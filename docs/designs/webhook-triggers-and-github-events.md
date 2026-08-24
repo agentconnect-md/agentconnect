@@ -5,13 +5,36 @@ one inbound delivery to one agent turn. The relay is the public ingress and data
 plane, the daemon runs the turn, and the Control Plane (CP) stores definitions
 and body-free run metadata.
 
-Two hook kinds share this execution path:
+The hook kinds sharing this execution path are the generic endpoint plus one per
+code host. The vocabulary is `HOOK_KINDS` in `packages/protocol/src/code-host.ts`,
+derived from `CODE_HOST_PROVIDERS`, so a new host widens it in one place and every
+mapping over it — the session integration facet, the console's trigger taxonomy,
+the per-kind marks and labels — stops type-checking until it is extended:
 
 - `webhook`: an unguessable capability URL accepts a caller-supplied
   instruction.
 - `github`: a GitHub App webhook accepts signed repository events, applies
   subscription and authorization rules, and preserves issue or pull-request
   session continuity.
+- `gitlab`: the GitLab counterpart, described in
+  [gitlab-com-integration.md](gitlab-com-integration.md).
+
+Only `webhook` is generic. Every code-host kind is promoted out of the generic
+bucket wherever a session is classified, so a code-host session is never
+filtered, marked, or labelled as a plain webhook. `webhook` is the mapping for
+the generic kind and for a hook whose source cannot be determined at all — it is
+never the fallback for a kind nobody mapped.
+
+A session's kind is **snapshotted onto the session row at creation**
+(`session_meta."hookKind"`), beside the trigger id and display names it already
+records. A hook definition can be deleted and recreated, which leaves past
+sessions pointing at an id that resolves to nothing; reading the kind live would
+then rewrite their history as generic webhooks. Every read — display label,
+integration facet, and the filter predicate — prefers the snapshot and consults
+the live definition only when a row has none. Rows written before the column
+have no snapshot and keep resolving through the live hook exactly as before;
+they are deliberately **not** backfilled, so a code-host session that predates
+the column still degrades to the generic rendering once its hook is gone.
 
 For a numbered GitHub thread, `GithubPoster` owns the ordinary reply comment and
 publishes only the completed ACP final answer. A formal pull-request review is a
@@ -302,6 +325,26 @@ under that Agent's `worktrees` directory; concurrent pull requests therefore
 use different working directories while later events for one pull request
 reuse its directory.
 
+### Revision Admission
+
+Deliveries for one pull request contend for the next generation rather than each
+queueing its own turn. Within one (hook, repository, pull-request) lane the
+newest relay-fired head supersedes queued turns and preempts an active turn on an
+older head with the normalized `superseded` outcome. A re-request names the head
+already current, so a burst of them collapses onto the newest delivery and
+re-runs that head once. Inline comments belonging to one submitted review
+coalesce into a single batched turn, sealed by the first of three gates — a
+maximum comment count, a quiet window since the last comment, and a maximum wait
+since the batch opened — and answered through the daemon-owned batched reply
+tool, which takes over publication from the ordinary reply.
+
+That admission plan is a provider-neutral seam with two implementers. Each code
+host supplies its own lane identity, revision and re-run event sets, comment
+batch stream and prompt, and whether a sealed batch publishes each item itself;
+the daemon core consults the seam and never a provider module. GitLab's
+implementation, and the two places the hosts deliberately differ, are in
+[gitlab-com-integration.md](gitlab-com-integration.md) Section 12.3.
+
 ### Prompt Boundary
 
 GitHub content is untrusted external input. The daemon wraps model-visible
@@ -582,7 +625,7 @@ The implementation does not provide:
 
 - synchronous webhook responses containing agent output;
 - arbitrary payload transformation or filter programs;
-- structured GitLab or Bitbucket event semantics;
+- structured Bitbucket event semantics;
 - per-repository webhook registration managed by AgentConnect;
 - daemon polling as an alternative public ingress;
 - queueing arbitrary generic deliveries while a daemon is offline;

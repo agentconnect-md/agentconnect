@@ -14,7 +14,7 @@ export const POOL_STORE_SCHEMA = 'agentconnect_cloud_store'
 export const SCHEMA_LOCK_KEY = 'agentconnect-cloud-store-schema'
 export const TRANSCRIPT_REVISION_LOCK_KEY = 'agentconnect-cloud-transcript-revision'
 
-/** camelCase column names as `LocalStore` spells them; PostgreSQL folds unquoted ones to lower. */
+/** Every camelCase column and result alias `LocalStore` spells; an unlisted one reads back undefined. */
 export const canonicalColumns = [
   'acpSessionId',
   'activationKey',
@@ -25,6 +25,7 @@ export const canonicalColumns = [
   'agentId',
   'attachmentsJson',
   'attemptAt',
+  'attemptId',
   'authorityGeneration',
   'authorityId',
   'automaticCount',
@@ -46,6 +47,8 @@ export const canonicalColumns = [
   'cpPrivate',
   'cpRev',
   'createdAt',
+  'credentialEpoch',
+  'daemonId',
   'defaultModel',
   'defaultPermissionMode',
   'deliveryReason',
@@ -67,9 +70,12 @@ export const canonicalColumns = [
   'failedAttempts',
   'fastModeOverride',
   'globalRules',
+  'headSha',
   'hookContext',
+  'hookId',
   'integrationId',
   'imageRef',
+  'intentId',
   'introducedAt',
   'isIm',
   'isQueueCmd',
@@ -83,11 +89,14 @@ export const canonicalColumns = [
   'mainSessionKey',
   'manifestDigest',
   'memoryProvider',
+  'mergeRequestIid',
+  'mintedAt',
   'modelId',
   'modelOverride',
   'modelsHash',
   'needsParentReply',
   'nextAttemptAt',
+  'noteId',
   'observedAt',
   'observedModel',
   'observedModelSet',
@@ -110,6 +119,9 @@ export const canonicalColumns = [
   'posterPublishState',
   'profileId',
   'probedAt',
+  'projectId',
+  'projectionId',
+  'projectionKey',
   'providerCheckpoint',
   'purgedAt',
   'queuedAt',
@@ -154,7 +166,8 @@ export const canonicalColumns = [
   'turnId',
   'updatedAt',
   'windowStartedAt',
-  'workspaceIsolation'
+  'workspaceIsolation',
+  'writeMarker'
 ] as const
 
 /** Lower-cased column name → the camelCase spelling every row shape expects back. */

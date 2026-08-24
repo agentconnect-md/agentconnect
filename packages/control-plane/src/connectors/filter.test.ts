@@ -59,14 +59,14 @@ describe('filterCatalog', () => {
   it('keeps a dual provider but strips the oauth2 method when its secret is unconfigured', () => {
     const kept = filterCatalog([dualProvider('linear')], [config('linear', false)], null, new Set())
     expect(kept.map((p) => p.service)).toEqual(['linear'])
-    expect(kept[0].auth.map((a) => a.type)).toEqual(['api_key'])
-    expect(kept[0].authTypes).toEqual(['api_key'])
+    expect(kept[0]!.auth.map((a) => a.type)).toEqual(['api_key'])
+    expect(kept[0]!.authTypes).toEqual(['api_key'])
   })
 
   it('keeps both methods on a dual provider when oauth IS configured', () => {
     const kept = filterCatalog([dualProvider('linear')], [config('linear', true)], null, new Set())
-    expect(kept[0].auth.map((a) => a.type)).toEqual(['oauth2', 'api_key'])
-    expect(kept[0].authTypes).toEqual(['oauth2', 'api_key'])
+    expect(kept[0]!.auth.map((a) => a.type)).toEqual(['oauth2', 'api_key'])
+    expect(kept[0]!.authTypes).toEqual(['oauth2', 'api_key'])
   })
 
   it('applies the whitelist', () => {

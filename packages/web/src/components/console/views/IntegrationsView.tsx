@@ -33,6 +33,7 @@ import { botCardCopy, botSharingEditable, platformRegistry } from '@/components/
 import { BOT_PLATFORM_TABS, botMatchesPlatformTab } from '@/components/console/platforms/host-projections'
 import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
+import GitlabCard from '@/components/console/GitlabCard'
 
 // The free-bot sub-line shows where the bot came from without repeating
 // historical usage metadata in the list row.
@@ -252,6 +253,10 @@ export default function IntegrationsView() {
 
       <Section label="Code hosts">
         <GithubCard canWrite={canWrite} isOwner={isOwner} />
+        {/* Cards own no margin here (see Section) — the second one supplies its own gap. */}
+        <div className="mt-4">
+          <GitlabCard canWrite={canWrite} />
+        </div>
       </Section>
 
       {deletingBot && (

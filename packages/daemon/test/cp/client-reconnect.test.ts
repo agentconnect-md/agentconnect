@@ -34,7 +34,7 @@ function deps(connect: () => Promise<FakeTransport>, clock: FakeClock): CpClient
     connect,
     log: silent,
     jitter: () => 0
-  }
+  } as unknown as CpClientDeps
 }
 
 describe('CpClient reconnect', () => {

@@ -9,6 +9,7 @@ import { jwtVerify } from 'jose'
 import type { GitCredCapability } from '@agentconnect.md/protocol'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
 import type { AgentRepoAuthorizationRecord, GithubInstallationRecord } from '../persistence/ports.js'
+import { OrgId } from '../domain/ids.js'
 import { githubAppBotIdentity, resolveGithubAppConfig, type GithubAppConfig } from './config.js'
 import { GithubApiError, githubRequest, mintAppJwt, type FetchLike } from './api.js'
 import { InstallationTokenInvalidatedError, InstallationTokenService } from './installation-token.service.js'
@@ -927,6 +928,13 @@ describe('GithubService.mintForAgent — capabilities forwarding (P2.5)', () => 
     // writes coupled to contents writes.
     await svc.mintForAgent(agent, [])
     expect(bodies[1]!.permissions).toEqual({ metadata: 'read', contents: 'write', workflows: 'write' })
+
+    // §17.1 access floor: a caller may ask for LESS than the write tier, and the read it gets back
+    // drops the coupled workflows write with it. 'write' is a no-op — the tier is already the ceiling.
+    await svc.mintForAgent(agent, [], ['contents', 'issues'], undefined, 'read')
+    expect(bodies[2]!.permissions).toEqual({ metadata: 'read', contents: 'read', issues: 'read' })
+    await svc.mintForAgent(agent, [], ['contents'], undefined, 'write')
+    expect(bodies).toHaveLength(3) // no new mint: it landed on the grant the absent-access ask cached
   })
 })
 
@@ -987,6 +995,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
       accountLogin: 'acme',
       accountType: 'Organization',
       repositorySelection: 'all',
+      permissions: {},
       suspendedAt: null,
       revokedAt: null,
       createdAt: new Date(0),
@@ -998,6 +1007,7 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     return {
       id: 'ra-1',
       agentId: 'agent-1' as never,
+      provider: 'github',
       repoId: 111n,
       repoFullName: 'Acme/Tools', // stored as GitHub cases it — may differ from the request
       access: 'comment',
@@ -1145,7 +1155,8 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     // the grant ECHOES the requested name (not the row's stored casing) so the
     // daemon's identity guard is a clean equality check.
     const grant = await svc.mintForAgent(AGENT, [], CONTENTS, 'acme/tools')
-    expect(grant).toMatchObject({ repoFullName: 'acme/tools', access: 'read' })
+    // …and reports that numeric id back, which is what a provider-qualified grant echoes.
+    expect(grant).toMatchObject({ repoFullName: 'acme/tools', access: 'read', repoId: 111n })
     expect(mintBodies[0]).toMatchObject({
       repository_ids: [111],
       permissions: { metadata: 'read', contents: 'read' }
@@ -1374,7 +1385,7 @@ describe('GithubService.refreshInstallationFacts', () => {
     const clock = new FakeClock(1_700_000_000_000)
     const claimed = {
       id: 'row-1',
-      orgId: 'org-a',
+      orgId: OrgId('org-a'),
       installationId: 42n,
       accountLogin: 'acme',
       accountType: 'Organization',
@@ -1439,7 +1450,7 @@ describe('GithubService.refreshInstallationFacts', () => {
     const clock = new FakeClock(1_700_000_000_000)
     const claimed = {
       id: 'row-1',
-      orgId: 'org-a',
+      orgId: OrgId('org-a'),
       installationId: 42n,
       accountLogin: 'acme',
       accountType: 'Organization',

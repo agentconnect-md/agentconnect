@@ -191,16 +191,24 @@ spec replication or restart.
 
 ## Prisma data model
 
+GitLab's arrival made this row a two-host one
+([gitlab-com-integration.md](gitlab-com-integration.md) §8.3): it carries the
+provider beside its numeric id, and identity is the pair. Everything below that
+says GitHub is now that host's arm of a shared shape.
+
 ```prisma
-/// Explicit agent access to a GitHub repository outside the workspace.
-/// Authorization belongs to the agent, not a hook. repoId is the rename-immune
-/// match key; repoFullName is for display. Installation is resolved dynamically
-/// by owner at mint time. Rows are detachable and do not change workspace identity.
+/// Explicit agent access to one code-host repository outside the workspace.
+/// Authorization belongs to the agent, not a hook. (provider, repoId) is the
+/// rename-immune match key — the hosts number their repositories independently;
+/// repoFullName is for display. A GitHub installation is resolved dynamically by
+/// owner at mint time, a GitLab project through its managed binding. Rows are
+/// detachable and do not change workspace identity.
 model AgentRepoAuthorization {
   id              String   @id @default(uuid()) @db.Uuid
   agentId         String   @db.Uuid
-  repoId          BigInt            // Numeric GitHub repository ID; match key
-  repoFullName    String            // "owner/repo"; display and fast-path match
+  provider        String   @default("github")  // 'github' | 'gitlab'
+  repoId          BigInt            // Numeric repository/project ID; match key
+  repoFullName    String            // "owner/repo" or "group/subgroup/project"; display and fast-path match
   access          RepoAccess        // read | comment | write
   createdByUserId String?           // Audit: who granted it and was attested
   createdAt       DateTime @default(now()) @db.Timestamptz(6)
@@ -208,7 +216,7 @@ model AgentRepoAuthorization {
   agent     Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   createdBy User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
 
-  @@unique([agentId, repoId])
+  @@unique([agentId, provider, repoId])
   @@index([agentId])
   @@map("agent_repo_authorization")
 }

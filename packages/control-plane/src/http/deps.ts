@@ -47,6 +47,11 @@ import type {
   PresetAgentStore,
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
+  CodeHostRepositoryRepo,
+  GitlabConnectionRepo,
+  GitlabAgentAccountRepo,
+  GitlabInstanceStateRepo,
+  GitlabProjectBindingRepo,
   DaemonLifecycleOpRepo,
   OAuthRepo,
   WebchatMcpOperationRepo
@@ -54,6 +59,11 @@ import type {
 import type { Clock } from '../domain/clock.js'
 import type { OAuthService } from '../registry/oauthService.js'
 import type { GithubService } from '../github/service.js'
+import type { GitlabOauthService } from '../gitlab/oauth.service.js'
+import type { GitlabApiClient } from '../gitlab/api.js'
+import type { GitlabAccountService } from '../gitlab/account.service.js'
+import type { GitlabProvisioner } from '../gitlab/provisioner.js'
+import type { GitlabHookRerunService } from '../gitlab/hook-rerun.service.js'
 import type { PullRequestViewService } from '../github/pull-request-view.service.js'
 import type { SessionPullRequestLinkService } from '../github/session-pull-request-link.service.js'
 import type { GithubUserAuthzService } from '../github/user-authz.js'
@@ -233,6 +243,16 @@ export interface HttpDeps {
     /** Explicit non-workspace repo grants per agent (issue #457) — the agent
      *  Repositories card + the github-hook watch-repo gate. */
     agentRepoAuth: AgentRepoAuthorizationRepo
+    /** Provider-qualified repository catalog (gitlab-com-integration.md §8.1) — readers-first write side. */
+    codeHostRepository: CodeHostRepositoryRepo
+    /** GitLab.com OAuth connection metadata (§8.2); token pair lives behind its secret store. */
+    gitlabConnection: GitlabConnectionRepo
+    /** Managed GitLab project bindings (§8.2/§10). */
+    gitlabProjectBinding: GitlabProjectBindingRepo
+    /** Per-agent GitLab service accounts and their memberships (§7.2/§8.2). */
+    gitlabAgentAccount: GitlabAgentAccountRepo
+    /** Deployment-level observed instance version (§24.2). */
+    gitlabInstanceState: GitlabInstanceStateRepo
     /** Append-only events feed (§3.12) — WebUI CRUD writes land here (`cron_change`, …). */
     audit: AuditRepo
     /** Durable browser-confirmed delegated MCP operation ledger. */
@@ -363,6 +383,17 @@ export interface HttpDeps {
   /** github-app workspaces façade; absent ⇒ feature disabled (GITHUB_APP_* unset) and
    *  every github route 404s. */
   github?: GithubService
+  /** GitLab OAuth surface (gitlab-com-integration.md §9); absent ⇒ routes 404.
+   *  `api` is the base-bound GitLab edge the admin routes share with the service. */
+  gitlab?: {
+    oauth: GitlabOauthService
+    provisioner: GitlabProvisioner
+    /** §7.2 per-agent accounts: convergence, retirement, and PAT rotation. */
+    accounts: GitlabAccountService
+    /** The §16.1 Console rerun authorizer; the route 404s without the GitLab app. */
+    hookRerun: GitlabHookRerunService
+    api: GitlabApiClient
+  }
   /** The PR panel's read projection; absent like {@link github} ⇒ the route 404s, hiding the tab. */
   pullRequestView?: PullRequestViewService
   /** The panel's second identity source: the PR a session's own head branch has, for the sessions no

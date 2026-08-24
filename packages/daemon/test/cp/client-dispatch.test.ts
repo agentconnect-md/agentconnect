@@ -97,7 +97,7 @@ async function readyClient(
     list: vi.fn(async () => ({ agentId: 'a', sessionId: 'acp-1', tracked: false, tasks: [], truncated: false })),
     ...((over.taskReader as any) ?? {})
   }
-  const deps: CpClientDeps = {
+  const deps = {
     url: 'wss://cp/daemon/ws',
     token: 't',
     daemonId: DAEMON_ID,
@@ -121,7 +121,7 @@ async function readyClient(
     jitter: () => 0,
     ...overRest
   }
-  const client = new CpClient(deps)
+  const client = new CpClient(deps as unknown as CpClientDeps)
   client.start()
   await tick()
   const auth = t.lastSent()

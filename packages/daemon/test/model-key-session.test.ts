@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
+import { offClusterPlaintext } from '../src/key-server/session-hosts.js'
 
 function harness(grants: Array<Record<string, unknown>>) {
   const clock = new FakeClock(1_000)
@@ -13,7 +13,12 @@ function harness(grants: Array<Record<string, unknown>>) {
   const starts = vi.fn().mockResolvedValueOnce(firstHost).mockResolvedValueOnce(secondHost)
   ;(daemon as any).runtimes = { claude: { command: 'claude-agent-acp', args: [], env: [] } }
   ;(daemon as any).cpAgents = { orgForAgent: () => 'org-a' }
-  ;(daemon as any).store = { getSession: () => undefined, getModelOverride: () => undefined }
+  ;(daemon as any).store = {
+    getSession: () => undefined,
+    getModelOverride: () => undefined,
+    // The credential names the session by its outward id, minted here on first use.
+    ensureOutwardSessionId: async (key: string) => `outward-of-${key}`
+  }
   ;(daemon as any).startModelSessionRuntime = starts
   return { clock, daemon: daemon as any, issue, revoke, starts, firstHost, secondHost }
 }
@@ -21,9 +26,15 @@ function harness(grants: Array<Record<string, unknown>>) {
 const agent = { id: 'agent-a', runtime: 'claude' }
 
 describe('daemon model-key session lifecycle', () => {
-  it('accepts key-server configuration only in cloud mode', () => {
-    expect(() => new Daemon({ keyServerClient: {} as never })).toThrow(/only by cloud daemons/)
-    expect(() => new Daemon({ k8s: true, keyServerTokenPath: '/token' })).toThrow(/requires key-server/)
+  it('refuses a key server outside cloud mode, and never demands a token path', () => {
+    // A minted key is only usable with the `*_MODEL_BASE_URL` pair that aims it at this install's
+    // gateway, and that pair is cloud-mode configuration — so a non-cloud key server is refused.
+    // Its credential is a separate question: with or without a token path, both directions are a
+    // warning rather than a refusal to start a daemon whose every other agent is fine.
+    expect(() => new Daemon({ keyServerClient: {} as never })).toThrow(/--k8s/)
+    expect(() => new Daemon({ k8s: true, keyServerClient: {} as never })).not.toThrow()
+    expect(() => new Daemon({ k8s: true, keyServerTokenPath: '/token' })).not.toThrow()
+    expect(() => new Daemon({ keyServerTokenPath: '/token' })).not.toThrow()
   })
 
   it('issues once per logical session, caches the host, and revokes on release', async () => {
@@ -37,7 +48,7 @@ describe('daemon model-key session lifecycle', () => {
     expect(h.issue).toHaveBeenCalledWith({
       orgId: 'org-a',
       agentId: 'agent-a',
-      sessionId: createHash('sha256').update('slack:C:T:agent-a').digest('hex'),
+      sessionId: 'outward-of-slack:C:T:agent-a',
       provider: 'anthropic',
       ttlSeconds: 3_600
     })
@@ -271,5 +282,45 @@ describe('daemon model-key session lifecycle', () => {
     await released
     expect(h.firstHost.stop).toHaveBeenCalledOnce()
     expect(h.revoke).toHaveBeenCalledWith('key-1')
+  })
+})
+
+describe('the plaintext key-server warning', () => {
+  it('says nothing for TLS, and nothing for the in-cluster shapes a deployment actually writes', () => {
+    // The scheme is the deployment's to choose, so this is a warning about ONE case — a bearer
+    // crossing something that is not obviously the cluster — not a rule about schemes.
+    for (const address of [
+      'https://keys.example.com',
+      'https://hub.agentconnect-test.svc:8080',
+      'http://test-agentconnect-aigw-hub:8080',
+      'http://test-agentconnect-aigw-hub.agentconnect-test:8080',
+      'http://test-agentconnect-aigw-hub.agentconnect-test.svc:8080',
+      'http://test-agentconnect-aigw-hub.agentconnect-test.svc.cluster.local:8080',
+      'http://localhost:8080',
+      'http://127.0.0.1:8080',
+      'http://[::1]:8080',
+      'http://10.96.3.4:8080',
+      'http://172.20.0.5:8080',
+      'http://192.168.1.9:8080',
+      'http://100.72.4.1:8080'
+    ]) {
+      expect(offClusterPlaintext(address), address).toBe(false)
+    }
+  })
+
+  it('warns for plaintext to a name that is not cluster-shaped', () => {
+    for (const address of [
+      'http://keys.example.com',
+      'http://keys.example.com:8080',
+      'http://a.b.c',
+      'http://203.0.113.5:8080',
+      'http://172.32.0.5:8080'
+    ]) {
+      expect(offClusterPlaintext(address), address).toBe(true)
+    }
+  })
+
+  it('says nothing about an address it cannot parse — the client already refuses that', () => {
+    expect(offClusterPlaintext('not a url')).toBe(false)
   })
 })

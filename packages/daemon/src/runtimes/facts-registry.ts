@@ -483,6 +483,17 @@ export class RuntimeFactsRegistry {
       this.host.log().warn(`probe: ${result.runtime} unreachable in the sandbox — keeping the image's declared facts`)
       return
     }
+    // An auth-required rejection of a launch that carried no credential is the DEPLOYMENT's gap,
+    // not a login this host is missing: publishing it would empty the model picker and ask the
+    // user to log a cluster runtime in, on a machine nobody can log into.
+    if (!result.ok && result.uncredentialed) {
+      this.host
+        .log()
+        .warn(
+          `probe: ${result.runtime} wants a provider credential and this deployment configures none — keeping the image's declared facts`
+        )
+      return
+    }
     await this.applyProbeResult(result)
     this.emitFacts()
   }

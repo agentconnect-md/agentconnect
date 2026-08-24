@@ -9,16 +9,33 @@
  * connection index.
  *
  * Fire-and-forget + per-socket isolated: a dead relay socket's error is swallowed
- * (its close removes it from the registry).
+ * (its close removes it from the registry). The one exception is {@link
+ * RelayControlSender.hookRerun}, which AWAITS a correlated admission — a console
+ * action must not report success for a frame that merely reached a socket.
  */
 import type {
   RcHookAssign,
+  RcHookRerun,
+  RcHookRerunRefusal,
   RcCollabRoutes,
   RcMcpAssign,
   RcMcpUnassign,
   RcMemoryConnectionAssign,
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
+import { GITLAB_RERUN_V1_FEATURE, RcHookRerunResult } from '@agentconnect.md/protocol'
+import { advertises, requiredGitlabFeatures, requiredGitlabInstanceFeatures } from '../domain/daemon-features.js'
+
+/** What one Console rerun attempt achieved across the eligible relay pool. */
+export type RelayRerunOutcome =
+  | { kind: 'admitted' }
+  /** The relay that answered definitively declined; nothing ran, anywhere. */
+  | { kind: 'refused'; code: RcHookRerunRefusal }
+  /** A relay went quiet mid-request: the turn may or may not have started. */
+  | { kind: 'ambiguous' }
+  /** No connected relay could be asked (none eligible, or none reachable). */
+  | { kind: 'unreachable' }
+import { RelayNotWritten } from '../ws/relay-registry.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 
 export class RelayControlSender {
@@ -35,14 +52,60 @@ export class RelayControlSender {
   }
 
   /** Upsert one compiled hook rule on every connected relay (the frame is NEVER
-   *  logged — it carries the hook's hmacSecret). */
+   *  logged — it carries the hook's hmacSecret). A gitlab rule goes only to
+   *  relays advertising the feature: the widened `kind` is frame-fatal on an
+   *  older relay's decoder (§17.3), so gating here IS the negotiation. A rule on a
+   *  self-managed host needs the §24.4 bit too — a relay without it would forward
+   *  metadata missing the fence host. */
   hookAssign(rule: RcHookAssign): void {
-    this.broadcast((ch) => ch.send('rc/hook-assign', rule))
+    this.broadcast((ch) => {
+      if (rule.kind === 'gitlab' && !advertises(ch.features, requiredGitlabFeatures(rule.gitlab?.host))) return
+      ch.send('rc/hook-assign', rule)
+    })
   }
 
   /** Drop one hook rule pool-wide (hook disabled / deleted / agent unplaced). */
   hookRemove(hookId: string): void {
     this.broadcast((ch) => ch.send('rc/hook-remove', { hookId }))
+  }
+
+  /**
+   * Hand ONE gitlab rerun to ONE relay (§16.1) and wait for its verdict.
+   * Reaching a socket proves nothing: only a relay that answers `admitted` has
+   * queued a turn and opened a run row, so the console is told "started" on that
+   * REP alone.
+   *
+   * THE FIRST ANSWERED VERDICT IS FINAL — refusals included. Relay rule tables
+   * converge independently, so a peer asked after a refusal may still hold the
+   * pre-disable or pre-bump replica and would dispatch under authority this one
+   * already revoked; and walking past `limiter_exhausted` would turn a per-hook
+   * budget into a pool-wide walk. An ambiguous failure stops for the older
+   * reason: the frame was written, so a turn may already have started.
+   *
+   * The walk therefore only skips relays that could not answer at all —
+   * ineligible (`gitlab-rerun-v1`; `gitlab-com-v1` predates the frame and its
+   * holder cannot decode it, §17.3) or unreachable before the frame was written.
+   *
+   * §24.4 adds the host to that eligibility, not just to the frame: a relay denied the
+   * self-managed RULE holds none, so asking it would collect a `replay_pending` refusal —
+   * and the first answered verdict is final, so that refusal would end the walk before an
+   * eligible peer was ever asked.
+   */
+  async hookRerun(rerun: RcHookRerun): Promise<RelayRerunOutcome> {
+    const required = [GITLAB_RERUN_V1_FEATURE, ...requiredGitlabInstanceFeatures(rerun.gitlab.host)]
+    for (const ch of this.relays.all()) {
+      if (!advertises(ch.features, required) || typeof ch.request !== 'function') continue
+      let result: RcHookRerunResult
+      try {
+        result = RcHookRerunResult.parse(await ch.request('rc/hook-rerun', rerun))
+      } catch (e) {
+        // Nothing reached the wire, so nothing could have been admitted here.
+        if (e instanceof RelayNotWritten) continue
+        return { kind: 'ambiguous' }
+      }
+      return result.admitted ? { kind: 'admitted' } : { kind: 'refused', code: result.code }
+    }
+    return { kind: 'unreachable' }
   }
 
   /** Load an MCP provider's proxy binding onto every relay (whole-pool BROADCAST —

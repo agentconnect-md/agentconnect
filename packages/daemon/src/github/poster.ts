@@ -332,7 +332,7 @@ function safePrefix(text: string, maxChars: number): string {
 }
 
 /** Fit a reply prefix into `budget`, closing a fence before marker/footer chrome. */
-function truncatedMarkdownPrefix(text: string, budget: number): string {
+export function truncatedMarkdownPrefix(text: string, budget: number): string {
   let contentBudget = Math.max(0, budget)
   for (;;) {
     const prefix = safePrefix(text, contentBudget)

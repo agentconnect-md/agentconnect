@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { OrgId } from '../domain/ids.js'
 import type { BotRecord, ExternalScopeRecord } from '../persistence/ports.js'
 import type { SessionAccessViewer } from './session-access-plugin.js'
 import { FeishuSessionAccessService } from './feishu-session-access.js'
@@ -8,7 +9,7 @@ const BOT_ID = 'b0b0b0b0-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 function scope(): ExternalScopeRecord {
   return {
     id: '11111111-1111-4111-8111-111111111111',
-    orgId: 'org-1',
+    orgId: OrgId('org-1'),
     provider: 'feishu',
     realmKey: 'lark:cli_custom',
     resourceKind: 'conversation',
@@ -83,7 +84,7 @@ describe('FeishuSessionAccessService', () => {
   })
 
   it('uses the Lark gateway and allows a current member of a custom Bot chat', async () => {
-    const fetchImpl = vi.fn(async (url: string) =>
+    const fetchImpl = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(async (url: string) =>
       url.endsWith('/tenant_access_token/internal')
         ? json({ code: 0, tenant_access_token: 'tenant-token' })
         : json({ code: 0, data: { items: [{ member_id: 'on_member' }], has_more: false } })

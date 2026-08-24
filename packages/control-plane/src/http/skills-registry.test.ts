@@ -56,7 +56,7 @@ describe('skills.sh registry search', () => {
   })
 
   it('queries the index with the owner filter and reports hits', async () => {
-    const fetchMock = vi.fn(
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
       async () => new Response(JSON.stringify({ skills: [hit()] }), { headers: { 'content-type': 'application/json' } })
     )
     vi.stubGlobal('fetch', fetchMock)

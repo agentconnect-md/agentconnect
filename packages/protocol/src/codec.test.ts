@@ -422,9 +422,15 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
   })
 
   it('spec.workspace round-trips the additional-repository allowlist on both modes', () => {
+    // A provider-less entry is what a pre-GitLab control plane sends, and it means
+    // github — the tolerant-reader default the two hosts' independent numbering needs.
     const additionalRepos = [
       { repoFullName: 'acme/infra', repoId: '4711' },
-      { repoFullName: 'example-co/shared-library', repoId: '815' }
+      { repoFullName: 'example-group/example-project', repoId: '815', provider: 'gitlab' }
+    ]
+    const qualified = [
+      { repoFullName: 'acme/infra', repoId: '4711', provider: 'github' },
+      { repoFullName: 'example-group/example-project', repoId: '815', provider: 'gitlab' }
     ]
     const scratch = decodeEnvelope(
       envelope('agent/upsert', {
@@ -433,7 +439,7 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
       })
     )
     if (!scratch.ok || !isFrame('agent/upsert')(scratch.frame)) throw new Error('expected agent/upsert')
-    expect(scratch.frame.payload.spec.workspace?.additionalRepos).toEqual(additionalRepos)
+    expect(scratch.frame.payload.spec.workspace?.additionalRepos).toEqual(qualified)
 
     const github = decodeEnvelope(
       envelope('agent/upsert', {
@@ -445,7 +451,7 @@ describe('agent spec / CRUD frames (CP→daemon spec sync)', () => {
       })
     )
     if (!github.ok || !isFrame('agent/upsert')(github.frame)) throw new Error('expected agent/upsert')
-    expect(github.frame.payload.spec.workspace?.additionalRepos).toEqual(additionalRepos)
+    expect(github.frame.payload.spec.workspace?.additionalRepos).toEqual(qualified)
   })
 
   it('agent/upsert and agent/remove decode for live CRUD', () => {
@@ -2298,7 +2304,7 @@ describe('gitcred frames (github-app workspace credentials)', () => {
     expect(decoded.frame.corr).toBeDefined()
   })
 
-  it('rejects a gitcred/grant with a foreign username (single fixed basic-auth user)', () => {
+  it('rejects a gitcred/grant with a foreign username on the GitHub branch (v2 opens it per provider only)', () => {
     const f = buildEnvelope('gitcred/grant', {
       username: 'x-access-token',
       token: 'ghs_x',

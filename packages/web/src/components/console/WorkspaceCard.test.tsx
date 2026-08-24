@@ -8,7 +8,8 @@ vi.mock('swr', () => ({
 }))
 vi.mock('@/lib/api', () => ({
   creatorLabel: () => 'Dana Reyes',
-  fetchAgentRepos: vi.fn()
+  fetchAgentRepos: vi.fn(),
+  repoAuthProvider: (row: { provider?: string }) => row.provider ?? 'github'
 }))
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: vi.fn() }),
@@ -37,6 +38,7 @@ const agent = (
   }) as unknown as Agent
 
 const GITHUB = { mode: 'github', repo: 'acme/infra', branch: 'main', agentDir: '/' }
+const GITLAB = { mode: 'gitlab', repo: 'example-group/example-project', branch: 'main', agentDir: '/' }
 
 it('does not repeat the checkout branch in the Source card', () => {
   repos.rows = []
@@ -90,5 +92,27 @@ describe('workspace repository authority', () => {
     )
     expect(html).toContain('Authorize repository')
     expect(html).toContain('Edit workspace')
+  })
+})
+
+// A GitLab workspace names no identity on its source line, exactly as a GitHub one does not: the
+// agent page carries no GitLab identity surface at all (gitlab-com-integration.md §18.1).
+describe('workspace push identity', () => {
+  it('names no bot on a GitLab workspace source line', () => {
+    repos.rows = []
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITLAB)} />)
+
+    expect(html).not.toContain('pushes as')
+    expect(html).not.toContain('agentconnect-a1-g900')
+    // The line still says what it is for: the project, and the access the agent has on it.
+    expect(html).toContain('example-group/example-project')
+  })
+
+  it('leaves a GitHub workspace naming its installation instead', () => {
+    repos.rows = []
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ ...GITHUB, installationId: 'inst-1' })} />)
+
+    expect(html).toContain('authorized implicitly by the GitHub App installation')
+    expect(html).not.toContain('pushes as')
   })
 })

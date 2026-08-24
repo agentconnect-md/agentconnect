@@ -24,6 +24,7 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
     soleTarget: () => ROUTE
   },
   canDeliver: () => true,
+  dedupSeen: () => false,
   setChannelAgent: () => {},
   selectThreadAgent: () => {},
   reportBotUserId: () => {},

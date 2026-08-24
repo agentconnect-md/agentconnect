@@ -25,16 +25,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
-import { GithubMark, LoadingState } from '@/components/marks'
+import { GithubMark, GitlabMark, LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { isPoolPlacementKind, type Agent, type WorkspaceStatusInfo } from '@/lib/data'
-import { creatorLabel, fetchAgentRepos } from '@/lib/api'
+import { creatorLabel, fetchAgentRepos, repoAuthProvider } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
 import { consoleKeys } from '@/lib/swr-keys'
 import { useConsoleData } from '@/lib/data-context'
 import EditWorkspaceModal from '@/components/console/modals/EditWorkspaceModal'
-import { REPOSITORY_ACCESS_BADGE } from '@/components/console/WorkspaceFormFields'
+import { REPOSITORY_ACCESS_BADGE, type WorkspaceMode } from '@/components/console/WorkspaceFormFields'
 
 /**
  * The live half of the Source row. The card itself only knows the agent's
@@ -83,7 +83,7 @@ export function WorkspaceCard({
   // Non-null ⇒ the unified workspace editor is open. The authorization
   // shortcut starts it directly in its additional-repository subview.
   const [editState, setEditState] = useState<{
-    mode: 'scratch' | 'github'
+    mode: WorkspaceMode
     authorizeRepository?: true
   } | null>(null)
 
@@ -107,6 +107,8 @@ export function WorkspaceCard({
   }, [searchParams, agent.canEdit, pathname, router])
 
   const isGithub = ws.mode === 'github'
+  const isGitlab = ws.mode === 'gitlab'
+  const isGit = ws.mode !== 'scratch'
   const isGithubApp = ws.mode === 'github' && !!ws.installationId
   const reposKey = consoleKeys.agentRepos(activeOrg?.id, agent.id)
   const {
@@ -121,20 +123,30 @@ export function WorkspaceCard({
   const manualWorkspaceAuthorized =
     ws.mode === 'github' &&
     !isGithubApp &&
-    repos.some((authorization) => authorization.repoFullName.toLowerCase() === ws.repo.toLowerCase())
+    repos.some(
+      (authorization) =>
+        repoAuthProvider(authorization) === 'github' &&
+        authorization.repoFullName.toLowerCase() === ws.repo.toLowerCase()
+    )
   // A manual checkout has no App installation to mint a write token from, so its
   // effective workspace access is read regardless of the stored preference.
   const workspaceAccess =
-    ws.mode === 'github' ? (ws.installationId ? (ws.gitAccess ?? 'write') : ('read' as const)) : null
-  const remoteLabel = header?.remoteLabel ?? 'GitHub'
+    ws.mode === 'github'
+      ? ws.installationId
+        ? (ws.gitAccess ?? 'write')
+        : ('read' as const)
+      : ws.mode === 'gitlab'
+        ? (ws.gitAccess ?? 'write')
+        : null
+  const remoteLabel = header?.remoteLabel ?? (isGitlab ? 'GitLab' : 'GitHub')
 
   // The segment is the conversion entry point; picking the mode the agent is
   // already on is a no-op (the pencil edits the current source's settings).
-  const pickMode = (next: 'scratch' | 'github') => {
+  const pickMode = (next: WorkspaceMode) => {
     if (!canEdit || next === ws.mode) return
     setEditState({ mode: next })
   }
-  const segClass = (mode: 'scratch' | 'github') =>
+  const segClass = (mode: WorkspaceMode) =>
     mode === ws.mode ? (canEdit ? SEG_ON : SEG_ON_LOCKED) : canEdit ? SEG_OFF : SEG_OFF_LOCKED
 
   return (
@@ -153,10 +165,18 @@ export function WorkspaceCard({
             GitHub repo
           </button>
           <button
+            className={segClass('gitlab')}
+            onClick={() => pickMode('gitlab')}
+            title={isGitlab ? 'The workspace is a GitLab clone' : 'Convert this workspace to a GitLab project'}
+          >
+            <Icon name="git-branch" size={12} />
+            GitLab project
+          </button>
+          <button
             className={segClass('scratch')}
             onClick={() => pickMode('scratch')}
             title={
-              isGithub ? 'Convert this workspace to an empty scratch directory' : 'The workspace is a scratch directory'
+              isGit ? 'Convert this workspace to an empty scratch directory' : 'The workspace is a scratch directory'
             }
           >
             <Icon name="folder" size={12} />
@@ -166,15 +186,15 @@ export function WorkspaceCard({
 
         <span className="mx-[2px] h-[18px] w-px flex-none bg-(--border-subtle)" />
 
-        {isGithub ? (
+        {isGit ? (
           <span className="flex h-5 w-5 flex-none items-center justify-center">
-            <GithubMark color="var(--text-secondary)" />
+            {isGitlab ? <GitlabMark /> : <GithubMark color="var(--text-secondary)" />}
           </span>
         ) : (
           <Icon name="folder" size={16} color="var(--text-tertiary)" />
         )}
         <span className="mono min-w-0 truncate text-[13px] font-semibold text-(--text-primary)">
-          {ws.mode === 'github' ? ws.repo : 'Scratch workspace'}
+          {ws.mode === 'scratch' ? 'Scratch workspace' : ws.repo}
         </span>
         {/* Effective workspace access stays visible next to the repository
             (product-conventions.md §Workspace navigation and repository access) —
@@ -197,7 +217,7 @@ export function WorkspaceCard({
             <span className="text-(--brand-soft-text)">{header.commit.sha}</span> · {header.commit.time}
           </span>
         )}
-        {isGithub && header?.onPull && (
+        {isGit && header?.onPull && (
           <button
             className={`iconbtn h-6 w-6 flex-none ${header.pulling ? 'pointer-events-none opacity-50' : ''}`}
             title="Fast-forward pull from the remote"
@@ -206,7 +226,7 @@ export function WorkspaceCard({
             <Icon name="refresh-cw" size={13} />
           </button>
         )}
-        {isGithub && header?.repoUrl && (
+        {isGit && header?.repoUrl && (
           <a
             className="iconbtn flex h-6 w-6 flex-none items-center justify-center no-underline"
             title={`View on ${remoteLabel}`}
@@ -269,7 +289,7 @@ export function WorkspaceCard({
                 title={`${r.repoFullName} — ${r.access} access${poolPlaced ? '' : ', checked out alongside the workspace'}; added by ${creatorLabel(r.createdBy, me)}`}
               >
                 <span className="imark h-[14px] w-[14px] border-0 bg-transparent">
-                  <GithubMark />
+                  {repoAuthProvider(r) === 'gitlab' ? <GitlabMark /> : <GithubMark />}
                 </span>
                 <span className="mono text-[11.5px] text-(--text-primary)">{r.repoFullName}</span>
                 <span className={REPOSITORY_ACCESS_BADGE[r.access]}>{r.access}</span>

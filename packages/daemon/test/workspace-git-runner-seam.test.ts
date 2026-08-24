@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { WorkspaceManager, type WorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
@@ -40,7 +40,8 @@ function git(cwd: string, args: string[]): string {
 
 /** A real agent whose workspace is a real repository with a real session worktree. */
 function agentWithWorktree(sessionKey: string): { agent: Agent; worktree: string } {
-  const home = mkdtempSync(join(tmpdir(), 'ac-seam-'))
+  // CANONICAL: removal re-derives cwd from the realpath'd root, so a symlinked tmpdir (macOS) renames the argv.
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ac-seam-')))
   roots.push(home)
   const path = join(home, 'checkout')
   mkdirSync(path, { recursive: true })
@@ -117,29 +118,32 @@ function recording(): {
   const resolver: WorkspaceGitRunnerResolver = (agentId, cwd, abort) => {
     calls.push({ agentId, ...(cwd === undefined ? {} : { cwd }) })
     const inner: GitRunner = new LocalGitRunner(gitFor(cwd, abort), cwd, (env) => gitFor(cwd, abort).env(env))
-    const wrap = (runner: GitRunner): GitRunner => ({
-      withEnv: (env) => wrap(runner.withEnv(env)),
-      raw: async (args) => {
-        argv.push(args)
-        return runner.raw(args)
-      },
-      clone: async (repo, target, options) => {
-        argv.push(['clone', ...(options ?? []), repo, target])
-        return runner.clone(repo, target, options)
-      },
-      pull: async (remote, branch, options) => {
-        argv.push(['pull', ...(options ?? []), remote, branch])
-        return runner.pull(remote, branch, options)
-      },
-      status: async () => {
-        argv.push(['status'])
-        return runner.status()
-      },
-      log: async (options) => {
-        argv.push(['log', String(options.maxCount)])
-        return runner.log(options)
+    const wrap = (runner: GitRunner): GitRunner => {
+      const recorder: Omit<GitRunner, 'readBounded'> = {
+        withEnv: (env) => wrap(runner.withEnv(env)),
+        raw: async (args) => {
+          argv.push(args)
+          return runner.raw(args)
+        },
+        clone: async (repo, target, options) => {
+          argv.push(['clone', ...(options ?? []), repo, target])
+          return runner.clone(repo, target, options)
+        },
+        pull: async (remote, branch, options) => {
+          argv.push(['pull', ...(options ?? []), remote, branch])
+          return runner.pull(remote, branch, options)
+        },
+        status: async () => {
+          argv.push(['status'])
+          return runner.status()
+        },
+        log: async (options) => {
+          argv.push(['log', String(options.maxCount)])
+          return runner.log(options)
+        }
       }
-    })
+      return recorder as GitRunner
+    }
     return wrap(inner)
   }
   return { resolver, calls, argv }
@@ -220,7 +224,7 @@ describe('workspace-manager git runner seam', () => {
         pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
         status: async () => ({ current: null, tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
         log: async () => []
-      } as GitRunner
+      } as unknown as GitRunner
       return runner
     })
 

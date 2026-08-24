@@ -51,6 +51,7 @@ import type { SystemMetrics } from '../metrics/system-metrics.js'
 import type { ReadinessGate } from '../readiness.js'
 import type { MemoryFs } from '../memory/store.js'
 import type { DreamRunner } from '../dream/runner.js'
+import type { CodeHostNoteProjector } from '../gitlab/note-projection.js'
 
 /** The credentials, identity and logging this connection is built from, plus its single-point writes. */
 export interface CpClientConnectionHost {
@@ -110,6 +111,10 @@ export interface CpClientReadyHost {
   webchatMcpRevocations(): WebchatMcpRevocations
   drainSessionPurges(): Promise<void>
   effectiveAgents(): LoadedAgent[]
+  /** The §16 run-projection writer: the CP dispatch target and the interrupted-write reconciler. */
+  noteProjector(): CodeHostNoteProjector
+  /** The §15 review adapter, for the control-plane frames a finished attempt still owes. */
+  gitlabReviews(): { reconcilePending(): Promise<void> }
 }
 
 /** Tenant lookups for agent-scoped frames, plus the duty seam the heartbeat carries. */
@@ -137,7 +142,7 @@ export interface CpClientSeamHost {
   gitCommitIdentity(): GitCommitIdentity | undefined
   sessionThreadUrl(session: SessionRecord): string | undefined
   childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
-  listBackgroundTasks(req: TaskListReq): TaskList
+  listBackgroundTasks(req: TaskListReq): Promise<TaskList>
   /** The edge's in-memory merge-when-ready registry, or undefined before agents are loaded. */
   autoMerge(): AutoMergeWatcher | undefined
   /** The console keep-alive leases over this daemon's sandboxes (`k8s/sandbox-hold.ts`). */
@@ -163,7 +168,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
   const workspaceScope = createWorkspaceScope({
     workspaces: host.workspaces(),
     agentOf: (id) => host.agents().get(id),
-    sessionOf: (id, acpSessionId) => host.store().getSessionByAcpIdForAgent(id, acpSessionId),
+    sessionOf: (id, sessionId) => host.store().getSessionByOutwardId(sessionId, id),
     runtimeRootOf: (id) => host.k8sPlane()?.workspaceRootFor(id)
   })
 
@@ -256,6 +261,12 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       // Replay remote MCP revocations that could not reach the CP (revokes
       // queued while disconnected or left over from a previous process).
       void host.webchatMcpRevocations().drainWebchatMcpRevocations()
+      // ...and every §16 projection write this daemon started but never settled. Each is reconciled
+      // by the hidden marker before the merge request is touched again, never by replaying the write.
+      void host.noteProjector().reconcilePending()
+      // ...and every §15 settle/result frame a review attempt still owes. Both are idempotent
+      // REQs, so replaying one the CP already took is a no-op; not replaying wedges its ledger.
+      void host.gitlabReviews().reconcilePending()
       // ...and the retention-GC receipts (#485). A sweep that ran while the CP
       // was unreachable (or before it advertised the feature) left the deleted
       // sessions' metadata rows unmarked; this is the only side that still knows.
@@ -343,6 +354,8 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
           })
         }
       : {}),
+    // §16 desired projection generations, converged by the only GitLab Notes writer for this surface.
+    codeHostNoteProjection: (desired, orgId) => host.noteProjector().apply(desired, orgId),
     // The console's "start this agent's sandbox": duty claim + channel bind, no host — the same
     // condition the file reader serves on, reached without a turn. Local daemons have no plane.
     agentWake: createAgentWaker({

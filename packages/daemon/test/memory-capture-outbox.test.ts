@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi, type Mock } from 'vitest'
 import { MEMORY_PLUGIN_PROFILE, type MemoryConnectionSpec, type MemoryPluginManifest } from '@agentconnect.md/protocol'
 import { LocalStore, type MemoryCaptureOutboxRow } from '../src/store/local-store.js'
 import { openTestStore, usingPostgresStore } from './store-support.js'
@@ -67,15 +67,15 @@ function spec(): MemoryConnectionSpec {
 }
 
 function registryFor(client: MemoryPluginClient): MemoryCaptureConnectionRegistry & {
-  markRecovered: ReturnType<typeof vi.fn>
-  markDegraded: ReturnType<typeof vi.fn>
+  markRecovered: Mock<MemoryCaptureConnectionRegistry['markRecovered']>
+  markDegraded: Mock<MemoryCaptureConnectionRegistry['markDegraded']>
 } {
   return {
     connectionIds: () => [connectionId],
     clientFor: (id) => (id === connectionId ? client : undefined),
     specFor: (id) => (id === connectionId ? spec() : undefined),
-    markRecovered: vi.fn(),
-    markDegraded: vi.fn()
+    markRecovered: vi.fn<MemoryCaptureConnectionRegistry['markRecovered']>(),
+    markDegraded: vi.fn<MemoryCaptureConnectionRegistry['markDegraded']>()
   }
 }
 

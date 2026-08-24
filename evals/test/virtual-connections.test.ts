@@ -86,4 +86,33 @@ describe('VirtualSlackConnection — the concrete-connection surface the daemon 
     await expect(conn.getUserProfile('U-UNKNOWN')).resolves.toEqual({ id: 'U-UNKNOWN' })
     await expect(conn.downloadFile()).resolves.toBeNull()
   })
+
+  it('provides bounded channel history pages from the virtual world', async () => {
+    const { port } = worldStub({
+      channelHistory: () => [
+        { ts: '1700000000.000001', text: 'older', sender: 'U1', isBot: false },
+        { ts: '1700000000.000002', text: 'newer', sender: 'UBOT', isBot: true }
+      ]
+    })
+    const conn = new VirtualSlackConnection('int-1', { workspaceId: 'T-EVAL' }, port)
+    await expect(conn.getChannelHistory('C-KNOWN', { limit: 1 })).resolves.toEqual({
+      messages: [{ ts: '1700000000.000002', text: 'newer', sender: 'UBOT', isBot: true }],
+      hasMore: true,
+      nextCursor: '1'
+    })
+    await expect(conn.getChannelHistory('C-KNOWN', { cursor: '1', limit: 1 })).resolves.toEqual({
+      messages: [{ ts: '1700000000.000001', text: 'older', sender: 'U1', isBot: false }],
+      hasMore: false
+    })
+    const bounded = await conn.getChannelHistory('C-KNOWN', {
+      oldest: '1700000000.000001',
+      latest: '1700000000.000002'
+    })
+    expect(bounded.messages).toEqual(
+      expect.arrayContaining([
+        { ts: '1700000000.000001', text: 'older', sender: 'U1', isBot: false },
+        { ts: '1700000000.000002', text: 'newer', sender: 'UBOT', isBot: true }
+      ])
+    )
+  })
 })

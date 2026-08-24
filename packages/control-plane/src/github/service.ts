@@ -25,7 +25,12 @@ import type {
 } from '../persistence/ports.js'
 import { githubRequest, githubRequestPage, mintAppJwt, GithubApiError, type FetchLike, type GithubPage } from './api.js'
 import { githubAppBotIdentity, type GithubAppConfig } from './config.js'
-import { InstallationTokenService, type CapabilityLevels, type MintedGitCred } from './installation-token.service.js'
+import {
+  InstallationTokenService,
+  type CapabilityLevels,
+  type GitAccess,
+  type MintedGitCred
+} from './installation-token.service.js'
 import { deriveInstallStateKey, mintInstallState, verifyInstallState } from './install-state.js'
 import { TokenBucket } from './rate-limit.js'
 
@@ -635,12 +640,17 @@ export class GithubService {
    * installation, so grants span installations naturally; the row's access tier
    * drives the per-capability clamp. No row ⇒ SCOPE_DENIED — the daemon treats a
    * repo-keyed denial as a short-TTL negative, not the agent-terminal kind.
+   *
+   * `requestedAccess` is the v2 access FLOOR (gitlab-com-integration.md §17.1): a caller may ask for
+   * LESS than the tier, never more. Absent ⇒ the tier itself, which is what every GitHub caller asks
+   * for today, so the pre-v2 request shape resolves exactly as it did before.
    */
   async mintForAgent(
     agent: AgentRecord,
     bucketKeys: string[],
     capabilities?: readonly GitCredCapability[],
-    requestedRepo?: string
+    requestedRepo?: string,
+    requestedAccess?: GitAccess
   ): Promise<MintedGitCred> {
     const workspace = agent.workspace
     let label: string | undefined
@@ -667,7 +677,7 @@ export class GithubService {
     const levels: CapabilityLevels = {}
     for (const cap of new Set(wanted)) {
       const level = tier[cap]
-      if (level) levels[cap] = level
+      if (level) levels[cap] = requestedAccess === 'read' ? 'read' : level
     }
     try {
       return await this.tokens.mintLevels(
@@ -794,7 +804,10 @@ export class GithubService {
       }
     }
 
-    const auth = (await this.deps.repoAuths?.listForAgent(agent.id))?.find((row) => row.repoId === repoId)
+    // Grants are provider-qualified: a GitLab project sharing this numeric id is a different repository.
+    const auth = (await this.deps.repoAuths?.listForAgent(agent.id))?.find(
+      (row) => row.provider === 'github' && row.repoId === repoId
+    )
     if (!auth) {
       throw new GitCredDeniedError(
         `${repoFullName} is not authorized for this agent — add it under the agent's Repositories settings`,
@@ -1027,7 +1040,9 @@ export class GithubService {
       }
     }
 
-    const grants = (await this.deps.repoAuths?.listForAgent(agent.id)) ?? []
+    const grants = ((await this.deps.repoAuths?.listForAgent(agent.id)) ?? []).filter(
+      (row) => row.provider === 'github'
+    )
     const exact = grants.find((row) => row.repoFullName.toLowerCase() === repoFullName.toLowerCase())
     // Never probe an unrelated owner merely because the daemon named it. A
     // same-owner grant is enough to justify the slow rename lookup below.

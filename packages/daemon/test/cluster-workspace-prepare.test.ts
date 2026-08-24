@@ -871,7 +871,7 @@ describe('secondary roots on the pod volume', () => {
     await workspaces.prepareClusterWorkspace(agentWithRoots(), POD_ROOT)
 
     // The clone stages beside the checkout and is published by a rename, on the volume.
-    const clone = calls.find((call) => call.args[0] === 'clone' && call.args[1].includes('acme/infra'))
+    const clone = calls.find((call) => call.args[0] === 'clone' && call.args[1]!.includes('acme/infra'))
     expect(clone!.args[2]).toMatch(new RegExp(`^${INFRA}/checkout\\.clone-`))
     // `--branch` carries what the REMOTE reported, since the CP projects no branch for a secondary.
     expect(clone!.args).toContain('trunk')
@@ -920,7 +920,7 @@ describe('secondary roots on the pod volume', () => {
 
     const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
 
-    expect(calls.some((call) => call.args[0] === 'clone' && call.args[1].includes('acme/infra'))).toBe(false)
+    expect(calls.some((call) => call.args[0] === 'clone' && call.args[1]!.includes('acme/infra'))).toBe(false)
     expect(await workspaces.additionalWorkspaceDirectories(agent, cwd)).toEqual([])
   })
 

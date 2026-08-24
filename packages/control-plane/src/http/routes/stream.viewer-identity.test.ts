@@ -14,7 +14,7 @@ import { streamRoutes } from './stream.js'
 const ORG_ID = 'org-1'
 const SLACK_OWNER = 'slack:T024BE7LD:U0123ABCD'
 
-const sessions: Record<string, unknown> = {
+const sessions: Record<string, { orgId: string; agentId: string; visibility: string; ownerIdentity: string | null }> = {
   'sess-dm': { orgId: ORG_ID, agentId: 'agent-1', visibility: 'private', ownerIdentity: SLACK_OWNER },
   'sess-org': { orgId: ORG_ID, agentId: 'agent-1', visibility: 'org', ownerIdentity: null }
 }
@@ -90,7 +90,7 @@ describe('stream route × viewer identity (live unlink)', () => {
         {
           provider: 'slack',
           available: true,
-          addViewerIdentities: async ({ identitySet }) => {
+          addViewerIdentities: async ({ identitySet }: { identitySet: Set<string> }) => {
             if (linked) identitySet.add(`slack:${linked.teamId}:${linked.userId}`)
           },
           resolve: async () => ({ allowedScopes: [], degraded: false })

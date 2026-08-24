@@ -2,6 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
+import { isCodeHostHookKind, type HookKind } from '@agentconnect.md/protocol'
 import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
@@ -334,6 +335,13 @@ export interface GithubWorkspace {
   files: WorkspaceFile[]
 }
 
+/** A managed GitLab project checkout — the same git shape, keyed by project id. */
+export interface GitlabWorkspace extends Omit<GithubWorkspace, 'mode' | 'repoId' | 'installationId'> {
+  mode: 'gitlab'
+  /** Numeric GitLab project id — rename-stable, unlike the namespaced path. */
+  projectId?: string
+}
+
 export interface ScratchWorkspace {
   mode: 'scratch'
   created: string
@@ -341,7 +349,18 @@ export interface ScratchWorkspace {
   files: WorkspaceFile[]
 }
 
-export type Workspace = GithubWorkspace | ScratchWorkspace
+/** A workspace backed by a git checkout, on either code host. */
+export type GitWorkspace = GithubWorkspace | GitlabWorkspace
+
+export type Workspace = GitWorkspace | ScratchWorkspace
+
+/** Whether the workspace is a clone rather than an empty directory. Everything that
+ *  reads a checkout — the files view, session worktrees, branch scope — keys off this
+ *  rather than off one code host's name, which is how GitLab workspaces used to read
+ *  as scratch. Host-specific facts (App installations, repo grants) still ask by mode. */
+export function isGitWorkspace(ws: Pick<Workspace, 'mode'>): ws is GitWorkspace {
+  return ws.mode !== 'scratch'
+}
 
 export interface WorkspaceStatusInfo {
   dot: string
@@ -440,9 +459,10 @@ export interface Agent {
   /** Display name projected with the Agent; available even when the daemon itself is not visible. */
   daemonName?: string
   region: string
-  /** Convenience mirror of the workspace for list views: github repo, else '—'. */
+  /** Convenience mirror of the workspace for list views: the cloned repository or
+   *  project path on either code host, else '—'. */
   repo: string
-  /** On-disk working dir (github agentDir or the scratch path). */
+  /** On-disk working dir (the checkout's agentDir, or the scratch path). */
   workdir: string
   status: StatusKey
   tokens: string
@@ -479,7 +499,7 @@ export interface Agent {
   sandboxRequired: boolean
   integrations: Integration[]
   /** Distinct kinds of enabled inbound triggers (hooks) — list-view marks. */
-  hookKinds?: ('webhook' | 'github')[]
+  hookKinds?: HookKind[]
   workspace: Workspace
 }
 
@@ -1063,7 +1083,7 @@ export interface Session {
    *  fire. Lets the Sessions list link a run back to its schedule. */
   triggeredBy?: string
   /** Stable source kind for a `hook:<id>` trigger, enriched by the Control Plane. */
-  hookKind?: 'webhook' | 'github'
+  hookKind?: HookKind
   /** Session-level visibility (lock badge / detail toggle). Absent on mock and
    *  pre-feature CP rows — treated as 'org', matching the server-side backfill. */
   visibility?: 'private' | 'org' | 'external'
@@ -2123,8 +2143,8 @@ export const MEMBERS: Member[] = [
  * A platform's display name.
  *
  * The CORE kinds are matched by SUBSTRING because their ids are synthesized in
- * several places (`sessionPlatform` folds playground→webchat and hook+github→
- * github; `sessionChannelDisplay` mints `schedule`); order is load-bearing, since
+ * several places (`sessionPlatform` folds playground→webchat and hook+code-host→
+ * that host; `sessionChannelDisplay` mints `schedule`); order is load-bearing, since
  * `hook` must be tested before `web` or `webhook` would read as "Playground".
  * The four CHAT platforms are an exact-id lookup into the one shared label table
  * (`lib/platform-labels.ts`) — their ids come off the wire, where the vocabulary
@@ -2134,6 +2154,7 @@ export function platName(p: string): string {
   const x = (p || '').toLowerCase()
   if (x.includes('sched')) return 'Schedule'
   if (x.includes('github')) return 'GitHub'
+  if (x.includes('gitlab')) return 'GitLab'
   if (x.includes('dream')) return 'Memory dream'
   if (x.includes('hook')) return 'Webhook'
   // 'playground' (live sandbox) and 'webchat' (its persisted CP session) are the same
@@ -2148,11 +2169,14 @@ export function platName(p: string): string {
   return p.charAt(0).toUpperCase() + p.slice(1)
 }
 
-/** A session's display integration. GitHub is a hook source rather than a
- * routing Platform, so the CP supplies its stable hook kind explicitly. */
-export function sessionPlatform(s: { platform: string; hookKind?: 'webhook' | 'github' }): string {
+/** A session's display integration. Code hosts are hook sources rather than routing
+ * Platforms, so the CP supplies the stable hook kind explicitly — without it a GitLab
+ * session renders as a generic webhook. The promotion asks the shared vocabulary which
+ * kinds are code hosts instead of listing them, so no future host can miss it. */
+export function sessionPlatform(s: { platform: string; hookKind?: HookKind }): string {
   if (s.platform === 'playground') return 'webchat'
-  return s.platform === 'hook' && s.hookKind === 'github' ? 'github' : s.platform
+  if (s.platform !== 'hook') return s.platform
+  return s.hookKind && isCodeHostHookKind(s.hookKind) ? s.hookKind : s.platform
 }
 
 /** Channel-cell identity (mark + label) for a session row. A headless schedule
@@ -2161,7 +2185,7 @@ export function sessionPlatform(s: { platform: string; hookKind?: 'webhook' | 'g
  * schedule mark instead of a raw uuid with a Slack icon. `cronName` looks up
  * the schedule (the crons list may still be loading → short-id fallback). */
 export function sessionChannelDisplay(
-  s: { platform: string; channel: string; hookKind?: 'webhook' | 'github' },
+  s: { platform: string; channel: string; hookKind?: HookKind },
   cronName: (id: string) => string | null | undefined
 ): { platform: string; label: string } {
   if (s.channel.startsWith('cron:')) {
@@ -2179,7 +2203,7 @@ export function sessionChannelFilterValue(s: {
   platform: string
   channel: string
   channelId?: string
-  hookKind?: 'webhook' | 'github'
+  hookKind?: HookKind
 }): string {
   return sessionPlatform(s) === 'webchat' ? PLAYGROUND_CHANNEL_FILTER : (s.channelId ?? s.channel)
 }

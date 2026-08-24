@@ -154,7 +154,7 @@ class SeamRunner implements GitRunner {
   }
 
   private delegate(): GitRunner {
-    const env = { ...this.env, GIT_ALLOW_PROTOCOL: 'file:https:ssh' }
+    const env: Record<string, string> = { ...this.env, GIT_ALLOW_PROTOCOL: 'file:https:ssh' }
     for (let index = 0; index < Number(env.GIT_CONFIG_COUNT ?? 0); index += 1) {
       // Only a remote's URL: rewriting every matching value would flip the `url.*.insteadOf` guard
       // around and rewrite the substituted path back again.

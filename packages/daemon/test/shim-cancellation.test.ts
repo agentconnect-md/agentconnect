@@ -64,7 +64,7 @@ async function channelUnderTest(
     podName: 'runtime-1',
     podUid: 'pod-uid-1',
     grants: ['exec', 'materialize']
-  } as SpawnRecord
+  } as unknown as SpawnRecord
   const { endpoint } = await fixtures.sandbox({
     workspaceRoot,
     clock: options.shimClock ?? new FakeClock(),

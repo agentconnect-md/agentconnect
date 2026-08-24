@@ -65,7 +65,7 @@ async function boot(root: string, daemonId: string, scope: 'frame' | 'install' =
   await daemon.start()
   const inner = daemon as any
   inner.cfg.daemonId = daemonId
-  const warn = vi.fn()
+  const warn = vi.fn<(msg: string) => void>()
   inner.log.warn = warn
   const scopeBlind = new Set<string>()
   const synced: { orgId: string; agentId: string; sessionId: string }[] = []
@@ -156,7 +156,7 @@ async function seedSnapshot(
 }
 
 const deferred = (member: Member) =>
-  member.warn.mock.calls.filter(([message]: [string]) => String(message).includes('snapshot deferred'))
+  member.warn.mock.calls.filter(([message]) => String(message).includes('snapshot deferred'))
 
 describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
   it("a member drains its own rows and never a peer's", async () => {

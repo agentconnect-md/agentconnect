@@ -17,6 +17,7 @@
 import type {
   RcAuth,
   RcDeploymentConfig,
+  RcCodeHostMembershipAuthz,
   RcGithubCommentAuthz,
   RcGithubRerequest,
   RcGithubRerequestResult,
@@ -44,9 +45,13 @@ import type { Transport } from './transport.js'
 import type { RelayAuthService } from '../registry/relayAuthService.js'
 import type { RelayRepo } from '../persistence/ports.js'
 import type { Clock } from '../domain/clock.js'
+import { RelayNotWritten } from './relay-registry.js'
 import type { RelayChannel, RelayRegistry } from './relay-registry.js'
 
 type RelayState = 'AUTHENTICATING' | 'REGISTERING' | 'READY' | 'CLOSED'
+
+/** Deadline for a correlated C→R REQ. Bounded well under a console request. */
+const RELAY_REQUEST_TIMEOUT_MS = 5_000
 
 export interface RelayConnDeps {
   auth: RelayAuthService
@@ -108,11 +113,17 @@ export interface RelayConnDeps {
   /** Resolve an App-owned informational Check Run rerequest to one current hook
    *  delivery. Operational failures become a retryable correlated error. */
   authorizeGithubRerequest: (req: RcGithubRerequest) => Promise<RcGithubRerequestResult>
+  /** Provider-neutral live membership re-check (gitlab-com-integration.md §12.2).
+   *  A thrown store/provider error becomes a retryable correlated error. */
+  authorizeCodeHostMembership: (req: RcCodeHostMembershipAuthz) => Promise<boolean>
 }
 
 export class RelayConnection implements RelayChannel {
   state: RelayState = 'AUTHENTICATING'
   relayId = ''
+  features: readonly string[] = []
+  /** In-flight CP-issued REQs on this socket, by frame id (see {@link request}). */
+  private readonly pending = new Map<string, { resolve: (value: unknown) => void; reject: (err: unknown) => void }>()
 
   constructor(
     private readonly transport: Transport,
@@ -136,6 +147,8 @@ export class RelayConnection implements RelayChannel {
       return
     }
     const frame = decoded.frame
+    // A correlated REP/error settles a CP-issued REQ — never dispatched as inbound.
+    if (this.settle(frame)) return
     if (!this.isLegalInState(frame.type)) {
       this.sendError(frame.id, 'PROTOCOL_STATE', `${frame.type} illegal in ${this.state}`)
       return
@@ -158,6 +171,9 @@ export class RelayConnection implements RelayChannel {
           return
         case 'rc/github-comment-authz':
           await this.handleGithubCommentAuthz(frame, frame.payload)
+          return
+        case 'rc/codehost-membership-authz':
+          await this.handleCodeHostMembershipAuthz(frame, frame.payload)
           return
         case 'rc/github-rerequest':
           await this.handleGithubRerequest(frame, frame.payload)
@@ -211,6 +227,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/heartbeat' ||
           type === 'rc/verify' ||
           type === 'rc/github-comment-authz' ||
+          type === 'rc/codehost-membership-authz' ||
           type === 'rc/github-rerequest' ||
           type === 'rc/run-report' ||
           type === 'rc/set-channel-agent' ||
@@ -256,6 +273,7 @@ export class RelayConnection implements RelayChannel {
     // dead connection. Bail: the durable row is harmless (the sweeper ages it out).
     if (this.state === 'CLOSED') return
     this.relayId = row.id
+    this.features = req.features
     // Supersede a stale connection for the same relayId (a restarted pod reclaims its
     // id by name), then register THIS socket so the CP can push rc/daemon-revoke to it.
     const prev = this.deps.relayReg.get(row.id)
@@ -382,6 +400,19 @@ export class RelayConnection implements RelayChannel {
     this.reply(frame, 'rc/github-comment-authz/ok', { allowed })
   }
 
+  private async handleCodeHostMembershipAuthz(frame: RelayCpFrame, req: RcCodeHostMembershipAuthz): Promise<void> {
+    // Same discipline as the GitHub arm: definitive denials stay distinct from
+    // transient failures; the relay fails closed on both.
+    let allowed: boolean
+    try {
+      allowed = await this.deps.authorizeCodeHostMembership(req)
+    } catch {
+      this.sendError(frame.id, 'INTERNAL', 'code host membership authorization failed', true)
+      return
+    }
+    this.reply(frame, 'rc/codehost-membership-authz/ok', { allowed })
+  }
+
   private async handleGithubRerequest(frame: RelayCpFrame, req: RcGithubRerequest): Promise<void> {
     let result: RcGithubRerequestResult
     try {
@@ -427,6 +458,59 @@ export class RelayConnection implements RelayChannel {
     this.transport.send(JSON.stringify(buildRelayCpFrame(type, payload)))
   }
 
+  /**
+   * {@link RelayChannel} — correlated C→R REQ, resolving with the relay's REP
+   * payload. Deliberately SINGLE-SHOT: unlike the daemon correlator this never
+   * retransmits, because every frame that rides it (today `rc/hook-rerun`) is an
+   * effect a duplicate would perform twice. A silent relay therefore rejects on
+   * the deadline rather than being re-asked.
+   */
+  request<T extends RelayCpFrameType>(
+    type: T,
+    payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>,
+    timeoutMs = RELAY_REQUEST_TIMEOUT_MS
+  ): Promise<unknown> {
+    // A socket past READY swallows sends silently, so it would only ever time
+    // out — refuse now, while the caller can still tell nothing was written.
+    if (this.state !== 'READY') {
+      return Promise.reject(new RelayNotWritten(`relay ${this.relayId || '(unregistered)'} is ${this.state}`))
+    }
+    const frame = buildRelayCpFrame(type, payload)
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = this.deps.clock.setTimeout(() => {
+        this.pending.delete(frame.id)
+        reject(new Error(`no relay reply for ${type} within ${timeoutMs}ms`))
+      }, timeoutMs)
+      this.pending.set(frame.id, {
+        resolve: (value) => {
+          this.deps.clock.clearTimeout(timer)
+          resolve(value)
+        },
+        reject: (err) => {
+          this.deps.clock.clearTimeout(timer)
+          reject(err)
+        }
+      })
+      try {
+        this.transport.send(JSON.stringify(frame))
+      } catch (e) {
+        this.pending.get(frame.id)?.reject(new RelayNotWritten(`relay send failed: ${(e as Error).message}`))
+        this.pending.delete(frame.id)
+      }
+    })
+  }
+
+  /** Settle a CP-issued REQ from an inbound correlated frame; true when it matched. */
+  private settle(frame: RelayCpFrame): boolean {
+    if (!frame.corr) return false
+    const entry = this.pending.get(frame.corr)
+    if (!entry) return false
+    this.pending.delete(frame.corr)
+    if (frame.type === 'error') entry.reject(new Error(`relay refused ${frame.corr}`))
+    else entry.resolve(frame.payload)
+    return true
+  }
+
   private sendError(corr: string, code: ErrorCode, message: string, retryable = false): void {
     this.transport.send(JSON.stringify(buildRelayCpFrame('error', { code, message, retryable }, { corr })))
   }
@@ -444,6 +528,8 @@ export class RelayConnection implements RelayChannel {
 
   private onClose(): void {
     this.state = 'CLOSED'
+    for (const entry of this.pending.values()) entry.reject(new Error('relay connection closed'))
+    this.pending.clear()
     // Drop from the registry only if still ours (a late close from a superseded old
     // socket must not evict the live one). The durable `relay` row ages out of the
     // roster via the sweeper (bounded failover window, §13).

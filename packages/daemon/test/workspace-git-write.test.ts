@@ -161,11 +161,11 @@ class SeamRunner implements GitRunner {
     throw new Error('clone is not part of the console write seam')
   }
 
-  async pull() {
+  async pull(): Promise<never> {
     throw new Error('pull has its own coverage')
   }
 
-  async log() {
+  async log(): Promise<never> {
     throw new Error('log has its own coverage')
   }
 }
@@ -301,7 +301,7 @@ describe('workspace git commit (real repo, real commit)', () => {
       workspaces,
       async () => dir,
       () => undefined,
-      () => githubTarget(),
+      async () => githubTarget(),
       () => IDENTITY
     )
     await seam.stage({ agentId: 'a', paths: ['tracked.txt'] })
@@ -329,7 +329,7 @@ describe('workspace git commit (real repo, real commit)', () => {
       workspaces,
       async () => dir,
       () => undefined,
-      () => githubTarget(),
+      async () => githubTarget(),
       () => IDENTITY
     )
     await seam.stage({ agentId: 'a', paths: ['tracked.txt'] })
@@ -369,7 +369,7 @@ describe('workspace git commit (real repo, real commit)', () => {
       workspaces,
       async () => dir,
       () => undefined,
-      () => githubTarget(),
+      async () => githubTarget(),
       () => IDENTITY
     )
     writeFileSync(join(dir, 'tracked.txt'), 'two\n') // dirty, but nothing STAGED
@@ -389,7 +389,7 @@ describe('workspace git commit (real repo, real commit)', () => {
       workspaces,
       async () => scratch,
       () => undefined,
-      () => undefined,
+      async () => undefined,
       () => IDENTITY
     )
     expect(await scratchSeam.commit({ agentId: 'a', message: 'feat: x' })).toMatchObject({
@@ -406,7 +406,7 @@ describe('workspace git commit (real repo, real commit)', () => {
       workspaces,
       async () => dir,
       () => undefined,
-      () => githubTarget(),
+      async () => githubTarget(),
       () => IDENTITY
     )
     await seam.stage({ agentId: 'a', paths: ['tracked.txt'] })
@@ -431,7 +431,7 @@ describe('workspace git commit (real repo, real commit)', () => {
       workspaces,
       async () => dir,
       () => undefined,
-      () => githubTarget(),
+      async () => githubTarget(),
       () => IDENTITY
     )
     await seam.stage({ agentId: 'a', paths: ['tracked.txt'] })
@@ -451,7 +451,7 @@ describe('workspace git push (real repo; local bare remote through the runner se
       workspaces,
       async () => dir,
       gitcredAgent,
-      () => githubTarget(),
+      async () => githubTarget(),
       () => IDENTITY
     )
     await seam.stage({ agentId: 'a', paths: ['tracked.txt'] })
@@ -513,7 +513,7 @@ describe('workspace git push (real repo; local bare remote through the runner se
       workspaces,
       async () => dir,
       () => undefined,
-      () => githubTarget(),
+      async () => githubTarget(),
       () => IDENTITY
     )
     await seam.stage({ agentId: 'a', paths: ['tracked.txt'] })
@@ -552,7 +552,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
       workspaces,
       async () => dir,
       () => undefined,
-      () => githubTarget(),
+      async () => githubTarget(),
       () => IDENTITY
     )
 
@@ -629,7 +629,7 @@ describe('workspace git push preconditions (data, not errors)', () => {
       workspaces,
       async () => dir,
       gitcredAgent,
-      () => githubTarget(),
+      async () => githubTarget(),
       () => IDENTITY
     )
 

@@ -266,7 +266,9 @@ describe('Mem0 Cloud V3 plugin contract', () => {
     ).resolves.toEqual({ state: 'failed' })
     expect(request).toHaveBeenLastCalledWith(expect.objectContaining({ operation: 'capture', outcome: 'rate_limited' }))
 
-    const disconnected = await startUpstream((req) => req.socket.destroy())
+    const disconnected = await startUpstream((req) => {
+      req.socket.destroy()
+    })
     const disconnectedClient = new Mem0CloudClient({ baseUrl: disconnected.url, metrics: { request } })
     await expect(
       disconnectedClient.capture(

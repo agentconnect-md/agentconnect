@@ -225,6 +225,41 @@ export class GithubInstallationClaimConflict extends Error {
   }
 }
 
+/** The deployment-global project claim (gitlab-com-integration.md §8.1/§10.2):
+ * one managing organization per numeric GitLab project. A uniqueness loser may
+ * not begin any provider mutation. */
+export class GitlabProjectClaimConflict extends Error {
+  readonly code = 'GITLAB_PROJECT_CLAIM_CONFLICT' as const
+  constructor(readonly projectId: bigint) {
+    super(`gitlab project ${projectId} is already claimed by another organization`)
+    this.name = 'GitlabProjectClaimConflict'
+  }
+}
+
+/** The host axis moved under an in-flight GitLab write (§24.1): the persisted
+ * document now names another instance, so this operation's credentials and
+ * host-relative ids must not be committed against it. */
+export class GitlabAxisRetargeted extends Error {
+  readonly code = 'gitlab_base_url_changed' as const
+  constructor(
+    readonly operationBaseUrl: string,
+    readonly persistedBaseUrl: string
+  ) {
+    super(`the gitlab instance changed to ${persistedBaseUrl} while this ${operationBaseUrl} operation was in flight`)
+    this.name = 'GitlabAxisRetargeted'
+  }
+}
+
+/** The OAuth callback lost the race with a membership removal (§9.4): the
+ * starting user is no longer a member, so no connection may be (re)created. */
+export class GitlabMembershipGone extends Error {
+  readonly code = 'GITLAB_MEMBERSHIP_GONE' as const
+  constructor(orgless?: string) {
+    super(orgless ?? 'the starting user is no longer a member of the organization')
+    this.name = 'GitlabMembershipGone'
+  }
+}
+
 /** A numeric repository is already the agent's implicit workspace authority,
  * so persisting a second "additional repository" grant would be redundant and
  * could later make grant deletion look like a real authority revocation. */

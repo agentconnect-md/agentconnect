@@ -573,7 +573,7 @@ describe('normalizeSlackMessage conversation kinds', () => {
 
 describe('SlackHttpIngest message events', () => {
   it('drops self and Slack system messages while forwarding peer app text', async () => {
-    const onMessage = vi.fn(async () => {})
+    const onMessage = vi.fn<SlackHttpIngestDeps['onMessage']>(async () => {})
     const botIds = [undefined, 'BSELF']
     const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: botIds.shift() })) } }
     const ingest = new SlackHttpIngest(

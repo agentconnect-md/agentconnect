@@ -301,3 +301,60 @@ export const POD_TEMPLATE_HASH_ENV = 'AC_POD_TEMPLATE_HASH'
  *  asks before collecting a leaked sandbox object; a daemon that does not see it
  *  skips the sweep rather than emit a frame an older CP rejects as `UNKNOWN_FRAME`. */
 export const AGENT_EXISTS_FEATURE = 'agent-exists-v1'
+
+// ── GitLab.com code-host features (gitlab-com-integration.md §17.3) ─────────
+// Each string is advertised only when its COMPLETE slice is live; the CP must
+// never place a GitLab-shaped workspace, grant, or hook on a peer without it.
+
+/** Daemon/relay serves the complete GitLab.com slice: hook normalization, credential
+ *  routing, poster, and (relay) signed ingress. Gate for placement, snapshot projection,
+ *  and rule broadcast — a GitLab-shaped value sent without it is frame-fatal downstream. */
+export const GITLAB_COM_V1_FEATURE = 'gitlab-com-v1'
+
+/** The default value of the GitLab host axis (§24.1). An absent host on a replicated
+ *  agent spec, a compiled hook rule, trusted hook metadata, or a credential grant means
+ *  this — the default of one axis, never a separate mode. */
+export const GITLAB_DEFAULT_BASE_URL = 'https://gitlab.com'
+
+/** Daemon/relay serves the self-managed-instance slice: the host carried per agent rather
+ *  than assumed (§24.4). Gates placement, snapshot projection, hook assignment, and hook
+ *  dispatch ONLY when the configured host is not `GITLAB_DEFAULT_BASE_URL`; on GitLab.com
+ *  nothing is gated. Fail-closed by omission — a peer without it never sees self-managed
+ *  work, so it cannot fall back to GitLab.com for it. */
+export const GITLAB_INSTANCE_V1_FEATURE = 'gitlab-instance-v1'
+
+/** True when a carried host names an instance other than GitLab.com — the only case anything
+ *  gates (§24.4). Absent is the default value of the axis, so it is never self-managed. Lives
+ *  here, not in one consumer: the control plane, the relay, and the daemon all read it. */
+export function isSelfManagedGitlabHost(host: string | undefined): boolean {
+  return host !== undefined && host !== GITLAB_DEFAULT_BASE_URL
+}
+
+/** Relay decodes `rc/hook-rerun` and answers its correlated admission REP
+ *  (§16.1 Console "Run again"). Strictly newer than `gitlab-com-v1`: a relay
+ *  advertising only that one cannot decode the frame, so the CP must select
+ *  rerun targets on THIS bit alone. */
+export const GITLAB_RERUN_V1_FEATURE = 'gitlab-rerun-v1'
+
+/** CP serves provider-qualified gitcred v2 request/grant fields. A daemon must not name a
+ *  provider before seeing this, and must reject a grant whose provider or numeric repository
+ *  id differs from its request (an older CP strips new fields and answers GitHub-shaped). */
+export const GITCRED_PROVIDER_V2_FEATURE = 'gitcred-provider-v2'
+
+/** CP accepts an explicitly github-qualified credential request and echoes `provider: 'github'` back. */
+export const GITCRED_GITHUB_V2_FEATURE = 'gitcred-github-v2'
+
+/** Provider-routed formal-review surface (`submitCodeReview` and the provider-neutral
+ *  review authorization/result frames). */
+export const CODEHOST_REVIEW_V1_FEATURE = 'codehost-review-v1'
+
+/** Informational status-note projection, each side attesting to its own half: the daemon renders
+ *  and updates the note (desired/result frame pair), the CP drives the ledger end to end including
+ *  the gitlab arm of `hook/start` that records the started head and opens `running`. */
+export const CODEHOST_NOTE_PROJECTION_V1_FEATURE = 'codehost-note-projection-v1'
+
+/** CP mints the §14.2 broker effect lease — `purpose: 'gitlab_effect'` on a gitcred v2 request,
+ *  authorized by the agent's GitLab workspace binding or an enabled gitlab hook and clamped by the
+ *  grant's echoed access. A daemon must not name that purpose before seeing this: a new enum value
+ *  in a daemon→CP frame is frame-fatal to an older CP (§17.3), not a stripped field. */
+export const GITLAB_EFFECT_V1_FEATURE = 'gitlab-effect-v1'

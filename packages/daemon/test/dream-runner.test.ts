@@ -86,13 +86,24 @@ class FakeStore implements DreamStorePort {
       (d) => agentIds.includes(d.agentId) && (d.status === 'pending' || d.status === 'running')
     )
   }
+  // A dream's durable records name their sessions outwardly (§1.1): the fake keeps the mapping
+  // explicit so a regression that stores the runtime's id instead is visible in the assertions.
+  async getSessionByAcpIdForAgent(_agentId: string, acpSessionId: string): Promise<{ key: string } | undefined> {
+    return { key: `key-of-${acpSessionId}` }
+  }
+  async ensureOutwardSessionId(key: string): Promise<string> {
+    return key.replace(/^key-of-/, 'sid-of-')
+  }
   async completedDreams(agentId: string): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter((d) => d.agentId === agentId && d.status === 'completed')
   }
   async supersededDreams(): Promise<DreamInfo[]> {
     return [...this.dreams.values()].filter((d) => d.status === 'superseded')
   }
-  async dreamSessionSources(): Promise<{ sessionId: string; channel: string; thread: string; updatedAt: number }[]> {
+  async dreamSessionSources(
+    _agentId: string,
+    _limit: number
+  ): Promise<{ sessionId: string; channel: string; thread: string; updatedAt: number }[]> {
     const now = Date.now()
     return this.sources.map((s) => ({ ...s, updatedAt: s.updatedAt ?? now }))
   }
@@ -420,7 +431,7 @@ describe('DreamRunner pipeline', () => {
 
     expect(done).toMatchObject({
       status: 'completed',
-      executionSessionId: 'dream-session-1',
+      executionSessionId: 'sid-of-dream-session-1',
       runtime: 'codex',
       model: 'gpt-5.6',
       stopReason: 'end_turn',
@@ -435,7 +446,7 @@ describe('DreamRunner pipeline', () => {
     expect(done.usage?.inputBytes).toBeGreaterThan(0)
     expect(done.usage?.outputBytes).toBeGreaterThan(0)
     expect(events.map((event) => event.type)).toEqual(['memory.dream.started', 'memory.dream.completed'])
-    expect(events[1]?.dream.executionSessionId).toBe('dream-session-1')
+    expect(events[1]?.dream.executionSessionId).toBe('sid-of-dream-session-1')
   })
 
   it('rejects a second dream while one is in flight and when dreaming is disabled', async () => {
@@ -1249,7 +1260,7 @@ describe('DreamRunner crash recovery', () => {
       dreamingPolicyFor: () => undefined,
       operationPolicy: 'test-only',
       store,
-      extract: async () => '',
+      extract: async () => ({ output: '' }),
       log: silent
     }).initialize()
     expect(store.dreams.get('drm-stale')).toMatchObject({
@@ -1279,7 +1290,7 @@ describe('DreamRunner crash recovery', () => {
       dreamingPolicyFor: () => undefined,
       operationPolicy: 'test-only',
       store,
-      extract: async () => '',
+      extract: async () => ({ output: '' }),
       onEvent: (event) => {
         if (event.type === 'memory.dream.failed') failures.push(event.dream.dreamId)
       },
@@ -1545,11 +1556,11 @@ describe('DreamRunner store persistence', () => {
       trigger: 'manual',
       sessionIds: ['s1'],
       snapshotDigest: 'sha256:abc',
-      executionSessionId: 'dream-session-1',
+      executionSessionId: 'sid-of-dream-session-1',
       runtime: 'codex',
       model: 'gpt-5.6',
       stopReason: 'end_turn',
-      snapshotWrites: { total: 7, nonDistill: 3 },
+      snapshotWrites: { generation: 'gen-1', total: 7, nonDistill: 3 },
       usage: {
         inputBytes: 2048,
         outputBytes: 512,
@@ -1561,7 +1572,7 @@ describe('DreamRunner store persistence', () => {
     }
     await store.insertDream(dream)
     expect(await store.getDream('a1', 'drm-store-1')).toMatchObject({
-      executionSessionId: 'dream-session-1',
+      executionSessionId: 'sid-of-dream-session-1',
       runtime: 'codex',
       model: 'gpt-5.6',
       stopReason: 'end_turn',
@@ -1571,8 +1582,16 @@ describe('DreamRunner store persistence', () => {
 
     // …and survives the status updates the pipeline makes on the way to adoption.
     await store.updateDream({ ...dream, status: 'completed', endedAt: '2026-07-24T00:05:00.000Z' })
-    expect((await store.getDream('a1', 'drm-store-1'))?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
-    expect((await store.listDreams('a1', 10))[0]?.snapshotWrites).toEqual({ total: 7, nonDistill: 3 })
+    expect((await store.getDream('a1', 'drm-store-1'))?.snapshotWrites).toEqual({
+      generation: 'gen-1',
+      total: 7,
+      nonDistill: 3
+    })
+    expect((await store.listDreams('a1', 10))[0]?.snapshotWrites).toEqual({
+      generation: 'gen-1',
+      total: 7,
+      nonDistill: 3
+    })
     await store.close()
   })
 

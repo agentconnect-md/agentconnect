@@ -1,0 +1,9 @@
+{{ .Release.Name }} deployed to namespace {{ .Release.Namespace }}.
+
+Routing (/ → web, /cp/* → control-plane, daemon WS at /cp/daemon/ws) is a
+Gateway-API HTTPRoute this chart owns (templates/httproute.yaml),
+attached to {{ .Values.route.gateway.namespace }}/{{ .Values.route.gateway.name }}.
+
+Check rollout:
+  kubectl -n {{ .Release.Namespace }} get pods,httproute
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "agentconnect.fullname" . }}-control-plane -c migrate

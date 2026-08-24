@@ -20,6 +20,8 @@ import {
   RESERVED_MCP_SERVER_NAME,
   SESSION_RETENTION_RE,
   GitCloneUrlError,
+  CODE_HOST_PROVIDERS,
+  HOOK_KINDS,
   RepoSubdirError,
   SessionImageAttachment,
   MAX_WORKSPACE_COMMIT_MESSAGE,
@@ -344,6 +346,16 @@ export const AgentWorkspaceBody = z.discriminatedUnion('mode', [
     // Ceiling for minted tokens; only meaningful with installationId. Default 'write' —
     // coding agents push branches; the console offers a read-only toggle.
     gitAccess: z.enum(['read', 'write']).optional()
+  }),
+  // gitlab-com-integration.md M4: the workspace is a managed project binding.
+  z.object({
+    mode: z.literal('gitlab'),
+    worktree: z.boolean(),
+    gitRepo: GitRepoOutput,
+    gitBranch: z.string().optional(),
+    agentDir: z.string().optional(),
+    projectId: z.string().optional(), // numeric project id (workspaceRepoId)
+    gitAccess: z.enum(['read', 'write']).optional()
   })
 ])
 
@@ -394,6 +406,17 @@ const AgentWorkspaceInputBody = z.discriminatedUnion('mode', [
     gitBranch: z.string().optional(),
     agentDir: AgentDirCreateInput.optional(),
     installationId: z.string().uuid().optional(),
+    gitAccess: z.enum(['read', 'write']).optional()
+  }),
+  // The project is named by its rename-stable numeric id and must already be a
+  // managed GitLab binding in the organization; the route derives the clone URL
+  // from the binding — the caller never supplies a gitlab gitRepo directly.
+  z.object({
+    mode: z.literal('gitlab'),
+    worktree: z.boolean().optional(),
+    projectId: z.string().regex(/^[1-9]\d*$/),
+    gitBranch: z.string().optional(),
+    agentDir: AgentDirCreateInput.optional(),
     gitAccess: z.enum(['read', 'write']).optional()
   })
 ])
@@ -686,6 +709,16 @@ export const SetAgentWorkspaceBody = z.discriminatedUnion('mode', [
       agentDir: AgentDirCreateInput.optional(),
       gitAccess: z.enum(['read', 'write']).default('read')
     })
+    .strict(),
+  z
+    .object({
+      mode: z.literal('gitlab'),
+      worktree: z.boolean().optional(),
+      projectId: z.string().regex(/^[1-9]\d*$/),
+      gitBranch: z.string().min(1).optional(),
+      agentDir: AgentDirCreateInput.optional(),
+      gitAccess: z.enum(['read', 'write']).default('read')
+    })
     .strict()
 ])
 
@@ -770,10 +803,9 @@ export const AgentDto = z.object({
   sandboxSupported: z.boolean(),
   // #642: daemon policy forces the effective value true and makes it immutable.
   sandboxRequired: z.boolean(),
-  // Distinct kinds of ENABLED inbound triggers (hooks) on this agent — the list
-  // view's integrations cell renders a mark per kind (github repo subscriptions,
-  // generic webhooks) without an org-wide hook list existing anywhere.
-  hookKinds: z.array(z.enum(['webhook', 'github']))
+  // Distinct kinds of ENABLED inbound triggers on this agent — one mark per kind in the
+  // list's integrations cell, without an org-wide hook list existing anywhere.
+  hookKinds: z.array(z.enum(HOOK_KINDS))
 })
 export const AgentListDto = z.array(AgentDto)
 
@@ -1736,6 +1768,126 @@ export const SlackBotRefreshDto = z.object({
 
 // ── github app (github-app workspaces) ────────────────────────────────────
 /** Deployment GitHub App status + the org-bound install deep link. NEVER key material. */
+/** One organization GitLab.com OAuth connection — administration identity, no token material. */
+export const GitlabConnectionDto = z.object({
+  id: z.string(),
+  gitlabUserId: z.string(), // numeric GitLab.com user id, losslessly as a string
+  gitlabUsername: z.string(),
+  state: z.enum(['connected', 'reauth_required', 'disconnected']),
+  scopes: z.array(z.string()),
+  connectedBy: z.string().nullable(), // AgentConnect user id; null after user deletion
+  /** Whether the CALLER owns this connection: takeover and reconnect are their
+   *  own account's actions, so the console needs the answer without comparing ids. */
+  mine: z.boolean(),
+  accessExpiresAt: z.string().nullable(),
+  /** Managed projects this connection still administers (§7.1). A released
+   *  connection with none can be removed; with any, removal is refused. */
+  assignedProjects: z.number().int(),
+  /** The instance this deployment talks to (§24.1) — non-secret, the same for
+   *  every connection, because one deployment has exactly one host axis. */
+  instanceUrl: z.string(),
+  /** The version last observed on that instance (§24.2); null until first contact. */
+  instanceVersion: z.string().nullable(),
+  createdAt: z.string()
+})
+export type GitlabConnectionDtoT = z.infer<typeof GitlabConnectionDto>
+
+export const GitlabConnectionListDto = z.object({ connections: z.array(GitlabConnectionDto) })
+
+/** Deleting a connection twice means two things (§9.4): the first call releases
+ *  it and returns the retained row, the second removes the row entirely. */
+export const GitlabConnectionDeleteDto = z.object({
+  removed: z.boolean(),
+  connection: GitlabConnectionDto.nullable()
+})
+
+/** The begin URL the browser must visit to continue the OAuth flow on GitLab.com. */
+export const GitlabOauthStartDto = z.object({ url: z.string() })
+
+/** One accessible GitLab.com project for the picker — metadata only (§10.1). */
+export const GitlabProjectDto = z.object({
+  projectId: z.string(), // numeric id, losslessly as a string
+  path: z.string(), // current namespaced path — display only
+  defaultBranch: z.string().nullable(),
+  lastActivityAt: z.string().nullable()
+})
+
+export const GitlabProjectPageDto = z.object({
+  projects: z.array(GitlabProjectDto),
+  nextPage: z.number().int().nullable()
+})
+
+/** One managed project binding — §8.2 lifecycle states, no secret material. */
+export const GitlabProjectBindingDto = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  projectPath: z.string(),
+  defaultBranch: z.string().nullable(),
+  state: z.enum(['provisioning', 'ready', 'admin_degraded', 'runtime_degraded', 'cleanup_pending']),
+  stateReason: z.string().nullable(),
+  /** The OAuth connection administering this project (§7.1); null once it was
+   *  removed. Its state decides whether repair, removal, or takeover can run. */
+  installerConnectionId: z.string().nullable(),
+  /** The per-agent service accounts bound to this project (§7.2): each agent
+   *  acts as its own GitLab user, so the project has a member list, not one bot. */
+  accounts: z.array(
+    z.object({
+      agentId: z.string(),
+      username: z.string(),
+      displayName: z.string().nullable(),
+      userId: z.string().nullable(),
+      /** The account's OWN health: an agent's identity can be broken on a project whose binding is ready. */
+      state: z.enum(['provisioning', 'ready', 'admin_degraded', 'runtime_degraded', 'cleanup_pending']),
+      stateReason: z.string().nullable()
+    })
+  ),
+  /** The managed webhook's state (§11.1). `not_needed` is NORMAL — a project with no enabled
+   *  trigger wants no ingress — so the console badges only the two that need attention. */
+  webhookState: z.enum(['not_needed', 'installed', 'repairing', 'failed']),
+  credentialEpoch: z.string(),
+  createdAt: z.string()
+})
+export type GitlabProjectBindingDtoT = z.infer<typeof GitlabProjectBindingDto>
+
+export const GitlabProjectBindingListDto = z.object({ bindings: z.array(GitlabProjectBindingDto) })
+
+export const CreateGitlabProjectBody = z.object({
+  connectionId: z.string().uuid(),
+  projectId: z.string().regex(/^[1-9]\d*$/) // numeric id as a string; the server re-fetches and validates
+})
+
+/** One organization bot for the Integrations card (§18.1): the service account an agent acts as,
+ *  one per top-level group it has a bound project in, plus the projects it is a member of.
+ *  No token material. */
+export const GitlabOrgAccountDto = z.object({
+  id: z.string(),
+  /** The agent whose identity this is; the console joins it to that agent's own name, icon, and page. */
+  agentId: z.string(),
+  rootGroupId: z.string(), // numeric top-level group id, losslessly as a string
+  /** Current path of that top-level group, read off a bound project; null while none is bound. */
+  rootGroupPath: z.string().nullable(),
+  username: z.string(),
+  displayName: z.string().nullable(),
+  userId: z.string().nullable(), // numeric GitLab user id; null until the account exists
+  /** The §8.2 lifecycle vocabulary the binding uses, so the console translates one set. */
+  state: z.enum(['provisioning', 'ready', 'admin_degraded', 'runtime_degraded', 'cleanup_pending']),
+  stateReason: z.string().nullable(),
+  /** `retiring` once the agent's last project in the group went away (§7.2). */
+  lifecycle: z.enum(['active', 'retiring']),
+  /** The bound projects this account is a member of. The console manages a project where it is
+   *  used, so this says only WHICH — enough to tell an orphaned binding from a held one. */
+  bindingIds: z.array(z.string())
+})
+export type GitlabOrgAccountDtoT = z.infer<typeof GitlabOrgAccountDto>
+
+export const GitlabOrgAccountListDto = z.object({
+  accounts: z.array(GitlabOrgAccountDto),
+  /** Whether account convergence still owes this organization work: an account mid-flight, a
+   *  membership no consumer justifies, or a consumer with none yet. The console cannot judge
+   *  this — it cannot see an agent's hooks or workspace — so it polls on this answer. */
+  converging: z.boolean()
+})
+
 export const GithubAppDto = z.object({
   enabled: z.boolean(),
   /** github.com/apps/<slug>; null when the feature is disabled. */
@@ -1813,11 +1965,13 @@ export const GithubOwnerRepoParam = z.object({ id: z.string(), owner: z.string()
  *  hook write-back shape); `read`/`write` are uniform across capabilities. */
 export const RepoAccessDto = z.enum(['read', 'comment', 'write'])
 
-/** One explicit repo grant on an agent (the Repositories card). */
+/** One explicit repository grant on an agent (the Repositories card). */
 export const AgentRepoAuthDto = z.object({
   id: z.string(),
-  repoId: z.string(), // rename-proof GitHub numeric id
-  repoFullName: z.string(), // owner/repo as GitHub cases it (refreshed on rename)
+  /** The host that numbers `repoId` — identity is the pair, never the id alone (§8.1). */
+  provider: z.enum(CODE_HOST_PROVIDERS),
+  repoId: z.string(), // rename-proof numeric repository/project id
+  repoFullName: z.string(), // owner/repo as GitHub cases it, or the GitLab project path (refreshed on rename)
   access: RepoAccessDto,
   createdBy: z.string().nullable(), // app_user id (member directory resolves display)
   createdAt: z.string() // ISO-8601
@@ -1825,15 +1979,30 @@ export const AgentRepoAuthDto = z.object({
 export const AgentRepoAuthListDto = z.array(AgentRepoAuthDto)
 export type AgentRepoAuthDtoT = z.infer<typeof AgentRepoAuthDto>
 
-/** `POST /agents/:agentId/repos` — repo named by full name; the server resolves
- *  the numeric id through an org installation (never client-supplied). */
-export const CreateAgentRepoAuthBody = z.strictObject({
-  repoFullName: z
-    .string()
-    .trim()
-    .regex(/^[^/\s]+\/[^/\s]+$/, 'expected "owner/repo"'),
-  access: RepoAccessDto.default('read')
-})
+/** `POST /agents/:agentId/repos` — one arm per code host, keyed by `provider`.
+ *  A github repository is named by full name and the server resolves its numeric id
+ *  through an org installation; a gitlab project is named by the numeric project id
+ *  alone (§10.1 — the client never supplies facts, and a namespaced project path is
+ *  not `owner/repo` shaped).
+ *
+ *  Plain `z.union`, not `discriminatedUnion`: `provider` STAYS OPTIONAL on the github
+ *  arm because the published body never carried it, and a versioned surface must not
+ *  400 yesterday's valid body — a defaulted discriminator does not match an absent key. */
+export const CreateAgentRepoAuthBody = z.union([
+  z.strictObject({
+    provider: z.literal('gitlab'),
+    projectId: z.string().regex(/^[1-9]\d*$/),
+    access: RepoAccessDto.default('read')
+  }),
+  z.strictObject({
+    provider: z.literal('github').default('github'),
+    repoFullName: z
+      .string()
+      .trim()
+      .regex(/^[^/\s]+\/[^/\s]+$/, 'expected "owner/repo"'),
+    access: RepoAccessDto.default('read')
+  })
+])
 
 /** `PATCH /agents/:agentId/repos/:repoAuthId` — raise an existing grant's tier. */
 export const UpdateAgentRepoAuthBody = z.strictObject({ access: RepoAccessDto })
@@ -2309,7 +2478,30 @@ export const CreateGithubHookBody = HookBodyBase.extend({
   gateMode: HookGateModeEnum.default('informational')
 })
 
-export const CreateHookBody = z.discriminatedUnion('kind', [CreateWebhookHookBody, CreateGithubHookBody])
+/** GitLab family:action patterns (§12): the three subscribed families only. */
+export const GitlabHookEventPattern = /^(issues|merge_request|push):([a-z_]+|\*)$/
+export const GitlabCommentFamily = z.enum(['issues', 'merge_request'])
+
+export const CreateGitlabHookBody = HookBodyBase.extend({
+  kind: z.literal('gitlab'),
+  // perThread by definition, like github (one issue/MR continues one session).
+  // The project must already be a managed binding in this organization; the
+  // numeric id is validated against it server-side (never trusted for facts).
+  projectId: z.string().regex(/^[1-9]\d*$/),
+  events: z.array(z.string().regex(GitlabHookEventPattern)).min(1).max(20),
+  // Note events for the selected subject families (§12); empty = no comments.
+  commentFamilies: z.array(GitlabCommentFamily).max(2).default([]),
+  mentionOnly: z.boolean().default(false),
+  // The two effect axes github carries; `check` is the §16 run note. No gateMode — GitLab has no required gate.
+  reviewPolicy: HookReviewPolicyEnum.default('off'),
+  reportingMode: HookReportingModeEnum.default('off')
+})
+
+export const CreateHookBody = z.discriminatedUnion('kind', [
+  CreateWebhookHookBody,
+  CreateGithubHookBody,
+  CreateGitlabHookBody
+])
 
 // PUT: `kind` discriminates the body but STAYS OPTIONAL for webhook updates —
 // the P1-published contract had no `kind` on PUT, and a versioned surface must
@@ -2321,6 +2513,14 @@ export const CreateHookBody = z.discriminatedUnion('kind', [CreateWebhookHookBod
 // secret rotation is a delete/re-create. The github repo IS re-targetable
 // (repoId re-resolved).
 export const UpdateHookBody = z.union([
+  CreateGitlabHookBody.extend({
+    enabled: z.boolean().optional(),
+    commentFamilies: z.array(GitlabCommentFamily).max(2).optional(),
+    mentionOnly: z.boolean().optional(),
+    // Optional on whole-definition PUT so a client predating these axes preserves the stored policy.
+    reviewPolicy: HookReviewPolicyEnum.optional(),
+    reportingMode: HookReportingModeEnum.optional()
+  }),
   // mentionOnly OPTIONAL on update (unlike create's default-false): a pre-P3
   // client echoing a hook back must not silently downgrade mention mode — the
   // route falls back to the stored value when the key is absent.
@@ -2346,7 +2546,7 @@ export const HookDto = z.object({
   id: z.string(),
   orgId: z.string(),
   agentId: z.string().nullable(), // null ⇒ legacy inert row
-  kind: z.enum(['webhook', 'github']),
+  kind: z.enum(HOOK_KINDS),
   name: z.string(),
   sessionMode: HookSessionModeEnum,
   enabled: z.boolean(),
@@ -2361,7 +2561,8 @@ export const HookDto = z.object({
   repoId: z.string().nullable(), // rename-proof GitHub numeric id; null for webhook kind
   repoFullName: z.string().nullable(),
   events: z.array(z.string()),
-  commentFamilies: GithubCommentFamilies,
+  // The stored union across code hosts; each row carries its own host's subset.
+  commentFamilies: z.array(z.enum(['issues', 'pull_request', 'merge_request'])),
   labelFilter: z.array(z.string()),
   mentionOnly: z.boolean(),
   configRevision: z.string(),
@@ -2405,6 +2606,23 @@ export const HookRunDto = z.object({
 export const HookRunListDto = z.array(HookRunDto)
 export type HookRunDtoT = z.infer<typeof HookRunDto>
 
+// The Console "Run again" action (gitlab-com-integration.md §16.1): the caller
+// names the subject thread; the Control Plane reads its CURRENT state itself.
+export const HookRerunBody = z.object({
+  subject: z.object({
+    kind: z.enum(['merge_request', 'issue']),
+    iid: z.number().int().positive()
+  })
+})
+export const HookRerunDto = z.object({
+  accepted: z.literal(true),
+  /** The minted delivery identity — the run row this rerun opens. */
+  deliveryKey: z.string(),
+  event: z.string(),
+  /** The merge request's current head, read live; null for an issue subject. */
+  headSha: z.string().nullable()
+})
+
 // ── sessions (CP-stored metadata; transcript bodies remain daemon-local) ──
 export const SessionKeyDto = z.object({
   platform: z.string(),
@@ -2439,7 +2657,7 @@ export const SessionDto = z.object({
   triggeredBy: z.string().nullable(),
   // Stable source kind for hook-triggered sessions. null for non-hook or a
   // deleted/legacy hook whose definition can no longer be resolved.
-  hookKind: z.enum(['webhook', 'github']).nullable(),
+  hookKind: z.enum(HOOK_KINDS).nullable(),
   // Daemon-resolved display names (pure passthrough — the raw ids above stay
   // canonical; null when the daemon hasn't resolved them).
   channelName: z.string().nullable(),
@@ -2491,7 +2709,7 @@ export const SessionFacetsDto = z.object({
       value: z.string(),
       integration: z.string(),
       name: z.string().nullable(),
-      hookKind: z.enum(['webhook', 'github']).nullable(),
+      hookKind: z.enum(HOOK_KINDS).nullable(),
       githubRepoId: z.string().nullable()
     })
   )
@@ -2575,7 +2793,7 @@ export const SessionDetailDto = z.object({
   lastActivityAt: z.string(),
   usage: SessionUsageDto.nullable(),
   triggeredBy: z.string().nullable(),
-  hookKind: z.enum(['webhook', 'github']).nullable(),
+  hookKind: z.enum(HOOK_KINDS).nullable(),
   channelName: z.string().nullable(),
   triggeredByName: z.string().nullable(),
   threadUrl: z.string().nullable(),

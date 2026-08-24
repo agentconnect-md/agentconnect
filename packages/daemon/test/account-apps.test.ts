@@ -20,20 +20,20 @@ const REG: Record<string, RuntimeDef> = {
 
 describe('accountAppIsolation — disabled (verified switches)', () => {
   it('Codex: forces features.apps=false while preserving existing CODEX_CONFIG', () => {
-    const result = accountAppIsolation('codex-acp', REG['codex-acp'], {
+    const result = accountAppIsolation('codex-acp', REG['codex-acp']!, {
       CODEX_CONFIG: JSON.stringify({ model: 'gpt-test', features: { fast_mode: true, apps: true } })
     })
     expect(result.status).toBe('disabled')
     expect(result.runtime).toBe('codex-acp')
     expect(result.appendArgs).toEqual([])
-    expect(JSON.parse(result.env.CODEX_CONFIG)).toEqual({
+    expect(JSON.parse(result.env.CODEX_CONFIG!)).toEqual({
       model: 'gpt-test',
       features: { fast_mode: true, apps: false }
     })
   })
 
   it('Claude: sets ENABLE_CLAUDEAI_MCP_SERVERS=false and nothing else', () => {
-    const result = accountAppIsolation('claude-acp', REG['claude-acp'], { ENABLE_CLAUDEAI_MCP_SERVERS: 'true' })
+    const result = accountAppIsolation('claude-acp', REG['claude-acp']!, { ENABLE_CLAUDEAI_MCP_SERVERS: 'true' })
     expect(result.status).toBe('disabled')
     expect(result.env).toEqual({ ENABLE_CLAUDEAI_MCP_SERVERS: 'false' })
     expect(result.appendArgs).toEqual([])
@@ -41,7 +41,7 @@ describe('accountAppIsolation — disabled (verified switches)', () => {
   })
 
   it('Grok: disables managed MCP gateway via env', () => {
-    const result = accountAppIsolation('grok-build', REG['grok-build'], {})
+    const result = accountAppIsolation('grok-build', REG['grok-build']!, {})
     expect(result.status).toBe('disabled')
     expect(result.env).toEqual({
       GROK_MANAGED_MCPS_ENABLED: 'false',
@@ -50,14 +50,14 @@ describe('accountAppIsolation — disabled (verified switches)', () => {
   })
 
   it('Copilot: appends --disable-builtin-mcps as a CLI arg, no env', () => {
-    const result = accountAppIsolation('github-copilot-cli', REG['github-copilot-cli'], {})
+    const result = accountAppIsolation('github-copilot-cli', REG['github-copilot-cli']!, {})
     expect(result.status).toBe('disabled')
     expect(result.env).toEqual({})
     expect(result.appendArgs).toEqual(['--disable-builtin-mcps'])
   })
 
   it('Open Interpreter: disables only inherited Codex account apps', () => {
-    const result = accountAppIsolation('open-interpreter', REG['open-interpreter'], {})
+    const result = accountAppIsolation('open-interpreter', REG['open-interpreter']!, {})
     expect(result.status).toBe('disabled')
     expect(result.env).toEqual({})
     expect(result.appendArgs).toEqual(['--disable', 'apps'])
@@ -96,7 +96,7 @@ describe('accountAppIsolation — not-applicable (clean machine inherits nothing
 
 describe('accountAppIsolation — no-switch (inherits connectors, no safe lever)', () => {
   it('warns without changing env/args for auggie', () => {
-    const result = accountAppIsolation('auggie', REG.auggie, {})
+    const result = accountAppIsolation('auggie', REG.auggie!, {})
     expect(result.status).toBe('no-switch')
     expect(result.env).toEqual({})
     expect(result.appendArgs).toEqual([])
@@ -117,14 +117,14 @@ describe('accountAppIsolation — unknown runtime', () => {
 
 describe('accountAppIsolation — command/args fallback for the disable set', () => {
   it('catches Codex launched under a non-standard id via its adapter package', () => {
-    const result = accountAppIsolation('my-codex', REG['codex-acp'], {})
+    const result = accountAppIsolation('my-codex', REG['codex-acp']!, {})
     expect(result.status).toBe('disabled')
     expect(result.runtime).toBe('codex-acp')
-    expect(JSON.parse(result.env.CODEX_CONFIG)).toEqual({ features: { apps: false } })
+    expect(JSON.parse(result.env.CODEX_CONFIG!)).toEqual({ features: { apps: false } })
   })
 
   it('catches Copilot launched under a non-standard id', () => {
-    const result = accountAppIsolation('gh-cli', REG['github-copilot-cli'], {})
+    const result = accountAppIsolation('gh-cli', REG['github-copilot-cli']!, {})
     expect(result.status).toBe('disabled')
     expect(result.appendArgs).toEqual(['--disable-builtin-mcps'])
   })
@@ -142,7 +142,7 @@ describe('accountAppIsolation — Codex unsafe inherited config', () => {
     (raw) => {
       const result = accountAppIsolation('codex-acp', runtime('codex-acp'), { CODEX_CONFIG: raw })
       expect(result.status).toBe('disabled')
-      expect(JSON.parse(result.env.CODEX_CONFIG)).toEqual({ features: { apps: false } })
+      expect(JSON.parse(result.env.CODEX_CONFIG!)).toEqual({ features: { apps: false } })
       expect(result.warning).toContain('ignoring unsafe inherited CODEX_CONFIG')
     }
   )

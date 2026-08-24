@@ -344,6 +344,15 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       expect(row.githubSessionKey).toBe(`github:${REPO_ID}`)
       expect(row.commentFamilies).toEqual(['issues'])
       expect(row.urlToken).toBeNull()
+      // Readers-first catalog convergence (gitlab-com-integration.md §8.1): the
+      // resolved reference lands in the provider-qualified catalog with canonical hints.
+      const catalog = await prisma.codeHostRepository.findUniqueOrThrow({
+        where: {
+          orgId_provider_externalId: { orgId: DEFAULT_ORG_ID, provider: 'github', externalId: BigInt(REPO_ID) }
+        }
+      })
+      expect(catalog.displayPath).toBe('acme/infra')
+      expect(catalog.cloneUrl).toBe('https://github.com/acme/infra')
     })
 
     it('POST and PUT reject reserved required/status modes without persisting them', async () => {
@@ -760,6 +769,29 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
         tombstonedAt: expect.any(Date)
       })
     })
+  })
+
+  it('refuses a rerun on a deployment with no GitLab application, without an existence oracle', async () => {
+    const agentId = await placedAgent()
+    await seedRelay()
+    const a = app()
+    const { id } = (await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: body(agentId) })).json() as {
+      id: string
+    }
+    const rerun = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks/${id}/rerun`,
+      payload: { subject: { kind: 'merge_request', iid: 1 } }
+    })
+    expect(rerun.statusCode).toBe(409)
+    expect((rerun.json() as { code: string }).code).toBe('GITLAB_NOT_CONFIGURED')
+    // An unknown hook is still absent, not a configuration complaint.
+    const missing = await a.app.inject({
+      method: 'POST',
+      url: `${ORG}/hooks/${randomUUID()}/rerun`,
+      payload: { subject: { kind: 'merge_request', iid: 1 } }
+    })
+    expect(missing.statusCode).toBe(404)
   })
 
   it('POST and DELETE append hook_change audit rows', async () => {

@@ -27,6 +27,7 @@ import type {
 } from '../../generated/prisma/client.js'
 import { Prisma } from '../../generated/prisma/client.js'
 import type { PrismaLike } from '../prisma.js'
+import { tombstoneCodeHostRunProjections } from './code-host-projection.repo.js'
 import type {
   HookRepo,
   HookRecord,
@@ -63,6 +64,7 @@ import {
 import { authoritativeHookProjectionState } from '../../github/projection-state.js'
 import { AgentWorkspaceIntegrationConflict, HookMissing } from '../errors.js'
 import { bumpAgentConfigRevisions } from './organization-environment-fence.js'
+import { joinAxisFence } from './gitlab-axis.js'
 
 type HookWithUsers = HookDef & {
   createdBy: User | null
@@ -525,6 +527,12 @@ export class PgHookRepo implements HookRepo {
         // existing agent -> hook order. This also avoids a parent-FK row-lock /
         // agent advisory-lock inversion with concurrent org deletion.
         await lockHookReviewOrgProducerScope(tx, input.orgId)
+        // §24.1: `repoId` is a host-relative GitLab project id, and a hook that
+        // will not be enabled takes no binding lease, so this is its only fence.
+        if (input.kind === 'gitlab') {
+          if (!input.axisBaseUrl) throw new Error('gitlab hook write is missing its axis base url')
+          await joinAxisFence(tx, input.axisBaseUrl)
+        }
         const lockedAgentIds = await this.lockAgentLifecycleScopes(tx, [
           ownerHint ? AgentId(ownerHint) : null,
           input.agentId
@@ -661,7 +669,10 @@ export class PgHookRepo implements HookRepo {
           return { kind: 'retry', owner: AgentId(hook.agentId) } as const
         }
         const projections = await tx.hookReviewProjection.findMany({ where: { hookId } })
-        await this.tombstoneProjectionRows(tx, projections, new Date(), 'failure')
+        const deletedAt = new Date()
+        await this.tombstoneProjectionRows(tx, projections, deletedAt, 'failure')
+        // The §16 ledger has no FK to this row, so its cleanup intent must commit with the delete.
+        await tombstoneCodeHostRunProjections(tx, { hookIds: [hookId] }, deletedAt)
         await tx.hookDef.delete({
           where: { id: hookId, orgId, ...(expectedOwnerForMutation ? { agentId: expectedOwnerForMutation } : {}) }
         })
@@ -1027,20 +1038,17 @@ export class PgHookRepo implements HookRepo {
       // The grants carry the renamed display name into `workspace.additionalRepos`, so their
       // owners join the same configuration-ordering domain — and the same convergence fan-out —
       // as the workspace agents below. Read the owners BEFORE the write erases the predicate.
+      // Provider-qualified: a GitLab project carrying this same number is a different
+      // repository, and a GitHub rename must never overwrite its path (§8.1).
+      const renamedGrants = { provider: 'github', repoId, agent: { orgId }, repoFullName: { not: repoFullName } }
       const renamedGrantAgentIds = [
         ...new Set(
-          (
-            await tx.agentRepoAuthorization.findMany({
-              where: { repoId, agent: { orgId }, repoFullName: { not: repoFullName } },
-              select: { agentId: true }
-            })
-          ).map((row) => row.agentId)
+          (await tx.agentRepoAuthorization.findMany({ where: renamedGrants, select: { agentId: true } })).map(
+            (row) => row.agentId
+          )
         )
       ]
-      await tx.agentRepoAuthorization.updateMany({
-        where: { repoId, agent: { orgId }, repoFullName: { not: repoFullName } },
-        data: { repoFullName }
-      })
+      await tx.agentRepoAuthorization.updateMany({ where: renamedGrants, data: { repoFullName } })
       await bumpAgentConfigRevisions(tx, renamedGrantAgentIds)
       const gitRepo = normalizeGitUrl(repoFullName)
       const workspaceWhere = {
@@ -2322,19 +2330,22 @@ export class PgHookRepo implements HookRepo {
         })
         const agent = await tx.agent.findUnique({
           where: { id: input.agentId },
-          select: { orgId: true, workspaceRepoId: true, gitAccess: true }
+          select: { orgId: true, workspaceRepoId: true, workspaceMode: true, gitAccess: true }
         })
-        const additionalGrant =
-          agent?.workspaceRepoId === input.repoId
-            ? null
-            : await tx.agentRepoAuthorization.findUnique({
-                where: { agentId_repoId: { agentId: input.agentId, repoId: input.repoId } },
-                select: { access: true }
-              })
+        // HookReviewProjection is the GitHub Checks ledger, so both authorities read
+        // github here — the hosts number their repositories independently (§8.1).
+        const workspaceIsThisRepo = agent?.workspaceRepoId === input.repoId && agent.workspaceMode === 'github'
+        const additionalGrant = workspaceIsThisRepo
+          ? null
+          : await tx.agentRepoAuthorization.findUnique({
+              where: {
+                agentId_provider_repoId: { agentId: input.agentId, provider: 'github', repoId: input.repoId }
+              },
+              select: { access: true }
+            })
         const currentRepoAuthority =
           agent?.orgId === input.orgId &&
-          ((agent.workspaceRepoId === input.repoId && agent.gitAccess === 'write') ||
-            additionalGrant?.access === 'write')
+          ((workspaceIsThisRepo && agent.gitAccess === 'write') || additionalGrant?.access === 'write')
         const currentLifecycle =
           hook?.kind === 'github' &&
           hook.enabled &&
@@ -2901,6 +2912,30 @@ export class PgHookRepo implements HookRepo {
     })
   }
 
+  /** Nothing left to publish: drop the row out of the due set instead of leaving it to be
+   *  claimed, re-written, and claimed again. Not a failure, so `lastErrorCode` clears too. */
+  async settleReviewProjection(projectionId: string, generation: bigint, leaseOwner: string): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const current = await this.lockReviewProjectionById(tx, projectionId)
+      if (!current || current.generation !== generation || current.leaseOwner !== leaseOwner) return false
+      // Re-read under the row lock: a converge that landed while this worker held the lease has
+      // already re-armed the row, and clearing its due time would strand the new intent.
+      if (
+        current.desiredState !== current.observedState ||
+        current.pendingIntent !== null ||
+        current.writePhase !== null ||
+        current.writeMarker !== null
+      ) {
+        return false
+      }
+      const changed = await tx.hookReviewProjection.updateMany({
+        where: { id: projectionId, generation, leaseOwner },
+        data: { nextAttemptAt: null, leaseOwner: null, leaseUntil: null, lastErrorCode: null, attempts: 0 }
+      })
+      return changed.count === 1
+    })
+  }
+
   async blockProjection(
     projectionId: string,
     generation: bigint,
@@ -2958,6 +2993,8 @@ export class PgHookRepo implements HookRepo {
         }
       })
       const rows = await tx.hookReviewProjection.findMany({ where: { hookId: { in: ids } } })
+      // The Agent-delete cascade reaches the §16 ledger only here — it has no FK to ride.
+      await tombstoneCodeHostRunProjections(tx, { hookIds: ids }, at)
       return this.tombstoneProjectionRows(tx, rows, at, desiredState)
     })
   }
@@ -3061,6 +3098,8 @@ export class PgHookRepo implements HookRepo {
 
         const projections = await tx.hookReviewProjection.findMany({ where: { orgId } })
         await this.tombstoneProjectionRows(tx, projections, at, 'failure')
+        // Same sweep for the §16 ledger: its rows survive the organization's cascade by design.
+        await tombstoneCodeHostRunProjections(tx, { orgId }, at)
 
         // A marker is durable before every external mutation. With no check id,
         // marker/phase, observed state, or write-start timestamp, there is proof

@@ -1,6 +1,50 @@
+import { CODE_HOST_PROVIDERS, GENERIC_HOOK_KIND, isCodeHostProvider, type HookKind } from '@agentconnect.md/protocol'
 import { isSelfSender } from './data'
 
-export type SessionTriggerKind = 'agent' | 'person' | 'github' | 'webhook' | 'schedule'
+/**
+ * Session source taxonomy. A hook kind IS a trigger kind, so the union is the three
+ * non-hook origins plus the shared hook-kind vocabulary rather than a hand-copied
+ * list — a new code host widens it here and every total mapping below (and every
+ * `Record<HookKind, …>` in the views) stops compiling until it is given an entry.
+ * That is the constraint GitLab was missing: it could be typed out of the union and
+ * silently inherit the generic webhook rendering.
+ */
+export type SessionTriggerKind = 'agent' | 'person' | 'schedule' | HookKind
+
+/** Hook kinds in console display order — every code host first, the generic endpoint last. */
+export const HOOK_TRIGGER_KINDS = [...CODE_HOST_PROVIDERS, GENERIC_HOOK_KIND] as const
+
+/** Trigger filter-group heading per hook kind. Total: a new kind gets its own group. */
+export const HOOK_KIND_GROUP_LABEL: Record<HookKind, string> = {
+  github: 'GitHub',
+  gitlab: 'GitLab',
+  webhook: 'Webhooks'
+}
+
+/** Display name for a hook source the daemon left unnamed. Total, so no code host reads as "Webhook". */
+export const HOOK_KIND_LABEL: Record<HookKind, string> = {
+  github: 'GitHub',
+  gitlab: 'GitLab',
+  webhook: 'Webhook'
+}
+
+/** The name to show for an unnamed hook source; an unresolvable hook is generic by definition. */
+export function hookSourceLabel(kind: HookKind | null | undefined): string {
+  return HOOK_KIND_LABEL[kind ?? GENERIC_HOOK_KIND]
+}
+
+/** The kind that stands for a set of them where only one mark fits — code hosts first,
+ *  so an agent's GitLab subscription is never represented by the generic webhook glyph. */
+export function primaryHookKind(kinds: readonly HookKind[]): HookKind | undefined {
+  return HOOK_TRIGGER_KINDS.find((kind) => kinds.includes(kind))
+}
+
+/** The hook kind an integration facet value names — the CP promotes each code host
+ *  out of the generic `hook` bucket, so only that one value needs translating. */
+export function hookKindFromIntegration(integration: string): HookKind | undefined {
+  if (integration === 'hook') return GENERIC_HOOK_KIND
+  return isCodeHostProvider(integration) ? integration : undefined
+}
 
 type IdLookup = { has(id: string): boolean }
 const GITHUB_REPO_TRIGGER_PREFIX = 'github-repo:'
@@ -64,9 +108,11 @@ export function sessionTranscriptAgentIds(
   return authors
 }
 
+/** GitHub subscriptions collapse per repository — the CP indexes their numeric repo id.
+ *  Every other trigger, GitLab included, filters by its own raw `hook:<id>` value. */
 export function sessionTriggerFilterValue(trigger: {
   value: string
-  hookKind?: 'webhook' | 'github'
+  hookKind?: HookKind
   githubRepoId?: string
 }): string {
   return trigger.hookKind === 'github' && trigger.githubRepoId
@@ -81,13 +127,16 @@ export function githubRepoIdFromSessionTriggerFilter(value: string): string | un
 }
 
 export function sessionTriggerKind(
-  session: { triggeredBy?: string; hookKind?: 'webhook' | 'github' },
+  session: { triggeredBy?: string; hookKind?: HookKind },
   agentIds: IdLookup
 ): SessionTriggerKind | null {
   const trigger = session.triggeredBy
   if (!trigger) return null
   if (trigger.startsWith('cron:')) return 'schedule'
-  if (trigger.startsWith('hook:')) return session.hookKind ?? 'webhook'
+  // A hook kind IS its own trigger kind. The generic kind is a mapping, never a
+  // fallback: only a hook the CP could not resolve (deleted definition, local row)
+  // arrives without one, and an unidentified hook source is generic by definition.
+  if (trigger.startsWith('hook:')) return session.hookKind ?? GENERIC_HOOK_KIND
   return agentIds.has(trigger) ? 'agent' : 'person'
 }
 
@@ -100,6 +149,6 @@ export function sessionSenderLabel(
 ): string {
   if (!sender) return fallback ?? '—'
   if (isSelfSender(sender, me)) return 'You'
-  if (sender.startsWith('hook:')) return fallback ?? 'Webhook'
+  if (sender.startsWith('hook:')) return fallback ?? HOOK_KIND_LABEL[GENERIC_HOOK_KIND]
   return agentNames.get(sender) ?? memberNames.get(sender) ?? fallback ?? sender
 }

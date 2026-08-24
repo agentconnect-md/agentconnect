@@ -136,8 +136,8 @@ function fakeConn() {
  */
 function fakeDeps(placedOn: string | null, channelExtra?: ChannelAgentRecord) {
   const orgRoster: OrgAgentRecord[] = [
-    { ...rec({ agentId: CALLER }), daemonId: placedOn },
-    { ...rec({ agentId: PEER }), daemonId: ASKING_DAEMON }
+    { ...rec({ agentId: CALLER }), placementKind: 'daemon', daemonId: placedOn, setId: null },
+    { ...rec({ agentId: PEER }), placementKind: 'daemon', daemonId: ASKING_DAEMON, setId: null }
   ]
   const agentsInChannel = vi.fn(async (): Promise<ChannelAgentRecord[]> => [
     rec({ agentId: CALLER }),

@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { SEND_MESSAGE_BRANCHES, TOOL_ARG_SCHEMAS } from '../src/mcp/ops.js'
-import { GITHUB_REVIEW_TOOLS, RETIRED_ORCHESTRATION_TOOLS, toolsForIntegrations } from '../src/mcp/tools.js'
+import {
+  CODE_HOST_EFFECT_TOOLS,
+  GITHUB_REVIEW_TOOLS,
+  RETIRED_ORCHESTRATION_TOOLS,
+  toolsForIntegrations
+} from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
@@ -15,23 +20,28 @@ import type { Integration } from '../src/agents/agent-schema.js'
 const slackInt: Integration = {
   id: 'int-1',
   platform: 'slack',
-  core: { bindRules: [] },
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
   config: { botToken: 'xoxb', appToken: 'xapp' }
 }
 const telegramInt: Integration = {
   id: 'int-2',
   platform: 'telegram',
-  core: { bindRules: [] },
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
   config: { botToken: '123456:ABC' }
 }
 
 const ALL_CAPABILITIES = new Set(['recall', 'create', 'get', 'update', 'delete'] as const)
 
 const advertised: ToolDescriptor[] = [
-  ...toolsForIntegrations([slackInt, telegramInt], { sessionTitle: true, organizationKnowledge: true }),
+  ...toolsForIntegrations([slackInt, telegramInt], {
+    sessionTitle: true,
+    organizationKnowledge: true,
+    currentPlatform: 'slack'
+  }),
   ...externalMemoryTools(ALL_CAPABILITIES),
   ...RETIRED_ORCHESTRATION_TOOLS,
-  ...GITHUB_REVIEW_TOOLS
+  ...GITHUB_REVIEW_TOOLS,
+  ...CODE_HOST_EFFECT_TOOLS
 ]
 
 interface ObjectSchemaView {
@@ -54,13 +64,13 @@ describe('advertised tool schemas agree with their zod validators', () => {
 
   it('advertises every dispatchable tool that takes arguments', () => {
     const missing = [...TOOL_ARG_SCHEMAS.keys()].filter(
-      // `listChannelAgents` is a dispatch-only alias, and the orchestration triple is retired.
-      (name) => !byName.has(name) && name !== 'listChannelAgents'
+      // `listChannelAgents` and `submitGithubReview` are dispatch-only aliases, and the orchestration triple is retired.
+      (name) => !byName.has(name) && name !== 'listChannelAgents' && name !== 'submitGithubReview'
     )
     expect(missing).toEqual([])
   })
 
-  it.each([...TOOL_ARG_SCHEMAS.keys()].filter((name) => name !== 'listChannelAgents'))(
+  it.each([...TOOL_ARG_SCHEMAS.keys()].filter((name) => name !== 'listChannelAgents' && name !== 'submitGithubReview'))(
     '%s takes exactly the advertised arguments',
     (name) => {
       const descriptor = byName.get(name)!

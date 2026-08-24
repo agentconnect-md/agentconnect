@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtemp, readFile, stat } from 'node:fs/promises'
@@ -53,8 +53,10 @@ import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-r
 import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
-import type { SetSessionTitleReq } from './mcp/ops.js'
+import type { CodeHostEffectReq, SetSessionTitleReq } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
+import { GitlabBroker } from './gitlab/broker.js'
+import { CodeHostNoteProjector } from './gitlab/note-projection.js'
 import {
   CONFIG_FILE_CONVENTIONS,
   cleanupConfigFiles,
@@ -62,6 +64,7 @@ import {
   materializeConfigFiles
 } from './shim/config-file-env.js'
 import { writeGhShim } from './cp/gh-shim.js'
+import { writeGlabShim } from './cp/glab-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import { AutoMergeWatcher } from './github/auto-merge/watcher.js'
 import { SandboxHolds } from './k8s/sandbox-hold.js'
@@ -77,7 +80,7 @@ import {
 import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
-import { toolsForIntegrations, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
+import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { DREAM_TOPIC_RE, MAX_DREAM_FILES } from './dream/dreamer.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
@@ -183,16 +186,25 @@ import {
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { finalizeGithubTurn, isGithubFinalChunk, onGithubUpdate } from './platforms/github/turn-output.js'
 import { GithubReviewOrchestrator, type GithubReviewHost } from './github/review-orchestrator.js'
+import { CodeHostReviewRouter } from './codehost/review-adapter.js'
+import { GitlabReviewAdapter, type GitlabReviewAdapterDeps, type GitlabReviewTurn } from './gitlab/review-adapter.js'
 import {
-  collectGithubQueueCandidates,
+  collectHookQueueCandidates,
   combineCoordinationWaits,
-  githubReviewBatchSettleStep,
-  planGithubReviewBatchCoalesce,
-  planGithubRevisionAdmission,
-  planGithubRevisionAdmissionEffects,
-  planQueuedGithubRevisionRemovals,
-  selectGithubReviewBatchLeader
-} from './github/queue-admission.js'
+  planQueuedRevisionRemovals,
+  planReviewBatchCoalesce,
+  planRevisionAdmission,
+  planRevisionAdmissionEffects,
+  reviewBatchSettleStep,
+  selectReviewBatchLeader
+} from './codehost/queue-admission.js'
+import {
+  batchPublishesItems,
+  hookCoordinates,
+  reviewSubjectLane,
+  type HookQueueCandidate,
+  type RevisionAdmissionPlan
+} from './codehost/hook-admission.js'
 import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
 import {
   internalPassSlot,
@@ -253,6 +265,9 @@ import {
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
+  CODEHOST_NOTE_PROJECTION_V1_FEATURE,
+  CODEHOST_REVIEW_V1_FEATURE,
+  GITLAB_COM_V1_FEATURE,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
@@ -263,6 +278,8 @@ import {
   K8S_SUPERVISOR,
   AGENT_CONFIG_REVISION_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
+  GITCRED_GITHUB_V2_FEATURE,
+  GITLAB_EFFECT_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
   ORGANIZATION_SUGGESTION_REVIEW_FEATURE,
   SESSION_VISIBILITY_FEATURE,
@@ -410,19 +427,17 @@ import {
 import {
   foreignHookDispatch,
   githubDeletedHookEvent,
-  githubFallbackAllowed,
-  githubHookCoordinates,
-  githubPullRequestLane,
+  hookOutputFallbackAllowed,
   githubReviewResultForCompletion,
   githubThreadWorktreeCleanup,
+  hookOutcomeFailure,
   MAX_HOOK_REPORT_INFLIGHT,
   type ActiveGithubReplyBatchMeta,
   type ActiveGithubTurnMeta,
-  type GithubQueueCandidate,
   type GithubReplyTarget,
-  type GithubRevisionAdmissionPlan,
   type HookCompletionOwner,
   type HookDispatchContext,
+  type NotePublishFailure,
   type SessionWorktreeCleanupResult
 } from './github/hook-coords.js'
 import {
@@ -636,6 +651,10 @@ export class Daemon {
   /** Lazily-built dream-job engine (docs/designs/memory-dreaming.md §4). */
   private dreamRunnerInstance?: DreamRunner
   private gitCreds!: GitCredentialCache
+  /** §14.2 structured mutation broker — allowlisted GitLab effects run under a daemon-held lease. */
+  private gitlabBroker?: GitlabBroker
+  /** §16 run projection — the only writer of the service-account status note for a merge-request head. */
+  private noteProjector!: CodeHostNoteProjector
   /** Public commit attribution selected by the CP deployment's GitHub App. */
   private gitCommitIdentity?: GitCommitIdentity
   private gitCredServer?: GitCredServer
@@ -648,6 +667,7 @@ export class Daemon {
   /** run/bin with the gh wrapper (multi-repo #457) — prepended to github-app
    *  agents' PATH at host spawn; unset ⇒ shim write failed, spawn without it. */
   private ghBinDir?: string
+  private glabBinDir?: string
   /** Spawn-time config warnings per agent (config-file secrets: pointer-var
    *  conflicts, write failures) — flushed into the next dispatched session. */
   private pendingSpawnNotices = new Map<string, string[]>()
@@ -959,6 +979,9 @@ export class Daemon {
   private readonly activeGithubTurnMeta = new Map<string, ActiveGithubTurnMeta>()
   private readonly activeGithubReplyBatchMeta = new Map<string, ActiveGithubReplyBatchMeta>()
   private readonly githubReviews: GithubReviewOrchestrator
+  /** §15 GitLab formal-review adapter and the provider-routing seam both live behind this. */
+  private readonly gitlabReviews: GitlabReviewAdapter
+  private readonly codeReviews = new CodeHostReviewRouter()
   // ── lifecycle (§2.5/§5.3/§7.2/§7.3) ──
   private clock: Clock
   private requestExit: (code: number) => void
@@ -982,7 +1005,7 @@ export class Daemon {
   private safetyDrainWaits = new Map<string, Set<Promise<void>>>()
   private safetyDrainRuns = new Map<string, symbol>()
   private safetyDrainAdmissionKeys = new Map<string, Set<string>>()
-  private safetyDrainGithubLanes = new Map<string, Set<string>>()
+  private safetyDrainReviewLanes = new Map<string, Set<string>>()
   // Cold-move staging is distinct from an ordinary agent/stop gate: staged
   // agents are excluded from the effective roster, so restoring an old archive
   // during bootstrap cannot reopen stale platform credentials before activate
@@ -1181,6 +1204,9 @@ export class Daemon {
     this.webchatMcpRevocations = new WebchatMcpRevocations(this.webchatMcpRevocationHost())
     this.commands = new CommandHandlers(this.commandHost())
     this.githubReviews = new GithubReviewOrchestrator(this.githubReviewHost())
+    this.gitlabReviews = new GitlabReviewAdapter(this.gitlabReviewDeps())
+    this.codeReviews.register(this.githubReviews.reviewAdapter)
+    this.codeReviews.register(this.gitlabReviews)
     this.curatedRuntimeAdmission = new CuratedRuntimeAdmission({
       now: () => this.clock.now(),
       ttlMs: PROBE_TTL_MS
@@ -1275,7 +1301,8 @@ export class Daemon {
         await this.dispatch(agentId, msg, integrationId, undefined, undefined, { isQueueCmd: true })
       },
       replyConnFor: (agentId, integrationId) => this.replyConnFor(agentId, integrationId),
-      sessionLink: (acpSessionId, source) => this.sessionLink(acpSessionId, source),
+      sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
+      outwardSessionId: (agentId, acpSessionId) => this.outwardSessionIdForAcp(agentId, acpSessionId),
       sessionLinkSource: (platform, integrationId) => this.sessionLinkSource(platform, integrationId),
       threadOwner: async (channel, thread, transportScope) =>
         await this.sessions.threadOwner(channel, thread, transportScope),
@@ -1565,6 +1592,13 @@ export class Daemon {
     })
     this.cfg = cfg
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
+    // §13.2 readiness: an explicit operator policy stays authoritative — but say
+    // plainly when it excludes managed GitLab rather than silently widening it.
+    if (!cfg.security.workspaceGitAllowedOrigins.some((origin) => origin.toLowerCase() === 'https://gitlab.com')) {
+      this.log.warn(
+        'workspace policy: workspaceGitAllowedOrigins excludes https://gitlab.com — managed GitLab workspaces will refuse to clone on this daemon'
+      )
+    }
     return { root, cfg }
   }
 
@@ -1617,13 +1651,13 @@ export class Daemon {
           // the daemon's own filesystem, so without a tunnel they exist nowhere the pod can reach.
           // `mcp` is served for every pod agent because any session may carry tools and the
           // listener belongs to the pod's lifetime, while the spec that dials it is decided per
-          // session; a GitHub-App workspace adds the credential helper its git asks for.
+          // session; a managed-credential workspace — github-app or gitlab — adds the helper socket.
           // An id this daemon holds no agent for gets neither: the member's own runtime probe is
           // the case, and its channel is granted `probe` alone, so asking would only be refused.
           tunnelsFor: (agentId) => {
             const agent = this.agents.get(agentId)
             if (!agent) return []
-            return agent.workspace.gitCredential === 'github-app' ? ['mcp', 'gitcred'] : ['mcp']
+            return this.workspaces.usesManagedCredential(agent) ? ['mcp', 'gitcred'] : ['mcp']
           },
           tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
           // A bound sandbox is a reachable memory tree: drain any managed capture that waited for it.
@@ -1669,7 +1703,48 @@ export class Daemon {
         return client.requestGitCred(payload)
       },
       log: { warn: (m: string) => this.log.warn(m) },
-      actionsSupported: () => this.cpClient?.supportsServerFeature?.('gitcred-actions-v1') ?? false
+      actionsSupported: () => this.cpClient?.supportsServerFeature?.('gitcred-actions-v1') ?? false,
+      providerV2Supported: () => this.cpClient?.supportsServerFeature?.('gitcred-provider-v2') ?? false,
+      githubV2Supported: () => this.cpClient?.supportsServerFeature?.(GITCRED_GITHUB_V2_FEATURE) ?? false,
+      gitlabEffectSupported: () => this.cpClient?.supportsServerFeature?.(GITLAB_EFFECT_V1_FEATURE) ?? false
+    })
+    // §14.2: the broker holds the effect lease; the agent environment never sees the token.
+    this.gitlabBroker = new GitlabBroker({
+      lease: async (target) => {
+        const entry = await this.gitCreds.getGitlabEffectToken(target.agentId, target.projectId, target.hookId)
+        return { token: entry.token, access: entry.access }
+      },
+      invalidateLease: (target, token) => this.gitCreds.invalidateGitlabEffect(target.agentId, target.projectId, token)
+    })
+    // §16: the same hook-authorized effect lease, on a writer the model never sees or influences.
+    this.noteProjector = new CodeHostNoteProjector({
+      daemonId: () => this.cfg.daemonId,
+      store: {
+        getNoteProjection: (daemonId, key) => this.store.getNoteProjection(daemonId, key),
+        beginNoteProjectionWrite: (row, now) => this.store.beginNoteProjectionWrite(row, now),
+        recordNoteProjectionOutcome: (row, outcome, code, now) =>
+          this.store.recordNoteProjectionOutcome(row, outcome, code, now),
+        markNoteProjectionReported: (daemonId, key, marker, now) =>
+          this.store.markNoteProjectionReported(daemonId, key, marker, now),
+        listUnsettledNoteProjections: (daemonId) => this.store.listUnsettledNoteProjections(daemonId)
+      },
+      lease: async (target) => {
+        const entry = await this.gitCreds.getGitlabEffectToken(target.agentId, target.projectId, target.hookId)
+        // The grant's purge epoch travels with it: the writer refuses a fence the grant does not match.
+        return {
+          token: entry.token,
+          access: entry.access,
+          ...(entry.credentialEpoch !== undefined ? { credentialEpoch: entry.credentialEpoch } : {})
+        }
+      },
+      invalidateLease: (target, token) => this.gitCreds.invalidateGitlabEffect(target.agentId, target.projectId, token),
+      report: async (result, orgId) => {
+        const client = this.cpClient
+        if (!client) throw new Error('control plane is not connected')
+        await client.reportCodeHostNoteResult(result, orgId)
+      },
+      log: { warn: (m: string) => this.log.warn(m) },
+      now: () => this.clock.now()
     })
     this.gitCredServer = new GitCredServer(this.gitCreds, gitcredSocketPath(root), {
       log: {
@@ -1682,6 +1757,22 @@ export class Daemon {
         const ws = this.agents.get(agentId)?.workspace
         if (ws?.mode !== 'git-repo' || !ws.gitRepo) return undefined
         return gitRepoLabel(ws.gitRepo) ?? undefined
+      },
+      // The REPLICATED SPEC decides the provider — never the helper's host hint.
+      providerOf: (agentId: string) => {
+        const agent = this.agents.get(agentId)
+        return agent ? this.workspaces.managedCredentialProvider(agent) : undefined
+      },
+      projectIdOf: (agentId: string) => {
+        const ws = this.agents.get(agentId)?.workspace
+        return ws?.mode === 'git-repo' ? ws.gitlabProjectId : undefined
+      },
+      // The §8.3 allowlist, matched case-insensitively on the project path.
+      gitlabProjectOf: (agentId: string, repoFullName: string) => {
+        const wanted = repoFullName.toLowerCase()
+        return (this.agents.get(agentId)?.workspace.additionalRepos ?? []).find(
+          (row) => row.provider === 'gitlab' && row.repoFullName.toLowerCase() === wanted
+        )?.repoId
       }
     })
     const daemonCredentialTarget = daemonGitCredentialTarget({
@@ -1696,7 +1787,15 @@ export class Daemon {
         this.k8sPlane?.runsInSandbox(agentId) ? sandboxGitCredentialTarget() : daemonCredentialTarget,
       capabilityFor: (agentId) => this.gitCredServer!.capabilityFor(agentId),
       preWarm: async (agentId, reason) => {
-        await this.gitCreds.get(agentId, reason)
+        const agent = this.agents.get(agentId)
+        const provider = agent ? this.workspaces.managedCredentialProvider(agent) : undefined
+        if (provider === 'gitlab') {
+          const projectId = agent?.workspace.mode === 'git-repo' ? agent.workspace.gitlabProjectId : undefined
+          await this.gitCreds.get(agentId, reason, {
+            provider: 'gitlab',
+            ...(projectId !== undefined ? { externalRepoId: projectId } : {})
+          })
+        } else await this.gitCreds.get(agentId, reason)
       }
     })
     try {
@@ -1706,6 +1805,13 @@ export class Daemon {
       this.ghBinDir = writeGhShim(root, daemonEntryForShims(root))
     } catch (err) {
       this.log.warn(`gitcred: gh wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
+    }
+    try {
+      // glab wrapper (§13.3) — read-only tokens for gitlab workspaces; same
+      // regenerate-per-boot, never-block-startup discipline as gh.
+      this.glabBinDir = writeGlabShim(root, daemonEntryForShims(root))
+    } catch (err) {
+      this.log.warn(`gitcred: glab wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
     }
     this.gitCredServer.start()
     // The watcher dispatches on placement: a cluster agent's pod gets the `automerge` channel and
@@ -2251,8 +2357,9 @@ export class Daemon {
       startOrchestration: (req) => this.collab.startOrchestration(req),
       getOrchestration: (req) => Promise.resolve(this.collab.getOrchestrationForOwner(req)),
       cancelOrchestration: (req) => Promise.resolve(this.collab.cancelOrchestrationForOwner(req)),
-      submitGithubReview: (req) => this.githubReviews.submitGithubReview(req),
+      submitCodeReview: (req) => this.codeReviews.submit(req),
       replyGithubReviewThreads: (req) => this.githubReviews.replyGithubReviewThreads(req),
+      codeHostEffect: (req) => this.runCodeHostEffect(req),
       memory: this.memory,
       // Every session may READ shared agent memory; only a non-isolated session
       // may WRITE it, so a private DM/A2A turn can use existing memory but cannot
@@ -2299,7 +2406,7 @@ export class Daemon {
         const scope = createWorkspaceScope({
           workspaces: this.workspaces,
           agentOf: (id) => this.agents.get(id),
-          sessionOf: (id, acpSessionId) => this.store.getSessionByAcpIdForAgent(id, acpSessionId),
+          sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
           runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
         })
         const acpSessionId = await this.acpSessionIdForToolCall(ctx).catch(() => undefined)
@@ -2435,6 +2542,7 @@ export class Daemon {
     )
 
     this.sessions = new SessionManager({
+      prepareOutwardBinding: (agentId, key) => this.prepareOutwardBinding(agentId, key),
       // THIS daemon's plane. Omitting it hands the manager a local-mode one, and
       // `additionalWorkspaceDirectories` would then `realpathSync` a `--k8s` workspace's pod-side
       // cwd against this filesystem — failing session create/load before the runtime call.
@@ -2502,12 +2610,15 @@ export class Daemon {
       mcpServersFor: ({ agent, platform, channel, thread, integrationId, transportScope, isDm }) => {
         const servers: McpServer[] = []
         let tools = toolsForIntegrations(agent.integrations, {
-          organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true
+          organizationKnowledge: this.cpClient?.supportsServerFeature?.(ORGANIZATION_KNOWLEDGE_FEATURE) === true,
+          currentPlatform: platform
         })
         // Static descriptor, dynamic authority: a per-thread ACP session can
         // outlive many hook deliveries. The call resolves the CURRENT daemon-
         // private turn and fails closed everywhere else.
         tools = [...tools, ...GITHUB_REVIEW_TOOLS]
+        // §14.2 broker: only a session with a GitLab target carries it, and the clamped lease still authorizes.
+        if (this.gitlabWorkspaceProject(agent.id) !== undefined) tools = [...tools, ...CODE_HOST_EFFECT_TOOLS]
         // Replace the legacy managed descriptors with this provider's stable core
         // tools. An external plugin's raw MCP tools never enter the ACP session.
         tools = tools.filter((t) => !MEMORY_TOOL_NAMES.has(t.name))
@@ -3078,7 +3189,8 @@ export class Daemon {
     agent: LoadedAgent,
     runtime: RuntimeDef,
     launchEnv: Record<string, string>,
-    githubAppCredentials: boolean
+    githubAppCredentials: boolean,
+    gitlabCredentials: boolean
   ): string[] {
     const configuredMcp = agent.mcpServers.flatMap((name) => {
       const definition = this.mcpDefsForAgent(agent.id)[name]
@@ -3093,6 +3205,15 @@ export class Daemon {
       if (launchEnv.GIT_CONFIG_GLOBAL) paths.push(launchEnv.GIT_CONFIG_GLOBAL)
       const gh = resolveCommandPath('gh', process.env)
       if (gh) executableCommands.push(gh)
+    }
+    if (gitlabCredentials) {
+      // The gitlab twin: same helper socket/shim, the glab wrapper dir, and the
+      // real glab binary for the OS sandbox's read allowlist (§13.3).
+      paths.push(gitcredSocketPath(this.root), gitcredShimPath(this.root))
+      if (this.glabBinDir) paths.push(this.glabBinDir)
+      if (launchEnv.GIT_CONFIG_GLOBAL) paths.push(launchEnv.GIT_CONFIG_GLOBAL)
+      const glab = resolveCommandPath('glab', process.env)
+      if (glab) executableCommands.push(glab)
     }
     return trustedRuntimeReadRoots({
       runtime,
@@ -3404,6 +3525,9 @@ export class Daemon {
     // A GitHub workspace uses this channel for its implicit repo; scratch uses
     // it only for explicitly authorized repos named by git/gh.
     const githubAppCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
+    const gitlabCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'gitlab'
+    const managedCredentials = githubAppCredentials || gitlabCredentials
+    const managedCredentialHost = gitlabCredentials ? ('gitlab.com' as const) : ('github.com' as const)
     // The Git session policy runs for every configured repository, not only
     // GitHub review: repository hooks/fsmonitor stay disabled without rewriting
     // checkout config. sessionGitEnv additionally supplies GitHub App identity.
@@ -3423,8 +3547,8 @@ export class Daemon {
     // is re-materialized on every spawn, because a resumed Sandbox is a new pod with an empty tmpfs.
     // The daemon-local write (sessionGitEnv) would land the file on this daemon's disk instead.
     const sandboxSessionGit =
-      this.k8sPlane && githubAppCredentials
-        ? sessionGitConfig(agent.id, this.gitCommitIdentity, sandboxGitCredentialTarget())
+      this.k8sPlane && managedCredentials
+        ? sessionGitConfig(agent.id, this.gitCommitIdentity, sandboxGitCredentialTarget(), managedCredentialHost)
         : undefined
     const env: Record<string, string> = {
       ...baseEnv,
@@ -3435,8 +3559,8 @@ export class Daemon {
       ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission(agent.id)).runtimeEnv(),
       // App identity rides with the CREDENTIAL mode, not the workspace mode: a scratch workspace with
       // authorized repositories needs the capability for its git and gh exactly like a clone does.
-      ...(githubAppCredentials
-        ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, this.gitCommitIdentity))
+      ...(managedCredentials
+        ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, this.gitCommitIdentity, managedCredentialHost))
         : agent.workspace.mode === 'git-repo'
           ? sessionGitPolicyEnv()
           : {})
@@ -3481,6 +3605,11 @@ export class Daemon {
       env.AC_AGENT_ID = agent.id
       shimDirs.add(this.ghBinDir)
     }
+    if (gitlabCredentials && this.glabBinDir && !this.k8sPlane) {
+      // glab wrapper (§13.3): read-only project tokens for the managed workspace.
+      env.AC_AGENT_ID = agent.id
+      shimDirs.add(this.glabBinDir)
+    }
     if (shimDirs.size > 0) {
       env.PATH = `${[...shimDirs].join(':')}:${env.PATH ?? process.env.PATH ?? ''}`
     }
@@ -3520,12 +3649,15 @@ export class Daemon {
           if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
         },
         runtimeReadRoots: runInSandbox
-          ? (launchEnv) => this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials)
+          ? (launchEnv) =>
+              this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials, gitlabCredentials)
           : undefined,
         trustedWorkspaceWriteRoots: runInSandbox ? this.workspaces.trustedWorkspaceWriteRoots(agent) : undefined,
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
-        allowModelToolUnixSockets: githubAppCredentials,
+        // Inner tool sandboxes must CONNECT to the daemon socket for either
+        // managed provider — read permission on the path alone is insufficient.
+        allowModelToolUnixSockets: managedCredentials,
         // The pod is the isolation boundary AND a different filesystem, so this daemon's env
         // must not travel with the launch.
         ...(this.k8s ? { k8s: true as const } : {})
@@ -3679,7 +3811,14 @@ export class Daemon {
       // a runtime artifact, capability probe, or sandbox policy. The CP remains
       // authoritative for deciding whether a conversation belongs to the
       // built-in preset; turn-time dispatch rechecks the replicated marker.
-      ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : [])
+      ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : []),
+      // The CP withholds gitlab-workspace specs and gitlab hook assignments until this is advertised.
+      GITLAB_COM_V1_FEATURE,
+      // §16: this daemon renders and updates the run-projection note. The CP leaves the desired
+      // generation pending rather than opening a second provider egress path without this bit.
+      CODEHOST_NOTE_PROJECTION_V1_FEATURE,
+      // The provider-routed formal-review surface: `submitCodeReview` plus the §15 GitLab adapter.
+      CODEHOST_REVIEW_V1_FEATURE
     ]
   }
 
@@ -3712,6 +3851,8 @@ export class Daemon {
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
       modelOverride: async (sessionKey) => await this.store.getModelOverride(sessionKey),
       acpSessionId: async (sessionKey) => (await this.store.getSession(sessionKey))?.acpSessionId,
+      outwardSessionId: async (sessionKey, agentId) =>
+        await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now()),
       sessionKeyForAcpId: async (agentId, acpSessionId) =>
         (await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId))?.key,
       sessionSdkQuiescent: (agentId, acpSessionId) => this.sessionSdkQuiescent(agentId, acpSessionId),
@@ -4483,7 +4624,9 @@ export class Daemon {
     if (dream) {
       await this.store.updateDream({
         ...dream,
-        executionSessionId: sessionId,
+        // Stored outwardly (§1.1), not resolved at read time: the dream outlives its session, and
+        // a record whose identity changes when the session is purged is worse than no link.
+        executionSessionId: await this.store.ensureOutwardSessionId(executionKey, agentId, this.clock.now()),
         runtime: agent.runtime,
         ...(model ? { model } : {})
       })
@@ -4702,7 +4845,7 @@ export class Daemon {
     })
 
     if (!dream.executionSessionId || event.type === 'memory.dream.started') return
-    const rec = await this.store.getSessionByAcpIdForAgent(dream.agentId, dream.executionSessionId)
+    const rec = await this.store.getSessionByOutwardId(dream.executionSessionId, dream.agentId)
     if (!rec) return
     const message: Partial<Record<DreamLifecycleEvent['type'], string>> = {
       'memory.dream.completed': 'Dream completed. The staged memory is ready for review.',
@@ -4724,7 +4867,8 @@ export class Daemon {
     }
     await this.store.setSessionState(rec.key, 'idle', this.clock.now())
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
-      sessionId: dream.executionSessionId,
+      // The outbox takes the ACP hop's id and translates; the dream row holds the outward one.
+      sessionId: rec.acpSessionId ?? dream.executionSessionId,
       agentId: dream.agentId,
       phase: event.type === 'memory.dream.failed' ? 'problem' : 'end',
       platform: 'dream',
@@ -6322,7 +6466,7 @@ export class Daemon {
     // policy above still apply. A missing session NAKs `not_found`, mirroring the
     // local replyToSession contract — SessionTarget never creates a session.
     if (msg.lineageReplyTo !== undefined) {
-      const origin = await this.store.getSessionByAcpIdForAgent(msg.toAgentId, msg.lineageReplyTo)
+      const origin = await this.store.getSessionByOutwardId(msg.lineageReplyTo, msg.toAgentId)
       if (!origin) return record(nak('not_found'))
       // Reply transport from the SESSION's own scope (mirrors replyToSession's local branch).
       const replyIntegrationId = this.integrationIdForSessionTransport(
@@ -6505,7 +6649,74 @@ export class Daemon {
     return !this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agentId)
   }
 
+  /** §14.2: resolve this turn's trusted GitLab target, then run exactly one allowlisted operation. */
+  private async runCodeHostEffect(req: CodeHostEffectReq): Promise<unknown> {
+    const broker = this.gitlabBroker
+    if (!broker) throw new Error('code-host effects are unavailable on this daemon')
+    const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
+    const target = this.codeHostEffectTarget(req.agentId, key)
+    if (!target) throw new Error('this session has no GitLab project to act on')
+    return await broker.execute({ ...target, agentId: req.agentId, sessionKey: key }, req.operation)
+  }
+
+  /** The hook-dispatched turn's trusted project first (§13.1), else the agent's GitLab workspace project. */
+  private codeHostEffectTarget(agentId: string, key: string): { projectId: string; hookId?: string } | undefined {
+    const hook = this.activeTurnCodeHost.get(key)
+    if (hook && hook.agentId === agentId) return { projectId: hook.projectId, hookId: hook.hookId }
+    const projectId = this.gitlabWorkspaceProject(agentId)
+    return projectId === undefined ? undefined : { projectId }
+  }
+
+  /** The agent's managed GitLab workspace project from the REPLICATED SPEC — never a tool argument. */
+  private gitlabWorkspaceProject(agentId: string): string | undefined {
+    const agent = this.agents.get(agentId)
+    if (!agent || this.workspaces.managedCredentialProvider(agent) !== 'gitlab') return undefined
+    return agent.workspace.mode === 'git-repo' ? agent.workspace.gitlabProjectId : undefined
+  }
+
   /** Everything the GitHub hook-dispatch and formal-review seam reaches back for. */
+  /** §15 GitLab review adapter deps: the CP lease surface plus the never-agent-visible effect PAT. */
+  private gitlabReviewDeps(): GitlabReviewAdapterDeps {
+    return {
+      cp: () => {
+        const client = this.cpClient
+        if (!client) return undefined
+        return {
+          supportsReview: () => client.supportsServerFeature?.(CODEHOST_REVIEW_V1_FEATURE) === true,
+          authorize: (payload, orgId) => client.authorizeCodeHostReview(payload, orgId),
+          operate: (payload, orgId) => client.operateCodeHostReview(payload, orgId),
+          renew: (payload, orgId) => client.renewCodeHostReviewLease(payload, orgId),
+          report: (payload, orgId) => client.reportCodeHostReviewResult(payload, orgId)
+        }
+      },
+      orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
+      daemonId: () => this.cfg.daemonId,
+      store: {
+        recordReviewIntent: (row, now) => this.store.recordReviewIntent(row, now),
+        clearReviewIntent: (intentId) => this.store.clearReviewIntent(intentId),
+        listReviewIntents: (daemonId) => this.store.listReviewIntents(daemonId)
+      },
+      // Restart-stable, so a same-attempt recovery can still verify the drafts it authored.
+      markerKey: async () =>
+        Buffer.from(
+          await this.store.getOrCreateDaemonSecret(
+            'gitlab-review-marker-key',
+            () => randomBytes(32).toString('base64'),
+            this.clock.now()
+          ),
+          'base64'
+        ),
+      token: async (turn) =>
+        (await this.gitCreds.getGitlabEffectToken(turn.agentId, turn.projectId, turn.hookId)).token,
+      invalidateToken: (turn, token) => this.gitCreds.invalidateGitlabEffect(turn.agentId, turn.projectId, token),
+      attribution: async (turn) =>
+        this.agents.get(turn.agentId)?.output.showFooter
+          ? await this.githubReviews.githubCommentAttribution(turn.agentId, turn.sessionId)
+          : undefined,
+      log: { warn: (message: string) => this.log.warn(message) }
+    }
+  }
+
   private githubReviewHost(): GithubReviewHost {
     return {
       log: () => this.log,
@@ -6518,11 +6729,14 @@ export class Daemon {
       getSession: async (key) => await this.store.getSession(key),
       displayNames: async (ids) => await this.store.getDisplayNames(ids),
       getPostToken: (agentId, repo, hookId) => this.gitCreds.getPostToken(agentId, repo, hookId),
+      getGitlabPostToken: (agentId, projectId, hookId) => this.gitCreds.getGitlabPostToken(agentId, projectId, hookId),
+      invalidateGitlabPost: (agentId, projectId, token) =>
+        this.gitCreds.invalidateGitlabPost(agentId, projectId, token),
       invalidatePost: (agentId, repo, presentedToken) => this.gitCreds.invalidatePost(agentId, repo, presentedToken),
       paused: (agentId) => this.paused(agentId),
       draining: (agentId) => this.draining || this.drainingAgents.has(agentId),
       safetyDraining: (agentId) => this.safetyDrainingAgents.has(agentId),
-      safetyDrainAllows: (agentId, key, githubLane) => this.safetyDrainAllows(agentId, key, githubLane),
+      safetyDrainAllows: (agentId, key, reviewLane) => this.safetyDrainAllows(agentId, key, reviewLane),
       persistInbox: async (entry, key, options) => await this.persistInbox(entry, key, options),
       persistHookState: (entry, posterPublishState, required) =>
         this.persistHookState(entry, posterPublishState, required),
@@ -6534,14 +6748,15 @@ export class Daemon {
       sessionHasReferenceDirectories: async (agent, request) =>
         (await this.workspaces.sessionAdditionalRoots(agent, request)).length > 0,
       warmHostFor: (agentId) => (this.readyHosts.has(agentId) ? this.hosts.get(agentId) : undefined),
-      anchorTrigger: (agentId, msg, target, anchorText, label, safetyGithubLane) =>
-        this.anchorTrigger(agentId, msg, target, anchorText, label, safetyGithubLane),
+      anchorTrigger: (agentId, msg, target, anchorText, label, safetyReviewLane) =>
+        this.anchorTrigger(agentId, msg, target, anchorText, label, safetyReviewLane),
       dispatch: (agentId, msg, integrationId, webchat, callMeta, opts, githubReply, hookContext) =>
         this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts, githubReply, hookContext),
       activeGithubTurn: (key) => this.activeGithubTurnMeta.get(key),
       activeGithubReplyBatch: (key) => this.activeGithubReplyBatchMeta.get(key),
       agentLink: (agentId) => this.agentLink(agentId),
-      sessionLink: (acpSessionId, source) => this.sessionLink(acpSessionId, source),
+      sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
+      outwardSessionId: (agentId, acpSessionId) => this.outwardSessionIdForAcp(agentId, acpSessionId),
       runtimeNames: () => this.runtimeFacts.runtimeNames(),
       hostForStoredSession: async (agentId, acpSessionId) =>
         await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
@@ -7013,12 +7228,12 @@ export class Daemon {
     return count
   }
 
-  private githubQueueCandidates(): GithubQueueCandidate[] {
-    return collectGithubQueueCandidates(this.activeGateEntries, this.serialQueue)
+  private hookQueueCandidates(): HookQueueCandidate[] {
+    return collectHookQueueCandidates(this.activeGateEntries, this.serialQueue)
   }
 
-  private githubRevisionAdmissionPlan(key: string, incoming: QueueEntry): GithubRevisionAdmissionPlan | undefined {
-    return planGithubRevisionAdmission(key, incoming, this.githubQueueCandidates())
+  private revisionAdmissionPlan(key: string, incoming: QueueEntry): RevisionAdmissionPlan | undefined {
+    return planRevisionAdmission(key, incoming, this.hookQueueCandidates())
   }
 
   /** Run one session key's queued-branch admission after every earlier arrival for that key
@@ -7070,14 +7285,14 @@ export class Daemon {
     else this.inflight.delete(key)
   }
 
-  private removeQueuedGithubRevisions(candidates: readonly GithubQueueCandidate[]): void {
-    for (const [key, next] of planQueuedGithubRevisionRemovals(candidates, this.serialQueue)) {
+  private removeQueuedHookRevisions(candidates: readonly HookQueueCandidate[]): void {
+    for (const [key, next] of planQueuedRevisionRemovals(candidates, this.serialQueue)) {
       if (next) this.serialQueue.set(key, next)
       else this.serialQueue.delete(key)
     }
   }
 
-  private async settleSupersededGithubRevisions(entries: readonly QueueEntry[], successor: QueueEntry): Promise<void> {
+  private async settleSupersededHookRevisions(entries: readonly QueueEntry[], successor: QueueEntry): Promise<void> {
     if (entries.length === 0) return
     for (const entry of entries) {
       this.terminateQueuedSink(entry)
@@ -7094,23 +7309,20 @@ export class Daemon {
       })
     }
     defaultTurnOutputMetrics.queueCoalesced(successor.msg.platform, entries.length)
-    this.log.info(`github review: superseded ${entries.length} queued or incoming revision(s)`)
+    this.log.info(`code host review: superseded ${entries.length} queued or incoming revision(s)`)
   }
 
-  private extendGithubCoordinationWait(entry: QueueEntry, waits: readonly Promise<void>[]): void {
+  private extendHookCoordinationWait(entry: QueueEntry, waits: readonly Promise<void>[]): void {
     const next = combineCoordinationWaits(entry.coordinationWait, waits)
     if (next) entry.coordinationWait = next
   }
 
-  private async applyGithubRevisionAdmissionPlan(
-    plan: GithubRevisionAdmissionPlan,
-    incoming: QueueEntry
-  ): Promise<boolean> {
+  private async applyRevisionAdmissionPlan(plan: RevisionAdmissionPlan, incoming: QueueEntry): Promise<boolean> {
     const { terminalLosers, activeLosers, preemptableActiveLosers, winnerLane, winnerNeedsWait, incomingWins } =
-      planGithubRevisionAdmissionEffects(plan, incoming)
+      planRevisionAdmissionEffects(plan, incoming)
     const preemptable = new Set(preemptableActiveLosers)
-    this.removeQueuedGithubRevisions(terminalLosers)
-    await this.settleSupersededGithubRevisions(
+    this.removeQueuedHookRevisions(terminalLosers)
+    await this.settleSupersededHookRevisions(
       terminalLosers.map((candidate) => candidate.entry),
       plan.winner.entry
     )
@@ -7123,22 +7335,47 @@ export class Daemon {
       await this.interruptTurn(candidate.entry.agentId, candidate.key, 'superseded', undefined, {
         preserveQueued: true,
         allowSameKeyAdmissions: true,
-        ...(winnerLane ? { allowGithubLane: winnerLane } : {})
+        ...(winnerLane ? { allowReviewLane: winnerLane } : {})
       })
     }
     if (this.safetyDrainingAgents.has(plan.winner.entry.agentId)) {
       waits.push(this.waitForSafetyDrain(plan.winner.entry.agentId))
     }
-    if (winnerNeedsWait) this.extendGithubCoordinationWait(plan.winner.entry, waits)
+    if (winnerNeedsWait) this.extendHookCoordinationWait(plan.winner.entry, waits)
     return incomingWins
   }
 
-  private githubReviewBatchLeader(incoming: QueueEntry): QueueEntry | undefined {
-    return selectGithubReviewBatchLeader(incoming, this.githubQueueCandidates())
+  private reviewBatchLeader(incoming: QueueEntry): QueueEntry | undefined {
+    return selectReviewBatchLeader(incoming, this.hookQueueCandidates())
   }
 
-  private async coalesceGithubReviewBatch(leader: QueueEntry, follower: QueueEntry): Promise<boolean> {
-    const plan = planGithubReviewBatchCoalesce(leader, follower, this.clock.now())
+  /** Serialize one leader's batch mutations. The durable coalesce awaits mid-flight, and the seal that
+   *  dispatches the batch is what it would interleave with: a follower must never be terminalized as
+   *  coalesced into a generation whose prompt was already built without it. */
+  private async withReviewBatchLock<T>(leader: QueueEntry, work: () => Promise<T>): Promise<T> {
+    const previous = this.reviewBatchChains.get(leader) ?? Promise.resolve()
+    let release!: () => void
+    const held = new Promise<void>((settle) => (release = settle))
+    this.reviewBatchChains.set(
+      leader,
+      previous.then(() => held)
+    )
+    await previous
+    try {
+      return await work()
+    } finally {
+      release()
+    }
+  }
+
+  private coalesceReviewBatch(leader: QueueEntry, follower: QueueEntry): Promise<boolean> {
+    // Re-planned INSIDE the lock: a leader that sealed while this delivery waited refuses it, and the
+    // follower runs as its own turn instead of vanishing into a prompt that never carried it.
+    return this.withReviewBatchLock(leader, () => this.coalesceIntoLeader(leader, follower))
+  }
+
+  private async coalesceIntoLeader(leader: QueueEntry, follower: QueueEntry): Promise<boolean> {
+    const plan = planReviewBatchCoalesce(leader, follower, this.clock.now())
     if (!plan || !leader.inboxId || !follower.inboxId) return false
     const { nextHook } = plan
     const report = this.buildHookReport(follower.hookContext!, 'success', { reason: 'coalesced_review_batch' })
@@ -7163,32 +7400,29 @@ export class Daemon {
     this.liveInboxIds.delete(follower.inboxId)
     await this.sendHookReport(report, follower.inboxId)
     defaultTurnOutputMetrics.queueCoalesced(follower.msg.platform, 1)
-    this.log.info(`github review batch: coalesced thread ${plan.threadRootCommentId} into review ${plan.reviewId}`)
+    this.log.info(`code host review batch: coalesced ${plan.itemKey} into review ${plan.reviewId}`)
     return true
   }
 
-  private async settleGithubReviewBatch(entry: QueueEntry): Promise<void> {
+  private async settleReviewBatch(entry: QueueEntry): Promise<void> {
+    // Every hook turn passes here; only one carrying a batch takes the lock.
+    if (!entry.hookContext?.githubReviewBatch) return
     while (true) {
-      const step = githubReviewBatchSettleStep(
-        entry.hookContext?.githubReviewBatch,
-        Boolean(entry.cancelledReason),
-        this.clock.now()
-      )
-      if (step.action === 'stop') {
-        if (step.clearReply) entry.githubReply = undefined
-        return
-      }
-      if (step.action === 'wait') {
-        await new Promise<void>((resolve) => this.clock.setTimeout(resolve, step.delayMs))
-        continue
-      }
-      entry.hookContext = { ...entry.hookContext!, githubReviewBatch: step.sealed }
-      if (step.promptText !== undefined) {
-        entry.msg = { ...entry.msg, text: step.promptText }
-        entry.githubReply = undefined
-      }
-      await this.persistHookPayload(entry, true)
-      return
+      // Reading the batch and sealing it are one critical section, so a coalesce mid-durable-write
+      // either lands in the generation this seals or is refused by it.
+      const step = await this.withReviewBatchLock(entry, async () => {
+        const next = reviewBatchSettleStep(entry.hookContext, Boolean(entry.cancelledReason), this.clock.now())
+        if (next.action !== 'seal') return next
+        entry.hookContext = { ...entry.hookContext!, githubReviewBatch: next.sealed }
+        if (next.promptText !== undefined) entry.msg = { ...entry.msg, text: next.promptText }
+        // Only a provider whose batch tool publishes each item withdraws the ordinary reply target.
+        if (next.clearReply) entry.githubReply = undefined
+        await this.persistHookPayload(entry, true)
+        return next
+      })
+      if (step.action === 'stop' && step.clearReply) entry.githubReply = undefined
+      if (step.action !== 'wait') return
+      await new Promise<void>((resolve) => this.clock.setTimeout(resolve, step.delayMs))
     }
   }
 
@@ -7221,6 +7455,8 @@ export class Daemon {
   private serialQueue = new Map<string, QueueEntry[]>()
   /** Per-key tail of the queued-branch admission chain — see {@link admitInArrivalOrder}. */
   private readonly dispatchAdmissionChains = new Map<string, Promise<void>>()
+  /** Per-leader tail of the review-batch mutation chain — see {@link withReviewBatchLock}. */
+  private readonly reviewBatchChains = new WeakMap<QueueEntry, Promise<void>>()
   /** Per-ACP-session tail of the update chain — see {@link enqueueAcpUpdate}. */
   private readonly acpUpdateChains = new Map<string, Promise<void>>()
   /** Current head for every owned serial gate, including the cold pre-Pending phase.
@@ -7705,11 +7941,15 @@ export class Daemon {
       ...(hook.snapshot ?? {}),
       ...(hook.event ? { event: hook.event } : {}),
       ...(hook.github ? { github: hook.github } : {}),
+      // The §16 terminal edge is keyed on this subject: without it the note never leaves its
+      // last non-terminal state, because nothing else re-dispatches the projection.
+      ...(hook.gitlab ? { gitlab: hook.gitlab } : {}),
       status,
       durationMs: Number.isFinite(start) ? Math.max(0, this.clock.now() - start) : 0,
       ...extra,
       ...(review ? { reviewAttemptId: review.attemptId, reviewResult: review.result } : {}),
-      ...(hook.publishedComment ? { publishedComment: hook.publishedComment } : {})
+      ...(hook.publishedComment ? { publishedComment: hook.publishedComment } : {}),
+      ...(hook.publishedOutput ? { publishedOutput: hook.publishedOutput } : {})
     }
   }
 
@@ -7733,12 +7973,19 @@ export class Daemon {
     owner?: HookCompletionOwner
   ): Promise<void> {
     if (owner?.hookTerminalReceipt) return
+    // Every caller here holds the runtime's session id; the CP files the run against
+    // `session_meta.id` and deep-links the console from it, which is the outward one (§1.1).
+    // Translating at this one boundary is what keeps a later caller from getting it wrong.
+    const attributed =
+      extra.sessionId === undefined
+        ? extra
+        : { ...extra, sessionId: (await this.outwardSessionIdForAcp(hook.agentId, extra.sessionId)) ?? extra.sessionId }
     // Interrupt reasons are local vocabulary, but the CP turns THIS one into maintainer-facing
     // Check text, so it crosses as the shared normalized code rather than the internal word.
     const report = this.buildHookReport(
       hook,
       status,
-      extra.reason === 'handover' ? { ...extra, reason: HOOK_REPORT_REASON_AGENT_HANDOVER } : extra
+      attributed.reason === 'handover' ? { ...attributed, reason: HOOK_REPORT_REASON_AGENT_HANDOVER } : attributed
     )
     let reportInboxId: string | undefined
     if (owner?.inboxId) {
@@ -8098,7 +8345,8 @@ export class Daemon {
       admissionWait?: Promise<boolean>
       /** Delay observed-inbound persistence until admissionWait succeeds. */
       deferObservedInbound?: boolean
-      /** Best-effort notification once the ACP session exists, before prompt. */
+      /** Best-effort notification once the session exists, before prompt. Carries its OUTWARD
+       *  id (session-concept.md §1.1) — every consumer of this reports it onward. */
       onSessionReady?: (sessionId: string) => void
     },
     githubReply?: GithubReplyTarget,
@@ -8129,7 +8377,7 @@ export class Daemon {
     return new Promise<string | null>((resolve, reject) => {
       void (async () => {
         const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
-        const githubLane = githubPullRequestLane(hookContext, githubHookCoordinates(agentId, msg, integrationId))
+        const reviewLane = reviewSubjectLane(hookContext, hookCoordinates(agentId, msg, integrationId))
         const safetyDrainByKey = this.safetyDrainAdmissionKeys.get(agentId)?.has(key) === true
         let admissionSettled = false
         const settleAdmission = async (result: {
@@ -8195,7 +8443,7 @@ export class Daemon {
         // selected old dispatches fully unwind. Live platform arrivals are intentionally
         // dropped; a DURABLE startup replay cannot be lost/dormant, so retry that same row
         // after the transient drain closes (its inbox id has not been adopted yet).
-        if (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, githubLane)) {
+        if (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, reviewLane)) {
           if (opts?.fromInboxReplay) {
             void this.waitForSafetyDrain(agentId)
               .then(async () => {
@@ -8295,8 +8543,8 @@ export class Daemon {
           resolve,
           reject
         }
-        let batchLeader = this.githubReviewBatchLeader(entry)
-        let revisionPlan = this.githubRevisionAdmissionPlan(key, entry)
+        let batchLeader = this.reviewBatchLeader(entry)
+        let revisionPlan = this.revisionAdmissionPlan(key, entry)
         // ── atomic claim-or-enqueue (single synchronous tick, no await before add) ──
         // An outstanding chain link IS a reservation: the owner may have released the gate
         // while an earlier arrival was still persisting, and a direct claim here would start
@@ -8310,8 +8558,8 @@ export class Daemon {
           await this.admitInArrivalOrder(key, async () => {
             // This link may have waited on a peer's placement, so read the queue it actually
             // admits into rather than the one this delivery arrived at.
-            batchLeader = this.githubReviewBatchLeader(entry)
-            revisionPlan = this.githubRevisionAdmissionPlan(key, entry)
+            batchLeader = this.reviewBatchLeader(entry)
+            revisionPlan = this.revisionAdmissionPlan(key, entry)
             const q = this.serialQueue.get(key) ?? []
             const supersededQueued =
               revisionPlan?.superseded.filter((candidate) => candidate.state === 'queued' && candidate.key === key)
@@ -8360,7 +8608,7 @@ export class Daemon {
             // Admission settles only once the entry is on the queue (or coalesced away): the
             // caller's accepted ACK has always meant "this delivery is placed", and awaiting a
             // Promise-returning store must not let the ACK outrun the placement.
-            if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
+            if (batchLeader && (await this.coalesceReviewBatch(batchLeader, entry))) {
               await settleAdmission({ accepted: true })
               entry.resolve(null)
               return
@@ -8389,7 +8637,7 @@ export class Daemon {
             const reclaimedGate = !this.inflight.has(key)
             if (reclaimedGate) this.inflight.add(key)
             try {
-              if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
+              if (revisionPlan && !(await this.applyRevisionAdmissionPlan(revisionPlan, entry))) {
                 settleHold('drop')
                 this.removeQueuedEntry(key, entry)
                 if (reclaimedGate) await this.releaseDispatchClaim(key)
@@ -8450,13 +8698,13 @@ export class Daemon {
           }
           // Admission settles only once the entry is placed (or coalesced away), exactly as in
           // the queued branch: the accepted ACK must not outrun the batch this delivery joins.
-          if (batchLeader && (await this.coalesceGithubReviewBatch(batchLeader, entry))) {
+          if (batchLeader && (await this.coalesceReviewBatch(batchLeader, entry))) {
             await this.releaseDispatchClaim(key)
             await settleAdmission({ accepted: true })
             entry.resolve(null)
             return
           }
-          if (revisionPlan && !(await this.applyGithubRevisionAdmissionPlan(revisionPlan, entry))) {
+          if (revisionPlan && !(await this.applyRevisionAdmissionPlan(revisionPlan, entry))) {
             await this.releaseDispatchClaim(key)
             await settleAdmission({ accepted: true })
             return
@@ -8502,10 +8750,10 @@ export class Daemon {
     }
   }
 
-  private safetyDrainAllows(agentId: string, key: string, githubLane?: string): boolean {
+  private safetyDrainAllows(agentId: string, key: string, reviewLane?: string): boolean {
     return (
       this.safetyDrainAdmissionKeys.get(agentId)?.has(key) === true ||
-      (githubLane !== undefined && this.safetyDrainGithubLanes.get(agentId)?.has(githubLane) === true)
+      (reviewLane !== undefined && this.safetyDrainReviewLanes.get(agentId)?.has(reviewLane) === true)
     )
   }
 
@@ -8533,7 +8781,7 @@ export class Daemon {
     reason: TurnInterruptReason,
     keys?: Iterable<string>,
     admissionKeys?: Iterable<string>,
-    admissionGithubLanes?: Iterable<string>
+    admissionReviewLanes?: Iterable<string>
   ): void {
     const selected =
       keys === undefined
@@ -8543,7 +8791,7 @@ export class Daemon {
             .filter((done): done is Promise<void> => done !== undefined)
     if (selected.length === 0) return
     this.intersectSafetyDrainAdmissions(this.safetyDrainAdmissionKeys, agentId, admissionKeys)
-    this.intersectSafetyDrainAdmissions(this.safetyDrainGithubLanes, agentId, admissionGithubLanes)
+    this.intersectSafetyDrainAdmissions(this.safetyDrainReviewLanes, agentId, admissionReviewLanes)
     const waits = this.safetyDrainWaits.get(agentId) ?? new Set<Promise<void>>()
     for (const done of selected) waits.add(done)
     this.safetyDrainWaits.set(agentId, waits)
@@ -8568,7 +8816,7 @@ export class Daemon {
         this.safetyDrainRuns.delete(agentId)
         this.safetyDrainingAgents.delete(agentId)
         this.safetyDrainAdmissionKeys.delete(agentId)
-        this.safetyDrainGithubLanes.delete(agentId)
+        this.safetyDrainReviewLanes.delete(agentId)
         this.log.info(`${reason}: interrupted turns fully stopped for agent "${agentId}"`)
       }
     })()
@@ -8828,7 +9076,7 @@ export class Daemon {
             const releaseDispatch = await this.admitActiveDispatch(entry.agentId, key)
             let sessionId: string | null
             try {
-              await this.settleGithubReviewBatch(entry)
+              await this.settleReviewBatch(entry)
               sessionId = await this.dispatchOne(entry, key)
             } finally {
               releaseDispatch()
@@ -8991,7 +9239,14 @@ export class Daemon {
     const pendingWebchat = webchat
       ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
       : undefined
-    const p = this.buildPending(run, { conv, rec, sessionId, webchat: pendingWebchat })
+    // Resolved once for the turn: the console addresses this session by its outward id (§1.1),
+    // and most of the turn's link/status producers are synchronous.
+    const outwardSessionId = await this.store.ensureOutwardSessionId(
+      run.plan.sessionKey,
+      run.entry.agentId,
+      this.clock.now()
+    )
+    const p = this.buildPending(run, { conv, rec, sessionId, outwardSessionId, webchat: pendingWebchat })
     const activeTurn = await this.installActiveTurnContext(run, sessionId)
     const settlement: TurnSettlement = { finalPhase: 'end', propagatingTurnError: false }
     let turnModel: string | undefined
@@ -9031,7 +9286,7 @@ export class Daemon {
     // Turn finished cleanly. Draining the next queued message for this sessionKey is
     // runLoop's job (it holds ownership across turns) — NOT here. On a throw, the catch
     // above rethrows and runLoop applies fail-stop (§6.9 #378).
-    await this.completeHookOutcome(entry, sessionId)
+    await this.completeHookOutcome(entry, sessionId, p)
     return sessionId
   }
 
@@ -9308,7 +9563,9 @@ export class Daemon {
       await this.observedChannelsSync.refreshObservedChannels()
     }
     try {
-      onSessionReady?.(sessionId)
+      // The one consumer is the CP's cron report, a console deep link — so the callback is
+      // handed the session's outward id (§1.1), not the runtime's.
+      onSessionReady?.((await this.outwardSessionIdForAcp(agentId, sessionId)) ?? sessionId)
     } catch (err) {
       this.log.warn(`dispatch: session-ready notification failed (${formatErr(err)})`)
     }
@@ -9317,11 +9574,17 @@ export class Daemon {
   /** Build this turn's live record from its plan and register it as the session's Pending turn. */
   private buildPending(
     run: TurnRun,
-    turn: { conv: DaemonConverger; rec: TranscriptRecorder; sessionId: string; webchat: Pending['webchat'] }
+    turn: {
+      conv: DaemonConverger
+      rec: TranscriptRecorder
+      sessionId: string
+      outwardSessionId: string
+      webchat: Pending['webchat']
+    }
   ): Pending {
     const { entry, plan } = run
     const { agentId, callMeta, githubReply } = entry
-    const { conv, rec, sessionId } = turn
+    const { conv, rec, sessionId, outwardSessionId } = turn
     let resolveDone!: () => void
     const done = new Promise<void>((r) => (resolveDone = r))
     if (!entry.selectedHost) {
@@ -9353,6 +9616,7 @@ export class Daemon {
       builtinSystemToolCallIds: new Set(),
       hiddenSessionTitleToolCallIds: new Set(),
       acpSessionId: sessionId,
+      outwardSessionId,
       ...(entry.selectedHost ? { selectedHost: entry.selectedHost } : {}),
       turnState: plan.turnSurface.initialTurnState(plan.turnCtx),
       conn: run.replyConn,
@@ -9376,7 +9640,11 @@ export class Daemon {
   private async installActiveTurnContext(
     run: TurnRun,
     sessionId: string
-  ): Promise<{ github?: ActiveGithubTurnMeta; githubReplyBatch?: ActiveGithubReplyBatchMeta }> {
+  ): Promise<{
+    github?: ActiveGithubTurnMeta
+    githubReplyBatch?: ActiveGithubReplyBatchMeta
+    gitlabReview?: GitlabReviewTurn
+  }> {
     const { entry, key, plan } = run
     const { agentId, callMeta } = entry
     // session/new|load may emit title/usage metadata before the local row exists.
@@ -9399,17 +9667,84 @@ export class Daemon {
       headless: entry.msg.headless === true,
       synthetic: isSyntheticA2aChannel(plan.channel)
     })
+    // §14.2: a hook-dispatched turn pins the broker to the delivery's own signature-verified project.
+    const hookContext = entry.hookContext
+    if (hookContext?.gitlab) {
+      const target = { agentId, projectId: hookContext.gitlab.projectId, hookId: hookContext.hookId }
+      this.activeTurnCodeHost.set(key, target)
+    }
     const activeGithub = await this.githubReviews.prepareGithubTurn(entry, sessionId).catch((err) => {
       this.log.warn(`github review: turn setup failed (${formatErr(err)})`)
       return undefined
     })
     if (activeGithub) this.activeGithubTurnMeta.set(key, activeGithub)
+    // §17.2: the provider-neutral start barrier attaches the head this turn runs on to the accepted
+    // run before the prompt, which is what a review authorization fences and §16 opens `running` on.
+    const barrier = await this.startGitlabHookTurn(hookContext, sessionId)
+    // A refused barrier keeps the ordinary turn but withholds the formal-review surface, exactly as a
+    // failed GitHub barrier does: a run whose started head was not recorded must never reach a lease.
+    const gitlabReview =
+      barrier === 'failed'
+        ? undefined
+        : this.gitlabReviews.openTurn(key, hookContext, sessionId, {
+            ...(this.cfg.daemonId ? { daemonId: this.cfg.daemonId } : {}),
+            persist: (required) => this.persistHookState(entry, undefined, required)
+          })
+    // A replayed delivery may still owe the control plane frames a previous incarnation
+    // recorded; the ones needing no provider evidence are handed back before the turn runs.
+    if (gitlabReview) {
+      await this.gitlabReviews
+        .recoverTurn(gitlabReview)
+        .catch((err) => this.log.warn(`gitlab review: turn recovery deferred (${formatErr(err)})`))
+    }
     const activeGithubReplyBatch = plan.githubReplyBatchActive ? { entry, sessionId, called: false } : undefined
     if (activeGithubReplyBatch) this.activeGithubReplyBatchMeta.set(key, activeGithubReplyBatch)
     return {
       ...(activeGithub ? { github: activeGithub } : {}),
+      ...(gitlabReview ? { gitlabReview } : {}),
       ...(activeGithubReplyBatch ? { githubReplyBatch: activeGithubReplyBatch } : {})
     }
+  }
+
+  /** Cross the gitlab `hook/start` barrier (§17.2): `started` durably recorded the head, `legacy` is a
+   *  control plane that does not serve the barrier, `failed` is an advertised barrier that refused. */
+  private async startGitlabHookTurn(
+    hook: HookDispatchContext | undefined,
+    sessionId: string
+  ): Promise<'started' | 'legacy' | 'failed'> {
+    const gitlab = hook?.gitlab
+    const snapshot = hook?.snapshot
+    if (!hook || !gitlab || !snapshot) return 'legacy'
+    const client = this.cpClient
+    // An older CP cannot route the gitlab member of the one-of, so the send waits on its bit.
+    if (!client || client.supportsServerFeature?.(CODEHOST_NOTE_PROJECTION_V1_FEATURE) !== true) return 'legacy'
+    // A stale dispatch target opens no review turn anyway; the barrier is not this daemon's to cross.
+    if (this.cfg.daemonId && snapshot.dispatchDaemonId !== this.cfg.daemonId) return 'legacy'
+    const payload = {
+      hookId: hook.hookId,
+      agentId: hook.agentId,
+      deliveryKey: hook.deliveryKey,
+      sessionId,
+      ...(hook.event ? { event: hook.event } : {}),
+      gitlab,
+      ...snapshot
+    }
+    const orgId = this.cpAgents?.orgForAgent(hook.agentId) ?? this.cpCollab.orgForAgent(hook.agentId)
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await client.startHook(payload, orgId)
+        return 'started'
+      } catch (err) {
+        if (attempt === 2) {
+          this.log.warn(`gitlab review: hook/start rejected (${formatErr(err)})`)
+          return 'failed'
+        }
+        // The daemon ACK and the relay's accepted report travel on different sockets;
+        // let the accepted row land before repeating this idempotent barrier.
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)))
+      }
+    }
+    return 'failed'
   }
 
   /** Resolve the exact host this turn runs on and re-apply the session's sticky runtime controls
@@ -10003,7 +10338,7 @@ export class Daemon {
   ): Promise<void> {
     if (p.webchat && !p.webchat.continuation) return
     const { plan } = run
-    const link = plan.showFooter ? this.sessionLink(sessionId) : undefined
+    const link = plan.showFooter ? this.sessionLink(p.outwardSessionId) : undefined
     const finalAttributionInfo = plan.showFooter ? await currentAttributionInfo() : undefined
     // A runtime may only publish its final session-scoped model during prompt.
     // Refresh before enqueueing the final body so any not-yet-sent section is born
@@ -10268,7 +10603,11 @@ export class Daemon {
     sessionId: string,
     settlement: TurnSettlement,
     releaseReplyConn: () => void,
-    activeTurn: { github?: ActiveGithubTurnMeta; githubReplyBatch?: ActiveGithubReplyBatchMeta }
+    activeTurn: {
+      github?: ActiveGithubTurnMeta
+      githubReplyBatch?: ActiveGithubReplyBatchMeta
+      gitlabReview?: GitlabReviewTurn
+    }
   ): Promise<void> {
     const { entry, key, plan } = run
     const { agentId, msg, callMeta, githubReply, hookContext } = entry
@@ -10301,15 +10640,18 @@ export class Daemon {
     if (callMeta) this.activeTurnCallMeta.delete(key)
     this.activeTurnShare.delete(key)
     this.shareBudgetByTurn.delete(key)
+    this.activeTurnCodeHost.delete(key)
     const activeGithub = activeTurn.github
     const activeGithubReplyBatch = activeTurn.githubReplyBatch
     if (activeGithub && this.activeGithubTurnMeta.get(key) === activeGithub) this.activeGithubTurnMeta.delete(key)
+    if (activeTurn.gitlabReview) this.gitlabReviews.closeTurn(key, activeTurn.gitlabReview)
     if (activeGithubReplyBatch && this.activeGithubReplyBatchMeta.get(key) === activeGithubReplyBatch) {
       this.activeGithubReplyBatchMeta.delete(key)
     }
-    // Anything other than no attempt or a correlated definite no-effect
-    // result is fail-closed: GitHub may already own the public response.
-    const formalReviewOwnsResponse = githubReply !== undefined && !githubFallbackAllowed(hookContext)
+    // Anything other than no attempt or a correlated definite no-effect result is
+    // fail-closed: the code host may already own the public response. Both providers'
+    // durable attempt records are consulted, so a GitLab review blocks the note too.
+    const formalReviewOwnsResponse = githubReply !== undefined && !hookOutputFallbackAllowed(hookContext)
     if (formalReviewOwnsResponse) {
       try {
         await this.persistHookState(entry, 'settled', true)
@@ -10328,7 +10670,7 @@ export class Daemon {
         {
           appendTranscript: async (row) => await this.store.appendTranscript(row),
           monotonicTs: () => monotonicTs(),
-          beginPublish: async () => {
+          beginPublish: async (hasFinal) => {
             try {
               // A replay of `in_flight` suppresses another comment. If this write
               // cannot be made durable, fail closed and do not perform the POST.
@@ -10336,11 +10678,24 @@ export class Daemon {
               return true
             } catch (err) {
               this.log.warn(`github poster: durability barrier failed; final publish skipped (${formatErr(err)})`)
+              // A body was owed and the poster is never reached — a lost publication, not a silent skip.
+              if (hasFinal && this.markNotePublishFailure(entry, 'publish_barrier_failed')) {
+                // The barrier write just failed, so this one may too; the live completion still reads memory.
+                await this.persistHookState(entry)
+              }
               return false
             }
           },
-          endPublish: async (publishedComment) => {
-            if (publishedComment && hookContext) hookContext.publishedComment = publishedComment
+          endPublish: async (published) => {
+            if (published && hookContext) {
+              if ('provider' in published) hookContext.publishedOutput = published
+              else hookContext.publishedComment = published
+            }
+            // Stamped BEFORE the settled write so one durable record carries both — a crash
+            // between them cannot replay into a successful report with no note. A barrier refusal
+            // leaves the row retryable, so a note that DID land must erase that marker here.
+            if (published) this.clearNotePublishFailure(entry)
+            else this.markNotePublishFailure(entry, p.github?.poster.failure)
             await this.persistHookState(entry, 'settled')
           },
           warn: (message) => this.log.warn(message)
@@ -10388,24 +10743,39 @@ export class Daemon {
     }
   }
 
+  /** Stamp this turn's normalized note outcome on the durable hook context (14.1) so settlement
+   *  carries it; gitlab reply targets only. Returns whether anything was recorded. */
+  private markNotePublishFailure(entry: QueueEntry, code: NotePublishFailure | undefined): boolean {
+    if (!code || !entry.hookContext || entry.githubReply?.provider !== 'gitlab') return false
+    entry.hookContext.notePublishFailure = code
+    return true
+  }
+
+  /** Erase a marker a retryable earlier attempt left behind — the note this turn published exists. */
+  private clearNotePublishFailure(entry: QueueEntry): void {
+    if (entry.hookContext) delete entry.hookContext.notePublishFailure
+  }
+
   /** Report the terminal hook outcome of a cleanly finished turn, failing it when a sealed
-   *  GitHub review batch did not publish every reply. */
-  private async completeHookOutcome(entry: QueueEntry, sessionId: string): Promise<void> {
+   *  GitHub review batch did not publish every reply, or when the promised note never landed. */
+  private async completeHookOutcome(entry: QueueEntry, sessionId: string, p: Pending): Promise<void> {
     const hookContext = entry.hookContext
     if (!hookContext) return
-    const batch = hookContext.githubReviewBatch
-    const batchFailure =
-      batch && batch.items.length > 1
-        ? batch.items.some((item) => item.publishState === 'in_flight')
-          ? 'review_batch_publish_ambiguous'
-          : batch.items.some((item) => item.publishState !== 'settled')
-            ? 'review_batch_replies_missing'
-            : undefined
-        : undefined
+    // The PERSISTED outcome is authoritative — it is the only one a replayed row still has. A proven
+    // note identity outranks any marker: the publication happened, whatever an earlier attempt recorded.
+    const notePublishFailure = hookContext.publishedOutput
+      ? undefined
+      : (hookContext.notePublishFailure ??
+        (entry.githubReply?.provider === 'gitlab' ? p.github?.poster.failure : undefined))
+    const failure = hookOutcomeFailure(
+      hookContext.githubReviewBatch,
+      batchPublishesItems(hookContext),
+      notePublishFailure
+    )
     await this.emitHookCompletion(
       hookContext,
-      batchFailure ? 'failed' : 'success',
-      { sessionId, ...(batchFailure ? { reason: batchFailure } : {}) },
+      failure ? 'failed' : 'success',
+      { sessionId, ...(failure ? { reason: failure } : {}) },
       entry
     )
   }
@@ -10424,7 +10794,7 @@ export class Daemon {
       botUrl: this.agentLink(entry.agentId),
       runtime: this.runtimeFacts.runtimeNames()[agent.runtime] ?? agent.runtime,
       model: (await this.buildStatusInfo(p)).model ?? turnModel ?? 'default',
-      sessionUrl: this.sessionLink(sessionId, this.sessionLinkSource(plan.platform, plan.integrationId)),
+      sessionUrl: this.sessionLink(p.outwardSessionId, this.sessionLinkSource(plan.platform, plan.integrationId)),
       ...(plan.hopLimitNotice ? { notice: plan.hopLimitNotice } : {})
     }
   }
@@ -10447,7 +10817,7 @@ export class Daemon {
       dropQueued?: boolean
       preserveQueued?: boolean
       allowSameKeyAdmissions?: boolean
-      allowGithubLane?: string
+      allowReviewLane?: string
       /** Duty handoff: stop running the work here, but leave its durable rows for the successor. */
       handoffInbox?: boolean
     } = {}
@@ -10459,7 +10829,7 @@ export class Daemon {
       reason,
       [key],
       opts.allowSameKeyAdmissions ? [key] : undefined,
-      opts.allowGithubLane ? [opts.allowGithubLane] : undefined
+      opts.allowReviewLane ? [opts.allowReviewLane] : undefined
     )
     // Latch the current head even during the cold pre-Pending window. A quick reset
     // must not let pre-interrupt work resume once sessions.handle() returns.
@@ -10820,7 +11190,7 @@ export class Daemon {
         recordReplySegment: (turn, text) => this.recordReplySegment(turn as Pending, text),
         appendTranscript: async (row) => await this.store.appendTranscript(row),
         sessionUrl: (turn) =>
-          this.sessionLink(turn.acpSessionId, this.sessionLinkSource(turn.plan.platform, turn.plan.integrationId))
+          this.sessionLink(turn.outwardSessionId, this.sessionLinkSource(turn.plan.platform, turn.plan.integrationId))
       },
       p,
       turnState<FeishuTurnState>(p),
@@ -10848,10 +11218,48 @@ export class Daemon {
    *  (`DEFAULT_WEB_APP_URL`). The console is org-scoped, so the org slug is inserted when
    *  known; without it the link falls back to `<base>/sessions/<id>`. Provider-rendered
    *  links carry a presentation-only source hint for the generic 404 profile-linking action. */
-  private sessionLink(acpSessionId: string, source?: string): string {
+  /** The console deep link to a session. Takes its OUTWARD id (session-concept.md §1.1) — the
+   *  console resolves what the CP stored, and the CP stores this one. */
+  private sessionLink(sessionId: string, source?: string): string {
     const orgSeg = this.cpOrgSlug ? `/${encodeURIComponent(this.cpOrgSlug)}` : ''
-    const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(acpSessionId)}`
+    const link = `${this.webAppBase()}${orgSeg}/sessions/${encodeURIComponent(sessionId)}`
     return source ? `${link}?source=${source}` : link
+  }
+
+  /** The OUTWARD id of the session an ACP id names (session-concept.md §1.1) — for the reporting
+   *  boundaries that hold only the runtime's. Undefined when this daemon has no such session.
+   *
+   *  The in-flight bindings answer first, and they are why an early report cannot fall back to the
+   *  hop's id: `newSession()` returns a live session that can stream updates before the row
+   *  carrying the mapping is written, and one of those updates (an `available_commands_update`)
+   *  is persisted durably. */
+  private async outwardSessionIdForAcp(agentId: string, acpSessionId: string): Promise<string | undefined> {
+    // `store` is absent only in bare test harnesses constructed without start() — the same guard
+    // the advertisement's own persist makes one line later.
+    const slot = await this.store?.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    const turnKey = pendingTurnKey(agentId, acpSessionId)
+    // Once the row can answer, it is the authority and the binding has done its job.
+    if (slot) {
+      this.openingOutwardSessionIds.delete(turnKey)
+      return await this.store.ensureOutwardSessionId(slot.key, agentId, this.clock.now())
+    }
+    return this.openingOutwardSessionIds.get(turnKey)
+  }
+
+  /** Slots whose runtime session exists but whose row does not yet, by {@link pendingTurnKey}.
+   *  Dropped once the row can answer for itself; bounded so an aborted open cannot accumulate. */
+  private readonly openingOutwardSessionIds = new Map<string, string>()
+
+  /** Mint the slot's outward id BEFORE the runtime is asked for a session, and hand back the
+   *  binder its raw response calls. The binder is synchronous by contract: it runs in the instant
+   *  between the runtime answering and its session becoming reachable, and an update that lands
+   *  while it awaited anything would be dropped for want of an owner. */
+  private async prepareOutwardBinding(agentId: string, key: string): Promise<(acpSessionId: string) => void> {
+    const outward = await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
+    return (acpSessionId) => {
+      if (this.openingOutwardSessionIds.size >= 2000) this.openingOutwardSessionIds.clear()
+      this.openingOutwardSessionIds.set(pendingTurnKey(agentId, acpSessionId), outward)
+    }
   }
 
   /** The console deep link to an agent: `<base>/<orgSlug>/agents/<agentId>`. Same
@@ -10910,6 +11318,9 @@ export class Daemon {
   ): Promise<StatusBarInfo> {
     const agent = this.agents.get(agentId)
     const usage = await this.store.getUsage(sessionKey)
+    const outwardSessionId = acpSessionId
+      ? await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now())
+      : undefined
     // `?.()` guards a host stub without the method (test fakes); real AcpHosts always have it.
     const host = acpSessionId
       ? await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
@@ -10989,7 +11400,8 @@ export class Daemon {
           }
         : {}),
       ...(allowRuntimeChangesInChat && fast ? { fastModeAvailable: true } : {}),
-      ...(acpSessionId ? { sessionId: acpSessionId } : {})
+      // The console deep-links from this, so it is the session's outward id (§1.1), not the hop's.
+      ...(outwardSessionId ? { sessionId: outwardSessionId } : {})
     }
   }
 
@@ -11017,7 +11429,8 @@ export class Daemon {
       ...(iconUrl ? { iconUrl } : {}),
       ...(sessionTitle ? { sessionTitle } : {})
     }
-    const link = rec.acpSessionId ? this.sessionLink(rec.acpSessionId, 'slack') : undefined
+    const outward = rec.sessionId ?? rec.acpSessionId
+    const link = outward ? this.sessionLink(outward, 'slack') : undefined
     const pending = [...this.pending.values()].find((turn) => turn.plan.sessionKey === sessionKey)
     const cancellable = pending?.chrome.statusCancellable ?? this.inflight.has(sessionKey)
     return { info, identity, ...(link ? { link } : {}), cancellable }
@@ -11081,7 +11494,7 @@ export class Daemon {
       // runtimes only advertise the model after the first prompt). It fills in via edits
       // as usage_update / turn-end land.
       p.chrome.lastStatusBar = key
-      const link = this.sessionLink(p.acpSessionId, 'slack')
+      const link = this.sessionLink(p.outwardSessionId, 'slack')
       const sessionTarget = this.httpSlackSessionTarget(p)
       const shared =
         sessionTarget && p.plan.integrationId
@@ -11217,6 +11630,9 @@ export class Daemon {
    *  reservation of agent-authored-attachments.md §5. */
   private shareBudgetByTurn = new Map<string, number>()
 
+  /** The hook-dispatched turn's trusted GitLab project by sessionKey — the §14.2 broker target, never model input. */
+  private activeTurnCodeHost = new Map<string, { agentId: string; projectId: string; hookId: string }>()
+
   /**
    * Post a chronological boundary message SERIALIZED on the turn's apply chain, returning
    * its id (undefined on a failed post), then mark live chrome to continue below it. A direct
@@ -11302,9 +11718,12 @@ export class Daemon {
     const usage = await this.store.getUsage(key)
     if (Object.keys(usage).length === 0) return
     const observedModel = await this.store.getObservedModel(key)
+    // The wire carries the outward id (§1.1) — the same one the gateway's metered rows carry, so
+    // both sources of a session's spend land on one row instead of two.
+    const outwardSessionId = await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
     try {
       this.cpClient?.emitUsageReport({
-        sessionId,
+        sessionId: outwardSessionId,
         agentId,
         platform,
         channel,
@@ -11510,7 +11929,14 @@ export class Daemon {
       const host = this.hosts.get(agentId)
       const owned = host?.hasSession(sessionId) || host?.isLoadingSession(sessionId)
       if (owned && !this.internalPassSessions.has(extractionKey)) {
-        const entry = this.runtimeCommands.record(agentId, sessionId, update, this.clock.now())
+        // Recorded under the session's OUTWARD id (§1.1): the row survives the session, so a name
+        // resolved later would change once retention drops the mapping.
+        const entry = this.runtimeCommands.record(
+          agentId,
+          (await this.outwardSessionIdForAcp(agentId, sessionId)) ?? sessionId,
+          update,
+          this.clock.now()
+        )
         // Persisted so a restart/upgrade serves the last-known list instead of "nothing yet".
         // `store` is absent only in bare test harnesses constructed without start().
         if (entry && this.store) {
@@ -11692,9 +12118,6 @@ export class Daemon {
   private async ensureHostAsync(agentId: string, opts: { allowAgentDrain?: boolean } = {}): Promise<AcpHost> {
     const assertStartAllowed = (): void => {
       if (this.draining) throw new Error(`host start blocked while daemon is draining (${agentId})`)
-      if (this.workspaceDispatchFences.has(agentId)) {
-        throw new Error(`host start blocked while a workspace mutation is in progress (${agentId})`)
-      }
       // Already-admitted work in another logical session may keep using the warm
       // host while a conversation-scoped interrupt drains. It may not allocate a
       // replacement after that host/start generation has been evicted.
@@ -11705,10 +12128,21 @@ export class Daemon {
         throw new Error(`host start blocked while agent is draining (${agentId})`)
       }
     }
+    // A workspace mutation is a transient exclusion, not a refusal: join the fence and re-read the
+    // hard gates. The spawn queues behind the same per-agent tail one call deeper anyway, so waiting
+    // costs the same as failing did — and a cleanup for an unrelated session's worktree no longer
+    // kills an already-admitted cold turn.
+    const admitStart = async (): Promise<void> => {
+      assertStartAllowed()
+      while (this.workspaceDispatchFences.has(agentId)) {
+        await this.waitForWorkspaceDispatchFence(agentId)
+        assertStartAllowed()
+      }
+    }
     // The ordinary dispatch gates are the primary admission boundary; repeat them at
     // the lifecycle resource boundary so an already-admitted cold turn cannot spawn a
     // replacement child after reconcile/stop has begun.
-    assertStartAllowed()
+    await admitStart()
     // If this agent's previous host is mid-teardown, wait it out before (re)spawning
     // — otherwise we'd boot a second child while the first is still SIGTERM-ing.
     const stopping = this.hostStopping.get(agentId)
@@ -11716,7 +12150,7 @@ export class Daemon {
       await stopping
       // A reconcile gate may have been installed while this call waited. Re-check at
       // the exact promise boundary before allocating a new start generation.
-      assertStartAllowed()
+      await admitStart()
     }
     let p = this.hostStarts.get(agentId)
     if (!p) {
@@ -12380,19 +12814,22 @@ export class Daemon {
     // otherwise the two classifications would fight and re-emit on every message.
     const observed = isDm ? ('im' as const) : msg.isGroupDm ? ('mpim' as const) : ('channel' as const)
     const kind = observed === 'channel' && current?.kind === 'mpim' ? ('mpim' as const) : observed
+    // Who the row is with (§14.8), reported for a 1:1 DM only — the CP seeds a gated
+    // agent's DM to its ordinary default when this member is one of the agent's own.
+    const dmUserId = kind === 'im' ? { dmUserId: msg.sender.id } : undefined
     const known = (await this.store.getDisplayNames([channel])).get(channel)
     // Which Discord server the channel belongs to — see spaceFor. Direct rows have none.
     const found = kind === 'channel' ? await this.observedChannelsSync.spaceFor(msg.platform, channel) : undefined
     const space = found ? { spaceId: found.id, ...(found.name ? { space: found.name } : {}) } : undefined
     // Compare against what a write would actually change — a partially resolved space
     // (id known, name not yet) must not re-emit the snapshot on every message.
-    const merged = current ? { ...current, ...(known ? { name: known } : {}), ...space, kind } : undefined
+    const merged = current ? { ...current, ...(known ? { name: known } : {}), ...space, ...dmUserId, kind } : undefined
     if (merged && JSON.stringify(merged) === JSON.stringify(current)) return
     // A previously-observed DM (Telegram/Discord session snapshots are kind-less)
     // is upgraded to 'im' rather than skipped after an org→restricted flip.
     const next = merged
       ? existing.map((c) => (c.id === channel ? merged : c))
-      : [...existing, { id: channel, ...(known ? { name: known } : {}), ...space, kind }]
+      : [...existing, { id: channel, ...(known ? { name: known } : {}), ...space, ...dmUserId, kind }]
     this.channelSnapshots.set(integrationId, {
       channels: next,
       authoritative: cached?.authoritative ?? false
@@ -12790,9 +13227,13 @@ export class Daemon {
    *  ones fencing the host; then the retained settled ones (newest end first). Only an unknown
    *  agent is an error — no lease answers `tracked:false`, which is a different statement from
    *  "no background tasks" and the console says so. */
-  private listBackgroundTasks(req: TaskListReq): TaskList {
+  private async listBackgroundTasks(req: TaskListReq): Promise<TaskList> {
     if (!this.agents.has(req.agentId)) throw new TaskViolationError(`unknown agent "${req.agentId}"`, 'unknown-agent')
-    const lease = this.sdkLease.get(sdkLeaseKey(req.agentId, req.sessionId))
+    // The console names the session outwardly (§1.1); the lease it wants is keyed by the runtime's
+    // id, so this read is where the two meet. An unresolvable id is passed through, which is what
+    // a pre-v12 session was reported under.
+    const slot = await this.store.getSessionByOutwardId(req.sessionId, req.agentId)
+    const lease = this.sdkLease.get(sdkLeaseKey(req.agentId, slot?.acpSessionId ?? req.sessionId))
     const iso = (ms: number) => new Date(ms).toISOString()
     // Model-authored, so bounded here rather than trusted; the row survives, the tail does not.
     const described = (description: string | undefined) =>
@@ -14504,6 +14945,8 @@ export class Daemon {
       webchatMcpRevocations: () => this.webchatMcpRevocations,
       drainSessionPurges: () => this.drainSessionPurges(),
       effectiveAgents: () => this.effectiveAgents(),
+      noteProjector: () => this.noteProjector,
+      gitlabReviews: () => this.gitlabReviews,
       cpAgents: () => this.cpAgents,
       cpIntegrations: () => this.cpIntegrations,
       cpCrons: () => this.cpCrons,
@@ -14571,7 +15014,7 @@ export class Daemon {
     target: { channel?: string; integrationId?: string } | undefined,
     anchorText: string,
     label: string,
-    safetyGithubLane?: string
+    safetyReviewLane?: string
   ): Promise<NormalizedMessage | null> {
     const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
     // Gate BEFORE the anchor side effect. Cron scheduling remains registered while an
@@ -14581,7 +15024,7 @@ export class Daemon {
       this.draining ||
       this.drainingAgents.has(agentId) ||
       this.paused(agentId) ||
-      (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, safetyGithubLane))
+      (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, safetyReviewLane))
     ) {
       this.log.info(`${label}: skipped for agent "${agentId}" (paused or draining)`)
       return null
@@ -14764,6 +15207,8 @@ export class Daemon {
     report()
     let readySessionId: string | undefined
     try {
+      // A cron run is a console deep link on the CP side, so every id it reports is the outward
+      // one (§1.1). The ready callback already delivers that; `fireTrigger`'s return is the ACP id.
       const sessionId = await this.fireTrigger(
         agentId,
         msg,
@@ -14781,7 +15226,7 @@ export class Daemon {
         report({
           status: 'success',
           durationMs: Math.max(0, this.clock.now() - firedAt),
-          sessionId
+          sessionId: (await this.outwardSessionIdForAcp(agentId, sessionId)) ?? sessionId
         })
     } catch (err) {
       report({
@@ -15514,6 +15959,9 @@ export class Daemon {
     this.gitCredServer?.stop()
     // Local loops end with the process; dropping them here just makes the timers stop promptly.
     this.autoMergeWatcher?.stop()
+    // The projection resweep runs on its own clock, so it must be disarmed before the store closes.
+    this.noteProjector?.stop()
+    this.gitlabReviews?.stop()
     if (this.dataPlane) await this.dataPlane.close().catch((e) => errors.push(e))
     else await this.store?.close()
     if (errors.length) throw new AggregateError(errors, 'stop: partial failure')

@@ -15,13 +15,19 @@
 import {
   buildRelayCpFrame,
   decodeRelayCpFrame,
+  GITLAB_COM_V1_FEATURE,
+  GITLAB_INSTANCE_V1_FEATURE,
+  GITLAB_RERUN_V1_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
+  RELAY_CP_SCHEMAS,
   type RelayCpFrame,
+  type RelayCpFrameType,
   type RcAuthOk,
   type RcDeploymentConfig,
   type RcRegistered,
   type RcVerify,
   type RcVerifyResult,
+  type RcCodeHostMembershipAuthz,
   type RcGithubCommentAuthz,
   type RcGithubRerequest,
   type RcGithubRerequestResult,
@@ -33,6 +39,8 @@ import {
   type RcParticipantAssign,
   type RcHookAssign,
   type RcHookRemove,
+  type RcHookRerun,
+  type RcHookRerunResult,
   type RcRunReport,
   type RcGithubInstallation,
   type RcSetChannelAgent,
@@ -60,6 +68,7 @@ import {
   type TimerHandle,
   type Transport
 } from '@agentconnect.md/connection'
+import type { z } from 'zod'
 import type { Logger } from './log.js'
 import type { RelayAuthCredential } from './config.js'
 
@@ -116,6 +125,10 @@ export interface RelayCpClientDeps {
   onHookAssign?: (rule: RcHookAssign) => void
   /** Called on a CP `rc/hook-remove` EVT — drop one hook rule. */
   onHookRemove?: (hookId: string) => void
+  /** Called on a CP `rc/hook-rerun` REQ — re-dispatch one gitlab hook turn the
+   *  Console asked for (gitlab-com-integration.md §16.1). The returned verdict IS
+   *  the correlated reply: only `admitted` claims a turn was queued. */
+  onHookRerun?: (rerun: RcHookRerun) => RcHookRerunResult
   /** Called on a CP `rc/collab-routes` EVT — FULL-REPLACE the bot-agnostic
    *  collaboration routing snapshot (agent-collaboration §2.3/§6.2). */
   onCollabRoutes?: (snap: RcCollabRoutes) => void
@@ -272,6 +285,19 @@ export class RelayCpClient {
    * request is never retransmitted on the same connection (GitHub deliveries are
    * already deduplicated by delivery id), only re-issued once after a reconnect.
    */
+  /** §12.2 live effective-membership gate — the provider-neutral successor to
+   * the GitHub comment authz REQ. Fail-closed at the caller on any error. */
+  async authorizeCodeHostMembership(request: RcCodeHostMembershipAuthz): Promise<boolean> {
+    const rep = await this.authorizationRequest(
+      () => buildRelayCpFrame('rc/codehost-membership-authz', request),
+      'rc/codehost-membership-authz'
+    )
+    if (rep.type !== 'rc/codehost-membership-authz/ok') {
+      throw new WireError('INTERNAL', `expected rc/codehost-membership-authz/ok, got ${rep.type}`, false)
+    }
+    return rep.payload.allowed
+  }
+
   async authorizeGithubComment(request: RcGithubCommentAuthz): Promise<boolean> {
     const rep = await this.authorizationRequest(
       () => buildRelayCpFrame('rc/github-comment-authz', request),
@@ -506,7 +532,18 @@ export class RelayCpClient {
         daemonUrl: this.deps.daemonUrl,
         // This relay preserves RdMsgWebchat.targetSessionId end to end; the CP
         // gates session-targeted mints on every live relay advertising it.
-        features: [WEBCHAT_SESSION_CONTINUATION_FEATURE]
+        // gitlab-com-v1: this relay verifies and routes GitLab project
+        // webhooks, so the CP may send it gitlab-kind compiled rules (§17.3).
+        // gitlab-rerun-v1: this relay decodes rc/hook-rerun and answers its
+        // admission REP — strictly newer than gitlab-com-v1 (§17.3).
+        // gitlab-instance-v1: this relay carries the compiled rule's host through onto the
+        // trusted metadata it forwards, so a self-managed rule is dispatchable here (§24.4).
+        features: [
+          WEBCHAT_SESSION_CONTINUATION_FEATURE,
+          GITLAB_COM_V1_FEATURE,
+          GITLAB_RERUN_V1_FEATURE,
+          GITLAB_INSTANCE_V1_FEATURE
+        ]
       })
     )
     this.relayId = (registered.payload as RcRegistered).relayId
@@ -582,6 +619,16 @@ export class RelayCpClient {
         this.deps.onHookRemove?.((frame.payload as RcHookRemove).hookId)
         return
       }
+      case 'rc/hook-rerun': {
+        // The CP awaits this REP before it tells the console anything, so an
+        // unwired relay must answer an error rather than a silent non-admission.
+        if (!this.deps.onHookRerun) {
+          this.sendError(frame.id, 'PROTOCOL_STATE', 'rc/hook-rerun is not served by this relay', false)
+          return
+        }
+        this.reply(frame.id, 'rc/hook-rerun/ok', this.deps.onHookRerun(frame.payload as RcHookRerun))
+        return
+      }
       case 'rc/collab-routes': {
         this.deps.onCollabRoutes?.(frame.payload as RcCollabRoutes)
         return
@@ -613,6 +660,16 @@ export class RelayCpClient {
     if (msg === 'FRAME_TOO_LARGE') return 'FRAME_TOO_LARGE'
     if (msg === 'UNKNOWN_FRAME') return 'UNKNOWN_FRAME'
     return 'BAD_PAYLOAD'
+  }
+
+  /** Correlated REP to a CP-issued REQ (the mirror of the CP's own `reply`). */
+  private reply<T extends RelayCpFrameType>(
+    corr: string,
+    type: T,
+    payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>
+  ): void {
+    if (!this.transport) return
+    this.transport.send(JSON.stringify(buildRelayCpFrame(type, payload, { corr })))
   }
 
   private sendError(corr: string, code: ErrorCode, message: string, retryable: boolean): void {

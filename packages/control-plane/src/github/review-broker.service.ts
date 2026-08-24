@@ -300,7 +300,9 @@ export class GithubReviewBrokerService {
       denied('hook start agent does not match the accepted hook run')
     }
 
+    // HookStart is a provider one-of since gitcred v2; this broker serves GitHub only.
     const github = input.github
+    if (!github) denied('hook start requires github metadata on this broker')
     if (
       initial.repoId === null ||
       initial.repoId !== bigintWire(github.repoId) ||

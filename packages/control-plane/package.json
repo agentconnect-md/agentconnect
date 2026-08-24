@@ -34,6 +34,12 @@
       "import": "./dist/github/setup-api.js",
       "default": "./dist/github/setup-api.js"
     },
+    "./gitlab-config": {
+      "development": "./src/gitlab/config.ts",
+      "types": "./dist/gitlab/config.d.ts",
+      "import": "./dist/gitlab/config.js",
+      "default": "./dist/gitlab/config.js"
+    },
     "./slack-config-api": {
       "development": "./src/http/slack-config-api.ts",
       "types": "./dist/http/slack-config-api.d.ts",

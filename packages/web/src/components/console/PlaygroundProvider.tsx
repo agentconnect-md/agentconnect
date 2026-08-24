@@ -21,6 +21,7 @@ import {
 } from 'react'
 import {
   agentLabel,
+  isGitWorkspace,
   selectedPermissionPreset,
   type Agent,
   type Session,
@@ -1127,7 +1128,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   const openPlayground = useCallback(
     (da: Agent, members?: Agent[], options?: { worktree?: boolean }): string => {
       const id = newPlaygroundSessionId(da.id)
-      if (da.workspace?.mode === 'github') {
+      if (da.workspace && isGitWorkspace(da.workspace)) {
         stagedWorktree.current.set(id, options?.worktree ?? da.workspace.worktree === true)
       }
       // The roster is fixed at creation (webchat-multi-agents.md §3.1): the

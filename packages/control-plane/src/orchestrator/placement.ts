@@ -64,6 +64,7 @@ import {
   type McpDefinitionDeps,
   type MemoryDefinitionDeps
 } from './agentDefinitions.js'
+import { daemonSupportsAgent, requiredDaemonFeatures } from '../domain/daemon-features.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
@@ -408,12 +409,25 @@ export class Placement implements ReconcileService {
     const ownedCrons = dedupeById(daemonCrons, heldCrons)
 
     const quarantinedAgentIds = new Set<string>()
+    // §17.3 snapshot projection gate: a spec this daemon cannot decode is withheld
+    // from its snapshot entirely (spec, assignments, integrations, crons) instead of
+    // shipped as a frame-fatal union value. The local replica, if any, is deliberately
+    // NOT pruned — the durable row still names this daemon until an operator moves it.
+    for (const agent of ownedAgents) {
+      if (daemonSupportsAgent(agent, req.capabilities.features)) continue
+      quarantinedAgentIds.add(agent.id)
+      this.orch?.log?.warn(
+        { agentId: agent.id, daemonId, required: requiredDaemonFeatures(agent) },
+        'withholding agent from snapshot: daemon lacks a required feature'
+      )
+    }
+    const deliverableAgents = ownedAgents.filter((a) => !quarantinedAgentIds.has(a.id))
     // Conversation gating (§14): derived per-agent from restricted visibility. This
     // is a data-plane read of the DERIVED boolean only — identities never ride the
     // wire, and the roster itself stays unfiltered (§9 graceful degradation).
     const gatedAgentIds = new Set(ownedAgents.filter((a) => a.visibility === 'restricted').map((a) => a.id))
-    const [desiredAgents, assembledIntegrations] = await Promise.all([
-      this.specs.assembleAll(ownedAgents, (agent) => {
+    const [assembledAgents, assembledIntegrations] = await Promise.all([
+      this.specs.assembleAll(deliverableAgents, (agent) => {
         quarantinedAgentIds.add(agent.id)
         this.orch?.log?.warn({ agentId: agent.id }, 'quarantining agent with an unsafe historical git repository')
       }),
@@ -453,6 +467,18 @@ export class Placement implements ReconcileService {
     // no-op'd (agent.json not on disk yet), so filtering to one platform silently
     // strands the others' tokens off the daemon. integrationToSpec emits the
     // right per-platform variant.
+    // Second pass on the ASSEMBLED spec: the additional-repository allowlist and the
+    // §24.4 host live only there, so the domain-record pass above cannot see either.
+    const desiredAgents = assembledAgents.filter((spec) => {
+      if (daemonSupportsAgent(spec, req.capabilities.features)) return true
+      quarantinedAgentIds.add(spec.agentId)
+      this.orch?.log?.warn(
+        { agentId: spec.agentId, daemonId, required: requiredDaemonFeatures(spec) },
+        'withholding agent from snapshot: daemon lacks a feature its assembled spec requires'
+      )
+      return false
+    })
+
     const desiredIntegrations = assembledIntegrations.filter(
       (spec): spec is IntegrationSpec => spec !== null && !quarantinedAgentIds.has(spec.agentId)
     )

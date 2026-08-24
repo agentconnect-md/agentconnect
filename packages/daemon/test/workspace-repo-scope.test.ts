@@ -253,6 +253,155 @@ describe('a secondary root is App-covered whatever the primary workspace is', ()
   })
 })
 
+describe('the console git scope keys on the MANAGED credential, not the github-app value', () => {
+  // A real checkout whose `origin` IS the managed URL, with `origin/main` already at HEAD: a push
+  // then settles on the ahead-0 shortcut, which is reached only when authorizedTarget answered AND
+  // its origin equals the checkout's own — so it pins the authorized URL without any network.
+  const checkoutOn = (name: string, origin: string): string => {
+    const dir = join(base, 'agents', name, 'workspace')
+    mkdirSync(dir, { recursive: true })
+    git(dir, 'init', '-b', 'main')
+    writeFileSync(join(dir, 'README.md'), 'the managed primary\n')
+    git(dir, 'add', '-A')
+    git(dir, 'commit', '-m', 'feat: the managed primary')
+    git(dir, 'remote', 'add', 'origin', origin)
+    git(dir, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+    git(dir, 'branch', '--set-upstream-to=origin/main', 'main')
+    return dir
+  }
+
+  const managed = (id: string, path: string, gitRepo: string, gitCredential: 'github-app' | 'gitlab'): Agent =>
+    AgentSchema.parse({
+      id,
+      name: id,
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'git-repo', path, gitRepo, gitCredential },
+      integrations: [],
+      output: { mode: 'low' }
+    })
+
+  const seamOn = (agentRow: Agent) => {
+    const managedScope = createWorkspaceScope({
+      workspaces,
+      agentOf: (id) => (id === agentRow.id ? agentRow : undefined),
+      sessionOf: async () => undefined,
+      runtimeRootOf: () => undefined
+    })
+    return createWorkspaceGit(workspaces, managedScope.gitRoot, () => undefined, managedScope.target)
+  }
+
+  it('rides the helper for a gitlab primary, whose target host the remote builder derives from the URL', async () => {
+    const gitlab = AgentSchema.parse({
+      id: 'bot-gitlab',
+      name: 'bot-gitlab',
+      status: 'active',
+      runtime: 'claude',
+      workspace: {
+        mode: 'git-repo',
+        path: join(base, 'agents', 'bot-gitlab', 'workspace'),
+        gitRepo: 'https://gitlab.com/example-group/example-project',
+        gitCredential: 'gitlab',
+        gitlabProjectId: '4455667'
+      },
+      integrations: [],
+      output: { mode: 'low' }
+    })
+    const gitlabScope = createWorkspaceScope({
+      workspaces,
+      agentOf: (id) => (id === 'bot-gitlab' ? gitlab : undefined),
+      sessionOf: async () => undefined,
+      runtimeRootOf: () => undefined
+    })
+    await expect(gitlabScope.target('bot-gitlab')).resolves.toMatchObject({
+      repo: 'https://gitlab.com/example-group/example-project',
+      githubApp: true
+    })
+    expect(gitlabScope.usesGithubApp('bot-gitlab')).toBe(true)
+  })
+
+  it('leaves an anonymous git-repo primary off the helper, so the flag still means something', async () => {
+    const anon = AgentSchema.parse({
+      id: 'bot-anon',
+      name: 'bot-anon',
+      status: 'active',
+      runtime: 'claude',
+      workspace: {
+        mode: 'git-repo',
+        path: join(base, 'agents', 'bot-anon', 'workspace'),
+        gitRepo: 'https://gitlab.com/example-group/public-project'
+      },
+      integrations: [],
+      output: { mode: 'low' }
+    })
+    const anonScope = createWorkspaceScope({
+      workspaces,
+      agentOf: (id) => (id === 'bot-anon' ? anon : undefined),
+      sessionOf: async () => undefined,
+      runtimeRootOf: () => undefined
+    })
+    await expect(anonScope.target('bot-anon')).resolves.toMatchObject({ githubApp: false })
+    expect(anonScope.usesGithubApp('bot-anon')).toBe(false)
+  })
+
+  it('authorizes a gitlab SUBGROUP primary at its configured URL, which github canonicalization throws on', async () => {
+    // Three path segments: `normalizeGithubRepoUrl` demands owner/repo and throws, which used to refuse every console push.
+    const configured = 'https://gitlab.com/example-group/sub/example-project'
+    // The checkout carries what the daemon clones through — the canonical `.git` remote.
+    const row = managed('bot-gitlab-push', checkoutOn('bot-gitlab-push', `${configured}.git`), configured, 'gitlab')
+    expect(await seamOn(row).push({ agentId: row.id })).toMatchObject({ isRepo: true, ok: true, ahead: 0 })
+  })
+
+  it('dials a managed gitlab primary through the canonical `.git` remote, github byte-identically', () => {
+    // gitlab.com 301s the suffix-less ref probe and daemon Git refuses to follow one — the first real managed clone died on it.
+    const at = (id: string) => join(base, 'agents', id, 'workspace')
+    const bare = managed('bot-gl-bare', at('bot-gl-bare'), 'https://gitlab.com/example-group/example-project', 'gitlab')
+    expect(workspaces.gitRepoOf(bare)).toBe('https://gitlab.com/example-group/example-project.git')
+    expect(workspaces.primaryRoot(bare).cloneUrl).toBe('https://gitlab.com/example-group/example-project.git')
+
+    const subgroup = managed('bot-gl-sub', at('bot-gl-sub'), 'https://gitlab.com/example-group/sub/proj', 'gitlab')
+    expect(workspaces.primaryRoot(subgroup).cloneUrl).toBe('https://gitlab.com/example-group/sub/proj.git')
+
+    const suffixed = managed('bot-gl-suffixed', at('bot-gl-suffixed'), 'https://gitlab.com/g/p.git', 'gitlab')
+    expect(workspaces.primaryRoot(suffixed).cloneUrl).toBe('https://gitlab.com/g/p.git')
+
+    const github = managed('bot-gh-clone', at('bot-gh-clone'), 'https://github.com/acme/infra', 'github-app')
+    expect(workspaces.primaryRoot(github).cloneUrl).toBe('https://github.com/acme/infra')
+  })
+
+  it('converges a checkout left on the suffix-less origin, so the agent never sees a second form', async () => {
+    // The origin the AGENT's git reads must be the one the daemon dials; convergence at reconcile and prepare is that seam.
+    const configured = 'https://gitlab.com/example-group/example-project'
+    const dir = checkoutOn('bot-gl-converge', configured)
+    const row = managed('bot-gl-converge', dir, configured, 'gitlab')
+    await workspaces.convergeOriginInPlaceFor(row.id, workspaces.primaryRoot(row), dir)
+    const origin = execFileSync('git', ['-C', dir, 'remote', 'get-url', 'origin'], { env, encoding: 'utf8' }).trim()
+    expect(origin).toBe(`${configured}.git`)
+  })
+
+  it('keeps the materialization key suffix-insensitive, so canonicalizing does not re-clone a checkout', () => {
+    // The key decides whether a checkout still matches the config, so gaining `.git` must not empty a materialized volume.
+    const at = (id: string) => join(base, 'agents', id, 'workspace')
+    const bare = managed('bot-gl-key', at('bot-gl-key'), 'https://gitlab.com/example-group/example-project', 'gitlab')
+    const suffixed = managed(
+      'bot-gl-key2',
+      at('bot-gl-key'),
+      'https://gitlab.com/example-group/example-project.git',
+      'gitlab'
+    )
+    expect(workspaces.materializationKey(bare)).toBe(workspaces.materializationKey(suffixed))
+    expect(workspaces.materializationKey(bare)).toContain('https://gitlab.com/example-group/example-project"')
+  })
+
+  it('still collapses a github-app primary onto its canonical owner/repo origin', async () => {
+    // A host-shifted configured URL: collapsing it is what keeps the App grant's authority pinned to
+    // github.com, so the provider split must not cost github that canonicalization.
+    const dir = checkoutOn('bot-github-push', 'https://github.com/acme/canonical')
+    const row = managed('bot-github-push', dir, 'https://code.example.test/acme/canonical', 'github-app')
+    expect(await seamOn(row).push({ agentId: row.id })).toMatchObject({ isRepo: true, ok: true, ahead: 0 })
+  })
+})
+
 describe('a cluster daemon addresses a secondary root on the pod volume', () => {
   const POD_ROOT = '/agent'
   const POD_SECONDARY = `${POD_ROOT}/repos/${AUTHORIZED}`

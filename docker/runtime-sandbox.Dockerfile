@@ -88,12 +88,11 @@ RUN set -eu; \
 # ─────────────────────────────── runtime ────────────────────────────────────
 FROM node:24-bookworm-slim AS runtime-sandbox
 
-# The ACP runtimes this image declares it provides. Pinned exactly: the published runtime table
-# names these versions, and a floating tag would make the table a claim about the past.
-ARG CLAUDE_ACP_VERSION=0.66.0
-ARG CODEX_ACP_VERSION=1.1.14
-ARG OPENCODE_VERSION=1.18.16
-ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.9
+# Exact pins keep the published runtime table truthful.
+ARG CLAUDE_ACP_VERSION=0.70.0
+ARG CODEX_ACP_VERSION=1.6.2-agentconnect.1
+ARG OPENCODE_VERSION=1.18.20
+ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.16
 
 # git and ca-certificates are load-bearing — the workspace surface runs git IN here over the
 # shim's exec channel. openssh-client is for ssh remotes; tini is PID 1.
@@ -107,15 +106,11 @@ RUN apt-get update \
 # `python` as well as `python3` — plenty of tooling still spawns the unsuffixed name.
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 
-# Installed globally so the shim resolves a real executable on PATH. `--k8s` deliberately
-# refuses package-launcher (npx/uvx) entries: fetching a runtime at spawn time would mean the
-# image pin says nothing about what actually runs, and would need registry egress from a
-# sandbox that should have none.
-# opencode-ai NEEDS its postinstall (it copies the platform binary over a failing placeholder),
-# so no --ignore-scripts here; claude/codex resolve their binaries from optionalDeps instead.
+# Global installs give `--k8s` fixed PATH binaries without registry egress at spawn time.
+# Keep scripts enabled because opencode-ai copies its platform binary during postinstall.
 RUN npm install --global --no-fund --no-audit \
   "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}" \
-  "@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}" \
+  "@agentconnect.md/codex-acp@${CODEX_ACP_VERSION}" \
   "opencode-ai@${OPENCODE_VERSION}" \
   "@openma/deepseek-harness-acp@${DEEPSEEK_HARNESS_ACP_VERSION}" \
   && opencode --version \

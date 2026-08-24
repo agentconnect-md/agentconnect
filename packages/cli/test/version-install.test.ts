@@ -7,10 +7,17 @@ import { join } from 'node:path'
 // `installTarget` materializes the version dir so the real `useVersion`
 // (activation) can symlink `current` at it.
 const resolveTarget = vi.fn()
-const installTarget = vi.fn(async (root: string, target: { version: string }) => {
-  mkdirSync(join(root, 'versions', target.version), { recursive: true })
-  return target.version
-})
+const installTarget = vi.fn(
+  async (
+    root: string,
+    target: { version: string },
+    _log?: (m: string) => void,
+    _opts?: { force?: boolean }
+  ): Promise<string> => {
+    mkdirSync(join(root, 'versions', target.version), { recursive: true })
+    return target.version
+  }
+)
 vi.mock('../src/install.js', () => ({
   resolveTarget: (o: unknown) => resolveTarget(o),
   installTarget: (r: string, t: { version: string }, log?: (m: string) => void, opts?: { force?: boolean }) =>

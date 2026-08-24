@@ -16,6 +16,8 @@ export class HookTable {
   private byToken = new Map<string, RcHookAssign>()
   /** repoId → hookId → rule (fan-out: several hooks may watch one repo). */
   private byRepoId = new Map<string, Map<string, RcHookAssign>>()
+  /** GitLab projectId → hookId → rule (same fan-out shape as byRepoId). */
+  private byProjectId = new Map<string, Map<string, RcHookAssign>>()
 
   upsert(rule: RcHookAssign): void {
     // Re-index: if the hook's token/repo changed (or the kind did), drop the old key.
@@ -25,6 +27,9 @@ export class HookTable {
     }
     if (prior?.github && prior.github.repoId !== rule.github?.repoId) {
       this.dropFromRepoIndex(prior)
+    }
+    if (prior?.gitlab && prior.gitlab.projectId !== rule.gitlab?.projectId) {
+      this.dropFromProjectIndex(prior)
     }
     this.byHookId.set(rule.hookId, rule)
     if (rule.kind === 'webhook' && rule.webhook) this.byToken.set(rule.webhook.urlToken, rule)
@@ -36,6 +41,14 @@ export class HookTable {
       }
       bucket.set(rule.hookId, rule)
     }
+    if (rule.kind === 'gitlab' && rule.gitlab) {
+      let bucket = this.byProjectId.get(rule.gitlab.projectId)
+      if (!bucket) {
+        bucket = new Map()
+        this.byProjectId.set(rule.gitlab.projectId, bucket)
+      }
+      bucket.set(rule.hookId, rule)
+    }
   }
 
   remove(hookId: string): void {
@@ -44,6 +57,7 @@ export class HookTable {
     this.byHookId.delete(hookId)
     if (rule.webhook) this.byToken.delete(rule.webhook.urlToken)
     if (rule.github) this.dropFromRepoIndex(rule)
+    if (rule.gitlab) this.dropFromProjectIndex(rule)
   }
 
   /** The generic-ingress lookup: URL token → rule (undefined = uniform 404). */
@@ -63,6 +77,12 @@ export class HookTable {
     return bucket ? [...bucket.values()] : []
   }
 
+  /** The GitLab-ingress lookup: numeric project id (as string) → every watching rule. */
+  getByGitlabProject(projectId: string): RcHookAssign[] {
+    const bucket = this.byProjectId.get(projectId)
+    return bucket ? [...bucket.values()] : []
+  }
+
   size(): number {
     return this.byHookId.size
   }
@@ -73,5 +93,13 @@ export class HookTable {
     if (!bucket) return
     bucket.delete(rule.hookId)
     if (bucket.size === 0) this.byRepoId.delete(rule.github.repoId)
+  }
+
+  private dropFromProjectIndex(rule: RcHookAssign): void {
+    if (!rule.gitlab) return
+    const bucket = this.byProjectId.get(rule.gitlab.projectId)
+    if (!bucket) return
+    bucket.delete(rule.hookId)
+    if (bucket.size === 0) this.byProjectId.delete(rule.gitlab.projectId)
   }
 }

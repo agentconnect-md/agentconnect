@@ -5,7 +5,11 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { GitCredGrant } from '@agentconnect.md/protocol'
-import { GitCredentialCache, GitCredUnavailableError } from '../../src/cp/git-credential.js'
+import {
+  GitCredentialCache,
+  GitCredUnavailableError,
+  type GitCredentialCacheDeps
+} from '../../src/cp/git-credential.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const HOOK = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
@@ -91,6 +95,21 @@ describe('GitCredentialCache', () => {
 
     h.cache.clearDenied(AGENT) // agent/upsert replicated a fresh spec
     expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_2')
+  })
+
+  it('evicts the cached token on an authoritative LEASE_DENIED instead of riding it (19.3)', async () => {
+    const h = build((n) => {
+      if (n === 2) throw Object.assign(new Error('binding stopped new effects'), { code: 'LEASE_DENIED' })
+      return grant(`ghs_${n}`, 3540)
+    })
+    expect((await h.cache.get(AGENT, 'clone')).token).toBe('ghs_1')
+    h.advance(50 * 60 * 1000) // below the handout threshold → refresh, and the CP refuses
+
+    // Unlike the INTERNAL outage above, the caller must fail NOW rather than keep the revoked grant.
+    await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: false })
+    // Neither terminal nor negative-cached: a repaired binding serves on the very next ask.
+    expect((await h.cache.get(AGENT, 'push')).token).toBe('ghs_3')
+    expect(h.calls()).toBe(3)
   })
 
   it('invalidates only when the presented password matches (stale erase races)', async () => {
@@ -326,5 +345,219 @@ describe('GitCredentialCache', () => {
       h.cache.remove(AGENT)
       expect((await h.cache.get(AGENT, 'helper', { repo: 'other-org/tools' })).token).toBe('ghs_2')
     })
+  })
+
+  describe('daemon-owned gitlab leases (gitlab-com-integration.md 14.1/14.2)', () => {
+    const PROJECT = '4455667'
+
+    function buildEffect(responder: (n: number, payload: { purpose?: string }) => GitCredGrant) {
+      let calls = 0
+      let mono = 0
+      const cache = new GitCredentialCache({
+        request: async (p) => {
+          calls += 1
+          return responder(calls, p)
+        },
+        log: { warn: () => {} },
+        providerV2Supported: () => true,
+        gitlabEffectSupported: () => true,
+        monoNow: () => mono
+      })
+      return { cache, calls: () => calls, advance: (ms: number) => (mono += ms) }
+    }
+
+    function effectGrant(token: string): GitCredGrant {
+      return {
+        username: 'project_4455667_bot',
+        token,
+        ttlSec: 3540,
+        expiresAt: '2026-07-06T13:00:00.000Z',
+        repoFullName: 'example-group/example-project',
+        access: 'comment',
+        provider: 'gitlab',
+        externalRepoId: PROJECT
+      }
+    }
+
+    it('keeps a SCOPE_DENIED effect lease retryable instead of durably denying the key', async () => {
+      const h = buildEffect((n) => {
+        if (n === 1) throw Object.assign(new Error('hook is not enabled'), { code: 'SCOPE_DENIED' })
+        return effectGrant(`glpat_${n}`)
+      })
+      // A stale hook refusal is NOT terminal: hook lifecycle never replicates an agent spec,
+      // so a durable denial here could only be cleared by a restart or an unrelated upsert.
+      await expect(h.cache.getGitlabEffectToken(AGENT, PROJECT, HOOK)).rejects.toMatchObject({ terminal: false })
+      // The very next call re-contacts the CP, which re-resolves the hook live.
+      expect((await h.cache.getGitlabEffectToken(AGENT, PROJECT, HOOK)).token).toBe('glpat_2')
+      expect(h.calls()).toBe(2)
+    })
+
+    it('does not need clearDenied to recover, and never silences the agent workspace key', async () => {
+      const h = buildEffect((n) => {
+        if (n <= 2) throw Object.assign(new Error('hook is not enabled'), { code: 'SCOPE_DENIED' })
+        return effectGrant(`glpat_${n}`)
+      })
+      await expect(h.cache.getGitlabEffectToken(AGENT, PROJECT)).rejects.toBeInstanceOf(GitCredUnavailableError)
+      await expect(h.cache.getGitlabEffectToken(AGENT, PROJECT)).rejects.toBeInstanceOf(GitCredUnavailableError)
+      // Two refusals, two CP asks — no local negative cache absorbed the second one.
+      expect(h.calls()).toBe(2)
+      expect((await h.cache.getGitlabEffectToken(AGENT, PROJECT)).token).toBe('glpat_3')
+      // And the agent's own workspace grant was never dragged into the denial.
+      expect((await h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: PROJECT })).token).toBe('glpat_4')
+    })
+
+    it('keeps a SCOPE_DENIED hook-reply lease retryable instead of durably denying the key', async () => {
+      const h = buildEffect((n) => {
+        if (n === 1) throw Object.assign(new Error('hook is not enabled'), { code: 'SCOPE_DENIED' })
+        return effectGrant(`glpat_${n}`)
+      })
+      // The note poster carries only the numeric project, so this refusal used to read as agent-level.
+      await expect(h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).rejects.toMatchObject({ terminal: false })
+      // A re-enabled hook takes effect on the next turn, with no agent upsert in between.
+      expect((await h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).token).toBe('glpat_2')
+      expect(h.calls()).toBe(2)
+    })
+
+    it('recovers the note poster without clearDenied, and leaves the sibling keyspaces alone', async () => {
+      const h = buildEffect((n) => {
+        if (n <= 2) throw Object.assign(new Error('hook is not enabled'), { code: 'SCOPE_DENIED' })
+        return effectGrant(`glpat_${n}`)
+      })
+      await expect(h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).rejects.toBeInstanceOf(GitCredUnavailableError)
+      await expect(h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).rejects.toBeInstanceOf(GitCredUnavailableError)
+      // Two refusals, two CP asks — nothing absorbed the second one locally.
+      expect(h.calls()).toBe(2)
+      expect((await h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).token).toBe('glpat_3')
+      // The broker lease and the agent's own workspace grant were never dragged into the denial.
+      expect((await h.cache.getGitlabEffectToken(AGENT, PROJECT)).token).toBe('glpat_4')
+      expect((await h.cache.get(AGENT, 'clone', { provider: 'gitlab', externalRepoId: PROJECT })).token).toBe('glpat_5')
+    })
+
+    it('leaves a workspace-keyed git SCOPE_DENIED terminal, exactly as before', async () => {
+      const h = buildEffect((n, p) => {
+        if (p.purpose === undefined) throw Object.assign(new Error('not placed here'), { code: 'SCOPE_DENIED' })
+        return effectGrant(`glpat_${n}`)
+      })
+      await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: true })
+      await expect(h.cache.get(AGENT, 'push')).rejects.toMatchObject({ terminal: true })
+      expect(h.calls()).toBe(1) // still silenced locally — the git-purpose behavior is unchanged
+      // …and that terminal git denial reaches neither daemon-owned writer's keyspace.
+      expect((await h.cache.getGitlabEffectToken(AGENT, PROJECT)).token).toBe('glpat_2')
+      expect((await h.cache.getGitlabPostToken(AGENT, PROJECT, HOOK)).token).toBe('glpat_3')
+    })
+  })
+})
+
+/**
+ * §17.3 — GitHub requests carry `provider: 'github'` once the CP advertises gitcred-github-v2,
+ * verify the echo like every other provider, and fall back to the pre-v2 shape otherwise. The
+ * cache key is deliberately blind to which shape went out: one credential, one entry.
+ */
+describe('GitCredentialCache — explicit github provider (§17.3)', () => {
+  type Payload = Parameters<GitCredentialCacheDeps['request']>[0]
+
+  function buildV2(opts: { v2: boolean; respond?: (payload: Payload, n: number) => GitCredGrant }) {
+    let calls = 0
+    let mono = 0
+    const seen: Payload[] = []
+    const cache = new GitCredentialCache({
+      request: async (payload) => {
+        calls += 1
+        seen.push(payload)
+        if (opts.respond) return opts.respond(payload, calls)
+        // The default answer echoes the repository the ask named — the identity guard refuses anything else.
+        return { ...qualifiedGrant(`ghs_${calls}`), repoFullName: payload.repoFullName ?? 'acme/infra' }
+      },
+      log: { warn: () => {} },
+      monoNow: () => mono,
+      githubV2Supported: () => opts.v2
+    })
+    return { cache, seen, calls: () => calls, advance: (ms: number) => (mono += ms) }
+  }
+
+  const qualifiedGrant = (token: string): GitCredGrant => ({
+    ...grant(token, 3540),
+    provider: 'github',
+    externalRepoId: '501'
+  })
+
+  it('qualifies the workspace, gh-plane, and hook-reply asks once the CP advertises the bit', async () => {
+    const h = buildV2({ v2: true })
+    await h.cache.get(AGENT, 'clone')
+    await h.cache.get(AGENT, 'helper', { plane: 'gh', repo: 'acme/tools' })
+    await h.cache.getPostToken(AGENT, 'acme/infra', HOOK)
+
+    expect(h.seen.map((p) => p.provider)).toEqual(['github', 'github', 'github'])
+    // Everything else about the ask is what it always was.
+    expect(h.seen[1]).toMatchObject({
+      repoFullName: 'acme/tools',
+      capabilities: ['contents', 'issues', 'pull_requests']
+    })
+    expect(h.seen[2]).toMatchObject({ purpose: 'github_hook_reply', hookId: HOOK, repoFullName: 'acme/infra' })
+    // The daemon knows no numeric GitHub identity for these asks, so it names none and the CP echo
+    // is verified on the provider and the repository name alone.
+    expect(h.seen.every((p) => p.externalRepoId === undefined && p.requestedAccess === undefined)).toBe(true)
+  })
+
+  it('sends the pre-v2 shape byte-identically to a control plane without the bit', async () => {
+    const h = buildV2({
+      v2: false,
+      respond: (p, n) => ({ ...grant(`ghs_${n}`, 3540), repoFullName: p.repoFullName ?? 'acme/infra' })
+    })
+    await h.cache.get(AGENT, 'clone')
+    await h.cache.get(AGENT, 'helper', { plane: 'gh', repo: 'acme/tools' })
+    await h.cache.getPostToken(AGENT, 'acme/infra', HOOK)
+
+    expect(h.seen[0]).toEqual({ agentId: AGENT, reason: 'clone' })
+    expect(h.seen[1]).toEqual({
+      agentId: AGENT,
+      reason: 'helper',
+      capabilities: ['contents', 'issues', 'pull_requests'],
+      repoFullName: 'acme/tools'
+    })
+    expect(h.seen[2]).toEqual({
+      agentId: AGENT,
+      reason: 'helper',
+      capabilities: ['issues', 'pull_requests'],
+      repoFullName: 'acme/infra',
+      purpose: 'github_hook_reply',
+      hookId: HOOK
+    })
+  })
+
+  it('refuses a grant whose provider or repository echo disagrees with the qualified ask', async () => {
+    const stripped = buildV2({ v2: true, respond: (_p, n) => grant(`ghs_${n}`, 3540) })
+    await expect(stripped.cache.get(AGENT, 'clone')).rejects.toThrow(/github \(unqualified\) for a github request/)
+
+    const wrongRepo = buildV2({
+      v2: true,
+      respond: (_p, n) => ({ ...qualifiedGrant(`ghs_${n}`), repoFullName: 'acme/other' })
+    })
+    await expect(wrongRepo.cache.get(AGENT, 'helper', { repo: 'acme/tools' })).rejects.toThrow(GitCredUnavailableError)
+  })
+
+  it('serves ONE cache entry across both shapes: a CP downgrade must not split the credential', async () => {
+    let v2 = true
+    let calls = 0
+    const mono = 0
+    const cache = new GitCredentialCache({
+      request: async () => {
+        calls += 1
+        return v2 ? qualifiedGrant(`ghs_${calls}`) : grant(`ghs_${calls}`, 3540)
+      },
+      log: { warn: () => {} },
+      monoNow: () => mono,
+      githubV2Supported: () => v2
+    })
+
+    expect((await cache.get(AGENT, 'clone')).token).toBe('ghs_1')
+    v2 = false // reconnected to an older control plane
+    expect((await cache.get(AGENT, 'push')).token).toBe('ghs_1')
+    expect(calls).toBe(1) // the v1-shaped ask found the entry the qualified ask stored
+
+    // …and the erase path reaches that same entry regardless of the shape that filled it.
+    cache.invalidate(AGENT, 'ghs_1')
+    expect((await cache.get(AGENT, 'push')).token).toBe('ghs_2')
+    expect(calls).toBe(2)
   })
 })

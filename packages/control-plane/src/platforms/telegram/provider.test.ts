@@ -40,6 +40,7 @@ const BOT: BotRecord = {
   platform: 'telegram',
   name: 'helper-bot',
   prebuilt: false,
+  grantedScopes: null,
   slackAppId: null,
   teamId: null,
   workspaceId: null,
@@ -76,9 +77,13 @@ const channel = (
   integrationId: INTEGRATION.id,
   channelId,
   name: channelId.toLowerCase(),
+  spaceId: null,
+  space: null,
   isPrivate: false,
   kind,
   trigger,
+  dmUserId: null,
+  triggerChosen: false,
   agentId: null
 })
 

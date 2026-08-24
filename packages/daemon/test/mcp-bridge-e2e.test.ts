@@ -7,11 +7,11 @@ import net from 'node:net'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { Client } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
-import { McpControlServer } from '../src/mcp/control-server.js'
+import { McpControlServer, type McpControlDeps } from '../src/mcp/control-server.js'
 import { buildMcpServers } from '../src/mcp/inject.js'
 import { decodeFrames, encodeFrame, type IpcPrivateRequest, type IpcResponse } from '../src/mcp/ipc.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
-import type { SlackGateway } from '../src/mcp/ops.js'
+import type { MessageGateway } from '../src/mcp/ops.js'
 
 // The real CLI entry, invoked the same way buildMcpServers() does in dev:
 // current interpreter + execArgv (carries the tsx loader under vitest) + entry.
@@ -19,9 +19,19 @@ const cliEntry = fileURLToPath(new URL('../src/index.ts', import.meta.url))
 const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
 
 const tools = toolsForIntegrations(
-  [{ id: 'int-1', platform: 'slack', core: { bindRules: [] }, config: { botToken: 'x', appToken: 'y' } }],
+  [
+    {
+      id: 'int-1',
+      platform: 'slack',
+      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+      config: { botToken: 'x', appToken: 'y' }
+    }
+  ],
   { sessionTitle: true }
 )
+
+/** The bridge only exercises the tools these deps back; the rest are never dispatched. */
+const controlDeps = (deps: Partial<McpControlDeps>): McpControlDeps => deps as McpControlDeps
 
 let server: McpControlServer | undefined
 let privateServer: net.Server | undefined
@@ -56,22 +66,29 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
   it('lists daemon tools and routes a sendMessage call back to the gateway', async () => {
     const root = tempRoot('ac-e2e-')
     const path = join(root, 'mcp.sock')
-    const gw: SlackGateway = {
+    const gw: MessageGateway = {
       postMessage: vi.fn(async () => 'ts-42'),
       getChannelInfo: vi.fn(async (id) => ({ id })),
       listMembers: vi.fn(async () => []),
       listChannels: vi.fn(async () => []),
-      getUserProfile: vi.fn(async (u) => ({ id: u }))
+      getUserProfile: vi.fn(async (u) => ({ id: u })),
+      downloadFile: vi.fn(async () => null)
     }
     const recorded: unknown[] = []
     const titleUpdates: unknown[] = []
-    server = new McpControlServer({
-      socketPath: path,
-      setSessionTitle: async (req) => titleUpdates.push(req),
-      gatewayFor: () => gw,
-      recordOutbound: (_c, channel, _t, text, ts) => recorded.push({ channel, text, ts }),
-      now: () => 0
-    })
+    server = new McpControlServer(
+      controlDeps({
+        socketPath: path,
+        setSessionTitle: async (req) => {
+          titleUpdates.push(req)
+        },
+        gatewayFor: () => gw,
+        recordOutbound: async (_c, channel, _t, text, ts) => {
+          recorded.push({ channel, text, ts })
+        },
+        now: () => 0
+      })
+    )
     await server.start()
     const token = server.register({
       agentId: 'bot-a',

@@ -45,14 +45,19 @@ describe('WorkspaceFormFields', () => {
     const onChange = vi.fn()
     await render(<WorkspaceModeField value="scratch" onChange={onChange} />)
 
+    // Both code hosts are always offered; a deployment that configures neither
+    // says so in the pane the tile opens, never by dropping the tile.
     const buttons = Array.from(container?.querySelectorAll('button') ?? [])
     expect(buttons.map((button) => button.textContent)).toEqual([
       'From scratchFresh empty directory.',
-      'From GitHubClone a repo on a branch.'
+      'From GitHubClone a repo on a branch.',
+      'From GitLabClone a project on a branch.'
     ])
 
     await act(async () => buttons[1]?.click())
     expect(onChange).toHaveBeenCalledWith('github')
+    await act(async () => buttons[2]?.click())
+    expect(onChange).toHaveBeenCalledWith('gitlab')
   })
 
   it('returns the shared repository access vocabulary', async () => {

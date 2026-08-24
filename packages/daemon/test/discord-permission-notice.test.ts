@@ -82,7 +82,7 @@ describe('Discord permission update notice', () => {
       throw missingPermission
     })
     const sendB = vi.fn(async () => ({ id: 'unexpected-notice' }))
-    const conn = connectionWith((id) =>
+    const conn = connectionWith((id: string) =>
       id === 'A'
         ? {
             send: sendA,
@@ -111,8 +111,8 @@ describe('Discord permission update notice', () => {
     const sendA = vi.fn(async () => {
       throw missingPermission
     })
-    const sendB = vi.fn(async () => ({ id: 'notice-B' }))
-    const conn = connectionWith((id) =>
+    const sendB = vi.fn<(payload: unknown) => Promise<{ id: string }>>(async () => ({ id: 'notice-B' }))
+    const conn = connectionWith((id: string) =>
       id === 'A'
         ? {
             send: sendA,

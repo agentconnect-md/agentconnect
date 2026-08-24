@@ -77,7 +77,7 @@ export type ExternalSessionOrigin = z.infer<typeof ExternalSessionOrigin>
 
 /** Converged session lifecycle milestone — protocol §7.2. NOT the message stream. */
 export const EventSession = z.object({
-  sessionId: z.string(), // ACP session id (agent-assigned; a free string, NOT a wire UUID — matches usage/report)
+  sessionId: z.string(), // the session's outward identity (session-concept.md §1.1), never the ACP hop's
   // Stable ACP session id of the session that spawned this one. Absent for roots.
   // Stored as metadata so the console can navigate the session family.
   parentSessionId: z.string().optional(),
@@ -187,9 +187,9 @@ export const SessionPurged = z.object({
   // agent is placed on the reporting daemon, the same trust boundary as
   // `event/session`. A sweep spanning several agents sends several frames.
   agentId: z.string().uuid(),
-  // ACP session ids (agent-assigned strings, NOT wire UUIDs). Batched because a
-  // single sweep commonly expires many sessions at once; capped well under the
-  // frame budget so the daemon chunks instead of overflowing the wire.
+  // The purged sessions' outward ids (§1.1) — the rows these receipts mark over there. Batched
+  // because a single sweep commonly expires many sessions at once; capped well under the frame
+  // budget so the daemon chunks instead of overflowing the wire.
   sessionIds: z.array(z.string().min(1)).min(1).max(200),
   reason: SessionPurgeReason,
   ts: z.string().datetime()
@@ -211,7 +211,7 @@ export type ReportedSessionUsage = z.infer<typeof ReportedSessionUsage>
  * by `sessionId`: re-sending the same snapshot is a no-op upsert on the CP.
  */
 export const UsageReport = z.object({
-  sessionId: z.string(), // ACP session id (agent-assigned; NOT a wire UUID)
+  sessionId: z.string(), // the session's outward identity (§1.1) — the same id the gateway meters under
   agentId: z.string().uuid(),
   platform: z.string().optional(), // denormalized sessionKey echo for dashboard filters
   channel: z.string().optional(),

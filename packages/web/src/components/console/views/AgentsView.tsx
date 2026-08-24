@@ -1,22 +1,24 @@
 'use client'
 
 import Link from 'next/link'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import {
   agentDaemonLabel,
   agentLabel,
   agentModelDisplay,
   effectiveAgentStatus,
+  isGitWorkspace,
   runtimeLabel,
   status,
   type Agent
 } from '@/lib/data'
-import { creatorLabel, fmtCost, fmtCountCompact, memberDisplayName } from '@/lib/api'
+import { creatorLabel, fmtCost, fmtCountCompact, memberDisplayName, type HookKind } from '@/lib/api'
+import { primaryHookKind } from '@/lib/session-trigger'
 import { amountToNumber } from '@/lib/amount'
 import { useConsoleData } from '@/lib/data-context'
 import { IntegrationMarks } from '@/components/console/IntegrationMarks'
 import { useModal } from '@/components/console/ModalProvider'
-import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { AgentIconView, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { Avatar, Button, Icon } from '@/components/ui'
@@ -26,6 +28,15 @@ import { useIsMobile } from '@/lib/use-is-mobile'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { AgentReachabilityOverview } from '@/components/console/AgentReachabilityOverview'
 import { useOnboardingRedirect } from '@/lib/use-onboarding-redirect'
+
+// The single mark a compact agent row shows for its inbound triggers. Total over the
+// hook-kind vocabulary, so a new code host is given a mark instead of falling through
+// to the generic webhook glyph the way an unmapped kind used to.
+const AGENT_HOOK_MARK: Record<HookKind, ReactNode> = {
+  github: <GithubMark />,
+  gitlab: <GitlabMark />,
+  webhook: <Icon name="webhook" size={14} color="var(--text-secondary)" />
+}
 
 // Two-letter avatar initials for a creator name — first letters of the first two
 // words, or the first two chars of a single token.
@@ -100,7 +111,7 @@ export default function AgentsView() {
   // Creator names remain available to sorting and assistive text; rows show only avatars.
   const memberById = useMemo(() => new Map(members.map((m) => [m.userId, m])), [members])
   const creatorText = (a: Agent) => creatorLabel(a.createdBy || null, me)
-  const repoText = (a: Agent) => (a.workspace.mode === 'github' ? a.repo : 'scratch')
+  const repoText = (a: Agent) => (isGitWorkspace(a.workspace) ? a.repo : 'scratch')
   const onlineCount = agents.filter(
     (a) =>
       effectiveAgentStatus(
@@ -391,6 +402,7 @@ export default function AgentsView() {
               const s = status(effectiveAgentStatus(a, owning))
               const agentInts = integrations.filter((int) => int.agentId === a.id)
               const first = agentInts[0]
+              const primaryKind = primaryHookKind(a.hookKinds ?? [])
               const n24 = sessions24h(a.id)
               return (
                 <Link
@@ -432,13 +444,9 @@ export default function AgentsView() {
                     <span className="flex h-4 w-4 flex-none items-center justify-center">
                       <PlatformMark platform={first.platform} fillPct={100} />
                     </span>
-                  ) : (a.hookKinds ?? []).length > 0 ? (
+                  ) : primaryKind ? (
                     <span className="flex h-4 w-4 flex-none items-center justify-center">
-                      {(a.hookKinds ?? []).includes('github') ? (
-                        <GithubMark />
-                      ) : (
-                        <Icon name="webhook" size={14} color="var(--text-secondary)" />
-                      )}
+                      {AGENT_HOOK_MARK[primaryKind]}
                     </span>
                   ) : null}
                   <span className="flex-none font-mono text-[14px] font-medium leading-normal text-(--text-primary) tabular-nums">
@@ -561,9 +569,13 @@ export default function AgentsView() {
             const agentInts = integrations.filter((i) => i.agentId === a.id)
             const hookKinds = a.hookKinds ?? []
             const totalIntegrations = agentInts.length + hookKinds.length
-            const repoIcon =
-              a.workspace.mode === 'github' ? (a.workspace.installationId ? 'lock' : 'book-marked') : 'folder'
-            const repoLabel = a.workspace.mode === 'github' ? a.repo : 'scratch'
+            // Only a GitHub App checkout can promise privacy, so every other clone takes the neutral repo glyph.
+            const repoIcon = !isGitWorkspace(a.workspace)
+              ? 'folder'
+              : a.workspace.mode === 'github' && a.workspace.installationId
+                ? 'lock'
+                : 'book-marked'
+            const repoLabel = isGitWorkspace(a.workspace) ? a.repo : 'scratch'
             return (
               <Link
                 key={a.id}

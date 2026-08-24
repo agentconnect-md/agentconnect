@@ -30,10 +30,10 @@ describe('SlackNameResolver', () => {
     const avatars = new Map<string, string>()
     const conn = fakeConn()
     const r = new SlackNameResolver(
-      (id, name) => saved.set(id, name),
+      (id, name) => void saved.set(id, name),
       undefined,
       Date.now,
-      (_conn, id, avatarUrl) => avatars.set(id, avatarUrl)
+      (_conn, id, avatarUrl) => void avatars.set(id, avatarUrl)
     )
     r.noteMessage(conn, msg('C1', 'U1'))
     r.noteMessage(conn, msg('C1', 'U1')) // same ids again — must not re-hit the API
@@ -58,7 +58,7 @@ describe('SlackNameResolver', () => {
   it('labels a DM channel by its counterpart user, "@"-prefixed, once', async () => {
     const saved = new Map<string, string>()
     const conn = fakeConn({ getChannelInfo: vi.fn(async (id: string) => ({ id, isIm: true, user: 'U7' })) as never })
-    const r = new SlackNameResolver((id, name) => saved.set(id, name))
+    const r = new SlackNameResolver((id, name) => void saved.set(id, name))
     r.noteMessage(conn, msg('D1', 'U1'))
     await flush()
     r.noteMessage(conn, msg('D1', 'U1'))
@@ -71,7 +71,7 @@ describe('SlackNameResolver', () => {
   it('caches a nameless channel attempt (DM without counterpart) without saving anything', async () => {
     const saved = new Map<string, string>()
     const conn = fakeConn({ getChannelInfo: vi.fn(async (id: string) => ({ id, isIm: true })) as never })
-    const r = new SlackNameResolver((id, name) => saved.set(id, name))
+    const r = new SlackNameResolver((id, name) => void saved.set(id, name))
     r.noteMessage(conn, msg('D1', 'U1'))
     await flush()
     r.noteMessage(conn, msg('D1', 'U1'))
@@ -114,7 +114,7 @@ describe('ChannelNameResolver', () => {
 
   it('labels a Discord thread with its enclosing channel, not the thread title', async () => {
     const saved = new Map<string, string>()
-    const r = new ChannelNameResolver((id, name) => saved.set(id, name))
+    const r = new ChannelNameResolver((id, name) => void saved.set(id, name))
     r.noteChannel(source({ id: 'T1', name: '@bot deploy the docs', parentName: 'general' }), 'T1')
     await flush()
     expect(saved.get('T1')).toBe('general')
@@ -122,7 +122,7 @@ describe('ChannelNameResolver', () => {
 
   it('keeps the channel name when there is no parent', async () => {
     const saved = new Map<string, string>()
-    const r = new ChannelNameResolver((id, name) => saved.set(id, name))
+    const r = new ChannelNameResolver((id, name) => void saved.set(id, name))
     r.noteChannel(source({ id: 'C1', name: 'general' }), 'C1')
     await flush()
     expect(saved.get('C1')).toBe('general')
@@ -131,8 +131,8 @@ describe('ChannelNameResolver', () => {
   it('reports a thread scope (its enclosing channel) and names the channel itself', async () => {
     const saved = new Map<string, string>()
     const scopes = new Map<string, { parentId?: string }>()
-    const r = new ChannelNameResolver((id, name) => saved.set(id, name), {
-      saveScope: (id, scope) => scopes.set(id, scope)
+    const r = new ChannelNameResolver((id, name) => void saved.set(id, name), {
+      saveScope: (id, scope) => void scopes.set(id, scope)
     })
     r.noteChannel(source({ id: 'T1', name: 'deploy the docs', parentId: 'C1', parentName: 'general' }), 'T1')
     await flush()
@@ -149,8 +149,8 @@ describe('ChannelNameResolver', () => {
     const saved = new Map<string, string>()
     const avatars = new Map<string, string>()
     const src = source({ id: 'C1', name: 'general' })
-    const r = new ChannelNameResolver((id, name) => saved.set(id, name), {
-      saveAvatar: (_source, id, avatarUrl) => avatars.set(id, avatarUrl)
+    const r = new ChannelNameResolver((id, name) => void saved.set(id, name), {
+      saveAvatar: (_source, id, avatarUrl) => void avatars.set(id, avatarUrl)
     })
     r.noteMessage(src, { channel: 'C1', sender: { id: 'U9', isBot: false }, mentionedUserIds: ['U7'] })
     await flush()
@@ -174,7 +174,7 @@ describe('ChannelNameResolver', () => {
   it('noteMessage skips a bot sender (agent frames are labelled by agentId upstream)', async () => {
     const saved = new Map<string, string>()
     const src = source({ id: 'C1', name: 'general' })
-    const r = new ChannelNameResolver((id, name) => saved.set(id, name))
+    const r = new ChannelNameResolver((id, name) => void saved.set(id, name))
     r.noteMessage(src, { channel: 'C1', sender: { id: 'B1', isBot: true, name: '@bot' } })
     await flush()
     expect(src.getUserProfile).not.toHaveBeenCalled()

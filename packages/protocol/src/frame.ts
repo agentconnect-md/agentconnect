@@ -33,6 +33,7 @@ import {
   DutyFetch,
   DutyFetchOk
 } from './frames/duty.js'
+import { CodeHostNoteDesired, CodeHostNoteResult, CodeHostNoteResultOk } from './frames/codehost-note.js'
 import {
   GithubReviewAuthorize,
   GithubReviewAuthorized,
@@ -42,6 +43,16 @@ import {
   HookStart,
   HookStartOk
 } from './frames/hook.js'
+import {
+  CodeHostReviewAuthorize,
+  CodeHostReviewAuthorized,
+  CodeHostReviewLeaseRenew,
+  CodeHostReviewLeaseRenewed,
+  CodeHostReviewOpAccepted,
+  CodeHostReviewOpRequest,
+  CodeHostReviewResultOk,
+  CodeHostReviewResultReport
+} from './frames/codehost-review.js'
 import {
   IntegrationUpsert,
   IntegrationRemove,
@@ -258,6 +269,19 @@ export const FRAME_SCHEMAS = {
   'github/review-authorized': GithubReviewAuthorized,
   'github/review-result': GithubReviewResultReport,
   'github/review-result/ok': GithubReviewResultOk,
+  // ── informational run projection (gitlab-com-integration.md §16) — body-free desired/result pair ──
+  'codehost/note-desired': CodeHostNoteDesired,
+  'codehost/note-result': CodeHostNoteResult,
+  'codehost/note-result/ok': CodeHostNoteResultOk,
+  // ── provider-neutral formal reviews (gitlab-com-integration.md §15, §17.2) ──
+  'codehost/review-authz': CodeHostReviewAuthorize,
+  'codehost/review-authz/result': CodeHostReviewAuthorized,
+  'codehost/review-op': CodeHostReviewOpRequest,
+  'codehost/review-op/ok': CodeHostReviewOpAccepted,
+  'codehost/review-lease-renew': CodeHostReviewLeaseRenew,
+  'codehost/review-lease-renew/ok': CodeHostReviewLeaseRenewed,
+  'codehost/review-result': CodeHostReviewResultReport,
+  'codehost/review-result/ok': CodeHostReviewResultOk,
   // ── integrations (platform config distribution; token-bearing — never log) ──
   'integration/upsert': IntegrationUpsert,
   'integration/remove': IntegrationRemove,
@@ -529,6 +553,17 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('github/review-authorized', FRAME_SCHEMAS['github/review-authorized']),
   frame('github/review-result', FRAME_SCHEMAS['github/review-result']),
   frame('github/review-result/ok', FRAME_SCHEMAS['github/review-result/ok']),
+  frame('codehost/note-desired', FRAME_SCHEMAS['codehost/note-desired']),
+  frame('codehost/note-result', FRAME_SCHEMAS['codehost/note-result']),
+  frame('codehost/note-result/ok', FRAME_SCHEMAS['codehost/note-result/ok']),
+  frame('codehost/review-authz', FRAME_SCHEMAS['codehost/review-authz']),
+  frame('codehost/review-authz/result', FRAME_SCHEMAS['codehost/review-authz/result']),
+  frame('codehost/review-op', FRAME_SCHEMAS['codehost/review-op']),
+  frame('codehost/review-op/ok', FRAME_SCHEMAS['codehost/review-op/ok']),
+  frame('codehost/review-lease-renew', FRAME_SCHEMAS['codehost/review-lease-renew']),
+  frame('codehost/review-lease-renew/ok', FRAME_SCHEMAS['codehost/review-lease-renew/ok']),
+  frame('codehost/review-result', FRAME_SCHEMAS['codehost/review-result']),
+  frame('codehost/review-result/ok', FRAME_SCHEMAS['codehost/review-result/ok']),
   frame('integration/upsert', FRAME_SCHEMAS['integration/upsert']),
   frame('integration/remove', FRAME_SCHEMAS['integration/remove']),
   frame('integration/channels', FRAME_SCHEMAS['integration/channels']),

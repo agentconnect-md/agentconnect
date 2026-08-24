@@ -295,7 +295,8 @@ async function installSkillsLocked(
         candidates: [],
         gitResolutions: retainedGitResolutions,
         legacyOwned: legacyState.owned,
-        lockHeld: true
+        lockHeld: true,
+        warn: opts.warn
       })
       result.removed.push(...reconciled.removed)
       return result
@@ -447,11 +448,15 @@ async function installSkillsLocked(
       candidates,
       gitResolutions: nextGitResolutions,
       legacyOwned: legacyState.owned,
-      lockHeld: true
+      lockHeld: true,
+      warn: opts.warn
     })
     result.installed.push(...reconciled.installed)
     result.removed.push(...reconciled.removed)
     result.skipped = reconciled.skipped
+    for (const conflict of reconciled.conflicts) {
+      result.errors.push({ source: conflict, error: 'destination is not owned by this daemon ledger; skill skipped' })
+    }
     return result
   } catch (error) {
     if (error instanceof SkillLedgerSafetyError) throw error
@@ -478,7 +483,8 @@ async function installSkillsLocked(
         candidates: [],
         gitResolutions: retainedGitResolutions,
         legacyOwned: legacyState.owned,
-        lockHeld: true
+        lockHeld: true,
+        warn: opts.warn
       })
       result.removed.push(...cleared.removed)
       return result

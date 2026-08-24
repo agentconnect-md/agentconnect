@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CodeHostExternalId, CodeHostProviderString } from '../code-host.js'
 
 /**
  * Deployment GitHub App identity used for ordinary commits made by an agent.
@@ -55,7 +56,11 @@ export const GitCredRequest = z.object({
   // the one final comment for an enabled GitHub hook turn. Marking that purpose
   // explicitly lets the CP apply the hook authorization instead of incorrectly
   // clamping the comment token to the workspace contents gitAccess.
-  purpose: z.literal('github_hook_reply').optional(),
+  // gitlab_hook_reply is the §14.1 twin: the note poster's effect lease, gated by an enabled gitlab hook.
+  // gitlab_effect is the §14.2 broker lease: the same never-agent-visible effect PAT, authorized by the
+  // agent's GitLab workspace binding OR an enabled gitlab hook, and clamped by the grant's echoed access.
+  // A new value here is frame-fatal to an older CP (§17.3): name it only after GITLAB_EFFECT_V1_FEATURE.
+  purpose: z.enum(['github_hook_reply', 'gitlab_hook_reply', 'gitlab_effect']).optional(),
   // Trusted hook identity copied from the relay-delivered rd/msg. Required by
   // the CP for purpose=github_hook_reply so authorization stays rename-safe on
   // HookDef.repoId instead of comparing mutable owner/repo display names.
@@ -72,19 +77,70 @@ export const GitCredRequest = z.object({
   // enabled GitHub hook and receives only issues/PR write, never contents. Old
   // CPs strip this field and answer with a WORKSPACE grant: consumers MUST
   // verify grant.repoFullName against what they asked for before trusting it.
-  repoFullName: z.string().optional()
+  repoFullName: z.string().optional(),
+  // ── gitcred v2 (gitlab-com-integration.md §17.1) — negotiated fields ──
+  // Absent ⇒ GitHub, the pre-v2 wire user-installed daemons keep sending for a long time yet.
+  // 'gitlab' may be named only after GITCRED_PROVIDER_V2_FEATURE and an explicit 'github' only
+  // after GITCRED_GITHUB_V2_FEATURE; an older CP strips the field and answers a GitHub workspace
+  // grant, so a consumer that named one MUST verify the echo before trusting it (see GitCredGrant).
+  provider: CodeHostProviderString.optional(),
+  // Rename-stable numeric repository/project identity for the named provider; display paths are
+  // never a v2 match key. The GitHub arm still RESOLVES by name, so there it is verify-if-present.
+  externalRepoId: CodeHostExternalId.optional(),
+  // v2 access floor (§17.1): request LESS than the workspace clamp — the read-only CLI wrapper asks
+  // for 'read' even on a write workspace, so a mutating command cannot ride its token. Honored on
+  // both provider arms; absent ⇒ the clamp itself, which is what every GitHub caller asks for today.
+  requestedAccess: z.enum(['read', 'write']).optional()
 })
 export type GitCredRequest = z.infer<typeof GitCredRequest>
 
-export const GitCredGrant = z.object({
-  // C→D, REP (plaintext token — never log)
-  username: z.literal('x-access-token'), // fixed HTTPS basic-auth username for installation tokens
-  token: z.string(), // ghs_… — new stateless format runs ~520 chars; never assume a length
-  ttlSec: z.number().int(), // CP-computed remaining life, 60s clock-skew allowance already shaved.
-  // Daemons MUST track expiry as monotonic receivedAt+ttlSec (a skewed local
-  // clock must never resurrect a dead token); `expiresAt` is observability only.
-  expiresAt: z.string().datetime(),
-  repoFullName: z.string(), // owner/repo — helper path-match + diagnostics
-  access: z.enum(['read', 'write'])
-})
+export const GitCredGrant = z
+  .object({
+    // C→D, REP (plaintext token — never log)
+    // GitHub grants (provider absent or 'github') keep the exact installation-token
+    // literal 'x-access-token' — enforced below, so the v1 validation fence stands;
+    // only a provider-qualified non-GitHub v2 grant may name another basic-auth
+    // username (the binding's service-account login).
+    username: z.string().min(1),
+    token: z.string(), // ghs_… — new stateless format runs ~520 chars; never assume a length
+    ttlSec: z.number().int(), // CP-computed remaining life, 60s clock-skew allowance already shaved.
+    // Daemons MUST track expiry as monotonic receivedAt+ttlSec (a skewed local
+    // clock must never resurrect a dead token); `expiresAt` is observability only.
+    expiresAt: z.string().datetime(),
+    repoFullName: z.string(), // owner/repo (github) or namespaced project path (gitlab) — helper path-match + diagnostics
+    // §13.1 authorization level. 'comment' is the effect-lease clamp a daemon broker enforces per
+    // operation and rides only a gitlab grant (fenced below), so the GitHub v1 wire stays read|write.
+    access: z.enum(['read', 'comment', 'write']),
+    // ── gitcred v2 echo (gitlab-com-integration.md §17.1) — negotiated fields ──
+    // Absent ⇒ an unqualified GitHub grant: an older CP, or the answer to an absent-provider
+    // request. A consumer that named a provider MUST verify provider and externalRepoId against
+    // its request before returning the password — a mismatched echo is a wrong-repo credential.
+    provider: CodeHostProviderString.optional(),
+    externalRepoId: CodeHostExternalId.optional(),
+    // Purge fence: a grant is dead the moment the CP broadcasts a newer epoch.
+    credentialEpoch: CodeHostExternalId.optional(),
+    // Provider-side expiry of the UNDERLYING credential (observability only; the
+    // local lease above is always the shorter authority).
+    providerExpiresAt: z.string().datetime().optional(),
+    // The instance the credential authenticates against (§24.4), echoed for the consumer to
+    // verify exactly as it verifies provider and externalRepoId. Absent means GitLab.com.
+    host: z.string().optional()
+  })
+  .superRefine((grant, ctx) => {
+    const isGithub = grant.provider === undefined || grant.provider === 'github'
+    if (isGithub && grant.username !== 'x-access-token') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['username'],
+        message: 'a GitHub grant carries the fixed installation-token username'
+      })
+    }
+    if (isGithub && grant.access === 'comment') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['access'],
+        message: 'comment-level authority rides a provider-qualified gitlab grant only'
+      })
+    }
+  })
 export type GitCredGrant = z.infer<typeof GitCredGrant>

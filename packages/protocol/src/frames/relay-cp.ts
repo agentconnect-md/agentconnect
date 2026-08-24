@@ -1,11 +1,12 @@
 import { z } from 'zod'
 import { frameSchema } from '../envelope.js'
+import { HOOK_KINDS } from '../code-host.js'
 import { ErrorFrame } from './error.js'
 import { BindMatch, IntegrationChannel } from './integration.js'
 import { CronTarget } from './cron.js'
 import { Platform } from './route.js'
 import { CollabRoutesSnapshot } from './collab.js'
-import { GithubHookMetadata, HookBigIntString, OptionalHookConfigSnapshot } from './hook.js'
+import { GithubHookMetadata, GitlabHookMetadata, HookBigIntString, OptionalHookConfigSnapshot } from './hook.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 
@@ -146,7 +147,7 @@ export const RcVerifyResult = z.object({
   // always includes the primary. Absent ⇒ single-agent conversation on an older CP.
   participants: z.array(RcWebchatParticipant).max(16).optional(),
   // Session-targeted continuation (webchat-cross-integration-continuation.md):
-  // the CP-selected target ACP session id. The relay copies it verbatim onto
+  // the CP-selected target session, by its outward id (§1.1). The relay copies it verbatim onto
   // every rd/msg for this conversation; it never originates in the browser and
   // is deliberately the only cross-system coordinate on the wire — every local
   // coordinate comes from the daemon's own session row.
@@ -197,6 +198,39 @@ export type RcGithubCommentAuthz = z.infer<typeof RcGithubCommentAuthz>
 // effective permission or which validation failed; the relay needs one bit.
 export const RcGithubCommentAuthzResult = z.object({ allowed: z.boolean() }).strict()
 export type RcGithubCommentAuthzResult = z.infer<typeof RcGithubCommentAuthzResult>
+
+/** Neutral alias: the fence shape was never GitHub-specific. */
+export const RcHookFence = RcGithubHookFence
+export type RcHookFence = RcGithubHookFence
+
+// R→C REQ → rc/codehost-membership-authz/ok — the provider-neutral successor to
+// rc/github-comment-authz for hosts whose actor identity is numeric
+// (gitlab-com-integration.md §12.2, §17.2). Same discipline: metadata-only, the
+// CP re-resolves live membership and never trusts webhook-carried relationship
+// labels; authored content never crosses this wire. Deliberately NOT `.strict()`
+// — the GitHub frame's strictness is exactly why it could not be extended in
+// place. An older CP answers UNKNOWN_FRAME and the relay fails closed.
+export const RcCodeHostMembershipAuthz = z.object({
+  hookId: z.string().uuid(),
+  provider: z.string().min(1), // 'gitlab' today; open string so a new host degrades per-value
+  repoExternalId: z.string().regex(/^[1-9]\d*$/), // numeric project/repository id — the match key
+  actorExternalId: z.string().regex(/^[1-9]\d*$/), // sender/actor numeric user id
+  // Unmentioned thread continuation also requires the subject author's current
+  // membership; an explicit maintainer summon omits this second actor.
+  subjectAuthorExternalId: z
+    .string()
+    .regex(/^[1-9]\d*$/)
+    .optional(),
+  // Fence authorization to the exact compiled rule that accepted the delivery.
+  configRevision: HookBigIntString,
+  dispatchRevision: HookBigIntString,
+  siblingFences: z.array(RcHookFence).min(1).optional()
+})
+export type RcCodeHostMembershipAuthz = z.infer<typeof RcCodeHostMembershipAuthz>
+
+// C→R REP (corr = rc/codehost-membership-authz id). One bit, same as GitHub.
+export const RcCodeHostMembershipAuthzResult = z.object({ allowed: z.boolean() })
+export type RcCodeHostMembershipAuthzResult = z.infer<typeof RcCodeHostMembershipAuthzResult>
 
 // R→C REQ — signature-verified Check identity, suite identity, or waiting external-PR workflow control.
 const GithubNumericId = z.string().regex(/^[1-9]\d*$/)
@@ -278,7 +312,7 @@ export type RcGithubRerequestResult = z.infer<typeof RcGithubRerequestResult>
 export const RcHookAssign = z
   .object({
     hookId: z.string().uuid(),
-    kind: z.enum(['webhook', 'github']),
+    kind: z.enum(HOOK_KINDS),
     agentId: z.string().uuid(),
     daemonId: z.string().uuid(), // the agent's CURRENT placement; re-sent on moves
     // R1/R2a rolling fields. Partial/absent remains decodable, but the relay
@@ -325,6 +359,36 @@ export const RcHookAssign = z
         // attribution gate: an event fires only if payload.installation.id ∈ set.
         installationIds: z.array(z.string())
       })
+      .optional(),
+    // kind=gitlab (gitlab-com-integration.md §11.3) — required for that kind.
+    // The signing token rides inline exactly as the generic webhook's HMAC
+    // secret does; the rule is NEVER logged.
+    gitlab: z
+      .object({
+        projectId: z.string().regex(/^[1-9]\d*$/), // numeric project id — the match key
+        projectPath: z.string().min(1), // display/logs only; never matched on
+        sessionKeyPrefix: z.string().min(1), // rename-stable per-thread namespace: gitlab:<projectId>
+        events: z.array(z.string()), // 'issues:*' / 'merge_request:*' / 'push:*' …
+        // Removed feature, accepted and ignored for one release: a relay predating
+        // this one still REQUIRES the member, so the CP keeps sending an empty array.
+        labelFilter: z.array(z.string()).optional(),
+        commentFamilies: z.array(z.enum(['issues', 'merge_request'])).optional(),
+        mentionOnly: z.boolean(),
+        agentName: z.string().optional(),
+        // The binding's runtime identity: loop prevention (§12.1) and the
+        // mention/reviewer targets.
+        serviceAccountUserId: z.string().regex(/^[1-9]\d*$/),
+        serviceAccountUsername: z.string().min(1),
+        // §12.1 veto set: every managed account bound to the project, including the one above.
+        // Additive optional (§17.3) — a rule without it vetoes only the account it names.
+        boundServiceAccountUserIds: z.array(z.string().regex(/^[1-9]\d*$/)).optional(),
+        // whsec_ Standard Webhooks signing key for §11.2 verification.
+        signingToken: z.string().min(1),
+        // The instance this rule addresses (§24.4). The relay treats it as opaque data and
+        // copies it onto the trusted metadata it forwards, where it is the turn-time fence
+        // against the session's spec-carried host. Absent means GitLab.com.
+        host: z.string().optional()
+      })
       .optional()
   })
   .superRefine((rule, ctx) => {
@@ -343,6 +407,54 @@ export const RcHookRemove = z.object({
   hookId: z.string().uuid()
 })
 export type RcHookRemove = z.infer<typeof RcHookRemove>
+
+/**
+ * C→R REQ → `rc/hook-rerun/ok` — re-dispatch ONE gitlab hook turn the Console
+ * asked for (gitlab-com-integration.md §16.1 "Run again", §18.2). GitLab has no
+ * native Check button, so the Control Plane is the entry point instead of a
+ * signed provider callback; the frame carries only the fences and the freshly
+ * read subject metadata, and the relay re-checks its own compiled rule before
+ * reusing the ordinary hook dispatch path.
+ *
+ * Correlated, and NEVER retransmitted: a re-sent rerun is a second agent turn,
+ * so an unanswered frame is ambiguous rather than retryable on the same relay.
+ * Sent to ONE relay at a time (never broadcast) for the same reason; the CP
+ * moves to another eligible relay only on a DEFINITIVE refusal below.
+ * Gated on `gitlab-rerun-v1`, not `gitlab-com-v1`: the older bit predates this
+ * frame and its holder cannot decode it.
+ */
+export const RcHookRerun = z.object({
+  hookId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  deliveryKey: z.string().min(1), // Control-Plane-minted; the HookRun/dedup identity
+  configRevision: HookBigIntString,
+  dispatchRevision: HookBigIntString,
+  event: z.string().min(1), // normalized 'family:action', e.g. 'merge_request:rerun'
+  gitlab: GitlabHookMetadata
+})
+export type RcHookRerun = z.infer<typeof RcHookRerun>
+
+/**
+ * Definitive relay-side non-admission reasons. Each means NO turn started and
+ * NO HookRun row opened, so the Control Plane may try another eligible relay
+ * and must never report the click as accepted.
+ *
+ *  - `replay_pending`    — this relay holds no rule for the hook yet (its table
+ *    is a memory copy filled by the register replay);
+ *  - `rule_mismatch`     — it holds one, but the kind/agent/project/revision
+ *    fence differs from the frame;
+ *  - `limiter_exhausted` — the hook's shared per-hook run budget is spent.
+ */
+export const RcHookRerunRefusal = z.enum(['replay_pending', 'rule_mismatch', 'limiter_exhausted'])
+export type RcHookRerunRefusal = z.infer<typeof RcHookRerunRefusal>
+
+/** R→C REP (corr = the `rc/hook-rerun` id). `admitted` is the ONLY proof a turn
+ *  was queued: reaching a socket is not acceptance. */
+export const RcHookRerunResult = z.union([
+  z.object({ admitted: z.literal(true), deliveryKey: z.string().min(1) }),
+  z.object({ admitted: z.literal(false), code: RcHookRerunRefusal })
+])
+export type RcHookRerunResult = z.infer<typeof RcHookRerunResult>
 
 /** Definite pre-dispatch unavailability: the relay found no live connection for
  * the assigned daemon, so no agent turn or external review effect could start. */
@@ -388,6 +500,7 @@ export const RcRunReport = z
     ...OptionalHookConfigSnapshot.shape,
     event: z.string().min(1).optional(), // 'issues:opened' etc (github); absent for webhook kind
     github: GithubHookMetadata.optional(),
+    gitlab: GitlabHookMetadata.optional(),
     status: z.enum(['accepted', 'failed']),
     reason: z.string().optional() // delivery-stage reason; use isRetryableHookDeliveryReason before redelivery
   })
@@ -945,10 +1058,14 @@ export const RELAY_CP_SCHEMAS = {
   'rc/verify/ok': RcVerifyResult,
   'rc/github-comment-authz': RcGithubCommentAuthz,
   'rc/github-comment-authz/ok': RcGithubCommentAuthzResult,
+  'rc/codehost-membership-authz': RcCodeHostMembershipAuthz,
+  'rc/codehost-membership-authz/ok': RcCodeHostMembershipAuthzResult,
   'rc/github-rerequest': RcGithubRerequest,
   'rc/github-rerequest/ok': RcGithubRerequestResult,
   'rc/hook-assign': RcHookAssign,
   'rc/hook-remove': RcHookRemove,
+  'rc/hook-rerun': RcHookRerun,
+  'rc/hook-rerun/ok': RcHookRerunResult,
   'rc/run-report': RcRunReport,
   'rc/github-installation': RcGithubInstallation,
   'rc/daemon-revoke': RcDaemonRevoke,
@@ -992,10 +1109,14 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/verify/ok', RELAY_CP_SCHEMAS['rc/verify/ok']),
   frameSchema('rc/github-comment-authz', RELAY_CP_SCHEMAS['rc/github-comment-authz']),
   frameSchema('rc/github-comment-authz/ok', RELAY_CP_SCHEMAS['rc/github-comment-authz/ok']),
+  frameSchema('rc/codehost-membership-authz', RELAY_CP_SCHEMAS['rc/codehost-membership-authz']),
+  frameSchema('rc/codehost-membership-authz/ok', RELAY_CP_SCHEMAS['rc/codehost-membership-authz/ok']),
   frameSchema('rc/github-rerequest', RELAY_CP_SCHEMAS['rc/github-rerequest']),
   frameSchema('rc/github-rerequest/ok', RELAY_CP_SCHEMAS['rc/github-rerequest/ok']),
   frameSchema('rc/hook-assign', RELAY_CP_SCHEMAS['rc/hook-assign']),
   frameSchema('rc/hook-remove', RELAY_CP_SCHEMAS['rc/hook-remove']),
+  frameSchema('rc/hook-rerun', RELAY_CP_SCHEMAS['rc/hook-rerun']),
+  frameSchema('rc/hook-rerun/ok', RELAY_CP_SCHEMAS['rc/hook-rerun/ok']),
   frameSchema('rc/run-report', RELAY_CP_SCHEMAS['rc/run-report']),
   frameSchema('rc/github-installation', RELAY_CP_SCHEMAS['rc/github-installation']),
   frameSchema('rc/daemon-revoke', RELAY_CP_SCHEMAS['rc/daemon-revoke']),

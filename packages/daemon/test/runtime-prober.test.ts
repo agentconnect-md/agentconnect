@@ -211,8 +211,8 @@ describe('probeRuntime', () => {
     })
 
     expect(res.ok).toBe(true)
-    expect(await policy!.onPermission('sess', {} as never)).toEqual({ outcome: { outcome: 'cancelled' } })
-    expect(await policy!.onElicit('sess', {} as never)).toEqual({ action: 'decline' })
+    expect(await policy!.onPermission()).toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(await policy!.onElicit()).toEqual({ action: 'decline' })
     expect(policy!.suppressChildStderr).toBe(true)
     expect(start).toHaveBeenCalledOnce()
     expect(newSession).toHaveBeenCalledWith('/tmp/probe/workspace', [])
@@ -266,6 +266,7 @@ describe('probeRuntime', () => {
 
   it('captures private launch preparation failures', async () => {
     const res = await probeRuntime('broken-home', rt, '/tmp/x', {
+      hostFactory: () => successfulHost(),
       launchFor: () => {
         throw new Error('runtime HOME unavailable')
       }
@@ -454,14 +455,14 @@ describe('probeTimeoutMs', () => {
           RANDOM_AMBIENT_VALUE: 'nope'
         },
         hostFactory: (_runtime, _id, cwd, policy) => {
-          privateHome = policy.env!.HOME
-          privateConfig = join(policy.env!.HERMES_HOME, 'config.yaml')
+          privateHome = policy.env!.HOME!
+          privateConfig = join(policy.env!.HERMES_HOME!, 'config.yaml')
           expect(dirname(cwd)).toBe(dirname(privateHome))
           expect(policy.inheritProcessEnv).toBe(false)
           expect(policy.env).not.toHaveProperty('GOOGLE_APPLICATION_CREDENTIALS')
           expect(policy.env).not.toHaveProperty('RANDOM_AMBIENT_VALUE')
           expect(readFileSync(privateConfig, 'utf8')).toContain('memory_enabled: false')
-          expect(readFileSync(join(policy.env!.HERMES_HOME, '.env'), 'utf8')).toBe('OPENAI_API_KEY=scalar-key\n')
+          expect(readFileSync(join(policy.env!.HERMES_HOME!, '.env'), 'utf8')).toBe('OPENAI_API_KEY=scalar-key\n')
           return successfulHost()
         }
       }
@@ -487,7 +488,7 @@ describe('probeTimeoutMs', () => {
         curated: true,
         hostEnv: { HOME: hostHome, PATH: '/usr/bin' },
         hostFactory: (_runtime, _id, _cwd, policy) => {
-          const privateConfig = join(policy.env!.HOME, '.config', 'maki')
+          const privateConfig = join(policy.env!.HOME!, '.config', 'maki')
           expect(existsSync(join(privateConfig, 'init.lua'))).toBe(true)
           expect(existsSync(join(privateConfig, 'mcp.toml'))).toBe(false)
           return successfulHost()

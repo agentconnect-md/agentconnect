@@ -85,7 +85,7 @@ describe('normalizeTelegramMessage', () => {
     expect(n.thread).toBeUndefined()
     // §6.5 emission flip: generic coordinates only — the Telegram-named twins retired.
     expect(n.topicId).toBe('555')
-    expect(n.telegramTopicId).toBeUndefined()
+    expect((n as Record<string, unknown>).telegramTopicId).toBeUndefined()
     expect(n.threadRoot).toBeUndefined()
     expect(n.replyTo).toBe('999')
   })
@@ -97,7 +97,7 @@ describe('normalizeTelegramMessage', () => {
     expect(n.thread).toBeUndefined()
     expect(n.topicId).toBeUndefined()
     expect(n.threadRoot).toBe('6')
-    expect(n.telegramThreadRoot).toBeUndefined()
+    expect((n as Record<string, unknown>).telegramThreadRoot).toBeUndefined()
     expect(n.replyTo).toBe('7')
   })
 

@@ -12,14 +12,14 @@ import type { Integration } from '../src/agents/agent-schema.js'
 const slackInt: Integration = {
   id: 'int-1',
   platform: 'slack',
-  core: { bindRules: [] },
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
   config: { botToken: 'xoxb', appToken: 'xapp' }
 }
 
 const telegramInt: Integration = {
   id: 'int-2',
   platform: 'telegram',
-  core: { bindRules: [] },
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
   config: { botToken: '123456:ABC' }
 }
 
@@ -28,7 +28,7 @@ const telegramInt: Integration = {
 const discordInt: Integration = {
   id: 'int-3',
   platform: 'discord',
-  core: { bindRules: [], mutedChannels: [], gated: false },
+  core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
   config: { botToken: 'dc' }
 }
 
@@ -50,7 +50,7 @@ describe('toolsForIntegrations', () => {
     oneOf?: ObjectSchema[]
   }
   const sendSchema = (ints: Integration[]) => sendTool(ints)!.inputSchema as unknown as ObjectSchema
-  const sendTargetBranch = (ints: Integration[], targetField: 'toAgent' | 'toUser' | 'sessionId') =>
+  const sendTargetBranch = (ints: Integration[], targetField: 'toAgent' | 'toUser' | 'channel' | 'sessionId') =>
     sendSchema(ints).oneOf!.find((branch) => branch.required?.includes(targetField))!
   // The unified sendMessage tool's platform enum belongs only to the toUser-mode branch.
   const sendPlatformEnum = (ints: Integration[]) => {
@@ -66,6 +66,7 @@ describe('toolsForIntegrations', () => {
         'listChannelMembers',
         'listChannels',
         'getUserProfile',
+        'getChannelHistory',
         'readSlackFile'
       ])
     )
@@ -87,13 +88,25 @@ describe('toolsForIntegrations', () => {
       ])
     )
     expect(names).not.toContain('readSlackFile') // the Slack file tool is still platform-gated
+    expect(names).not.toContain('getChannelHistory')
     expect(sendPlatformEnum([telegramInt])).toEqual(['telegram'])
+  })
+
+  it('injects channel history only for the current session platform when its adapter is registered', () => {
+    const integrations = [slackInt, telegramInt, discordInt, feishuInt]
+    const namesFor = (currentPlatform: string) =>
+      toolsForIntegrations(integrations, { currentPlatform }).map((tool) => tool.name)
+
+    for (const platform of ['slack', 'discord', 'feishu']) {
+      expect(namesFor(platform)).toContain('getChannelHistory')
+    }
+    expect(namesFor('telegram')).not.toContain('getChannelHistory')
   })
 
   it('narrows the read tools’ platform enum to the agent’s platforms and routes cross-platform', () => {
     const readTool = (ints: Integration[], name: string) => toolsForIntegrations(ints).find((t) => t.name === name)!
     const enumOf = (t: { inputSchema: Record<string, unknown> }) =>
-      (t.inputSchema.properties as Record<string, { enum: string[] }>).platform.enum
+      (t.inputSchema.properties as Record<string, { enum: string[] }>).platform!.enum
     // A bridged agent's read tools can target either platform.
     expect(enumOf(readTool([slackInt, telegramInt], 'listChannels'))).toEqual(['slack', 'telegram'])
     expect(enumOf(readTool([slackInt, telegramInt], 'getUserProfile'))).toEqual(['slack', 'telegram'])
@@ -106,6 +119,11 @@ describe('toolsForIntegrations', () => {
     for (const n of ['listChannels', 'listChannelMembers', 'getUserProfile']) {
       expect(props(readTool([slackInt, telegramInt], n))).toHaveProperty('integrationId')
     }
+    const historyTool = toolsForIntegrations([slackInt, telegramInt], { currentPlatform: 'slack' }).find(
+      (tool) => tool.name === 'getChannelHistory'
+    )!
+    const historyProps = props(historyTool)
+    expect(Object.keys(historyProps).sort()).toEqual(['cursor', 'latest', 'limit', 'oldest'])
     expect(props(readTool([slackInt, telegramInt], 'listKnownUsers'))).not.toHaveProperty('integrationId')
   })
 
@@ -382,12 +400,15 @@ describe('toolsForIntegrations', () => {
         'setSessionTitle',
         'sendMessage',
         'listChannels',
+        'getChannelHistory',
         'readTelegramFile',
         'searchMemory',
         'saveMemory',
         'getMemory',
         'updateMemory',
         'deleteMemory',
+        'submitCodeReview',
+        // The pre-promotion alias stays reserved and auto-allowed for warm sessions.
         'submitGithubReview'
       ])
     )
@@ -411,16 +432,19 @@ describe('toolsForIntegrations', () => {
     }
   })
 
-  it('formal review descriptor has no model-selectable GitHub target', () => {
-    const tool = GITHUB_REVIEW_TOOLS.find((candidate) => candidate.name === 'submitGithubReview')!
-    expect(tool.name).toBe('submitGithubReview')
+  it('formal review descriptor has no model-selectable code-host target', () => {
+    const tool = GITHUB_REVIEW_TOOLS.find((candidate) => candidate.name === 'submitCodeReview')!
+    expect(tool.name).toBe('submitCodeReview')
     const properties = (tool.inputSchema.properties ?? {}) as Record<string, unknown>
     expect(Object.keys(properties)).toEqual(['event', 'verdict', 'body', 'comments'])
     expect(properties).not.toHaveProperty('repoFullName')
     expect(properties).not.toHaveProperty('pullNumber')
     expect(properties).not.toHaveProperty('commitId')
+    expect(properties).not.toHaveProperty('projectId')
+    expect(properties).not.toHaveProperty('mergeRequestIid')
     expect(properties.body).toMatchObject({ minLength: 1 })
     expect(tool.description).toContain('only a definite not_submitted result preserves')
+    expect(tool.description).toContain('REQUEST_CHANGES requires verdict fail')
   })
 
   it('batched review replies select only trusted thread roots exposed by the prompt', () => {

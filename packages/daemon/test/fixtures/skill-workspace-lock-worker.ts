@@ -5,7 +5,9 @@ import { installSkills } from '../../src/skills/install-skills.js'
 const [mode, cwd, stateDir, helperPgidArg] = process.argv.slice(2)
 if (!mode || !cwd || !stateDir || !process.send) throw new Error('invalid skill lock worker invocation')
 
-const notify = (message: Record<string, unknown>): void => process.send?.(message)
+const notify = (message: Record<string, unknown>): void => {
+  process.send?.(message)
+}
 
 if (mode === 'claim') {
   try {

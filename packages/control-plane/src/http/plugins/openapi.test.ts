@@ -212,7 +212,7 @@ describe('openapi plane', () => {
       // (assets 404ing) is caught here, not in a browser.
       const html = (await app.inject({ method: 'GET', url: '/docs' })).body
       const asset = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]
-        .map((m) => m[1])
+        .map((m) => m[1]!)
         .find((ref) => ref.includes('swagger-ui-bundle.js'))
       expect(asset).toBeTruthy()
       const assetUrl = new URL(asset!, 'http://example.test/docs').pathname // resolve as a browser would

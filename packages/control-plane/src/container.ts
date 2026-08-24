@@ -22,6 +22,19 @@ import {
 
 import { type AppConfig, resolveWebAppUrl } from './config/env.js'
 import { resolveGithubAppConfig } from './github/config.js'
+import { resolveGitlabAppConfig } from './gitlab/config.js'
+import { GitlabApiClient, type FetchLike as GitlabFetchLike } from './gitlab/api.js'
+import { GitlabOauthService } from './gitlab/oauth.service.js'
+import { DELETION_PENDING_REASON, GitlabAccountService } from './gitlab/account.service.js'
+import { GitlabProvisioner } from './gitlab/provisioner.js'
+import { GitlabGitcredService } from './gitlab/gitcred.service.js'
+import { GitlabCredentialRotator } from './gitlab/rotator.js'
+import { GitlabRetirementSweeper } from './gitlab/retirement-sweeper.js'
+import { GitlabConvergeSweeper } from './gitlab/converge-sweeper.js'
+import { GitlabMembershipAuthzService } from './gitlab/membership-authz.service.js'
+import { GitlabHookRerunService } from './gitlab/hook-rerun.service.js'
+import { CodeHostReviewBrokerService } from './codehost/review-lease.service.js'
+import { unionGitlabWebhookEvents } from './gitlab/webhook-events.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
 import type { FetchLike } from './github/api.js'
@@ -34,6 +47,7 @@ import { GithubReviewBrokerService } from './github/review-broker.service.js'
 import { PullRequestViewService } from './github/pull-request-view.service.js'
 import { SessionPullRequestLinkService } from './github/session-pull-request-link.service.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
+import { CodeHostNoteProjectionService } from './codehost/note-projection.service.js'
 import { githubProjectionIntent } from './github/projection-intent.js'
 import { HookRedeliveryReconciler } from './orchestrator/hookRedeliveryReconciler.js'
 import { LogtoIdentityService, resolveLogtoMgmtConfig } from './github/logto-identity.js'
@@ -88,6 +102,18 @@ import {
   PgGithubInstallationRepo,
   PgGithubInstallStateStore,
   PgAgentRepoAuthorizationRepo,
+  PgCodeHostRepositoryRepo,
+  PgCodeHostRunProjectionRepo,
+  PgGitlabConnectionRepo,
+  PgGitlabAgentAccountRepo,
+  PgGitlabProjectBindingRepo,
+  PgGitlabConnectionSecretStore,
+  PgGitlabProjectCredentialRepo,
+  PgGitlabProjectCredentialSecretStore,
+  PgGitlabWebhookSecretStore,
+  PgGitlabInstanceStateStore,
+  PgGitlabOauthStateStore,
+  PgCodeHostReviewLeaseRepo,
   PgSocialIdentityMutationGate,
   PgCronRepo,
   PgDutyGroupRepo,
@@ -119,6 +145,8 @@ import { RelaySweeper } from './orchestrator/relaySweeper.js'
 import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
+import { gatedDmSeeds, type GatedDmSeedResolver } from './orchestrator/linkedDm.js'
+import { convergeIntegrationGating } from './orchestrator/integrationPush.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
 import { findTool } from './http/mcp/tools.js'
@@ -134,7 +162,7 @@ import { WebchatMcpGrantTokenCodec } from './registry/webchatMcpGrantToken.js'
 import { OrgInviteLinkCodec } from './registry/orgInviteLink.js'
 import { OrgInviteLinkService } from './registry/orgInviteLinkService.js'
 import { WaitlistService } from './registry/waitlistService.js'
-import { AgentId, DaemonId, HookId, type OrgId } from './domain/ids.js'
+import { AgentId, DaemonId, HookId, OrgId } from './domain/ids.js'
 import { HookService } from './hooks/hook.service.js'
 import { RelayAuthService } from './registry/relayAuthService.js'
 import { DaemonRegistryService } from './registry/registryService.js'
@@ -143,6 +171,7 @@ import { DaemonReleaseResolver } from './registry/daemonRelease.js'
 import { InMemorySessionEventSink } from './events/sink.js'
 import { SessionUsageWriter } from './usage/writer.js'
 import { createIconStore } from './icons/icon-store.js'
+import { createGitlabAccountAvatarRenderer } from './http/gitlab-account-avatar.js'
 import type { IconUrlBases } from './agents/agent-icon.js'
 
 import type { SecretsProvider } from './secrets/providers/provider.js'
@@ -255,6 +284,8 @@ export interface ContainerOpts {
   fastify?: FastifyServerOptions
   /** GitHub REST fetch override — integration tests stub the API without network. */
   githubFetch?: FetchLike
+  /** GitLab HTTP edge stub for tests (mirrors githubFetch). */
+  gitlabFetch?: GitlabFetchLike
   /** Slack Web API fetch override for Session membership checks. */
   slackFetch?: FetchLike
   /** Feishu/Lark Open Platform fetch override for Session membership checks. */
@@ -407,7 +438,13 @@ export function buildContainer(
     waitlist: new PgWaitlistRepo(prisma, config.PRESET_AGENTS_ENABLED, presetPool),
     githubInstallation: new PgGithubInstallationRepo(prisma),
     githubInstallState: new PgGithubInstallStateStore(prisma),
-    agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma)
+    agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma),
+    codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
+    gitlabConnection: new PgGitlabConnectionRepo(prisma),
+    gitlabProjectBinding: new PgGitlabProjectBindingRepo(prisma),
+    gitlabAgentAccount: new PgGitlabAgentAccountRepo(prisma),
+    gitlabOauthState: new PgGitlabOauthStateStore(prisma),
+    gitlabInstanceState: new PgGitlabInstanceStateStore(prisma)
   }
 
   // ── C3/C4/C5 services ─────────────────────────────────────────────────────
@@ -508,6 +545,10 @@ export function buildContainer(
     ...(config.S3_PUBLIC_BASE_URL ? { store: config.S3_PUBLIC_BASE_URL } : {})
   }
 
+  // GitLab OAuth app config, resolved before the spec assembler because the host axis
+  // rides every projected spec with a GitLab consumer (§24.4); absent ⇒ gitlab disabled.
+  const gitlabAppCfg = resolveGitlabAppConfig(config)
+
   // The ONE assembler of CP→daemon AgentSpecs — owns secret loading (the only
   // AgentSecretStore VALUE reader) + icon bases, shared by every emission path:
   // reconcile roster, agent/upsert replicate, icon refresh, move activation.
@@ -535,7 +576,11 @@ export function buildContainer(
         'organization environment keys resolved to nothing and were removed from the agent projection'
       ),
     // The additional-repository allowlist the workspace projection mirrors.
-    repos.agentRepoAuth
+    repos.agentRepoAuth,
+    // §24.4 host carriage: the axis, and the hook read that reveals the one GitLab
+    // consumer neither the workspace nor the allowlist does.
+    gitlabAppCfg?.baseUrl,
+    repos.hook
   )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
@@ -648,6 +693,10 @@ export function buildContainer(
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
   // broadcast through it, and a (re)registering relay gets the full-set replay.
   // The installation repo feeds the github-kind compile (installationIds gate).
+  // §24.1: the resolved instance base, bound once here. Every GitLab URL in the
+  // process is composed from this client, so nothing can address another host.
+  const gitlabApi = gitlabAppCfg ? new GitlabApiClient(gitlabAppCfg.baseUrl, opts.gitlabFetch) : undefined
+  const gitlabWebhookSecretStore = gitlabAppCfg ? new PgGitlabWebhookSecretStore(prisma, secretCipher) : undefined
   const hookService = new HookService(
     repos.hook,
     repos.hookSecret,
@@ -655,7 +704,24 @@ export function buildContainer(
     relayControl,
     placementResolver,
     githubAppCfg ? repos.githubInstallation : undefined,
-    githubAppCfg?.slug
+    githubAppCfg?.slug,
+    undefined,
+    gitlabAppCfg ? repos.gitlabProjectBinding : undefined,
+    gitlabWebhookSecretStore,
+    gitlabAppCfg ? repos.gitlabAgentAccount : undefined,
+    gitlabAppCfg?.baseUrl,
+    async (orgId, agentId) => {
+      // Re-read: the hook write advanced this agent's configRevision in its own transaction.
+      const agent = await repos.agent.get(orgId, agentId)
+      if (!agent) return
+      await agentDelivery.upsert(agent, (err, daemonId) => {
+        if (err instanceof NoConnection) {
+          http.log.debug({ agentId, daemonId }, 'agent/upsert skipped: daemon offline')
+        } else {
+          http.log.warn({ err, agentId, daemonId }, 'hook converge: agent spec reconcile failed')
+        }
+      })
+    }
   )
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
@@ -689,7 +755,13 @@ export function buildContainer(
   )
 
   // The fan-out that rides the resolver (orchestrator/agentDelivery.ts).
-  const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
+  const agentDelivery = new AgentDelivery({
+    control: sender,
+    specs: agentSpecs,
+    placement: placementResolver,
+    // §17.3 projection gate: live advertised features; unknown daemon reads fail-closed.
+    daemonFeatures: (daemonId) => connReg.get(daemonId)?.capabilities?.features
+  })
 
   // The projections that BAKE IN the serving daemon — hook rules, HTTP-bot assignment, the
   // collaboration snapshot. A duty grant or release moves who serves an agent exactly as a
@@ -753,6 +825,17 @@ export function buildContainer(
   // daemons on register/sweep via the `relay/roster` EVT (sender is the broadcaster).
   const relayRoster = new RelayRoster(repos.relay, sender, clock, relayStaleMs)
 
+  // §14.8 (resource-visibility.md): which of a gated install's reported DMs open to the
+  // ordinary DM default because their counterpart is already in the agent's audience.
+  // Lazy over `logtoIdentity` and `http.log` for the same reason as the logger below —
+  // both are assigned further down and this only runs at report time.
+  const gatedDmSeedResolver: GatedDmSeedResolver = (channels, agent, bot) =>
+    gatedDmSeeds(channels, agent, bot, {
+      users: repos.user,
+      ...(logtoIdentity ? { identity: logtoIdentity } : {}),
+      log: { debug: (o, m) => http.log.debug(o, m), warn: (o, m) => http.log.warn(o, m) }
+    })
+
   // HTTP-bot assignment + attributed-route compilation (shared-bot-relay.md §4.2/§10).
   // Its logger is lazy (a wrapper over `http.log`, which is created below) — only ever
   // invoked at request/sweep time, well after `http` is assigned, so no TDZ hazard.
@@ -774,7 +857,8 @@ export function buildContainer(
     },
     platforms,
     agentDelivery,
-    placementResolver
+    placementResolver,
+    gatedDmSeedResolver
   )
   const stagedAgentMoves = new AgentMoveService({
     agents: repos.agent,
@@ -896,6 +980,197 @@ export function buildContainer(
         ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
       })
     : undefined
+  // GitLab.com OAuth administration (opt-in, gitlab-com-integration.md §9):
+  // assembled only when GITLAB_CLIENT_ID/SECRET are configured AND the public
+  // origin is known (the begin/callback URLs derive from it); absent ⇒ routes 404.
+  if (gitlabAppCfg && !config.PUBLIC_CP_URL) {
+    // A deploy mistake, not a mode: the begin/callback URLs derive from the public origin.
+    throw new Error('GITLAB_CLIENT_ID/SECRET are set but PUBLIC_CP_URL is not — set it or unset both')
+  }
+  const gitlabWebAppUrl = resolveWebAppUrl(config)
+  const gitlabOauthService =
+    gitlabAppCfg && config.PUBLIC_CP_URL
+      ? new GitlabOauthService({
+          cfg: gitlabAppCfg,
+          connections: repos.gitlabConnection,
+          secrets: new PgGitlabConnectionSecretStore(prisma, secretCipher),
+          states: repos.gitlabOauthState,
+          instanceState: repos.gitlabInstanceState,
+          cipher: secretCipher,
+          clock,
+          publicCpUrl: config.PUBLIC_CP_URL,
+          ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),
+          api: gitlabApi!,
+          log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+        })
+      : undefined
+  // Late-bound, like the other orchestrator refs here: the account service is
+  // built before the provisioner that owns the removal saga it resumes.
+  const gitlabRef: { current?: { provisioner: GitlabProvisioner } } = {}
+  // §7.2 identity: per-agent accounts, their PATs, and their memberships. Its
+  // mutation lease is the account row's, never a binding's.
+  const gitlabAccountService = gitlabOauthService
+    ? new GitlabAccountService({
+        oauth: gitlabOauthService,
+        accounts: repos.gitlabAgentAccount,
+        credentials: new PgGitlabProjectCredentialRepo(prisma),
+        credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+        agents: repos.agent,
+        instanceState: repos.gitlabInstanceState,
+        cipher: secretCipher,
+        clock,
+        avatarPng: createGitlabAccountAvatarRenderer(iconStore),
+        // A removal that stopped at a pending deletion finishes once the sweep
+        // proves the account gone; nothing else would revisit that binding.
+        onRetired: (orgId) => {
+          void (async () => {
+            for (const binding of await repos.gitlabProjectBinding.listForOrg(orgId)) {
+              if (binding.state !== 'cleanup_pending' || binding.stateReason !== DELETION_PENDING_REASON) continue
+              await gitlabRef.current?.provisioner.disconnect(orgId, binding.id)
+            }
+          })().catch((err) => http.log.warn({ err, orgId }, 'gitlab removal resume after retirement failed'))
+        },
+        api: gitlabApi!,
+        log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
+  const gitlab = gitlabOauthService
+    ? {
+        api: gitlabApi!,
+        oauth: gitlabOauthService,
+        // The Console "Run again" action (§16.1) — fences here, dispatch on the relay.
+        hookRerun: new GitlabHookRerunService({
+          hooks: repos.hook,
+          agents: repos.agent,
+          bindings: repos.gitlabProjectBinding,
+          accounts: repos.gitlabAgentAccount,
+          credentials: new PgGitlabProjectCredentialRepo(prisma),
+          credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+          hookService,
+          relayControl,
+          api: gitlabApi!
+        }),
+        accounts: gitlabAccountService!,
+        provisioner: new GitlabProvisioner({
+          oauth: gitlabOauthService,
+          bindings: repos.gitlabProjectBinding,
+          accounts: gitlabAccountService!,
+          webhookSecrets: gitlabWebhookSecretStore!,
+          catalog: repos.codeHostRepository,
+          instanceState: repos.gitlabInstanceState,
+          clock,
+          ...(config.PUBLIC_RELAY_URL ? { publicRelayUrl: config.PUBLIC_RELAY_URL } : {}),
+          // §11.1: the union every enabled gitlab hook on the project wants.
+          desiredWebhookEvents: async (orgId, projectId) =>
+            unionGitlabWebhookEvents(await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab'), projectId),
+          // Awaited under the run lease (§17.3 round 3): the durable clone-URL
+          // convergence rides the saga; only the daemon fan-out stays async.
+          syncWorkspacePaths: async (orgId, projectId, projectPath, cloneUrl) => {
+            const agentIds = await repos.agent.refreshGitlabProjectPath(OrgId(orgId), projectId, projectPath, cloneUrl)
+            for (const agentId of agentIds) {
+              void repos.agent
+                .getUnscoped(agentId)
+                .then(
+                  (agent) =>
+                    agent &&
+                    agentDelivery.upsert(agent, (err, daemonId) =>
+                      http.log.warn(
+                        { err, agentId, daemonId },
+                        'gitlab rename: agent/upsert failed (backstop: reconnect)'
+                      )
+                    )
+                )
+                .catch((err) => http.log.warn({ err, agentId }, 'gitlab rename: agent refresh fan-out failed'))
+            }
+          },
+          // Rules embed binding/webhook facts — recompile the project's hooks
+          // after every run that may have changed them (assign or remove).
+          onConverged: (orgId, projectId) => {
+            void (async () => {
+              // Rules embed binding/webhook facts — recompile the project's hooks.
+              for (const row of await repos.hook.listForOrgKind(OrgId(orgId), 'gitlab')) {
+                if (row.repoId === projectId) await hookService.broadcast(row)
+              }
+            })().catch((err) => http.log.warn({ err }, 'gitlab converge fan-out failed'))
+          },
+          api: gitlabApi!,
+          log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+        })
+      }
+    : undefined
+  if (gitlab) gitlabRef.current = gitlab
+
+  // §7.4 PAT-rotation sweep; armed only by startBackground().
+  const gitlabRotator = gitlab
+    ? new GitlabCredentialRotator({
+        accounts: gitlab.accounts,
+        clock,
+        log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
+
+  // §19.4 retirement sweep: GitLab deletes a user asynchronously, so the run
+  // that asked cannot witness it — this loop does. Armed by startBackground().
+  const gitlabRetirementSweeper = gitlab
+    ? new GitlabRetirementSweeper({
+        accounts: gitlab.accounts,
+        clock,
+        log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
+
+  // §10.2 convergence sweep: re-drives what a contended pass still owes, the
+  // half of that obligation which survives a restart. Armed by startBackground().
+  const gitlabConvergeSweeper = gitlab
+    ? new GitlabConvergeSweeper({
+        provisioner: gitlab.provisioner,
+        clock,
+        log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
+
+  // The GitLab arm of rc/codehost-membership-authz (§12.2): live effective
+  // membership through the binding's read PAT. Absent configuration fails closed.
+  const gitlabMembershipAuthz = gitlab
+    ? new GitlabMembershipAuthzService({
+        hooks: repos.hook,
+        bindings: repos.gitlabProjectBinding,
+        accounts: repos.gitlabAgentAccount,
+        credentials: new PgGitlabProjectCredentialRepo(prisma),
+        credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+        clock,
+        api: gitlabApi!
+      })
+    : undefined
+
+  // §16 informational run projection: the CP records the desired generation, the OWNING DAEMON
+  // writes the note. Assembled with the GitLab administration surface, since the ledger's
+  // credential fence comes from the acting agent's account on a project binding.
+  const codeHostNoteProjection = gitlab
+    ? new CodeHostNoteProjectionService({
+        projections: new PgCodeHostRunProjectionRepo(prisma),
+        runs: repos.hook,
+        agents: repos.agent,
+        bindings: repos.gitlabProjectBinding,
+        accounts: repos.gitlabAgentAccount,
+        orgs: repos.org,
+        clock,
+        ...(gitlabWebAppUrl ? { webAppUrl: gitlabWebAppUrl } : {}),
+        sender: {
+          daemonFeatures: (daemonId) => connReg.get(daemonId)?.capabilities?.features,
+          send: (daemonId, desired, orgId) => {
+            try {
+              sender.codeHostNoteDesired(daemonId, desired, orgId)
+            } catch (err) {
+              // An offline daemon leaves the desired generation pending — never an error path.
+              http.log.debug({ err, daemonId }, 'note projection: desired frame not sent — daemon offline')
+            }
+          }
+        },
+        log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+      })
+    : undefined
+
   // The console PR panel's read projection — long-lived so its short TTL cache actually absorbs mounts.
   const pullRequestView = github ? new PullRequestViewService(github.tokens, clock, opts.githubFetch) : undefined
   // §12.6's second identity source for that panel: the PR a session's own head branch has, for the
@@ -945,6 +1220,29 @@ export function buildContainer(
         github,
         clock,
         placement: placementResolver
+      })
+    : undefined
+  // Provider-neutral formal reviews (§15.1/§15.2). The publishing identity is the
+  // project binding's service account, so today the broker exists only where GitLab
+  // administration is configured; the frames themselves name no provider.
+  const codeHostReviewBroker = gitlabAppCfg
+    ? new CodeHostReviewBrokerService({
+        leases: new PgCodeHostReviewLeaseRepo(prisma),
+        hook: repos.hook,
+        agent: repos.agent,
+        clock,
+        placement: placementResolver,
+        publisher: async (orgId, provider, projectExternalId, agentId) => {
+          if (provider !== 'gitlab') return null
+          const binding = await repos.gitlabProjectBinding.byProject(orgId, projectExternalId)
+          if (!binding) return null
+          // A binding being repaired or torn down publishes nothing.
+          if (binding.state !== 'ready' && binding.state !== 'admin_degraded') return null
+          // §7.2: the ACTING agent's own account is the coordinator's subject key.
+          const account = await repos.gitlabAgentAccount.forAgentBinding(orgId, agentId, binding.id)
+          if (!account || account.serviceAccountUserId === null) return null
+          return { serviceAccountExternalId: account.serviceAccountUserId, projectPath: binding.projectPath }
+        }
       })
     : undefined
   const githubCommentAuthz = github
@@ -1150,6 +1448,11 @@ export function buildContainer(
       presetAgent: repos.presetAgent,
       githubInstallation: repos.githubInstallation,
       agentRepoAuth: repos.agentRepoAuth,
+      codeHostRepository: repos.codeHostRepository,
+      gitlabConnection: repos.gitlabConnection,
+      gitlabProjectBinding: repos.gitlabProjectBinding,
+      gitlabAgentAccount: repos.gitlabAgentAccount,
+      gitlabInstanceState: repos.gitlabInstanceState,
       audit: repos.audit,
       webchatMcpOperation: repos.webchatMcpOperation,
       oauth: repos.oauth
@@ -1194,6 +1497,7 @@ export function buildContainer(
     searchSkillRegistry,
     resolvePublicRepo: createPublicRepoResolver(),
     ...(github ? { github } : {}),
+    ...(gitlab ? { gitlab } : {}),
     ...(pullRequestView ? { pullRequestView } : {}),
     ...(sessionPullRequestLink ? { sessionPullRequestLink } : {}),
     ...(githubUserAuthz ? { githubUserAuthz } : {}),
@@ -1484,6 +1788,13 @@ export function buildContainer(
     githubInstallation: repos.githubInstallation,
     integrationChannel: repos.integrationChannel,
     slackSessionAccess,
+    gatedDmSeeds: gatedDmSeedResolver,
+    // §14.8: the report path can now create an ENABLED row, so it needs the same
+    // re-converge a visibility flip performs — the reporter's own bindRules predate it.
+    integrationConverge: (agent) =>
+      convergeIntegrationGating({ repos, agentDelivery, httpBot, platforms }, agent, {
+        warn: (o, m) => http.log.warn(o as Record<string, unknown>, m)
+      }),
     sessionAccessWarmer,
     agentMutations,
     recoverStagedAgent: (agentId, daemonId, moveId) => stagedAgentMoves.recoverStaged(agentId, daemonId, moveId),
@@ -1497,8 +1808,24 @@ export function buildContainer(
     organizationKnowledge: repos.organizationKnowledge,
     externalMemoryConnection: repos.externalMemoryConnection,
     ...(github ? { github } : {}),
+    // gitcred v2 (§13.1): the gitlab arm serves the agent's own account PATs; absent ⇒ disabled.
+    ...(gitlab
+      ? {
+          gitlabGitcred: new GitlabGitcredService({
+            bindings: repos.gitlabProjectBinding,
+            accounts: repos.gitlabAgentAccount,
+            credentials: new PgGitlabProjectCredentialRepo(prisma),
+            credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
+            repoAuths: repos.agentRepoAuth,
+            clock,
+            baseUrl: gitlab.api.baseUrl
+          })
+        }
+      : {}),
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
+    ...(codeHostReviewBroker ? { codeHostReviewBroker } : {}),
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),
+    ...(codeHostNoteProjection ? { codeHostNoteProjection } : {}),
     relayRoster: () => relayRoster.entries(),
     clock,
     config: {
@@ -1556,6 +1883,7 @@ export function buildContainer(
     // Missing GitHub configuration fails closed.
     authorizeGithubComment: async (req) => (githubCommentAuthz ? githubCommentAuthz.allowed(req) : false),
     authorizeGithubRerequest: async (req) => (githubRerequest ? githubRerequest.resolve(req) : { allowed: false }),
+    authorizeCodeHostMembership: async (req) => (gitlabMembershipAuthz ? gitlabMembershipAuthz.allowed(req) : false),
     // A relay just (re)registered — refresh every daemon's roster, (re)assign every
     // HTTP bots' ingress + routes (§5, idempotent), AND replay the compiled hook
     // rules to the fresh connection (its table is a memory copy). All fire-and-forget,
@@ -1704,6 +2032,30 @@ export function buildContainer(
             http.log.warn({ err, hookId: report.hookId }, 'github check: manual-request convergence failed')
           )
       }
+      // §16 delivery-stage edge: an accepted gitlab MR fire opens `queued`, a delivery failure
+      // reads `skipped`. Fire-and-forget like the Check convergence above — the desired generation
+      // is durable, so a lost projection edge is repaired by the next one.
+      if (delivery.accepted && codeHostNoteProjection && report.gitlab) {
+        void (async () => {
+          const hook = await repos.hook.getUnscoped(HookId(report.hookId))
+          if (hook?.kind !== 'gitlab') return
+          const edge = {
+            hookId: report.hookId,
+            agentId: report.agentId,
+            deliveryKey: report.deliveryKey,
+            orgId: hook.orgId,
+            state: 'queued' as const,
+            reason: report.reason ?? null,
+            gitlab: report.gitlab,
+            snapshot: report,
+            at: firedAt
+          }
+          if (report.status === 'accepted') await codeHostNoteProjection.afterAccepted(edge)
+          else await codeHostNoteProjection.afterDeliveryFailed(edge)
+        })().catch((err) =>
+          http.log.warn({ err, hookId: report.hookId }, 'note projection: delivery convergence failed')
+        )
+      }
     },
     // The in-Slack config modal picked a channel's default agent — persist + recompile
     // the bot's routes. Swallow+log: a store error must not close the shared relay link.
@@ -1811,6 +2163,9 @@ export function buildContainer(
       webchatMcpOperationReaper.start()
       githubRunReporter?.start()
       hookRedeliveryReconciler?.start()
+      gitlabRotator?.start()
+      gitlabRetirementSweeper?.start()
+      gitlabConvergeSweeper?.start()
       for (const reaper of pendingInstallReapers) reaper.start()
       relaySweeper.start()
       dutyRecompute.start()
@@ -1827,6 +2182,9 @@ export function buildContainer(
       const webchatMcpOperationSettled = webchatMcpOperationReaper.stopAndSettle()
       githubRunReporter?.stop()
       hookRedeliveryReconciler?.stop()
+      gitlabRotator?.stop()
+      gitlabRetirementSweeper?.stop()
+      gitlabConvergeSweeper?.stop()
       installationDoorbell?.stop()
       for (const reaper of pendingInstallReapers) reaper.stop()
       relaySweeper.stop()

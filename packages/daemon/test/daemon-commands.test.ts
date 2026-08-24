@@ -109,7 +109,9 @@ function makeRoutable(daemon: Daemon) {
   const conn = {
     workspaceId: vi.fn(() => 'T1'),
     setStatus: vi.fn(async () => {}),
-    postMessage: vi.fn(async () => {}),
+    postMessage: vi.fn<(channel: string, text: string, threadTs?: string, options?: unknown) => Promise<void>>(
+      async () => {}
+    ),
     getChannelInfo: vi.fn(async (id: string) => ({ id })),
     getUserProfile: vi.fn(async (id: string) => ({ id }))
   }
@@ -630,7 +632,6 @@ describe('Daemon in-conversation commands', () => {
       platform: 'slack',
       channel: 'C1',
       thread: 'T1',
-      transportScope: TRANSPORT_SCOPE,
       transportScope: TRANSPORT_SCOPE,
       acpSessionId: 'acp-old',
       state: 'idle',
@@ -1427,10 +1428,18 @@ describe('Slack interactive status bar', () => {
     const conn = {
       workspaceId: vi.fn(() => 'T1'),
       setStatus: vi.fn(async () => {}),
-      postMessage: vi.fn(async () => `m${++n}`),
-      updateMessage: vi.fn(async () => {}),
-      postBlocks: vi.fn(async () => `sb${++n}`),
-      updateBlocks: vi.fn(async () => {}),
+      postMessage: vi.fn<(channel: string, text: string, threadTs?: string, options?: unknown) => Promise<string>>(
+        async () => `m${++n}`
+      ),
+      updateMessage: vi.fn<(channel: string, ts: string, text: string, chrome?: boolean) => Promise<void>>(
+        async () => {}
+      ),
+      postBlocks: vi.fn<
+        (channel: string, blocks: unknown[], text: string, threadTs?: string, options?: unknown) => Promise<string>
+      >(async () => `sb${++n}`),
+      updateBlocks: vi.fn<
+        (channel: string, ts: string, blocks: unknown[], text?: string, chrome?: boolean) => Promise<void>
+      >(async () => {}),
       deleteMessage: vi.fn(async () => true),
       postContext: vi.fn(async () => {})
     }
@@ -1480,7 +1489,10 @@ describe('Slack interactive status bar', () => {
     const section = blocks.find((b) => b.type === 'section')!
     expect(blocks).toHaveLength(1)
     expect(section.text!.text).toContain('opus-4.8')
-    expect(section.text!.text).toContain('<http://localhost:3000/sessions/acp-1?source=slack|View Session>')
+    // The deep link names the session outwardly (session-concept.md §1.1), not the runtime's id.
+    const outward = (await (daemon as any).store.getSessionByAcpId('acp-1'))!.sessionId
+    expect(outward).not.toBe('acp-1')
+    expect(section.text!.text).toContain(`<http://localhost:3000/sessions/${outward}?source=slack|View Session>`)
     expect(section.accessory.action_id).toBe('ac_more')
     await daemon.stop()
   }, 15_000)
@@ -1685,7 +1697,9 @@ describe('Slack interactive status bar', () => {
     delete integration.config.appToken
     const sharedTransportScope = `slack:${createHash('sha256').update('slack\0b').digest('hex').slice(0, 24)}`
     const KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', sharedTransportScope)
-    const openStatusModal = vi.fn(async () => {})
+    const openStatusModal = vi.fn<(triggerId: string, sessionKey?: string, privateMetadata?: string) => Promise<void>>(
+      async () => {}
+    )
     ;(daemon as any).connByIntegration.set('int-a', { openStatusModal })
     await (daemon as any).store.upsertSession({
       key: KEY,
@@ -1739,7 +1753,9 @@ describe('Slack interactive status bar', () => {
     const sharedTransportScope = `slack:${createHash('sha256').update('slack\0b').digest('hex').slice(0, 24)}`
     const KEY = sessionKey('slack', 'C1', 'T1', 'bot-a', sharedTransportScope)
     const FOREIGN_KEY = sessionKey('slack', 'C1', 'T2', 'bot-a', sharedTransportScope)
-    const openStatusModal = vi.fn(async () => {})
+    const openStatusModal = vi.fn<(triggerId: string, sessionKey?: string, privateMetadata?: string) => Promise<void>>(
+      async () => {}
+    )
     const updateBlocks = vi.fn(async () => true)
     ;(daemon as any).connByIntegration.set('int-a', { openStatusModal, updateBlocks })
     await (daemon as any).store.upsertSession({
@@ -1800,7 +1816,7 @@ describe('Slack interactive status bar', () => {
     expect(openStatusModal).toHaveBeenCalledTimes(2)
     const [, shortcutSessionKey, shortcutMetadata] = openStatusModal.mock.calls[1]!
     expect(shortcutSessionKey).toBe(KEY)
-    expect(decodeSharedSlackStatusTarget(shortcutMetadata)).toEqual({
+    expect(decodeSharedSlackStatusTarget(shortcutMetadata!)).toEqual({
       v: 1,
       agentId: 'bot-a',
       integrationId: 'int-a',
@@ -1871,7 +1887,7 @@ describe('Slack interactive status bar', () => {
     const [triggerId, openedSessionKey, privateMetadata] = openStatusModal.mock.calls[0]!
     expect(triggerId).toBe('trig-1')
     expect(openedSessionKey).toBe(KEY)
-    expect(decodeSharedSlackStatusTarget(privateMetadata)).toEqual({
+    expect(decodeSharedSlackStatusTarget(privateMetadata!)).toEqual({
       v: 1,
       agentId: 'bot-a',
       integrationId: 'int-a',
@@ -2200,7 +2216,8 @@ describe('Slack interactive status bar', () => {
     await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
     // The connection queries statusInfoForKey to build the modal; it resolves the deep link.
     const data = await (daemon as any).statusInfoForKey(SESSION_KEY)
-    expect(data.link).toBe('https://console.example.com/sessions/acp-1?source=slack')
+    const outward = (await (daemon as any).store.getSessionByAcpId('acp-1'))!.sessionId
+    expect(data.link).toBe(`https://console.example.com/sessions/${outward}?source=slack`)
     expect(data.info.models).toEqual(['opus-4.8', 'sonnet-5'])
     expect(data.identity).toMatchObject({
       name: AGENT_IDENTITY.displayName,

@@ -59,7 +59,7 @@ program
   .option('--max-agents <n>', 'max agents this daemon advertises / enforces')
   .option('--require-sandbox', 'require the Linux SRT sandbox for every agent or refuse daemon startup')
   .option('--k8s', 'run runtimes in cluster sandbox pods instead of on this host (no probing, no local runtimes)')
-  .option('--key-server <url>', 'HTTPS endpoint for session-scoped model credentials')
+  .option('--key-server <url>', 'http(s) endpoint for session-scoped model credentials')
   .option('--key-server-token-path <path>', 'file containing the key-server bearer token')
   .option('--dry-run', 'load + validate config and print the reconcile plan, then exit')
   .option('--agent <name>', 'select a single agent by id (run/chat)')
@@ -208,6 +208,20 @@ program
   .action(async (agentId: string, ghArgs: string[]) => {
     const { runGhToken } = await import('./cli/gh-token.js')
     await runGhToken(agentId, ghArgs)
+  })
+
+// glab token fetch (gitlab-com-integration.md §13.3): the gh-token twin —
+// invoked BY the run/bin/glab wrapper once per invocation. Prints ONLY the
+// READ token on stdout; exit 2 = non-gitlab target (wrapper runs real glab).
+program
+  .command('glab-token', { hidden: true })
+  .description('Fetch a read-only GITLAB_TOKEN from the local daemon (glab wrapper backend)')
+  .argument('<agentId>', 'agent whose credentials to serve')
+  .argument('[glabArgs...]', "the agent's glab argv, forwarded verbatim after `--`")
+  .allowUnknownOption()
+  .action(async (agentId: string, glabArgs: string[]) => {
+    const { runGlabToken } = await import('./cli/glab-token.js')
+    await runGlabToken(agentId, glabArgs)
   })
 
 // Agent business config (identity, status, bindings) is owned by the Control

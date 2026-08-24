@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   GithubHookMetadata,
   GithubReviewAuthorize,
+  GitlabHookMetadata,
+  HookStart,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
@@ -188,7 +190,7 @@ describe('R1/R2a hook control schemas', () => {
     expect(decodedStart.ok).toBe(true)
     if (!decodedStart.ok || !isFrame('hook/start')(decodedStart.frame)) throw new Error('expected hook/start')
     expect(decodedStart.frame.payload.sessionId).toBe('session/with space')
-    expect(decodedStart.frame.payload.github.reportSha).toBe(github.headSha)
+    expect(decodedStart.frame.payload.github?.reportSha).toBe(github.headSha)
 
     const startOk = decodeEnvelope(
       JSON.stringify(buildEnvelope('hook/start/ok', { accepted: true }, { corr: start.id }))
@@ -257,5 +259,83 @@ describe('R1/R2a hook control schemas', () => {
     }
     expect(GithubReviewAuthorize.safeParse(base).success).toBe(true)
     expect(GithubReviewAuthorize.safeParse({ ...base, requestedVerdict: undefined }).success).toBe(false)
+  })
+})
+
+const gitlab = {
+  projectId: '4455667',
+  projectPath: 'example-group/sub/example-project',
+  webhookId: '9001',
+  target: { kind: 'merge_request' as const, iid: 7, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) }
+}
+
+describe('code-host M0 shapes (gitlab-com-integration.md §17.2)', () => {
+  it('validates GitLab subject metadata across all three targets', () => {
+    expect(GitlabHookMetadata.safeParse(gitlab).success).toBe(true)
+    expect(GitlabHookMetadata.safeParse({ ...gitlab, target: { kind: 'issue', iid: 12 } }).success).toBe(true)
+    expect(GitlabHookMetadata.safeParse({ ...gitlab, target: { kind: 'push', ref: 'refs/heads/main' } }).success).toBe(
+      true
+    )
+    // Missing subject identity is rejected before a session key could be derived from it.
+    expect(GitlabHookMetadata.safeParse({ ...gitlab, target: { kind: 'issue' } }).success).toBe(false)
+    expect(GitlabHookMetadata.safeParse({ ...gitlab, target: { kind: 'push', ref: '' } }).success).toBe(false)
+    expect(GitlabHookMetadata.safeParse({ ...gitlab, projectId: 'example/project' }).success).toBe(false)
+  })
+
+  it('keeps hook/start a provider one-of and existing github senders valid', () => {
+    const base = { hookId: HOOK_ID, agentId: AGENT_ID, deliveryKey: 'delivery-1', ...snapshot }
+    expect(HookStart.safeParse({ ...base, github }).success).toBe(true)
+    expect(HookStart.safeParse({ ...base, gitlab }).success).toBe(true)
+    expect(HookStart.safeParse(base).success).toBe(false)
+    expect(HookStart.safeParse({ ...base, github, gitlab }).success).toBe(false)
+  })
+
+  it('round-trips a gitlab hook/start and its correlated barrier reply', () => {
+    const start = buildEnvelope('hook/start', {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'delivery-1',
+      sessionId: 'acp-gitlab-1',
+      event: 'merge_request:update',
+      gitlab,
+      ...snapshot
+    })
+    const decoded = decodeEnvelope(JSON.stringify(start))
+    expect(decoded.ok).toBe(true)
+    if (!decoded.ok || !isFrame('hook/start')(decoded.frame)) throw new Error('expected hook/start')
+    // The trusted subject discriminator survives the wire: the head the CP fences reviews on.
+    expect(decoded.frame.payload.github).toBeUndefined()
+    expect(decoded.frame.payload.gitlab?.projectId).toBe(gitlab.projectId)
+    const target = decoded.frame.payload.gitlab?.target
+    expect(target?.kind === 'merge_request' ? target.headSha : undefined).toBe('a'.repeat(40))
+    expect(
+      decodeEnvelope(JSON.stringify(buildEnvelope('hook/start/ok', { accepted: true }, { corr: start.id }))).ok
+    ).toBe(true)
+  })
+
+  it('accepts gitlab metadata and a provider-neutral published output on hook/report', () => {
+    const base = { hookId: HOOK_ID, agentId: AGENT_ID, deliveryKey: 'delivery-1', status: 'success' as const }
+    const note = { provider: 'gitlab', kind: 'note', externalId: '123456' }
+    expect(HookReport.safeParse({ ...base, gitlab, publishedOutput: note }).success).toBe(true)
+    // The provider members and the two published-output shapes are mutually exclusive.
+    expect(HookReport.safeParse({ ...base, github, gitlab }).success).toBe(false)
+    expect(
+      HookReport.safeParse({
+        ...base,
+        github,
+        publishedComment: { kind: 'issue_comment', commentId: '77' },
+        publishedOutput: note
+      }).success
+    ).toBe(false)
+    // A submitted formal review still excludes any fallback output.
+    expect(
+      HookReport.safeParse({
+        ...base,
+        gitlab,
+        reviewAttemptId: ATTEMPT_ID,
+        reviewResult: { state: 'submitted', reviewId: 'r1', event: 'COMMENT', verdict: 'pass', commitId: 'c1' },
+        publishedOutput: note
+      }).success
+    ).toBe(false)
   })
 })

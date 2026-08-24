@@ -42,9 +42,9 @@ import { SLACK_ATTACHMENT_TOOL } from './slack/attachments.js'
 import { TELEGRAM_ATTACHMENT_TOOL } from './telegram/attachments.js'
 
 /** The optional {@link import('./contract.js').PlatformConnection} facets core
- *  branches on. Deliberately only the two this seam covers: a port earns a name
+ *  branches on. A port earns a name
  *  here when a branch retires onto it, never speculatively. */
-export type ReadPort = 'getThreadReplies' | 'openDirectMessage'
+export type ReadPort = 'getThreadReplies' | 'openDirectMessage' | 'getChannelHistory'
 
 /** Anything that MAY carry read ports: a real connection, the `MessageGateway`
  *  slice the MCP tools hold, or a duck-typed test fake. Deliberately `object`
@@ -72,6 +72,8 @@ export interface PlatformReadPorts {
    *  id to the app's own 1:1 conversation, so `sendMessage`'s `toUser` form has
    *  somewhere to post. */
   readonly openDirectMessage?: boolean
+  /** The agent-facing channel history tool backed by this platform's cursor API. */
+  readonly channelHistory?: boolean
   /** The agent-facing tool that surfaces this platform's CREDENTIALED attachment
    *  read. Present when the platform's file references cannot be fetched without
    *  the bot token, so the agent needs a tool instead of its own network access.
@@ -99,6 +101,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       platform: 'slack',
       label: 'Slack',
       openDirectMessage: true,
+      channelHistory: true,
       attachmentReadTool: SLACK_ATTACHMENT_TOOL
     }
   ],
@@ -108,6 +111,22 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       platform: 'telegram',
       label: 'Telegram',
       attachmentReadTool: TELEGRAM_ATTACHMENT_TOOL
+    }
+  ],
+  [
+    'discord',
+    {
+      platform: 'discord',
+      label: 'Discord',
+      channelHistory: true
+    }
+  ],
+  [
+    'feishu',
+    {
+      platform: 'feishu',
+      label: 'Lark / Feishu',
+      channelHistory: true
     }
   ]
 ])
@@ -167,6 +186,17 @@ export function attachmentReadToolsFor(platforms: Iterable<string>): ToolDescrip
   return [...READ_PORTS.values()].flatMap((d) =>
     wanted.has(d.platform) && d.attachmentReadTool ? [d.attachmentReadTool] : []
   )
+}
+
+/** The platforms in the input list that expose the bounded channel-history port. */
+export function channelHistoryPlatformsFor(platforms: Iterable<string>): string[] {
+  const wanted = new Set(platforms)
+  return [...READ_PORTS.values()].filter((d) => d.channelHistory && wanted.has(d.platform)).map((d) => d.platform)
+}
+
+/** Every platform that exposes the bounded channel-history port, in registry order. */
+export function allChannelHistoryPlatforms(): string[] {
+  return [...READ_PORTS.values()].filter((d) => d.channelHistory).map((d) => d.platform)
 }
 
 /** Is `name` some platform's attachment-read tool? The MCP dispatcher runs ONE

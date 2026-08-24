@@ -24,8 +24,8 @@ function catalog(): ResolvedRuntimeCatalog {
   const explicit = { command: 'custom-acp', args: [], env: [] }
   return {
     entries: {
-      'hermes-agent': { runtime: hermes, source: 'curated', name: 'Hermes Agent', version: '' },
-      explicit: { runtime: explicit, source: 'user', name: 'explicit', version: '' }
+      'hermes-agent': { runtime: hermes, source: 'curated', name: 'Hermes Agent', version: '', skillsAgentId: null },
+      explicit: { runtime: explicit, source: 'user', name: 'explicit', version: '', skillsAgentId: null }
     },
     runtimes: { 'hermes-agent': hermes, explicit }
   }
@@ -85,7 +85,9 @@ describe('daemon curated runtime admission', () => {
       root: root(),
       sandboxMechanism: null,
       resolveCatalog: async () => ({
-        entries: { 'hermes-agent': { runtime, source: 'curated', name: 'Hermes Agent', version: '' } },
+        entries: {
+          'hermes-agent': { runtime, source: 'curated', name: 'Hermes Agent', version: '', skillsAgentId: null }
+        },
         runtimes: { 'hermes-agent': runtime }
       }),
       installed: (runtimes) => runtimes
@@ -261,7 +263,7 @@ describe('daemon curated runtime admission', () => {
   // sweep completion, so a runtime stamped when it landed would go unlaunchable (and get
   // pruned from the snapshot) for the rest of a long package-launcher install.
   it('keeps a fast curated result admitted when a slow co-probe outlasts its TTL', async () => {
-    const clock = new FakeClock(100)
+    const clock = new FakeClock()
     // 'hermes-agent' answers immediately; the sweep then burns more than the 5-minute
     // admission TTL before returning, exactly like a cold npx install.
     const probe = vi.fn(
@@ -303,7 +305,7 @@ describe('daemon curated runtime admission', () => {
   }, 15_000)
 
   it('refreshes curated admission after the TTL without requiring a CP reconnect', async () => {
-    const clock = new FakeClock(100)
+    const clock = new FakeClock()
     const probe = vi.fn(async (runtimes: Record<string, unknown>) =>
       Object.keys(runtimes).map((runtime) => ({ runtime, ok: true, models: [] }))
     )
@@ -333,7 +335,7 @@ describe('daemon curated runtime admission', () => {
   }, 15_000)
 
   it('does not arm a local probe timer when no curated source wins', () => {
-    const daemon = new Daemon({ clock: new FakeClock(100), sandboxMechanism: null })
+    const daemon = new Daemon({ clock: new FakeClock(), sandboxMechanism: null })
     ;(daemon as any).runtimeCatalog = {
       entries: { explicit: catalog().entries.explicit },
       runtimes: { explicit: catalog().runtimes.explicit }

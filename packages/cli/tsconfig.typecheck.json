@@ -2,8 +2,10 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "customConditions": ["development"],
+    "declaration": false,
     "noEmit": true,
     "rootDir": "../..",
     "types": ["node"]
-  }
+  },
+  "include": ["src", "test", "vitest.config.ts"]
 }

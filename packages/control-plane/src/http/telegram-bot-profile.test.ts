@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { IconStore } from '../icons/icon-store.js'
 import { renderAgentIconPng } from '../agents/agent-icon-render.js'
 import { createTelegramBotIconSyncer } from './telegram-bot-profile.js'
+import { AgentId } from '../domain/ids.js'
 
 const realFetch = globalThis.fetch
 
@@ -30,7 +31,7 @@ describe('createTelegramBotIconSyncer', () => {
     const sync = createTelegramBotIconSyncer()
 
     await sync('telegram-secret', {
-      id: '00000000-0000-4000-8000-000000000001',
+      id: AgentId('00000000-0000-4000-8000-000000000001'),
       icon: { kind: 'glyph', glyph: 'terminal', color: '#2a6fdb' },
       runtime: 'claude'
     })
@@ -58,7 +59,7 @@ describe('createTelegramBotIconSyncer', () => {
     const sync = createTelegramBotIconSyncer(store)
 
     await sync('telegram-secret', {
-      id: '00000000-0000-4000-8000-000000000002',
+      id: AgentId('00000000-0000-4000-8000-000000000002'),
       icon: { kind: 'image' },
       runtime: 'codex'
     })

@@ -62,6 +62,56 @@ sessionId                                                // Stable opaque addres
   also the value shown on the `Session` line of the `# Agent` block in section
   2.3. A model treats it as opaque.
 
+**`sessionId` and `acpSessionId` are two NAMES for one session, each used in its
+own scope — never two concepts, and never interchangeable words for the same
+scope.** Which name is correct is decided by who is being addressed:
+
+- **`sessionId`** is the session's identity everywhere OUTSIDE the ACP hop: the
+  wire to the control plane, the console and its deep links, `sendMessage`
+  targets, the `# Agent` block, and the model-credential claims the gateway
+  verifies. It must exist BEFORE the runtime does — a credential is minted to
+  start the runtime, so an identity that only appears afterwards cannot be in it.
+- **`acpSessionId`** is the identity the RUNTIME knows the session by, and it is
+  needed in both directions on that hop: the daemon keys `session/prompt`,
+  `session/cancel` and `session/set_config_option` by it, and the runtime keys
+  every `session/update`, permission and elicitation notification by it. The
+  daemon can never discard it.
+
+The daemon mints the outward id when the session slot is first resolved — before
+any credential is issued, so a credential can carry it. Where a runtime adopts
+the id proposed on `session/new`, the two hold the same value; our adapters do
+not propose it yet, so today they normally differ, and a runtime is always free
+to insist on its own id. That does not break the doctrine: the daemon stores
+both, uses `acpSessionId` for the ACP hop alone, and keeps answering the rest of
+the world with `sessionId`. Translation happens at that one boundary and nowhere
+else.
+
+The field name is the contract, and it is readable from the frame alone: a field named
+`acpSessionId` carries the runtime's id, because what it addresses lives on that hop and dies
+with it — an ACP lease, a `session/update` stream. A field named `sessionId` carries the outward
+one, whoever is asking: session metadata, usage, a purge receipt, a credential's claims, a
+transcript page, a workspace read, a webchat delivery target. A daemon that receives one resolves
+its slot by the outward id (falling back to the ACP id, which is what a pre-v12 session was
+reported under) and works internally in ACP terms from there.
+
+LINEAGE is outward for the same reason, and it is the case where the ACP id fails hardest: an
+`originSessionId`, a `lineageReplyTo`, a `sendMessage` SessionTarget and a reported
+`parentSessionId` all name a session to someone who is not its runtime — another agent, another
+daemon, the CP. A lineage link written in the runtime's name matches nothing on the other side:
+the control plane keys its session rows by the outward id, so a child reporting an ACP-named
+parent is a child whose parent "does not exist" — no console lineage, and no visibility to
+inherit (session-visibility.md §5.1). The `Session` and `Parent session` lines of the `# Agent`
+block are the same id, which is what makes them usable as a SessionTarget at all.
+
+What this rules out, in both directions:
+
+- Reporting the ACP id (or anything derived from `sessionKey`, such as a hash of
+  it) as the outward identity. `sessionKey` carries platform coordinates —
+  channel and thread — which must not leave the daemon, and the ACP id does not
+  exist early enough to be minted into a credential.
+- Sending the outward id to the runtime as if it were the ACP id when the
+  runtime did not adopt it.
+
 The session's `platform` is where the owner agent receives and sends. It may
 differ from a target platform operated on by one message. See
 [case 3 in section 7.4](#74-case-3-send-from-telegram-to-a-slack-channel-without-mentioning-another-agent).

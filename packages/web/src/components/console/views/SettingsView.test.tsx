@@ -66,7 +66,7 @@ async function render() {
 }
 
 function rowNames(): string[] {
-  return ['Slack', 'GitHub', 'Feishu / Lark'].filter((name) =>
+  return ['Slack', 'GitHub', 'Feishu/Lark'].filter((name) =>
     [...host.querySelectorAll('span')].some((span) => span.textContent === name)
   )
 }
@@ -94,7 +94,7 @@ describe('session access card', () => {
 
     await render()
 
-    expect(rowNames()).toEqual(['Slack', 'GitHub', 'Feishu / Lark'])
+    expect(rowNames()).toEqual(['Slack', 'GitHub', 'Feishu/Lark'])
     expect(host.querySelectorAll('[role="switch"]')).toHaveLength(3)
   })
 

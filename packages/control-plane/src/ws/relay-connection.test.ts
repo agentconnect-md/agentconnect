@@ -14,7 +14,7 @@ import {
   type RcVerifyResult
 } from '@agentconnect.md/protocol'
 import { RelayConnection } from './relay-connection.js'
-import { RelayRegistry } from './relay-registry.js'
+import { RelayNotWritten, RelayRegistry } from './relay-registry.js'
 import type { Transport } from './transport.js'
 import { RelayAuthService } from '../registry/relayAuthService.js'
 import { ApiKeyCodec } from '../registry/apiKey.js'
@@ -90,13 +90,15 @@ function build(
   over: {
     upsertByName?: RelayRepo['upsertByName']
     touchLastSeen?: RelayRepo['touchLastSeen']
-    auth?: Pick<RelayAuthService, 'authenticate' | 'verifyDaemonKey' | 'heartbeatSec'>
+    auth?: Pick<RelayAuthService, 'authenticate' | 'verifyDaemonKey' | 'heartbeatSec'> &
+      Partial<Pick<RelayAuthService, 'verifyDaemonToken'>>
     verifyWebchatToken?: (token: string) => Promise<RcVerifyResult>
     authorizeGithubComment?: (req: RcGithubCommentAuthz) => Promise<boolean>
     authorizeGithubRerequest?: (req: RcGithubRerequest) => Promise<RcGithubRerequestResult>
     deploymentConfig?: ConstructorParameters<typeof RelayConnection>[1]['deploymentConfig']
     onThreadAssign?: ConstructorParameters<typeof RelayConnection>[1]['onThreadAssign']
     onThreadParticipant?: ConstructorParameters<typeof RelayConnection>[1]['onThreadParticipant']
+    clock?: Clock
   } = {}
 ) {
   const codec = new ApiKeyCodec({ API_KEY_PEPPER: 'unit-test-pepper-0123456789abcdefghij' })
@@ -108,6 +110,7 @@ function build(
     id: RELAY_ID,
     name,
     daemonUrl,
+    features: [],
     lastSeenAt: new Date(NOW),
     createdAt: new Date(NOW)
   }))
@@ -118,7 +121,7 @@ function build(
   const onRegistered = vi.fn()
   const onRunReport = vi.fn(async () => {})
   const onBotChannels = vi.fn(async () => {})
-  const onBotRevoked = vi.fn(async () => {})
+  const onBotRevoked = vi.fn(async () => ({ applied: true }))
   const onThreadAssign = over.onThreadAssign ?? vi.fn(async () => {})
   const onThreadParticipant = over.onThreadParticipant ?? vi.fn(async () => {})
   const relayReg = new RelayRegistry()
@@ -131,12 +134,14 @@ function build(
   const conn = new RelayConnection(transport, {
     auth,
     relays,
-    clock,
+    clock: over.clock ?? clock,
     ...(over.deploymentConfig ? { deploymentConfig: over.deploymentConfig } : {}),
     onRegistered,
     onRunReport,
     onSetChannelAgent: vi.fn(async () => {}),
     onBotChannels,
+    onBotConversation: vi.fn(async () => {}),
+    onNoticePosted: vi.fn(async () => {}),
     onBotRevoked,
     onThreadAssign,
     onThreadParticipant,
@@ -145,7 +150,8 @@ function build(
     relayReg,
     verifyWebchatToken,
     authorizeGithubComment,
-    authorizeGithubRerequest
+    authorizeGithubRerequest,
+    authorizeCodeHostMembership: vi.fn(async () => false)
   })
   conn.start()
   return {
@@ -214,6 +220,7 @@ function buildWebchatVerifier(
   const getAgent = vi.fn(async (id: string) => {
     if (over.agentById && id in over.agentById) return over.agentById[id] ?? null
     return {
+      id,
       orgId: 'org-1',
       placementKind: 'daemon' as const,
       setId: null,
@@ -466,6 +473,7 @@ describe('RelayConnection FSM', () => {
       id: RELAY_ID,
       name: 'pod-0',
       daemonUrl: 'wss://pod-0.example.test',
+      features: [],
       lastSeenAt: new Date(NOW),
       createdAt: new Date(NOW)
     })
@@ -490,6 +498,7 @@ describe('RelayConnection FSM', () => {
         id: RELAY_ID,
         name,
         daemonUrl,
+        features: [],
         lastSeenAt: new Date(NOW),
         createdAt: new Date(NOW)
       })),
@@ -505,6 +514,9 @@ describe('RelayConnection FSM', () => {
       onRunReport: vi.fn(async () => {}),
       onSetChannelAgent: vi.fn(async () => {}),
       onBotChannels: vi.fn(async () => {}),
+      onBotConversation: vi.fn(async () => {}),
+      onNoticePosted: vi.fn(async () => {}),
+      onBotRevoked: vi.fn(async () => ({ applied: true })),
       onThreadAssign: vi.fn(async () => {}),
       onThreadParticipant: vi.fn(async () => {}),
       threadLookup: vi.fn(async (m) => ({ ...m, target: null, participants: [] })),
@@ -512,7 +524,8 @@ describe('RelayConnection FSM', () => {
       relayReg,
       verifyWebchatToken,
       authorizeGithubComment: vi.fn(async () => false),
-      authorizeGithubRerequest: vi.fn(async () => ({ allowed: false }))
+      authorizeGithubRerequest: vi.fn(async () => ({ allowed: false as const })),
+      authorizeCodeHostMembership: vi.fn(async () => false)
     })
     conn.start()
     await toReady(transport)
@@ -799,7 +812,13 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
     const h = buildWebchatVerifier({
       participants: ROSTER,
       agentById: {
-        [MEMBER_AGENT_ID]: { orgId: 'org-1', placementKind: 'daemon', setId: null, daemonId: MEMBER_DAEMON_ID }
+        [MEMBER_AGENT_ID]: {
+          id: MEMBER_AGENT_ID,
+          orgId: 'org-1',
+          placementKind: 'daemon',
+          setId: null,
+          daemonId: MEMBER_DAEMON_ID
+        }
       },
       daemonById: { [MEMBER_DAEMON_ID]: { state: 'READY' } }
     })
@@ -822,7 +841,13 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
     const h = buildWebchatVerifier({
       participants: ROSTER,
       agentById: {
-        [MEMBER_AGENT_ID]: { orgId: 'org-1', placementKind: 'daemon', setId: null, daemonId: MEMBER_DAEMON_ID }
+        [MEMBER_AGENT_ID]: {
+          id: MEMBER_AGENT_ID,
+          orgId: 'org-1',
+          placementKind: 'daemon',
+          setId: null,
+          daemonId: MEMBER_DAEMON_ID
+        }
       },
       daemonById: { [MEMBER_DAEMON_ID]: { state: 'DEGRADED' } }
     })
@@ -840,7 +865,13 @@ describe('webchat verification multi-agent roster (webchat-multi-agents.md §6.2
     const h = buildWebchatVerifier({
       participants: ROSTER,
       agentById: {
-        [MEMBER_AGENT_ID]: { orgId: 'org-OTHER', placementKind: 'daemon', setId: null, daemonId: MEMBER_DAEMON_ID }
+        [MEMBER_AGENT_ID]: {
+          id: MEMBER_AGENT_ID,
+          orgId: 'org-OTHER',
+          placementKind: 'daemon',
+          setId: null,
+          daemonId: MEMBER_DAEMON_ID
+        }
       },
       daemonById: { [MEMBER_DAEMON_ID]: { state: 'READY' } }
     })
@@ -989,7 +1020,15 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
     const SUCCESSOR = '22222222-2222-4222-8222-222222222222'
     const pooled = (session: Parameters<typeof targetSession>[0], members: string[]) =>
       targeted(session, {
-        agentById: { [WEBCHAT_AGENT_ID]: { orgId: 'org-1', placementKind: 'set', setId: POOL_SET, daemonId: null } },
+        agentById: {
+          [WEBCHAT_AGENT_ID]: {
+            id: WEBCHAT_AGENT_ID,
+            orgId: 'org-1',
+            placementKind: 'set',
+            setId: POOL_SET,
+            daemonId: null
+          }
+        },
         placement: new PlacementResolver({ clock: systemClock, liveMembers: async () => [SUCCESSOR] }),
         sharedStoreMembersBySet: { [POOL_SET]: members },
         daemonById: { [SUCCESSOR]: { state: 'READY', features: CONTINUATION_FEATURES } }
@@ -1013,5 +1052,106 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
     await expect(
       pooled({ daemonId: RECORDER, contentSetId: POOL_SET }, [RECORDER]).verifier('t')
     ).resolves.toMatchObject({ ok: false })
+  })
+})
+
+describe('correlated C→R request (rc/hook-rerun admission, §16.1)', () => {
+  const timerClock: Clock = {
+    now: () => NOW,
+    setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+    clearTimeout: (h) => globalThis.clearTimeout(h as ReturnType<typeof globalThis.setTimeout>)
+  }
+  const RERUN = {
+    hookId: '88888888-8888-4888-8888-888888888888',
+    agentId: WEBCHAT_AGENT_ID,
+    deliveryKey: 'rerun_1',
+    configRevision: '7',
+    dispatchRevision: '9',
+    event: 'merge_request:rerun',
+    gitlab: {
+      projectId: '4455667',
+      projectPath: 'example-group/example-project',
+      target: { kind: 'merge_request' as const, iid: 42, headSha: 'a'.repeat(40) }
+    }
+  }
+
+  it('resolves with the relay REP payload and sends the frame exactly once', async () => {
+    const { conn, transport } = build({ clock: timerClock })
+    await toReady(transport)
+    const pending = conn.request('rc/hook-rerun', RERUN)
+    const sent = transport.sent.filter((f) => f.type === 'rc/hook-rerun')
+    expect(sent).toHaveLength(1)
+    transport.feedFrame(
+      buildRelayCpFrame('rc/hook-rerun/ok', { admitted: true, deliveryKey: 'rerun_1' }, { corr: sent[0]!.id })
+    )
+    await expect(pending).resolves.toEqual({ admitted: true, deliveryKey: 'rerun_1' })
+    // Never retransmitted: a second copy of this frame would be a second turn.
+    expect(transport.sent.filter((f) => f.type === 'rc/hook-rerun')).toHaveLength(1)
+  })
+
+  it('carries a definitive refusal through as the resolved payload', async () => {
+    const { conn, transport } = build({ clock: timerClock })
+    await toReady(transport)
+    const pending = conn.request('rc/hook-rerun', RERUN)
+    const corr = transport.sent.find((f) => f.type === 'rc/hook-rerun')!.id
+    transport.feedFrame(buildRelayCpFrame('rc/hook-rerun/ok', { admitted: false, code: 'rule_mismatch' }, { corr }))
+    await expect(pending).resolves.toEqual({ admitted: false, code: 'rule_mismatch' })
+  })
+
+  it('rejects on a correlated error REP, on close, and on its own deadline', async () => {
+    const errored = build({ clock: timerClock })
+    await toReady(errored.transport)
+    const failing = errored.conn.request('rc/hook-rerun', RERUN)
+    const corr = errored.transport.sent.find((f) => f.type === 'rc/hook-rerun')!.id
+    errored.transport.feedFrame(
+      buildRelayCpFrame('error', { code: 'PROTOCOL_STATE', message: 'not served', retryable: false }, { corr })
+    )
+    await expect(failing).rejects.toThrow()
+
+    const closing = build({ clock: timerClock })
+    await toReady(closing.transport)
+    const orphaned = closing.conn.request('rc/hook-rerun', RERUN)
+    closing.transport.simulateClose(1006)
+    await expect(orphaned).rejects.toThrow(/closed/)
+
+    const silent = build({ clock: timerClock })
+    await toReady(silent.transport)
+    await expect(silent.conn.request('rc/hook-rerun', RERUN, 5)).rejects.toThrow(/no relay reply/)
+    // A lapsed deadline still leaves exactly one frame on the wire.
+    expect(silent.transport.sent.filter((f) => f.type === 'rc/hook-rerun')).toHaveLength(1)
+  })
+
+  it('refuses BEFORE the write when the socket is past READY, so the caller may ask a peer', async () => {
+    const { conn, transport } = build({ clock: timerClock })
+    // Not registered yet: a send here would be swallowed and only ever time out.
+    await expect(conn.request('rc/hook-rerun', RERUN)).rejects.toBeInstanceOf(RelayNotWritten)
+    expect(transport.sent.filter((f) => f.type === 'rc/hook-rerun')).toHaveLength(0)
+
+    await toReady(transport)
+    transport.simulateClose(1006)
+    await expect(conn.request('rc/hook-rerun', RERUN)).rejects.toBeInstanceOf(RelayNotWritten)
+    expect(transport.sent.filter((f) => f.type === 'rc/hook-rerun')).toHaveLength(0)
+  })
+
+  it('marks a lost answer as WRITTEN — a deadline is never a pre-write failure', async () => {
+    const { conn, transport } = build({ clock: timerClock })
+    await toReady(transport)
+    await expect(conn.request('rc/hook-rerun', RERUN, 5)).rejects.not.toBeInstanceOf(RelayNotWritten)
+    expect(transport.sent.filter((f) => f.type === 'rc/hook-rerun')).toHaveLength(1)
+  })
+
+  it('never dispatches a correlated reply as a fresh inbound frame', async () => {
+    const { conn, transport } = build({ clock: timerClock })
+    await toReady(transport)
+    const pending = conn.request('rc/hook-rerun', RERUN)
+    const corr = transport.sent.find((f) => f.type === 'rc/hook-rerun')!.id
+    transport.feedFrame(buildRelayCpFrame('rc/hook-rerun/ok', { admitted: true, deliveryKey: 'rerun_1' }, { corr }))
+    await expect(pending).resolves.toMatchObject({ admitted: true })
+    // A REP the relay sends for an id nobody awaits is inert, not a state error.
+    transport.feedFrame(
+      buildRelayCpFrame('rc/hook-rerun/ok', { admitted: true, deliveryKey: 'rerun_9' }, { corr: 'unknown-id' })
+    )
+    await Promise.resolve()
+    expect(transport.closed).toBeUndefined()
   })
 })

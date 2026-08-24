@@ -43,12 +43,33 @@ import {
 import {
   replyGithubReviewThreads,
   REPLY_GITHUB_REVIEW_THREADS_ARGS,
-  submitGithubReview,
-  SUBMIT_GITHUB_REVIEW_ARGS,
+  submitCodeReview,
+  SUBMIT_CODE_REVIEW_ARGS,
   type GithubReviewDeps
 } from './ops/github.js'
 import {
+  controlCodeHostPipeline,
+  CONTROL_CODE_HOST_PIPELINE_ARGS,
+  createCodeHostComment,
+  CREATE_CODE_HOST_COMMENT_ARGS,
+  createCodeHostMergeRequest,
+  CREATE_CODE_HOST_MERGE_REQUEST_ARGS,
+  inspectCodeHostPipelines,
+  INSPECT_CODE_HOST_PIPELINES_ARGS,
+  readCodeHostDiscussions,
+  READ_CODE_HOST_DISCUSSIONS_ARGS,
+  replyCodeHostDiscussion,
+  REPLY_CODE_HOST_DISCUSSION_ARGS,
+  updateCodeHostComment,
+  UPDATE_CODE_HOST_COMMENT_ARGS,
+  updateCodeHostMergeRequest,
+  UPDATE_CODE_HOST_MERGE_REQUEST_ARGS,
+  type CodeHostEffectDeps
+} from './ops/code-host.js'
+import {
   getCurrentChannel,
+  getChannelHistory,
+  GET_CHANNEL_HISTORY_ARGS,
   getUserProfile,
   GET_USER_PROFILE_ARGS,
   listChannelMembers,
@@ -76,6 +97,8 @@ export type {
   ReplyGithubReviewThreadsResult,
   SubmitGithubReviewReq
 } from './ops/github.js'
+export type { SubmitCodeReviewReq } from '../codehost/review-adapter.js'
+export type { CodeHostEffectReq } from './ops/code-host.js'
 export { SEND_MESSAGE_BRANCHES } from './ops/messaging.js'
 export type { MessageAgentReq, MessageAgentResult, ReplyToSessionReq, ReplyToSessionResult } from './ops/messaging.js'
 export type {
@@ -100,6 +123,7 @@ export interface OpsDeps
     KnowledgeDeps,
     OrchestrationDeps,
     GithubReviewDeps,
+    CodeHostEffectDeps,
     MemoryOpsDeps,
     ShareFileDeps,
     PlatformReadDeps {
@@ -143,12 +167,23 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['startOrchestration', startOrchestration],
   ['getOrchestration', getOrchestration],
   ['cancelOrchestration', cancelOrchestration],
-  ['submitGithubReview', submitGithubReview],
+  ['submitCodeReview', submitCodeReview],
+  // A working alias so sessions already warm with the pre-promotion tool set keep resolving.
+  ['submitGithubReview', submitCodeReview],
   ['replyGithubReviewThreads', replyGithubReviewThreads],
+  ['createCodeHostComment', createCodeHostComment],
+  ['updateCodeHostComment', updateCodeHostComment],
+  ['readCodeHostDiscussions', readCodeHostDiscussions],
+  ['replyCodeHostDiscussion', replyCodeHostDiscussion],
+  ['createCodeHostMergeRequest', createCodeHostMergeRequest],
+  ['updateCodeHostMergeRequest', updateCodeHostMergeRequest],
+  ['inspectCodeHostPipelines', inspectCodeHostPipelines],
+  ['controlCodeHostPipeline', controlCodeHostPipeline],
   ['listKnownUsers', listKnownUsers],
   ['listChannels', listChannels],
   ['listChannelMembers', listChannelMembers],
-  ['getUserProfile', getUserProfile]
+  ['getUserProfile', getUserProfile],
+  ['getChannelHistory', getChannelHistory]
 ])
 
 /**
@@ -176,12 +211,22 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['startOrchestration', START_ORCHESTRATION_ARGS],
   ['getOrchestration', ORCHESTRATION_OWNER_ARGS],
   ['cancelOrchestration', ORCHESTRATION_OWNER_ARGS],
-  ['submitGithubReview', SUBMIT_GITHUB_REVIEW_ARGS],
+  ['submitCodeReview', SUBMIT_CODE_REVIEW_ARGS],
+  ['submitGithubReview', SUBMIT_CODE_REVIEW_ARGS],
   ['replyGithubReviewThreads', REPLY_GITHUB_REVIEW_THREADS_ARGS],
+  ['createCodeHostComment', CREATE_CODE_HOST_COMMENT_ARGS],
+  ['updateCodeHostComment', UPDATE_CODE_HOST_COMMENT_ARGS],
+  ['readCodeHostDiscussions', READ_CODE_HOST_DISCUSSIONS_ARGS],
+  ['replyCodeHostDiscussion', REPLY_CODE_HOST_DISCUSSION_ARGS],
+  ['createCodeHostMergeRequest', CREATE_CODE_HOST_MERGE_REQUEST_ARGS],
+  ['updateCodeHostMergeRequest', UPDATE_CODE_HOST_MERGE_REQUEST_ARGS],
+  ['inspectCodeHostPipelines', INSPECT_CODE_HOST_PIPELINES_ARGS],
+  ['controlCodeHostPipeline', CONTROL_CODE_HOST_PIPELINE_ARGS],
   ['listKnownUsers', LIST_KNOWN_USERS_ARGS],
   ['listChannels', LIST_CHANNELS_ARGS],
   ['listChannelMembers', LIST_CHANNEL_MEMBERS_ARGS],
   ['getUserProfile', GET_USER_PROFILE_ARGS],
+  ['getChannelHistory', GET_CHANNEL_HISTORY_ARGS],
   // The session's own conversation is read from trusted context alone — no arguments.
   ['getCurrentChannel', z.object({})],
   // One body serves every platform's credentialed attachment read, so one schema does too.

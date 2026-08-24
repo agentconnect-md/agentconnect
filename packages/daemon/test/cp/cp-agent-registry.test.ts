@@ -8,7 +8,7 @@ import { CpAgentRegistry } from '../../src/cp/cp-agent-registry.js'
 
 const A1 = '11111111-1111-4111-8111-111111111111'
 const A2 = '22222222-2222-4222-8222-222222222222'
-const spec = (over: Partial<AgentSpec> = {}): AgentSpec => ({ name: 'helper', runtime: 'claude', ...over })
+const spec = (over: Partial<AgentSpec> = {}) => ({ name: 'helper', runtime: 'claude', ...over }) as AgentSpec
 
 function makeReg(dir = mkdtempSync(join(tmpdir(), 'ac-cpreg-'))) {
   const onChange = vi.fn()

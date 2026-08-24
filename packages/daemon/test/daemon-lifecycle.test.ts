@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MAX_TASK_LIST_TASKS } from '@agentconnect.md/protocol'
+import { MAX_TASK_LIST_TASKS, type SessionPurged } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { TaskViolationError } from '../src/cp/task-reader.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
@@ -88,7 +88,7 @@ function multiBlockingHost() {
       await blocked
       return { stopReason: 'end_turn' }
     }),
-    cancel: vi.fn(async () => {}),
+    cancel: vi.fn(async (_sessionId: string) => {}),
     stop: vi.fn(async () => {})
   }
   return { host, release: () => release() }
@@ -273,7 +273,11 @@ describe('Daemon session lifecycle (#118)', () => {
     failing.start.mockRejectedValue(
       new Error('Codex process has exited with code 1:\nError: Missing optional dependency @openai/codex-linux-x64')
     )
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: vi.fn(() => failing) })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: vi.fn(() => failing as any)
+    })
     await daemon.start()
     ;(daemon as any).hostRuntimeHome.set('bot-a', join(root, 'agents', 'bot-a', 'home'))
     const repair = vi.spyOn(daemon as any, 'repairAgentRuntimeInstall').mockResolvedValue('failed')
@@ -288,7 +292,11 @@ describe('Daemon session lifecycle (#118)', () => {
 
   it('declines a repair it cannot own: no matching tree, or a cluster-launched runtime', async () => {
     const root = scaffold()
-    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: vi.fn(quietHost) })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: vi.fn(() => quietHost() as any)
+    })
     await daemon.start()
     const home = join(root, 'agents', 'bot-a', 'home')
 
@@ -570,6 +578,55 @@ describe('Daemon session lifecycle (#118)', () => {
     await expect((daemon as any).withWorkspaceIndexWrite('bot-a', async () => 'ran')).rejects.toThrow(
       /agent is working in this workspace/
     )
+    ;(daemon as any).drainingAgents.delete('bot-a')
+    await daemon.stop()
+  }, 20_000)
+
+  it('waits out a workspace mutation instead of failing an admitted cold host start', async () => {
+    const host = quietHost()
+    const factory = vi.fn(() => host as any)
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    // A per-session worktree cleanup fences the WHOLE agent, so a cold turn admitted just
+    // before it used to die on an unrelated session's cleanup rather than wait the seconds out.
+    let releaseMutation!: () => void
+    const mutationBlocked = new Promise<void>((resolve) => (releaseMutation = resolve))
+    const mutating = (daemon as any).withWorkspaceAdmissionFence('bot-a', () => mutationBlocked) as Promise<void>
+    expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(true)
+
+    const starting = (daemon as any).ensureHostAsync('bot-a') as Promise<unknown>
+    const settled = vi.fn()
+    void starting.then(settled, settled)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    // Still the old invariant: no child is constructed while the mutation holds the tree.
+    expect(settled).not.toHaveBeenCalled()
+    expect(factory).not.toHaveBeenCalled()
+
+    releaseMutation()
+    await mutating
+    await expect(starting).resolves.toBe(host)
+    expect(host.start).toHaveBeenCalledOnce()
+    await daemon.stop()
+  }, 20_000)
+
+  it('still refuses a host start when a hard gate closes while the mutation drains', async () => {
+    const factory = vi.fn(() => quietHost() as any)
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    let releaseMutation!: () => void
+    const mutationBlocked = new Promise<void>((resolve) => (releaseMutation = resolve))
+    const mutating = (daemon as any).withWorkspaceAdmissionFence('bot-a', () => mutationBlocked) as Promise<void>
+    const starting = (daemon as any).ensureHostAsync('bot-a') as Promise<unknown>
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    // Joining the fence must not launder a real refusal: the gates are re-read on the far side.
+    ;(daemon as any).drainingAgents.add('bot-a')
+    releaseMutation()
+    await mutating
+    await expect(starting).rejects.toThrow(/agent is draining/)
+    expect(factory).not.toHaveBeenCalled()
     ;(daemon as any).drainingAgents.delete('bot-a')
     await daemon.stop()
   }, 20_000)
@@ -987,12 +1044,16 @@ describe('Daemon session lifecycle (#118)', () => {
     await vi.waitFor(() => expect(blocked.host.prompt).toHaveBeenCalledWith('acp-1', expect.any(Array)), WAIT)
     expect(emitCronReport).toHaveBeenCalledTimes(2)
     expect(emitCronReport.mock.calls[0]![0]).not.toHaveProperty('sessionId')
-    expect(emitCronReport.mock.calls[1]![0]).toMatchObject({ sessionId: 'acp-1' })
+    // A cron run is a console deep link on the CP side, so it is reported under the session's
+    // outward id (session-concept.md §1.1) — the same one on the ready report and the close.
+    const outward = (await (daemon as any).store.getSessionByAcpId('acp-1'))!.sessionId
+    expect(outward).not.toBe('acp-1')
+    expect(emitCronReport.mock.calls[1]![0]).toMatchObject({ sessionId: outward })
     expect(emitCronReport.mock.calls[1]![0]).not.toHaveProperty('status')
 
     blocked.release()
     await run
-    expect(emitCronReport.mock.calls[2]![0]).toMatchObject({ status: 'success', sessionId: 'acp-1' })
+    expect(emitCronReport.mock.calls[2]![0]).toMatchObject({ status: 'success', sessionId: outward })
     await daemon.stop()
   }, 15_000)
 
@@ -1894,7 +1955,14 @@ describe('Daemon idle sweep — background-task lease', () => {
   it('projects the lease for task/list — running, done, and a failure refined by a later edge', async () => {
     const clock = new FakeClock()
     const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
-    const list = () => (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-1' })
+    const list = async () => await (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-1' })
+    // The console asks by the id it routed on — the outward one (session-concept.md §1.1) — and
+    // must get the same lease back, since the lease itself is keyed by the runtime's id.
+    const outwardList = async () =>
+      await (daemon as any).listBackgroundTasks({
+        agentId: 'bot-a',
+        sessionId: (await (daemon as any).store.getSessionByAcpId('acp-1'))!.sessionId
+      })
 
     await (daemon as any).onSdkLifecycle(
       'bot-a',
@@ -1911,22 +1979,23 @@ describe('Daemon idle sweep — background-task lease', () => {
     // Live rows, newest start first. The internal subagent is CARRIED, not filtered at the source:
     // it fences reclaim exactly like a real task, so hiding it here would make the panel and the
     // thing deferring reclaim disagree. Consumers filter at render.
-    expect(list().tasks.map((t: any) => [t.id, t.state, t.subagent])).toEqual([
+    expect((await list()).tasks.map((t: any) => [t.id, t.state, t.subagent])).toEqual([
       ['t2', 'running', true],
       ['t1', 'running', false]
     ])
-    expect(list().tracked).toBe(true)
-    expect(list().truncated).toBe(false)
-    expect(list().tasks[1].description).toBe('Sleep 15')
-    expect(list().tasks[1].startedAt).toBe(new Date(0).toISOString()) // the task_started edge's arrival
-    expect(list().tasks[1].endedAt).toBeUndefined() // a live task has not ended
-    expect(list().tasks[0].description).toBeUndefined() // the runtime omitted it
+    expect((await list()).tracked).toBe(true)
+    expect((await outwardList()).tasks.map((t: any) => t.id)).toEqual((await list()).tasks.map((t: any) => t.id))
+    expect((await list()).truncated).toBe(false)
+    expect((await list()).tasks[1].description).toBe('Sleep 15')
+    expect((await list()).tasks[1].startedAt).toBe(new Date(0).toISOString()) // the task_started edge's arrival
+    expect((await list()).tasks[1].endedAt).toBeUndefined() // a live task has not ended
+    expect((await list()).tasks[0].description).toBeUndefined() // the runtime omitted it
 
     // The snapshot settles both and carries NO status, which is the common case — so `done` means
     // "settled without a reported failure", and `detail` stays absent rather than claiming success.
     clock.advance(1000)
     await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
-    expect(list().tasks.map((t: any) => [t.id, t.state, t.endedAt, t.detail])).toEqual([
+    expect((await list()).tasks.map((t: any) => [t.id, t.state, t.endedAt, t.detail])).toEqual([
       ['t1', 'done', new Date(2000).toISOString(), undefined],
       ['t2', 'done', new Date(2000).toISOString(), undefined]
     ])
@@ -1938,7 +2007,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       'acp-1',
       evt('task_updated', { task_id: 't1', patch: { status: 'failed' } })
     )
-    const refined = list().tasks.find((t: any) => t.id === 't1')
+    const refined = (await list()).tasks.find((t: any) => t.id === 't1')
     expect([refined.state, refined.detail]).toEqual(['failed', 'failed'])
     expect((daemon as any).sdkLease.get(LEASE_KEY).tasks.size).toBe(0)
     expect((daemon as any).sessionSdkQuiescent('bot-a', 'acp-1')).toBe(false) // t1's own wake, not the record
@@ -1949,7 +2018,7 @@ describe('Daemon idle sweep — background-task lease', () => {
   it('bounds the retained history and the page, and neither bound touches the liveness set', async () => {
     const clock = new FakeClock()
     const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
-    const list = () => (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-1' })
+    const list = async () => await (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-1' })
     // Subagent tasks, so the sweep of settles below neither announces nor wakes — they are retained
     // and counted as live exactly like any other task, which is the point.
     const ids = Array.from({ length: MAX_TASK_LIST_TASKS + 1 }, (_unused, i) => `t${i}`)
@@ -1962,17 +2031,17 @@ describe('Daemon idle sweep — background-task lease', () => {
       )
     }
     expect((daemon as any).sdkLease.get(LEASE_KEY).tasks.size).toBe(MAX_TASK_LIST_TASKS + 1)
-    expect(list().tasks).toHaveLength(MAX_TASK_LIST_TASKS)
-    expect(list().truncated).toBe(true)
+    expect((await list()).tasks).toHaveLength(MAX_TASK_LIST_TASKS)
+    expect((await list()).truncated).toBe(true)
 
     // All settle on one snapshot. Retention keeps the newest MAX_SETTLED_TASKS_PER_SESSION (20) and
     // the liveness set empties completely — the cap evicts history, never a live task.
     await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
     expect((daemon as any).sdkLease.get(LEASE_KEY).tasks.size).toBe(0)
-    expect(list().tasks).toHaveLength(20)
-    expect(list().truncated).toBe(false)
-    expect(list().tasks.map((t: any) => t.id)).not.toContain('t0') // oldest settle evicted first
-    expect(list().tasks.every((t: any) => t.state === 'done' && t.subagent)).toBe(true)
+    expect((await list()).tasks).toHaveLength(20)
+    expect((await list()).truncated).toBe(false)
+    expect((await list()).tasks.map((t: any) => t.id)).not.toContain('t0') // oldest settle evicted first
+    expect((await list()).tasks.every((t: any) => t.state === 'done' && t.subagent)).toBe(true)
     expect((daemon as any).sessionSdkQuiescent('bot-a', 'acp-1')).toBe(true) // 20 retained rows, still quiescent
 
     await daemon.stop()
@@ -1984,14 +2053,14 @@ describe('Daemon idle sweep — background-task lease', () => {
 
     // No lease is NOT "no background tasks": a non-Claude runtime and an adapter without the
     // lifecycle extension both land here, and the console says so rather than claiming idleness.
-    expect((daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-9' })).toEqual({
+    expect(await (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-9' })).toEqual({
       agentId: 'bot-a',
       sessionId: 'acp-9',
       tracked: false,
       tasks: [],
       truncated: false
     })
-    expect(() => (daemon as any).listBackgroundTasks({ agentId: 'nope', sessionId: 'acp-1' })).toThrow(
+    await expect((daemon as any).listBackgroundTasks({ agentId: 'nope', sessionId: 'acp-1' })).rejects.toThrow(
       TaskViolationError
     )
 
@@ -2151,7 +2220,12 @@ describe('Daemon session retention GC (#485)', () => {
     await (daemon as any).sweepSessionRetention()
   }
 
-  const seedSession = async (daemon: Daemon, key: string, state: 'idle' | 'prompting' | 'closed', updatedAt: number) =>
+  const seedSession = async (
+    daemon: Daemon,
+    key: string,
+    state: 'idle' | 'prompting' | 'closed',
+    updatedAt: number
+  ): Promise<string> => {
     await (daemon as any).store.upsertSession({
       key,
       agentId: 'bot-a',
@@ -2163,6 +2237,8 @@ describe('Daemon session retention GC (#485)', () => {
       lastDeliveredTs: null,
       updatedAt
     })
+    return (await (daemon as any).store.getSession(key))!.sessionId!
+  }
 
   it('the idle sweep deletes expired sessions but spares live turns and gate-owned keys', async () => {
     const clock = new FakeClock()
@@ -2220,24 +2296,23 @@ describe('Daemon session retention GC (#485)', () => {
       clock
     })
     await daemon.start()
-    const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
+    const emitSessionPurged = vi.fn(async (_purged: SessionPurged) => 'acknowledged' as const)
     ;(daemon as any).cpClient = { emitSessionPurged, state: 'READY', stop: vi.fn(async () => {}) }
 
-    await seedSession(daemon, 'expired-a', 'closed', 0)
-    await seedSession(daemon, 'expired-b', 'idle', 0)
+    const expiredA = await seedSession(daemon, 'expired-a', 'closed', 0)
+    const expiredB = await seedSession(daemon, 'expired-b', 'idle', 0)
     clock.advance(8 * 24 * 3_600_000)
     await sweepRetention(daemon)
     await vi.waitFor(() => expect(emitSessionPurged).toHaveBeenCalledOnce(), WAIT)
 
-    // One frame per agent, carrying the ACP session ids — the only session
-    // identity the CP knows.
+    // One frame per agent, carrying the sessions' outward ids — the identity the CP knows.
     expect(emitSessionPurged.mock.calls[0]![0]).toMatchObject({
       agentId: 'bot-a',
       reason: 'retention'
     })
-    expect(emitSessionPurged.mock.calls[0]![0].sessionIds.sort()).toEqual(['acp-expired-a', 'acp-expired-b'])
-    // ACKed ⇒ the durable receipts are released.
-    expect(await (daemon as any).store.listSessionPurges(10, 0)).toEqual([])
+    expect([...emitSessionPurged.mock.calls[0]![0].sessionIds].sort()).toEqual([expiredA, expiredB].sort())
+    // ACKed ⇒ the durable receipts are released, which the drain does after the report returns.
+    await vi.waitFor(async () => expect(await (daemon as any).store.listSessionPurges(10, 0)).toEqual([]), WAIT)
 
     await daemon.stop()
   }, 15_000)
@@ -2251,7 +2326,7 @@ describe('Daemon session retention GC (#485)', () => {
       clock
     })
     await daemon.start()
-    const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
+    const emitSessionPurged = vi.fn(async (_purged: SessionPurged) => 'acknowledged' as const)
     ;(daemon as any).cpClient = { emitSessionPurged, state: 'READY', stop: vi.fn(async () => {}) }
     const store = (daemon as any).store
 
@@ -2259,11 +2334,11 @@ describe('Daemon session retention GC (#485)', () => {
     // agent + reason + timestamp for all the sessions it carries, so a row may
     // never ride in a frame that would mislabel when (or by whom) it was purged.
     await store.deleteSession('x', { reason: 'retention', at: 1_000 }) // absent row — no receipt
-    await seedSession(daemon, 'sweep-1a', 'closed', 0)
-    await seedSession(daemon, 'sweep-1b', 'closed', 0)
+    const sweep1a = await seedSession(daemon, 'sweep-1a', 'closed', 0)
+    const sweep1b = await seedSession(daemon, 'sweep-1b', 'closed', 0)
     await store.deleteSession('sweep-1a', { reason: 'retention', at: 1_000 })
     await store.deleteSession('sweep-1b', { reason: 'retention', at: 1_000 })
-    await seedSession(daemon, 'sweep-2', 'closed', 0)
+    const sweep2 = await seedSession(daemon, 'sweep-2', 'closed', 0)
     await store.deleteSession('sweep-2', { reason: 'retention', at: 2_000 })
 
     await (daemon as any).drainSessionPurges()
@@ -2272,9 +2347,9 @@ describe('Daemon session retention GC (#485)', () => {
     const frames = emitSessionPurged.mock.calls
       .map((call) => call[0])
       .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
-    expect(frames[0]!.sessionIds.sort()).toEqual(['acp-sweep-1a', 'acp-sweep-1b'])
+    expect([...frames[0]!.sessionIds].sort()).toEqual([sweep1a, sweep1b].sort())
     expect(frames[0]!.ts).toBe(new Date(1_000).toISOString())
-    expect(frames[1]!.sessionIds).toEqual(['acp-sweep-2'])
+    expect(frames[1]!.sessionIds).toEqual([sweep2])
     expect(frames[1]!.ts).toBe(new Date(2_000).toISOString())
     expect(await store.listSessionPurges(10, 0)).toEqual([])
 
@@ -2322,13 +2397,13 @@ describe('Daemon session retention GC (#485)', () => {
       stop: vi.fn()
     }
 
-    await seedSession(daemon, 'expired-a', 'closed', 0)
+    const expiredA = await seedSession(daemon, 'expired-a', 'closed', 0)
     clock.advance(8 * 24 * 3_600_000)
     await sweepRetention(daemon)
     await (daemon as any).drainSessionPurges()
 
     expect(await (daemon as any).store.listSessionPurges(10, 0)).toMatchObject([
-      { agentId: 'bot-a', sessionId: 'acp-expired-a', reason: 'retention' }
+      { agentId: 'bot-a', sessionId: expiredA, reason: 'retention' }
     ])
 
     // ...and a reporting failure is equally non-destructive.

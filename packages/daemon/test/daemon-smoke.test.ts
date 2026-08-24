@@ -8,6 +8,12 @@ import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-ser
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 
+// The outward `sessionId` a frame carries for the slot behind an ACP hop id (session-concept.md §1.1).
+const outwardId = async (daemon: any, acpSessionId: string): Promise<string> => {
+  const slot = await daemon.store.getSessionByAcpId(acpSessionId)
+  return slot!.sessionId ?? (await daemon.store.ensureOutwardSessionId(slot!.key, slot!.agentId ?? undefined))
+}
+
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
 // Give every poll in this file the same generous budget instead.
@@ -337,7 +343,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const fakeHost = {
       __started: true,
       start: vi.fn(async () => {}),
-      newSession: vi.fn(async () => 'acp-mem-1'),
+      newSession: vi.fn<(cwd: string, mcpServers: unknown[]) => Promise<string>>(async () => 'acp-mem-1'),
       prompt: vi.fn(async () => 'end_turn'),
       cancel: vi.fn(),
       stop: vi.fn()
@@ -368,7 +374,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const fakeHost = {
       __started: true,
       start: vi.fn(async () => {}),
-      newSession: vi.fn(async () => 'acp-none-1'),
+      newSession: vi.fn<(cwd: string, mcpServers: unknown[]) => Promise<string>>(async () => 'acp-none-1'),
       prompt: vi.fn(async () => 'end_turn'),
       cancel: vi.fn(),
       stop: vi.fn()
@@ -456,13 +462,13 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     // The warm turn's start snapshot is what flips the console's work panel open:
     // it must carry the ACTIVE raw state, on the same session row.
     expect(emitEventSession.mock.calls[2]![0]).toMatchObject({
-      sessionId: 'acp-sess-1',
+      sessionId: await outwardId(daemon, 'acp-sess-1'),
       phase: 'start',
       status: 'prompting'
     })
     const start = emitEventSession.mock.calls[0]![0]
     expect(start).toMatchObject({
-      sessionId: 'acp-sess-1',
+      sessionId: await outwardId(daemon, 'acp-sess-1'),
       agentId: 'bot-a',
       phase: 'start',
       platform: 'slack',
@@ -485,13 +491,13 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(start.model).toBeUndefined()
     expect(start.effort).toBeUndefined()
     expect(start.fastMode).toBeUndefined()
-    expect(start.link).toContain('/sessions/acp-sess-1')
+    expect(start.link).toContain(`/sessions/${await outwardId(daemon, 'acp-sess-1')}`)
     expect(typeof start.lastActivityAt).toBe('string')
     expect(typeof start.ts).toBe('string')
     expect(start.launchId).toBeUndefined() // Slack/Discord path — no CP launch fence
     const firstFinal = emitEventSession.mock.calls[1]![0]
     expect(firstFinal).toMatchObject({
-      sessionId: 'acp-sess-1',
+      sessionId: await outwardId(daemon, 'acp-sess-1'),
       phase: 'end',
       status: 'idle',
       title: 'first',
@@ -499,7 +505,12 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       observedModel: 'claude-sonnet-4-5'
     })
     const final = emitEventSession.mock.calls[3]![0]
-    expect(final).toMatchObject({ sessionId: 'acp-sess-1', phase: 'end', status: 'idle', observedModel: null })
+    expect(final).toMatchObject({
+      sessionId: await outwardId(daemon, 'acp-sess-1'),
+      phase: 'end',
+      status: 'idle',
+      observedModel: null
+    })
     expect(final.model).toBeUndefined()
     expect(emitUsageReport.mock.calls.map(([report]) => report.observedModel)).toEqual(['claude-sonnet-4-5', null])
     await daemon.stop()
@@ -570,7 +581,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
 
       expect(replayed).toHaveBeenCalledTimes(1)
       expect(replayed.mock.calls[0]![0]).toMatchObject({
-        sessionId,
+        sessionId: await outwardId(restored, sessionId),
         agentId,
         phase: 'end',
         platform: 'slack',
@@ -716,13 +727,13 @@ describe('Daemon (no Slack, injected ACP host)', () => {
 
     expect(emitEventSession.mock.calls.map(([payload]) => payload.phase)).toEqual(['start', 'plan', 'end'])
     expect(emitEventSession.mock.calls[1]![0]).toMatchObject({
-      sessionId: 'acp-title-1',
+      sessionId: await outwardId(daemon, 'acp-title-1'),
       phase: 'plan',
       title: 'Runtime summary',
       status: 'prompting'
     })
     expect(emitEventSession.mock.calls[2]![0]).toMatchObject({
-      sessionId: 'acp-title-1',
+      sessionId: await outwardId(daemon, 'acp-title-1'),
       phase: 'end',
       title: 'Runtime summary',
       status: 'idle'
@@ -788,7 +799,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(emitEventSession.mock.calls.map(([payload]) => payload.phase)).toEqual(['start', 'end'])
     // The session keeps its first-message fallback title instead of the echo.
     expect(emitEventSession.mock.calls[1]![0]).toMatchObject({
-      sessionId: 'acp-title-echo',
+      sessionId: await outwardId(daemon, 'acp-title-echo'),
       phase: 'end',
       title: 'first fallback',
       status: 'idle'
@@ -952,7 +963,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(connA.setTitle).not.toHaveBeenCalled()
     expect((await (daemon as any).store.getSessionByAcpId('acp-title-late'))?.title).toBe('Fix session titles')
     expect(emitEventSession.mock.calls.at(-1)?.[0]).toMatchObject({
-      sessionId: 'acp-title-late',
+      sessionId: await outwardId(daemon, 'acp-title-late'),
       phase: 'plan',
       title: 'Fix session titles'
     })
@@ -1264,7 +1275,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
 
     const refresh = emitEventSession.mock.calls.at(-1)![0]
     expect(refresh).toMatchObject({
-      sessionId: 'acp-name-1',
+      sessionId: await outwardId(daemon, 'acp-name-1'),
       phase: 'plan',
       title: 'need names',
       status: 'idle',

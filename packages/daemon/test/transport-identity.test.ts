@@ -65,14 +65,14 @@ describe('connection identity (transport scope)', () => {
   it('over-isolates unknown platforms rather than over-sharing', () => {
     // Identity = the integration id: the scope never consolidates across
     // integrations, which cannot merge unrelated conversations.
-    expect(connectionIdentityFor({ id: 'i9', platform: 'some-future-platform' })).toBe('i9')
+    expect(connectionIdentityFor({ id: 'i9', platform: 'some-future-platform' } as never)).toBe('i9')
   })
 })
 
 describe('tenant scope (durable owner identity)', () => {
   it('prefers the platform tenant id, falls back to the minted scope', async () => {
-    expect(await tenantScopeFor(host('T012', 'm1'), { id: 'i1', platform: 'slack' })).toBe('T012')
-    expect(await tenantScopeFor(host(undefined, 'm1'), { id: 'i1', platform: 'slack' })).toBe('m1')
+    expect(await tenantScopeFor(host('T012', 'm1'), { id: 'i1', platform: 'slack' } as never)).toBe('T012')
+    expect(await tenantScopeFor(host(undefined, 'm1'), { id: 'i1', platform: 'slack' } as never)).toBe('m1')
     expect(
       await tenantScopeFor(host(undefined, 'm2'), {
         id: 'i2',
@@ -106,10 +106,12 @@ describe('tenant scope (durable owner identity)', () => {
   })
 
   it('mints for platforms with no durable tenant id (Discord, unknown)', async () => {
-    expect(await tenantScopeFor(host(undefined, 'm4'), { id: 'i3', platform: 'discord' })).toBe('m4')
-    expect(await tenantScopeFor(host(undefined, 'm5'), { id: 'i9', platform: 'some-future-platform' })).toBe('m5')
+    expect(await tenantScopeFor(host(undefined, 'm4'), { id: 'i3', platform: 'discord' } as never)).toBe('m4')
+    expect(await tenantScopeFor(host(undefined, 'm5'), { id: 'i9', platform: 'some-future-platform' } as never)).toBe(
+      'm5'
+    )
     // No minted scope either ⇒ undefined ⇒ the CP records no owner (fail closed).
-    expect(await tenantScopeFor(host(undefined, undefined), { id: 'i9', platform: 'x' })).toBeUndefined()
+    expect(await tenantScopeFor(host(undefined, undefined), { id: 'i9', platform: 'x' } as never)).toBeUndefined()
   })
 })
 

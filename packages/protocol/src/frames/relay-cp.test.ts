@@ -9,6 +9,8 @@ import {
   RcVerifyResult,
   RcDaemonRevoke,
   RcHookAssign,
+  RcHookRerun,
+  RcHookRerunResult,
   RcRunReport,
   RcGithubInstallation,
   RcGithubRerequest,
@@ -225,6 +227,55 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
       })
     )
     expect(decoded.ok).toBe(false)
+  })
+
+  it('round-trips correlated rc/codehost-membership-authz → its one-bit reply', () => {
+    const payload = {
+      hookId: HOOK_ID,
+      provider: 'gitlab',
+      repoExternalId: '4455667',
+      actorExternalId: '778899',
+      subjectAuthorExternalId: '221133',
+      configRevision: '7',
+      dispatchRevision: '9',
+      siblingFences: [{ hookId: '99999999-9999-4999-8999-999999999999', configRevision: '11', dispatchRevision: '13' }]
+    }
+    const req = buildRelayCpFrame('rc/codehost-membership-authz', payload)
+    const decodedReq = decodeRelayCpFrame(JSON.stringify(req))
+    expect(decodedReq.ok).toBe(true)
+    if (!decodedReq.ok || decodedReq.frame.type !== 'rc/codehost-membership-authz') {
+      throw new Error('expected membership authz req')
+    }
+    expect(decodedReq.frame.payload).toEqual(payload)
+
+    const rep = buildRelayCpFrame('rc/codehost-membership-authz/ok', { allowed: false }, { corr: req.id })
+    const decodedRep = decodeRelayCpFrame(JSON.stringify(rep))
+    expect(decodedRep.ok).toBe(true)
+    if (!decodedRep.ok || decodedRep.frame.type !== 'rc/codehost-membership-authz/ok') {
+      throw new Error('expected membership authz rep')
+    }
+    expect(decodedRep.frame.corr).toBe(req.id)
+    expect(decodedRep.frame.payload).toEqual({ allowed: false })
+  })
+
+  it('rc/codehost-membership-authz keys on numeric identity, never a display path', () => {
+    const base = {
+      hookId: HOOK_ID,
+      provider: 'gitlab',
+      repoExternalId: '4455667',
+      actorExternalId: '778899',
+      configRevision: '7',
+      dispatchRevision: '9'
+    }
+    expect(decodeRelayCpFrame(envelope('rc/codehost-membership-authz', base)).ok).toBe(true)
+    expect(
+      decodeRelayCpFrame(
+        envelope('rc/codehost-membership-authz', { ...base, repoExternalId: 'example-group/example-project' })
+      ).ok
+    ).toBe(false)
+    expect(
+      decodeRelayCpFrame(envelope('rc/codehost-membership-authz', { ...base, actorExternalId: 'octocat' })).ok
+    ).toBe(false)
   })
 
   it('round-trips correlated rc/github-rerequest metadata and its fenced dispatch result', () => {
@@ -704,6 +755,123 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
 
     const rm = decodeRelayCpFrame(envelope('rc/hook-remove', { hookId: HOOK_ID }))
     expect(rm.ok).toBe(true)
+  })
+
+  it('a gitlab rule decodes with or without the removed label filter (§17.3)', () => {
+    const gitlab = {
+      hookId: '88888888-8888-4888-8888-888888888888',
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      kind: 'gitlab' as const,
+      sessionMode: 'perThread' as const,
+      gitlab: {
+        projectId: '4210',
+        projectPath: 'example-group/example-project',
+        sessionKeyPrefix: 'gitlab:4210',
+        events: ['merge_request:*'],
+        commentFamilies: ['merge_request' as const],
+        mentionOnly: false,
+        serviceAccountUserId: '99',
+        serviceAccountUsername: 'agentconnect-p4210',
+        signingToken: 'whsec_example'
+      }
+    }
+    // Absence is the shape a later release sends once no older relay is deployed.
+    expect(RcHookAssign.safeParse(gitlab).success).toBe(true)
+    // Presence is what a Control Plane predating the removal still sends; it decodes
+    // and the relay's matcher ignores the value.
+    const withFilter = { ...gitlab, gitlab: { ...gitlab.gitlab, labelFilter: ['bug'] } }
+    const decoded = RcHookAssign.safeParse(withFilter)
+    expect(decoded.success).toBe(true)
+    if (decoded.success) expect(decoded.data.gitlab?.labelFilter).toEqual(['bug'])
+  })
+
+  it('the §12.1 veto set is an additive optional member on a gitlab rule (§17.3)', () => {
+    const gitlab = {
+      hookId: '88888888-8888-4888-8888-888888888888',
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      kind: 'gitlab' as const,
+      sessionMode: 'perThread' as const,
+      gitlab: {
+        projectId: '4210',
+        projectPath: 'example-group/example-project',
+        sessionKeyPrefix: 'gitlab:4210',
+        events: ['merge_request:*'],
+        mentionOnly: false,
+        serviceAccountUserId: '99',
+        serviceAccountUsername: 'agentconnect-p4210',
+        signingToken: 'whsec_example'
+      }
+    }
+    // Absent: the shape a Control Plane predating the field sends; the relay vetoes one ID.
+    const without = RcHookAssign.safeParse(gitlab)
+    expect(without.success).toBe(true)
+    if (without.success) expect(without.data.gitlab?.boundServiceAccountUserIds).toBeUndefined()
+    // Present: every managed account bound to the project, including the named one.
+    const withSet = RcHookAssign.safeParse({
+      ...gitlab,
+      gitlab: { ...gitlab.gitlab, boundServiceAccountUserIds: ['99', '100'] }
+    })
+    expect(withSet.success).toBe(true)
+    if (withSet.success) expect(withSet.data.gitlab?.boundServiceAccountUserIds).toEqual(['99', '100'])
+    // Every member is a positive numeric provider ID, exactly like the named account.
+    const bad = { ...gitlab, gitlab: { ...gitlab.gitlab, boundServiceAccountUserIds: ['0'] } }
+    expect(RcHookAssign.safeParse(bad).success).toBe(false)
+  })
+
+  it('rc/hook-rerun carries the Console rerun fence and its live subject (§16.1)', () => {
+    const HOOK_ID = '99999999-9999-4999-8999-999999999999'
+    const base = {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'rerun_1',
+      configRevision: '3',
+      dispatchRevision: '5',
+      event: 'merge_request:rerun',
+      gitlab: {
+        projectId: '4455667',
+        projectPath: 'example-group/example-project',
+        target: { kind: 'merge_request', iid: 42, headSha: 'a'.repeat(40) }
+      }
+    }
+    const ok = decodeRelayCpFrame(envelope('rc/hook-rerun', base))
+    expect(ok.ok).toBe(true)
+    if (ok.ok && ok.frame.type === 'rc/hook-rerun') {
+      expect(ok.frame.payload.gitlab.target).toMatchObject({ kind: 'merge_request', iid: 42 })
+      expect(ok.frame.payload.deliveryKey).toBe('rerun_1')
+    }
+    expect(
+      RcHookRerun.safeParse({ ...base, gitlab: { ...base.gitlab, target: { kind: 'issue', iid: 7 } } }).success
+    ).toBe(true)
+    // The fence is REQUIRED here: unlike a rolling delivery frame, a rerun the
+    // relay cannot fence against its compiled rule must not decode at all.
+    expect(RcHookRerun.safeParse({ ...base, configRevision: undefined }).success).toBe(false)
+    expect(RcHookRerun.safeParse({ ...base, dispatchRevision: undefined }).success).toBe(false)
+    expect(RcHookRerun.safeParse({ ...base, deliveryKey: '' }).success).toBe(false)
+    expect(RcHookRerun.safeParse({ ...base, hookId: 'nope' }).success).toBe(false)
+    // A push ref has no rerun subject; the target still decodes as GitLab metadata.
+    expect(
+      RcHookRerun.safeParse({ ...base, gitlab: { ...base.gitlab, target: { kind: 'merge_request', iid: 0 } } }).success
+    ).toBe(false)
+
+    // The REP is the admission: reaching a socket is not acceptance.
+    const admitted = decodeRelayCpFrame(
+      envelope('rc/hook-rerun/ok', { admitted: true, deliveryKey: 'rerun_1' }, { corr: ok.ok ? ok.frame.id : 'x' })
+    )
+    expect(admitted.ok).toBe(true)
+    if (admitted.ok && admitted.frame.type === 'rc/hook-rerun/ok') {
+      expect(admitted.frame.payload).toEqual({ admitted: true, deliveryKey: 'rerun_1' })
+    }
+    for (const code of ['replay_pending', 'rule_mismatch', 'limiter_exhausted']) {
+      expect(RcHookRerunResult.safeParse({ admitted: false, code }).success).toBe(true)
+    }
+    // A refusal names a category, an admission names the delivery — never both,
+    // and never a code the Control Plane has no mapping for.
+    expect(RcHookRerunResult.safeParse({ admitted: false, code: 'daemon_offline' }).success).toBe(false)
+    expect(RcHookRerunResult.safeParse({ admitted: false }).success).toBe(false)
+    expect(RcHookRerunResult.safeParse({ admitted: true }).success).toBe(false)
+    expect(RcHookRerunResult.safeParse({ admitted: true, deliveryKey: '' }).success).toBe(false)
   })
 
   it('rc/run-report carries the delivery-stage verdict (accepted opens, failed records)', () => {

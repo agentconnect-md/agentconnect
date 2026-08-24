@@ -21,8 +21,8 @@ import { platformRegistry } from './registry'
  *    (`lib/platform-labels.ts`), never re-spelled here. §5's `displayName` is
  *    manifest data shared with the daemon/relay/CP and deliberately NOT a
  *    web-module member (contract D2);
- *  - the two **core trigger kinds** (`webhook`, `github`) are not platform
- *    modules at all — picking either mints an inbound hook rather than a bot
+ *  - the **core trigger kinds** (`webhook`, `github`, `gitlab`) are not platform
+ *    modules at all — picking one mints an inbound hook rather than a bot
  *    identity — so the chassis lists them itself;
  *  - the **region axis** ({@link BOT_PLATFORM_TABS}), for the same D2 reason.
  *
@@ -55,13 +55,23 @@ export function platformTiles(ids: readonly string[]): PlatformTile[] {
  */
 export const BOT_PLATFORMS: readonly PlatformTile[] = platformTiles(platformRegistry.ids())
 
-/** Every picker choice: the chat platforms plus the two core trigger kinds.
- *  Neither trigger is gated by daemon adapters — both live on the relay pool. */
+/** Every picker choice: the chat platforms plus the core trigger kinds. None of
+ *  the triggers is gated by daemon adapters — all live on the relay pool, and a
+ *  code host the deployment has not configured says so in its own pane. */
 export const PLATFORMS: readonly PlatformTile[] = [
   ...BOT_PLATFORMS,
   { key: 'webhook', label: 'Webhook' },
-  { key: 'github', label: 'GitHub' }
+  { key: 'github', label: 'GitHub' },
+  { key: 'gitlab', label: 'GitLab' }
 ]
+
+/** The core trigger kinds — every picker choice that is NOT a registry platform.
+ *  Derived from the two lists rather than restated, so adding a trigger kind above
+ *  is still one edit. These ride the relay pool, so no daemon's chat-adapter
+ *  capabilities gate them; every picker must treat them as always available. */
+export function isCoreTriggerKind(key: string): boolean {
+  return !BOT_PLATFORMS.some((tile) => tile.key === key) && PLATFORMS.some((tile) => tile.key === key)
+}
 
 /**
  * One-liners for the agent page's empty-integrations tiles, keyed by picker
@@ -75,6 +85,7 @@ export const INTEGRATION_BLURB: Record<string, string> = {
   discord: 'Reply in servers',
   feishu: 'Reply in groups & chats',
   github: 'React to issues & PRs',
+  gitlab: 'React to issues & MRs',
   webhook: 'Trigger by posting a URL'
 }
 

@@ -11,11 +11,33 @@
 import type { RelayCpFrameType, RELAY_CP_SCHEMAS } from '@agentconnect.md/protocol'
 import type { z } from 'zod'
 
+/**
+ * Raised by {@link RelayChannel.request} when the frame never reached the wire —
+ * a socket past READY, or a transport that threw before writing. Nothing could
+ * have been admitted, so the caller may safely ask another relay; every other
+ * rejection means the frame WAS written and its answer was lost.
+ */
+export class RelayNotWritten extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RelayNotWritten'
+  }
+}
+
 /** The minimal channel the registry / revoke-sender holds — no `ws` knowledge. */
 export interface RelayChannel {
   readonly relayId: string
+  /** The features this relay advertised on register (rc/register.features). */
+  readonly features?: readonly string[]
   /** Fire-and-forget C→R EVT (e.g. `rc/daemon-revoke`). */
   send<T extends RelayCpFrameType>(type: T, payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>): void
+  /** Correlated C→R REQ resolving with the relay's REP payload (e.g. `rc/hook-rerun`).
+   *  Single-shot: it rejects on close, on an `error` REP, and on its deadline —
+   *  it is never retransmitted, because its frames carry effects. A pre-write
+   *  failure rejects with {@link RelayNotWritten}. Optional so a push-only
+   *  stand-in still satisfies the firewall; a channel without it is never an
+   *  RPC target. */
+  request?<T extends RelayCpFrameType>(type: T, payload: z.input<(typeof RELAY_CP_SCHEMAS)[T]>): Promise<unknown>
   close(code: number, reason: string): void
 }
 

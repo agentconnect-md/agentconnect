@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import type { SessionPurged } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
@@ -62,7 +63,9 @@ async function boot(root: string, daemonId: string) {
   await daemon.start()
   const inner = daemon as any
   inner.cfg.daemonId = daemonId
-  const emitSessionPurged = vi.fn(async () => 'acknowledged' as const)
+  const emitSessionPurged = vi.fn<(purged: SessionPurged) => Promise<'acknowledged'>>(
+    async () => 'acknowledged' as const
+  )
   inner.cpClient = {
     organizationScope: () => 'frame',
     memberSet: () => ({ setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }),
@@ -105,7 +108,7 @@ const seedSession = async (
   agentId: string,
   state: 'idle' | 'closed',
   updatedAt: number
-) =>
+): Promise<string> => {
   await store.upsertSession({
     key,
     agentId,
@@ -117,6 +120,9 @@ const seedSession = async (
     lastDeliveredTs: null,
     updatedAt
   })
+  // The outward id the session's purge receipt will be addressed by (session-concept.md §1.1).
+  return (await store.getSession(key))!.sessionId!
+}
 
 /** A's in-memory background-task lease for one of its sessions: live work the TTL sweep must respect. */
 function leaseLiveTask(inner: any, agentId: string, acpSessionId: string): void {
@@ -208,10 +214,10 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
 
     // A's sweep purged two of A's sessions and one legacy, unowned receipt sits alongside;
     // B's own receipt is the youngest, so a drain that returned on the foreign group would never reach it.
-    await seedSession(shared, 'a-1', AGENT_A, 'closed', 0)
-    await seedSession(shared, 'a-2', AGENT_A, 'closed', 0)
-    await seedSession(shared, 'a-legacy', AGENT_A, 'closed', 0)
-    await seedSession(shared, 'b-1', AGENT_B, 'closed', 0)
+    const a1 = await seedSession(shared, 'a-1', AGENT_A, 'closed', 0)
+    const a2 = await seedSession(shared, 'a-2', AGENT_A, 'closed', 0)
+    const aLegacy = await seedSession(shared, 'a-legacy', AGENT_A, 'closed', 0)
+    const b1 = await seedSession(shared, 'b-1', AGENT_B, 'closed', 0)
     await shared.deleteSession('a-1', { reason: 'retention', at: 1_000, ownerId: 'daemon-a' })
     await shared.deleteSession('a-2', { reason: 'retention', at: 1_000, ownerId: 'daemon-a' })
     await shared.deleteSession('a-legacy', { reason: 'retention', at: 1_500 })
@@ -221,14 +227,14 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
 
     await b.inner.drainSessionPurges()
     expect(b.emitSessionPurged).toHaveBeenCalledOnce()
-    expect(b.emitSessionPurged.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_B, sessionIds: ['acp-b-1'] })
+    expect(b.emitSessionPurged.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_B, sessionIds: [b1] })
     // A's live rows and the unowned row for A's agent are left for A: nothing was destroyed.
-    expect((await owed()).sort()).toEqual(['acp-a-1', 'acp-a-2', 'acp-a-legacy'])
+    expect((await owed()).sort()).toEqual([a1, a2, aLegacy].sort())
 
     await a.inner.drainSessionPurges()
     const frames = a.emitSessionPurged.mock.calls.map((call: any[]) => call[0])
     expect(frames.map((frame: any) => frame.agentId)).toEqual([AGENT_A, AGENT_A])
-    expect(frames.flatMap((frame: any) => frame.sessionIds).sort()).toEqual(['acp-a-1', 'acp-a-2', 'acp-a-legacy'])
+    expect(frames.flatMap((frame: any) => [...frame.sessionIds]).sort()).toEqual([a1, a2, aLegacy].sort())
     expect(await owed()).toEqual([])
     await stop()
     for (const local of locals) await local.close()
@@ -290,7 +296,7 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     })
     const shared: LocalStore = b.inner.store
     // The prior holder purged this session and died before its receipt was ACKed.
-    await seedSession(shared, 'left', AGENT_A, 'closed', 0)
+    const left = await seedSession(shared, 'left', AGENT_A, 'closed', 0)
     await shared.deleteSession('left', { reason: 'retention', at: 1_000, ownerId: 'daemon-a' })
     await advance(b, 1_000 + 2 * 60_000 + 1)
 
@@ -300,7 +306,7 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     // The grant lands: the receipt is this member's to report now, and it is reported exactly once.
     b.inner.dutyCoordinator.settleDutyChange(b.inner.duties.applyGrant([grant(GROUP_A, AGENT_A)]))
     await vi.waitFor(() => expect(b.emitSessionPurged).toHaveBeenCalledOnce())
-    expect(b.emitSessionPurged.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_A, sessionIds: ['acp-left'] })
+    expect(b.emitSessionPurged.mock.calls[0]![0]).toMatchObject({ agentId: AGENT_A, sessionIds: [left] })
     await b.inner.drainSessionPurges()
     expect(b.emitSessionPurged).toHaveBeenCalledOnce()
     expect(await shared.listSessionPurges(10, b.clock.now(), 'daemon-b', [AGENT_A])).toEqual([])

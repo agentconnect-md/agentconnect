@@ -106,7 +106,7 @@ function environment(world: RecordingWorld): DaemonEvaluationEnvironment {
         })
       }
     ],
-    collaborationRoutes: { generation: 1, channels: [], agents: [] },
+    collaborationRoutes: { generation: 1, channels: [], agents: [], platformKinds: [] },
     listAgents: async (request) => ({
       platform: request.platform,
       ...(request.channel !== undefined ? { channel: request.channel } : {}),

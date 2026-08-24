@@ -18,7 +18,9 @@ import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent } from '../fixtures/seed.js'
 import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
-import { handleHookReport } from '../../src/ws/handlers/index.js'
+import { PgAgentRepo } from '../../src/persistence/index.js'
+import { CodeHostReviewBrokerService } from '../../src/codehost/review-lease.service.js'
+import { handleHookReport, handleHookStart } from '../../src/ws/handlers/index.js'
 import { AgentId, DaemonId, HookId, OrgId } from '../../src/domain/ids.js'
 import { systemClock } from '../../src/domain/clock.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
@@ -572,7 +574,10 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     expect(
       await repo().claimRetryableDeliveryRedelivery('projection-before-recovery', [HookId(hookId)], firedAt, [30_000])
     ).toBe(true)
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: hook.repoId, gitAccess: 'write' } })
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { workspaceMode: 'github', workspaceRepoId: hook.repoId, gitAccess: 'write' }
+    })
     const failed = (await repo().getRun(HookId(hookId), 'projection-before-recovery'))!
     const projection = await repo().upsertReviewProjection({
       hookId: HookId(hookId),
@@ -1053,5 +1058,125 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
       status: 'success',
       sessionId: 'ses_late'
     })
+  })
+})
+
+/** gitlab-com-integration.md §17.2: the provider-neutral start barrier, end to end on real rows. */
+describe('gitlab hook/start records the started head', () => {
+  const PROJECT = 4455667n
+  const HEAD = 'a'.repeat(40)
+
+  async function placedGitlabHook(): Promise<{ agentId: string; hookId: string }> {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    await prisma.agent.update({ where: { id: agentId }, data: { status: 'active' } })
+    const hookId = randomUUID()
+    await repo().upsert({
+      hookId: HookId(hookId),
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId: AgentId(agentId),
+      kind: 'gitlab',
+      axisBaseUrl: 'https://gitlab.com',
+      name: 'gitlab-review',
+      sessionMode: 'perThread',
+      repoId: PROJECT,
+      repoFullName: 'example-group/example-project',
+      events: ['merge_request:*'],
+      reviewPolicy: 'full',
+      reportingMode: 'off',
+      gateMode: 'informational',
+      targetPlatform: 'slack'
+    })
+    return { agentId, hookId }
+  }
+
+  async function start(hookId: string, agentId: string, deliveryKey: string) {
+    const hook = (await repo().getUnscoped(HookId(hookId)))!
+    const frame = {
+      v: 1,
+      id: randomUUID(),
+      ts: new Date().toISOString(),
+      type: 'hook/start',
+      payload: {
+        hookId,
+        agentId,
+        deliveryKey,
+        sessionId: 'ses_gitlab',
+        event: 'merge_request:update',
+        gitlab: {
+          projectId: PROJECT.toString(),
+          projectPath: 'example-group/example-project',
+          target: { kind: 'merge_request', iid: 42, headSha: HEAD, baseSha: 'b'.repeat(40) }
+        },
+        configRevision: hook.configRevision.toString(),
+        dispatchRevision: hook.dispatchRevision.toString(),
+        dispatchDaemonId: DAEMON,
+        reviewPolicy: hook.reviewPolicy,
+        reportingMode: hook.reportingMode,
+        gateMode: hook.gateMode
+      }
+    } as AnyFrame
+    const afterStart = vi.fn(async () => {})
+    const deps = {
+      hook: repo(),
+      clock: systemClock,
+      codeHostReviewBroker: new CodeHostReviewBrokerService({
+        leases: {} as never,
+        hook: repo(),
+        agent: new PgAgentRepo(prisma),
+        publisher: async () => null,
+        clock: systemClock
+      }),
+      codeHostNoteProjection: { afterStart } as never
+    } as unknown as DaemonWsDeps
+    const conn = { daemonId: DAEMON, orgId: DEFAULT_ORG_ID, replyTo: vi.fn(), sendError: vi.fn() }
+    await handleHookStart(frame, conn as unknown as DaemonConnection, deps)
+    return { frame, conn, afterStart, hook }
+  }
+
+  it('fills the head and turn time on the accepted run and offers the running edge', async () => {
+    const { agentId, hookId } = await placedGitlabHook()
+    const hook = (await repo().getUnscoped(HookId(hookId)))!
+    await repo().recordDelivery(HookId(hookId), {
+      deliveryKey: 'gl-1',
+      firedAt: new Date('2026-07-03T09:00:00.000Z'),
+      event: 'merge_request:update',
+      status: 'accepted',
+      agentId: AgentId(agentId),
+      configRevision: hook.configRevision,
+      dispatchRevision: hook.dispatchRevision,
+      dispatchDaemonId: DaemonId(DAEMON),
+      reviewPolicySnapshot: hook.reviewPolicy,
+      reportingModeSnapshot: hook.reportingMode,
+      gateModeSnapshot: hook.gateMode
+    })
+    // The relay's accepted report carries no revision for a gitlab run — the barrier is what does.
+    expect(await repo().getRun(HookId(hookId), 'gl-1')).toMatchObject({ headSha: null, turnStartedAt: null })
+
+    const first = await start(hookId, agentId, 'gl-1')
+    expect(first.conn.sendError).not.toHaveBeenCalled()
+    expect(first.conn.replyTo).toHaveBeenCalledWith(first.frame, 'hook/start/ok', { accepted: true })
+    const started = (await repo().getRun(HookId(hookId), 'gl-1'))!
+    expect(started).toMatchObject({ headSha: HEAD, baseSha: 'b'.repeat(40), sessionId: 'ses_gitlab' })
+    expect(started.turnStartedAt).not.toBeNull()
+    // The edge names the delivery, not an epoch — the projection resolves that from the accepted run.
+    expect(first.afterStart).toHaveBeenCalledWith(expect.objectContaining({ state: 'running', deliveryKey: 'gl-1' }))
+
+    // A retried barrier re-asserts the same row rather than moving the recorded head.
+    const retry = await start(hookId, agentId, 'gl-1')
+    expect(retry.conn.replyTo).toHaveBeenCalledWith(retry.frame, 'hook/start/ok', { accepted: true })
+    expect(await repo().getRun(HookId(hookId), 'gl-1')).toMatchObject({
+      headSha: HEAD,
+      turnStartedAt: started.turnStartedAt
+    })
+  })
+
+  it('refuses a barrier whose delivery was never accepted', async () => {
+    const { agentId, hookId } = await placedGitlabHook()
+    const { conn, afterStart } = await start(hookId, agentId, 'gl-missing')
+    expect(conn.replyTo).not.toHaveBeenCalled()
+    expect(conn.sendError).toHaveBeenCalledWith(expect.any(String), 'SCOPE_DENIED', expect.any(String), false)
+    expect(afterStart).not.toHaveBeenCalled()
   })
 })

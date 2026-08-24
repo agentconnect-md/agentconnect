@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AgentId, DaemonId, HookId, OrgId } from '../domain/ids.js'
-import type { AgentRecord, HookRecord, HookRunRecord } from '../persistence/ports.js'
+import type { AgentRecord, HookRecord, HookRepo, HookRunRecord } from '../persistence/ports.js'
 import { githubHookRun } from '../../test/fixtures/github-hook-run.js'
 import { HOOK_DELIVERY_REASON_DAEMON_OFFLINE } from '@agentconnect.md/protocol'
 import { GitCredDeniedError } from './service.js'
@@ -112,8 +112,8 @@ function setup(overrides: Partial<GithubReviewBrokerDeps> = {}) {
   const hookRepo = {
     getUnscoped: vi.fn(async () => hook()),
     getRun: vi.fn(async () => currentRun),
-    recordStart: vi.fn(async () => true),
-    reserveReviewAttempt: vi.fn(async (_hookId, _daemonId, input) => {
+    recordStart: vi.fn<HookRepo['recordStart']>(async () => true),
+    reserveReviewAttempt: vi.fn<HookRepo['reserveReviewAttempt']>(async (_hookId, _daemonId, input) => {
       currentRun = run({
         reviewAttemptId: input.attemptId,
         reviewAttemptState: 'reserved',
@@ -336,7 +336,7 @@ describe('GithubReviewBrokerService', () => {
           ttlSec: 3_540,
           expiresAt: '2026-07-11T01:00:00.000Z',
           repoFullName: 'acme/widgets',
-          access: 'read',
+          access: 'read' as const,
           installationId: 456n
         })),
         validateReviewForAgent: vi.fn(async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Ack } from '@agentconnect.md/protocol'
+import type { Ack, AgentActivate, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
 import type { LaunchRepo } from '../persistence/ports.js'
 import { ConnectionClosed, ConnectionRegistry, type ConnChannel, type DaemonConnState } from '../ws/registry.js'
 import { ControlSender } from './outbound.js'
@@ -40,7 +40,7 @@ describe('ControlSender agent move controls', () => {
         {
           agentId: AGENT,
           moveId: MOVE,
-          spec: { name: 'mover' },
+          spec: { name: 'mover' } as AgentActivate['spec'],
           integrations: [],
           crons: []
         },
@@ -87,7 +87,7 @@ describe('ControlSender agent move controls', () => {
       {
         agentId: AGENT,
         moveId: MOVE,
-        spec: { name: 'mover' },
+        spec: { name: 'mover' } as AgentActivate['spec'],
         integrations: [],
         crons: []
       },
@@ -121,7 +121,7 @@ describe('ControlSender agent move controls', () => {
     const registry = new ConnectionRegistry()
     registry.add(state(conn))
     const sender = new ControlSender(registry, {} as LaunchRepo)
-    const snapshot = { generation: 3, channels: [] }
+    const snapshot = { generation: 3, channels: [] } as unknown as CollabRoutesSnapshot
 
     await sender.collaborationRoutes(DAEMON, snapshot)
     expect(send).toHaveBeenCalledWith('collaboration/routes', snapshot, { epoch: 7 })

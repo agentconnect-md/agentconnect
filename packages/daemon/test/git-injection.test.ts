@@ -8,6 +8,7 @@ import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '.
 import { LocalGitRunner, type GitRunner } from '../src/workspace/git-runner.js'
 import {
   assertSafeWorkspaceGitConfig,
+  canonicalWorkspaceGitUrl,
   cloneGitEnv,
   gitEnvBase,
   gitFor,
@@ -352,7 +353,8 @@ describe('gitEnvBase', () => {
         clone: async () => undefined,
         pull: async () => ({ files: [], insertions: 0, deletions: 0 }),
         status: async () => ({ current: null, tracking: null, ahead: 0, behind: 0, files: [], clean: true }),
-        log: async () => []
+        log: async () => [],
+        readBounded: async () => ({ out: Buffer.alloc(0), overflow: false })
       }
       await expect(assertSafeWorkspaceGitConfig(hostile)).rejects.toThrow(/executable setting/)
 
@@ -528,7 +530,8 @@ describe('gitEnvBase', () => {
       run(['-C', seed, 'push', 'origin', 'main'])
 
       const git = gitFor(workspace).env(env)
-      await pullWorkspaceRef(git, 'origin', 'main')
+      const runner = new LocalGitRunner(git, workspace, (overrides) => gitFor(workspace).env(overrides), env)
+      await pullWorkspaceRef(runner, 'origin', 'main')
 
       const [head, tracking, status] = await Promise.all([
         git.raw(['rev-parse', 'HEAD']),
@@ -591,6 +594,54 @@ describe('cloneGitEnv', () => {
       'core.sshCommand',
       'ssh -F none -o ProxyCommand=none -o ProxyJump=none -o PermitLocalCommand=no -o ClearAllForwardings=yes'
     ])
+  })
+})
+
+describe('canonicalWorkspaceGitUrl', () => {
+  // gitlab.com 301s the suffix-less ref probe to the `.git` form and daemon Git pins http.followRedirects=false.
+  it('gives a gitlab.com HTTPS remote its `.git` form, at any subgroup depth', () => {
+    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project')).toBe(
+      'https://gitlab.com/example-group/example-project.git'
+    )
+    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/sub/deeper/example-project')).toBe(
+      'https://gitlab.com/example-group/sub/deeper/example-project.git'
+    )
+    // A trailing slash is the same repository, so it must not produce `…/.git`.
+    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project/')).toBe(
+      'https://gitlab.com/example-group/example-project.git'
+    )
+  })
+
+  it('is idempotent: a remote that already carries the suffix is left exactly as configured', () => {
+    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project.git')).toBe(
+      'https://gitlab.com/example-group/example-project.git'
+    )
+    // Git matches the suffix case-insensitively; appending a second one would name a different path.
+    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project.GIT')).toBe(
+      'https://gitlab.com/example-group/example-project.GIT'
+    )
+  })
+
+  it('leaves github and every non-gitlab HTTPS remote byte-identical', () => {
+    expect(canonicalWorkspaceGitUrl('https://github.com/acme/infra')).toBe('https://github.com/acme/infra')
+    expect(canonicalWorkspaceGitUrl('https://github.com/acme/infra.git')).toBe('https://github.com/acme/infra.git')
+    expect(canonicalWorkspaceGitUrl('https://code.example.test/acme/infra')).toBe(
+      'https://code.example.test/acme/infra'
+    )
+  })
+
+  it('leaves gitlab SSH alone — only the HTTPS ref probe redirects', () => {
+    expect(canonicalWorkspaceGitUrl('ssh://git@gitlab.com/example-group/example-project')).toBe(
+      'ssh://git@gitlab.com/example-group/example-project'
+    )
+    expect(canonicalWorkspaceGitUrl('git@gitlab.com:example-group/example-project')).toBe(
+      'git@gitlab.com:example-group/example-project'
+    )
+  })
+
+  it('still refuses what the shared codec refuses, so canonicalization cannot admit a new target', () => {
+    expect(() => canonicalWorkspaceGitUrl('/srv/local/repo')).toThrow('local git paths are not supported')
+    expect(() => canonicalWorkspaceGitUrl('ext::payload')).toThrow('git clone url must use https or ssh')
   })
 })
 

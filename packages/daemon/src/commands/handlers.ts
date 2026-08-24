@@ -71,7 +71,9 @@ export interface CommandHost {
   /** `!queue` admission through the unified per-sessionKey gate — it decides run-now vs enqueue. */
   dispatchQueueCommand(agentId: string, msg: NormalizedMessage, integrationId: string): Promise<void>
   replyConnFor(agentId: string, integrationId?: string): PlatformConnection | undefined
-  sessionLink(acpSessionId: string, source?: string): string
+  /** Takes the session's OUTWARD id (session-concept.md §1.1), which {@link outwardSessionId} resolves. */
+  sessionLink(sessionId: string, source?: string): string
+  outwardSessionId(agentId: string, acpSessionId: string): Promise<string | undefined>
   sessionLinkSource(platform: string, integrationId?: string): string | undefined
   /** Thread affinity for the routing ladder a command reuses. */
   threadOwner(channel: string, thread: string, transportScope?: string | null): Promise<string | null>
@@ -669,8 +671,10 @@ export class CommandHandlers {
       return true
     }
     const info = this.host.statusInfoFrom(target.agentId, key, acpSessionId ?? undefined)
-    const link = acpSessionId
-      ? this.host.sessionLink(acpSessionId, this.host.sessionLinkSource(msg.platform, target.integrationId))
+    // The View link goes to the console, which knows this session by its outward id (§1.1).
+    const outward = acpSessionId ? await this.host.outwardSessionId(target.agentId, acpSessionId) : undefined
+    const link = outward
+      ? this.host.sessionLink(outward, this.host.sessionLinkSource(msg.platform, target.integrationId))
       : undefined
     // Presentation is the platform's (§7.4): HTML chrome + View link on Telegram,
     // markdown + a real link button on Discord, plain text + a 🔗 line on Feishu,

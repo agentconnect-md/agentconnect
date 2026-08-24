@@ -28,10 +28,12 @@ import type {
   AgentRecord,
   AgentRepoAuthorizationRepo,
   AgentSecretStore,
+  HookRepo,
   OrganizationEnvironmentResolver,
   OrganizationKnowledgeRepo,
   SkillSourceRepo
 } from '../persistence/ports.js'
+import { AgentId } from '../domain/ids.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
 import { resolveAgentSkillEntries, type InvalidSkillSourceProjection } from './skillSource.js'
 import {
@@ -42,6 +44,9 @@ import {
 
 /** The wire spec plus the id it is keyed by on `agent/upsert` / the roster. */
 export type AssembledAgentSpec = AgentSpec & { agentId: string }
+
+/** Byte-order string compare — deliberately not `localeCompare`, whose order is host-dependent. */
+const cmp = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
 
 export class AgentSpecAssembler {
   constructor(
@@ -65,19 +70,35 @@ export class AgentSpecAssembler {
     // Optional for minimal test graphs: the agent's additional-repository allowlist,
     // projected onto the workspace (multi-repository-workspaces.md decision 2).
     // Absent ⇒ [], exactly the pre-feature projection.
-    private readonly agentRepoAuth?: AgentRepoAuthorizationRepo
+    private readonly agentRepoAuth?: AgentRepoAuthorizationRepo,
+    // The deployment's normalized GitLab instance base URL (§24.1). Absent ⇒ GitLab is
+    // not configured, so no consumer can exist and no spec carries a host.
+    private readonly gitlabHost?: string,
+    // Optional: the third GitLab consumer (§24.4). A hook can reach an already-running
+    // session whose environment cannot be retroactively edited, so an enabled gitlab hook
+    // has to put the host on the spec even when neither workspace nor grant does.
+    private readonly hooks?: Pick<HookRepo, 'listForAgent'>
   ) {}
 
   /** Fetch the agent's secret values + resolve its skills, then project the spec. */
   async assemble(a: AgentRecord): Promise<AssembledAgentSpec> {
-    const [secrets, skillEntries, managedSkillEntries, organization, additionalRepos] = await Promise.all([
+    const [secrets, skillEntries, managedSkillEntries, organization, additionalRepos, gitlabHook] = await Promise.all([
       this.secrets.get(a.orgId, a.id),
       resolveAgentSkillEntries(a, this.skillSources, (invalid) => this.onInvalidSkillSource?.(a.id, invalid)),
       this.managedSkillsOf(a),
       this.organizationEnvironmentOf(a),
-      this.additionalReposOf(a)
+      this.additionalReposOf(a),
+      this.gitlabHookOf(a)
     ])
-    return this.project(a, secrets, skillEntries, managedSkillEntries, organization, additionalRepos)
+    return this.project(a, secrets, skillEntries, managedSkillEntries, organization, additionalRepos, gitlabHook)
+  }
+
+  /** Whether an enabled gitlab hook rides this agent — the one GitLab consumer no other
+   *  projected field reveals. Skipped entirely when GitLab is unconfigured. */
+  async gitlabHookOf(a: Pick<AgentRecord, 'id'>): Promise<boolean> {
+    if (this.gitlabHost === undefined || this.hooks === undefined) return false
+    const rows = await this.hooks.listForAgent(AgentId(a.id))
+    return rows.some((hook) => hook.kind === 'gitlab' && hook.enabled)
   }
 
   /** The organization contribution to one agent's effective environment. */
@@ -114,14 +135,15 @@ export class AgentSpecAssembler {
     return this.secrets.get(a.orgId, a.id)
   }
 
-  /** The agent's authorized additional repositories, sorted by full name so the
-   *  projection is stable (a reordered read must not change the spec digest).
+  /** The agent's authorized additional repositories, sorted by provider then full name
+   *  so the projection is stable (a reordered read must not change the spec digest) —
+   *  two hosts can display the same path, so the name alone is not a total order.
    *  Pinned into the move {@link MoveBundle} for the same reason as skills. */
   async additionalReposOf(a: Pick<AgentRecord, 'id'>): Promise<AgentAdditionalRepo[]> {
     const rows = (await this.agentRepoAuth?.listForAgent(a.id)) ?? []
     return rows
-      .map((row) => ({ repoFullName: row.repoFullName, repoId: row.repoId.toString() }))
-      .sort((x, y) => (x.repoFullName < y.repoFullName ? -1 : x.repoFullName > y.repoFullName ? 1 : 0))
+      .map((row) => ({ repoFullName: row.repoFullName, repoId: row.repoId.toString(), provider: row.provider }))
+      .sort((x, y) => cmp(x.provider, y.provider) || cmp(x.repoFullName, y.repoFullName))
   }
 
   /** Resolve the agent's skill entries — pinned into the move {@link MoveBundle} so
@@ -172,7 +194,8 @@ export class AgentSpecAssembler {
     skillEntries: AgentSkillEntry[],
     managedSkillEntries: ManagedSkillEntry[] = [],
     organization: OrganizationEnvironmentValues = emptyOrganizationEnvironmentValues(),
-    additionalRepos: AgentAdditionalRepo[] = []
+    additionalRepos: AgentAdditionalRepo[] = [],
+    gitlabHook = false
   ): AssembledAgentSpec {
     // Resolve by key across both sources BEFORE splitting into the two wire maps
     // (organization-secrets-and-variables.md §3.2), so the winner of a collision
@@ -186,9 +209,29 @@ export class AgentSpecAssembler {
       skillEntries,
       managedSkillEntries,
       effective.env,
-      additionalRepos
+      additionalRepos,
+      gitlabHost(this.gitlabHost, a.workspace.mode, additionalRepos, gitlabHook)
     )
   }
+}
+
+/**
+ * The §24.4 host carriage rule, in one place: the configured instance rides the spec
+ * whenever ANY GitLab consumer does — the workspace, an additional-repository
+ * authorization, or an enabled hook. It never branches on "is this GitLab.com" (§24.1):
+ * the value is the axis, and an absent one means GitLab is unconfigured. A daemon reading
+ * an absent field means GitLab.com, so an older Control Plane needs no negotiation.
+ */
+export function gitlabHost(
+  configured: string | undefined,
+  workspaceMode: string,
+  additionalRepos: readonly AgentAdditionalRepo[],
+  enabledGitlabHook: boolean
+): string | undefined {
+  if (configured === undefined) return undefined
+  const consumer =
+    workspaceMode === 'gitlab' || enabledGitlabHook || additionalRepos.some((repo) => repo.provider === 'gitlab')
+  return consumer ? configured : undefined
 }
 
 /**
@@ -211,7 +254,9 @@ export function agentRecordToSpec(
   env: Record<string, string> = a.env,
   // The agent's `AgentRepoAuthorization` rows, already sorted by full name.
   // Defaults to [] so a caller with no allowlist context projects as before.
-  additionalRepos: AgentAdditionalRepo[] = []
+  additionalRepos: AgentAdditionalRepo[] = [],
+  // The §24.4 host carriage, already decided by {@link gitlabHost}.
+  host?: string
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
   // App-backed GitHub workspaces have one implicit repo. Scratch workspaces have
@@ -233,7 +278,24 @@ export function agentRecordToSpec(
           ...(a.workspace.installationId !== undefined ? { gitCredential: 'github-app' as const } : {}),
           additionalRepos
         }
-      : { mode: 'scratch', isolation: a.workspace.isolation ?? 'shared', gitCredential: 'github-app', additionalRepos }
+      : a.workspace.mode === 'gitlab'
+        ? {
+            // §17.3: this arm is frame-fatal on a pre-GitLab daemon; every
+            // projection path gates on daemonSupportsAgent before sending it.
+            mode: 'gitlab',
+            isolation: a.workspace.isolation ?? 'shared',
+            gitRepo: normalizeGitCloneUrl(redactGitUrlSecrets(a.workspace.gitRepo)),
+            branch: a.workspace.gitBranch ?? 'main',
+            ...(a.workspace.agentDir !== undefined ? { agentDir: a.workspace.agentDir } : {}),
+            projectId: (a.workspaceRepoId ?? 0n).toString(),
+            additionalRepos
+          }
+        : {
+            mode: 'scratch',
+            isolation: a.workspace.isolation ?? 'shared',
+            gitCredential: 'github-app',
+            additionalRepos
+          }
   return {
     agentId: a.id,
     orgId: a.orgId,
@@ -323,6 +385,9 @@ export function agentRecordToSpec(
     // Ship the memory backend only when set (like pause) — a switch isn't a
     // per-runtime-vocabulary reset, so absent ⇒ the daemon leaves agent.json alone.
     ...(a.memory !== null ? { memory: a.memory } : {}),
+    // §24.4: pre-spawn host carriage. Present only when a GitLab consumer is, so a spec
+    // with none stays byte-identical to what a pre-§24 control plane projected.
+    ...(host !== undefined ? { gitlabHost: host } : {}),
     workspace
   }
 }

@@ -1938,7 +1938,7 @@ describe('github ingress', () => {
     it('narrows an explicit agent mention while the App mention broadcasts to every review agent', async () => {
       const github = {
         events: ['issue_comment:created'],
-        commentFamilies: ['pull_request'] as const,
+        commentFamilies: ['pull_request' as const],
         appSlug: 'example-review-app'
       }
       h.table.upsert(rule({}, { ...github, agentName: 'review-alpha' }))

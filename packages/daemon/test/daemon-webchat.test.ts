@@ -68,7 +68,7 @@ function streamingHost(
   let onUpdate!: (sid: string, u: unknown) => void
   const host = {
     start: vi.fn(async () => {}),
-    newSession: vi.fn(async () => {
+    newSession: vi.fn(async (_cwd: string, _mcpServers: unknown[], _effortOverride?: string) => {
       for (const update of initialUpdates) onUpdate('acp-wc-1', update)
       return 'acp-wc-1'
     }),
@@ -78,7 +78,7 @@ function streamingHost(
     setSessionEffort: vi.fn(async () => true),
     setSessionPermissionMode: vi.fn(async () => true),
     setSessionFastMode: vi.fn(async () => true),
-    prompt: vi.fn(async (sid: string) => {
+    prompt: vi.fn(async (sid: string, _blocks: unknown[]) => {
       for (const u of updates) onUpdate(sid, u)
       return { stopReason, ...(usage ? { usage } : {}) }
     }),
@@ -108,7 +108,7 @@ function fakeCpClient() {
     outputs,
     dones,
     usageReports,
-    emitUsageReport: vi.fn((report: unknown) => usageReports.push(report)),
+    emitUsageReport: vi.fn<(report: unknown) => void>((report: unknown) => usageReports.push(report)),
     emitSessionActivity: vi.fn(),
     // An ordinary org-scoped daemon: it owns its agents outright and is not duty-governed.
     organizationScope: () => 'connection' as const,
@@ -392,11 +392,15 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     // Turn start: model + sessionId (no usage folded yet). Runtime controls are hidden while
     // chat-side changes are disabled. Then usage_update adds context+cost. Turn end: token
     // totals fold in. Deduped ⇒ exactly these three snapshots.
+    // The console deep-links from this, so it is the session's OUTWARD id (§1.1) — minted by the
+    // daemon, never the runtime's `acp-wc-1`.
+    const outward = (await (daemon as any).store.getSessionByAcpId('acp-wc-1'))!.sessionId
+    expect(outward).not.toBe('acp-wc-1')
     const base = {
       model: 'opus-4.8',
       permissionMode: 'default',
       permissionModes: [],
-      sessionId: 'acp-wc-1'
+      sessionId: outward
     }
     const ctx = { contextUsed: 120_000, contextSize: 200_000, costAmount: 0.18, costCurrency: 'USD' }
     expect(statuses).toEqual([base, { ...base, ...ctx }, { ...base, ...ctx, totalTokens: 45_200 }])
@@ -669,7 +673,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     let discardCalls = 0
     const host = {
       start: vi.fn(async () => {}),
-      newSession: vi.fn(async () => {
+      newSession: vi.fn(async (_cwd: string, _mcpServers: unknown[], _effortOverride?: string) => {
         newSessionCalls += 1
         if (newSessionCalls === 1) {
           await firstSessionGate
@@ -1670,9 +1674,11 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(ack).toMatchObject({ accepted: true })
     await vi.waitFor(() => expect(events.some((event) => event.kind === 'done')).toBe(true), WAIT)
 
+    // The trigger names its own attachment beside the pixels: the image block is what the
+    // model looks at, the marker is what `sendMessage`'s `attachment` forwards it BY.
     expect(host.prompt.mock.calls[0]?.[1]).toEqual(
       expect.arrayContaining([
-        { type: 'text', text: '[ada] What is shown?' },
+        { type: 'text', text: '[ada] What is shown?\n[attached: screen.webp (image/webp)]' },
         { type: 'image', data: bytes.toString('base64'), mimeType: 'image/webp' }
       ])
     )

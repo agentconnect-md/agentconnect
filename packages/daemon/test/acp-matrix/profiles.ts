@@ -28,7 +28,7 @@ const select = (
   id: SelectOption['id'],
   category: SelectOption['category'],
   values: string[],
-  current = values[0]
+  current = values[0]!
 ): SelectOption => ({
   id,
   category,

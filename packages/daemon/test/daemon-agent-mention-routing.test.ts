@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
-import { sessionKey } from '../src/store/local-store.js'
+import { sessionKey, type InboxRow } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import type { NormalizedMessage } from '../src/messages/normalized.js'
 
 /**
  * send-message-routing-rework.md §4 / §4.1 / §6 — the DIRECT-daemon ladder for a
@@ -251,7 +252,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // A live connection supplies the workspace id the conversation audience keys on; the
     // realm is what makes the tuple complete enough to bind at all.
     ;(daemon as any).connByIntegration.set('int-bot-b', { workspaceId: () => 'T-TEST' })
-    const msg = agentMessage()
+    const msg: NormalizedMessage = agentMessage()
     msg.transportScope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
 
     // The audience this very message resolves to for the target…
@@ -295,7 +296,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     // permanently silent in a conversation it visibly joined.
     const { daemon } = await boot([{ id: 'bot-a' }, { id: 'bot-b' }])
     ;(daemon as any).connByIntegration.set('int-bot-b', { workspaceId: () => 'T-TEST' })
-    const msg = agentMessage()
+    const msg: NormalizedMessage = agentMessage()
     msg.transportScope = (daemon as any).transportScopeForIntegrationIds(['int-bot-b'])
     const seedSession = async (key: string) =>
       await (daemon as any).store.upsertSession({
@@ -446,7 +447,8 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         { botUserIds: { 'bot-b': 'UB' }, realDispatch: true }
       )
       ;(daemon as any).botUserIds['int-bot-b'] = 'UB'
-      const appendInbox = vi.spyOn((daemon as any).store, 'appendInbox')
+      const inboxStore = (daemon as any).store as { appendInbox: (row: InboxRow) => Promise<boolean> }
+      const appendInbox = vi.spyOn(inboxStore, 'appendInbox')
 
       const human = agentMessage({
         msgId: 'slack:C1:1720000000.000260',
@@ -936,6 +938,8 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
         channel: 'C1',
         thread: '1720000000.000100',
         acpSessionId: 'acp-parent-1',
+        // Lineage travels by the OUTWARD id (session-concept.md §1.1), so seed one that differs.
+        sessionId: 'sid-parent-1',
         state: 'idle',
         lastDeliveredTs: null,
         updatedAt: Date.now()
@@ -945,7 +949,7 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
       expect(calls).toHaveLength(1)
       expect(calls[0]!.callMeta).toMatchObject({
         callFrom: 'bot-a',
-        originSessionId: 'acp-parent-1',
+        originSessionId: 'sid-parent-1',
         needsReply: true
       })
       expect(await (daemon as any).store.getActivation(pairingKey(daemon))).toMatchObject({

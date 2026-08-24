@@ -13,7 +13,12 @@
 import {
   isFrame,
   AGENT_EXISTS_FEATURE,
+  CODEHOST_NOTE_PROJECTION_V1_FEATURE,
+  CODEHOST_REVIEW_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
+  GITCRED_GITHUB_V2_FEATURE,
+  GITCRED_PROVIDER_V2_FEATURE,
+  GITLAB_EFFECT_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
@@ -82,6 +87,21 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     // caller's current channel, because an older CP rejects a channel-less payload.
     serverFeatures: [
       'gitcred-actions-v1',
+      // §17.1: this CP decodes provider-qualified gitcred v2 requests. A daemon
+      // may name provider 'gitlab' only after seeing this.
+      GITCRED_PROVIDER_V2_FEATURE,
+      // §17.3: …and decodes an explicitly github-qualified request, echoing the provider back so a
+      // daemon can verify a GitHub grant the same way it verifies every other provider's.
+      GITCRED_GITHUB_V2_FEATURE,
+      // §14.2: …and decodes purpose 'gitlab_effect', the broker's action-time effect lease.
+      GITLAB_EFFECT_V1_FEATURE,
+      // §15.1/§17.2: this CP serves the provider-neutral review authorization, the
+      // publication lease with its operation ledger, and the body-free result.
+      CODEHOST_REVIEW_V1_FEATURE,
+      // §16/§17.2: …and drives the run-projection ledger end to end, including the gitlab arm of
+      // `hook/start` that records the started head and opens `running`. A daemon must not send
+      // that arm before seeing this: a provider member an older CP cannot route is a fatal frame.
+      CODEHOST_NOTE_PROJECTION_V1_FEATURE,
       'agent-directory-org-scope-v1',
       SESSION_LIVE_TAIL_FEATURE,
       SESSION_METADATA_ACK_FEATURE,

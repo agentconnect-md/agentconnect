@@ -214,12 +214,28 @@ export const AgentSchema = z.object({
     // Remote-git credential mode. Absent ⇒ anonymous (public repos). 'github-app' ⇒
     // clone/fetch/push authenticate via the local credential helper backed by
     // CP-minted short-lived installation tokens — nothing durable on this host.
-    gitCredential: z.enum(['github-app']).optional(),
+    gitCredential: z.enum(['github-app', 'gitlab']).optional(),
+    // gitlab mode: the v2 rename-stable numeric project id (gitlab-com-integration.md
+    // §17.1) — the identity the credential consumer verifies against every grant echo.
+    gitlabProjectId: z
+      .string()
+      .regex(/^[1-9]\d*$/)
+      .optional(),
     // The agent's additional-repository allowlist, replicated from the CP
-    // (multi-repository-workspaces.md decision 2). A later phase materializes these
-    // as secondary workspace roots; nothing reads the list yet. `repoId` is GitHub's
-    // numeric repository id as a decimal string, so a rename cannot orphan an entry.
-    additionalRepos: z.array(z.object({ repoFullName: z.string(), repoId: z.string() })).default([]),
+    // (multi-repository-workspaces.md decision 2). `repoId` is the host's numeric
+    // repository/project id as a decimal string, so a rename cannot orphan an entry,
+    // and `provider` qualifies it — the hosts number theirs independently
+    // (gitlab-com-integration.md §8.1). Absent ⇒ github, what every entry a
+    // pre-GitLab control plane replicated means.
+    additionalRepos: z
+      .array(
+        z.object({
+          repoFullName: z.string(),
+          repoId: z.string(),
+          provider: z.string().min(1).default('github')
+        })
+      )
+      .default([]),
     pullOnNewSession: z.boolean().default(true),
     // DEPRECATED: superseded by the top-level `skills` field (AgentSkillEntry[]).
     // Kept so historical agent.json files still parse; nothing consumes it.

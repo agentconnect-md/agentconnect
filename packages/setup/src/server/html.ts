@@ -139,6 +139,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <a href="#startup-section">Startup</a>
       <a href="#logto-section">Logto</a>
       <a href="#github-section">GitHub</a>
+      <a href="#gitlab-section">GitLab</a>
       <a href="#slack-section">Slack</a>
       <a href="#google-section">Google</a>
       <a href="#feishu-section">Feishu</a>
@@ -239,6 +240,31 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <button id="clear-github" class="danger" hidden>Clear configuration</button>
           <a id="github-settings" class="button" target="_blank" rel="noopener" hidden>Open GitHub settings</a>
         </div>
+      </section>
+
+      <section id="gitlab-section" class="panel setup-section" aria-labelledby="gitlab-heading">
+        <div class="provider-head">
+          <div><h3 id="gitlab-heading">GitLab</h3><p class="muted">OAuth application used to administer GitLab.com projects.</p></div>
+          <span id="gitlab-match" class="badge">Not configured</span>
+        </div>
+        <dl class="credentials">
+          <dt>Instance</dt><dd class="value-line"><code id="gitlab-instance">https://gitlab.com</code></dd>
+          <dt>Application ID</dt><dd class="value-line"><code id="gitlab-client-id">Not configured</code><button class="edit-configuration" data-provider="gitlab">Edit</button></dd>
+          <dt>Secret</dt><dd class="secret-line"><span id="gitlab-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="gitlab.clientSecret" data-secret-display="gitlab-client-secret-display">Edit</button></dd>
+        </dl>
+        <p id="gitlab-status" class="muted"></p>
+        <p id="gitlab-probe" class="muted" hidden></p>
+        <div id="gitlab-drift" class="notice" hidden></div>
+        <p>Redirect URI:</p><ul id="gitlab-callbacks" class="uris"></ul>
+        <p>Scopes:</p><ul id="gitlab-scopes" class="uris"></ul>
+        <p class="muted">GitLab does not expose OAuth application creation through an API. In User settings &rarr; Applications, or a group's Settings &rarr; Applications, add an application whose redirect URI is exactly the value above, keep Confidential selected, grant the scopes above, then save the generated Application ID and Secret here. GitLab shows the secret only once.</p>
+        <div class="row"><a class="button" href="https://gitlab.com/-/user_settings/applications" target="_blank" rel="noopener">Open GitLab applications</a></div>
+        <div id="gitlab-config-controls" class="subsection">
+          <label class="field">Instance base URL<input id="gitlab-base-url" autocomplete="off" placeholder="Leave empty for https://gitlab.com"></label>
+          <label class="field">Application ID<input id="gitlab-id" autocomplete="off"></label>
+          <label id="gitlab-initial-secret-field" class="field">Secret<input id="gitlab-secret" type="password" autocomplete="new-password" placeholder="Required when the Application ID changes"></label>
+        </div>
+        <div class="row"><button id="save-gitlab">Save GitLab application</button><button id="cancel-gitlab-configuration" hidden>Cancel</button><button id="clear-gitlab" class="danger" hidden>Clear configuration</button></div>
       </section>
 
       <section id="slack-section" class="panel setup-section" aria-labelledby="slack-heading">
@@ -554,7 +580,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       currentStatus = status;
       const byKey = new Map((status.secrets || []).map((item) => [item.key, item]));
       const values = status.values;
-      const expected = status.providerExpectations || { github: null, slack: null, google: { origins: [], redirects: [] } };
+      const expected = status.providerExpectations || { github: null, gitlab: null, slack: null, google: { origins: [], redirects: [] } };
       renderStartupEnvironment();
 
       const logto = values.logto;
@@ -606,6 +632,34 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el('check-github').hidden = !github;
       if (github) showDiff('github-drift', githubDrift, 'Expected URLs changed since App creation');
       else el('github-drift').hidden = true;
+
+      const gitlab = values.gitlab;
+      const gitlabSecret = configured(byKey, 'gitlab.clientSecret');
+      const expectedGitlab = expected.gitlab;
+      renderUriList('gitlab-callbacks', expectedGitlab ? [expectedGitlab.callbackUrl] : []);
+      renderUriList('gitlab-scopes', expectedGitlab ? expectedGitlab.scopes : []);
+      text('gitlab-client-id', gitlab && gitlab.clientId);
+      secretText('gitlab-client-secret-display', byKey, 'gitlab.clientSecret', Boolean(gitlab));
+      showIdentityEditors('gitlab', Boolean(gitlab));
+      el('gitlab-id').value = gitlab ? gitlab.clientId : '';
+      text('gitlab-instance', (gitlab && gitlab.baseUrl) || 'https://gitlab.com');
+      el('gitlab-base-url').value = (gitlab && gitlab.baseUrl) || '';
+      // A probe verdict belongs to the save that produced it, never to a reload.
+      el('gitlab-probe').hidden = true;
+      el('gitlab-status').textContent = gitlab
+        ? gitlab.clientId + ' is configured.'
+        : expectedGitlab
+          ? 'Register the OAuth application on GitLab.com, then save its Application ID and Secret here.'
+          : 'Publishing the redirect URI needs an HTTPS API public URL.';
+      showDiff('gitlab-drift', gitlab && !expectedGitlab
+        ? [{ field: 'Startup public URLs', current: 'Unavailable', expected: 'An HTTPS API URL' }]
+        : []);
+      match('gitlab-match', gitlab && gitlabSecret ? 'warn' : '', !gitlab ? 'Not configured' : !gitlabSecret ? 'Missing secret' : "Can't verify automatically");
+      el('gitlab-initial-secret-field').hidden = Boolean(gitlab) && gitlabSecret;
+      el('gitlab-config-controls').hidden = Boolean(gitlab);
+      el('save-gitlab').hidden = Boolean(gitlab);
+      el('cancel-gitlab-configuration').hidden = true;
+      el('clear-gitlab').hidden = !gitlab;
 
       const slack = values.slack;
       text('slack-app-id', slack && slack.appId);
@@ -747,6 +801,16 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('slack-edit-controls').hidden = false;
         el('clear-slack').hidden = true;
         el('slack-edit-app-id').focus();
+      } else if (provider === 'gitlab') {
+        if (!values.gitlab) return;
+        el('gitlab-id').value = values.gitlab.clientId;
+        el('gitlab-secret').value = '';
+        el('gitlab-config-controls').hidden = false;
+        el('gitlab-initial-secret-field').hidden = false;
+        el('save-gitlab').hidden = false;
+        el('cancel-gitlab-configuration').hidden = false;
+        el('clear-gitlab').hidden = true;
+        el('gitlab-id').focus();
       } else if (provider === 'google') {
         const google = values.logto && values.logto.googleConnector;
         if (!google) return;
@@ -894,7 +958,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
     async function clearProvider(provider) {
       if (!currentStatus) throw new Error('Deployment configuration is not loaded');
-      const label = provider === 'github' ? 'GitHub' : provider === 'slack' ? 'Slack' : provider === 'google' ? 'Google' : provider === 'feishu' ? 'Feishu' : 'Lark';
+      const label = provider === 'github' ? 'GitHub' : provider === 'gitlab' ? 'GitLab' : provider === 'slack' ? 'Slack' : provider === 'google' ? 'Google' : provider === 'feishu' ? 'Feishu' : 'Lark';
       if (!window.confirm('Clear the saved ' + label + ' configuration and secrets?')) return;
       const values = currentStatus.values;
       let next = values;
@@ -914,6 +978,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
           'github.webhookSecret': null,
           ...(connectorReused ? { 'logto.githubConnectorClientSecret': null } : {})
         };
+      } else if (provider === 'gitlab') {
+        next = { ...values, gitlab: null };
+        secrets = { 'gitlab.clientSecret': null };
       } else if (provider === 'slack') {
         const logto = values.logto
           ? {
@@ -1165,6 +1232,32 @@ export const SETUP_HTML = String.raw`<!doctype html>
       el(region + '-login-status').textContent = result.message;
       el(region + '-login-status').className = result.status === 'pass' ? 'ok' : result.status === 'fail' ? 'warn' : 'muted';
       message(result.message || (label + ' credential check completed.'), result.status === 'fail');
+    }
+
+    async function saveGitlab() {
+      const clientSecret = el('gitlab-secret').value;
+      const baseUrl = el('gitlab-base-url').value.trim();
+      const saved = await json(await fetch(api + '/configure/gitlab', {
+        method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+        body: JSON.stringify({
+          application: {
+            clientId: requiredInput('gitlab-id', 'the GitLab Application ID'),
+            ...(clientSecret ? { clientSecret } : {}),
+            ...(baseUrl ? { baseUrl } : {})
+          }
+        })
+      }));
+      el('gitlab-secret').value = '';
+      await load();
+      showGitlabProbe(saved.probe);
+      message('GitLab OAuth application saved. Restart AgentConnect to apply it.');
+    }
+
+    // Only the URL shape blocks the save, so every other verdict is a line to read.
+    function showGitlabProbe(probe) {
+      const line = el('gitlab-probe');
+      line.hidden = !probe;
+      line.textContent = probe ? probe.message : '';
     }
 
     async function saveGoogle() {
@@ -1434,6 +1527,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('cancel-slack-configuration').onclick = cancelConfigurationEdit;
     el('clear-slack').onclick = () => clearProvider('slack').catch((error) => message(error.message, true));
     el('check-slack').onclick = () => checkSlack().catch((error) => message(error.message, true));
+    el('save-gitlab').onclick = () => saveGitlab().catch((error) => message(error.message, true));
+    el('cancel-gitlab-configuration').onclick = cancelConfigurationEdit;
+    el('clear-gitlab').onclick = () => clearProvider('gitlab').catch((error) => message(error.message, true));
     el('save-google').onclick = () => saveGoogle().catch((error) => message(error.message, true));
     el('cancel-google-configuration').onclick = cancelConfigurationEdit;
     el('clear-google').onclick = () => clearProvider('google').catch((error) => message(error.message, true));

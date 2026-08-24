@@ -32,6 +32,14 @@ import {
   PgUserRepo,
   PgGithubInstallationRepo,
   PgAgentRepoAuthorizationRepo,
+  PgCodeHostRepositoryRepo,
+  PgGitlabConnectionRepo,
+  PgGitlabAgentAccountRepo,
+  PgGitlabInstanceStateStore,
+  PgGitlabProjectBindingRepo,
+  PgGitlabProjectCredentialRepo,
+  PgGitlabProjectCredentialSecretStore,
+  PgGitlabWebhookSecretStore,
   PgOrgRepo,
   PgOrgInviteLinkRepo,
   PgWaitlistRepo,
@@ -91,6 +99,7 @@ import { RelayRegistry } from '../../src/ws/relay-registry.js'
 import { InMemorySessionEventSink } from '../../src/events/sink.js'
 import { SessionUsageWriter } from '../../src/usage/writer.js'
 import { HookService } from '../../src/hooks/hook.service.js'
+import { GitlabHookRerunService } from '../../src/gitlab/hook-rerun.service.js'
 import { buildHttpServer } from '../../src/http/server.js'
 import type { HttpDeps } from '../../src/http/deps.js'
 import { buildCpPlatformRegistry } from '../../src/platforms/registry.js'
@@ -213,7 +222,12 @@ export function buildHttpApp(
   // the platform keys are peeled into `platformStubs` and the rest merged last, so
   // a test can register funnel routes that gate on these at plugin-registration
   // time. Nested config goes through `configOverrides`, not here.
-  depsOverrides?: Partial<HttpDeps> & Partial<PlatformStubs>
+  // The gitlab seam's rerun authorizer is filled in below from the same repos,
+  // so a suite wires only `{ oauth, provisioner, fetchImpl }`.
+  depsOverrides?: Partial<Omit<HttpDeps, 'gitlab'>> &
+    Partial<PlatformStubs> & {
+      gitlab?: Omit<NonNullable<HttpDeps['gitlab']>, 'hookRerun'> & { hookRerun?: GitlabHookRerunService }
+    }
 ): HttpApp {
   const clock = systemClock
   // Mirror the prod graph: WAITLIST_MODE gates JIT personal-org creation and drives
@@ -284,6 +298,12 @@ export function buildHttpApp(
   )
   const presetAgentRepo = new PgPresetAgentStore(prisma)
   const hookRepo = new PgHookRepo(prisma)
+  const registryService = new DaemonRegistryService(
+    daemonRepo,
+    new PgRuntimeProfileRepo(prisma),
+    daemonLifecycleOpRepo,
+    clock
+  )
   const hookSecretStore = new PgHookSecretStore(prisma, cipher)
   const githubInstallationRepo = new PgGithubInstallationRepo(prisma)
   const agentRepoAuthRepo = new PgAgentRepoAuthorizationRepo(prisma)
@@ -330,7 +350,9 @@ export function buildHttpApp(
     undefined,
     organizationEnvironmentResolver,
     undefined,
-    agentRepoAuthRepo
+    agentRepoAuthRepo,
+    depsOverrides?.gitlab?.api.baseUrl,
+    hookRepo
   )
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 
@@ -360,7 +382,7 @@ export function buildHttpApp(
   // Peel the platform seams out of the overrides bag: they are no longer core
   // deps (§9 DI collapse), but suites still hand them in at build time so the
   // funnel plugins that gate on them register.
-  const coreOverrides: Partial<HttpDeps> = { ...depsOverrides }
+  const coreOverrides: Partial<HttpDeps> = { ...depsOverrides } as Partial<HttpDeps>
   for (const key of PLATFORM_STUB_KEYS) delete (coreOverrides as Record<string, unknown>)[key]
   const platformStubs: PlatformStubs = {
     verifyTelegramBot: async () => ({ status: 'ok', name: null, privacyModeDisabled: true }),
@@ -377,6 +399,45 @@ export function buildHttpApp(
         (depsOverrides as Record<string, unknown>)[key]
       ])
     )
+  }
+
+  const hookService = new HookService(
+    hookRepo,
+    hookSecretStore,
+    agentRepo,
+    relayControl,
+    placementResolver,
+    githubInstallationRepo,
+    'agentconnect-test',
+    undefined,
+    depsOverrides?.gitlab ? new PgGitlabProjectBindingRepo(prisma) : undefined,
+    depsOverrides?.gitlab ? new PgGitlabWebhookSecretStore(prisma, cipher) : undefined,
+    depsOverrides?.gitlab ? new PgGitlabAgentAccountRepo(prisma) : undefined,
+    // §24.4: the axis the fake GitLab edge serves rides every compiled gitlab rule, and the
+    // hook agent's spec is re-projected in the same ordered sequence production uses.
+    depsOverrides?.gitlab?.api.baseUrl,
+    async (orgId, agentId) => {
+      const agent = await agentRepo.get(orgId, agentId)
+      if (!agent) return
+      await (depsOverrides?.agentDelivery ?? agentDelivery).upsert(agent, () => {})
+    }
+  )
+  // The §16.1 rerun authorizer rides the gitlab seam; a suite may still override it.
+  if (coreOverrides.gitlab && !coreOverrides.gitlab.hookRerun) {
+    coreOverrides.gitlab = {
+      ...coreOverrides.gitlab,
+      hookRerun: new GitlabHookRerunService({
+        hooks: hookRepo,
+        agents: agentRepo,
+        bindings: new PgGitlabProjectBindingRepo(prisma),
+        accounts: new PgGitlabAgentAccountRepo(prisma),
+        credentials: new PgGitlabProjectCredentialRepo(prisma),
+        credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
+        hookService,
+        relayControl,
+        api: coreOverrides.gitlab.api
+      })
+    }
   }
 
   const deps: HttpDeps = {
@@ -401,6 +462,11 @@ export function buildHttpApp(
       waitlist: waitlistRepo,
       githubInstallation: githubInstallationRepo,
       agentRepoAuth: agentRepoAuthRepo,
+      codeHostRepository: new PgCodeHostRepositoryRepo(prisma),
+      gitlabConnection: new PgGitlabConnectionRepo(prisma),
+      gitlabProjectBinding: new PgGitlabProjectBindingRepo(prisma),
+      gitlabAgentAccount: new PgGitlabAgentAccountRepo(prisma),
+      gitlabInstanceState: new PgGitlabInstanceStateStore(prisma),
       integration: integrationRepo,
       bot: botRepo,
       botSecret: botSecretStore,
@@ -430,7 +496,7 @@ export function buildHttpApp(
       webchatMcpOperation: webchatMcpOperationRepo,
       oauth: oauthRepo
     },
-    registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),
+    registry: registryService,
     platforms,
     agentSpecs,
     liveness,
@@ -469,15 +535,8 @@ export function buildHttpApp(
     agentMutations: new AgentMutationGate(),
     sessionOwners: connReg,
     // The installations repo feeds the github-kind compile — same graph as prod.
-    hooks: new HookService(
-      hookRepo,
-      hookSecretStore,
-      agentRepo,
-      relayControl,
-      placementResolver,
-      githubInstallationRepo,
-      'agentconnect-test'
-    ),
+    // gitlab-kind compile sources appear exactly when the test wires a gitlab seam.
+    hooks: hookService,
     auth: new DaemonAuthService(
       codec,
       apiKeyRepo,

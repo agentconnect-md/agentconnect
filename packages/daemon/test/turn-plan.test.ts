@@ -5,14 +5,8 @@ import { AGENT_CALL_HOP_LIMIT_NOTICE } from '../src/daemon/constants.js'
 import { transcriptChannelKey } from '../src/store/local-store.js'
 import { TurnOutputRegistry, type TurnOutputSurface } from '../src/platforms/turn-output.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
-import type {
-  CallMeta,
-  DaemonConverger,
-  DaemonRenderAction,
-  Pending,
-  QueueEntry,
-  WebchatTurnContext
-} from '../src/daemon/turn-types.js'
+import type { CallMeta, DaemonConverger, DaemonRenderAction, Pending, QueueEntry } from '../src/daemon/turn-types.js'
+import type { WebchatTurnContext } from '../src/webchat/types.js'
 
 /**
  * The PURE half of one dispatched turn: every decision `dispatchOne` makes before
@@ -170,11 +164,23 @@ describe('buildTurnPlan', () => {
   })
 
   it('activates a github reply batch only when it is sealed and holds more than one item', () => {
-    const batch = (over: Record<string, unknown>) => entryFor({ hookContext: { githubReviewBatch: over } as never })
+    const batch = (over: Record<string, unknown>) =>
+      entryFor({ hookContext: { github: { subjectKind: 'pull_request' }, githubReviewBatch: over } as never })
     expect(planFor({ entry: batch({ sealed: true, items: [1, 2] }) }).githubReplyBatchActive).toBe(true)
     expect(planFor({ entry: batch({ sealed: true, items: [1] }) }).githubReplyBatchActive).toBe(false)
     expect(planFor({ entry: batch({ sealed: false, items: [1, 2] }) }).githubReplyBatchActive).toBe(false)
     expect(planFor().githubReplyBatchActive).toBe(false)
+  })
+
+  it('opens the batched reply tool for no provider that publishes its batch as one ordinary reply', () => {
+    // A GitLab note batch is answered by the single daemon-owned note, so the GitHub tool stays closed.
+    const gitlab = entryFor({
+      hookContext: {
+        gitlab: { target: { kind: 'merge_request', iid: 7 } },
+        githubReviewBatch: { sealed: true, items: [1, 2] }
+      } as never
+    })
+    expect(planFor({ entry: gitlab }).githubReplyBatchActive).toBe(false)
   })
 
   it('keys the transcript channel by channel plus transport scope', () => {

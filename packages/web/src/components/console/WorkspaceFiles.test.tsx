@@ -241,6 +241,52 @@ describe('workspaceReadModelKey', () => {
       workspaceReadModelKey(github, undefined, 'example-co/shared-library')
     )
   })
+
+  // Every gitlab workspace used to fall through to the `:scratch` arm, so switching
+  // project — or converting scratch → GitLab — reused the previous checkout's tree.
+  describe('gitlab workspaces', () => {
+    const gitlabAt = (over: Record<string, unknown>) =>
+      workspaceReadModelKey({
+        id: 'agent-a',
+        workdir: '/ws/agent-a',
+        workspace: {
+          mode: 'gitlab',
+          projectId: '4210',
+          repo: 'acme/platform',
+          branch: 'main',
+          agentDir: '/',
+          ...over
+        }
+      } as unknown as Pick<Agent, 'id' | 'workspace' | 'workdir'>)
+
+    it('separates two projects, and a project from scratch', () => {
+      expect(gitlabAt({ projectId: '4211', repo: 'acme/runtime' })).not.toBe(gitlabAt({}))
+      expect(gitlabAt({})).not.toBe(
+        workspaceReadModelKey({
+          id: 'agent-a',
+          workdir: '/ws/agent-a',
+          workspace: { mode: 'scratch' }
+        } as unknown as Pick<Agent, 'id' | 'workspace' | 'workdir'>)
+      )
+    })
+
+    it('separates a renamed project from a genuinely different one', () => {
+      // The path moved but the project did not: same checkout, so the same key.
+      expect(gitlabAt({ repo: 'acme-group/platform' })).toBe(gitlabAt({}))
+      expect(gitlabAt({ projectId: '99' })).not.toBe(gitlabAt({}))
+    })
+
+    it.each([
+      ['branch', { branch: 'next' }],
+      ['working subdirectory', { agentDir: '/services/api' }]
+    ])('changes when the %s changes', (_label, over) => {
+      expect(gitlabAt(over)).not.toBe(gitlabAt({}))
+    })
+
+    it('never collides with a GitHub workspace of the same path', () => {
+      expect(gitlabAt({ repo: 'acme/infra', projectId: 'acme/infra' })).not.toBe(workspaceReadModelKey(github))
+    })
+  })
 })
 
 const REPO_GRANTS = [

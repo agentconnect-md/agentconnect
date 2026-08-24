@@ -286,7 +286,7 @@ describe('P4 serial gate', () => {
     expect(g.started[1]).toContain('B stale trigger')
     expect(g.started[1]).toContain('C newer clarification')
     expect(g.started[1]).toContain('D latest: merge it')
-    expect(g.started[1].indexOf('B stale trigger')).toBeLessThan(g.started[1].indexOf('D latest: merge it'))
+    expect(g.started[1]!.indexOf('B stale trigger')).toBeLessThan(g.started[1]!.indexOf('D latest: merge it'))
     g.releaseOne()
     await staleWake
 
@@ -646,7 +646,7 @@ describe('P4 serial gate', () => {
 
     expect(cp.dones).toHaveLength(1)
     expect(cp.dones[0]).toMatchObject({ conversationId: 'conv-b', turnId })
-    expect(cp.dones[0].error).toBeTruthy()
+    expect(cp.dones[0]!.error).toBeTruthy()
 
     // Let the still-blocked head drain so the daemon can stop cleanly.
     g.releaseAll()

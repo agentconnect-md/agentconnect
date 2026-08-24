@@ -5,7 +5,8 @@
 <h1 align="center">AgentConnect</h1>
 
 <p align="center">
-  <strong>Tag any agent, wherever work happens.</strong>
+  <strong>The open-source, multi-agent alternative to Claude Tag.</strong><br />
+  @ any agent, wherever work happens.
 </p>
 
 <p align="center">
@@ -15,12 +16,13 @@
   <a href="https://discord.com"><img src="https://cdn.simpleicons.org/discord" width="16" height="16" alt="Discord" title="Discord" /></a>&nbsp;&nbsp;
   <a href="https://www.larksuite.com"><img src="https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lark.svg" width="16" height="16" alt="Lark and Feishu" title="Lark / Feishu" /></a>&nbsp;&nbsp;
   <a href="https://github.com"><img src="https://cdn.simpleicons.org/github/181717/e6edf3" width="16" height="16" alt="GitHub" title="GitHub" /></a>&nbsp;&nbsp;
+  <a href="https://gitlab.com"><img src="https://api.iconify.design/logos/gitlab-icon.svg" width="16" height="16" alt="GitLab" title="GitLab" /></a>&nbsp;&nbsp;
   <a href="https://en.wikipedia.org/wiki/Webhook"><img src="https://api.iconify.design/logos/webhooks.svg" width="16" height="16" alt="Webhook" title="Webhook" /></a>
   &nbsp;&nbsp;&nbsp;&nbsp;
   <strong>WITH</strong>&nbsp;&nbsp;
   <a href="https://claude.com"><img src="https://cdn.simpleicons.org/claude" width="16" height="16" alt="Claude" title="Claude" /></a>&nbsp;&nbsp;
   <a href="https://openai.com"><img src="https://api.iconify.design/tabler/brand-openai.svg?color=%23808896" width="16" height="16" alt="OpenAI" title="OpenAI" /></a>&nbsp;&nbsp;
-  <a href="https://gemini.google.com"><img src="https://cdn.simpleicons.org/googlegemini" width="16" height="16" alt="Gemini" title="Gemini" /></a>&nbsp;&nbsp;
+  <a href="https://x.ai/build"><img src="https://cdn.simpleicons.org/x/000000/e6edf3" width="16" height="16" alt="Grok Build" title="Grok Build" /></a>&nbsp;&nbsp;
   <a href="https://www.deepseek.com"><img src="https://cdn.simpleicons.org/deepseek" width="16" height="16" alt="DeepSeek" title="DeepSeek" /></a>&nbsp;&nbsp;
   <a href="https://opencode.ai"><img src="https://cdn.simpleicons.org/opencode/000000/e6edf3" width="16" height="16" alt="OpenCode" title="OpenCode" /></a>&nbsp;&nbsp;
   <a href="https://pi.dev"><img src="https://cdn.simpleicons.org/pi/000000/e6edf3" width="16" height="16" alt="Pi" title="Pi" /></a>&nbsp;&nbsp;
@@ -28,10 +30,10 @@
 </p>
 
 <p align="center">
+  <strong><a href="https://github.com/agentconnect-md/agentconnect">⭐ Star on GitHub</a></strong> ·
   <strong><a href="https://docs.agentconnect.md">Documentation</a></strong> ·
   <strong><a href="https://agentconnect.md">Website</a></strong> ·
-  <strong><a href="https://agentconnect.md/blog">Blog</a></strong> ·
-  <strong><a href="https://app.agentconnect.md/waitlist">Join Cloud waitlist</a></strong>
+  <strong><a href="https://agentconnect.md/blog">Blog</a></strong>
 </p>
 
 <p align="center">
@@ -57,20 +59,21 @@
   <a href="#explore">Explore</a>
 </p>
 
-**Use multiple AI agents for issue triage, customized code review, and support.**
+**Multiple agents, one team—in the tools your team already uses.**
 
-AgentConnect is an open-source platform where teams and AI agents work together
-across the tools they already use, including Slack, Telegram, Discord, and
-GitHub. Connect Claude Code, Codex, Gemini CLI, or any ACP-compatible runtime,
-then start work from a conversation, pull request, issue, webhook, or schedule.
+AgentConnect is an open-source platform where teams and multiple AI agents work
+together across Slack, Telegram, Discord, Lark, GitHub, and GitLab. Bring Claude
+Code, Codex, Grok Build, DeepSeek, Pi, or any ACP-compatible agent into the
+conversations and workflows your team already has open.
 
-Give each agent a role, then choose the runtime, model, workspace, memory,
-tools, skills, permissions, and sandbox policy it needs. Agents can call one
-another while your team follows the work in shared channels and from one console.
+Give each agent a role, then let people and agents collaborate in shared
+conversations. Agents can call one another, and work can begin from a message,
+issue, pull request, webhook, or schedule.
 
-A small daemon runs the agents in the environment you operate. One console lets
-your team configure the fleet, connect channels and triggers, control access,
-and follow the work they are allowed to see.
+Each agent can have its own model, workspace, memory, MCP servers, skills,
+repository access, and sandbox policy. Fine-grained controls separate who may
+use an agent from who may see its sessions, while one console keeps the team's
+agents, integrations, and permitted work in view.
 
 <p align="center">
   <img src="docs/assets/console-agents.gif" alt="AgentConnect console: touring the Agents, Sessions, Schedules, Tools & Skills, Knowledge, and Daemons views" width="880" />
@@ -88,6 +91,12 @@ and follow the work they are allowed to see.
 - **Support across trusted workspaces.** Start a support conversation in
   Telegram, involve engineering from a trusted Slack workspace, and return the
   resolution where the conversation began.
+- **Run recurring operations.** Start work from a schedule or webhook, bring
+  exceptions into a shared conversation, and keep the human decision visible.
+- **Keep private forks current.** Subscribe to upstream changes through GitHub,
+  a GitHub subscription in Slack, webhooks, or schedules. Let agents assess the
+  impact, prepare and test relevant updates, and bring them to the team for
+  review.
 
 ## Get started
 
@@ -107,15 +116,12 @@ Open `http://localhost:3000`, add a daemon from the console, run its generated
 command, and create your first agent. The default stack listens only on
 `127.0.0.1` and uses local no-auth mode for evaluation.
 
-For authentication, public URLs, Linux sandbox requirements, provider apps,
-image pinning, secrets, and optional Mem0 configuration, follow the
+For Kubernetes, install the official Helm chart in
+[`charts/agentconnect`](charts/agentconnect), published to
+`oci://ghcr.io/agentconnect-md/charts/agentconnect` on every release. For
+authentication, public URLs, Linux sandbox requirements, provider apps, image
+pinning, secrets, and optional Mem0 configuration, follow the
 [AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
-
-### AgentConnect Cloud
-
-AgentConnect Cloud provides a hosted management console while agents continue
-running in your environment.
-[Join the Cloud waitlist](https://app.agentconnect.md/waitlist).
 
 ## Community
 
@@ -135,30 +141,32 @@ terminals. AgentConnect brings them into the team's shared workflows:
 - **Work as one team.** Create agents with different roles and let them call on
   one another, while people follow along in the conversations where the work
   happens.
-- **Keep work where it happens.** Link agents to bots in Slack, Telegram, and
-  Discord, or to repositories and workflows on GitHub.
-- **Choose the right agent for every job.** Configure each agent's runtime,
-  model, workspace, tools, and machine independently.
-- **Carry context forward.** Give each agent its own memory and skills, and let
-  the team publish reviewed organization knowledge that every agent can find on
-  demand.
-- **Set clear boundaries.** Decide who can see each agent and session, which
-  repositories and tools it may use, and which other agents it may call.
+- **Keep work where it happens.** Connect agents to Slack, Telegram, Discord,
+  and Lark, or to repositories and workflows on GitHub or GitLab—even across
+  trusted messaging workspaces.
+- **Configure each role independently.** Give every agent the model, workspace,
+  memory, MCP servers, skills, repository access, and sandbox policy its work
+  requires.
+- **Control access for people and agents.** Manage agent access separately from
+  session visibility, link supported social identities, and decide which
+  repositories, tools, and other agents each agent may reach.
+- **Stay provider-neutral.** Run Claude Code, Codex, Grok Build, DeepSeek, Pi,
+  and other ACP-compatible agents side by side.
 - **Stay in control.** Self-host the Apache-2.0 stack, run agents in your
-  environment, and change runtimes without locking the team to one vendor.
+  environment, and keep execution and workspaces under your control.
 
 ## Build your stack
 
 | Layer                    | Options                                                                                                          |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| **Agent runtimes**       | Claude Code, Codex, Gemini CLI, and other ACP-compatible runtimes                                                |
+| **Agent runtimes**       | Claude Code, Codex, Grok Build, DeepSeek, Pi, and other ACP-compatible runtimes                                  |
 | **Channels**             | Slack, Telegram, Discord, Lark / Feishu, and webchat                                                             |
-| **Triggers**             | GitHub events, generic webhooks, and schedules                                                                   |
+| **Triggers**             | GitHub and GitLab events, generic webhooks, and schedules                                                        |
 | **Memory**               | AgentConnect-managed memory, supported runtime-native memory, external providers, or Off                         |
 | **Tools and apps**       | Custom MCP providers and OpenConnector-backed services                                                           |
 | **Knowledge and skills** | Reviewed organization knowledge, immutable managed skills, and Git-based skill sources with per-agent enablement |
-| **Team controls**        | Organization roles, resource and session visibility, repository access, and directional agent call policies      |
-| **Agent infrastructure** | Independent runtime, model, workspace, credentials, and daemon placement per agent                               |
+| **Team controls**        | Agent access, session visibility, linked social identities, repository and tool access, and agent visibility     |
+| **Agent configuration**  | Independent runtime, model, workspace, credentials, sandbox policy, and placement per agent                      |
 
 ## Architecture
 

@@ -27,9 +27,9 @@ callback endpoint is required; the CP only orchestrates. Concretely:
   It also accepts pre-addressed public ingress from the relay. It is a self-contained
   "message + agent execution unit" and keeps running established sessions even if the
   CP is down (graceful degradation).
-- The optional **relay** terminates Slack HTTP callbacks, GitHub and generic webhooks,
-  and webchat, then forwards content directly to the owning daemon. It does not persist
-  message content.
+- The optional **relay** terminates Slack HTTP callbacks, GitHub and GitLab webhooks,
+  generic webhooks, and webchat, then forwards content directly to the owning
+  daemon. It does not persist message content.
 - The **Control Plane** does orchestration/registry/auth + serves the Web UI BFF. It
   stores **only control-plane metadata** — never message bodies, ACP `session/update`
   streams, or attachment bytes. Authorized BFF reads may proxy bounded
@@ -80,16 +80,24 @@ Each host keeps its own per-platform directory plus a static `registry.ts` —
 
 **GitHub and GitLab are deliberately NOT platform modules.** They have no chat
 ingress, so they stay on the webhook / code-host seam (`relay/src/hooks/`,
-`control-plane/src/github/`, the daemon poster) and implement only the narrower
-Layer-2 turn-output surface, which is what removed the hardcoded `github` case
-from the dispatch path. Webchat is core-owned for the same kind of reason: it is
-the console's own surface and shares almost nothing with an external transport.
-Do not "finish the job" by forcing either into `WebPlatformModule` — §2 of the
-design records why that is the wrong shape. The code-host seam gets its own
-provider contract when GitLab arrives and makes it a two-implementer seam
-([`gitlab-com-integration.md`](docs/designs/gitlab-com-integration.md) §1.6,
-§8.1 `CodeHostRepository`); extracting it earlier, from one implementer, would
-be guessing at an interface.
+`control-plane/src/{codehost,github,gitlab}/`,
+`daemon/src/{codehost,github,gitlab}/`) and implement a much narrower
+per-provider surface than a chat platform does. Webchat is core-owned for the
+same kind of reason: it is the console's own surface and shares almost nothing
+with an external transport. Do not "finish the job" by forcing either into
+`WebPlatformModule` — §2 of the design records why that is the wrong shape.
+GitLab has now arrived and made the seam a two-implementer one
+([`gitlab-com-integration.md`](docs/designs/gitlab-com-integration.md) §6.5,
+§8.1 `CodeHostRepository`), so its members exist: the Layer-2 turn output that
+removed the hardcoded `github` case from the dispatch path, and
+`daemon/src/codehost/review-adapter.ts` — `CodeHostReviewAdapter` plus the
+router that hands provider-routed `submitCodeReview` to whichever adapter owns
+the active review turn, the GitHub review orchestrator's member or the GitLab
+adapter (`submitGithubReview` survives as a dispatch alias), over the CP's
+provider-neutral publication lease and operation ledger behind
+`codehost-review-v1`. Each member was extracted in the change that added its
+second implementer; extracting from one implementer would have been guessing at
+an interface.
 
 Two rules this refactor exists to enforce: **a platform name is never core
 knowledge** — core reads a capability, a manifest field, or a registry entry
@@ -142,6 +150,10 @@ pnpm --filter @agentconnect.md/daemon dev        # tsx watch ... run
 pnpm --filter @agentconnect.md/control-plane dev # tsx watch src/index.ts
 pnpm --filter @agentconnect.md/web dev           # next dev
 ```
+
+`typecheck` covers tests, not just `src`: each package's `tsconfig.typecheck.json`
+includes `src` + `test` and resolves workspace siblings from source (no build needed),
+so a test calling a stale signature fails at the gate instead of mid-run.
 
 ### Control-plane tests (two Vitest projects)
 

@@ -1271,7 +1271,7 @@ describe('Daemon CP agent → memory + reconcile', () => {
     const secondBlocked = new Promise<void>((resolve) => (releaseSecond = resolve))
     let markSecondEntered!: () => void
     const secondEntered = new Promise<void>((resolve) => (markSecondEntered = resolve))
-    vi.spyOn(daemon as any, 'quiesceAgentWorkspaceAuthority').mockImplementation(async (agentId: string) => {
+    vi.spyOn(daemon as any, 'quiesceAgentWorkspaceAuthority').mockImplementation(async (agentId: unknown) => {
       quiesceCalls += 1
       if (quiesceCalls === 2) {
         markSecondEntered()

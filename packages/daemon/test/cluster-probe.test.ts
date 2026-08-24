@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { clusterProbeEnv, parseK8sProbePayload, probeClusterRuntimes } from '../src/runtimes/cluster-probe.js'
+import {
+  PROBE_PLACEHOLDER_KEY,
+  clusterProbeEnv,
+  parseK8sProbePayload,
+  probeClusterRuntimes
+} from '../src/runtimes/cluster-probe.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 
 /** The `--k8s` credentialed model probe: what a probed runtime launches with, and how the sweep
@@ -27,8 +32,33 @@ describe('cluster runtime probe', () => {
     // Inventing an env here would state something about a machine this daemon is not on.
     expect(clusterProbeEnv('mystery', unknown, { agentId: 'probe' })).toEqual({
       env: { AC_AGENT_ID: 'probe' },
-      redactValues: []
+      redactValues: [],
+      // Nothing was withheld from a runtime that carries its own auth, so a refusal from one is
+      // live knowledge about its login rather than a gap in this launch.
+      uncredentialed: false
     })
+  })
+
+  it('admits the enumeration session with a stand-in key when the deployment’s pair is endpoint-only', () => {
+    // The key-server shape: real launches mint a per-session key and a probe belongs to no
+    // session, so codex refused `session/new` outright and the whole model list was lost.
+    const { env, redactValues, uncredentialed } = clusterProbeEnv('codex-acp', codex, {
+      agentId: 'probe',
+      staticCredential: () => ({ key: '', baseUrl: 'https://gw.example/v1' })
+    })
+    expect(env.OPENAI_API_KEY).toBe(PROBE_PLACEHOLDER_KEY)
+    const request = JSON.parse(env.DEFAULT_AUTH_REQUEST!)
+    expect(request.methodId).toBe('gateway')
+    expect(request._meta.gateway.baseUrl).toBe('https://gw.example/v1')
+    // A key nobody issued is not a secret, and the probe never spends it on a request.
+    expect(redactValues).toEqual([])
+    expect(uncredentialed).toBe(false)
+  })
+
+  it('marks a runtime the deployment configures nothing for, so its refusal is not read as a login', () => {
+    const { env, uncredentialed } = clusterProbeEnv('codex-acp', codex, { agentId: 'probe' })
+    expect(env).toEqual({ AC_AGENT_ID: 'probe' })
+    expect(uncredentialed).toBe(true)
   })
 
   it('applies the codex session floor last, so a daemon-authored key stays authoritative', () => {
@@ -73,6 +103,9 @@ describe('cluster runtime probe', () => {
       { runtime: 'codex-acp', ok: false, models: [] }
     ])
     expect(results.find((r) => r.runtime === 'codex-acp')?.authRequired).toBe(true)
+    // This sweep configured no pair at all, so the mark rides the published result — an adopting
+    // member reads it and has no other way to know what the prober launched with.
+    expect(results.every((r) => r.uncredentialed)).toBe(true)
   })
 })
 
@@ -93,7 +126,7 @@ describe('published probe payload', () => {
     }
     const parsed = parseK8sProbePayload(JSON.stringify(payload))
     expect(parsed?.table.runtimes[0]?.command).toBe('claude-agent-acp')
-    expect(parsed?.results[0]?.configOptions).toEqual(payload.results[0].configOptions)
+    expect(parsed?.results[0]?.configOptions).toEqual(payload.results[0]!.configOptions)
   })
 
   it('refuses a payload it cannot read, so the member probes rather than advertises a guess', () => {

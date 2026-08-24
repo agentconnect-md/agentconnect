@@ -25,9 +25,23 @@ import type {
   AgentMemoryBinding,
   ApprovalsReviewer,
   DecimalAmount,
+  CodeHostNoteState,
   GithubPublishedComment,
-  OrganizationSuggestionInfo
+  OrganizationSuggestionInfo,
+  CodeHostReviewLeasePhase,
+  CodeHostReviewOpKind,
+  CodeHostReviewOpMethod,
+  CodeHostReviewOpOutcome,
+  CodeHostReviewOpState,
+  CodeHostReviewState,
+  CodeHostProvider,
+  HookKind
 } from '@agentconnect.md/protocol'
+import type {
+  CodeHostReviewLockReason,
+  CodeHostReviewOpRefusal,
+  CodeHostReviewTransferCondition
+} from '../domain/code-host-review.js'
 import type {
   DaemonId,
   AgentId,
@@ -593,6 +607,17 @@ export type AgentWorkspace =
       /** Ceiling for minted tokens (contents read|write); absent ⇒ 'write'. */
       gitAccess?: 'read' | 'write'
     }
+  | {
+      /** A managed GitLab project binding is the workspace (gitlab-com-integration.md
+       *  §13): credentials come from the binding's purpose-separated PATs, never a
+       *  per-agent installation. `workspaceRepoId` holds the numeric project id. */
+      mode: 'gitlab'
+      isolation?: WorkspaceIsolation
+      gitRepo: string
+      gitBranch?: string
+      agentDir?: string
+      gitAccess?: 'read' | 'write'
+    }
 export type GithubAgentWorkspace = Extract<AgentWorkspace, { mode: 'github' }>
 
 export interface CreateAgentInput {
@@ -853,6 +878,13 @@ export interface AgentRepo {
    *  numeric repo without tombstoning projections: workspace authority remains
    *  live. A concurrently deleted or differently repaired agent is a no-op. */
   setWorkspaceRepoId(agentId: AgentId, repoId: bigint): Promise<boolean>
+  /** Converge everything a gitlab project path is replicated into after a binding
+   *  path refresh (rename): gitlab-workspace clone URLs AND every explicit
+   *  authorization's display path, which is how the daemon maps a named project
+   *  back to its numeric id. Bumps configRevision once per agent so the fenced
+   *  spec push replicates. Returns the affected agent ids. `cloneUrl` is the
+   *  provider's own value (§24.1) — omitted ⇒ only display paths converge. */
+  refreshGitlabProjectPath(orgId: OrgId, projectId: bigint, projectPath: string, cloneUrl?: string): Promise<AgentId[]>
   /** Set the visibility + share set (the dedicated `/sharing` write path, kept
    *  separate from content `update`). An org→restricted transition atomically
    *  closes known direct-conversation rows. Stamps the last-modified audit;
@@ -1131,6 +1163,9 @@ export interface SessionMetaRecord {
   triggeredBy: string | null
   channelName: string | null
   triggeredByName: string | null
+  /** Creation-time hook-kind snapshot, so a deleted hook cannot rewrite this session's
+   *  source. Null on rows written before the column; those resolve through the live hook. */
+  hookKind: HookKind | null
   threadUrl: string | null
   runtime: string | null
   model: string | null
@@ -1184,9 +1219,12 @@ export interface SessionQuery {
 }
 
 export interface SessionFilterQuery extends SessionQuery {
-  integration?: Platform | 'github'
+  integration?: Platform | CodeHostProvider
   triggeredBy?: string
-  githubHookIds?: HookId[]
+  /** Code-host hook ids keyed by provider: each provider is promoted out of the generic
+   *  hook bucket into its own integration, and `integration: 'hook'` excludes them all.
+   *  Keyed rather than one field per host, so a new provider needs no new field here. */
+  codeHostHookIds?: Partial<Record<CodeHostProvider, HookId[]>>
   hookTriggerIds?: HookId[]
   /** Agents whose sessions count as conversation MEMBERS, when the caller may see
    *  more than the filter returns. Absent ⇒ `agentIds`, i.e. membership and row
@@ -1269,6 +1307,8 @@ export interface SessionFacetRecord {
   triggeredBy: string | null
   channelName: string | null
   triggeredByName: string | null
+  /** Creation-time hook-kind snapshot; null on rows written before it existed. */
+  hookKind: HookKind | null
   lastActivityAt: Date
   startedAt: Date
 }
@@ -2066,9 +2106,12 @@ export interface CronRepo {
 //   HookDef rows into rc/hook-assign rules; event payloads never land here.
 // ───────────────────────────────────────────────────────────────────────────
 
-export type HookKind = 'webhook' | 'github'
+/** Re-exported so the repository layer keeps one hook-kind vocabulary with the wire contract. */
+export type { HookKind }
 export type HookSessionMode = 'perDelivery' | 'perThread' | 'shared'
 export type GithubCommentFamily = 'issues' | 'pull_request'
+/** The stored comment-family vocabulary across code hosts; rows carry one host's subset. */
+export type HookCommentFamily = GithubCommentFamily | 'merge_request'
 export type HookReviewPolicy = 'off' | 'comment' | 'request_changes' | 'full'
 export type HookReportingMode = 'off' | 'check' | 'status'
 export type HookGateMode = 'informational' | 'required'
@@ -2090,6 +2133,10 @@ export interface UpsertHookInput {
   /** Trigger text (control metadata, same as CronDef.trigger). */
   sessionMode: HookSessionMode
   enabled?: boolean
+  /** REQUIRED for kind=gitlab: the instance `repoId` names, joining the §24.1
+   *  axis fence inside the insert transaction. Omitting it on a gitlab hook is
+   *  refused, because a disabled hook takes no binding lease of any kind. */
+  axisBaseUrl?: string
   /** Generic-endpoint routing key — minted server-side on CREATE, immutable
    *  after (the capability URL must survive edits). */
   urlToken?: string
@@ -2099,7 +2146,7 @@ export interface UpsertHookInput {
   repoFullName?: string
   events?: string[]
   /** Empty preserves the published API's legacy repo-wide issue_comment semantics. */
-  commentFamilies?: GithubCommentFamily[]
+  commentFamilies?: HookCommentFamily[]
   labelFilter?: string[]
   mentionOnly?: boolean
   reviewPolicy?: HookReviewPolicy
@@ -2135,7 +2182,7 @@ export interface HookRecord {
   githubSessionKey?: string | null
   events: string[]
   /** Empty = legacy repo-wide comments; non-empty scopes comments to these subjects. */
-  commentFamilies: GithubCommentFamily[]
+  commentFamilies: HookCommentFamily[]
   labelFilter: string[]
   mentionOnly: boolean
   configRevision: bigint
@@ -2636,6 +2683,9 @@ export interface HookRepo {
     errorCode: string,
     keepWriteMutex?: boolean
   ): Promise<boolean>
+  /** Release a projection that has nothing left to publish, clearing its due time so the
+   *  bounded claim stops returning it. Any later work re-arms `nextAttemptAt`. */
+  settleReviewProjection(projectionId: string, generation: bigint, leaseOwner: string): Promise<boolean>
   /** Permanently tombstone every durable Check owned by one agent/repository
    * grant before that grant is revoked. The reporter may subsequently use only
    * its cleanup capability; delayed HookRun repair must never revive the row. */
@@ -2646,6 +2696,163 @@ export interface HookRepo {
     desiredState: string
   ): Promise<number>
   tombstoneReviewProjections(hookIds: HookId[], at: Date, desiredState: string): Promise<number>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// CodeHostRunProjectionRepo — the provider-neutral informational run projection
+// (gitlab-com-integration.md §16). One row per (hook, project, MR IID, head
+// SHA, projection epoch). It ports the GitHub Checks writer's generation,
+// lease, pending-intent, write-marker, tombstone, and out-of-order rules, but
+// inverts the writer: the OWNING DAEMON is the only provider writer, so
+// `leaseOwner` is a daemon id and an offline one leaves the row pending.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface CodeHostRunProjectionRecord {
+  id: string
+  provider: string
+  hookId: HookId
+  orgId: OrgId
+  agentId: AgentId
+  agentName: string | null
+  projectId: bigint
+  projectPath: string
+  mergeRequestIid: number
+  headSha: string
+  projectionEpoch: bigint
+  generation: bigint
+  /** (hookId, deliveryKey) is the hook-run identity, so the delivery key IS the owning run. */
+  currentDeliveryKey: string | null
+  currentRunAt: Date | null
+  /** Hidden stable marker the daemon reconciles its note by; stable across generations. */
+  externalId: string
+  noteId: string | null
+  desiredState: CodeHostNoteState
+  observedState: CodeHostNoteState | null
+  reason: string | null
+  /** Terminal-authority watermark, separate from `generation`: it orders AUTHORITY, not writes. */
+  sealedThrough: bigint
+  queuedAt: Date | null
+  startedAt: Date | null
+  completedAt: Date | null
+  sessionId: string | null
+  credentialEpoch: bigint
+  configRevision: bigint | null
+  dispatchRevision: bigint | null
+  dispatchDaemonId: string | null
+  reviewPolicySnapshot: HookReviewPolicy | null
+  reportingModeSnapshot: HookReportingMode | null
+  gateModeSnapshot: HookGateMode | null
+  /** The daemon that currently holds the write, not a Control-Plane worker. */
+  leaseOwner: string | null
+  leaseUntil: Date | null
+  nextAttemptAt: Date | null
+  attempts: number
+  lastErrorCode: string | null
+  pendingIntent: unknown | null
+  writeMarker: string | null
+  writePhase: string | null
+  writeStartedAt: Date | null
+  tombstonedAt: Date | null
+  updatedAt: Date
+}
+
+export interface UpsertCodeHostRunProjectionInput {
+  provider: string
+  hookId: HookId
+  orgId: OrgId
+  agentId: AgentId
+  agentName: string
+  projectId: bigint
+  projectPath: string
+  mergeRequestIid: number
+  headSha: string
+  projectionEpoch: bigint
+  desiredState: CodeHostNoteState
+  reason?: string
+  currentDeliveryKey: string
+  /** Relay ingest / report time of this edge — the total order an older edge loses against. */
+  currentRunAt: Date
+  sessionId?: string
+  credentialEpoch?: bigint
+  configRevision?: bigint
+  dispatchRevision?: bigint
+  dispatchDaemonId?: string
+  reviewPolicySnapshot?: HookReviewPolicy
+  reportingModeSnapshot?: HookReportingMode
+  gateModeSnapshot?: HookGateMode
+  queuedAt?: Date
+  startedAt?: Date
+  completedAt?: Date
+  nextAttemptAt: Date
+}
+
+export interface CodeHostProjectionWriteResultInput {
+  projectionId: string
+  generation: bigint
+  leaseOwner: string
+  writeMarker: string
+  observedState: CodeHostNoteState
+  noteId?: string
+  settledErrorCode?: string
+  /** Keeps a changed desired state due after the older write reconciled. */
+  recheckAt?: Date
+}
+
+export interface CodeHostRunProjectionRepo {
+  /** Record or advance the desired generation for one natural key. A tombstoned row is never
+   *  revived, an older run never takes the row from a newer one, and an edge that lands while a
+   *  provider mutation is in flight is parked as `pendingIntent` instead of moving the generation.
+   *  Null ⇒ the owner is retired: creation is refused under the owner-lifecycle fence. */
+  upsert(input: UpsertCodeHostRunProjectionInput): Promise<CodeHostRunProjectionRecord | null>
+  /** Move the desired state within one generation. A non-terminal edge loses to `sealedThrough`. */
+  setDesired(
+    projectionId: string,
+    generation: bigint,
+    desiredState: CodeHostNoteState,
+    nextAttemptAt: Date,
+    reason?: string
+  ): Promise<boolean>
+  /** A newer head preempted every older generation on the same merge request (§16). */
+  supersede(
+    hookId: HookId,
+    projectId: bigint,
+    mergeRequestIid: number,
+    currentHeadSha: string,
+    at: Date
+  ): Promise<number>
+  /** Take the write for one generation on behalf of `leaseOwner` (a daemon id) and arm the mutex.
+   *  Refused while another mutation is in flight — ownership may not move mid-write. */
+  beginWrite(
+    projectionId: string,
+    generation: bigint,
+    leaseOwner: string,
+    writeMarker: string,
+    writePhase: string,
+    startedAt: Date,
+    leaseUntil: Date
+  ): Promise<boolean>
+  /** Settle the daemon's reported outcome. Fenced on generation ∧ lease owner ∧ marker, so an
+   *  older generation's result can never regress a newer desired state. */
+  completeWrite(input: CodeHostProjectionWriteResultInput): Promise<boolean>
+  /** A deterministic no-effect failure releases the mutex AND the lease; an ambiguous one keeps both
+   *  (`keepWriteMutex`) so only that daemon's reconciliation, never a replay, may follow. Fenced on
+   *  the echoed marker so a late duplicate of an older attempt settles nothing. */
+  failWrite(
+    projectionId: string,
+    generation: bigint,
+    leaseOwner: string,
+    writeMarker: string,
+    errorCode: string,
+    nextAttemptAt: Date,
+    keepWriteMutex?: boolean
+  ): Promise<boolean>
+  /** Drain a parked intent into a fresh generation once no mutation is in flight. */
+  advancePending(
+    projectionId: string,
+    generation: bigint,
+    fallbackNextAttemptAt: Date
+  ): Promise<CodeHostRunProjectionRecord | null>
+  get(projectionId: string): Promise<CodeHostRunProjectionRecord | null>
 }
 
 /** Per-hook HMAC signing key — read ONLY here, NEVER joined into a DTO
@@ -2992,6 +3199,596 @@ export interface GithubInstallStateStore {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// CodeHostRepositoryRepo — the provider-qualified repository catalog
+// (gitlab-com-integration.md §8.1). Readers-first: writers converge referenced
+// repos into it while legacy github columns stay the read path; GitLab readers
+// join it from day one.
+// ───────────────────────────────────────────────────────────────────────────
+
+export interface CodeHostRepositoryRecord {
+  id: string
+  orgId: string
+  provider: string // 'github' | 'gitlab' — app-layer closed set
+  externalId: bigint // numeric repo/project id — the rename-immune match key
+  displayPath: string // mutable display hint, never matched on
+  cloneUrl: string | null
+  defaultBranch: string | null
+}
+
+export interface CodeHostRepositoryRepo {
+  /** Convergent catalog write: insert or refresh the mutable hints for one referenced repo. */
+  upsert(input: {
+    orgId: string
+    provider: string
+    externalId: bigint
+    displayPath: string
+    cloneUrl?: string
+    defaultBranch?: string
+  }): Promise<CodeHostRepositoryRecord>
+  byExternalId(orgId: string, provider: string, externalId: bigint): Promise<CodeHostRepositoryRecord | null>
+  listForOrg(orgId: string): Promise<CodeHostRepositoryRecord[]>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// GitLab.com OAuth connections (gitlab-com-integration.md §8.2, §9) — the
+// administration identity. Sealed token material lives ONLY behind
+// GitlabConnectionSecretStore; DTO reads never join it.
+// ───────────────────────────────────────────────────────────────────────────
+
+export type GitlabConnectionState = 'connected' | 'reauth_required' | 'disconnected'
+
+export interface GitlabConnectionRecord {
+  id: string
+  orgId: string
+  userId: string | null
+  gitlabUserId: bigint
+  gitlabUsername: string
+  scopes: string[]
+  accessExpiresAt: Date | null
+  state: GitlabConnectionState
+  tokenVersion: bigint
+  lastSyncAt: Date | null
+  createdAt: Date
+}
+
+/** A sealed (SecretCipher representation) access+refresh pair. */
+export interface GitlabSealedTokenPair {
+  accessToken: string
+  refreshToken: string
+}
+
+export interface GitlabConnectionRepo {
+  /** Callback upsert (§9.2), atomic with its sealed pair: a reader can never
+   *  observe the new version/expiry with an old or missing pair. Reconnect
+   *  advances the version, so any in-flight refresh CAS loses. */
+  upsertOnCallback(input: {
+    orgId: string
+    userId: string
+    gitlabUserId: bigint
+    gitlabUsername: string
+    scopes: string[]
+    accessExpiresAt: Date | null
+    sealedPair: GitlabSealedTokenPair
+    /** The instance this pair was minted on; the write joins the §24.1 axis fence with it. */
+    axisBaseUrl: string
+  }): Promise<GitlabConnectionRecord>
+  get(orgId: string, connectionId: string): Promise<GitlabConnectionRecord | null>
+  listForOrg(orgId: string): Promise<GitlabConnectionRecord[]>
+  /** Refresh single-writer (§9.3): claim a short lease iff free/expired/own. */
+  claimRefreshLease(connectionId: string, owner: string, until: Date, now: Date): Promise<boolean>
+  releaseRefreshLease(connectionId: string, owner: string): Promise<void>
+  /** One atomic refresh commit: the tokenVersion CAS and the sealed pair land in
+   *  the same transaction, or not at all. False ⇒ the caller lost (reconnect,
+   *  disconnect, or another writer advanced the version) and must not retry. */
+  commitRefresh(
+    connectionId: string,
+    expectedVersion: bigint,
+    accessExpiresAt: Date | null,
+    sealedPair: GitlabSealedTokenPair
+  ): Promise<boolean>
+  /** Version-fenced failure transition: a stale refresh outcome (older version)
+   *  can never overwrite newer user intent such as a completed reconnect. */
+  markReauthRequired(connectionId: string, expectedVersion: bigint): Promise<boolean>
+  /** Atomic disconnect: state flip, version bump (defeats in-flight refresh CAS),
+   *  and sealed-pair deletion in one transaction. The row stays as history. */
+  disconnect(orgId: string, connectionId: string): Promise<boolean>
+  /** Drop an already-released row (§9.4). Locks the row, re-checks the state and
+   *  the assigned-binding count, and deletes — all in one transaction, because
+   *  `installerConnectionId` is ON DELETE SET NULL: an unfenced delete would
+   *  silently DETACH a binding a racing create had just attached. */
+  remove(orgId: string, connectionId: string): Promise<GitlabConnectionRemoval>
+}
+
+/** Why a connection removal did or did not happen — the route maps it to a status. */
+export type GitlabConnectionRemoval =
+  | { outcome: 'removed' }
+  | { outcome: 'blocked'; assignedProjects: number }
+  | { outcome: 'not_disconnected' }
+  | { outcome: 'missing' }
+
+/** Sealed OAuth pair reads (per-org key scope). Writes ride the connection
+ *  repo's atomic transitions; never joined by DTO queries. */
+export interface GitlabConnectionSecretStore {
+  get(orgId: string, connectionId: string): Promise<{ accessToken: string; refreshToken: string } | null>
+}
+
+export interface GitlabOauthStateRecord {
+  nonce: string
+  orgId: string
+  userId: string
+  browserHash: string | null
+  returnPath: string
+  verifier: string // sealed PKCE verifier
+  expiresAt: Date
+}
+
+/** The deployment-level observed instance facts (§24.2), keyed on the normalized
+ *  base URL so a re-targeted axis never inherits another instance's version. */
+export interface GitlabInstanceStateRecord {
+  baseUrl: string
+  version: string
+  enterprise: boolean
+  observedAt: Date
+}
+
+export interface GitlabInstanceStateRepo {
+  /** Last-observation-wins upsert: the authenticated version read at first
+   *  credentialed contact, and every reconciliation refresh after it. */
+  record(input: GitlabInstanceStateRecord): Promise<void>
+  get(baseUrl: string): Promise<GitlabInstanceStateRecord | null>
+}
+
+export type GitlabBindingState = 'provisioning' | 'ready' | 'admin_degraded' | 'runtime_degraded' | 'cleanup_pending'
+
+export interface GitlabProjectBindingRecord {
+  id: string
+  orgId: string
+  projectId: bigint
+  projectPath: string
+  defaultBranch: string | null
+  installerConnectionId: string | null
+  webhookId: bigint | null
+  desiredEventsHash: string | null
+  credentialEpoch: bigint
+  /** Set when a convergence lost a fence and wrote nothing; a sweep re-drives it. */
+  convergeOwedAt: Date | null
+  state: GitlabBindingState
+  stateReason: string | null
+  createdAt: Date
+}
+
+export interface GitlabProjectBindingRepo {
+  /** §10.2 desired-state transaction: acquire the deployment-global claim, upsert
+   *  the catalog row, and create the `provisioning` binding — atomically. A claim
+   *  uniqueness loser throws GitlabProjectClaimConflict and mutates nothing. */
+  createWithClaim(input: {
+    orgId: string
+    projectId: bigint
+    projectPath: string
+    defaultBranch?: string
+    cloneUrl?: string
+    installerConnectionId: string
+    /** The instance these host-relative ids came from; joins the §24.1 axis fence. */
+    axisBaseUrl: string
+  }): Promise<GitlabProjectBindingRecord>
+  get(orgId: string, bindingId: string): Promise<GitlabProjectBindingRecord | null>
+  byProject(orgId: string, projectId: bigint): Promise<GitlabProjectBindingRecord | null>
+  listForOrg(orgId: string): Promise<GitlabProjectBindingRecord[]>
+  /** How many bindings each connection still administers, keyed by connection id
+   *  (§7.1): a connection with any is not released and cannot be removed. */
+  countByInstaller(orgId: string): Promise<Record<string, number>>
+  /** Saga/reconciler facts (service account, webhook, path refresh, lifecycle). */
+  update(
+    orgId: string,
+    bindingId: string,
+    patch: Partial<{
+      projectPath: string
+      defaultBranch: string | null
+      installerConnectionId: string | null
+      webhookId: bigint | null
+      desiredEventsHash: string | null
+      convergeOwedAt: Date | null
+      state: GitlabBindingState
+      stateReason: string | null
+    }>
+  ): Promise<GitlabProjectBindingRecord | null>
+  /** Record that a contended pass still owes convergence — but ONLY while the
+   *  claim is still provisionable. A repair that loses to cleanup must not arm
+   *  an obligation nothing can satisfy; one statement, so either order is safe. */
+  markConvergeOwed(orgId: string, bindingId: string, at: Date): Promise<void>
+  /** Bindings a contended convergence still owes work, oldest first (§10.2). */
+  listConvergeOwed(before: Date, limit: number): Promise<GitlabProjectBindingRecord[]>
+  /** Purge fence: every rotation/revocation/disconnect bumps it (§7.4/§19.4). */
+  bumpCredentialEpoch(orgId: string, bindingId: string): Promise<bigint | null>
+  /** §10.2 EXCLUSIVE run-owned provisioning lease, CAS-acquired before the
+   *  first provider write: free, same-owner, or expired only — a live foreign
+   *  lease refuses, so two runs can never both write. False also when the claim
+   *  is gone, detached, or in cleanup. */
+  markProviderMutationStarted(
+    orgId: string,
+    bindingId: string,
+    projectId: bigint,
+    owner: string,
+    until: Date,
+    now: Date
+  ): Promise<boolean>
+  /** Releases ONLY the owning run's lease. */
+  endProviderMutation(orgId: string, bindingId: string, projectId: bigint, owner: string): Promise<void>
+  /** Per-step ATOMIC renewal before every provider mutation: still attached,
+   *  `active`, and owned by this run — and the lease is extended so it cannot
+   *  expire while the provider request is in flight. */
+  renewProviderLease(orgId: string, bindingId: string, projectId: bigint, owner: string, until: Date): Promise<boolean>
+  /** Cleanup entry — mutually exclusive with a LIVE lease: false while one is
+   *  held (cleanup retries later); flips the attached claim to `cleanup_pending`. */
+  beginCleanup(orgId: string, bindingId: string, projectId: bigint, now: Date): Promise<boolean>
+  /** Verified-complete cleanup only (§10.2/§19.4): the binding, its cascaded
+   *  local rows, and the deployment-global claim are removed in ONE
+   *  transaction. Anything short of verified cleanup keeps both. */
+  removeWithClaim(orgId: string, bindingId: string, projectId: bigint): Promise<boolean>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Per-agent runtime identity (§7.2, §8.2): one group service account per
+// (organization, agent, top-level group), its project memberships, and the
+// purpose-separated PATs it issues. Account and PAT lifecycle mutations run
+// under the account's own mutation lease; membership and webhook work stays
+// under the binding's provisioning lease.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Account rows reuse the binding lifecycle vocabulary and Console translations (§8.2). */
+export type GitlabAccountState = GitlabBindingState
+
+/** The generation fence a membership insert commits against (§7.2). */
+export type GitlabAccountLifecycle = 'active' | 'retiring'
+
+/** One recorded service-account creation attempt. `knownServiceAccountUserIds`
+ *  is the root group's own service accounts at the moment the attempt opened,
+ *  so an account absent from it is one this attempt created — the window a
+ *  provider that reports no creation time for a service account still gives. */
+export interface GitlabAccountCreateAttempt {
+  id: string
+  openedAt: Date
+  knownServiceAccountUserIds: bigint[]
+}
+
+export interface GitlabAgentAccountRecord {
+  id: string
+  orgId: string
+  agentId: string
+  rootGroupId: bigint
+  serviceAccountUserId: bigint | null
+  username: string
+  displayName: string | null
+  avatarFingerprint: string | null
+  /** The open, record-first service-account create window (§7.2), or null. */
+  createAttempt: GitlabAccountCreateAttempt | null
+  credentialEpoch: bigint
+  administeringConnectionId: string | null
+  generation: bigint
+  lifecycle: GitlabAccountLifecycle
+  state: GitlabAccountState
+  stateReason: string | null
+}
+
+export interface GitlabAccountMembershipRecord {
+  accountId: string
+  accountGeneration: bigint
+  bindingId: string
+  accessLevel: number
+}
+
+/** One agent that binds a project, with the access level its authorization derives. */
+export interface GitlabAccountConsumer {
+  agentId: string
+  accessLevel: number
+}
+
+/** One consumer, addressed by the project it consumes — the desired membership set convergence
+ *  is judged against, across the whole organization rather than a project at a time. */
+export interface GitlabProjectConsumer extends GitlabAccountConsumer {
+  projectId: bigint
+}
+
+export interface GitlabAgentAccountRepo {
+  /** Find-or-create the (org, agent, root) row; an existing row keeps its state. */
+  ensure(input: {
+    orgId: string
+    agentId: string
+    rootGroupId: bigint
+    username: string
+    administeringConnectionId: string | null
+    /** The instance this root group id came from; joins the §24.1 axis fence. */
+    axisBaseUrl: string
+  }): Promise<GitlabAgentAccountRecord>
+  get(accountId: string): Promise<GitlabAgentAccountRecord | null>
+  byAgentRoot(orgId: string, agentId: string, rootGroupId: bigint): Promise<GitlabAgentAccountRecord | null>
+  /** The account serving one agent on one project — the membership IS the resolution. */
+  forAgentBinding(orgId: string, agentId: string, bindingId: string): Promise<GitlabAgentAccountRecord | null>
+  /** Every account holding a membership on the binding (§12.1 veto set, DTO). */
+  listForBinding(bindingId: string): Promise<GitlabAgentAccountRecord[]>
+  listForAgent(orgId: string, agentId: string): Promise<GitlabAgentAccountRecord[]>
+  /** Retirement sweep worklist (§19.4): every account whose retirement is still
+   *  owed external cleanup, untouched since `before`. Keyed on the lifecycle, not
+   *  on a reason — a row must not fall out of the sweep by failing differently. */
+  listUnfinishedRetirements(before: Date, limit: number): Promise<GitlabAgentAccountRecord[]>
+  /** Detach a membership as part of a binding's removal, recording in the SAME
+   *  transaction that the removal now owes this account's retirement when the
+   *  detach empties it. Durable before any provider write: a crash after the
+   *  detach would otherwise lose the only link between the two. */
+  detachMembershipForRemoval(accountId: string, bindingId: string): Promise<void>
+  /** The retirements that removal is still owed evidence for. */
+  listRetiringForBinding(bindingId: string): Promise<GitlabAgentAccountRecord[]>
+  /** Every account the organization owns — the console's bot roster (§18.1). */
+  listForOrg(orgId: string): Promise<GitlabAgentAccountRecord[]>
+  update(
+    accountId: string,
+    patch: Partial<{
+      serviceAccountUserId: bigint | null
+      /** Cosmetic username convergence (§7.2) — the numeric user id stays the key. */
+      username: string
+      displayName: string | null
+      avatarFingerprint: string | null
+      administeringConnectionId: string | null
+      state: GitlabAccountState
+      stateReason: string | null
+    }>
+  ): Promise<GitlabAgentAccountRecord | null>
+  /** §7.2 record-first create window: persisted BEFORE the provider write, so a
+   *  crash between GitLab creating the account and the row committing its
+   *  numeric id can still recover that account instead of refusing it. */
+  openCreateAttempt(input: {
+    accountId: string
+    attemptId: string
+    openedAt: Date
+    knownServiceAccountUserIds: bigint[]
+  }): Promise<GitlabAgentAccountRecord | null>
+  /** §7.2: the resolved provider account becomes durable. The numeric user id,
+   *  the username it actually carries, and the closed window commit in ONE
+   *  write, so no exit can leave the row holding neither the id nor a window
+   *  while the account exists at the provider. */
+  commitServiceAccount(input: {
+    accountId: string
+    serviceAccountUserId: bigint
+    username: string
+    administeringConnectionId: string
+  }): Promise<GitlabAgentAccountRecord | null>
+  /** §7.2 mutation lease, CAS-acquired: free, same-owner, or expired only. */
+  claimLease(accountId: string, owner: string, until: Date, now: Date): Promise<boolean>
+  renewLease(accountId: string, owner: string, until: Date): Promise<boolean>
+  releaseLease(accountId: string, owner: string): Promise<void>
+  /** Generation-fenced membership insert: commits only while the row is `active`
+   *  at exactly `generation`. False ⇒ a retirement won; the caller re-provisions. */
+  attachMembership(input: {
+    accountId: string
+    generation: bigint
+    bindingId: string
+    accessLevel: number
+  }): Promise<boolean>
+  detachMembership(accountId: string, bindingId: string): Promise<void>
+  membershipsForBinding(bindingId: string): Promise<GitlabAccountMembershipRecord[]>
+  /** The account's own bound projects — agent deletion removes each membership
+   *  at the provider before the account may retire (§19.4). */
+  membershipsOfAccount(accountId: string): Promise<Array<{ bindingId: string; projectId: bigint }>>
+  countMemberships(accountId: string): Promise<number>
+  /** §7.2 retirement CAS: `active`→`retiring` in the SAME transaction that
+   *  verifies the membership set is empty. False ⇒ a bind landed first. */
+  beginRetirement(accountId: string): Promise<boolean>
+  /** Verified-complete retirement: the row and its cascaded credentials go. */
+  finishRetirement(accountId: string): Promise<void>
+  /** The agents consuming a project: gitlab-workspace agents and enabled gitlab
+   *  hooks, each with the access level its authorization derives (§7.2). */
+  consumers(orgId: string, projectId: bigint): Promise<GitlabAccountConsumer[]>
+  /** Every consumer in the organization, in two queries — the desired membership set the
+   *  console's convergence signal is judged against, and the reasons it names on a row (§18.1). */
+  consumersForOrg(orgId: string): Promise<GitlabProjectConsumer[]>
+}
+
+export type GitlabCredentialPurpose = 'read' | 'git_write' | 'effect'
+
+export interface GitlabProjectCredentialRecord {
+  id: string
+  accountId: string
+  purpose: GitlabCredentialPurpose
+  externalTokenId: bigint
+  scopes: string[]
+  providerExpiresAt: Date
+  generation: bigint
+}
+
+export interface GitlabProjectCredentialRepo {
+  /** One atomic rotation commit per (account, purpose): credential metadata and
+   *  generation, the SEALED value, and the account's credential-epoch purge
+   *  fence land in the same transaction, or not at all (§7.4). */
+  commitRotation(input: {
+    accountId: string
+    purpose: GitlabCredentialPurpose
+    externalTokenId: bigint
+    scopes: string[]
+    providerExpiresAt: Date
+    sealedToken: string
+  }): Promise<GitlabProjectCredentialRecord>
+  get(accountId: string, purpose: GitlabCredentialPurpose): Promise<GitlabProjectCredentialRecord | null>
+  listForAccount(accountId: string): Promise<GitlabProjectCredentialRecord[]>
+  /** Rotation worklist (§7.4): credentials whose provider expiry is before the horizon. */
+  listExpiring(before: Date): Promise<Array<{ credential: GitlabProjectCredentialRecord; orgId: string }>>
+  remove(accountId: string, purpose: GitlabCredentialPurpose): Promise<void>
+}
+
+/** Sealed PAT value reads (per-org key scope); writes ride the rotation commit. */
+export interface GitlabProjectCredentialSecretStore {
+  get(orgId: string, credentialId: string): Promise<string | null>
+}
+
+/** Sealed webhook signing key (whsec_ form); relay-only secret. */
+export interface GitlabWebhookSecretStore {
+  put(orgId: string, bindingId: string, signingKey: string): Promise<void>
+  get(orgId: string, bindingId: string): Promise<string | null>
+  delete(orgId: string, bindingId: string): Promise<void>
+}
+
+export interface GitlabOauthStateStore {
+  put(input: Omit<GitlabOauthStateRecord, 'browserHash'>): Promise<void>
+  /** Begin hop: stamp the browser-binding hash exactly once (null → value). */
+  bindBrowser(nonce: string, browserHash: string, now: Date): Promise<GitlabOauthStateRecord | null>
+  /** Callback: atomically delete and return the row — single use; null ⇒ replay/unknown/expired. */
+  consume(nonce: string, now: Date): Promise<GitlabOauthStateRecord | null>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// CodeHostReviewLeaseRepo — the formal-review publication lease, its single-use
+// operation ledger, and the body-free attempt outcome store
+// (gitlab-com-integration.md §15.1, §15.2). Every durable transition here is a
+// compare-and-swap under the subject's advisory lock; the transfer rules
+// themselves are pure (`domain/code-host-review.ts`).
+// ───────────────────────────────────────────────────────────────────────────
+
+/** The provider-side subject a lease serializes: one merge request, one publisher. */
+export interface CodeHostReviewSubject {
+  provider: string
+  projectExternalId: bigint
+  mergeRequestIid: number
+  serviceAccountExternalId: bigint
+}
+
+export interface CodeHostReviewLeaseRecord extends CodeHostReviewSubject {
+  id: string
+  orgId: string
+  fence: bigint
+  attemptId: string | null
+  ownerDaemonId: DaemonId | null
+  agentId: AgentId | null
+  hookId: HookId | null
+  deliveryKey: string | null
+  event: string | null
+  verdict: string | null
+  headSha: string | null
+  phase: CodeHostReviewLeasePhase
+  leaseUntil: Date | null
+  lockedReason: CodeHostReviewLockReason | null
+}
+
+export interface CodeHostReviewAcquireInput {
+  subject: CodeHostReviewSubject
+  orgId: string
+  attemptId: string
+  daemonId: DaemonId
+  agentId: AgentId
+  hookId: HookId
+  deliveryKey: string
+  event: string
+  verdict: string
+  headSha: string
+  leaseUntil: Date
+  now: Date
+}
+
+/** `held` is ordinary contention; `locked` is the indefinite fail-closed state. */
+export type CodeHostReviewAcquireResult =
+  | { outcome: 'acquired'; lease: CodeHostReviewLeaseRecord; condition: CodeHostReviewTransferCondition | 'fresh' }
+  | { outcome: 'idempotent'; lease: CodeHostReviewLeaseRecord }
+  | { outcome: 'held'; lease: CodeHostReviewLeaseRecord }
+  | { outcome: 'locked'; lease: CodeHostReviewLeaseRecord; lock: CodeHostReviewLockReason | null }
+
+export interface CodeHostReviewOperationRecord {
+  id: string
+  leaseId: string
+  orgId: string
+  attemptId: string
+  fence: bigint
+  ordinal: number
+  kind: CodeHostReviewOpKind
+  method: CodeHostReviewOpMethod
+  target: string
+  state: CodeHostReviewOpState
+  startToken: string | null
+  responseStatus: number | null
+  responseExternalId: string | null
+  resultCode: string | null
+}
+
+export interface CodeHostReviewIssueInput {
+  attemptId: string
+  orgId: string
+  fence: bigint
+  daemonId: DaemonId
+  kind: CodeHostReviewOpKind
+  method: CodeHostReviewOpMethod
+  target: string
+  ordinal: number
+  now: Date
+}
+
+export interface CodeHostReviewAdvanceInput {
+  attemptId: string
+  orgId: string
+  fence: bigint
+  daemonId: DaemonId
+  recordId: string
+  now: Date
+}
+
+/** Every ledger refusal is terminal for that record; none of them is a retry hint. */
+export type CodeHostReviewOpFailure =
+  | { failure: 'no_lease' }
+  | { failure: 'not_owner' }
+  | { failure: 'stale_fence' }
+  | { failure: 'lease_closed' }
+  | { failure: 'no_record' }
+  | { failure: 'permit_conflict' }
+  | { failure: 'transition'; reason: CodeHostReviewOpRefusal }
+
+export type CodeHostReviewOpResult =
+  { outcome: 'ok'; record: CodeHostReviewOperationRecord; phase: CodeHostReviewLeasePhase } | CodeHostReviewOpFailure
+
+/** The lease is resolved by `attemptId`; every other field is re-checked against it. */
+export interface CodeHostReviewOutcomeInput {
+  attemptId: string
+  orgId: string
+  hookId: HookId
+  deliveryKey: string
+  provider: string
+  projectExternalId: bigint
+  mergeRequestIid: number
+  daemonId: DaemonId
+  event: string
+  verdict: string
+  headSha: string
+  state: CodeHostReviewState
+  /** Already encoded as `"<kind>:<numeric id>"`; the repository refuses anything else. */
+  externalIds: string[]
+  now: Date
+}
+
+export type CodeHostReviewOutcomeResult =
+  | { outcome: 'recorded'; phase: CodeHostReviewLeasePhase }
+  | { outcome: 'idempotent'; phase: CodeHostReviewLeasePhase }
+  | { outcome: 'not_owner' }
+  | { outcome: 'conflict' }
+
+export interface CodeHostReviewLeaseRepo {
+  /** CAS acquisition under the subject's advisory lock; bumps the fence on every win. */
+  acquire(input: CodeHostReviewAcquireInput): Promise<CodeHostReviewAcquireResult>
+  /** Owner-only extension; a stale fence or a foreign daemon renews nothing. */
+  renew(input: {
+    attemptId: string
+    orgId: string
+    fence: bigint
+    daemonId: DaemonId
+    leaseUntil: Date
+  }): Promise<CodeHostReviewLeaseRecord | null>
+  byAttempt(attemptId: string): Promise<CodeHostReviewLeaseRecord | null>
+  bySubject(subject: CodeHostReviewSubject): Promise<CodeHostReviewLeaseRecord | null>
+  issueOperation(input: CodeHostReviewIssueInput): Promise<CodeHostReviewOpResult>
+  startOperation(input: CodeHostReviewAdvanceInput & { startToken: string }): Promise<CodeHostReviewOpResult>
+  settleOperation(
+    input: CodeHostReviewAdvanceInput & { outcome: CodeHostReviewOpOutcome }
+  ): Promise<CodeHostReviewOpResult>
+  returnOperationUnused(input: CodeHostReviewAdvanceInput): Promise<CodeHostReviewOpResult>
+  /** Persist the terminal classification and release or lock the lease with it. */
+  recordOutcome(input: CodeHostReviewOutcomeInput): Promise<CodeHostReviewOutcomeResult>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // AgentRepoAuthorizationRepo — explicit repo grants per agent
 // (issue #457, agent-multi-repo-authorization.md). Anchored on the AGENT, never
 // derived from hooks; `repoId` is the rename-immune match key. Subordinate to
@@ -3007,8 +3804,9 @@ export type RepoAccess = 'read' | 'comment' | 'write'
 export interface AgentRepoAuthorizationRecord {
   id: string
   agentId: AgentId
+  provider: CodeHostProvider // the host that numbers `repoId` — identity is (provider, repoId)
   repoId: bigint
-  repoFullName: string // "owner/repo" as GitHub cases it; refreshed on rename detection
+  repoFullName: string // "owner/repo" as GitHub cases it, or a GitLab namespaced project path; refreshed on rename detection
   access: RepoAccess
   createdAt: Date
   createdBy: AgentCreator | null // audit: who authorized (identity-assertion subject)
@@ -3021,6 +3819,7 @@ export interface AgentRepoAuthorizationRepo {
    *  may grant any covered repo. */
   create(input: {
     agentId: AgentId
+    provider: CodeHostProvider
     repoId: bigint
     repoFullName: string
     access: RepoAccess
@@ -3042,6 +3841,7 @@ export interface AgentRepoAuthorizationRepo {
   removeWithReviewProjectionCleanup(
     id: string,
     agentId: AgentId,
+    provider: CodeHostProvider,
     repoId: bigint,
     at: Date,
     desiredState: string
@@ -3630,6 +4430,12 @@ export interface IntegrationChannelRecord {
   kind: ConversationKind
   /** Repeated across shared-bot sibling rows; per-integration for non-shared bots. */
   trigger: ChannelTrigger
+  /** The 1:1 DM counterpart's platform member id (§14.8); null on rooms and on rows
+   *  discovered before the reporter carried it. */
+  dmUserId: string | null
+  /** True once a HUMAN chose this trigger — the one thing that tells an operator's Off
+   *  apart from a default nobody has decided yet (§14.8). */
+  triggerChosen: boolean
   /** Per-conversation owner for a shared bot (§10.1); null on sibling non-owner rows. */
   agentId: AgentId | null
 }
@@ -3645,6 +4451,8 @@ export interface ReportedChannel {
   isPrivate?: boolean
   /** Absent = 'channel' (wire compatibility). */
   kind?: ConversationKind
+  /** The 1:1 DM counterpart's platform member id — reported for `kind:'im'` only. */
+  dmUserId?: string
 }
 
 /**
@@ -3678,7 +4486,14 @@ export interface IntegrationChannelRepo {
   replaceSnapshot(
     integrationId: IntegrationId,
     channels: ReportedChannel[],
-    opts?: { defaultTrigger?: ChannelTrigger; authoritative?: boolean; removed?: string[] }
+    opts?: {
+      defaultTrigger?: ChannelTrigger
+      /** Per-conversation seed overriding `defaultTrigger` on a NEW row (§14.8: a gated
+       *  agent's DM with a member of its own audience). Existing rows are unaffected. */
+      defaultTriggerByChannel?: ReadonlyMap<string, ChannelTrigger>
+      authoritative?: boolean
+      removed?: string[]
+    }
   ): Promise<void>
   /** Forget one conversation row. Console-driven cleanup for a conversation the bot
    *  is no longer in on a platform that cannot say so itself; returns whether a row
@@ -3696,11 +4511,14 @@ export interface IntegrationChannelRepo {
   /** Conversations across EVERY integration of a shared bot — the route compiler's
    *  ownership source. */
   listForBot(botId: BotId): Promise<IntegrationChannelRecord[]>
-  /** Per-conversation trigger choice; returns null when the row doesn't exist. */
+  /** Per-conversation trigger choice; returns null when the row doesn't exist.
+   *  `chosen` records that a HUMAN picked this value (§14.8) — omitted leaves the flag
+   *  as it was, so orchestration mirroring a trigger never fabricates a decision. */
   setTrigger(
     integrationId: IntegrationId,
     channelId: string,
-    trigger: ChannelTrigger
+    trigger: ChannelTrigger,
+    opts?: { chosen?: boolean }
   ): Promise<IntegrationChannelRecord | null>
   /** Set or clear this integration row's owner marker. The orchestrator keeps
    *  exactly one row marked per shared conversation. Returns null when missing. */

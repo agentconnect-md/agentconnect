@@ -10,6 +10,7 @@
 import Fastify, { type FastifyInstance } from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
 import type { HttpDeps } from '../deps.js'
+import type { SessionAccessViewer } from '../session-access-plugin.js'
 import { installZod } from '../plugins/zod.js'
 import { sessionRoutes } from './sessions.js'
 
@@ -106,7 +107,7 @@ function fakeDeps(overrides: {
             {
               provider: 'slack',
               available: true,
-              addViewerIdentities: async ({ request, identitySet }) => {
+              addViewerIdentities: async ({ request, identitySet }: SessionAccessViewer) => {
                 if (!request.oidcSubject) return
                 const identity = await overrides.slackIdentityFor!()
                 if (identity) identitySet.add(`slack:${identity.teamId}:${identity.userId}`)

@@ -1,0 +1,179 @@
+{{- if .Values.daemonPool.enabled }}
+{{- $sandboxNamespace := .Values.daemonPool.sandboxNamespace | default .Release.Namespace }}
+{{- $runtime := .Values.daemonPool.runtime }}
+{{- $templateName := include "agentconnect.runtimeTemplateName" . }}
+{{- $warmPool := include "agentconnect.warmPoolName" . }}
+# Every agent sandbox is minted from this template, and the daemon pool claims against
+# the warm pool below. Both names are release-prefixed like every other chart-owned
+# object and derived from the release, so the warm pool the daemon claims against and the
+# one rendered here are the same string by construction.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: {{ $templateName }}
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "agent-runtime") | nindent 4 }}
+spec:
+  # The agent-sandbox controller renders and owns the sandbox NetworkPolicy from the
+  # `networkPolicy` field below, so the chart must not render a second policy for the
+  # same pods. Sandbox INGRESS comes from the separate `-daemon-pool-shim` policy in
+  # daemon-pool.yaml; policies are additive.
+  networkPolicyManagement: Managed
+  networkPolicy:
+    # Egress only: DNS and HTTPS. There is deliberately no sandbox->daemon-pool allowance — a
+    # member dials the sandbox's shim port and replies ride that established connection.
+    egress:
+      - ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      - ports:
+          - protocol: TCP
+            port: 443
+      {{- if $.Values.modelEgress.enabled }}
+      {{- if not $.Values.modelEgress.ports }}{{ fail "modelEgress.enabled needs modelEgress.ports: the sandbox egress allowlist names each endpoint listener port" }}{{ end }}
+      # A managed egress endpoint is reached over plaintext inside the cluster, so the 443 rule
+      # above does not cover it — without this the default-deny leaves every model call timing out
+      # with no obvious cause. Narrow on purpose: those exact ports, in that one namespace. This
+      # chart does not know what serves them; `modelEgress.namespace`/`ports` are told to it.
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: {{ $.Values.modelEgress.namespace | default $.Release.Namespace }}
+        ports:
+          {{- range $.Values.modelEgress.ports }}
+          - protocol: TCP
+            port: {{ . }}
+          {{- end }}
+      {{- end }}
+  # A claim may not inject its own env or attach its own volumes; both are template-owned.
+  envVarsInjectionPolicy: Disallowed
+  volumeClaimTemplatesPolicy: Disallowed
+  podTemplate:
+    metadata:
+      labels:
+        # The label the shim ingress policy in daemon-pool.yaml selects on. It is here, on the
+        # template, so a pod carries it from birth: a warm spare is reachable the moment it is
+        # ready instead of at the moment it is claimed, and claiming adds ownership labels to a
+        # pod whose policy identity is already settled rather than moving it into a new one.
+        agentconnect.md/sandbox: 'true'
+    spec:
+      # The only credential an agent gets is the audience-scoped projection below.
+      automountServiceAccountToken: false
+      {{- with $.Values.imagePullSecrets }}
+      # The same install-wide pull secrets every chart-rendered pod carries: these pods are
+      # created by the agent-sandbox controller from this template, so an install pulling
+      # from a private mirror needs them here or the first sandbox stops in ImagePullBackOff.
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Together with the container's securityContext this is the `restricted` Pod
+      # Security profile the agents namespace enforces (templates/agents-namespace.yaml).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with $runtime.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $runtime.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: runtime
+          image: {{ include "agentconnect.runtimeSandboxImage" . | quote }}
+          env:
+            # Where the shim rooted the agent's workspace — the `workspace` claim's mount.
+            - name: AC_SHIM_WORKSPACE_ROOT
+              value: /agent
+            # The port the in-sandbox shim listens on. One value serves all three surfaces —
+            # this listener, the member's dialer (AC_K8S_SHIM_PORT), and the shim ingress
+            # NetworkPolicy — so an override cannot leave the shim on its baked-in default
+            # while the other two move.
+            - name: AC_SHIM_PORT
+              value: {{ $.Values.daemonPool.shimPort | quote }}
+            {{- if $.Values.modelEgress.enabled }}
+            # Point the runtimes at a managed egress endpoint instead of the provider. The shim
+            # maps these onto the runtime's own ANTHROPIC_*/OPENAI_* at spawn, fill-in only —
+            # anything the daemon sends wins, so this is the floor rather than an override.
+            #
+            # Everything about that endpoint is TOLD to this chart. It does not know what serves
+            # the URL, how the credential is checked, or whether one is checked at all: it knows
+            # that a runtime can be pointed at a base URL with a key. That is the whole of what
+            # AgentConnect needs, and keeping it that way is why the gateway is a separate chart.
+            #
+            # Per client, not one switch for all: a client whose runtime does not honour the
+            # injected base URL would take this key straight to the provider and fail, or fall
+            # back to a real key and keep spending from inside the sandbox — the opposite of what
+            # this exists for. Listing a client here asserts its runtime honours the URL.
+            {{- include "agentconnect.modelEgressEnv" (dict "ctx" $ "prefixes" (dict "claude" "AC_CLAUDE" "codex" "AC_CODEX" "deepseek" "AC_DEEPSEEK") "urlSuffix" "_BASE_URL" "keySuffix" "_API_KEY") | nindent 12 }}
+            {{- with (get $.Values.modelEgress.clients "codex" | default dict).sessionConfig }}
+            # Codex session config this deployment asserts about the endpoint — e.g. disabling a
+            # feature whose request shape the gateway rejects. Same floor contract as the pair
+            # above: the shim merges it UNDER any daemon-sent CODEX_CONFIG key.
+            - name: AC_CODEX_CONFIG
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ['ALL']
+          resources:
+            {{- toYaml $runtime.resources | nindent 12 }}
+          volumeMounts:
+            - name: workspace
+              mountPath: /agent
+            - name: ac-identity
+              mountPath: /var/run/ac-identity
+              readOnly: true
+      volumes:
+        # The shim's callback identity. A pool member TokenReviews it with exactly
+        # this audience, which is why it is not the pod's ordinary API credential.
+        - name: ac-identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: ac-daemon-callback
+                  expirationSeconds: 3600
+  # Per-sandbox workspace. It is bound to the Sandbox, so deleting a Sandbox deletes the
+  # agent's working tree with it — deleting one is destructive, not a restart.
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes: ['ReadWriteOnce']
+        storageClassName: {{ $runtime.workspace.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ $runtime.workspace.size | quote }}
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: {{ $warmPool }}
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "agent-runtime") | nindent 4 }}
+spec:
+  # Spare pre-warmed sandboxes. Each is a standing pod plus a bound workspace PVC, and it buys
+  # latency on a new agent's FIRST mint only — a resume binds the sandbox that agent already has.
+  # 0 ⇒ every claim mints cold.
+  replicas: {{ $runtime.warmReplicas }}
+  sandboxTemplateRef:
+    name: {{ $templateName }}
+  # Recreate, not OnReplenish: a template change must reach spares immediately rather
+  # than waiting for each to be claimed and replaced.
+  updateStrategy:
+    type: Recreate
+{{- end }}

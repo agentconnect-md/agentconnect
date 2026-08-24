@@ -62,6 +62,8 @@ export async function seedAgent(
     gitRepo?: string
     /** GithubInstallation row-id provenance hint ⇒ github-APP credential mode. */
     installationId?: string
+    /** Numeric GitLab project id ⇒ a gitlab-mode workspace on that managed binding. */
+    gitlabProjectId?: bigint
     gitAccess?: 'read' | 'write'
     /** `runtimeOverrides` JSON — where the MCP enable-list and memory binding live. */
     runtimeOverrides?: Record<string, unknown>
@@ -83,6 +85,13 @@ export async function seedAgent(
       ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
       ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
       ...(opts.gitRepo ? { workspaceMode: 'github' as const, gitRepo: opts.gitRepo } : {}),
+      ...(opts.gitlabProjectId !== undefined
+        ? {
+            workspaceMode: 'gitlab' as const,
+            workspaceRepoId: opts.gitlabProjectId,
+            gitRepo: opts.gitRepo ?? 'https://gitlab.com/example-group/example-project'
+          }
+        : {}),
       ...(opts.installationId ? { installationId: opts.installationId } : {}),
       ...(opts.gitAccess ? { gitAccess: opts.gitAccess } : {}),
       ...(opts.runtimeOverrides ? { runtimeOverrides: opts.runtimeOverrides as Prisma.InputJsonValue } : {})

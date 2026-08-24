@@ -23,8 +23,12 @@ import { canChangeSessionVisibility, canContinueSession, canView, canViewSession
 import {
   AUTO_MERGE_FEATURE,
   AutoMergeErrorReason,
+  CODE_HOST_PROVIDERS,
+  isCodeHostHookKind,
   SANDBOX_KEEP_ALIVE_FEATURE,
-  originKindOf
+  originKindOf,
+  type CodeHostProvider,
+  type HookKind
 } from '@agentconnect.md/protocol'
 import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveContinuationHost } from '../session-continuation.js'
@@ -60,14 +64,19 @@ import {
   SessionExternalAccessDto
 } from '../dto/index.js'
 
+const SESSION_PLATFORM_IDS = ['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream'] as const
+
 const SessionFilterQueryDto = z.object({
   // Repeatable: `?agentId=a` scopes to one agent's rows (unchanged), while
   // `?agentId=a&agentId=b` asks for the CONVERSATIONS both took part in and
   // returns each of their sessions in those threads. Fastify's querystring
   // parser hands repeated keys over as an array.
   agentId: z.union([z.string(), z.array(z.string()).min(1)]).optional(),
-  platform: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'dream']).optional(),
-  integration: z.enum(['slack', 'telegram', 'webchat', 'discord', 'feishu', 'hook', 'github', 'dream']).optional(),
+  platform: z.enum(SESSION_PLATFORM_IDS).optional(),
+  // The integration axis is every routing platform plus each code host, which the facet
+  // projection promotes out of the generic hook bucket. Derived from the shared provider
+  // list, so a promoted host is selectable the moment it can be emitted.
+  integration: z.enum([...SESSION_PLATFORM_IDS, ...CODE_HOST_PROVIDERS]).optional(),
   channel: z.string().optional(),
   triggeredBy: z.string().optional(),
   githubRepoId: z
@@ -90,10 +99,10 @@ const SessionQueryDto = SessionFilterQueryDto.extend({
 type SessionCursor = { activityMs: number; startedMs: number; id: string }
 type SessionPageRow = Awaited<ReturnType<HttpDeps['repos']['session']['listPage']>>['sessions'][number]
 type SessionFacetIndex = Awaited<ReturnType<HttpDeps['repos']['session']['listFacets']>>
-type HookSessionRow = Pick<SessionPageRow, 'agentId' | 'platform' | 'channel' | 'triggeredBy'>
+type HookSessionRow = Pick<SessionPageRow, 'agentId' | 'platform' | 'channel' | 'triggeredBy' | 'hookKind'>
 type HookSessionMetadata = {
   agentId: string | null
-  kind: 'webhook' | 'github'
+  kind: HookKind
   name: string
   repoId: bigint | null
 }
@@ -110,25 +119,34 @@ function requestedAgentIds(query: z.infer<typeof SessionFilterQueryDto>): string
 const HOOK_TRIGGER_PREFIX = 'hook:'
 const HookIdString = z.string().uuid()
 
-async function githubHookFilters(
+/** Which code-host hook definitions this request has to resolve, keyed by provider. A
+ *  repository filter stays GitHub-only — the numeric repo id is GitHub's alone; otherwise
+ *  each host's ids are read when the facet projection classifies everything, when that
+ *  host is the requested integration, or when `hook` needs to exclude it. Iterating the
+ *  shared provider list is what keeps this seam level with the facet projection: a host
+ *  that can be emitted as a facet is resolved here too, so it can also be selected. */
+async function codeHostHookFilters(
   deps: HttpDeps,
   orgId: OrgId,
   query: z.infer<typeof SessionFilterQueryDto>,
   classifyAll: boolean
-): Promise<{ githubHookIds: HookId[]; repoHookIds?: HookId[] }> {
+): Promise<{ codeHostHookIds: Partial<Record<CodeHostProvider, HookId[]>>; repoHookIds?: HookId[] }> {
   if (query.githubRepoId) {
     const githubHooks = await deps.repos.hook.listForOrgKind(orgId, 'github')
     return {
-      githubHookIds: githubHooks.map((hook) => hook.id),
+      codeHostHookIds: { github: githubHooks.map((hook) => hook.id) },
       repoHookIds: githubHooks.filter((hook) => hook.repoId?.toString() === query.githubRepoId).map((hook) => hook.id)
     }
   }
-  return {
-    githubHookIds:
-      classifyAll || query.integration === 'github' || query.integration === 'hook'
-        ? await deps.repos.hook.listIdsForOrgKind(orgId, 'github')
-        : []
-  }
+  const wanted = (provider: CodeHostProvider) =>
+    classifyAll || query.integration === provider || query.integration === 'hook'
+  const codeHostHookIds: Partial<Record<CodeHostProvider, HookId[]>> = {}
+  await Promise.all(
+    CODE_HOST_PROVIDERS.filter(wanted).map(async (provider) => {
+      codeHostHookIds[provider] = await deps.repos.hook.listIdsForOrgKind(orgId, provider)
+    })
+  )
+  return { codeHostHookIds }
 }
 
 function hookIdForSession(s: HookSessionRow): string | null {
@@ -208,10 +226,30 @@ function decodeSessionCursor(raw: string): SessionCursor | null {
   }
 }
 
+/** A hook session's own source kind. The creation-time snapshot is authoritative — the
+ *  definition it fired from may have been deleted since, and a session's history must not
+ *  change when that happens. Only rows written before the snapshot existed read the live
+ *  hook, and a hook that no longer resolves leaves them with no kind at all. */
+function sessionHookKind(s: HookSessionRow, hook: HookSessionMetadata | undefined): HookKind | null {
+  return s.hookKind ?? hook?.kind ?? null
+}
+
+/** A hook session's integration facet. EVERY code host is promoted out of the generic
+ *  hook bucket so each gets a first-class entry the console can filter by; only the
+ *  generic kind keeps the raw `hook` platform. The predicate is derived from the shared
+ *  hook-kind vocabulary, so a new host is promoted here without a code change, and the
+ *  value matches the client's own `sessionPlatform` classification. */
 function sessionIntegration(s: HookSessionRow, hook: HookSessionMetadata | undefined): string {
   const platform = s.platform ?? 'slack'
-  return platform === 'hook' && hook?.kind === 'github' ? 'github' : platform
+  if (platform !== 'hook') return platform
+  const kind = sessionHookKind(s, hook)
+  return kind && isCodeHostHookKind(kind) ? kind : platform
 }
+
+/** Display name for a hook source with no name of its own. TOTAL over the hook-kind
+ *  vocabulary, so a new code host cannot inherit the generic "Webhook" label the way
+ *  GitLab did — adding one to the shared union fails this file's type-check first. */
+const HOOK_KIND_LABEL: Record<HookKind, string> = { webhook: 'Webhook', github: 'GitHub', gitlab: 'GitLab' }
 
 function sessionDisplayMetadata(
   s: HookSessionRow & { channelName: string | null; triggeredByName: string | null },
@@ -220,10 +258,13 @@ function sessionDisplayMetadata(
   // Hook kind remains valid after reassignment, but the current name only
   // describes historical rows while the hook still belongs to the same agent.
   const hookName = hook?.agentId === s.agentId ? hook.name : undefined
+  // A row with neither a snapshot nor a resolvable hook has no kind to name, so it stays generic.
+  const kind = sessionHookKind(s, hook)
+  const sourceLabel = HOOK_KIND_LABEL[kind ?? 'webhook']
   return {
     channelName: s.platform === 'hook' ? (hookName ?? s.channelName ?? null) : (s.channelName ?? null),
     triggeredByName: s.triggeredBy?.startsWith(HOOK_TRIGGER_PREFIX)
-      ? (hookName ?? s.triggeredByName ?? 'Webhook')
+      ? (hookName ?? s.triggeredByName ?? sourceLabel)
       : (s.triggeredByName ?? null)
   }
 }
@@ -245,7 +286,7 @@ function sessionFacets(
       value: string
       integration: string
       name: string | null
-      hookKind: 'webhook' | 'github' | null
+      hookKind: HookKind | null
       githubRepoId: string | null
     }
   >()
@@ -285,7 +326,7 @@ function sessionFacets(
       value: triggeredBy,
       integration: sessionIntegration(session, hook),
       name: display.triggeredByName,
-      hookKind: hook?.kind ?? null,
+      hookKind: sessionHookKind(session, hook),
       githubRepoId
     })
   }
@@ -320,7 +361,7 @@ function sessionDto(
     lastActivityAt: s.lastActivityAt.toISOString(),
     usage: s.usage ?? null,
     triggeredBy: s.triggeredBy ?? null,
-    hookKind: hook?.kind ?? null,
+    hookKind: sessionHookKind(s, hook),
     channelName: display.channelName,
     triggeredByName: display.triggeredByName,
     threadUrl: s.threadUrl ?? null,
@@ -606,7 +647,7 @@ export function sessionRoutes(deps: HttpDeps) {
         if (requested.some((id) => !new Set<string>(orgAgentIds).has(id))) {
           return { agents: [], agentNames: {}, integrations: [], channels: [], triggers: [] }
         }
-        const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, true)
+        const { codeHostHookIds, repoHookIds } = await codeHostHookFilters(deps, orgOf(req), req.query, true)
         // A multi-agent request narrows to the qualifying CONVERSATIONS and then
         // reads facets off every member row the caller can see, rather than only
         // the selected agents' rows: a facet answers "what else can I narrow by",
@@ -619,7 +660,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
           ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
-          githubHookIds,
+          codeHostHookIds,
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {})
         }
         // Each facet drops its own active filter, so its external-audience
@@ -690,9 +731,9 @@ export function sessionRoutes(deps: HttpDeps) {
           }
         }
 
-        // GitHub is a semantic subtype of hook sessions. Resolve definitions only
-        // when integration classification or a repository-wide trigger filter needs them.
-        const { githubHookIds, repoHookIds } = await githubHookFilters(deps, orgOf(req), req.query, false)
+        // Each code host is a semantic subtype of hook sessions. Resolve definitions
+        // only when integration classification or a repository-wide trigger filter needs them.
+        const { codeHostHookIds, repoHookIds } = await codeHostHookFilters(deps, orgOf(req), req.query, false)
         // Two or more selected agents ask for the threads they SHARE. The rows stay
         // scoped to those agents (`agentIds`), so `?agentId=a` keeps returning
         // exactly what it always did. Every branch below reads this one binding —
@@ -712,7 +753,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
           ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
-          ...(githubHookIds.length > 0 ? { githubHookIds } : {}),
+          ...(Object.keys(codeHostHookIds).length > 0 ? { codeHostHookIds } : {}),
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
           ...(cursor ? { cursor } : {}),
           limit: req.query.limit,
@@ -904,7 +945,7 @@ export function sessionRoutes(deps: HttpDeps) {
           lastActivityAt: s.lastActivityAt.toISOString(),
           usage,
           triggeredBy: s.triggeredBy,
-          hookKind: hook?.kind ?? null,
+          hookKind: sessionHookKind(s, hook),
           channelName: display.channelName,
           triggeredByName: display.triggeredByName,
           threadUrl: s.threadUrl,

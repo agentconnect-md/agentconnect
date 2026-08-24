@@ -10,9 +10,9 @@ import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js
 // `test/no-stray-vi-mock.test.ts` fails if this list drifts from what the suite actually mocks.
 export const MOCKING_TESTS = [
   'test/cp/cp-integration.test.ts',
+  'test/slack-upload-file.test.ts',
   'test/daemon-cp-onboarding.test.ts',
   'test/runtime-install-repair-collapse.test.ts',
-  'test/slack-upload-file.test.ts',
   'test/telegram-connection.test.ts',
   'test/workspace-git.test.ts',
   'test/workspace.test.ts'

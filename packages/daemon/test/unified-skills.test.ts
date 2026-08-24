@@ -122,9 +122,110 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     })
 
     expect(result.errors).toEqual([])
-    expect(result.installed).toEqual(['.agents/skills/audit'])
+    // Ownership is reported by the real directory, not by whichever root the harness named.
+    expect(result.installed).toEqual(['.claude/skills/audit'])
     expect(await readFile(join(cwd, '.claude/skills/audit/SKILL.md'), 'utf8')).toContain('# audit')
   })
+
+  it('keeps an aliased skill root owned across a harness switch', async () => {
+    const sourceDir = await writeSkill(sources, 'aliased', 'v1')
+    const localSkills: LocalSkillSource[] = [{ kind: 'dream', key: 'dream:aliased', name: 'aliased', sourceDir }]
+    await mkdir(join(cwd, '.claude/skills'), { recursive: true })
+    await mkdir(join(cwd, '.agents'))
+    await symlink('../.claude/skills', join(cwd, '.agents/skills'))
+    // Claude names the root .claude/skills; Codex names that same directory .agents/skills.
+    const cli = fakeCli((agentId) => (agentId === 'claude-code' ? '.claude' : '.agents'))
+
+    const first = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
+      stateDir,
+      localSkills,
+      runCli: cli.run
+    })
+    expect(first.errors).toEqual([])
+    expect(existsSync(join(cwd, '.claude/skills/aliased/SKILL.md'))).toBe(true)
+
+    const switched = await installSkills({ id: 'a1', runtime: 'codex', skills: [] }, cwd, {
+      stateDir,
+      localSkills,
+      runCli: cli.run
+    })
+
+    // The switch must not read its own bundle as a foreign path, and both harnesses must agree on the real directory.
+    expect(switched.errors).toEqual([])
+    expect(switched.installed).toEqual(['.claude/skills/aliased'])
+    // Surviving bytes are the proof it was not installed under one root and then removed under the other.
+    expect(await readFile(join(cwd, '.claude/skills/aliased/SKILL.md'), 'utf8')).toContain('# v1')
+  }, 120_000)
+
+  it('skips a foreign bundle at one destination instead of failing the whole install', async () => {
+    const takenDir = await writeSkill(sources, 'taken', 'ours')
+    const freshDir = await writeSkill(sources, 'fresh', 'fresh')
+    const cli = fakeCli(() => '.runtime')
+    await mkdir(join(cwd, '.runtime/skills/taken'), { recursive: true })
+    await writeFile(join(cwd, '.runtime/skills/taken/SKILL.md'), 'not ours')
+    const warnings: string[] = []
+
+    const result = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
+      stateDir,
+      localSkills: [
+        { kind: 'dream', key: 'dream:taken', name: 'taken', sourceDir: takenDir },
+        { kind: 'dream', key: 'dream:fresh', name: 'fresh', sourceDir: freshDir }
+      ],
+      runCli: cli.run,
+      warn: (message) => warnings.push(message)
+    })
+
+    expect(result.errors).toEqual([
+      { source: '.runtime/skills/taken', error: 'destination is not owned by this daemon ledger; skill skipped' }
+    ])
+    expect(warnings.some((message) => message.includes('skipped unowned skill .runtime/skills/taken'))).toBe(true)
+    // The foreign bytes stay untouched, and one conflict does not cost the agent its other skills.
+    expect(await readFile(join(cwd, '.runtime/skills/taken/SKILL.md'), 'utf8')).toBe('not ours')
+    expect(existsSync(join(cwd, '.runtime/skills/fresh/SKILL.md'))).toBe(true)
+
+    // An unmet plan must not be recorded as satisfied: the conflict has to keep being reported and retried.
+    const repeated = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
+      stateDir,
+      localSkills: [
+        { kind: 'dream', key: 'dream:taken', name: 'taken', sourceDir: takenDir },
+        { kind: 'dream', key: 'dream:fresh', name: 'fresh', sourceDir: freshDir }
+      ],
+      runCli: cli.run
+    })
+    expect(repeated.skipped).toBeNull()
+    expect(repeated.errors).toHaveLength(1)
+
+    await rm(join(cwd, '.runtime/skills/taken'), { recursive: true })
+    const cleared = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
+      stateDir,
+      localSkills: [
+        { kind: 'dream', key: 'dream:taken', name: 'taken', sourceDir: takenDir },
+        { kind: 'dream', key: 'dream:fresh', name: 'fresh', sourceDir: freshDir }
+      ],
+      runCli: cli.run
+    })
+    expect(cleared.errors).toEqual([])
+    expect(await readFile(join(cwd, '.runtime/skills/taken/SKILL.md'), 'utf8')).toContain('# ours')
+  }, 120_000)
+
+  it('refuses a skill-root alias that resolves outside the workspace', async () => {
+    const sourceDir = await writeSkill(sources, 'escape', 'escape')
+    const outside = join(root, 'outside')
+    await mkdir(outside, { recursive: true })
+    await mkdir(join(cwd, '.agents'))
+    await symlink(outside, join(cwd, '.agents/skills'))
+    const cli = fakeCli(() => '.agents')
+
+    // Containment is the security boundary, so an escaping alias fails closed rather than degrading to a skip.
+    await expect(
+      installSkills({ id: 'a1', runtime: 'codex-acp', skills: [] }, cwd, {
+        stateDir,
+        localSkills: [{ kind: 'dream', key: 'dream:escape', name: 'escape', sourceDir }],
+        runCli: cli.run
+      })
+    ).rejects.toThrow(/resolves outside workspace|mutation was refused|could not be restored/)
+    expect(existsSync(join(outside, 'escape'))).toBe(false)
+  }, 120_000)
 
   it.each([
     ['direct skills root', ''],
@@ -242,7 +343,7 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
         id: 'a1',
         runtime: 'claude',
         skills: [
-          { name: 'legacy', source: 'https://gitlab.com/acme/legacy' },
+          { name: 'legacy', source: 'https://gitlab.com/acme/legacy', skills: [] },
           { name: 'unbound-old-cp', source: 'acme/unbound', skills: ['unbound'] },
           { name: 'valid', source: 'acme/valid', githubRepoId: '42', skills: ['valid'] }
         ]

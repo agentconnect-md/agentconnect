@@ -64,7 +64,7 @@ describe('KeyServerClient', () => {
         new Response(JSON.stringify({ keyId: 'key-1', key: 'secret', expiresInSeconds: 7_200 }), { status: 200 })
       )
     const client = new KeyServerClient('https://keys.example', { fetch })
-    await expect(client.issue(request)).rejects.toMatchObject<KeyServerError>({ code: 'unavailable' })
+    await expect(client.issue(request)).rejects.toMatchObject({ code: 'unavailable' } satisfies Partial<KeyServerError>)
   })
 
   it('surfaces machine-readable denials and revokes by issuance id', async () => {
@@ -77,24 +77,30 @@ describe('KeyServerClient', () => {
       )
       .mockResolvedValueOnce(new Response('{}', { status: 200 }))
     const client = new KeyServerClient('https://keys.example', { fetch })
-    await expect(client.issue(request)).rejects.toMatchObject<KeyServerError>({
+    await expect(client.issue(request)).rejects.toMatchObject({
       code: 'quota_denied',
       message: 'budget exhausted',
       status: 403
-    })
+    } satisfies Partial<KeyServerError>)
     await expect(client.revoke('key-1')).resolves.toBeUndefined()
     expect(fetch.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ keyId: 'key-1' }))
   })
 
-  it('requires HTTPS and rejects credentials in the address', () => {
-    expect(() => new KeyServerClient('http://keys.example')).toThrow(/https/)
+  it("takes either scheme — that is the deployment's call — and rejects credentials in the address", () => {
+    // http is not a downgrade this client gets to veto: the bearer is a projected ServiceAccount
+    // token, and the same process already carries one over an in-cluster `ws://` socket to the CP.
+    expect(() => new KeyServerClient('http://keys.example')).not.toThrow()
+    expect(() => new KeyServerClient('https://keys.example')).not.toThrow()
+    expect(() => new KeyServerClient('ftp://keys.example')).toThrow(/http or https/)
     expect(() => new KeyServerClient('https://user:pass@keys.example')).toThrow(/must not contain credentials/)
   })
 
   it('classifies an unreadable token file as key-server authentication failure', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
     const client = new KeyServerClient('https://keys.example', { tokenPath: '/definitely/missing/token', fetch })
-    await expect(client.issue(request)).rejects.toMatchObject<KeyServerError>({ code: 'unauthorized' })
+    await expect(client.issue(request)).rejects.toMatchObject({
+      code: 'unauthorized'
+    } satisfies Partial<KeyServerError>)
     expect(fetch).not.toHaveBeenCalled()
   })
 })

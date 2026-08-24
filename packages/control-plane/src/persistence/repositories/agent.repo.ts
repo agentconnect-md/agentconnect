@@ -53,7 +53,12 @@ function placementCreateColumns(input: { placementKind?: PlacementKind; daemonId
     return { placementKind: 'set', setId: input.setId, status: 'active' }
   return input.daemonId ? { daemonId: input.daemonId, status: 'active' } : {}
 }
-import { fenceAgentLocalConfigWrite, lockOrgForConfigWrite, orgIdOfAgent } from './organization-environment-fence.js'
+import {
+  bumpAgentConfigRevisions,
+  fenceAgentLocalConfigWrite,
+  lockOrgForConfigWrite,
+  orgIdOfAgent
+} from './organization-environment-fence.js'
 import {
   AgentMissing,
   AgentWorkspaceIntegrationConflict,
@@ -204,6 +209,16 @@ function workspaceOf(a: Agent): AgentWorkspace {
       ...(a.gitBranch !== null ? { gitBranch: a.gitBranch } : {}),
       ...(a.agentDir !== null ? { agentDir: a.agentDir } : {}),
       ...(a.installationId !== null ? { installationId: a.installationId, gitAccess: a.gitAccess } : {})
+    }
+  }
+  if (a.workspaceMode === 'gitlab') {
+    return {
+      mode: 'gitlab',
+      isolation: a.workspaceIsolation,
+      gitRepo: redactGitUrlSecrets(a.gitRepo ?? ''),
+      ...(a.gitBranch !== null ? { gitBranch: a.gitBranch } : {}),
+      ...(a.agentDir !== null ? { agentDir: a.agentDir } : {}),
+      gitAccess: a.gitAccess
     }
   }
   return { mode: 'scratch', isolation: a.workspaceIsolation }
@@ -371,13 +386,15 @@ export class PgAgentRepo implements AgentRepo {
             ? { createdByUserId: input.createdByUserId, lastModifiedByUserId: input.createdByUserId }
             : {}),
           workspaceMode: ws.mode,
-          workspaceIsolation: ws.mode === 'github' ? (ws.isolation ?? 'session') : 'shared',
-          gitRepo: ws.mode === 'github' ? ws.gitRepo : null,
-          gitBranch: ws.mode === 'github' ? (ws.gitBranch ?? 'main') : null,
-          agentDir: ws.mode === 'github' ? (ws.agentDir ?? null) : null,
+          workspaceIsolation: ws.mode !== 'scratch' ? (ws.isolation ?? 'session') : 'shared',
+          gitRepo: ws.mode !== 'scratch' ? ws.gitRepo : null,
+          gitBranch: ws.mode !== 'scratch' ? (ws.gitBranch ?? 'main') : null,
+          agentDir: ws.mode !== 'scratch' ? (ws.agentDir ?? null) : null,
           installationId: ws.mode === 'github' ? (ws.installationId ?? null) : null,
-          workspaceRepoId: ws.mode === 'github' ? (input.workspaceRepoId ?? null) : null,
-          ...(ws.mode === 'github' && ws.installationId ? { gitAccess: ws.gitAccess ?? 'write' } : {}),
+          workspaceRepoId: ws.mode !== 'scratch' ? (input.workspaceRepoId ?? null) : null,
+          ...((ws.mode === 'github' && ws.installationId) || ws.mode === 'gitlab'
+            ? { gitAccess: ws.gitAccess ?? 'write' }
+            : {}),
           capabilities: input.capabilities ?? [],
           // #536 self-introduce-on-join (dedicated column; absent ⇒ DB default false).
           ...(input.introduceOnJoin !== undefined ? { introduceOnJoin: input.introduceOnJoin } : {}),
@@ -640,13 +657,13 @@ export class PgAgentRepo implements AgentRepo {
           where: { id: agentId, orgId, workspaceMode: expectedMode, lastModifiedAt: expectedLastModifiedAt },
           data: {
             workspaceMode: workspace.mode,
-            workspaceIsolation: workspace.mode === 'github' ? (workspace.isolation ?? 'session') : 'shared',
-            gitRepo: workspace.mode === 'github' ? workspace.gitRepo : null,
-            gitBranch: workspace.mode === 'github' ? (workspace.gitBranch ?? 'main') : null,
-            agentDir: workspace.mode === 'github' ? (workspace.agentDir ?? null) : null,
+            workspaceIsolation: workspace.mode !== 'scratch' ? (workspace.isolation ?? 'session') : 'shared',
+            gitRepo: workspace.mode !== 'scratch' ? workspace.gitRepo : null,
+            gitBranch: workspace.mode !== 'scratch' ? (workspace.gitBranch ?? 'main') : null,
+            agentDir: workspace.mode !== 'scratch' ? (workspace.agentDir ?? null) : null,
             installationId: workspace.mode === 'github' ? (workspace.installationId ?? null) : null,
             workspaceRepoId: workspaceRepoId ?? null,
-            gitAccess: workspace.mode === 'github' ? (workspace.gitAccess ?? 'write') : 'write',
+            gitAccess: workspace.mode !== 'scratch' ? (workspace.gitAccess ?? 'write') : 'write',
             lastModifiedAt: new Date(Math.max(Date.now(), expectedLastModifiedAt.getTime() + 1)),
             ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
             // `workspace` rides the AgentSpec, so this edit joins the same
@@ -693,13 +710,13 @@ export class PgAgentRepo implements AgentRepo {
           },
           data: {
             workspaceMode: workspace.mode,
-            workspaceIsolation: workspace.mode === 'github' ? (workspace.isolation ?? 'session') : 'shared',
-            gitRepo: workspace.mode === 'github' ? workspace.gitRepo : null,
-            gitBranch: workspace.mode === 'github' ? (workspace.gitBranch ?? 'main') : null,
-            agentDir: workspace.mode === 'github' ? (workspace.agentDir ?? null) : null,
+            workspaceIsolation: workspace.mode !== 'scratch' ? (workspace.isolation ?? 'session') : 'shared',
+            gitRepo: workspace.mode !== 'scratch' ? workspace.gitRepo : null,
+            gitBranch: workspace.mode !== 'scratch' ? (workspace.gitBranch ?? 'main') : null,
+            agentDir: workspace.mode !== 'scratch' ? (workspace.agentDir ?? null) : null,
             installationId: workspace.mode === 'github' ? (workspace.installationId ?? null) : null,
             workspaceRepoId: workspaceRepoId ?? null,
-            gitAccess: workspace.mode === 'github' ? (workspace.gitAccess ?? 'write') : 'write',
+            gitAccess: workspace.mode !== 'scratch' ? (workspace.gitAccess ?? 'write') : 'write',
             lastModifiedAt: new Date(Math.max(Date.now(), expectedLastModifiedAt.getTime() + 1)),
             ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
             // `workspace` rides the AgentSpec, so this edit joins the same
@@ -714,6 +731,56 @@ export class PgAgentRepo implements AgentRepo {
       if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2025') return null
       throw err
     }
+  }
+
+  async refreshGitlabProjectPath(
+    orgId: OrgId,
+    projectId: bigint,
+    projectPath: string,
+    cloneUrl?: string
+  ): Promise<AgentId[]> {
+    // The path is a mutable display/transport hint keyed by the immutable project
+    // id (§8.1). Both places that replicate it drift on a rename: a gitlab
+    // workspace's clone URL, and every explicit authorization's display path,
+    // which is what the daemon maps a NAMED project back to its numeric id with
+    // (§13.1). Leaving a grant stale orphans the new path and makes an ask under
+    // the old one fail the daemon's echo check against the binding's new path.
+    // Both writes join the configRevision ordering domain the daemon fences on,
+    // in one transaction, so a spec never carries one half of the rename.
+    // The clone URL is the provider's own `http_url_to_repo`, never composed
+    // (§24.1); a provider answer without one leaves the existing URL alone.
+    return this.transaction(async (tx) => {
+      const workspaces = cloneUrl
+        ? await tx.agent.findMany({
+            where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId, NOT: { gitRepo: cloneUrl } },
+            select: { id: true }
+          })
+        : []
+      const workspaceIds = workspaces.map((row: { id: string }) => row.id)
+      if (cloneUrl && workspaceIds.length > 0) {
+        await tx.agent.updateMany({
+          where: { id: { in: workspaceIds }, orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId },
+          data: { gitRepo: cloneUrl }
+        })
+      }
+      const staleGrants = {
+        provider: 'gitlab',
+        repoId: projectId,
+        agent: { orgId },
+        repoFullName: { not: projectPath }
+      }
+      const grantAgentIds = (
+        await tx.agentRepoAuthorization.findMany({ where: staleGrants, select: { agentId: true } })
+      ).map((row: { agentId: string }) => row.agentId)
+      if (grantAgentIds.length > 0) {
+        await tx.agentRepoAuthorization.updateMany({ where: staleGrants, data: { repoFullName: projectPath } })
+      }
+      const ids = [...new Set([...workspaceIds, ...grantAgentIds])].sort()
+      // One bump per agent, after both writes: an agent holding the workspace AND
+      // a grant on the same project must not advance two revisions for one rename.
+      await bumpAgentConfigRevisions(tx, ids)
+      return ids.map((id: string) => AgentId(id))
+    })
   }
 
   async setWorkspaceRepoId(agentId: AgentId, repoId: bigint): Promise<boolean> {
@@ -741,7 +808,9 @@ export class PgAgentRepo implements AgentRepo {
         where: { id: agentId },
         data: { workspaceRepoId: repoId, configRevision: { increment: 1 } }
       })
-      await tx.agentRepoAuthorization.deleteMany({ where: { agentId, repoId } })
+      // Only the github grant is redundant with a github workspace: a gitlab project
+      // that happens to carry the same number is a different repository (§8.1).
+      await tx.agentRepoAuthorization.deleteMany({ where: { agentId, provider: 'github', repoId } })
       return true
     })
   }

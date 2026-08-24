@@ -9,6 +9,7 @@
  * delivery: the daemon prompts from its own ingress, never the CP.
  */
 import { createHash } from 'node:crypto'
+import { daemonSupportsAgent } from '../domain/daemon-features.js'
 import type {
   Ack,
   AgentLaunch,
@@ -127,7 +128,8 @@ import type {
   AgentPermissionRequestPage,
   AgentPermissionDecision,
   SessionVisibilityPush,
-  SessionVisibilityOk
+  SessionVisibilityOk,
+  CodeHostNoteDesired
 } from '@agentconnect.md/protocol'
 import {
   MAX_ORGANIZATION_SUGGESTION_BODY_BYTES,
@@ -328,6 +330,18 @@ export class ControlSender {
     c.conn.send('agent/remove', r, { epoch: c.sessionEpoch, agentId: r.agentId }, orgId)
   }
 
+  /**
+   * Hand one desired run-projection generation to its owning daemon (§16 EVT).
+   *
+   * Fire-and-forget by design: the daemon is the only provider writer, and its authoritative answer
+   * is the `codehost/note-result` frame, not a transport ack. The §17.3 feature gate is the caller's
+   * — an offline or non-advertising daemon must leave the row pending, never raise.
+   */
+  codeHostNoteDesired(daemonId: string, desired: CodeHostNoteDesired, orgId?: string): void {
+    const c = this.must(daemonId)
+    c.conn.send('codehost/note-desired', desired, { epoch: c.sessionEpoch, agentId: desired.agentId }, orgId)
+  }
+
   /** Fence and archive an agent before a daemon move or workspace edit (REQ → ack). */
   async agentDetach(daemonId: string, d: AgentDetach, orgId?: string): Promise<Ack> {
     const c = this.must(daemonId)
@@ -338,6 +352,14 @@ export class ControlSender {
   async agentActivate(daemonId: string, a: AgentActivate, orgId?: string): Promise<Ack> {
     let c = await this.activationConnection(daemonId)
     for (let connectionTry = 1; ; connectionTry += 1) {
+      // §17.3/§24.4 at the SEND, against the connection actually selected — and again
+      // after every reconnect retry, because a re-registered daemon may have come back
+      // with different advertised features. The activate bundle carries the complete
+      // spec, so a gitlab-shaped workspace or a self-managed host would be frame-fatal
+      // or silently mis-hosted on a target that has not advertised the feature.
+      if (!daemonSupportsAgent(a.spec, c.capabilities?.features)) {
+        throw new Error(`daemon ${daemonId} lacks a feature required by agent ${a.agentId}'s spec`)
+      }
       try {
         return await c.conn.request<Ack>(
           'agent/activate',

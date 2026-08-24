@@ -5,6 +5,7 @@ import {
   type SessionContext,
   type MessageGateway,
   type MessageAgentReq,
+  type MessageAgentResult,
   type ReplyToSessionReq,
   type SessionStatusReq
 } from '../src/mcp/ops.js'
@@ -19,7 +20,12 @@ const ctx: SessionContext = {
   channel: 'C_CURRENT',
   thread: '111.1',
   tools: toolsForIntegrations([
-    { id: 'int-1', platform: 'slack', core: { bindRules: [] }, config: { botToken: 'x', appToken: 'y' } }
+    {
+      id: 'int-1',
+      platform: 'slack',
+      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+      config: { botToken: 'x', appToken: 'y' }
+    }
   ]),
   integrations: [{ id: 'int-1', platform: 'slack' }]
 }
@@ -82,7 +88,7 @@ function makeDeps(over: Partial<OpsDeps> = {}): OpsDeps {
     getOrchestration: async () => null,
     cancelOrchestration: async () => false,
     memory: noMemory,
-    recordOutbound: () => {},
+    recordOutbound: async () => {},
     now: () => 1000,
     ...over
   }
@@ -99,7 +105,7 @@ function deps(gw: MessageGateway): { deps: OpsDeps; recorded: unknown[]; titleUp
         titleUpdates.push(req)
       },
       gatewayFor: () => gw,
-      recordOutbound: (_c, channel, thread, text, ts) => recorded.push({ channel, thread, text, ts }),
+      recordOutbound: async (_c, channel, thread, text, ts) => void recorded.push({ channel, thread, text, ts }),
       now: () => 1000
     })
   }
@@ -286,15 +292,20 @@ describe('executeTool: sendMessage (channel post)', () => {
       expect(recorded).toEqual([])
     })
 
-    it('refuses an unforwardable name without blaming the spelling, posting nothing', async () => {
+    it('refuses an unforwardable name without blaming the spelling or inviting a re-send', async () => {
       const gw = anchorless()
       const { deps: d } = deps(gw)
       Object.assign(d, resolves())
       await expect(
         executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'nope.png', message: 'hi' }, d)
-      ).rejects.toThrow(/"nope.png" is not forwardable/)
+      ).rejects.toThrow(/"nope.png" cannot be forwarded/)
       expect(gw.uploadFile).not.toHaveBeenCalled()
       expect(gw.postMessage).not.toHaveBeenCalled()
+      // An agent read an earlier phrasing backwards and asked the user to re-send the picture
+      // AS a document — the one move that cannot help. The refusal now forecloses it.
+      await expect(
+        executeTool(ctx, 'sendMessage', { channel: 'C_OTHER', attachment: 'nope.png', message: 'hi' }, d)
+      ).rejects.toThrow(/Do NOT ask anyone to re-send it/)
     })
 
     it('refuses a target platform with no upload port rather than sending the caption alone', async () => {
@@ -496,7 +507,7 @@ describe('executeTool: sendMessage (channel post)', () => {
       const wakes: MessageAgentReq[] = []
       const d = makeDeps({
         gatewayFor: () => fakeGateway({ postMessage: vi.fn(async () => '172'), ...gw }),
-        recordOutbound: (_c, channel, thread, text, ts) => recorded.push({ channel, thread, text, ts }),
+        recordOutbound: async (_c, channel, thread, text, ts) => void recorded.push({ channel, thread, text, ts }),
         spawnChannelRootSession: (req) => {
           spawns.push(req)
           return true
@@ -910,6 +921,39 @@ describe('executeTool: read tools', () => {
     expect(res.members).toEqual([{ id: 'U1', name: 'alice', isBot: false }])
   })
 
+  it('reads one channel-history page and forwards Slack pagination arguments', async () => {
+    const getChannelHistory = vi.fn(async () => ({
+      messages: [{ sender: 'U1', ts: '100.5', text: 'hello', isBot: false }],
+      hasMore: true,
+      nextCursor: 'next-page'
+    }))
+    const gw = fakeGateway({ getChannelHistory })
+    const { deps: d } = deps(gw)
+
+    const res = (await executeTool(
+      ctx,
+      'getChannelHistory',
+      { cursor: 'previous-page', limit: 2, oldest: '100.0', latest: '100.5' },
+      d
+    )) as Record<string, unknown>
+
+    expect(getChannelHistory).toHaveBeenCalledWith('C_CURRENT', {
+      cursor: 'previous-page',
+      limit: 2,
+      oldest: '100.0',
+      latest: '100.5'
+    })
+    expect(res).toMatchObject({
+      platform: 'slack',
+      channel: 'C_CURRENT',
+      hasMore: true,
+      nextCursor: 'next-page'
+    })
+
+    await executeTool(ctx, 'getChannelHistory', { channel: 'C_OTHER' }, d)
+    expect(getChannelHistory).toHaveBeenLastCalledWith('C_CURRENT', {})
+  })
+
   it('routes a read to another connected platform via the `platform` arg', async () => {
     // Slack session; agent also has a Telegram bot. Ask for Telegram channels — the
     // read must resolve the Telegram gateway, not the current Slack one.
@@ -1203,7 +1247,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
         calls.push(req)
         return { delivered: true, targetSession: `slack:${req.channel}:${req.thread ?? 'root'}:${req.toAgentId}` }
       },
-      recordOutbound: (_c, channel, thread, text, ts) => recorded.push({ channel, thread, text, ts }),
+      recordOutbound: async (_c, channel, thread, text, ts) => void recorded.push({ channel, thread, text, ts }),
       now: () => 0,
       ...over
     })
@@ -1313,7 +1357,7 @@ describe('executeTool: sendMessage (wake / reply)', () => {
     const { deps: d, calls } = wakeDeps({ gatewayFor: () => gw })
     d.messageAgent = async (req) => {
       calls.push(req)
-      return { delivered: false, reason: 'self' }
+      return { delivered: false, reason: 'self' } as MessageAgentResult
     }
 
     const res = (await executeTool(
@@ -1703,9 +1747,9 @@ describe('executeTool: viewSessionStatus', () => {
   })
 })
 
-describe('executeTool: submitGithubReview', () => {
+describe('executeTool: submitCodeReview', () => {
   it('takes agent/session identity from trusted context and passes only semantic review input', async () => {
-    const submitGithubReview = vi.fn(async () => ({
+    const submitCodeReview = vi.fn(async () => ({
       state: 'submitted' as const,
       reviewId: '99',
       event: 'REQUEST_CHANGES' as const,
@@ -1713,11 +1757,11 @@ describe('executeTool: submitGithubReview', () => {
       commitId: 'a'.repeat(40)
     }))
     const { deps: d } = deps(fakeGateway())
-    d.submitGithubReview = submitGithubReview
+    d.submitCodeReview = submitCodeReview
 
     const result = await executeTool(
       ctx,
-      'submitGithubReview',
+      'submitCodeReview',
       {
         // These attacker-supplied target fields are ignored.
         repoFullName: 'evil/repo',
@@ -1732,7 +1776,7 @@ describe('executeTool: submitGithubReview', () => {
     )
 
     expect(result).toMatchObject({ state: 'submitted', reviewId: '99' })
-    expect(submitGithubReview).toHaveBeenCalledWith({
+    expect(submitCodeReview).toHaveBeenCalledWith({
       agentId: 'bot-a',
       platform: 'slack',
       channel: 'C_CURRENT',
@@ -1747,18 +1791,28 @@ describe('executeTool: submitGithubReview', () => {
   it('fails closed when no review effect boundary is wired', async () => {
     const { deps: d } = deps(fakeGateway())
     await expect(
-      executeTool(ctx, 'submitGithubReview', { event: 'COMMENT', verdict: 'neutral', body: 'note' }, d)
+      executeTool(ctx, 'submitCodeReview', { event: 'COMMENT', verdict: 'neutral', body: 'note' }, d)
     ).rejects.toThrow(/unavailable/)
   })
 
-  it('validates inline coordinates before calling the effect boundary', async () => {
-    const submitGithubReview = vi.fn()
+  it('still dispatches the pre-promotion `submitGithubReview` name to the same entry', async () => {
+    const submitCodeReview = vi.fn(async () => ({ provider: 'gitlab', state: 'submitted' }))
     const { deps: d } = deps(fakeGateway())
-    d.submitGithubReview = submitGithubReview
+    d.submitCodeReview = submitCodeReview
+    await executeTool(ctx, 'submitGithubReview', { event: 'COMMENT', verdict: 'neutral', body: 'note' }, d)
+    expect(submitCodeReview).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'bot-a', event: 'COMMENT', verdict: 'neutral', body: 'note' })
+    )
+  })
+
+  it('validates inline coordinates before calling the effect boundary', async () => {
+    const submitCodeReview = vi.fn()
+    const { deps: d } = deps(fakeGateway())
+    d.submitCodeReview = submitCodeReview
     await expect(
       executeTool(
         ctx,
-        'submitGithubReview',
+        'submitCodeReview',
         {
           event: 'COMMENT',
           verdict: 'neutral',
@@ -1768,14 +1822,14 @@ describe('executeTool: submitGithubReview', () => {
         d
       )
     ).rejects.toThrow(/positive integer/)
-    expect(submitGithubReview).not.toHaveBeenCalled()
+    expect(submitCodeReview).not.toHaveBeenCalled()
   })
 
   // A malformed entry must name its own INDEX — that is the whole repair instruction for a
   // model holding a long batch, so the number has to survive the argument-schema plumbing.
   it.each([
     {
-      tool: 'submitGithubReview',
+      tool: 'submitCodeReview',
       args: {
         event: 'COMMENT',
         verdict: 'neutral',
@@ -1792,7 +1846,7 @@ describe('executeTool: submitGithubReview', () => {
     { tool: 'startOrchestration', args: { subtasks: ['nope'] }, expected: 'subtasks[0] must be an object' }
   ])('$tool names the offending entry by index', async ({ tool, args, expected }) => {
     const { deps: d } = deps(fakeGateway())
-    d.submitGithubReview = vi.fn()
+    d.submitCodeReview = vi.fn()
     d.replyGithubReviewThreads = vi.fn()
     await expect(executeTool(ctx, tool, args, d)).rejects.toThrow(expected)
   })

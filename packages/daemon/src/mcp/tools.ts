@@ -1,8 +1,14 @@
 import type { Integration } from '../agents/agent-schema.js'
 import { obj, unionOf, type ToolDescriptor } from '../tool-schema/descriptor.js'
 import { SESSION_TITLE_TOOL_NAME } from './session-title-tool.js'
-import { allAttachmentReadTools, attachmentReadToolsFor } from '../platforms/read-ports.js'
+import {
+  allAttachmentReadTools,
+  allChannelHistoryPlatforms,
+  attachmentReadToolsFor,
+  channelHistoryPlatformsFor
+} from '../platforms/read-ports.js'
 import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
+import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
 
 /**
  * Session metadata fallback tools. Opt-in via `toolsForIntegrations`'s
@@ -345,7 +351,7 @@ function buildShareFileTool(): ToolDescriptor {
   }
 }
 
-function buildReadTools(platforms: string[]): ToolDescriptor[] {
+function buildReadTools(platforms: string[], currentPlatform?: string): ToolDescriptor[] {
   const platform = {
     type: 'string',
     enum: platforms,
@@ -359,6 +365,9 @@ function buildReadTools(platforms: string[]): ToolDescriptor[] {
     type: 'string',
     description: 'Optional. Pick a specific bot when the agent has multiple integrations on the target platform.'
   }
+  // History has no target selector, so only the current session platform may enable it.
+  const historyPlatform = currentPlatform ?? (platforms.length === 1 ? platforms[0] : undefined)
+  const hasChannelHistory = historyPlatform !== undefined && channelHistoryPlatformsFor([historyPlatform]).length > 0
   return [
     {
       name: 'getCurrentChannel',
@@ -377,6 +386,29 @@ function buildReadTools(platforms: string[]): ToolDescriptor[] {
         'has multiple bots on the platform (history is not attributable to one bot).',
       inputSchema: obj({ platform, integrationId })
     },
+    ...(hasChannelHistory
+      ? [
+          {
+            name: 'getChannelHistory',
+            description:
+              'Read one bounded page of messages from the channel bound to this conversation. This tool is ' +
+              'intentionally limited to the current context channel and accepts no channel, platform, or ' +
+              'integration selector. Results are newest-first; pass nextCursor as cursor to continue with older ' +
+              'messages. This returns channel messages, not replies inside a thread.',
+            inputSchema: obj({
+              cursor: { type: 'string', description: 'Cursor returned by the previous page.' },
+              limit: {
+                type: 'integer',
+                minimum: 1,
+                maximum: 200,
+                description: 'Number of messages to request (max 200; the provider may return a smaller page).'
+              },
+              oldest: { type: 'string', description: 'Inclusive oldest message timestamp bound.' },
+              latest: { type: 'string', description: 'Inclusive latest message timestamp bound.' }
+            })
+          }
+        ]
+      : []),
     {
       name: 'listKnownUsers',
       description:
@@ -616,20 +648,24 @@ export const RETIRED_ORCHESTRATION_TOOLS: ToolDescriptor[] = [
 ]
 
 /**
- * Formal GitHub PR review effect. The descriptor may remain attached to a
- * long-lived per-thread ACP session, but availability is not authorization:
- * execution resolves the daemon-private active hook turn and fails closed for
- * every ordinary/non-PR/policy-off turn. The target is intentionally absent.
+ * Formal code-host review effect (gitlab-com-integration.md §15). The descriptor
+ * may remain attached to a long-lived per-thread ACP session, but availability is
+ * not authorization: execution resolves the daemon-private active hook turn, routes
+ * to that turn's code host, and fails closed for every ordinary/non-review turn.
+ * The target is intentionally absent.
  */
 export const GITHUB_REVIEW_TOOLS: ToolDescriptor[] = [
   {
-    name: 'submitGithubReview',
+    name: 'submitCodeReview',
     description:
-      'Submit the formal review for the active GitHub pull-request hook turn. The repository, pull request, and ' +
-      'commit are fixed by trusted turn metadata and cannot be selected here. Use COMMENT for a formal non-blocking ' +
-      'review, REQUEST_CHANGES for a failing review, or APPROVE for a passing review. This tool is unavailable ' +
-      'outside an authorized active PR hook turn, and at most one review can be submitted per turn. The review body ' +
-      'is the complete public response: once an attempt starts, only a definite not_submitted result preserves the ordinary-comment fallback.',
+      'Submit the formal review for the active pull-request or merge-request hook turn. The repository or project, ' +
+      'the pull/merge request, and the commit are fixed by trusted turn metadata and cannot be selected here. Use ' +
+      'COMMENT for a formal non-blocking review, REQUEST_CHANGES for a failing review, or APPROVE for a passing ' +
+      'review; REQUEST_CHANGES requires verdict fail and APPROVE requires verdict pass. On GitLab, REQUEST_CHANGES ' +
+      'is available only while the project service account is already a current reviewer — otherwise record the ' +
+      'finding with COMMENT and verdict fail. This tool is unavailable outside an authorized active review hook ' +
+      'turn, and at most one review can be submitted per turn. The review body is the complete public response: ' +
+      'once an attempt starts, only a definite not_submitted result preserves the ordinary-comment fallback.',
     inputSchema: obj(
       {
         event: { type: 'string', enum: ['COMMENT', 'REQUEST_CHANGES', 'APPROVE'] },
@@ -689,6 +725,164 @@ export const GITHUB_REVIEW_TOOLS: ToolDescriptor[] = [
   }
 ]
 
+/**
+ * The provider-neutral code-host effect surface (gitlab-com-integration.md §14.2),
+ * GitLab-backed today. Each tool maps to ONE allowlisted endpoint and method; the
+ * project is resolved from trusted daemon state and the effect token never enters
+ * the agent environment. Availability is not authorization: every call is refused
+ * below its clamped capability, and read/comment/write are the §13.1 classes.
+ */
+export const CODE_HOST_EFFECT_TOOLS: ToolDescriptor[] = [
+  {
+    name: 'createCodeHostComment',
+    description:
+      'Post one comment on an issue or merge request in the code-host project this session is bound to. The project ' +
+      'is fixed by trusted session state and cannot be selected here. Requires comment authority. Returns the ' +
+      'created comment id, which is the only id `updateCodeHostComment` will accept later in this session.',
+    inputSchema: obj(
+      {
+        subject: {
+          type: 'string',
+          enum: ['issue', 'merge_request'],
+          description: 'Which subject family to comment on.'
+        },
+        iid: { type: 'integer', minimum: 1, description: 'The subject’s project-scoped number (IID).' },
+        body: { type: 'string', minLength: 1, description: 'Complete Markdown comment body.' }
+      },
+      ['subject', 'iid', 'body']
+    )
+  },
+  {
+    name: 'updateCodeHostComment',
+    description:
+      'Rewrite a comment THIS session created through the broker. Any other comment is refused, so the single ' +
+      'author of a brokered comment stays its only editor. Requires comment authority.',
+    inputSchema: obj(
+      {
+        subject: { type: 'string', enum: ['issue', 'merge_request'] },
+        iid: { type: 'integer', minimum: 1, description: 'The subject’s project-scoped number (IID).' },
+        noteId: {
+          type: 'string',
+          pattern: '^[1-9][0-9]*$',
+          description: 'The comment id returned by an earlier createCodeHostComment or replyCodeHostDiscussion call.'
+        },
+        body: { type: 'string', minLength: 1, description: 'The complete replacement body.' }
+      },
+      ['subject', 'iid', 'noteId', 'body']
+    )
+  },
+  {
+    name: 'readCodeHostDiscussions',
+    description:
+      'Read the discussion threads on an issue or merge request. Omit `discussionId` for a bounded list of the ' +
+      'subject’s threads, or supply one to read that single thread. Read-only, so a read-level authorization is enough.',
+    inputSchema: obj(
+      {
+        subject: { type: 'string', enum: ['issue', 'merge_request'] },
+        iid: { type: 'integer', minimum: 1, description: 'The subject’s project-scoped number (IID).' },
+        discussionId: { type: 'string', description: 'Read exactly this thread; omit to list the subject’s threads.' },
+        limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum threads to list (default 20).' }
+      },
+      ['subject', 'iid']
+    )
+  },
+  {
+    name: 'replyCodeHostDiscussion',
+    description:
+      'Add one reply to an existing discussion thread on an issue or merge request. Use this instead of a new ' +
+      'top-level comment when answering in place. Requires comment authority.',
+    inputSchema: obj(
+      {
+        subject: { type: 'string', enum: ['issue', 'merge_request'] },
+        iid: { type: 'integer', minimum: 1, description: 'The subject’s project-scoped number (IID).' },
+        discussionId: { type: 'string', description: 'The thread id from readCodeHostDiscussions.' },
+        body: { type: 'string', minLength: 1, description: 'Complete Markdown reply body.' }
+      },
+      ['subject', 'iid', 'discussionId', 'body']
+    )
+  },
+  {
+    name: 'createCodeHostMergeRequest',
+    description:
+      'Open a merge request in this session’s project from an already-pushed branch. Only the fields below are ' +
+      'settable — there is no arbitrary payload. Requires write authority.',
+    inputSchema: obj(
+      {
+        sourceBranch: { type: 'string', minLength: 1, description: 'The branch holding the changes (already pushed).' },
+        targetBranch: { type: 'string', minLength: 1, description: 'The branch to merge into.' },
+        title: { type: 'string', minLength: 1, description: 'Merge-request title.' },
+        description: { type: 'string', description: 'Merge-request description in Markdown.' },
+        draft: { type: 'boolean', description: 'Open it as a draft (marks the title accordingly).' }
+      },
+      ['sourceBranch', 'targetBranch', 'title']
+    )
+  },
+  {
+    name: 'updateCodeHostMergeRequest',
+    description:
+      'Edit an existing merge request’s title, description, target branch, or draft state. Supply at least one of ' +
+      'them; everything else is left untouched. Requires write authority.',
+    inputSchema: obj(
+      {
+        iid: { type: 'integer', minimum: 1, description: 'The merge request’s project-scoped number (IID).' },
+        title: { type: 'string', description: 'Replacement title.' },
+        description: { type: 'string', description: 'Replacement description in Markdown.' },
+        targetBranch: { type: 'string', description: 'Retarget the merge request at this branch.' },
+        draft: { type: 'boolean', description: 'Set or clear draft state (requires `title` to re-mark it).' }
+      },
+      ['iid']
+    )
+  },
+  {
+    name: 'inspectCodeHostPipelines',
+    description:
+      'Inspect CI in this session’s project: list recent pipelines, read one pipeline, list a pipeline’s jobs, or ' +
+      'read one job. Read-only, so a read-level authorization is enough. Results are bounded.',
+    inputSchema: obj(
+      {
+        scope: {
+          type: 'string',
+          enum: ['pipelines', 'pipeline', 'pipeline_jobs', 'job'],
+          description:
+            '`pipelines` lists recent pipelines; `pipeline` and `pipeline_jobs` need `pipelineId`; `job` needs `jobId`.'
+        },
+        pipelineId: {
+          type: 'string',
+          pattern: '^[1-9][0-9]*$',
+          description: 'Required for `pipeline`/`pipeline_jobs`.'
+        },
+        jobId: { type: 'string', pattern: '^[1-9][0-9]*$', description: 'Required for `job`.' },
+        ref: { type: 'string', description: 'Only for `pipelines`: filter by branch or tag.' },
+        status: {
+          type: 'string',
+          enum: [...BROKER_PIPELINE_STATUSES],
+          description: 'Only for `pipelines`: filter by pipeline status.'
+        },
+        limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Maximum entries to list (default 20).' }
+      },
+      ['scope']
+    )
+  },
+  {
+    name: 'controlCodeHostPipeline',
+    description:
+      'Retry or cancel a pipeline or a single job in this session’s project. Requires write authority; nothing else ' +
+      'about the pipeline can be changed here.',
+    inputSchema: obj(
+      {
+        action: {
+          type: 'string',
+          enum: ['retry_pipeline', 'cancel_pipeline', 'retry_job', 'cancel_job'],
+          description: 'Pipeline actions need `pipelineId`; job actions need `jobId`.'
+        },
+        pipelineId: { type: 'string', pattern: '^[1-9][0-9]*$', description: 'Required for the pipeline actions.' },
+        jobId: { type: 'string', pattern: '^[1-9][0-9]*$', description: 'Required for the job actions.' }
+      },
+      ['action']
+    )
+  }
+]
+
 export const ALL_TOOL_NAMES = [
   ...new Set(
     [
@@ -697,7 +891,7 @@ export const ALL_TOOL_NAMES = [
       // are stable and belong in the permission auto-allow set.
       buildSendMessageTool([]),
       buildShareFileTool(),
-      ...buildReadTools([]),
+      ...buildReadTools(allChannelHistoryPlatforms(), allChannelHistoryPlatforms().at(0)),
       // Every platform's credentialed attachment tool, whatever this agent has:
       // the auto-allow set is about NAMES, and a name a platform can inject must
       // be listed even for an agent that will never see it.
@@ -709,11 +903,14 @@ export const ALL_TOOL_NAMES = [
       // reserved (no evaluation tool may shadow it) and auto-allowed (a session warm with
       // the old descriptor, or an in-flight orchestration, must not start hitting approval).
       ...RETIRED_ORCHESTRATION_TOOLS,
-      ...GITHUB_REVIEW_TOOLS
+      ...GITHUB_REVIEW_TOOLS,
+      ...CODE_HOST_EFFECT_TOOLS
     ]
       .map((t) => t.name)
       // External-memory record tools: only their names are core knowledge here, the descriptors live in memory/.
       .concat([...EXTERNAL_MEMORY_TOOL_NAMES])
+      // The pre-promotion review name: no longer injected, still dispatched for warm sessions.
+      .concat(['submitGithubReview'])
   )
 ]
 
@@ -727,7 +924,7 @@ export const ALL_TOOL_NAMES = [
  */
 export function toolsForIntegrations(
   integrations: Integration[],
-  options: { sessionTitle?: boolean; organizationKnowledge?: boolean } = {}
+  options: { sessionTitle?: boolean; organizationKnowledge?: boolean; currentPlatform?: string } = {}
 ): ToolDescriptor[] {
   const tools: ToolDescriptor[] = []
   const seen = new Set<string>()
@@ -750,7 +947,7 @@ export function toolsForIntegrations(
   add([buildSendMessageTool(platforms)])
   // Platform read helpers only make sense once the agent has at least one integration.
   if (platforms.length > 0) {
-    add(buildReadTools(platforms))
+    add(buildReadTools(platforms, options.currentPlatform))
     // The current-conversation file share (docs/designs/agent-authored-attachments.md §3):
     // platform-gated like the read tools; sessions without a file-hosting gateway get a
     // clean refusal at call time (port probe / coordinate gates).

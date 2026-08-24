@@ -44,12 +44,13 @@ const INTEGRATION: IntegrationRecord = {
   id: IntegrationId('66666666-6666-4666-8666-666666666666'),
   orgId: OrgId('org'),
   agentId: AgentId('77777777-7777-4777-8777-777777777777'),
+  botId: BotId('88888888-8888-4888-8888-888888888888'),
   platform: 'slack',
   name: 'acme-bot',
   status: 'active',
   createdAt: new Date('2026-01-01T00:00:00Z')
 }
-const SECRET = { botToken: 'xoxb-abc', appToken: 'xapp-def' }
+const SECRET = { botToken: 'xoxb-abc', appToken: 'xapp-def', signingSecret: null }
 
 /** A socket-transport bot row — the direct-mode fork the projector applies. Only
  *  the fields the four projectors read are meaningful. */
@@ -84,9 +85,13 @@ const channel = (
   integrationId: INTEGRATION.id,
   channelId,
   name: channelId.toLowerCase(),
+  spaceId: null,
+  space: null,
   isPrivate: false,
   kind,
   trigger,
+  dmUserId: null,
+  triggerChosen: false,
   agentId: null
 })
 
@@ -126,9 +131,11 @@ describe('integrationToSpec bindRules', () => {
   })
 
   it('emits a telegram-shaped spec (single botToken, no appToken) for a telegram integration', async () => {
-    const spec = await specOf({ ...INTEGRATION, platform: 'telegram' }, { botToken: '123:abc', appToken: null }, [
-      channel('-100', 'any')
-    ])
+    const spec = await specOf(
+      { ...INTEGRATION, platform: 'telegram' },
+      { botToken: '123:abc', appToken: null, signingSecret: null },
+      [channel('-100', 'any')]
+    )
     if (spec.platform !== 'telegram') throw new Error('expected telegram spec')
     expect(telegramCfg(spec).botToken).toBe('123:abc')
     expect(spec).not.toHaveProperty('slack')
@@ -204,19 +211,25 @@ describe('integrationToSpec mutedChannels', () => {
   })
 
   it('rides every platform variant', async () => {
-    const tg = await specOf({ ...INTEGRATION, platform: 'telegram' }, { botToken: '1:a', appToken: null }, [
-      channel('-100', 'off')
-    ])
+    const tg = await specOf(
+      { ...INTEGRATION, platform: 'telegram' },
+      { botToken: '1:a', appToken: null, signingSecret: null },
+      [channel('-100', 'off')]
+    )
     if (tg.platform !== 'telegram') throw new Error('expected telegram spec')
     expect(tg.core?.mutedChannels).toEqual(['-100'])
-    const dc = await specOf({ ...INTEGRATION, platform: 'discord' }, { botToken: 'bot', appToken: null }, [
-      channel('999', 'off')
-    ])
+    const dc = await specOf(
+      { ...INTEGRATION, platform: 'discord' },
+      { botToken: 'bot', appToken: null, signingSecret: null },
+      [channel('999', 'off')]
+    )
     if (dc.platform !== 'discord') throw new Error('expected discord spec')
     expect(dc.core?.mutedChannels).toEqual(['999'])
-    const fs = await specOf({ ...INTEGRATION, platform: 'feishu' }, { botToken: 'sec', appToken: 'cli_x' }, [
-      channel('oc_1', 'off')
-    ])
+    const fs = await specOf(
+      { ...INTEGRATION, platform: 'feishu' },
+      { botToken: 'sec', appToken: 'cli_x', signingSecret: null },
+      [channel('oc_1', 'off')]
+    )
     if (fs.platform !== 'feishu') throw new Error('expected feishu spec')
     expect(fs.core?.mutedChannels).toEqual(['oc_1'])
   })
@@ -265,24 +278,33 @@ describe('integrationToSpec platform fences (§9)', () => {
 describe('agentRecordToSpec runtime overrides', () => {
   it('ships displayName as either its value or explicit null so clearing it replicates', () => {
     const agent: AgentRecord = {
-      builtin: false,
       id: AgentId('77777777-7777-4777-8777-777777777777'),
       orgId: OrgId('org'),
       name: 'deploy-bot',
       displayName: 'Deploy Bot',
+      builtin: false,
+      icon: null,
       description: null,
       runtime: 'claude-acp',
       model: null,
       reasoningEffort: null,
       outputMode: null,
+      showFooter: true,
+      showStatusBar: false,
       fastMode: null,
       permissionMode: null,
+      approvalsReviewer: null,
+      allowRuntimeChangesInChat: false,
       pause: null,
       env: {},
       mcpServers: [],
+      skills: [],
+      managedSkills: [],
       memory: null,
       status: 'active',
+      placementKind: 'daemon',
       daemonId: null,
+      setId: null,
       workspace: { mode: 'scratch' },
       capabilities: [],
       createdAt: new Date('2026-01-01T00:00:00Z'),
@@ -290,6 +312,12 @@ describe('agentRecordToSpec runtime overrides', () => {
       createdByUserId: null,
       visibility: 'org',
       sharedWith: [],
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: [],
+      introduceOnJoin: false,
+      runInSandbox: false,
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
       configRevision: 0n
@@ -311,22 +339,33 @@ describe('agentRecordToSpec runtime overrides', () => {
 
   it('carries permissionMode to the daemon spec', () => {
     const agent: AgentRecord = {
-      builtin: false,
       id: AgentId('77777777-7777-4777-8777-777777777777'),
       orgId: OrgId('org'),
       name: 'deploy-bot',
       displayName: 'Deploy Bot',
+      builtin: false,
+      icon: null,
       description: null,
       runtime: 'claude-acp',
       model: null,
       reasoningEffort: null,
       outputMode: null,
+      showFooter: true,
+      showStatusBar: false,
       fastMode: null,
       permissionMode: 'plan',
+      approvalsReviewer: null,
+      allowRuntimeChangesInChat: false,
       pause: null,
       env: {},
+      mcpServers: [],
+      skills: [],
+      managedSkills: [],
+      memory: null,
       status: 'active',
+      placementKind: 'daemon',
       daemonId: null,
+      setId: null,
       workspace: { mode: 'scratch' },
       capabilities: [],
       createdAt: new Date('2026-01-01T00:00:00Z'),
@@ -334,6 +373,12 @@ describe('agentRecordToSpec runtime overrides', () => {
       createdByUserId: null,
       visibility: 'org',
       sharedWith: [],
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: [],
+      introduceOnJoin: false,
+      runInSandbox: false,
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
       configRevision: 0n
@@ -344,22 +389,33 @@ describe('agentRecordToSpec runtime overrides', () => {
 
   it('carries pause to the daemon spec, and omits it when null (#288)', () => {
     const base: AgentRecord = {
-      builtin: false,
       id: AgentId('77777777-7777-4777-8777-777777777777'),
       orgId: OrgId('org'),
       name: 'deploy-bot',
       displayName: 'Deploy Bot',
+      builtin: false,
+      icon: null,
       description: null,
       runtime: 'claude-acp',
       model: null,
       reasoningEffort: null,
       outputMode: null,
+      showFooter: true,
+      showStatusBar: false,
       fastMode: null,
       permissionMode: null,
+      approvalsReviewer: null,
+      allowRuntimeChangesInChat: false,
       pause: true,
       env: {},
+      mcpServers: [],
+      skills: [],
+      managedSkills: [],
+      memory: null,
       status: 'active',
+      placementKind: 'daemon',
       daemonId: null,
+      setId: null,
       workspace: { mode: 'scratch' },
       capabilities: [],
       createdAt: new Date('2026-01-01T00:00:00Z'),
@@ -367,6 +423,12 @@ describe('agentRecordToSpec runtime overrides', () => {
       createdByUserId: null,
       visibility: 'org',
       sharedWith: [],
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: [],
+      introduceOnJoin: false,
+      runInSandbox: false,
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
       configRevision: 0n
@@ -382,24 +444,33 @@ describe('agentRecordToSpec runtime overrides', () => {
 
   it('carries the memory backend to the daemon spec, and omits it when null', () => {
     const base: AgentRecord = {
-      builtin: false,
       id: AgentId('88888888-8888-4888-8888-888888888888'),
       orgId: OrgId('org'),
       name: 'mem-bot',
       displayName: 'Mem Bot',
+      builtin: false,
+      icon: null,
       description: null,
       runtime: 'claude-acp',
       model: null,
       reasoningEffort: null,
       outputMode: null,
+      showFooter: true,
+      showStatusBar: false,
       fastMode: null,
       permissionMode: null,
+      approvalsReviewer: null,
+      allowRuntimeChangesInChat: false,
       pause: null,
       env: {},
       mcpServers: [],
+      skills: [],
+      managedSkills: [],
       memory: { provider: 'native' },
       status: 'active',
+      placementKind: 'daemon',
       daemonId: null,
+      setId: null,
       workspace: { mode: 'scratch' },
       capabilities: [],
       createdAt: new Date('2026-01-01T00:00:00Z'),
@@ -407,6 +478,12 @@ describe('agentRecordToSpec runtime overrides', () => {
       createdByUserId: null,
       visibility: 'org',
       sharedWith: [],
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: [],
+      introduceOnJoin: false,
+      runInSandbox: false,
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
       configRevision: 0n
@@ -419,22 +496,33 @@ describe('agentRecordToSpec runtime overrides', () => {
 
   it('ships a cleared model/effort/permissionMode as explicit null so a runtime switch replicates the clear', () => {
     const base: AgentRecord = {
-      builtin: false,
       id: AgentId('77777777-7777-4777-8777-777777777777'),
       orgId: OrgId('org'),
       name: 'deploy-bot',
       displayName: 'Deploy Bot',
+      builtin: false,
+      icon: null,
       description: null,
       runtime: 'claude-acp',
       model: null,
       reasoningEffort: null,
       outputMode: null,
+      showFooter: true,
+      showStatusBar: false,
       fastMode: null,
       permissionMode: null,
+      approvalsReviewer: null,
+      allowRuntimeChangesInChat: false,
       pause: null,
       env: {},
+      mcpServers: [],
+      skills: [],
+      managedSkills: [],
+      memory: null,
       status: 'active',
+      placementKind: 'daemon',
       daemonId: null,
+      setId: null,
       workspace: { mode: 'scratch' },
       capabilities: [],
       createdAt: new Date('2026-01-01T00:00:00Z'),
@@ -442,6 +530,12 @@ describe('agentRecordToSpec runtime overrides', () => {
       createdByUserId: null,
       visibility: 'org',
       sharedWith: [],
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: [],
+      introduceOnJoin: false,
+      runInSandbox: false,
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
       configRevision: 0n
@@ -461,24 +555,33 @@ describe('agentRecordToSpec runtime overrides', () => {
 
   it('ships the caller-fetched secrets (AgentSecretStore) on the spec — even {} so a removed secret replicates', () => {
     const base: AgentRecord = {
-      builtin: false,
       id: AgentId('77777777-7777-4777-8777-777777777777'),
       orgId: OrgId('org'),
       name: 'deploy-bot',
       displayName: 'Deploy Bot',
+      builtin: false,
+      icon: null,
       description: null,
       runtime: 'claude-acp',
       model: null,
       reasoningEffort: null,
       outputMode: null,
+      showFooter: true,
+      showStatusBar: false,
       fastMode: null,
       permissionMode: null,
+      approvalsReviewer: null,
+      allowRuntimeChangesInChat: false,
       pause: null,
       env: {},
       mcpServers: [],
+      skills: [],
+      managedSkills: [],
       memory: null,
       status: 'active',
+      placementKind: 'daemon',
       daemonId: null,
+      setId: null,
       workspace: { mode: 'scratch' },
       capabilities: [],
       createdAt: new Date('2026-01-01T00:00:00Z'),
@@ -486,6 +589,12 @@ describe('agentRecordToSpec runtime overrides', () => {
       createdByUserId: null,
       visibility: 'org',
       sharedWith: [],
+      callPolicy: 'all',
+      allowedCallerAgentIds: [],
+      outboundPolicy: 'all',
+      allowedTargetAgentIds: [],
+      introduceOnJoin: false,
+      runInSandbox: false,
       lastModifiedAt: new Date('2026-01-01T00:00:00Z'),
       lastModifiedBy: null,
       configRevision: 0n

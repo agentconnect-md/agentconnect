@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -30,6 +29,8 @@ export interface ModelSessionHostPoolHost {
   orgForAgent(agentId: string): string | undefined
   modelOverride(sessionKey: string): Promise<string | undefined>
   acpSessionId(sessionKey: string): Promise<string | null | undefined>
+  /** The slot's OUTWARD session id, minted on first ask — see session-concept.md §1.1. */
+  outwardSessionId(sessionKey: string, agentId: string): Promise<string>
   sessionKeyForAcpId(agentId: string, acpSessionId: string): Promise<string | undefined>
   sessionSdkQuiescent(agentId: string, acpSessionId: string | null | undefined): boolean
   releaseSdkLease(agentId: string, acpSessionId: string): void
@@ -42,11 +43,52 @@ export interface ModelSessionHostPoolHost {
 }
 
 export interface ModelSessionHostPoolOptions {
+  /** Cloud mode. A key server is refused without it — not because minting needs a cluster, but
+   *  because the credential it mints is only usable with the `*_MODEL_BASE_URL` pair that aims it
+   *  at this install's gateway, and that pair is cloud-mode configuration. A key minted for a
+   *  gateway and sent to the provider's own address is a 401 with no hint as to why. */
   k8s: boolean
   address?: string
   tokenPath?: string
   client?: KeyServerClient
   now: () => number
+}
+
+/** True for an http address whose host is not obviously inside the cluster — a Service name (with
+ *  or without its namespace/`.svc` suffix), the local node, the cluster domain, or a private
+ *  network. Deliberately a shape test rather than a resolver: this runs at construction, and a
+ *  warning that needed DNS would be a startup dependency. */
+export function offClusterPlaintext(address: string): boolean {
+  let url: URL
+  try {
+    url = new URL(address)
+  } catch {
+    return false
+  }
+  if (url.protocol !== 'http:') return false
+  const host = url.hostname
+  if (host === 'localhost') return false
+  // IPv6 literals arrive bracketed; classifying one by shape is more than this warning is worth.
+  if (host.startsWith('[')) return false
+  const octets = host.split('.')
+  if (octets.length === 4 && octets.every((o) => /^\d{1,3}$/.test(o) && Number(o) < 256)) {
+    const [a, b = 0] = octets.map(Number)
+    // Loopback, RFC1918, and the CGNAT range CNIs hand pod and Service IPs out of are this cluster
+    // or the network it sits on; any other literal is an address on the open internet.
+    const internal =
+      a === 127 ||
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127)
+    return !internal
+  }
+  // `.local` covers the default cluster domain (`…svc.cluster.local`) as well as an mDNS name,
+  // which is a LAN rather than the internet and not what this warning is about.
+  if (host.endsWith('.svc') || host.endsWith('.local')) return false
+  // A bare label (`my-service`) or `service.namespace` is in-cluster addressing; a public name has
+  // a registrable domain, which needs at least three labels here (`a.b.c`) not to be one of those.
+  return host.split('.').length > 2
 }
 
 /** Owns the per-session model-credential state machine: the key-server handle, the issued grants,
@@ -64,10 +106,31 @@ export class ModelSessionHostPool {
     if ((opts.address || opts.client) && !opts.k8s) {
       throw new Error('key-server is supported only by cloud daemons running with --k8s')
     }
-    if (opts.tokenPath && !opts.address && !opts.client) throw new Error('key-server-token-path requires key-server')
+    // A token path with no server is a configuration that does nothing — say so and carry on, rather
+    // than refusing to start a daemon whose every other agent is fine.
+    if (opts.tokenPath && !opts.address && !opts.client) {
+      this.log.warn(
+        'key-server-token-path is set with no key-server address: no credential will be requested and the token file is unused'
+      )
+    }
+    // The mirror image, and the more expensive one: with no token source every mint goes out with
+    // no Authorization header at all, and a server that reviews its callers 401s each one. Still a
+    // warning — a key server may trust its callers by network position, which is its operator's call.
+    if (opts.address && !opts.tokenPath && !opts.client) {
+      this.log.warn(
+        `key-server ${opts.address} is configured with no key-server-token-path: requests will carry no credential, which a server that reviews its callers refuses`
+      )
+    }
     this.keyServer =
       opts.client ??
       (opts.address ? new KeyServerClient(opts.address, { tokenPath: opts.tokenPath, now: opts.now }) : undefined)
+    // Plaintext is not refused, but plaintext to an address that is not plainly in-cluster sends
+    // this daemon's bearer across whatever lies between — said once here, being a config fact.
+    if (opts.address && offClusterPlaintext(opts.address)) {
+      this.log.warn(
+        `key-server ${opts.address} is plaintext and does not look in-cluster: the bearer token will cross the network in the clear`
+      )
+    }
   }
 
   private get log(): Logger {
@@ -99,7 +162,8 @@ export class ModelSessionHostPool {
     return this.staticModelCredentials?.[runtime]
   }
 
-  /** The deployment's base for a target, the only source of one — an IssueKey `baseUrl` is not read. */
+  /** The deployment's base for a target, and the only source of one: the contract defines no
+   *  `baseUrl`, and an issuer that sends one is stripped rather than read. */
   staticBaseUrl(target: ModelProviderTarget): { baseUrl?: string } {
     const baseUrl = this.staticModelCredentials?.[target.runtime]?.baseUrl
     return baseUrl ? { baseUrl } : {}
@@ -109,10 +173,13 @@ export class ModelSessionHostPool {
     const orgId = this.host.orgForAgent(agent.id)
     if (!orgId) throw new Error(`cannot resolve organization for agent ${agent.id}`)
     if (!this.keyServer) throw new Error('key-server is not configured')
+    // Minted here if this is the slot's first credential — which is why the outward id cannot be
+    // the ACP one: this call starts the runtime, so the runtime's id does not exist yet (§1.1).
+    const sessionId = await this.host.outwardSessionId(sessionKey, agent.id)
     return await this.keyServer.issue({
       orgId,
       agentId: agent.id,
-      sessionId: createHash('sha256').update(sessionKey).digest('hex'),
+      sessionId,
       provider: target.provider,
       ttlSeconds: DEFAULT_MODEL_KEY_TTL_SECONDS
     })

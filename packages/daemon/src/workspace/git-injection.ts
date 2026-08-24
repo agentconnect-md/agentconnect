@@ -256,7 +256,9 @@ export function workspaceGitRemoteTarget(
   const remote = `agentconnect-${randomUUID()}`
   const pairs = [
     ...workspaceGitConfigPairs(normalized),
-    ...(credentialAgentId ? credentialConfigPairs(credentialAgentId) : []),
+    ...(credentialAgentId
+      ? credentialConfigPairs(credentialAgentId, managedCredentialHostOf(normalized) ?? 'github.com')
+      : []),
     // Never an empty value first: Git reads it as the first fetch URL and fails before the authorized target.
     [`remote.${remote}.url`, normalized] as const,
     [`remote.${remote}.proxy`, ''] as const
@@ -328,6 +330,28 @@ export async function pullWorkspaceRef(git: GitRunner, remote: string, branch: s
   await git.raw(['check-ref-format', '--branch', branch])
   const refspec = `+refs/heads/${branch}:refs/remotes/origin/${branch}`
   return git.pull(remote, refspec, ['--ff-only', '--no-recurse-submodules'])
+}
+
+/** The managed-credential hosts the helper may answer for (§13.2: exact origins). */
+export type ManagedCredentialHost = 'github.com' | 'gitlab.com'
+
+/** Which managed host a workspace repository URL belongs to; undefined ⇒ neither. */
+export function managedCredentialHostOf(repository: string | undefined): ManagedCredentialHost | undefined {
+  if (!repository) return undefined
+  try {
+    const host = new URL(normalizeGitCloneUrl(repository)).host.toLowerCase()
+    return host === 'github.com' ? 'github.com' : host === 'gitlab.com' ? 'gitlab.com' : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// The address daemon Git may dial: gitlab.com 301s the suffix-less HTTPS probe and we refuse redirects, so its remote carries `.git`.
+export function canonicalWorkspaceGitUrl(repository: string): string {
+  const normalized = normalizeGitCloneUrl(repository)
+  if (managedCredentialHostOf(normalized) !== 'gitlab.com') return normalized
+  if (!/^https:/i.test(normalized) || /\.git$/i.test(normalized)) return normalized
+  return `${normalized}.git`
 }
 
 /**
@@ -424,12 +448,14 @@ function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(ag
   return `!'${helper.replaceAll("'", "'\\''")}' ${agentId}`
 }
 
-/** The three github.com-scoped config pairs both channels share. */
-function credentialConfigPairs(agentId: string): Array<[string, string]> {
+/** The three host-scoped config pairs both channels share. The host defaults to
+ *  github.com; a gitlab workspace pins gitlab.com instead (§13.2) — never both,
+ *  so a non-gitlab agent keeps whatever machine gitlab credentials exist. */
+function credentialConfigPairs(agentId: string, host: ManagedCredentialHost = 'github.com'): Array<[string, string]> {
   return [
-    ['credential.https://github.com.helper', ''], // reset: machine helpers must never answer for github.com
-    ['credential.https://github.com.helper', quotedHelper(agentId)],
-    ['credential.https://github.com.useHttpPath', 'true'] // git strips `path` otherwise — the helper wants it
+    [`credential.https://${host}.helper`, ''], // reset: machine helpers must never answer for this host
+    [`credential.https://${host}.helper`, quotedHelper(agentId)],
+    [`credential.https://${host}.useHttpPath`, 'true'] // git strips `path` otherwise — the helper wants it
   ]
 }
 
@@ -439,7 +465,10 @@ function credentialConfigPairs(agentId: string): Array<[string, string]> {
  * child environment (v3.36 verified), a bare object would strip PATH/HOME.
  */
 export function cloneGitEnv(agentId: string, repository?: string): Record<string, string> {
-  const pairs = [...workspaceGitConfigPairs(repository), ...credentialConfigPairs(agentId)]
+  const pairs = [
+    ...workspaceGitConfigPairs(repository),
+    ...credentialConfigPairs(agentId, managedCredentialHostOf(repository) ?? 'github.com')
+  ]
   const env: Record<string, string> = {
     ...gitCredentialEnv(agentId),
     GIT_TERMINAL_PROMPT: '0',
@@ -462,15 +491,16 @@ export function sessionGitConfig(
   commitIdentity?: GitCommitIdentity,
   // Explicit for a spawn that KNOWS where the runtime will run (a --k8s launch always lands in the
   // pod), so the env cannot depend on whether the shim channel happens to be attached right now.
-  target: GitCredentialTarget = targetOf(agentId)
+  target: GitCredentialTarget = targetOf(agentId),
+  host: ManagedCredentialHost = 'github.com'
 ): { path: string; content: string; env: Record<string, string> } {
   const file = join(target.configDir, `${agentId}.gitconfig`)
   const lines = [
     '# agentconnect session git config — regenerated on agent start; NO secrets.',
-    '# Keeps non-identity host config, then pins github.com credentials to the daemon helper.',
+    `# Keeps non-identity host config, then pins ${host} credentials to the daemon helper.`,
     ...(target.hostConfig ? ['[include]', `\tpath = ${target.hostConfig}`] : []),
-    '[credential "https://github.com"]',
-    '\thelper = ', // reset the accumulated helper list for github.com
+    `[credential "https://${host}"]`,
+    '\thelper = ', // reset the accumulated helper list for this host
     `\thelper = ${quotedHelper(agentId, target)}`,
     '\tuseHttpPath = true',
     ''
@@ -496,11 +526,15 @@ export function sessionGitConfig(
  * Refuses a sandbox target rather than writing one: this is a synchronous local write, and the
  * caller that owns a pod's files is the async materialization path.
  */
-export function sessionGitEnv(agentId: string, commitIdentity?: GitCommitIdentity): Record<string, string> {
+export function sessionGitEnv(
+  agentId: string,
+  commitIdentity?: GitCommitIdentity,
+  host: ManagedCredentialHost = 'github.com'
+): Record<string, string> {
   if (targetOf(agentId).kind !== 'daemon') {
     throw new Error(`agent ${agentId} runs its git in a sandbox — materialize its gitconfig instead of writing it`)
   }
-  const { path: file, content, env } = sessionGitConfig(agentId, commitIdentity)
+  const { path: file, content, env } = sessionGitConfig(agentId, commitIdentity, targetOf(agentId), host)
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   writeFileSync(file, content, { mode: 0o644 })
   return env
@@ -520,13 +554,17 @@ export function gitCommitIdentityEnv(identity: GitCommitIdentity): Record<string
 }
 
 /** Post-clone: pin the repo-local helper so agent-run git in the checkout works. */
-export async function writeRepoHelperConfig(runner: GitRunner, agentId: string): Promise<void> {
+export async function writeRepoHelperConfig(
+  runner: GitRunner,
+  agentId: string,
+  host: ManagedCredentialHost = 'github.com'
+): Promise<void> {
   const git = runner.withEnv(workspaceGitLocalEnv())
   // `--replace-all` on the first write resets any stale helper list from a
   // previous agent generation; addConfig(append=true) accumulates the rest.
-  await git.raw(['config', '--replace-all', 'credential.https://github.com.helper', ''])
-  await git.raw(['config', '--add', 'credential.https://github.com.helper', quotedHelper(agentId)])
-  await git.raw(['config', 'credential.https://github.com.useHttpPath', 'true'])
+  await git.raw(['config', '--replace-all', `credential.https://${host}.helper`, ''])
+  await git.raw(['config', '--add', `credential.https://${host}.helper`, quotedHelper(agentId)])
+  await git.raw(['config', `credential.https://${host}.useHttpPath`, 'true'])
 }
 
 /** Pre-warm hook for workspace-manager (no-op until initialized). */

@@ -7,7 +7,8 @@ import {
   type RcHookAssign,
   type RcRunReport,
   type RdAck,
-  type RdMsg
+  type RdMsg,
+  type RdMsgHook
 } from '@agentconnect.md/protocol'
 import { HookTable } from './hook-table.js'
 import { HookRateLimiter } from './rate-limit.js'
@@ -184,7 +185,7 @@ describe('hook ingress', () => {
     )
     await post('wh_tok1', { headers: { 'x-ac-delivery-key': 'legacy-1' } })
     await flush()
-    const msg = h.sent[0]!
+    const msg = h.sent[0]! as RdMsgHook
     expect(msg).toMatchObject({ reviewPolicy: 'off', reportingMode: 'off', gateMode: 'informational' })
     expect(msg.configRevision).toBeUndefined()
     expect(h.reports[0]).toMatchObject({ reviewPolicy: 'off', reportingMode: 'off' })

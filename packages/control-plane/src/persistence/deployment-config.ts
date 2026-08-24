@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { SecretCipher } from '../secrets/cipher.js'
 import { DEPLOYMENT_SCOPE } from '../secrets/scope.js'
+import { GITLAB_DEFAULT_BASE_URL, normalizeGitlabBaseUrl } from '../gitlab/config.js'
 
 export const DEPLOYMENT_CONFIG_SCHEMA_VERSION = 1 as const
 
@@ -119,6 +120,30 @@ const GithubAppSchema = z.preprocess(
   })
 )
 
+const GitlabBaseUrlSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .superRefine((value, ctx) => {
+    try {
+      normalizeGitlabBaseUrl(value)
+    } catch (error) {
+      ctx.addIssue({ code: 'custom', message: (error as Error).message })
+    }
+  })
+
+const GitlabAppSchema = z.preprocess(
+  withoutProviderUrlSnapshot,
+  z.strictObject({
+    // GitLab OAuth application id (gitlab-com-integration.md §18.3); the client
+    // secret is the write-only 'gitlab.clientSecret' deployment secret.
+    clientId: z.string().trim().min(1),
+    // The instance that application is registered on (§24.1). Absent means
+    // GitLab.com — the default value of the axis, not a separate mode.
+    baseUrl: GitlabBaseUrlSchema.nullable().optional()
+  })
+)
+
 const SlackAppSchema = z.preprocess(
   withoutProviderUrlSnapshot,
   z.strictObject({
@@ -132,6 +157,7 @@ export const DeploymentConfigValuesV1Schema = z
   .strictObject({
     auth: AuthSchema,
     github: GithubAppSchema.nullable(),
+    gitlab: GitlabAppSchema.nullable().optional(),
     slack: SlackAppSchema.nullable(),
     /** Regional Login Apps used as the tenant anchor for Bot App admission. */
     feishu: RegionalLoginAppSchema.nullable().optional(),
@@ -203,6 +229,7 @@ export const DEPLOYMENT_SECRET_KEYS = [
   // GitHub returns this only once during App creation. The CP does not consume
   // it today, but Logto's GitHub connector setup does, so it must not be lost.
   'github.clientSecret',
+  'gitlab.clientSecret',
   'slack.clientSecret',
   'slack.signingSecret',
   'feishu.loginAppSecret',
@@ -342,6 +369,32 @@ export class DeploymentConfigSecretRefreshRequiredError extends Error {
   }
 }
 
+/** The named reason a GitLab base-URL change is refused (gitlab-com-integration.md §24.1). */
+export const GITLAB_BASE_URL_LOCKED_REASON = 'gitlab_base_url_locked' as const
+
+/** Retargeting would send the old host's credentials and host-relative numeric
+ *  ids to a new one, because no GitLab row carries instance provenance (§24.1):
+ *  the axis is immutable while any GitLab state exists. */
+export class DeploymentConfigGitlabBaseUrlLockedError extends Error {
+  readonly code = GITLAB_BASE_URL_LOCKED_REASON
+
+  constructor(
+    readonly currentBaseUrl: string,
+    readonly requestedBaseUrl: string
+  ) {
+    super(
+      `the GitLab instance base URL is locked while GitLab state exists (${currentBaseUrl} → ${requestedBaseUrl}); disconnect every GitLab project first`
+    )
+    this.name = 'DeploymentConfigGitlabBaseUrlLockedError'
+  }
+}
+
+/** The instance a document's GitLab entry selects; absent means GitLab.com (§24.1). */
+export function effectiveGitlabBaseUrl(values: DeploymentConfigValuesV1): string {
+  const configured = values.gitlab?.baseUrl
+  return configured ? normalizeGitlabBaseUrl(configured) : GITLAB_DEFAULT_BASE_URL
+}
+
 export function parseDeploymentConfigValues(schemaVersion: number, values: unknown): DeploymentConfigValuesV1 {
   if (schemaVersion !== DEPLOYMENT_CONFIG_SCHEMA_VERSION) {
     throw new Error(`unsupported deployment configuration schema version: ${schemaVersion}`)
@@ -357,6 +410,11 @@ export function deploymentSecretsRequiringRefresh(
   const githubClientChanged =
     next.github !== null && next.github.clientId !== null && previous?.github?.clientId !== next.github.clientId
   const githubWebhookEnabled = next.github !== null && next.github.webhookEnabled !== false
+  // A different instance is a different application, so its secret must be re-entered.
+  const gitlabClientChanged =
+    next.gitlab != null &&
+    (previous?.gitlab?.clientId !== next.gitlab.clientId ||
+      (previous != null && effectiveGitlabBaseUrl(previous) !== effectiveGitlabBaseUrl(next)))
   const slackIdentityChanged =
     next.slack && (previous?.slack?.appId !== next.slack.appId || previous?.slack?.clientId !== next.slack.clientId)
   const feishuIdentityChanged = next.feishu && previous?.feishu?.loginAppId !== next.feishu.loginAppId
@@ -372,6 +430,7 @@ export function deploymentSecretsRequiringRefresh(
     ...(githubAppChanged ? (['github.privateKeyB64'] as const) : []),
     ...(next.github && githubWebhookEnabled && githubAppChanged ? (['github.webhookSecret'] as const) : []),
     ...(githubClientChanged ? (['github.clientSecret'] as const) : []),
+    ...(gitlabClientChanged ? (['gitlab.clientSecret'] as const) : []),
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(feishuIdentityChanged ? (['feishu.loginAppSecret'] as const) : []),
     ...(larkIdentityChanged ? (['lark.loginAppSecret'] as const) : []),
@@ -385,6 +444,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
   return [
     ...(values.github ? (['github.privateKeyB64'] as const) : []),
     ...(values.github && values.github.webhookEnabled !== false ? (['github.webhookSecret'] as const) : []),
+    ...(values.gitlab ? (['gitlab.clientSecret'] as const) : []),
     ...(values.slack ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
     ...(values.feishu ? (['feishu.loginAppSecret'] as const) : []),
     ...(values.lark ? (['lark.loginAppSecret'] as const) : []),

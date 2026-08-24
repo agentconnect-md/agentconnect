@@ -27,7 +27,8 @@ export interface WorkspaceScopeSession {
 export interface WorkspaceScopeDeps {
   workspaces: WorkspaceManager
   agentOf: (agentId: string) => Agent | undefined
-  sessionOf: (agentId: string, acpSessionId: string) => Promise<WorkspaceScopeSession | undefined>
+  /** Resolve a slot from the id the console addresses it by — its outward one (session-concept.md §1.1). */
+  sessionOf: (agentId: string, sessionId: string) => Promise<WorkspaceScopeSession | undefined>
   /** The sandbox volume root a cluster agent's workspace lives on; undefined for a local daemon. */
   runtimeRootOf: (agentId: string) => string | undefined
 }
@@ -118,15 +119,21 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
         return root ? { repo: root.cloneUrl, branch: root.branch, githubApp: true } : undefined
       }
       const workspace = agent.workspace
+      // The flag's name is historical: it means MANAGED credential, gitlab as much as github-app.
       return workspace.mode === 'git-repo' && workspace.gitRepo
-        ? { repo: workspace.gitRepo, branch: workspace.gitBranch, githubApp: workspace.gitCredential === 'github-app' }
+        ? {
+            repo: workspace.gitRepo,
+            branch: workspace.gitBranch,
+            githubApp: deps.workspaces.usesManagedCredential(agent)
+          }
         : undefined
     },
     usesGithubApp: (agentId, repo) => {
-      const workspace = deps.agentOf(agentId)?.workspace
+      const agent = deps.agentOf(agentId)
       // Rows exist only for App-covered repositories, so a secondary root always rides the helper.
-      if (repo !== undefined) return workspace !== undefined
-      return workspace?.mode === 'git-repo' && workspace.gitCredential === 'github-app'
+      if (repo !== undefined) return agent !== undefined
+      // Same historical name, same meaning: either managed provider rides the daemon helper.
+      return agent !== undefined && deps.workspaces.usesManagedCredential(agent)
     }
   }
 }

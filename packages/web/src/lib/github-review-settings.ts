@@ -1,70 +1,33 @@
-/**
- * R1/R2a GitHub review settings shared by the create and edit surfaces.
- *
- * Keep the release boundary explicit here: the console only offers formal
- * reviews plus informational Checks. Required gates and legacy commit statuses
- * are later milestones and therefore have no option in this module.
- */
+// R1/R2a GitHub review settings shared by the create and edit surfaces.
+// The release boundary is explicit: only formal reviews plus informational Checks have options here.
+// The host-neutral half lives in `code-host-review-settings.ts`; what stays is GitHub's own
+// App-installation permissions and the per-repository access tier an effect is clamped against.
 
-export type HookReviewPolicy = 'off' | 'comment' | 'request_changes' | 'full'
-export type HookReportingMode = 'off' | 'check'
-export type HookGateMode = 'informational'
+import {
+  codeHostReviewCapabilities,
+  codeHostReviewSettingsFromCapabilities,
+  type CodeHostReviewCapabilities,
+  type CodeHostReviewSettingsValue,
+  type HookReportingMode
+} from './code-host-review-settings'
+
+export {
+  REVIEW_POLICY_OPTIONS,
+  reviewPolicyLabel,
+  type HookGateMode,
+  type HookReportingMode,
+  type HookReviewPolicy
+} from './code-host-review-settings'
+
 export type EffectiveRepoAccess = 'none' | 'read' | 'comment' | 'write'
 export type GithubChecksPermission = 'write' | 'missing' | 'unknown'
 export type GithubPullRequestsPermission = 'read' | 'write' | 'missing' | 'unknown'
 
-export interface GithubReviewSettingsValue {
-  reviewPolicy: HookReviewPolicy
-  reportingMode: HookReportingMode
-}
+export type GithubReviewSettingsValue = CodeHostReviewSettingsValue
+export type GithubReviewCapabilities = CodeHostReviewCapabilities
 
-export interface GithubReviewCapabilities {
-  inlineComments: boolean
-  requestChanges: boolean
-  approve: boolean
-  statusCheck: boolean
-}
-
-/** Present the hierarchical reviewPolicy enum as capability checkboxes. */
-export function githubReviewCapabilities(value: GithubReviewSettingsValue): GithubReviewCapabilities {
-  return {
-    inlineComments: value.reviewPolicy !== 'off',
-    requestChanges: value.reviewPolicy === 'request_changes' || value.reviewPolicy === 'full',
-    approve: value.reviewPolicy === 'full',
-    statusCheck: value.reportingMode === 'check'
-  }
-}
-
-/** Collapse capability checkboxes back to the strongest enabled R1 policy. */
-export function githubReviewSettingsFromCapabilities(
-  capabilities: GithubReviewCapabilities
-): GithubReviewSettingsValue {
-  return {
-    reviewPolicy: capabilities.approve
-      ? 'full'
-      : capabilities.requestChanges
-        ? 'request_changes'
-        : capabilities.inlineComments
-          ? 'comment'
-          : 'off',
-    reportingMode: capabilities.statusCheck ? 'check' : 'off'
-  }
-}
-
-export const REVIEW_POLICY_OPTIONS: ReadonlyArray<{
-  value: HookReviewPolicy
-  label: string
-  description: string
-}> = [
-  { value: 'off', label: 'Off', description: 'Do not submit a formal review.' },
-  { value: 'comment', label: 'Comment', description: 'Submit a formal COMMENT review.' },
-  {
-    value: 'request_changes',
-    label: 'Request changes',
-    description: 'Allow COMMENT or REQUEST_CHANGES.'
-  },
-  { value: 'full', label: 'Full', description: 'Also allow the shared App bot to approve.' }
-]
+export const githubReviewCapabilities = codeHostReviewCapabilities
+export const githubReviewSettingsFromCapabilities = codeHostReviewSettingsFromCapabilities
 
 export const REPORTING_MODE_OPTIONS: ReadonlyArray<{
   value: HookReportingMode
@@ -82,13 +45,8 @@ const ACCESS_RANK: Record<EffectiveRepoAccess, number> = {
   write: 3
 }
 
-/**
- * The additional capability a selected R1/R2a configuration needs. Any formal
- * review — even a COMMENT-type one — is submitted through the Reviews API, which
- * requires the App's pull_requests:write scope; the console now grants that only
- * via the `write` tier (the standalone `comment` grant tier was retired from the
- * UI). Informational Checks need checks:write, likewise the `write` tier.
- */
+/** The tier a configuration needs: every formal review and every Check goes through an API the
+ *  App holds only at `write`, so anything but the off pair demands the `write` grant tier. */
 export function requiredRepoAccess({ reviewPolicy, reportingMode }: GithubReviewSettingsValue): 'none' | 'write' {
   return reviewPolicy !== 'off' || reportingMode === 'check' ? 'write' : 'none'
 }
@@ -97,12 +55,8 @@ export function repoAccessSatisfies(actual: EffectiveRepoAccess, required: 'none
   return ACCESS_RANK[actual] >= ACCESS_RANK[required]
 }
 
-/**
- * Checks are authorized from the installation-effective permission snapshot,
- * not GitHub's coarse "new App permissions are waiting" status. The latter
- * can include unrelated permissions, while a legacy/unknown snapshot must
- * still fail closed.
- */
+/** Checks are authorized from the installation-effective snapshot, not the coarse
+ *  "permissions waiting" status; a legacy or unknown snapshot still fails closed. */
 export function hasChecksWritePermission(
   installation: { checksPermission: GithubChecksPermission } | null | undefined
 ): boolean {
@@ -129,7 +83,7 @@ interface WorkspaceRepoMatchInput {
   repoId?: string | null
   repoFullName: string | null | undefined
   workspace: {
-    mode: 'github' | 'scratch'
+    mode: 'github' | 'gitlab' | 'scratch'
     repoId?: string
     repo?: string
     installationId?: string
@@ -149,16 +103,13 @@ export function isWorkspaceRepo(input: WorkspaceRepoMatchInput): boolean {
   )
 }
 
-/**
- * Resolve the hook repo against the agent's implicit App-backed workspace
- * grant first, then its explicit repo grants. Scratch has no implicit repo,
- * while a manual GitHub workspace can carry an explicit grant for its own repo.
- */
+/** Resolve the hook repo against the agent's implicit App-backed workspace grant first, then its
+ *  explicit repo grants — scratch has no implicit repo, a manual workspace may grant its own. */
 export function effectiveRepoAccess(input: {
   repoId?: string | null
   repoFullName: string | null | undefined
   workspace: {
-    mode: 'github' | 'scratch'
+    mode: 'github' | 'gitlab' | 'scratch'
     repoId?: string
     repo?: string
     installationId?: string
@@ -197,8 +148,4 @@ export function installationForRepo<T extends { accountLogin: string }>(
 ): T | undefined {
   const owner = repoFullName?.split('/')[0]?.toLowerCase()
   return owner ? installations.find((installation) => installation.accountLogin.toLowerCase() === owner) : undefined
-}
-
-export function reviewPolicyLabel(policy: HookReviewPolicy): string {
-  return REVIEW_POLICY_OPTIONS.find((option) => option.value === policy)?.label ?? 'Off'
 }

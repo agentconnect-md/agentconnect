@@ -43,7 +43,7 @@ describe('SqliteAsyncDatabase', () => {
       { sql: 'SELECT name FROM t ORDER BY id', params: [], kind: 'read' }
     ])
     expect(results.map((result) => result.changes)).toEqual([1, 1, 0])
-    expect(results[2].rows).toEqual([{ name: 'a' }, { name: 'b' }])
+    expect(results[2]!.rows).toEqual([{ name: 'a' }, { name: 'b' }])
     expect(await rows(db, 'SELECT COUNT(*) AS n FROM t')).toEqual([{ n: 2 }])
     await db.close()
   })

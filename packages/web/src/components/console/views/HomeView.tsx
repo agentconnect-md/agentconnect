@@ -39,6 +39,7 @@ import {
   modelCapability,
   effortChoicesFor,
   displayedEffort,
+  isGitWorkspace,
   resolveEffortForModel,
   permissionModeChoicesFor,
   permissionModePresets,
@@ -210,8 +211,8 @@ export default function HomeView() {
   const [menu, setMenu] = useState<'agent' | 'model' | 'effort' | 'permission' | 'add' | 'attach' | null>(null)
   const [runtime, setRuntime] = useState<{ model?: string; effort?: string; permissionPreset?: string }>({})
   const [worktreeOverride, setWorktreeOverride] = useState<boolean>()
-  const githubWorkspace = agent?.workspace?.mode === 'github' ? agent.workspace : undefined
-  const defaultWorktree = githubWorkspace?.worktree === true
+  const gitWorkspace = agent?.workspace && isGitWorkspace(agent.workspace) ? agent.workspace : undefined
+  const defaultWorktree = gitWorkspace?.worktree === true
   const worktree = worktreeOverride ?? defaultWorktree
 
   // Overrides are per-agent; drop them when the agent changes so the new agent's
@@ -312,7 +313,7 @@ export default function HomeView() {
     const text = input.trim()
     if ((!text && !image) || imagePreparing || mention.joining) return
     if (!agent || !canSend) return // offline / unsigned-in agents can't take a session
-    const id = openPlayground(agent, members, !multi && githubWorkspace ? { worktree } : undefined)
+    const id = openPlayground(agent, members, !multi && gitWorkspace ? { worktree } : undefined)
     // Stage the EFFECTIVE (displayed) runtime before the turn — not just explicit
     // overrides — so the session runs exactly what the composer showed. stageRuntimeChange
     // is a synchronous ref write, so pgSend's payload picks it up (PlaygroundProvider).
@@ -683,7 +684,7 @@ export default function HomeView() {
                     onChange={(v) => setRuntime((r) => ({ ...r, permissionPreset: v }))}
                   />
                 )}
-                {!multi && githubWorkspace && (
+                {!multi && gitWorkspace && (
                   <label className={`${CHIP} min-w-0 cursor-pointer`}>
                     <input
                       type="checkbox"

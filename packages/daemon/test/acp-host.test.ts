@@ -35,6 +35,24 @@ describe('AcpHost (against a fake ACP agent)', () => {
     await host.stop()
   }, 15_000)
 
+  // A runtime can advertise from inside `newSession()`: the host makes the session ownable and
+  // then awaits its configuration round trips. Whatever the daemon needs in order to name that
+  // session must therefore be handed over at the RAW response, before it is reachable.
+  it('announces a new session id before the session becomes reachable', async () => {
+    const host = new AcpHost({ command: process.execPath, args: [fakeAgent], env: [] }, { onUpdate: () => {} })
+    await host.start()
+    let reachableWhenAnnounced: boolean | undefined
+    let announced: string | undefined
+    const sessionId = await host.newSession('/tmp', [], undefined, undefined, [], (id) => {
+      announced = id
+      reachableWhenAnnounced = host.hasSession(id)
+    })
+    expect(announced).toBe(sessionId)
+    expect(reachableWhenAnnounced).toBe(false)
+    expect(host.hasSession(sessionId)).toBe(true)
+    await host.stop()
+  }, 15_000)
+
   it('applies and switches the composite Auto permission preset through independent selectors', async () => {
     const host = new AcpHost(
       { command: process.execPath, args: [fakeAgent], env: [] },
@@ -541,6 +559,22 @@ describe('turnFailureCode (normalized non-actionable provider failures)', () => 
     {
       name: 'provider credit exhaustion text',
       error: { error: { message: 'Credit balance is too low to access the Anthropic API' } }
+    },
+    {
+      // Observed live 2026-08-21: every review turn on the org died in under a second, and this
+      // wording reached neither the quota codes nor the usage-limit patterns, so the Check said
+      // only "Review could not be completed" while the real cause sat in the daemon log.
+      name: 'Claude org spend limit text',
+      error: Object.assign(
+        new Error(
+          "Internal error: You've hit your org's monthly spend limit · run /usage-credits to ask your admin for a higher limit"
+        ),
+        { code: -32603, data: { errorKind: 'rate_limit' } }
+      )
+    },
+    {
+      name: 'spend limit reached text',
+      error: { data: { message: 'Your monthly spend limit has been reached.' } }
     }
   ])('classifies $name as provider_quota_exhausted', ({ error }) => {
     expect(turnFailureCode(error)).toBe('provider_quota_exhausted')
@@ -570,6 +604,8 @@ describe('turnFailureCode (normalized non-actionable provider failures)', () => 
   it.each([
     new Error('spawn claude ENOENT'),
     { code: 'rate_limit_error', message: 'Rate limit exceeded; retry in 20 seconds' },
+    // An adapter's `rate_limit` error kind is transient on its own: only the message promotes.
+    { message: 'Rate limit exceeded; retry in 20 seconds', data: { errorKind: 'rate_limit' } },
     { data: { error: { type: 'overloaded_error', message: 'Service temporarily overloaded' } } },
     Object.assign(new Error('Authentication required'), { data: { message: 'Please sign in again' } })
   ])('keeps non-quota failures as turn_failed', (error) => {

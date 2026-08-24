@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CodeHostProviderString } from '../code-host.js'
 import { AgentMemoryBinding } from './memory-connection.js'
 import { IntegrationSpec } from './integration.js'
 import { CronUpsert } from './cron.js'
@@ -14,8 +15,15 @@ import { normalizeGitHubSkillSource } from '../git-url.js'
  */
 
 // One repository of the agent's additional-repository allowlist (multi-repository-workspaces.md decision 2).
-// `repoId` is GitHub's numeric repository id as a decimal string — rename-immune, the identity minting matches on.
-export const AgentAdditionalRepo = z.object({ repoFullName: z.string(), repoId: z.string() })
+// `repoId` is the host's numeric repository/project id as a decimal string — rename-immune, the identity
+// minting matches on. `provider` qualifies it (gitlab-com-integration.md §8.1): the hosts number their
+// repositories independently, so the pair is the identity. Absent ⇒ `github`, which is what every row a
+// pre-GitLab control plane projects means, so an older peer's list still decodes.
+export const AgentAdditionalRepo = z.object({
+  repoFullName: z.string(),
+  repoId: z.string(),
+  provider: CodeHostProviderString.default('github')
+})
 export type AgentAdditionalRepo = z.infer<typeof AgentAdditionalRepo>
 
 /**
@@ -57,6 +65,22 @@ export const AgentWorkspace = z.discriminatedUnion('mode', [
     // CP-minted installation tokens over gitcred/request and injects them via
     // the local credential helper — no durable git credential on the host.
     gitCredential: z.enum(['github-app']).optional(),
+    additionalRepos: z.array(AgentAdditionalRepo).default([])
+  }),
+  // gitlab-com-integration.md M4: a managed GitLab project binding is the
+  // workspace. FRAME-FATAL on a pre-GitLab daemon (§17.3): the CP never
+  // projects this arm to a daemon that has not advertised gitlab-com-v1 —
+  // reconcile withholds it and AgentDelivery/placement gate on the same
+  // predicate. Credentials are implied managed (binding PATs over gitcred v2);
+  // there is no anonymous gitlab mode.
+  z.object({
+    mode: z.literal('gitlab'),
+    isolation: z.enum(['shared', 'session']).default('shared'),
+    gitRepo: z.string(), // https://gitlab.com/<full/namespaced/path> (subgroups preserved)
+    branch: z.string().default('main'),
+    agentDir: z.string().optional(),
+    // The rename-stable numeric project id — the gitcred v2 request identity.
+    projectId: z.string().regex(/^[1-9]\d*$/),
     additionalRepos: z.array(AgentAdditionalRepo).default([])
   })
 ])
@@ -312,6 +336,16 @@ export const AgentSpec = z.object({
   // agent.json pause untouched — same contract as fastMode/permissionMode.
   pause: z.boolean().optional(),
   workspace: AgentWorkspace.optional(), // where it runs; absent ⇒ daemon defaults to scratch
+  // The GitLab instance every GitLab consumer on this spec addresses (§24.4). The daemon
+  // needs the host BEFORE the agent spawns — the credential git-config block, the helper
+  // table, and the session export are all established there — and a GitLab consumer is not
+  // always the workspace: an additional-repository authorization rides on a scratch or
+  // github workspace, and a hook can reach an already-running session. So the CP sets this
+  // whenever the assembled spec has ANY GitLab consumer (gitlab workspace, gitlab
+  // additional repository, or an enabled gitlab hook), and absent means GitLab.com, which
+  // is what every spec an older CP projects means. One field rather than a per-consumer
+  // table is the one-instance axiom (§24.1) made wire-visible.
+  gitlabHost: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(), // extra env injected into the runtime
   // Write-only secret env vars: same injection as `env` (merged into the spawned
   // child's environment, secrets winning on a key collision), but their VALUES never
@@ -539,8 +573,9 @@ export type AgentScopeDenied = z.infer<typeof AgentScopeDenied>
 export const AgentPermissionRequestRecord = z.object({
   id: z.string().uuid(),
   agentId: z.string().uuid(),
-  // Optional for rolling compatibility with daemons that predate session-scoped
-  // approval rendering. Current daemons always report the owning ACP session id.
+  // The owning session, by its outward id (session-concept.md §1.1) — the console scopes
+  // approvals to the session it is showing, by the id it routed on. Optional for rolling
+  // compatibility with daemons that predate session-scoped approval rendering.
   sessionId: z.string().min(1).optional(),
   createdAt: z.string().datetime(),
   requesterId: z.string().nullable(),

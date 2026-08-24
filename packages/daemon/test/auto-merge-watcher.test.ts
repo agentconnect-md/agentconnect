@@ -203,7 +203,6 @@ describe('AutoMergeWatcher', () => {
     const { timers } = fakeTimers()
     const watcher = new AutoMergeWatcher({
       knownAgent: () => true,
-      clusterPlaced: () => false,
       clusterPlaced: () => false, // a daemon that runs no sandboxes at all
       sandboxFor: () => undefined,
       capabilityFor: () => 'cap_secret',

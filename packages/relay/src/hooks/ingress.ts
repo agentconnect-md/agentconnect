@@ -23,6 +23,9 @@ import { isDeepStrictEqual } from 'node:util'
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Clock } from '@agentconnect.md/connection'
 import {
+  GITLAB_COM_V1_FEATURE,
+  GITLAB_INSTANCE_V1_FEATURE,
+  isSelfManagedGitlabHost,
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
@@ -150,7 +153,8 @@ function reportBase(rule: RcHookAssign, msg: RdMsgHook): Omit<RcRunReport, 'stat
     daemonId: rule.daemonId,
     ...hookSnapshotForDelivery(rule),
     ...(msg.event ? { event: msg.event } : {}),
-    ...(msg.github ? { github: msg.github } : {})
+    ...(msg.github ? { github: msg.github } : {}),
+    ...(msg.gitlab ? { gitlab: msg.gitlab } : {})
   }
 }
 
@@ -194,6 +198,23 @@ export async function dispatchHookFire(
       // daemon would run them as model prompts, so fail closed until the target
       // explicitly advertises maintenance-only handling.
       if (requiresGithubThreadWorktreeCleanup(dispatchMsg) && !conn.supports(RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2)) {
+        deps.report({ ...base, status: 'failed', reason: 'rejected:unsupported' })
+        resolve()
+        return
+      }
+      // A GitLab turn's session-key/normalization contract is the daemon's
+      // gitlab-com-v1 capability (§12.3): an older daemon would fall back to
+      // generic parsing and mis-scope the thread, so fail closed instead.
+      if (dispatchMsg.gitlab && !conn.supports(GITLAB_COM_V1_FEATURE)) {
+        deps.report({ ...base, status: 'failed', reason: 'rejected:unsupported' })
+        resolve()
+        return
+      }
+      // §24.4, the same shape one bit newer: a self-managed host needs a daemon that
+      // resolves the host from its spec rather than assuming GitLab.com. Fenced HERE, on the
+      // live connection, because a daemon's advertisement changes under a standing rule —
+      // and re-read on every retry attempt, so a rollout heals without a convergence pass.
+      if (isSelfManagedGitlabHost(dispatchMsg.gitlab?.host) && !conn.supports(GITLAB_INSTANCE_V1_FEATURE)) {
         deps.report({ ...base, status: 'failed', reason: 'rejected:unsupported' })
         resolve()
         return

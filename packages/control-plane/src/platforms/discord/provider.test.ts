@@ -52,6 +52,7 @@ const BOT: BotRecord = {
   revokedAt: null,
   credentialRevision: 1,
   credentialInstalledAt: null,
+  grantedScopes: null,
   externalAppId: null,
   externalTenantId: null,
   platformConfig: null,
@@ -80,9 +81,13 @@ const channel = (
   integrationId: INTEGRATION.id,
   channelId,
   name: channelId.toLowerCase(),
+  spaceId: null,
+  space: null,
   isPrivate: false,
   kind,
   trigger,
+  dmUserId: null,
+  triggerChosen: false,
   agentId: null
 })
 

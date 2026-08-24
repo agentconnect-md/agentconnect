@@ -21,6 +21,7 @@ import type { CronUpsert, IntegrationSpec } from '@agentconnect.md/protocol'
 import type { AgentSpecAssembler } from './agentSpecAssembler.js'
 import type { ControlSender } from './outbound.js'
 import { PLACEMENT_ONLY, type PlacementResolver, type ResolvableAgent } from './placementResolver.js'
+import { daemonSupportsAgent } from '../domain/daemon-features.js'
 import type { AgentRecord } from '../persistence/ports.js'
 
 export type { DutyHolderReader } from './placementResolver.js'
@@ -39,6 +40,9 @@ export class AgentDelivery {
       specs: AgentSpecAssembler
       /** Absent (tests / no pool) ⇒ placement alone, which is the pre-duty behavior. */
       placement?: PlacementResolver
+      /** Live advertised features per connected daemon (§17.3 projection gate).
+       *  Absent or unknown reads as "no features" — fail-closed for gated agents. */
+      daemonFeatures?: (daemonId: string) => readonly string[] | undefined
     }
   ) {}
 
@@ -91,9 +95,19 @@ export class AgentDelivery {
   /** Push an edited spec to every delivery target. The spec is assembled ONCE:
    *  the targets replicate the same agent, and two assemblies could disagree. */
   async upsert(agent: AgentRecord, onError: DeliveryErrorHandler): Promise<void> {
-    const targets = await this.daemonsFor(agent)
-    if (targets.length === 0) return
+    const candidates = await this.daemonsFor(agent)
+    if (candidates.length === 0) return
     const spec = await this.deps.specs.assemble(agent)
+    // §17.3/§24.4 projection gate, judged on the ASSEMBLED spec: a gitlab additional
+    // repository and the host axis are only visible there (grants and hooks are their
+    // own tables), and a target that has not advertised the required features is skipped
+    // rather than sent a frame it would decode into the wrong host.
+    const shaped = {
+      workspace: spec.workspace ?? agent.workspace,
+      ...(spec.gitlabHost !== undefined ? { gitlabHost: spec.gitlabHost } : {})
+    }
+    const targets = candidates.filter((daemonId) => daemonSupportsAgent(shaped, this.deps.daemonFeatures?.(daemonId)))
+    if (targets.length === 0) return
     await this.fanOut(targets, onError, (daemonId) =>
       this.deps.control.agentUpsert(daemonId, { agentId: agent.id, spec }, agent.orgId)
     )

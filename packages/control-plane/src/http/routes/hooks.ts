@@ -11,15 +11,24 @@
  * echoed EXACTLY ONCE in the create response and never retrievable after.
  */
 import { randomBytes, randomUUID } from 'node:crypto'
-import { gitRepoLabel } from '@agentconnect.md/protocol'
+import { gitRepoLabel, type CodeHostProvider } from '@agentconnect.md/protocol'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { isSyntheticEmail, type AgentRecord, type HookRecord, type UpsertHookInput } from '../../persistence/ports.js'
+import {
+  isSyntheticEmail,
+  type AgentRecord,
+  type GitlabBindingState,
+  type HookRecord,
+  type UpsertHookInput
+} from '../../persistence/ports.js'
 import { GithubApiError } from '../../github/api.js'
+import { GITLAB_ACCESS_DEVELOPER } from '../../gitlab/api.js'
+import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import { GitCredDeniedError, type ResolvedAgentRepoAuthorization } from '../../github/service.js'
 import { AgentId, HookId, IntegrationId, OrgId } from '../../domain/ids.js'
+import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
 import { toDbPlatform, type DbPlatform } from '../../persistence/platform.js'
@@ -32,10 +41,20 @@ import {
   HookListDto,
   CreatedHookDto,
   HookRunListDto,
+  HookRerunBody,
+  HookRerunDto,
   ErrorDto,
   IdParam,
   type HookDtoT
 } from '../dto/index.js'
+
+/** Reason phrases for the rerun route's refusal statuses. */
+const RERUN_STATUS_TEXT = {
+  409: 'Conflict',
+  429: 'Too Many Requests',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable'
+} as const
 
 /** The full ingress URL for a hook's urlToken (pool-level origin + fixed path). */
 export function hookIngressUrl(publicRelayUrl: string, urlToken: string): string {
@@ -109,8 +128,73 @@ export function hookRoutes(deps: HttpDeps) {
 
     // Re-converge the relay pool after a write. Fire-and-forget: a push failure
     // never fails the CRUD (a relay converges via its register replay).
-    const converge = (hook: HookRecord): void => {
-      void deps.hooks.broadcast(hook).catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
+    //
+    // `afterAssigned` runs once the rule has actually been assigned, for work that is only
+    // safe on the far side of it. It is deliberately skipped when the broadcast REJECTS: the
+    // old rule may still be live in the pool, and its callers use this to drop state that
+    // rule still depends on. Leaving that state stale is safe and the roster reconciles it.
+    const converge = (hook: HookRecord, afterAssigned?: () => Promise<void>): void => {
+      void deps.hooks
+        .broadcast(hook)
+        .then(() => afterAssigned?.())
+        .catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
+    }
+
+    // §24.4: the hook's OWN agent is re-projected by `HookService.broadcast`, which is the
+    // only place that sees every rule assignment. This covers the two an assign cannot: the
+    // agent a retarget moved the hook OFF, and a delete, which leaves no row to broadcast.
+    // Best-effort, like the agents route's replicateUpsert: the register/ok roster backstops.
+    const replicateUpsert = async (orgId: OrgId, agentId: AgentId | null): Promise<void> => {
+      if (!agentId) return
+      // Re-read: the hook write advanced the agent's configRevision in its own transaction.
+      const fresh = await deps.repos.agent.get(orgId, agentId)
+      if (!fresh) return
+      await deps.agentDelivery.upsert(fresh, (err, daemonId) => {
+        if (err instanceof NoConnection) {
+          app.log.debug({ agentId, daemonId }, 'agent/upsert skipped: daemon offline')
+        } else {
+          app.log.warn({ err, agentId, daemonId }, 'hook write: agent spec reconcile failed')
+        }
+      })
+    }
+
+    // §7.2 identity bracket for a gitlab hook write: the hook agent's own account
+    // is provisioned FIRST — the compiled rule names it and its poster mints
+    // credentials from it — and the write commits while the binding lease is
+    // still held, so convergence never sees the membership without the hook row
+    // that authorizes it. A hook that will not be enabled needs no identity: it
+    // can never fire, and provisioning one would churn an account the next
+    // convergence retires, and would block disabling during an account outage.
+    const withGitlabHookIdentity = async <T>(
+      orgId: OrgId,
+      projectId: bigint,
+      agentId: string,
+      enabled: boolean,
+      commit: () => Promise<T>
+    ): Promise<{ ok: true; result: T } | { ok: false; status: 409; message: string }> => {
+      const gitlab = deps.gitlab
+      if (!gitlab || !enabled) return { ok: true, result: await commit() }
+      const done = await gitlab.provisioner.provisionAgentAccount(
+        orgId,
+        projectId,
+        // A hook consumer posts notes and may run the configured review policy.
+        { agentId, accessLevel: GITLAB_ACCESS_DEVELOPER },
+        commit
+      )
+      if (!done.ok) return { ok: false, status: 409, message: gitlabAccountUnavailableMessage(done.reason) }
+      return { ok: true, result: done.result }
+    }
+
+    // gitlab-kind writes also (re)converge the project (§11.1): the saga
+    // recomputes the desired event union, gives the hook's agent its own §7.2
+    // account and membership, and its onConverged rebroadcasts the compiled
+    // rules. Fire-and-forget; the saga itself outwaits a peer's lease.
+    const convergeGitlabWebhook = (orgId: OrgId, projectId: bigint | null): void => {
+      const gitlab = deps.gitlab
+      if (!gitlab || projectId === null) return
+      void gitlab.provisioner
+        .convergeProject(orgId, projectId)
+        .catch((err) => app.log.warn({ projectId: projectId.toString(), err }, 'gitlab webhook converge failed'))
     }
 
     // The repository repeats the workspace-access invariant under its shared
@@ -118,7 +202,11 @@ export function hookRoutes(deps: HttpDeps) {
     // route's fast preflight instead of leaking it as a generic 500.
     const persistHook = async (input: UpsertHookInput): Promise<HookRecord | AgentWorkspaceIntegrationConflict> => {
       try {
-        return await deps.repos.hook.upsert(input)
+        // §24.1: every gitlab-kind write carries the instance its repoId names,
+        // enabled or not — the disabled path reaches this with no lease at all.
+        const fenced =
+          input.kind === 'gitlab' && deps.gitlab ? { ...input, axisBaseUrl: deps.gitlab.api.baseUrl } : input
+        return await deps.repos.hook.upsert(fenced)
       } catch (err) {
         if (err instanceof AgentWorkspaceIntegrationConflict) return err
         throw err
@@ -159,6 +247,15 @@ export function hookRoutes(deps: HttpDeps) {
       try {
         const ref = await deps.github.repoRefFor(ins, owner, repo)
         if (!ref) return notCovered
+        // Readers-first catalog convergence (gitlab-com-integration.md §8.1).
+        await deps.repos.codeHostRepository.upsert({
+          orgId,
+          provider: 'github',
+          externalId: ref.repoId,
+          displayPath: ref.fullName,
+          cloneUrl: `https://github.com/${ref.fullName}`,
+          defaultBranch: ref.defaultBranch
+        })
         return { ok: true, repoId: ref.repoId, repoFullName: ref.fullName }
       } catch (e) {
         if (e instanceof GithubApiError) return { ok: false, ...githubUpstream(e) }
@@ -173,29 +270,36 @@ export function hookRoutes(deps: HttpDeps) {
     } as const
 
     // The trigger plane must not outrun the credential plane (issue #457,
-    // multi-repo design decision 6): a github hook may only watch the agent's
-    // workspace repo or an explicitly authorized one — otherwise the agent's
-    // `gh` write-back on the watched repo is credential-less by construction.
-    // Enforced on create and on a repo-CHANGING edit; pre-existing rows are
-    // grandfathered (the console badges them instead).
+    // multi-repo design decision 6; gitlab-com-integration.md §8.3): a code-host
+    // hook may only watch the agent's workspace repository or an explicitly
+    // authorized one — otherwise the agent's write-back on the watched repository
+    // is credential-less by construction, which is exactly the "could not review"
+    // note both agents post. Enforced on create and on a binding-CHANGING edit;
+    // pre-existing rows are grandfathered (the console badges them instead).
     type WatchRepoAuthz = { ok: true } | { ok: false; status: 409 | 429 | 502; message: string }
     const watchRepoAuthorized = async (
       agent: AgentRecord,
+      provider: CodeHostProvider,
       repoId: bigint,
       repoFullName: string
     ): Promise<WatchRepoAuthz> => {
+      const subject = provider === 'gitlab' ? 'project' : 'repository'
       const denied = {
         ok: false,
         status: 409,
-        message: `${repoFullName} is not authorized for this agent — add it under the agent's Repositories settings first`
+        message: `${repoFullName} is not authorized for this agent — authorize the ${subject} for it, or make it the agent's workspace ${subject}, then create the trigger`
       } as const
       const explicitlyGranted = async () =>
-        (await deps.repos.agentRepoAuth.listForAgent(agent.id)).some((row) => row.repoId === repoId)
-      if (agent.workspaceRepoId === repoId) return { ok: true }
+        (await deps.repos.agentRepoAuth.listForAgent(agent.id)).some(
+          (row) => row.provider === provider && row.repoId === repoId
+        )
+      // The workspace is this repository only when it is the SAME host's: the two
+      // number theirs independently, so `workspaceMode` qualifies the id (§8.1).
+      if (agent.workspaceRepoId === repoId && agent.workspace.mode === provider) return { ok: true }
       // Legacy workspace rows acquire their rename-proof id lazily. The stored
       // name is only an endpoint hint: after a GitHub rename the requested
       // canonical name differs, so always resolve and compare numeric identity.
-      if (agent.workspace.mode === 'github' && deps.github) {
+      if (provider === 'github' && agent.workspace.mode === 'github' && deps.github) {
         const workspaceLabel = gitRepoLabel(agent.workspace.gitRepo)
         const [owner, repo] = workspaceLabel.split('/')
         const ins = owner ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner) : null
@@ -219,13 +323,15 @@ export function hookRoutes(deps: HttpDeps) {
       return (await explicitlyGranted()) ? { ok: true } : denied
     }
 
-    type GithubEffectConfig = {
+    // The two effect axes both code hosts carry; github adds its own gate axis on top.
+    type CodeHostEffectConfig = {
       reviewPolicy: HookRecord['reviewPolicy']
       reportingMode: HookRecord['reportingMode']
-      gateMode: HookRecord['gateMode']
     }
 
-    type GithubEffectDenial = { status: 409 | 429 | 502; message: string }
+    type GithubEffectConfig = CodeHostEffectConfig & { gateMode: HookRecord['gateMode'] }
+
+    type CodeHostEffectDenial = { status: 409 | 429 | 502; message: string }
 
     /** R1/R2a action-time rules are also enforced at configuration time so the
      * editor cannot save a mode that is guaranteed to fail. Runtime still
@@ -235,8 +341,8 @@ export function hookRoutes(deps: HttpDeps) {
       repoId: bigint,
       repoFullName: string,
       cfg: GithubEffectConfig
-    ): Promise<GithubEffectDenial | null> => {
-      const misconfigured = (message: string): GithubEffectDenial => ({ status: 409, message })
+    ): Promise<CodeHostEffectDenial | null> => {
+      const misconfigured = (message: string): CodeHostEffectDenial => ({ status: 409, message })
       if (cfg.gateMode === 'required') return misconfigured('required review gates are not available until R2b')
       if (cfg.reportingMode === 'status') return misconfigured('commit status reporting is not available until R3')
       if (cfg.reviewPolicy === 'off' && cfg.reportingMode === 'off') return null
@@ -275,6 +381,28 @@ export function hookRoutes(deps: HttpDeps) {
         const pullRequests = resolved.installation.permissions?.pull_requests
         if (pullRequests !== 'read' && pullRequests !== 'write') {
           return misconfigured('this GitHub App installation has not accepted the Pull requests read permission')
+        }
+      }
+      return null
+    }
+
+    // The GitLab counterpart. No repository-access clamp: the writer for BOTH effects is the
+    // hook agent's own service account under its provisioned role (§7.2), not the agent's git
+    // grant. That account is created by the convergence this very write kicks, so the only
+    // configuration-time fact to check is that the binding itself has converged once.
+    const validateGitlabEffects = (
+      binding: { state: GitlabBindingState; projectPath: string },
+      cfg: CodeHostEffectConfig
+    ): CodeHostEffectDenial | null => {
+      // §16.2: GitLab commit statuses are external CI jobs, deliberately not this transport.
+      if (cfg.reportingMode === 'status') {
+        return { status: 409, message: 'commit status reporting is not available for GitLab projects' }
+      }
+      if (cfg.reviewPolicy === 'off' && cfg.reportingMode === 'off') return null
+      if (binding.state === 'provisioning') {
+        return {
+          status: 409,
+          message: `${binding.projectPath} is still being set up — reviews and run reporting need its bot accounts`
         }
       }
       return null
@@ -344,71 +472,134 @@ export function hookRoutes(deps: HttpDeps) {
                 urlToken: `whk_${randomBytes(16).toString('hex')}`,
                 hmacSecret: req.body.hmac ? `whsec_${randomBytes(32).toString('hex')}` : null
               }
-            : await (async () => {
-                const repo = await resolveGithubRepo(orgId, (req.body as { repoFullName: string }).repoFullName)
-                if (!repo.ok) return repo
-                // One subscription per (agent, repo): edit the existing hook's
-                // events instead of stacking duplicates that would double-fire.
-                const dup = (await deps.repos.hook.listForAgent(agent.id)).some(
-                  (h) => h.kind === 'github' && h.repoId === repo.repoId
-                )
-                if (dup) {
-                  return {
-                    ok: false as const,
-                    status: 409 as const,
-                    message: `this agent already watches ${repo.repoFullName}`
+            : req.body.kind === 'gitlab'
+              ? await (async () => {
+                  // The project must already be a managed binding (§8.3): a hook
+                  // never creates a grant or a binding, and the numeric id is
+                  // validated against the org's own row — never trusted for facts.
+                  const projectId = BigInt((req.body as { projectId: string }).projectId)
+                  const binding = deps.gitlab ? await deps.repos.gitlabProjectBinding.byProject(orgId, projectId) : null
+                  if (!binding || binding.state === 'cleanup_pending') {
+                    return {
+                      ok: false as const,
+                      status: 409 as const,
+                      message: 'the project is not a managed GitLab binding in this organization'
+                    }
                   }
-                }
-                const authz = await watchRepoAuthorized(agent, repo.repoId, repo.repoFullName)
-                if (!authz.ok) return authz
-                const configError = await validateGithubEffects(agent, repo.repoId, repo.repoFullName, {
-                  reviewPolicy: req.body.kind === 'github' ? req.body.reviewPolicy : 'off',
-                  reportingMode: req.body.kind === 'github' ? req.body.reportingMode : 'off',
-                  gateMode: req.body.kind === 'github' ? req.body.gateMode : 'informational'
-                })
-                if (configError) {
-                  return { ok: false as const, ...configError }
-                }
-                return {
-                  // github is perThread by definition — the same issue/PR
-                  // continues one session (design decision 7).
-                  sessionMode: 'perThread' as const,
-                  repoId: repo.repoId,
-                  repoFullName: repo.repoFullName,
-                  hmacSecret: null
-                }
-              })()
+                  const dup = (await deps.repos.hook.listForAgent(agent.id)).some(
+                    (h) => h.kind === 'gitlab' && h.repoId === projectId
+                  )
+                  if (dup) {
+                    return {
+                      ok: false as const,
+                      status: 409 as const,
+                      message: `this agent already watches ${binding.projectPath}`
+                    }
+                  }
+                  // §8.3: creating a hook never creates a grant, so the project must
+                  // ALREADY be the workspace or an explicit additional authorization.
+                  const authz = await watchRepoAuthorized(agent, 'gitlab', projectId, binding.projectPath)
+                  if (!authz.ok) return authz
+                  const effectError = validateGitlabEffects(binding, {
+                    reviewPolicy: req.body.kind === 'gitlab' ? req.body.reviewPolicy : 'off',
+                    reportingMode: req.body.kind === 'gitlab' ? req.body.reportingMode : 'off'
+                  })
+                  if (effectError) return { ok: false as const, ...effectError }
+                  return {
+                    // gitlab is perThread by definition, like github (§12.3).
+                    sessionMode: 'perThread' as const,
+                    repoId: projectId,
+                    repoFullName: binding.projectPath,
+                    githubSessionKey: `gitlab:${projectId}`,
+                    hmacSecret: null
+                  }
+                })()
+              : await (async () => {
+                  const repo = await resolveGithubRepo(orgId, (req.body as { repoFullName: string }).repoFullName)
+                  if (!repo.ok) return repo
+                  // One subscription per (agent, repo): edit the existing hook's
+                  // events instead of stacking duplicates that would double-fire.
+                  const dup = (await deps.repos.hook.listForAgent(agent.id)).some(
+                    (h) => h.kind === 'github' && h.repoId === repo.repoId
+                  )
+                  if (dup) {
+                    return {
+                      ok: false as const,
+                      status: 409 as const,
+                      message: `this agent already watches ${repo.repoFullName}`
+                    }
+                  }
+                  const authz = await watchRepoAuthorized(agent, 'github', repo.repoId, repo.repoFullName)
+                  if (!authz.ok) return authz
+                  const configError = await validateGithubEffects(agent, repo.repoId, repo.repoFullName, {
+                    reviewPolicy: req.body.kind === 'github' ? req.body.reviewPolicy : 'off',
+                    reportingMode: req.body.kind === 'github' ? req.body.reportingMode : 'off',
+                    gateMode: req.body.kind === 'github' ? req.body.gateMode : 'informational'
+                  })
+                  if (configError) {
+                    return { ok: false as const, ...configError }
+                  }
+                  return {
+                    // github is perThread by definition — the same issue/PR
+                    // continues one session (design decision 7).
+                    sessionMode: 'perThread' as const,
+                    repoId: repo.repoId,
+                    repoFullName: repo.repoFullName,
+                    hmacSecret: null
+                  }
+                })()
         if ('status' in kindFields) {
           const { status, message } = kindFields
           return reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })
         }
         const { hmacSecret, ...upsertFields } = kindFields
-        const hook = await persistHook({
-          hookId,
-          orgId,
-          agentId: agent.id,
-          kind: req.body.kind,
-          name: req.body.name,
-          enabled: req.body.enabled,
-          ...upsertFields,
-          ...(req.body.kind === 'github'
-            ? {
-                events: req.body.events,
-                commentFamilies: req.body.commentFamilies,
-                labelFilter: req.body.labelFilter,
-                mentionOnly: req.body.mentionOnly,
-                reviewPolicy: req.body.reviewPolicy,
-                reportingMode: req.body.reportingMode,
-                gateMode: req.body.gateMode
-              }
-            : {}),
-          targetPlatform: target.targetPlatform,
-          ...(req.body.targetChannel ? { targetChannel: req.body.targetChannel } : {}),
-          ...(target.targetIntegrationId ? { targetIntegrationId: target.targetIntegrationId } : {}),
-          ...(req.principal
-            ? { createdByUserId: req.principal.userId, lastModifiedByUserId: req.principal.userId }
-            : {})
-        })
+        const writeHook = (): Promise<HookRecord | AgentWorkspaceIntegrationConflict> =>
+          persistHook({
+            hookId,
+            orgId,
+            agentId: agent.id,
+            kind: req.body.kind,
+            name: req.body.name,
+            enabled: req.body.enabled,
+            ...upsertFields,
+            ...(req.body.kind === 'github'
+              ? {
+                  events: req.body.events,
+                  commentFamilies: req.body.commentFamilies,
+                  labelFilter: req.body.labelFilter,
+                  mentionOnly: req.body.mentionOnly,
+                  reviewPolicy: req.body.reviewPolicy,
+                  reportingMode: req.body.reportingMode,
+                  gateMode: req.body.gateMode
+                }
+              : {}),
+            ...(req.body.kind === 'gitlab'
+              ? {
+                  events: req.body.events,
+                  commentFamilies: req.body.commentFamilies,
+                  mentionOnly: req.body.mentionOnly,
+                  reviewPolicy: req.body.reviewPolicy,
+                  reportingMode: req.body.reportingMode
+                  // No gateMode: GitLab has no required-gate surface, so the row stays informational.
+                }
+              : {}),
+            targetPlatform: target.targetPlatform,
+            ...(req.body.targetChannel ? { targetChannel: req.body.targetChannel } : {}),
+            ...(target.targetIntegrationId ? { targetIntegrationId: target.targetIntegrationId } : {}),
+            ...(req.principal
+              ? { createdByUserId: req.principal.userId, lastModifiedByUserId: req.principal.userId }
+              : {})
+          })
+        const written =
+          req.body.kind === 'gitlab'
+            ? await withGitlabHookIdentity(orgId, BigInt(req.body.projectId), agent.id, req.body.enabled, writeHook)
+            : { ok: true as const, result: await writeHook() }
+        if (!written.ok) {
+          return reply
+            .code(written.status)
+            .send({ error: ERROR_NAMES[written.status], statusCode: written.status, message: written.message })
+        }
+        const hook = written.result
         if (hook instanceof AgentWorkspaceIntegrationConflict) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
         }
@@ -432,6 +623,7 @@ export function hookRoutes(deps: HttpDeps) {
         // Re-read so hmacConfigured reflects the secret written above.
         const fresh = (await deps.repos.hook.get(orgId, hookId)) ?? hook
         converge(fresh)
+        if (fresh.kind === 'gitlab') convergeGitlabWebhook(orgId, fresh.repoId)
         return { ...toDto(fresh, deps.config.PUBLIC_RELAY_URL), hmacSecret }
       }
     )
@@ -603,7 +795,7 @@ export function hookRoutes(deps: HttpDeps) {
           // not brick an existing hook.
           const bindingChanged = repo.repoId !== existing.repoId || agent.id !== existing.agentId
           if (bindingChanged) {
-            const authz = await watchRepoAuthorized(agent, repo.repoId, repo.repoFullName)
+            const authz = await watchRepoAuthorized(agent, 'github', repo.repoId, repo.repoFullName)
             if (!authz.ok) {
               return reply.code(authz.status).send({
                 error: ERROR_NAMES[authz.status],
@@ -633,26 +825,92 @@ export function hookRoutes(deps: HttpDeps) {
             mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
             ...effectConfig
           }
+        } else if (req.body.kind === 'gitlab') {
+          const projectId = BigInt(req.body.projectId)
+          const binding = deps.gitlab ? await deps.repos.gitlabProjectBinding.byProject(orgId, projectId) : null
+          if (!binding || binding.state === 'cleanup_pending') {
+            return reply.code(409).send({
+              error: ERROR_NAMES[409],
+              statusCode: 409,
+              message: 'the project is not a managed GitLab binding in this organization'
+            })
+          }
+          const dup = (await deps.repos.hook.listForAgent(agent.id)).some(
+            (h) => h.id !== existing.id && h.kind === 'gitlab' && h.repoId === projectId
+          )
+          if (dup) {
+            return reply.code(409).send({
+              error: ERROR_NAMES[409],
+              statusCode: 409,
+              message: `this agent already watches ${binding.projectPath}`
+            })
+          }
+          // Binding-CHANGING edits go through the §8.3 gate — a new project, or the
+          // same project moved onto a different agent. An edit that keeps the
+          // (grandfathered) pair must not brick an existing hook, exactly as github.
+          if (projectId !== existing.repoId || agent.id !== existing.agentId) {
+            const authz = await watchRepoAuthorized(agent, 'gitlab', projectId, binding.projectPath)
+            if (!authz.ok) {
+              return reply.code(authz.status).send({
+                error: ERROR_NAMES[authz.status],
+                statusCode: authz.status,
+                message: authz.message
+              })
+            }
+          }
+          const effectConfig = {
+            reviewPolicy: req.body.reviewPolicy ?? existing.reviewPolicy,
+            reportingMode: req.body.reportingMode ?? existing.reportingMode
+          }
+          const effectError = validateGitlabEffects(binding, effectConfig)
+          if (effectError) {
+            return reply.code(effectError.status).send({
+              error: ERROR_NAMES[effectError.status],
+              statusCode: effectError.status,
+              message: effectError.message
+            })
+          }
+          kindFields = {
+            sessionMode: 'perThread',
+            repoId: projectId,
+            repoFullName: binding.projectPath,
+            events: req.body.events,
+            commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
+            mentionOnly: req.body.mentionOnly ?? existing.mentionOnly,
+            ...effectConfig
+          }
         } else {
           kindFields = { sessionMode: req.body.sessionMode }
         }
         // PgHookRepo owns the hook-level lifecycle transaction: binding/mode/
         // enablement changes tombstone the old projection epoch before this
         // definition advances to its new epoch.
-        const hook = await persistHook({
-          hookId: existing.id,
-          expectedAgentId: existing.agentId!,
-          orgId,
-          agentId: agent.id,
-          kind: existing.kind,
-          name: req.body.name,
-          enabled: req.body.enabled ?? existing.enabled,
-          ...kindFields,
-          targetPlatform: target.targetPlatform,
-          ...(req.body.targetChannel ? { targetChannel: req.body.targetChannel } : {}),
-          ...(target.targetIntegrationId ? { targetIntegrationId: target.targetIntegrationId } : {}),
-          ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
-        })
+        const nowEnabled = req.body.enabled ?? existing.enabled
+        const writeHook = (): Promise<HookRecord | AgentWorkspaceIntegrationConflict> =>
+          persistHook({
+            hookId: existing.id,
+            expectedAgentId: existing.agentId!,
+            orgId,
+            agentId: agent.id,
+            kind: existing.kind,
+            name: req.body.name,
+            enabled: nowEnabled,
+            ...kindFields,
+            targetPlatform: target.targetPlatform,
+            ...(req.body.targetChannel ? { targetChannel: req.body.targetChannel } : {}),
+            ...(target.targetIntegrationId ? { targetIntegrationId: target.targetIntegrationId } : {}),
+            ...(req.principal ? { lastModifiedByUserId: req.principal.userId } : {})
+          })
+        const written =
+          req.body.kind === 'gitlab'
+            ? await withGitlabHookIdentity(orgId, BigInt(req.body.projectId), agent.id, nowEnabled, writeHook)
+            : { ok: true as const, result: await writeHook() }
+        if (!written.ok) {
+          return reply
+            .code(written.status)
+            .send({ error: ERROR_NAMES[written.status], statusCode: written.status, message: written.message })
+        }
+        const hook = written.result
         if (hook instanceof AgentWorkspaceIntegrationConflict) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
         }
@@ -667,7 +925,20 @@ export function hookRoutes(deps: HttpDeps) {
             details: { hookId: hook.id, kind: hook.kind, enabled: hook.enabled }
           })
           .catch(() => {})
-        converge(hook)
+        // A retarget moved the hook OFF this agent, which may have just lost its last GitLab
+        // consumer — so it is re-projected only once the rule has actually MOVED. Until
+        // `hookAssign` runs, the pool still holds the old rule targeting this very agent, and
+        // dropping its host first would have a delivery in that window refused.
+        const retargetedFrom = existing.agentId && existing.agentId !== agent.id ? existing.agentId : null
+        converge(hook, retargetedFrom ? () => replicateUpsert(orgOf(req), retargetedFrom) : undefined)
+        if (hook.kind === 'gitlab') {
+          convergeGitlabWebhook(orgOf(req), hook.repoId)
+          // A retarget moved this hook off `existing.repoId`: the source
+          // binding's union shrank too, so converge BOTH distinct projects.
+          if (existing.repoId !== null && existing.repoId !== hook.repoId) {
+            convergeGitlabWebhook(orgOf(req), existing.repoId)
+          }
+        }
         return toDto(hook, deps.config.PUBLIC_RELAY_URL)
       }
     )
@@ -705,6 +976,10 @@ export function hookRoutes(deps: HttpDeps) {
           })
           .catch(() => {})
         deps.hooks.remove(existing.id)
+        // Losing: no rule can fire any more, so dropping the host now cannot orphan a
+        // delivery that still quotes it.
+        await replicateUpsert(orgOf(req), existing.agentId)
+        if (existing.kind === 'gitlab') convergeGitlabWebhook(orgOf(req), existing.repoId)
         return reply.code(204).send(null)
       }
     )
@@ -741,6 +1016,67 @@ export function hookRoutes(deps: HttpDeps) {
           redeliveryAttempts: run.redeliveryAttempts,
           redeliveryLastRequestedAt: run.redeliveryLastRequestedAt?.toISOString() ?? null
         }))
+      }
+    )
+
+    // The Console "Run again" action (gitlab-com-integration.md §16.1, §18.2).
+    // GitLab has no native Check button, so this is the replacement start path:
+    // the service revalidates every fence live and reads the subject's CURRENT
+    // head from GitLab, then the relay re-dispatches through the ordinary hook
+    // turn path. Registered unconditionally so the published spec describes it;
+    // a deployment without the GitLab app refuses every call.
+    r.post(
+      '/hooks/:id/rerun',
+      {
+        schema: {
+          tags: [Tag.Hooks],
+          summary: 'Run a GitLab trigger again',
+          description:
+            'Re-dispatches one GitLab trigger turn for a merge request or issue thread. GitLab offers no native re-run control, so this is the console entry point. The enabled trigger, its agent, the managed project binding, and the subject are all revalidated live, and a merge-request rerun targets the head SHA GitLab reports right now — never a stored one. Refusals carry a machine-readable `code`.',
+          operationId: 'rerunHook',
+          params: IdParam,
+          body: HookRerunBody,
+          response: {
+            200: HookRerunDto,
+            403: ErrorDto,
+            404: ErrorDto,
+            409: ErrorDto,
+            429: ErrorDto,
+            502: ErrorDto,
+            503: ErrorDto
+          }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        // Cross-org and invisible-agent ids read as absent, like every other hook route.
+        const hook = await getOrgHook(req, req.params.id)
+        if (!hook) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'hook not found' })
+        }
+        if (!deps.gitlab) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'this deployment has no GitLab application configured',
+            code: 'GITLAB_NOT_CONFIGURED'
+          })
+        }
+        const outcome = await deps.gitlab.hookRerun.rerun(hook, req.body.subject)
+        if (!outcome.ok) {
+          return reply.code(outcome.status).send({
+            error: RERUN_STATUS_TEXT[outcome.status],
+            statusCode: outcome.status,
+            message: outcome.message,
+            code: outcome.code
+          })
+        }
+        return {
+          accepted: true as const,
+          deliveryKey: outcome.deliveryKey,
+          event: outcome.event,
+          headSha: outcome.headSha
+        }
       }
     )
 

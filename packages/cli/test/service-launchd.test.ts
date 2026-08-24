@@ -111,7 +111,7 @@ describe('LaunchdController', () => {
     const bootstrap = calls.find((k) => k.cmd === 'launchctl' && k.args[0] === 'bootstrap' && k.args[1] === 'gui/501')
     expect(bootstrap).toBeDefined()
     expect(bootstrap?.args[2]).toBe(join(h, 'Library', 'LaunchAgents', 'md.agentconnect.daemon.plist'))
-    expect(bootstrap?.args[2].endsWith('Library/LaunchAgents/md.agentconnect.daemon.plist')).toBe(true)
+    expect(bootstrap?.args[2]!.endsWith('Library/LaunchAgents/md.agentconnect.daemon.plist')).toBe(true)
   })
 
   it('down boots the label out of the gui domain', async () => {

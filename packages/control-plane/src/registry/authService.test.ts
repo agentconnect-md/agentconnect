@@ -24,6 +24,7 @@ function record(over: Partial<ApiKeyRecord> = {}): ApiKeyRecord {
     displayTail: '…abcd',
     name: null,
     scopes: [],
+    oauthGrantId: null,
     createdAt: new Date(NOW),
     lastUsedAt: null,
     expiresAt: null,

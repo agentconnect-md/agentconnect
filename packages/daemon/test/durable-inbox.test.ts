@@ -65,8 +65,8 @@ describe('LocalStore inbox', () => {
     expect(await s.appendInbox({ ...row('dup', k, '999'), loopGuardCounted: 1 })).toBe(false)
     const rows = await s.listInboxBySessionKeyFifo()
     expect(rows).toHaveLength(1)
-    expect(rows[0].enqueuedAt).toBe('100')
-    expect(rows[0].loopGuardCounted).toBe(1)
+    expect(rows[0]!.enqueuedAt).toBe('100')
+    expect(rows[0]!.loopGuardCounted).toBe(1)
     await s.close()
   })
 
@@ -81,7 +81,7 @@ describe('LocalStore inbox', () => {
         maxAutomatic: 8
       })
     ).toMatchObject({ allowed: true, automaticCount: 1 })
-    expect((await s.listInboxBySessionKeyFifo())[0].loopGuardCounted).toBe(1)
+    expect((await s.listInboxBySessionKeyFifo())[0]!.loopGuardCounted).toBe(1)
     expect(await s.getLoopGuard('slack:C1:dm')).toMatchObject({ automaticCount: 1 })
     await s.close()
   })

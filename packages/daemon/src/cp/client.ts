@@ -26,6 +26,16 @@ import type {
   GithubReviewAuthorized,
   GithubReviewResultReport,
   GithubReviewResultOk,
+  CodeHostNoteResult,
+  CodeHostNoteResultOk,
+  CodeHostReviewAuthorize,
+  CodeHostReviewAuthorized,
+  CodeHostReviewLeaseRenew,
+  CodeHostReviewLeaseRenewed,
+  CodeHostReviewOpAccepted,
+  CodeHostReviewOpRequest,
+  CodeHostReviewResultOk,
+  CodeHostReviewResultReport,
   GitCredRequest,
   GitCredGrant,
   ChannelAgentsReq,
@@ -70,6 +80,7 @@ import {
 import { ReqRep, WireError, type Clock, type TimerHandle, type Transport } from '@agentconnect.md/connection'
 import type { AgentControlDeps } from './control/agent.js'
 import type { ControlWire } from './control/context.js'
+import type { CodeHostControlDeps } from './control/codehost.js'
 import type { DreamControlDeps } from './control/dream.js'
 import type { MemoryControlDeps } from './control/memory.js'
 import { CONTROL_HANDLERS, type ControlDeps } from './control/registry.js'
@@ -126,6 +137,7 @@ export interface CpClientDeps
     TaskControlDeps,
     AutoMergeControlDeps,
     SandboxKeepAliveDeps,
+    CodeHostControlDeps,
     WorkspaceReadDeps {
   url: string
   /** The CP API key. Absent on an in-cluster daemon, which presents
@@ -283,6 +295,7 @@ export class CpClient {
       localSkillsReader: deps.localSkillsReader,
       runtimeCommandsReader: deps.runtimeCommandsReader,
       gitMessagePasses: new GitMessagePasses(),
+      codeHostNoteProjection: deps.codeHostNoteProjection,
       noteLeasesGranted: (groupIds) => this.noteLeasesGranted(groupIds),
       forgetLeaseDeadlines: (groupIds) => this.forgetLeaseDeadlines(groupIds),
       onDutyRenewed: (leaseMs) => this.onDutyRenewed(leaseMs),
@@ -758,11 +771,11 @@ export class CpClient {
     }
   }
 
-  /** Durable start barrier for an accepted GitHub hook turn. Formal review is
-   * not exposed until this correlated request succeeds. */
-  async startHook(payload: HookStart): Promise<HookStartOk> {
+  /** Durable start barrier for an accepted hook turn. Formal review is not exposed until this
+   * correlated request succeeds. The gitlab arm of the one-of is organization-scoped (§17.2). */
+  async startHook(payload: HookStart, orgId?: string): Promise<HookStartOk> {
     this.requireReady('hook/start')
-    const rep = await this.request('hook/start', payload)
+    const rep = await this.request('hook/start', payload, orgId)
     if (rep.type !== 'hook/start/ok') {
       throw new WireError('INTERNAL', `expected hook/start/ok, got ${rep.type}`, false)
     }
@@ -787,6 +800,67 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected github/review-result/ok, got ${rep.type}`, false)
     }
     return rep.payload as GithubReviewResultOk
+  }
+
+  /** The observed outcome of ONE desired run projection generation (gitlab-com-integration.md §16). */
+  async reportCodeHostNoteResult(payload: CodeHostNoteResult, orgId?: string): Promise<CodeHostNoteResultOk> {
+    this.requireReady('codehost/note-result')
+    const rep = await this.request('codehost/note-result', payload, orgId)
+    if (rep.type !== 'codehost/note-result/ok') {
+      throw new WireError('INTERNAL', `expected codehost/note-result/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as CodeHostNoteResultOk
+  }
+
+  /**
+   * The provider-neutral formal-review surface (gitlab-com-integration.md §15).
+   * `codehost/review-authz` acquires the durable publication lease and its fence;
+   * the ledger, renewal, and terminal result ride the three frames below. Review
+   * bodies never travel on any of them.
+   */
+  async authorizeCodeHostReview(payload: CodeHostReviewAuthorize, orgId?: string): Promise<CodeHostReviewAuthorized> {
+    this.requireReady('codehost/review-authz')
+    const rep = await this.request('codehost/review-authz', payload, orgId)
+    if (rep.type !== 'codehost/review-authz/result') {
+      throw new WireError('INTERNAL', `expected codehost/review-authz/result, got ${rep.type}`, false)
+    }
+    return rep.payload as CodeHostReviewAuthorized
+  }
+
+  /** One step of the §15.1 single-use operation ledger. */
+  async operateCodeHostReview(payload: CodeHostReviewOpRequest, orgId?: string): Promise<CodeHostReviewOpAccepted> {
+    this.requireReady('codehost/review-op')
+    const rep = await this.request('codehost/review-op', payload, orgId)
+    if (rep.type !== 'codehost/review-op/ok') {
+      throw new WireError('INTERNAL', `expected codehost/review-op/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as CodeHostReviewOpAccepted
+  }
+
+  /** Owner-only publication-lease extension; expiry alone never transfers authority. */
+  async renewCodeHostReviewLease(
+    payload: CodeHostReviewLeaseRenew,
+    orgId?: string
+  ): Promise<CodeHostReviewLeaseRenewed> {
+    this.requireReady('codehost/review-lease-renew')
+    const rep = await this.request('codehost/review-lease-renew', payload, orgId)
+    if (rep.type !== 'codehost/review-lease-renew/ok') {
+      throw new WireError('INTERNAL', `expected codehost/review-lease-renew/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as CodeHostReviewLeaseRenewed
+  }
+
+  /** The body-free terminal classification; it is also what releases or locks the lease. */
+  async reportCodeHostReviewResult(
+    payload: CodeHostReviewResultReport,
+    orgId?: string
+  ): Promise<CodeHostReviewResultOk> {
+    this.requireReady('codehost/review-result')
+    const rep = await this.request('codehost/review-result', payload, orgId)
+    if (rep.type !== 'codehost/review-result/ok') {
+      throw new WireError('INTERNAL', `expected codehost/review-result/ok, got ${rep.type}`, false)
+    }
+    return rep.payload as CodeHostReviewResultOk
   }
 
   async issueWebchatMcpGrant(payload: WebchatMcpGrantIssue, orgId?: string): Promise<WebchatMcpGrantIssued> {

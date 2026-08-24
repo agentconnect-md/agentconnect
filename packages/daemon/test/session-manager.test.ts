@@ -10,6 +10,7 @@ import { writeMemoryFile, MEMORY_INDEX, MAX_INDEX_INJECT_BYTES } from '../src/me
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
+import type { McpServer } from '@agentclientprotocol/sdk'
 
 const local = (dir: string) => new LocalMemoryFs(dir)
 
@@ -35,7 +36,7 @@ const agent: Agent & { dir: string; env: Record<string, string> } = {
   output: { mode: 'medium' },
   permissions: { policy: 'ask', autoApprove: [] },
   crons: []
-} as Agent & { dir: string; env: Record<string, string> }
+} as unknown as Agent & { dir: string; env: Record<string, string> }
 
 const fakeHost = () => ({ newSession: vi.fn(async () => 'acp-1') }) as any
 
@@ -145,7 +146,7 @@ describe('SessionManager', () => {
         pullOnNewSession: false,
         skills: []
       }
-    } as Agent & { dir: string; env: Record<string, string> }
+    } as unknown as Agent & { dir: string; env: Record<string, string> }
     const host = fakeHost()
     const prepareWorkspace = vi.fn(async () => realpathSync(cwd))
     const sm = new SessionManager({
@@ -158,7 +159,16 @@ describe('SessionManager', () => {
 
     await sm.handle('bot-a', msg({ ts: '100.3', thread: '100.3', text: 'update production' }))
 
-    expect(host.newSession).toHaveBeenCalledWith(realpathSync(cwd), [], undefined, undefined, [realpathSync(repoRoot)])
+    // The trailing argument is the outward-id binder (session-concept.md §1.1); this harness
+    // wires no `prepareOutwardBinding`, so the opener has none to pass on.
+    expect(host.newSession).toHaveBeenCalledWith(
+      realpathSync(cwd),
+      [],
+      undefined,
+      undefined,
+      [realpathSync(repoRoot)],
+      undefined
+    )
     await (await store).close()
   })
 
@@ -391,7 +401,7 @@ describe('SessionManager', () => {
       {
         id: `memory-${req.turnId}`,
         text: 'deploy in sea',
-        scope: { kind: 'agent', key: 'ac:agent:bot-a' },
+        scope: { kind: 'agent' as const, key: 'ac:agent:bot-a' },
         provenance: { pluginId: 'ai.example.memory' }
       }
     ])
@@ -547,7 +557,7 @@ describe('SessionManager', () => {
 
   it('starts a fresh ACP session when the memory provider changes', async () => {
     const store = await newStore()
-    let currentAgent = { ...agent, memory: { provider: 'managed' as const } }
+    let currentAgent: typeof agent = { ...agent, memory: { provider: 'managed' } }
     const host = {
       newSession: vi.fn().mockResolvedValueOnce('acp-managed').mockResolvedValueOnce('acp-none'),
       hasSession: vi.fn(() => true)
@@ -555,7 +565,7 @@ describe('SessionManager', () => {
     const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => currentAgent, memory })
 
     await sm.handle('bot-a', msg({ ts: '100.1', text: 'first' }))
-    currentAgent = { ...agent, memory: { provider: 'none' as const } }
+    currentAgent = { ...agent, memory: { provider: 'none' } }
     const next = await sm.handle('bot-a', msg({ ts: '100.2', text: 'second' }))
 
     expect(next.sessionId).toBe('acp-none')
@@ -772,9 +782,11 @@ describe('SessionManager', () => {
     expect(appendArg).toContain('- Source: telegram')
     expect(appendArg).toContain('# Choosing whether to respond')
     expect(appendArg).toContain('AC_NO_RESPONSE')
-    // On a resume the session record already carries its acpSessionId (minted on the
-    // first turn), so the `- Session` locator line is present now.
-    expect(appendArg).toContain('- Session: acp-1')
+    // The locator line names the session OUTWARDLY (session-concept.md §1.1), never the runtime's
+    // id — and that one exists from the slot's first resolution, so it is there on every turn.
+    const outward = (await store.getSession(sessionKey('telegram', 'C1', '100.1', 'bot-a')))!.sessionId
+    expect(outward).not.toBe('acp-1')
+    expect(appendArg).toContain(`- Session: ${outward}`)
     await (await store).close()
   })
 
@@ -1253,13 +1265,13 @@ describe('SessionManager', () => {
     const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
     await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first turn' }))
 
-    const ordinary = { type: 'stdio', name: 'ordinary', command: 'ordinary-mcp', args: [], env: [] } as const
-    const admin = {
+    const ordinary: McpServer = { name: 'ordinary', command: 'ordinary-mcp', args: [], env: [] }
+    const admin: McpServer = {
       type: 'http',
       name: 'agentconnect-admin',
       url: 'https://cp.example/api/v1/mcp',
       headers: [{ name: 'Authorization', value: 'Bearer test-token' }]
-    } as const
+    }
     const host2 = {
       newSession: vi.fn(async () => 'acp-2'),
       hasSession: () => false,
@@ -1312,13 +1324,13 @@ describe('SessionManager', () => {
     const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
     await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first turn' }))
 
-    const ordinary = { type: 'stdio', name: 'ordinary', command: 'ordinary-mcp', args: [], env: [] } as const
-    const admin = {
+    const ordinary: McpServer = { name: 'ordinary', command: 'ordinary-mcp', args: [], env: [] }
+    const admin: McpServer = {
       type: 'http',
       name: 'agentconnect-admin',
       url: 'https://cp.example/api/v1/mcp',
       headers: [{ name: 'Authorization', value: 'Bearer test-token' }]
-    } as const
+    }
     const host2 = {
       newSession: vi.fn(async () => 'acp-2'),
       hasSession: () => false,
@@ -1400,7 +1412,7 @@ describe('SessionManager', () => {
     expect(host2.loadSession).toHaveBeenCalledTimes(1)
     expect(host2.loadSession.mock.calls[0]?.[3]).toBe('ultracode')
     expect(host2.discardSession).toHaveBeenCalledWith('acp-1')
-    expect(host2.newSession).toHaveBeenCalledWith(expect.any(String), [], undefined, undefined, [])
+    expect(host2.newSession).toHaveBeenCalledWith(expect.any(String), [], undefined, undefined, [], undefined)
     await (await store).close()
   })
 
@@ -1426,6 +1438,41 @@ describe('SessionManager', () => {
     const img = blocks.find((b: any) => b.type === 'image') as any
     expect(img).toMatchObject({ type: 'image', mimeType: 'image/png', data: png.toString('base64') })
     expect(img).not.toHaveProperty('uri')
+    // The pixels are not enough: `sendMessage`'s `attachment` takes the NAME from this marker,
+    // so an agent asked to forward the picture it can see needs the marker on the trigger too.
+    const prompt = blocks
+      .filter((b: any) => b.type === 'text')
+      .map((b: any) => b.text)
+      .join('\n')
+    expect(prompt).toContain('see this')
+    expect(prompt).toContain('[attached: a.png (image/png)]')
+    await (await store).close()
+  })
+
+  it('names the trigger’s attachment even when the agent cannot take images at all', async () => {
+    // The resource_link arm carries a uri, but the forward path is keyed on the marker name —
+    // it must not depend on the runtime's image capability.
+    const store = await newStore()
+    const sm = new SessionManager({
+      store,
+      hostFor: async () => fakeHost(),
+      agentById: () => agent,
+      memory,
+      downloadAttachment: async () => null
+    })
+    const { blocks } = await sm.handle(
+      'bot-a',
+      msg({
+        ts: '100.1',
+        text: 'forward this',
+        attachments: [{ id: 'F1', name: 'shot.jpg', mimeType: 'image/jpeg', sourceUrl: 'tg-file-id' }]
+      })
+    )
+    const prompt = blocks
+      .filter((b: any) => b.type === 'text')
+      .map((b: any) => b.text)
+      .join('\n')
+    expect(prompt).toContain('[attached: shot.jpg (image/jpeg)]')
     await (await store).close()
   })
 
@@ -1684,7 +1731,7 @@ describe('SessionManager', () => {
     expect(res.skipped).not.toBe(true)
 
     // One deduped hand-off row (the post), not two.
-    const rows = (await (await store).transcriptSince('C1', '200.1', null)).filter((r) => r.kind === 'text')
+    const rows = (await (await store).transcriptSince('C1', '200.1', null, 'bot-b')).filter((r) => r.kind === 'text')
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ ts: '200.5' })
 
@@ -1814,9 +1861,13 @@ describe('SessionManager', () => {
 
     // The own message stays a SINGLE transcript row (the snapshot skipped it), while the
     // missed human message is still backfilled.
-    const own = (await (await store).transcriptSince('C1', '100.1', null)).filter((r) => r.text === 'here is my answer')
+    const own = (await (await store).transcriptSince('C1', '100.1', null, 'bot-a')).filter(
+      (r) => r.text === 'here is my answer'
+    )
     expect(own).toHaveLength(1)
-    const human = (await (await store).transcriptSince('C1', '100.1', null)).filter((r) => r.text === 'human follow-up')
+    const human = (await (await store).transcriptSince('C1', '100.1', null, 'bot-a')).filter(
+      (r) => r.text === 'human follow-up'
+    )
     expect(human).toHaveLength(1)
     await (await store).close()
   })

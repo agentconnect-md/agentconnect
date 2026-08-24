@@ -69,7 +69,9 @@ function connect(daemon: Daemon, overrides: Record<string, unknown> = {}) {
   const conn = {
     workspaceId: vi.fn(() => 'T1'),
     setStatus: vi.fn(async () => {}),
-    postMessage: vi.fn(async () => `reply-${++post}`),
+    postMessage: vi.fn<(channel: string, text: string, thread?: string, options?: unknown) => Promise<string>>(
+      async () => `reply-${++post}`
+    ),
     postBlocks: vi.fn(async () => 'status-bar'),
     updateBlocks: vi.fn(async () => {}),
     ...overrides
@@ -192,8 +194,8 @@ describe('TurnOutputWorkflow', () => {
 
     expect(prompts[1]).toContain('AgentConnect context update')
     expect(prompts[1]).toContain('important clarification')
-    expect(prompts[1].indexOf('the deployment failed with ECONNRESET')).toBeLessThan(
-      prompts[1].indexOf('[U1] important clarification')
+    expect(prompts[1]!.indexOf('the deployment failed with ECONNRESET')).toBeLessThan(
+      prompts[1]!.indexOf('[U1] important clarification')
     )
     const publishedBodies = conn.postMessage.mock.calls.map((call) => String(call[1]))
     expect(publishedBodies).toContain('fresh replacement')
@@ -274,10 +276,10 @@ describe('TurnOutputWorkflow', () => {
     openSession()
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
     expect(prompts[0]).toContain('original request')
-    const firstQuote = prompts[0].indexOf('[U2] the deployment failed with ECONNRESET')
-    const firstReply = prompts[0].indexOf('[U1] first pre-prompt clarification')
-    const secondQuote = prompts[0].indexOf('[U3] the rollback is still running')
-    const secondReply = prompts[0].indexOf('[U1] second pre-prompt clarification')
+    const firstQuote = prompts[0]!.indexOf('[U2] the deployment failed with ECONNRESET')
+    const firstReply = prompts[0]!.indexOf('[U1] first pre-prompt clarification')
+    const secondQuote = prompts[0]!.indexOf('[U3] the rollback is still running')
+    const secondReply = prompts[0]!.indexOf('[U1] second pre-prompt clarification')
     expect(firstQuote).toBeGreaterThanOrEqual(0)
     expect(firstQuote).toBeLessThan(firstReply)
     expect(firstReply).toBeLessThan(secondQuote)
@@ -362,7 +364,7 @@ describe('TurnOutputWorkflow', () => {
 
     expect(host.prompt).toHaveBeenCalledTimes(3)
     expect(prompts[1]).toContain('peer-only quoted source')
-    expect(prompts[1].indexOf('peer-only quoted source')).toBeLessThan(prompts[1].indexOf('[U1] late clarification'))
+    expect(prompts[1]!.indexOf('peer-only quoted source')).toBeLessThan(prompts[1]!.indexOf('[U1] late clarification'))
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'fresh replacement', 'T1', expect.anything())
     await daemon.stop()
   }, 15_000)

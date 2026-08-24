@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayCpFrame,
   RELAY_CP_SUBPROTOCOL,
+  GITLAB_COM_V1_FEATURE,
+  GITLAB_INSTANCE_V1_FEATURE,
+  GITLAB_RERUN_V1_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   type RelayCpFrame
 } from '@agentconnect.md/protocol'
@@ -34,6 +37,19 @@ const REREQUEST = {
   repoId: '987654321',
   headSha: 'a'.repeat(40),
   deliveryKey: 'delivery-rerun-1'
+} as const
+const HOOK_RERUN = {
+  hookId: COMMENT_AUTHZ.hookId,
+  agentId: '33333333-3333-4333-8333-333333333333',
+  deliveryKey: 'rerun_1',
+  configRevision: '3',
+  dispatchRevision: '5',
+  event: 'merge_request:rerun',
+  gitlab: {
+    projectId: '4455667',
+    projectPath: 'example-group/example-project',
+    target: { kind: 'merge_request', iid: 42, headSha: 'b'.repeat(40) }
+  }
 } as const
 
 const silentLog: Logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
@@ -177,7 +193,12 @@ describe('RelayCpClient', () => {
     expect(reg.payload).toEqual({
       name: 'relay-0',
       daemonUrl: 'wss://relay-0.example',
-      features: [WEBCHAT_SESSION_CONTINUATION_FEATURE]
+      features: [
+        WEBCHAT_SESSION_CONTINUATION_FEATURE,
+        GITLAB_COM_V1_FEATURE,
+        GITLAB_RERUN_V1_FEATURE,
+        GITLAB_INSTANCE_V1_FEATURE
+      ]
     })
 
     expect(client.state).toBe('READY')
@@ -626,5 +647,44 @@ describe('RelayCpClient', () => {
     const replayed = next.sent.filter((f) => f.type === 'rc/run-report')
     expect(replayed).toHaveLength(200)
     expect((replayed[0]!.payload as { deliveryKey: string }).deliveryKey).toBe('delivery-5')
+  })
+})
+
+describe('RelayCpClient — rc/hook-rerun admission REP (§16.1)', () => {
+  it('answers the handler verdict on the correlated reply', async () => {
+    const onHookRerun = vi.fn(() => ({ admitted: true as const, deliveryKey: 'rerun_1' }))
+    const { client, transport } = makeClient({ onHookRerun })
+    await handshakeToReady(client, transport)
+
+    const req = buildRelayCpFrame('rc/hook-rerun', HOOK_RERUN)
+    transport.inject(req)
+    await flush()
+
+    expect(onHookRerun).toHaveBeenCalledWith(HOOK_RERUN)
+    const rep = transport.lastReq('rc/hook-rerun/ok')!
+    expect(rep.corr).toBe(req.id)
+    expect(rep.payload).toEqual({ admitted: true, deliveryKey: 'rerun_1' })
+  })
+
+  it('carries a definitive refusal back rather than staying silent', async () => {
+    const onHookRerun = vi.fn(() => ({ admitted: false as const, code: 'replay_pending' as const }))
+    const { client, transport } = makeClient({ onHookRerun })
+    await handshakeToReady(client, transport)
+    transport.inject(buildRelayCpFrame('rc/hook-rerun', HOOK_RERUN))
+    await flush()
+    expect(transport.lastReq('rc/hook-rerun/ok')!.payload).toEqual({ admitted: false, code: 'replay_pending' })
+  })
+
+  it('errors rather than silently dropping the frame when nothing serves reruns', async () => {
+    const { client, transport } = makeClient()
+    await handshakeToReady(client, transport)
+    const req = buildRelayCpFrame('rc/hook-rerun', HOOK_RERUN)
+    transport.inject(req)
+    await flush()
+    expect(transport.lastReq('rc/hook-rerun/ok')).toBeUndefined()
+    const err = transport.lastReq('error')!
+    expect(err.corr).toBe(req.id)
+    // The CP treats an error REP as ambiguous and stops, never as an admission.
+    expect((err.payload as { code: string }).code).toBe('PROTOCOL_STATE')
   })
 })

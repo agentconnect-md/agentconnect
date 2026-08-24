@@ -17,6 +17,8 @@ import type {
   PlacementKindValue
 } from '@/lib/data'
 import { isSelfSender, lifecycleStatus, MOCK_MODE, placementValueOf, poolLabel } from '@/lib/data'
+import type { HookKind } from '@agentconnect.md/protocol'
+import { hookKindFromIntegration, hookSourceLabel } from '@/lib/session-trigger'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { withIconUrl } from '@/lib/agent-icon'
 import {
@@ -253,6 +255,17 @@ export type AgentWorkspaceDto =
       installationId?: string
       gitAccess?: 'read' | 'write'
     }
+  | {
+      // A managed GitLab project binding. `projectId` is what a caller sends; the
+      // clone address comes back derived from the binding and is never supplied.
+      mode: 'gitlab'
+      worktree?: boolean
+      projectId?: string
+      gitRepo?: string
+      gitBranch?: string
+      agentDir?: string
+      gitAccess?: 'read' | 'write'
+    }
 
 export interface ExternalMemoryRecallPolicy {
   mode: 'auto' | 'tool-only'
@@ -343,7 +356,7 @@ export interface AgentDto {
   runInSandbox: boolean // #642: persisted per-agent Run in sandbox preference
   sandboxSupported: boolean // #642: whether the placed daemon can provide an OS sandbox
   sandboxRequired: boolean // #642: whether daemon policy forces the effective value on
-  hookKinds: ('webhook' | 'github')[] // distinct kinds of enabled inbound triggers (list-view marks)
+  hookKinds: HookKind[] // distinct kinds of enabled inbound triggers (list-view marks)
 }
 
 /** The `PUT /{agents,daemons,crons}/:id/sharing` request body. */
@@ -403,7 +416,7 @@ export interface SessionDto {
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
   triggeredBy: string | null
-  hookKind?: 'webhook' | 'github' | null
+  hookKind?: HookKind | null
   // Daemon-resolved display names; null until the daemon has resolved them.
   channelName: string | null
   triggeredByName: string | null
@@ -446,7 +459,7 @@ export interface SessionFacetsDto {
     value: string
     integration: string
     name: string | null
-    hookKind: 'webhook' | 'github' | null
+    hookKind: HookKind | null
     githubRepoId: string | null
   }>
 }
@@ -513,7 +526,7 @@ export interface SessionFacets {
     value: string
     name?: string
     platform: string
-    hookKind?: 'webhook' | 'github'
+    hookKind?: HookKind
     githubRepoId?: string
   }>
 }
@@ -554,7 +567,7 @@ export interface SessionDetailDto {
   usage: SessionUsageDto | null
   triggeredBy: string | null
   /** Stable source kind for hook-backed sessions. Absent on older Control Planes. */
-  hookKind?: 'webhook' | 'github' | null
+  hookKind?: HookKind | null
   channelName: string | null
   triggeredByName: string | null
   threadUrl: string | null
@@ -972,6 +985,16 @@ export type SetAgentWorkspaceInput =
       agentDir?: string
       gitAccess: 'read' | 'write'
     }
+  | {
+      mode: 'gitlab'
+      worktree?: boolean
+      /** Numeric GitLab project id of a managed binding in this organization. */
+      projectId: string
+      /** Absent lets the server use the project's current default branch. */
+      gitBranch?: string
+      agentDir?: string
+      gitAccess: 'read' | 'write'
+    }
 
 export interface DaemonCapabilitiesDto {
   platforms: string[]
@@ -1342,8 +1365,8 @@ async function authenticatedFetch(
   return retried
 }
 
-async function apiGet<T>(path: string): Promise<T> {
-  const res = await authenticatedFetch(path, { cache: 'no-store' })
+async function apiGet<T>(path: string, init?: Omit<RequestInit, 'headers'>): Promise<T> {
+  const res = await authenticatedFetch(path, { cache: 'no-store', ...init })
   // Parse the denial body like the write helpers do: reads carry machine-readable
   // `code`s too (e.g. DAEMON_FEATURE_MISSING on a capability-gated route), and a
   // status-only ApiError silently drops them.
@@ -1711,6 +1734,26 @@ export function repoWebUrl(gitRepo: string): string | undefined {
 // The CP does not surface git state (commit/pull/dirty/files), so those render
 // as placeholders / empty until a daemon read model exists.
 function workspaceFromDto(w: AgentWorkspaceDto, workspaceRepoId?: string | null): Workspace {
+  if (w.mode === 'gitlab') {
+    // The clone address is the binding's, so the namespaced path is what it labels.
+    const gitRepo = w.gitRepo ?? ''
+    return {
+      mode: 'gitlab',
+      worktree: w.worktree === true,
+      ...((w.projectId ?? workspaceRepoId) ? { projectId: (w.projectId ?? workspaceRepoId)! } : {}),
+      repo: repoLabel(gitRepo),
+      ...(repoWebUrl(gitRepo) ? { repoUrl: repoWebUrl(gitRepo) } : {}),
+      ...(w.gitAccess ? { gitAccess: w.gitAccess } : {}),
+      branch: w.gitBranch || 'main',
+      agentDir: w.agentDir || '/',
+      lastPull: PLACEHOLDER,
+      commit: PLACEHOLDER,
+      commitMsg: '',
+      commitTime: '',
+      clean: true,
+      files: []
+    }
+  }
   if (w.mode === 'github') {
     return {
       mode: 'github',
@@ -1828,8 +1871,8 @@ export function agentFromDto(d: AgentDto): Agent {
     daemon: placementValueOf(d) ?? PLACEHOLDER,
     ...(d.daemonName ? { daemonName: d.daemonName } : {}),
     region: PLACEHOLDER,
-    repo: ws.mode === 'github' ? ws.repo : PLACEHOLDER,
-    workdir: ws.mode === 'github' ? ws.agentDir : PLACEHOLDER,
+    repo: ws.mode !== 'scratch' ? ws.repo : PLACEHOLDER,
+    workdir: ws.mode !== 'scratch' ? ws.agentDir : PLACEHOLDER,
     // A paused agent reads as "paused" regardless of placement — pause is a deliberate
     // operator state, orthogonal to online/offline. Gives the "Paused" filter tab meaning.
     status: d.pause ? 'paused' : toStatusKey(d.status),
@@ -1885,7 +1928,8 @@ function sessionChannelLabel(
   platform: string,
   rawChannel: string,
   channelName: string | null,
-  triggeredByName: string | null
+  triggeredByName: string | null,
+  hookKind: HookKind | null | undefined
 ): string {
   // webchat's `channel` is the conversationId (a UUID) — never a human channel. Show the
   // "Playground" label (matching platName + the live playground session), and keep the raw
@@ -1895,7 +1939,8 @@ function sessionChannelLabel(
   // A headless webhook's `channel` is the hook id (and `thread` may be the delivery key),
   // so render the CP-enriched hook name when present and otherwise hide the raw UUID.
   const isHook = platform === 'hook'
-  const hookLabel = channelName?.trim() || 'Webhook'
+  // An unnamed hook still names its SOURCE — a GitLab delivery is "GitLab", not "Webhook".
+  const hookLabel = channelName?.trim() || hookSourceLabel(hookKind)
   // Name-first display: "#general" when the daemon resolved a channel name, or the
   // DM counterpart verbatim ("@Dana Reyes" — already @-prefixed by the daemon). A
   // Slack DM ("D…" im id) the daemon hasn't labeled yet falls back to the
@@ -1922,7 +1967,7 @@ export function sessionFromDto(d: SessionDto): Session {
   const isWebchat = platform === 'webchat'
   const isHook = platform === 'hook'
   const isDream = platform === 'dream'
-  const channel = sessionChannelLabel(platform, rawChannel, d.channelName, d.triggeredByName)
+  const channel = sessionChannelLabel(platform, rawChannel, d.channelName, d.triggeredByName, d.hookKind)
   const isSlackDm = platform === 'slack' && /^D/.test(rawChannel)
   const dmFallback = isSlackDm ? (d.triggeredByName ? `@${d.triggeredByName}` : 'DM') : null
   const user = isDream
@@ -1931,7 +1976,9 @@ export function sessionFromDto(d: SessionDto): Session {
       : d.triggeredBy === 'auto'
         ? 'Automatic'
         : 'Manual'
-    : d.triggeredByName || (isHook && d.triggeredBy?.startsWith('hook:') ? 'Webhook' : d.triggeredBy) || PLACEHOLDER
+    : d.triggeredByName ||
+      (isHook && d.triggeredBy?.startsWith('hook:') ? hookSourceLabel(d.hookKind) : d.triggeredBy) ||
+      PLACEHOLDER
   return {
     id: d.sessionId,
     title: d.title || `Session ${d.sessionId.slice(0, 8)}`,
@@ -2275,7 +2322,13 @@ export async function fetchSessionFacets(orgId?: string, filters: SessionListFil
     integrations: facets.integrations,
     channels: facets.channels.map((channel) => ({
       value: channel.value,
-      label: sessionChannelLabel(channel.platform, channel.value, channel.name, channel.triggeredByName),
+      label: sessionChannelLabel(
+        channel.platform,
+        channel.value,
+        channel.name,
+        channel.triggeredByName,
+        hookKindFromIntegration(channel.integration)
+      ),
       platform: channel.integration
     })),
     triggers: facets.triggers.map((trigger) => ({
@@ -2348,12 +2401,15 @@ export function putSessionExternalAccess(
 // SessionMeta. Content ownership stays pinned there when the agent moves.
 export async function fetchSessionMessages(
   sessionId: string,
-  options: { cursor?: string; after?: string; limit?: number } = {}
+  options: { cursor?: string; after?: string; limit?: number; signal?: AbortSignal } = {}
 ): Promise<SessionHistoryDto> {
   const q = new URLSearchParams({ limit: String(options.limit ?? 50) })
   if (options.cursor) q.set('cursor', options.cursor)
   if (options.after) q.set('after', options.after)
-  return apiGet<SessionHistoryDto>(`${orgBase()}/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`)
+  return apiGet<SessionHistoryDto>(
+    `${orgBase()}/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`,
+    options.signal ? { signal: options.signal } : undefined
+  )
 }
 
 // One frame-budgeted byte slice of a tool call's FULL ToolBody JSON (mirrors the
@@ -3824,7 +3880,14 @@ export async function deleteIntegration(id: string): Promise<void> {
 
 // A hook definition row. `url` is the full public ingress URL (relay-pool based),
 // a capability URL the CP surfaces only to callers with edit rights.
+// The hook-kind vocabulary is the shared wire contract's, not a copy: a new code
+// host widens it there and every mapping over it in the console must be extended.
+export type { HookKind }
 export type GithubCommentFamily = 'issues' | 'pull_request'
+/** GitLab's own note families — the merge-request counterpart of a pull request. */
+export type GitlabCommentFamily = 'issues' | 'merge_request'
+/** The stored union across code hosts; each row carries only its own host's subset. */
+export type HookCommentFamily = GithubCommentFamily | GitlabCommentFamily
 export type HookReviewPolicy = 'off' | 'comment' | 'request_changes' | 'full'
 // R2a intentionally exposes informational Checks only. `status` is R3.
 export type HookReportingMode = 'off' | 'check'
@@ -3834,17 +3897,17 @@ export type HookGateMode = 'informational'
 export interface HookDto {
   id: string
   agentId: string | null // null ⇒ orphaned by agent delete (inert)
-  kind: 'webhook' | 'github'
+  kind: HookKind
   name: string
   sessionMode: 'perDelivery' | 'perThread' | 'shared'
   enabled: boolean
   url: string | null
   hmacConfigured: boolean
-  // ── github kind ── repo + subscription (empty/null on webhook kind)
-  repoId?: string | null
-  repoFullName: string | null // canonical owner/repo as GitHub cases it
-  events: string[] // 'issues:*' / 'issue_comment:created' / …
-  commentFamilies: GithubCommentFamily[] // thread kinds whose replies may fire this hook
+  // ── code-host kinds ── repo/project + subscription (empty/null on webhook kind)
+  repoId?: string | null // GitHub numeric repo id, or the GitLab numeric project id
+  repoFullName: string | null // owner/repo as GitHub cases it, or the GitLab project path
+  events: string[] // 'issues:*' / 'issue_comment:created' / 'merge_request:*' / …
+  commentFamilies: HookCommentFamily[] // thread kinds whose replies may fire this hook
   labelFilter: string[]
   mentionOnly: boolean // P3: authored event text must @-mention the agent or App
   configRevision: string // BigInt JSON/wire form; CP-owned, monotonic
@@ -3899,6 +3962,21 @@ export interface CreateGithubHookInput {
   gateMode?: HookGateMode
 }
 
+// gitlab kind: the project must already be a managed binding in the org — the CP
+// validates the numeric id against its own row and derives the path from it.
+export interface CreateGitlabHookInput {
+  agentId: string
+  name: string
+  enabled?: boolean
+  projectId: string // numeric GitLab project id
+  events: string[] // 'issues:*' / 'merge_request:*' / 'push:*' — at least one
+  commentFamilies?: GitlabCommentFamily[]
+  mentionOnly?: boolean
+  reviewPolicy?: HookReviewPolicy
+  // 'check' publishes the merge-request run note; no gateMode — GitLab has no required gate.
+  reportingMode?: HookReportingMode
+}
+
 // A hook is subordinate to its agent (like an Integration), so there is no
 // org-wide hook list — you fetch ONE agent's hooks, gated server-side by that
 // agent's visibility (404 for an agent you can't see).
@@ -3929,6 +4007,19 @@ export async function updateGithubHook(id: string, input: CreateGithubHookInput)
   return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(id)}`, { kind: 'github', ...input })
 }
 
+// GitLab subscription — no URL, no secret: the managed project webhook signs its
+// own deliveries. Events ride through the relay, one session per issue/MR thread.
+export async function createGitlabHook(input: CreateGitlabHookInput): Promise<CreatedHookDto> {
+  const hook = await apiPost<CreatedHookDto>(`${orgBase()}/hooks`, { kind: 'gitlab', ...input })
+  track('hook_created', { org_id: apiOrgId, agent_id: hook.agentId, hook_kind: hook.kind, hook_id: hook.id })
+  return hook
+}
+
+// Update a gitlab hook's subscription. Whole-definition PUT, like the github one.
+export async function updateGitlabHook(id: string, input: CreateGitlabHookInput): Promise<HookDto> {
+  return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(id)}`, { kind: 'gitlab', ...input })
+}
+
 export async function deleteHook(id: string): Promise<void> {
   await apiDelete<void>(`${orgBase()}/hooks/${encodeURIComponent(id)}`)
   track('hook_deleted', { org_id: apiOrgId, hook_id: id })
@@ -3936,6 +4027,31 @@ export async function deleteHook(id: string): Promise<void> {
 
 export async function fetchHookRuns(id: string, orgId?: string): Promise<HookRunDto[]> {
   return apiGet<HookRunDto[]>(`${orgBase(orgId)}/hooks/${encodeURIComponent(id)}/runs`)
+}
+
+/** One rerun subject — the two GitLab thread kinds a session can be keyed to. */
+export interface GitlabRerunSubject {
+  kind: 'merge_request' | 'issue'
+  iid: number
+}
+
+export interface HookRerunDto {
+  accepted: true
+  deliveryKey: string
+  event: string
+  /** The merge request's current head, read live by the CP; null for an issue. */
+  headSha: string | null
+}
+
+// The "Run again" action for a GitLab trigger thread (gitlab-com-integration.md
+// §16.1). The caller names only the subject: the Control Plane reads its current
+// state and head itself, so the console can never re-run a stale revision.
+export async function rerunGitlabHook(
+  hookId: string,
+  subject: GitlabRerunSubject,
+  orgId?: string
+): Promise<HookRerunDto> {
+  return apiPost<HookRerunDto>(`${orgBase(orgId)}/hooks/${encodeURIComponent(hookId)}/rerun`, { subject })
 }
 
 // Per-conversation trigger choice (`PATCH /integrations/:id/channels/:channelId`). The CP
@@ -5181,6 +5297,199 @@ export async function fetchGithubRepoAccess(
   }
 }
 
+// ── gitlab.com connections and project bindings ──────────────────────────────
+// The org's GitLab.com OAuth connections and the projects they manage
+// (gitlab-com-integration.md §18.2). Deployment-config opt-in like the GitHub
+// App: without a GitLab OAuth application the CP registers none of these routes
+// and every call 404s — mapped to `enabled: false` so callers get a tri-state
+// instead of throws. No token material crosses this surface, ever.
+
+/** One organization GitLab.com connection — the administration identity only. */
+export interface GitlabConnectionDto {
+  id: string
+  gitlabUserId: string // numeric GitLab.com user id, losslessly as a string
+  gitlabUsername: string
+  state: 'connected' | 'reauth_required' | 'disconnected'
+  scopes: string[]
+  connectedBy: string | null // AgentConnect user id; null after user deletion
+  /** Whether this connection is the CALLER's own: takeover and reconnect act on
+   *  their own GitLab account, and the CP answers so the console compares no ids. */
+  mine: boolean
+  accessExpiresAt: string | null
+  assignedProjects: number // managed projects this connection still administers
+  createdAt: string
+}
+
+/** Deleting a connection twice means two things: the first call releases it and
+ *  returns the retained row, the second removes the row entirely. */
+export interface GitlabConnectionDeleteDto {
+  removed: boolean
+  connection: GitlabConnectionDto | null
+}
+
+/** One accessible project in the picker — metadata only, never installability. */
+export interface GitlabProjectDto {
+  projectId: string // numeric id, losslessly as a string
+  path: string // current namespaced path — display only, renames are expected
+  defaultBranch: string | null
+  lastActivityAt: string | null
+}
+
+/** The managed webhook's state. `not_needed` is a normal resting state — a project with no
+ *  enabled trigger wants no ingress — not a condition anyone has to act on. */
+export type GitlabWebhookState = 'not_needed' | 'installed' | 'repairing' | 'failed'
+
+export type GitlabProjectBindingState =
+  'provisioning' | 'ready' | 'admin_degraded' | 'runtime_degraded' | 'cleanup_pending'
+
+/** One managed project — its lifecycle state and non-secret external identity. */
+/** One agent's GitLab identity on a managed project. */
+export interface GitlabProjectAccountDto {
+  agentId: string
+  username: string
+  displayName: string | null
+  userId: string | null
+  /** The account's OWN health: an agent's identity can be broken on a ready project. */
+  state: GitlabProjectBindingState
+  stateReason: string | null
+}
+
+export interface GitlabProjectBindingDto {
+  id: string
+  projectId: string
+  projectPath: string
+  defaultBranch: string | null
+  state: GitlabProjectBindingState
+  stateReason: string | null
+  /** The connection administering this project; null once it was removed. A
+   *  project whose administering connection is not connected can neither be
+   *  repaired nor removed — it is reconnected or transferred first. */
+  installerConnectionId: string | null
+  /** The per-agent service accounts bound to this project: each agent acts on
+   *  GitLab as its own user, so a project has a member list, not one bot. */
+  accounts: GitlabProjectAccountDto[]
+  webhookState: GitlabWebhookState
+  credentialEpoch: string
+  createdAt: string
+}
+
+/** Removing a project can leave external cleanup unfinished; the binding then
+ *  stays listed as `cleanup_pending` instead of disappearing (§19.4). */
+export interface GitlabProjectRemovalDto {
+  removed: boolean
+  state?: GitlabProjectBindingState
+  stateReason?: string | null
+}
+
+/** The connection list doubles as the enabled-probe: it is viewer-readable (the
+ *  OAuth start route is not — minting a state is a write), and 404 ⇒ the feature
+ *  is off on this deployment. */
+export async function fetchGitlabConnections(): Promise<{ enabled: boolean; connections: GitlabConnectionDto[] }> {
+  try {
+    const body = await apiGet<{ connections: GitlabConnectionDto[] }>(`${orgBase()}/gitlab/connections`)
+    return { enabled: true, connections: body.connections }
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return { enabled: false, connections: [] }
+    throw e
+  }
+}
+
+/** One-shot org-bound authorization URL. Mints a state the begin hop consumes,
+ *  so fetch it fresh per click; `returnPath` is where the callback lands back. */
+export function startGitlabOauth(returnPath?: string): Promise<string> {
+  return apiPost<{ url: string }>(`${orgBase()}/gitlab/oauth/start`, returnPath ? { returnPath } : {}).then(
+    (r) => r.url
+  )
+}
+
+/** Two-step release. On a live connection this revokes the OAuth grant, drops the
+ *  stored tokens, and keeps the row so its projects can still be listed; on an
+ *  already-disconnected one that administers nothing it removes the row. Removal
+ *  is refused (409) while any project is still assigned to the connection. */
+export function disconnectGitlabConnection(id: string): Promise<GitlabConnectionDeleteDto> {
+  return apiDelete<GitlabConnectionDeleteDto>(`${orgBase()}/gitlab/connections/${encodeURIComponent(id)}`)
+}
+
+/** Server-side paginated project search. `nextPage` is null on the last page. */
+export function searchGitlabProjects(
+  connectionId: string,
+  input: { search?: string; page?: number } = {}
+): Promise<{ projects: GitlabProjectDto[]; nextPage: number | null }> {
+  const params = new URLSearchParams()
+  if (input.search?.trim()) params.set('search', input.search.trim())
+  if (input.page) params.set('page', String(input.page))
+  const query = params.toString()
+  return apiGet<{ projects: GitlabProjectDto[]; nextPage: number | null }>(
+    `${orgBase()}/gitlab/connections/${encodeURIComponent(connectionId)}/projects${query ? `?${query}` : ''}`
+  )
+}
+
+export function fetchGitlabProjects(orgId?: string): Promise<GitlabProjectBindingDto[]> {
+  return apiGet<{ bindings: GitlabProjectBindingDto[] }>(`${orgBase(orgId)}/gitlab/projects`).then((r) => r.bindings)
+}
+
+/** Bind a project. The server re-fetches it and requires current Maintainer or
+ *  Owner access, so the returned binding — not the picked row — is the truth. */
+export function createGitlabProject(input: {
+  connectionId: string
+  projectId: string
+}): Promise<GitlabProjectBindingDto> {
+  return apiPost<GitlabProjectBindingDto>(`${orgBase()}/gitlab/projects`, input)
+}
+
+/** Re-run provisioning: identity, service account, credentials, and webhook. */
+export function repairGitlabProject(id: string): Promise<GitlabProjectBindingDto> {
+  return apiPost<GitlabProjectBindingDto>(`${orgBase()}/gitlab/projects/${encodeURIComponent(id)}/repair`, {})
+}
+
+/** Take over a project whose administering account can no longer act: the CP
+ *  re-verifies the caller's own Maintainer-or-Owner access live, through the
+ *  caller's own connection, and re-runs provisioning under it. Refusals carry a
+ *  `GITLAB_*` code on the ApiError. */
+export function transferGitlabProject(id: string): Promise<GitlabProjectBindingDto> {
+  return apiPost<GitlabProjectBindingDto>(`${orgBase()}/gitlab/projects/${encodeURIComponent(id)}/transfer`, {})
+}
+
+export function deleteGitlabProject(id: string): Promise<GitlabProjectRemovalDto> {
+  return apiDelete<GitlabProjectRemovalDto>(`${orgBase()}/gitlab/projects/${encodeURIComponent(id)}`)
+}
+
+/** One organization bot for the Integrations card: the service account an agent acts as, one per
+ *  top-level group it has a bound project in, with the projects it is a member of. A project bound
+ *  to two agents therefore appears under both bots, once per membership. */
+export interface GitlabOrgAccountDto {
+  id: string
+  agentId: string
+  rootGroupId: string // numeric top-level group id, losslessly as a string
+  rootGroupPath: string | null // that group's current path, read off a bound project
+  username: string
+  displayName: string | null
+  userId: string | null // numeric GitLab user id; null until the account exists
+  state: GitlabProjectBindingState
+  stateReason: string | null
+  lifecycle: 'active' | 'retiring'
+  /** The bound projects this account is a member of — which, not how: a project is managed
+   *  where it is used, and this only tells a held binding from an orphaned one. */
+  bindingIds: string[]
+}
+
+/** The organization's bots, plus whether account convergence still owes it work — the console
+ *  cannot judge that itself, so it asks again only while the answer is yes.
+ *  Same enabled-probe shape as the connection list: 404 ⇒ no GitLab app. */
+export async function fetchGitlabAccounts(
+  orgId?: string
+): Promise<{ enabled: boolean; accounts: GitlabOrgAccountDto[]; converging: boolean }> {
+  try {
+    const body = await apiGet<{ accounts: GitlabOrgAccountDto[]; converging: boolean }>(
+      `${orgBase(orgId)}/gitlab/accounts`
+    )
+    return { enabled: true, accounts: body.accounts, converging: body.converging }
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return { enabled: false, accounts: [], converging: false }
+    throw e
+  }
+}
+
 // ── agent repository authorizations (agent-multi-repo-authorization.md) ──────
 // Explicit non-workspace repo grants on an agent — the detail page's
 // Repositories card. The workspace repo is implicit and never listed here; the
@@ -5193,11 +5502,18 @@ export type RepoAccess = 'read' | 'comment' | 'write'
 
 export interface AgentRepoAuthDto {
   id: string
-  repoId?: string // rename-proof GitHub numeric id (absent on an older CP)
-  repoFullName: string // owner/repo as GitHub cases it (refreshed on rename)
+  /** Which host numbers `repoId`. Absent on an older CP, where every grant is GitHub. */
+  provider?: 'github' | 'gitlab'
+  repoId?: string // rename-proof numeric repository/project id (absent on an older CP)
+  repoFullName: string // owner/repo as GitHub cases it, or the GitLab project path (refreshed on rename)
   access: RepoAccess
   createdBy: string | null // authorizer's userId (resolved to a name / "You" in the UI); null for key-created
   createdAt: string // ISO-8601
+}
+
+/** Which host a grant row names — an older CP omits the field and means GitHub. */
+export function repoAuthProvider(row: AgentRepoAuthDto): 'github' | 'gitlab' {
+  return row.provider ?? 'github'
 }
 
 // Gated by the agent's visibility server-side (404 for an agent you can't see) —
@@ -5212,7 +5528,9 @@ export async function fetchAgentRepos(agentId: string, orgId?: string): Promise<
 // USER_NO_ACCESS) that the add-repo modal words inline.
 export async function createAgentRepo(
   agentId: string,
-  input: { repoFullName: string; access: RepoAccess }
+  // One arm per host: a GitHub repository by full name, a GitLab project by its
+  // numeric id (the namespaced path is never a match key).
+  input: { repoFullName: string; access: RepoAccess } | { provider: 'gitlab'; projectId: string; access: RepoAccess }
 ): Promise<AgentRepoAuthDto> {
   const path = `${orgBase()}/agents/${encodeURIComponent(agentId)}/repos`
   const res = await authenticatedFetch(

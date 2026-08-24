@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { effectiveAgentId, repoFromPath } from '../../src/cli/git-credential.js'
 import { normalizeRepoArg } from '../../src/cp/gh-target.js'
-import { GITCRED_AGENT_ENV, GitCredServer } from '../../src/cp/gitcred-server.js'
+import { GITCRED_AGENT_ENV, GitCredServer, type GitCredServerDeps } from '../../src/cp/gitcred-server.js'
 import type { GitCredentialCache } from '../../src/cp/git-credential.js'
 
 describe('repoFromPath (git credential path → owner/repo)', () => {
@@ -70,9 +70,16 @@ describe('normalizeRepoArg (gh wrapper repo argument)', () => {
 })
 
 describe('GitCredServer routing (gitcred.sock)', () => {
+  interface GetOpts {
+    plane?: string
+    repo?: string
+    provider?: string
+    externalRepoId?: string
+    requestedAccess?: string
+  }
   interface GetCall {
     agentId: string
-    opts?: { plane?: string; repo?: string }
+    opts?: GetOpts
   }
   interface EraseCall {
     agentId: string
@@ -87,7 +94,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     if (dir) rmSync(dir, { recursive: true, force: true })
   })
 
-  function boot(workspace?: string) {
+  function boot(workspace?: string, spec?: Partial<GitCredServerDeps>) {
     dir = mkdtempSync(join(tmpdir(), 'gitcred-routing-'))
     const sockPath = join(dir, 'gitcred.sock')
     const gets: GetCall[] = []
@@ -95,7 +102,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     const logs: string[] = []
     const warnings: string[] = []
     const fakeCache = {
-      get: async (agentId: string, _reason: string, opts?: { plane?: string; repo?: string }) => {
+      get: async (agentId: string, _reason: string, opts?: GetOpts) => {
         gets.push({ agentId, ...(opts ? { opts } : {}) })
         return {
           username: 'x-access-token',
@@ -105,13 +112,14 @@ describe('GitCredServer routing (gitcred.sock)', () => {
           expiresAtMono: 0
         }
       },
-      invalidate: (agentId: string, password?: string, opts?: { plane?: string; repo?: string }) => {
+      invalidate: (agentId: string, password?: string, opts?: GetOpts) => {
         erases.push({ agentId, ...(password !== undefined ? { password } : {}), ...(opts ? { opts } : {}) })
       }
     }
     server = new GitCredServer(fakeCache as unknown as GitCredentialCache, sockPath, {
       log: { info: (message) => logs.push(message), warn: (message) => warnings.push(message) },
-      ...(workspace ? { workspaceRepoOf: () => workspace } : {})
+      ...(workspace ? { workspaceRepoOf: () => workspace } : {}),
+      ...spec
     })
     const capability = server.capabilityFor('a1')
     server.start()
@@ -150,6 +158,47 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     expect(logs.join('\n')).not.toContain('ghs_test')
   })
 
+  it('names the numeric project id for an authorized additional gitlab project (§8.3)', async () => {
+    // Without the id the ask travels as a display path only, the control plane
+    // answers with the WORKSPACE grant, and the echo check rejects it — which is
+    // what leaves an exact checkout of an authorized project credential-less.
+    const { sockPath, gets, capability } = boot('example-group/example-project', {
+      providerOf: () => 'gitlab',
+      gitlabProjectOf: (_agentId, repoFullName) =>
+        repoFullName === 'example-group/example-second' ? '4455668' : undefined
+    })
+    const res = await roundtrip(sockPath, {
+      op: 'get',
+      agentId: 'a1',
+      capability,
+      repoFullName: 'example-group/example-second',
+      provider: 'gitlab'
+    })
+    expect(res.ok).toBe(true)
+    expect(gets).toEqual([
+      {
+        agentId: 'a1',
+        opts: { plane: 'git', repo: 'example-group/example-second', provider: 'gitlab', externalRepoId: '4455668' }
+      }
+    ])
+  })
+
+  it('denies a gitlab project the replicated spec does not authorize', async () => {
+    const { sockPath, gets, capability } = boot(undefined, {
+      providerOf: () => 'github',
+      gitlabProjectOf: () => undefined
+    })
+    const res = await roundtrip(sockPath, {
+      op: 'get',
+      agentId: 'a1',
+      capability,
+      repoFullName: 'example-group/unauthorized',
+      provider: 'gitlab'
+    })
+    expect(res.ok).toBe(false)
+    expect(gets).toEqual([]) // refused locally; the control plane is never asked
+  })
+
   it('folds a request naming the workspace repo onto the repo-less key', async () => {
     const { sockPath, gets, capability } = boot('acme/infra')
     const res = await roundtrip(sockPath, {
@@ -160,6 +209,34 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     })
     expect(res.ok).toBe(true)
     expect(gets).toEqual([{ agentId: 'a1', opts: { plane: 'git' } }]) // no repo → workspace key
+  })
+
+  it('erases the provider-qualified key a named gitlab project was served under', async () => {
+    // A scratch or github-workspace agent holding a gitlab additional project has a
+    // cache entry keyed gitlab, while its WORKSPACE says github. Deriving erase from
+    // the workspace alone would invalidate the github key and leave the rejected
+    // GitLab token live until its TTL.
+    const { sockPath, erases, capability } = boot(undefined, {
+      providerOf: () => 'github',
+      gitlabProjectOf: (_agentId, repoFullName) =>
+        repoFullName === 'example-group/example-second' ? '4455668' : undefined
+    })
+    const res = await roundtrip(sockPath, {
+      op: 'erase',
+      agentId: 'a1',
+      capability,
+      password: 'glpat_dead',
+      repoFullName: 'example-group/example-second',
+      provider: 'gitlab'
+    })
+    expect(res.ok).toBe(true)
+    expect(erases).toEqual([
+      {
+        agentId: 'a1',
+        password: 'glpat_dead',
+        opts: { plane: 'git', repo: 'example-group/example-second', provider: 'gitlab' }
+      }
+    ])
   })
 
   it('routes erase to the same key the get used', async () => {

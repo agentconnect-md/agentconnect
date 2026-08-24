@@ -40,6 +40,7 @@ import { organizationEnvironmentRoutes } from './routes/organization-environment
 import { connectorRoutes } from './routes/connectors.js'
 import { memoryConnectionRoutes } from './routes/memory-connections.js'
 import { githubRoutes, githubCallbackRoutes } from './routes/github.js'
+import { gitlabRoutes, gitlabOauthRoutes } from './routes/gitlab.js'
 import { agentIconRoutes } from './routes/agent-icon.js'
 import { orgIconRoutes } from './routes/org-icon.js'
 import { iconUploadRoutes } from './routes/icon-upload.js'
@@ -266,6 +267,9 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
       // Unauthenticated GitHub setup callback (browser redirect; org rides the
       // signed state) — version root, deliberately OUTSIDE the org subtree.
       await api.register(githubCallbackRoutes(deps))
+      // Unauthenticated GitLab OAuth begin/callback hops (browser redirects; the
+      // one-shot state row carries the org) — version root, outside the org subtree.
+      await api.register(gitlabOauthRoutes(deps))
       // Unauthenticated PLATFORM callbacks from the registry (§9
       // `installRoutes('public-callback')`) — browser redirects whose state
       // rides the OAuth exchange: today the Slack quick-install callback and its
@@ -320,6 +324,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
           await scope.register(sessionRoutes(deps))
           await scope.register(streamRoutes(deps))
           await scope.register(githubRoutes(deps))
+          await scope.register(gitlabRoutes(deps))
           // Uploaded-icon write surface — mounted ONLY when the object store is
           // configured; absent ⇒ the routes don't exist and the console hides Upload.
           if (deps.iconStore) await scope.register(iconUploadRoutes(deps))
@@ -358,6 +363,7 @@ export function buildHttpServer(deps: HttpDeps, opts: FastifyServerOptions = {})
   void app.register(
     async (pub) => {
       await pub.register(githubCallbackRoutes(deps))
+      await pub.register(gitlabOauthRoutes(deps))
       // The SAME platform callback plugins as the `/api/v1` mount above — the
       // deliberate double mount (§9: "core mounts this scope twice"), so a
       // callback URL handed out in the public form routes in both shapes.

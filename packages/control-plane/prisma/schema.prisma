@@ -89,10 +89,14 @@ model Org {
   memberSets                MemberSet[]
   crons                     CronDef[]
   hooks                     HookDef[]
+  codeHostRepositories      CodeHostRepository[]
   apiKeys                   ApiKey[]
   integrations              Integration[]
   bots                      Bot[]
   githubInstallations       GithubInstallation[]
+  gitlabConnections         GitlabConnection[]
+  gitlabProjectBindings     GitlabProjectBinding[]
+  gitlabAgentAccounts       GitlabAgentAccount[]
   slackUserConfigs          SlackUserConfig[]
   inviteLink                OrgInviteLink?
   mcpProviders              McpProvider[]
@@ -109,6 +113,8 @@ model Org {
   sessionExternalAccess     SessionExternalAccessPolicy[]
   environmentEntries        OrganizationEnvironmentEntry[]
   dutyGroups                DutyGroup[]
+  codeHostReviewLeases      CodeHostReviewLease[]
+  codeHostReviewOutcomes    CodeHostReviewAttemptOutcome[]
 
   @@index([createdByUserId])
   @@map("org")
@@ -150,6 +156,7 @@ model User {
   createdHooks                     HookDef[]                  @relation("HookCreatedBy")
   modifiedHooks                    HookDef[]                  @relation("HookModifiedBy")
   createdRepoAuths                 AgentRepoAuthorization[]   @relation("AgentRepoAuthCreatedBy")
+  gitlabConnections                GitlabConnection[]         @relation("GitlabConnectionUser")
   slackConfigs                     SlackUserConfig[]
   createdInviteLinks               OrgInviteLink[]            @relation("OrgInviteLinkCreatedBy")
   inviteRedemptions                OrgInviteRedemption[]
@@ -651,6 +658,7 @@ model RuntimeProfile {
 enum WorkspaceMode {
   scratch // fresh empty working dir, no repo
   github // clone gitRepo @ gitBranch, run in agentDir
+  gitlab // clone a managed GitLab project binding @ gitBranch, run in agentDir
 }
 
 enum WorkspaceIsolation {
@@ -883,29 +891,92 @@ enum RepoAccess {
   write // all write — secondary working repo
 }
 
-/// Explicit grant of a GitHub repo to an agent (issue #457,
-/// agent-multi-repo-authorization.md). Anchored on the agent, NOT on hooks —
-/// creating a hook must never silently widen credentials. `repoId` (numeric,
-/// rename-immune) is the match key; `repoFullName` is display + the request
-/// fast-path. The covering installation is deliberately NOT bound here: minting
-/// re-resolves the live installation by repo owner (gitcred decision 7), so an
-/// uninstall→reinstall self-heals. Rows are mutable (add/remove) — the
-/// workspace-immutability convention is untouched.
+/// Explicit grant of one code-host repository to an agent (issue #457,
+/// agent-multi-repo-authorization.md; gitlab-com-integration.md §8.3). Anchored on
+/// the agent, NOT on hooks — creating a hook must never silently widen
+/// credentials. `repoId` (numeric, rename-immune) is the match key WITHIN a
+/// provider; `repoFullName` is display + the request fast-path. The covering
+/// installation is deliberately NOT bound here: minting re-resolves the live
+/// installation by repo owner (gitcred decision 7), so an uninstall→reinstall
+/// self-heals. Rows are mutable (add/remove) — the workspace-immutability
+/// convention is untouched.
 model AgentRepoAuthorization {
-  id              String     @id @default(uuid()) @db.Uuid
-  agentId         String     @db.Uuid
-  repoId          BigInt // GitHub numeric repo id — the match key
-  repoFullName    String // "owner/repo" — display + case-insensitive fast-path; refreshed on rename detection
-  access          RepoAccess
+  id String @id @default(uuid()) @db.Uuid
+  agentId String @db.Uuid
+  /// 'github' | 'gitlab' — TEXT with the closed-set guard at the application layer,
+  /// matching CodeHostRepository. The two hosts number their repositories
+  /// independently, so identity is (provider, repoId), never repoId alone.
+  provider String @default("github")
+  repoId BigInt // numeric repository/project id — the match key
+  repoFullName String // "owner/repo" or "group/subgroup/project" — display + case-insensitive fast-path; refreshed on rename detection
+  access RepoAccess
   createdByUserId String? // audit: who authorized (the identity-assertion subject)
-  createdAt       DateTime   @default(now()) @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   agent     Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   createdBy User? @relation("AgentRepoAuthCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
-  @@unique([agentId, repoId])
+  @@unique([agentId, provider, repoId])
   @@index([agentId])
   @@map("agent_repo_authorization")
+}
+
+/// Provider-qualified repository catalog (gitlab-com-integration.md §8.1) — the
+/// org-scoped identity every code-host reference converges on. `provider` is
+/// TEXT, not an enum (the platform-text precedent above): a new host id must be
+/// storable without a migration, with the closed-set guard at the application
+/// layer. `externalId` (numeric, rename-immune) is the authority; `displayPath`
+/// and `cloneUrl` are mutable hints refreshed from the provider. GitHub rows are
+/// backfilled readers-first: legacy `repoId`/`repoFullName` columns stay the
+/// read path until writers cut over.
+model CodeHostRepository {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String
+  provider      String // 'github' | 'gitlab' — app-layer closed set
+  externalId    BigInt // numeric repo/project id — the match key
+  displayPath   String // "owner/repo" / "group/subgroup/project" — display only
+  cloneUrl      String? // canonical HTTPS clone URL
+  defaultBranch String?
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, provider, externalId])
+  @@index([orgId])
+  @@map("code_host_repository")
+}
+
+/// Deployment-GLOBAL single-owner claim over one external repository/project
+/// (§8.1): within one deployment, one numeric project has at most one managing
+/// organization. Acquired transactionally BEFORE any provider mutation; a
+/// uniqueness loser may not begin provisioning. Deliberately org-relation-free
+/// and binding-relation-free (`bindingRef` is a soft pointer): the claim must
+/// survive owner deletion so `cleanup_pending` external state is never orphaned
+/// silently, and release requires provider-verified cleanup, never elapsed time.
+/// GitHub keeps its existing installation claim; only GitLab rows live here in v1.
+model CodeHostRepositoryClaim {
+  id         String   @id @default(uuid()) @db.Uuid
+  provider   String
+  externalId BigInt
+  orgId      String // owning organization — soft reference, see above
+  bindingRef String?  @db.Uuid // owning provider binding (e.g. GitlabProjectBinding), soft reference
+  generation BigInt   @default(1) // incremented on ownership transfer
+  state      String // provisioning | active | transferring | cleanup_pending — app-layer closed set
+  // Metadata-only cleanup facts (external ids, never secrets) preserved when the
+  // owning binding disappears before external cleanup completed (§10.2/§19.4).
+  tombstone  Json?
+  // §10.2 mutual exclusion: an EXCLUSIVE run-owned provisioning lease. Acquired
+  // CAS-style before any provider write; cleanup refuses while it is live; only
+  // the owning run releases it, and only expiry lets another run reclaim.
+  opOwner      String?
+  opLeaseUntil DateTime? @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([provider, externalId])
+  @@index([orgId])
+  @@map("code_host_repository_claim")
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1029,6 +1100,11 @@ model SessionMeta {
   triggeredBy         String?
   channelName         String?
   triggeredByName     String?
+  // Trigger-identity snapshot, frozen at creation beside triggeredBy/triggeredByName: the
+  // KIND of hook this session fired from. The hook row can be deleted and recreated, and
+  // without this the session would silently degrade to the generic webhook rendering.
+  // Null on rows written before this column — those still resolve through the live hook.
+  hookKind            HookKind?
   threadUrl           String?             @db.Text
   // ── execution-config snapshot (what the session actually ran with) ──
   // Daemon-reported via event/session (session override ?? agent config at run
@@ -1593,6 +1669,7 @@ model CronRun {
 enum HookKind {
   webhook // generic inbound webhook (POST /webhooks/in/:token on the relay)
   github // GitHub event subscription (P2)
+  gitlab // GitLab.com event subscription (gitlab-com-integration.md §8.3)
 }
 
 enum HookSessionMode {
@@ -1827,6 +1904,123 @@ model HookReviewProjection {
   @@map("hook_review_projection")
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Provider-neutral formal reviews (gitlab-com-integration.md §15.1, §15.2).
+//   Every agent on a project publishes through ONE service account, and the
+//   provider's bulk-publish endpoint carries no attempt identifier — so the
+//   publication lease below is a correctness boundary, not an optimization.
+//   Review bodies and inline comments never reach these tables.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// The durable publication lease for one `(provider, project, merge-request IID,
+/// service-account user)` subject. Acquisition is compare-and-swap, increments
+/// `fence`, and admits exactly one owner across agents and daemons. The subject
+/// key deliberately omits `orgId`: the boundary is the provider-side merge
+/// request, and the global project claim already gives it one owning org.
+model CodeHostReviewLease {
+  id                       String    @id @default(uuid()) @db.Uuid
+  orgId                    String
+  provider                 String    // 'gitlab' today — app-layer closed set (protocol code-host.ts)
+  projectExternalId        BigInt
+  mergeRequestIid          Int
+  serviceAccountExternalId BigInt
+  // Monotonic and never reused; bumped on every acquisition so a stale broker
+  // cannot obtain another operation record. Never a provider-side fence (§15.1).
+  fence                    BigInt    @default(0)
+  // The current owner; null only while the lease is settled.
+  attemptId                String?   @unique @db.Uuid
+  ownerDaemonId            String?   @db.Uuid
+  agentId                  String?   @db.Uuid
+  hookId                   String?   @db.Uuid
+  deliveryKey              String?
+  event                    String?
+  verdict                  String?
+  headSha                  String?
+  // open / publishing / classifying / settled / ambiguous_locked — app-layer closed set.
+  // `ambiguous_locked` retains its attempt indefinitely: no timeout, no force unlock.
+  phase                    String    @default("settled")
+  // Advisory only. An expired lease permits a TRANSFER decision, never a takeover:
+  // once a record was issued, transfer needs one of the four §15.1 conditions.
+  leaseUntil               DateTime? @db.Timestamptz(6)
+  // Short normalized lock category for operator diagnosis. Never provider text.
+  lockedReason             String?
+  lockedAt                 DateTime? @db.Timestamptz(6)
+  createdAt                DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime  @updatedAt @db.Timestamptz(6)
+
+  org        Org                       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  operations CodeHostReviewOperation[]
+
+  @@unique([provider, projectExternalId, mergeRequestIid, serviceAccountExternalId], map: "code_host_review_lease_subject_key")
+  @@index([orgId])
+  @@index([phase, leaseUntil])
+  @@map("code_host_review_lease")
+}
+
+/// One single-use provider-mutation permit. Bound to attempt, fence, kind,
+/// method, target, and ordinal; `issued` -> `request_started` (atomically, before
+/// the outbound request) -> `settled` or `ambiguous`, or `unused` when the same
+/// live broker durably returns it before any request starts. `startToken` is the
+/// broker's id for the ONE intended request, so a lost reply is retransmittable
+/// while a second, different start is refused.
+model CodeHostReviewOperation {
+  id                 String    @id @default(uuid()) @db.Uuid
+  leaseId            String    @db.Uuid
+  orgId              String
+  attemptId          String    @db.Uuid
+  fence              BigInt
+  ordinal            Int
+  kind               String    // draft_create / draft_delete / bulk_publish / approval
+  method             String    // POST / PUT / PATCH / DELETE
+  target             String    // bounded request path — body-free by construction
+  state              String    @default("issued") // issued / request_started / settled / ambiguous / unused
+  startToken         String?   @db.Uuid
+  responseStatus     Int?
+  responseExternalId String?
+  resultCode         String?   // short normalized code; provider error text never lands here
+  issuedAt           DateTime  @default(now()) @db.Timestamptz(6)
+  startedAt          DateTime? @db.Timestamptz(6)
+  // Set the first time this record was classified ambiguous and retained after a
+  // later positive identification — that history is §15.1's fourth transfer condition.
+  ambiguousAt        DateTime? @db.Timestamptz(6)
+  settledAt          DateTime? @db.Timestamptz(6)
+
+  lease CodeHostReviewLease @relation(fields: [leaseId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, fence, kind, ordinal], map: "code_host_review_operation_permit_key")
+  @@index([leaseId, state])
+  @@index([orgId])
+  @@map("code_host_review_operation")
+}
+
+/// The body-free outcome of one formal review attempt (§15.2). The control plane
+/// stores the attempt id, external ids, event, verdict, head SHA, and normalized
+/// state — never a review body, an inline comment, or provider prose.
+/// `externalIds` entries are `"<kind>:<numeric id>"`, validated on write, so the
+/// column cannot hold text.
+model CodeHostReviewAttemptOutcome {
+  attemptId         String   @id @db.Uuid
+  orgId             String
+  hookId            String   @db.Uuid
+  deliveryKey       String
+  provider          String
+  projectExternalId BigInt
+  mergeRequestIid   Int
+  event             String
+  verdict           String
+  headSha           String
+  state             String
+  externalIds       String[] @default([])
+  recordedAt        DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([hookId, deliveryKey])
+  @@map("code_host_review_attempt_outcome")
+}
+
 model HookReviewSubject {
   projectionId String   @db.Uuid
   pullNumber   Int
@@ -1840,6 +2034,80 @@ model HookReviewSubject {
   @@id([projectionId, pullNumber])
   @@index([headSha])
   @@map("hook_review_subject")
+}
+
+// Provider-neutral informational run projection (gitlab-com-integration.md §16).
+// ONE note per (hook, project, merge-request IID, head SHA, projection epoch).
+// The Control Plane records the desired generation; the OWNING DAEMON is the
+// only provider writer, so `leaseOwner` is the daemon that holds the write and
+// an offline or non-advertising daemon simply leaves the row pending. Same
+// no-FK discipline as hook_review_projection: cleanup outlives its owner rows.
+model CodeHostRunProjection {
+  id              String  @id @default(uuid()) @db.Uuid
+  provider        String
+  hookId          String  @db.Uuid
+  orgId           String
+  agentId         String  @db.Uuid
+  // Snapshotted so a projection survives Agent deletion for cleanup.
+  agentName       String?
+  projectId       BigInt
+  projectPath     String
+  mergeRequestIid Int
+  headSha         String
+  projectionEpoch BigInt
+
+  generation         BigInt  @default(1)
+  currentDeliveryKey String?
+  // Relay ingest / report time of the delivery that owns the row; an older edge never takes it back.
+  currentRunAt       DateTime? @db.Timestamptz(6)
+  // The hidden stable marker the daemon reconciles its note by; stable across generations.
+  externalId         String  @unique
+  noteId             String?
+
+  desiredState  String
+  observedState String?
+  // Bounded normalized code only — never provider or runtime exception text.
+  reason        String?
+  // Terminal-authority watermark: a late queued/running edge cannot regress a sealed generation.
+  sealedThrough BigInt  @default(0)
+
+  queuedAt    DateTime? @db.Timestamptz(6)
+  startedAt   DateTime? @db.Timestamptz(6)
+  completedAt DateTime? @db.Timestamptz(6)
+
+  // ACP session behind the ordinary authenticated Console link; never a token-bearing URL.
+  sessionId       String?
+  // Purge fence copied from the project binding: a stale effect lease loses against a newer epoch.
+  credentialEpoch BigInt  @default(1)
+  // The complete §17.2 placement fence, stored verbatim so the desired frame echoes exactly the
+  // accepted dispatch tuple. Any member missing ⇒ the row is not dispatchable (fail closed).
+  configRevision        BigInt?
+  dispatchRevision      BigInt?
+  dispatchDaemonId      String? @db.Uuid
+  reviewPolicySnapshot  String?
+  reportingModeSnapshot String?
+  gateModeSnapshot      String?
+
+  // Write ownership. `leaseOwner` is the daemon id; `writeMarker`/`writePhase` are the
+  // in-flight mutation mutex, and ownership may not move while one is set.
+  leaseOwner     String?
+  leaseUntil     DateTime? @db.Timestamptz(6)
+  nextAttemptAt  DateTime? @db.Timestamptz(6)
+  attempts       Int       @default(0)
+  lastErrorCode  String?
+  pendingIntent  Json?     @db.JsonB
+  writeMarker    String?   @unique
+  writePhase     String?
+  writeStartedAt DateTime? @db.Timestamptz(6)
+  tombstonedAt   DateTime? @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@unique([hookId, projectId, mergeRequestIid, headSha, projectionEpoch])
+  @@index([orgId])
+  @@index([nextAttemptAt, leaseUntil])
+  @@index([hookId, projectId, mergeRequestIid])
+  @@index([agentId])
+  @@map("code_host_run_projection")
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -2135,10 +2403,20 @@ model IntegrationChannel {
   space         String?
   isPrivate     Boolean          @default(false)
   kind          ConversationKind @default(channel)
+  // The 1:1 DM counterpart's platform member id (resource-visibility.md §14.8). Control
+  // metadata of the same class as `name` — it says WHO the row is with, which is what
+  // lets a private agent's DM follow that person's linked console identity instead of
+  // defaulting Off. Null on channels, on group DMs, and on rows reported before §14.8.
+  dmUserId      String?
   // Relay-backed shared-bot rows repeat the effective trigger across each active
   // integration so deleting the canonical owner does not discard conversation state.
   // Classic integrations keep their trigger per integration.
   trigger       ChannelTrigger   @default(mention)
+  // True once a HUMAN chose this conversation's trigger (resource-visibility.md §14.8).
+  // A stored Off is otherwise indistinguishable from a default nobody has decided yet,
+  // and the two need opposite treatment: §14.8's catch-up may open a defaulted row and
+  // must never reopen one an editor deliberately closed.
+  triggerChosen Boolean          @default(false)
   // Per-conversation default/owning agent for a SHARED bot (shared-bot-relay.md §10.1
   // conversation ownership — the primary disambiguation path). Exactly one active
   // integration row per shared conversation carries the owner; sibling rows are null.
@@ -2400,6 +2678,240 @@ model GithubInstallState {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
   @@map("github_install_state")
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// GitLab.com integration (gitlab-com-integration.md §8.2, §9) — the OAuth
+// administration identity. Metadata here; sealed token material lives ONLY in
+// the side-tables read through their secret stores (BotSecret discipline).
+// ───────────────────────────────────────────────────────────────────────────
+
+/// One org member's GitLab.com OAuth connection — the ADMINISTRATION identity
+/// (project discovery, provisioning); never a runtime credential. `state` is
+/// TEXT with the app-layer closed set: connected | reauth_required | disconnected.
+model GitlabConnection {
+  id              String    @id @default(uuid()) @db.Uuid
+  orgId           String
+  userId          String? // the AgentConnect user who connected; null after user deletion
+  gitlabUserId    BigInt // numeric GitLab.com user id — the stable identity
+  gitlabUsername  String // display only, refreshed on sync
+  scopes          String[]  @default([])
+  accessExpiresAt DateTime? @db.Timestamptz(6) // access-token expiry (observability; refresh is authoritative)
+  state           String
+  // Refresh single-writer (§9.3): one process claims the lease, refreshes, and
+  // commits both sealed tokens under a tokenVersion CAS; others reload.
+  tokenVersion    BigInt    @default(1)
+  refreshLeaseOwner String?
+  refreshLeaseUntil DateTime? @db.Timestamptz(6)
+  lastSyncAt      DateTime? @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+
+  org    Org                     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user   User?                   @relation("GitlabConnectionUser", fields: [userId], references: [id], onDelete: SetNull)
+  secret GitlabConnectionSecret?
+  installedBindings GitlabProjectBinding[] @relation("GitlabBindingInstaller")
+  administeredAccounts GitlabAgentAccount[] @relation("GitlabAccountAdministrator")
+
+  @@unique([orgId, gitlabUserId])
+  @@index([orgId])
+  @@map("gitlab_connection")
+}
+
+/// Sealed OAuth access+refresh pair, 1:1 with GitlabConnection. BotSecret
+/// discipline: list/DTO queries never join it; read ONLY via the secret store.
+model GitlabConnectionSecret {
+  connectionId String @id @db.Uuid
+  accessToken  String // stored SecretCipher representation
+  refreshToken String // stored SecretCipher representation
+
+  connection GitlabConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@map("gitlab_connection_secret")
+}
+
+/// One managed GitLab.com project (gitlab-com-integration.md §8.2, §10): the
+/// org-scoped binding that owns the Project Service Account, purpose-separated
+/// credentials, and the managed webhook. `state` is TEXT with the app-layer
+/// closed set: provisioning | ready | admin_degraded | runtime_degraded |
+/// cleanup_pending — never collapsed into one connected boolean (§8.2).
+model GitlabProjectBinding {
+  id                     String    @id @default(uuid()) @db.Uuid
+  orgId                  String
+  projectId              BigInt // numeric GitLab.com project id — the match key
+  projectPath            String // current namespaced path — display only, refreshed by the reconciler
+  defaultBranch          String?
+  // The OAuth connection currently responsible for administration (§7.1); a
+  // different Maintainer/Owner may explicitly take over. SetNull on removal —
+  // the binding then reads admin_degraded, never silently transfers.
+  installerConnectionId  String?   @db.Uuid
+  webhookId              BigInt? // the one AgentConnect-managed project webhook (§10.3)
+  desiredEventsHash      String? // hash of the enabled-hook event union the webhook was last converged to
+  credentialEpoch        BigInt    @default(1) // purge fence: bumped on rotation/revocation/disconnect
+  // A convergence that lost a fence wrote nothing, so this is the only record
+  // that one is still owed. Neutral, not a degraded state: the binding keeps
+  // whatever it was, and a sweep re-drives it — including after a restart.
+  convergeOwedAt         DateTime? @db.Timestamptz(6)
+  state                  String
+  stateReason            String? // bounded normalized repair category for degraded states
+  createdAt              DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime  @updatedAt @db.Timestamptz(6)
+
+  org         Org               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  installer   GitlabConnection? @relation("GitlabBindingInstaller", fields: [installerConnectionId], references: [id], onDelete: SetNull)
+  memberships GitlabAccountMembership[]
+  webhookSecret GitlabWebhookSecret?
+
+  @@unique([orgId, projectId])
+  @@index([orgId])
+  @@index([convergeOwedAt])
+  @@map("gitlab_project_binding")
+}
+
+/// One group service account per (organization, agent, top-level group) — the
+/// runtime identity every note, review, and push is authored by (§7.2, §8.2).
+/// `username` is the rename-stable deterministic marker; `displayName` is the
+/// last synced label. `agentId` deliberately carries NO foreign key: an account
+/// whose external cleanup is still owed outlives the agent that earned it.
+/// `state` is TEXT with the binding's own closed set; `lifecycle` is the
+/// generation fence a membership insert commits against (§7.2).
+model GitlabAgentAccount {
+  id                        String    @id @default(uuid()) @db.Uuid
+  orgId                     String
+  agentId                   String    @db.Uuid
+  rootGroupId               BigInt // numeric TOP-LEVEL group id — accounts cannot cross it
+  serviceAccountUserId      BigInt? // numeric GitLab user id; null until created
+  username                  String // <agentSlug>-<agentId12>-<root36>, taken at creation
+  displayName               String? // fingerprint of the agent name last synced to the provider
+  avatarFingerprint         String? // fingerprint of the agent icon last uploaded as the avatar
+  createAttemptId           String? // open service-account create attempt (§7.2 recovery window)
+  createAttemptAt           DateTime? @db.Timestamptz(6) // when that attempt opened
+  createAttemptKnownIds     BigInt[] // the root's service accounts when it opened
+  credentialEpoch           BigInt    @default(1) // purge fence: bumped on every PAT rotation
+  administeringConnectionId String?   @db.Uuid // the OAuth connection currently administering it
+  leaseOwner                String? // account mutation lease (§7.2): create/rotate/rename/retire
+  leaseUntil                DateTime? @db.Timestamptz(6)
+  generation                BigInt    @default(1) // lifecycle generation a membership insert fences on
+  lifecycle                 String    @default("active") // active | retiring
+  // The binding removal, if any, that is waiting on this retirement. Memberships
+  // are detached before a deletion settles, so without this the removal would
+  // lose track of what it still owes evidence for. No relation: the row must
+  // outlive a binding that is removed once every obligation clears.
+  retiringForBindingId      String?   @db.Uuid
+  state                     String
+  stateReason               String? // bounded repair category, e.g. service_account_quota
+  createdAt                 DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt                 DateTime  @updatedAt @db.Timestamptz(6)
+
+  org           Org                       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  administering GitlabConnection?         @relation("GitlabAccountAdministrator", fields: [administeringConnectionId], references: [id], onDelete: SetNull)
+  memberships   GitlabAccountMembership[]
+  credentials   GitlabProjectCredential[]
+
+  @@unique([orgId, agentId, rootGroupId])
+  @@index([orgId])
+  @@index([agentId])
+  @@index([retiringForBindingId])
+  @@map("gitlab_agent_account")
+}
+
+/// One account's project membership — authorization made external (§7.2). The
+/// row is inserted against the account's CURRENT lifecycle generation, so a
+/// bind racing a retirement loses deterministically instead of resurrecting a
+/// deleted account.
+model GitlabAccountMembership {
+  id                String   @id @default(uuid()) @db.Uuid
+  accountId         String   @db.Uuid
+  accountGeneration BigInt // the account generation this membership was bound under
+  bindingId         String   @db.Uuid
+  accessLevel       Int // GitLab access level the workspace gitAccess clamp derives
+  state             String   @default("active") // active — the app-layer closed set
+  createdAt         DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(6)
+
+  account GitlabAgentAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  binding GitlabProjectBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, bindingId])
+  @@index([bindingId])
+  @@map("gitlab_account_membership")
+}
+
+/// One purpose-separated service-account PAT (§7.3): read | git_write | effect.
+/// Metadata only — the sealed token value lives in the side-table below, read
+/// exclusively through its secret store. Keyed by the ISSUING ACCOUNT (§8.2):
+/// PATs are per agent account, not per project.
+model GitlabProjectCredential {
+  id                String    @id @default(uuid()) @db.Uuid
+  accountId         String    @db.Uuid
+  purpose           String // read | git_write | effect — app-layer closed set
+  externalTokenId   BigInt // provider PAT id — the revocation/rotation handle
+  scopes            String[]  @default([])
+  providerExpiresAt DateTime  @db.Timestamptz(6)
+  generation        BigInt    @default(1) // rotation counter; the active row is the (account, purpose) row
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(6)
+
+  account GitlabAgentAccount             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  secret  GitlabProjectCredentialSecret?
+
+  @@unique([accountId, purpose])
+  @@map("gitlab_project_credential")
+}
+
+/// Sealed PAT value, 1:1 with its credential row (BotSecret discipline).
+model GitlabProjectCredentialSecret {
+  credentialId String @id @db.Uuid
+  token        String // stored SecretCipher representation
+
+  credential GitlabProjectCredential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@map("gitlab_project_credential_secret")
+}
+
+/// Sealed webhook signing key, 1:1 with the binding (§11.1). Relay-only secret:
+/// compiled into rules, never sent to a daemon.
+model GitlabWebhookSecret {
+  bindingId  String @id @db.Uuid
+  signingKey String // stored SecretCipher representation of the whsec_ form
+
+  binding GitlabProjectBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+
+  @@map("gitlab_webhook_secret")
+}
+
+/// One-shot OAuth authorization state (§9.1): bound to org, user, browser (a
+/// cookie-nonce hash stamped at the begin hop), exact return path, and the
+/// sealed PKCE verifier. Consumed exactly once at the callback; expired rows
+/// are garbage. The `state` sent to GitLab is exactly `nonce` — opaque, no
+/// embedded ids or reusable claims.
+model GitlabOauthState {
+  nonce       String   @id // random 128-bit, base64url
+  orgId       String
+  userId      String
+  browserHash String? // sha256 of the begin-hop browser cookie nonce; null until begin
+  returnPath  String // allowlisted local console path for the final redirect
+  verifier    String // sealed PKCE verifier (SecretCipher representation)
+  expiresAt   DateTime @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@map("gitlab_oauth_state")
+}
+
+/// Deployment-level observed facts about the GitLab instance (§24.2): the
+/// authenticated `GET /api/v4/version` at first credentialed contact, refreshed
+/// on the reconciliation pass. Keyed on the normalized base URL, so a re-target
+/// after a full disconnect can never inherit another instance's version.
+model GitlabInstanceState {
+  baseUrl    String   @id
+  version    String // exactly what the instance reported, e.g. '18.11.0-ee'
+  enterprise Boolean  @default(false)
+  observedAt DateTime @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+
+  @@map("gitlab_instance_state")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

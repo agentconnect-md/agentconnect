@@ -71,8 +71,8 @@ export const CronReport = z.object({
   // Terminal outcome fields (absent on fire/session progress reports).
   status: CronRunStatus.optional(),
   durationMs: z.number().int().nonnegative().optional(), // fire → turn end
-  // Sent once the ACP session exists, then repeated on completion.
-  sessionId: z.string().optional(), // ACP session the run prompted (console deep-link)
+  // Sent once the session exists, then repeated on completion.
+  sessionId: z.string().optional(), // the session the run prompted, by its outward id (§1.1)
   reason: z.string().optional() // short failure text (status "failed")
 })
 export type CronReport = z.infer<typeof CronReport>

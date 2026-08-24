@@ -84,7 +84,9 @@ function harness(opts: { drivers?: ModelCatalogDriver[] } = {}) {
     drivers: opts.drivers ?? [],
     enumerate,
     driverEnv: () => ({}),
-    onUpdated: (id) => updated.push(id)
+    onUpdated: async (id) => {
+      updated.push(id)
+    }
   })
   return {
     svc,

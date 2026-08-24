@@ -249,4 +249,33 @@ describe('fetchBillingTransactions', () => {
 
     expect(urls[0]).toBe('https://billing.test/api/v1/orgs/org1/billing/transactions')
   })
+
+  it('keeps an https receipt and drops anything else, so no row can render a hostile href', async () => {
+    vi.stubEnv('BILLING_URL', 'https://billing.test')
+    vi.stubGlobal('fetch', async () => ({
+      ok: true,
+      json: async () => ({
+        items: [
+          {
+            id: 'c1',
+            kind: 'purchase',
+            amountMicro: 50_000_000,
+            at: tx.at,
+            receiptUrl: 'https://pay.stripe.com/receipts/x'
+          },
+          { id: 'c2', kind: 'purchase', amountMicro: 50_000_000, at: tx.at, receiptUrl: 'javascript:alert(1)' },
+          { id: 'c3', kind: 'purchase', amountMicro: 50_000_000, at: tx.at }
+        ],
+        nextCursor: null
+      })
+    }))
+
+    const page = await fetchBillingTransactions('org1')
+
+    expect(page.items.map((t) => (t.type === 'credit' ? t.receiptUrl : undefined))).toEqual([
+      'https://pay.stripe.com/receipts/x',
+      null,
+      null
+    ])
+  })
 })

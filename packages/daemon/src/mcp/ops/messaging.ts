@@ -522,11 +522,15 @@ export async function sendMessage(
       // message, while only the one retained image is forwardable. Saying "no such name"
       // would send the agent back to retry a name it read correctly.
       if (!attachment) {
+        // Wording matters here: an earlier phrasing listed the unforwardable kinds and an agent
+        // read the list backwards, asking the user to RE-SEND the picture as a document. State
+        // what can be forwarded, then close the loop on the retries that cannot work.
         throw new Error(
-          `sendMessage: "${attachmentName}" is not forwardable from this conversation. Only a shared ` +
-            'IMAGE is retained for forwarding — a document, a second image on the same message, or an ' +
-            'image too large to retain is not, even though the `[attached: …]` marker still lists it. ' +
-            'Check the spelling once; if it matches, this file cannot be forwarded and retrying will not help.'
+          `sendMessage: "${attachmentName}" cannot be forwarded. Only ONE shared image per message is ` +
+            'retained, and only PNG, JPEG or WEBP. Do NOT ask anyone to re-send it in another format ' +
+            '— a document or a second image on the same message can never be forwarded, and re-sending ' +
+            'will not change that. Check the spelling once against the `[attached: …]` marker; if it ' +
+            'matches, describe the image in your reply instead.'
         )
       }
     }
@@ -603,9 +607,10 @@ export async function sendMessage(
               'MAY still have been delivered — do NOT retry; say the send may have gone through instead.'
           )
         }
+        const detail = shared && !shared.ok && shared.detail ? `: ${shared.detail}` : ''
         throw new Error(
           `sendMessage: ${platformLabel(wantPlatform)} rejected the file "${attachment.name}" ` +
-            `(${reason.replace('_', ' ')}) — nothing was sent.`
+            `(${reason.replace('_', ' ')}${detail}) — nothing was sent.`
         )
       }
       providerPostId = shared.messageId

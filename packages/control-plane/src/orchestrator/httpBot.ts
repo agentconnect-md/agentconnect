@@ -36,6 +36,7 @@ import type {
   IntegrationChannelRepo,
   IntegrationChannelRecord,
   ChannelTrigger,
+  ConversationKind,
   ReportedChannel,
   AgentRepo,
   AgentRecord,
@@ -45,6 +46,7 @@ import type {
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
 import { isGatedAgent, httpIntegrationToSpec } from './placement.js'
+import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
 import type { CpPlatformRegistry } from '../platforms/provider.js'
@@ -139,7 +141,11 @@ export class HttpBotOrchestrator {
     private readonly agentDelivery: AgentDelivery,
     /** Names the one member the relay addresses ingress to. Placement when it names a machine;
      *  for a pool agent, the member currently holding its duty — placement names none. */
-    private readonly placement: Pick<PlacementResolver, 'routableDaemon'> = PLACEMENT_ONLY
+    private readonly placement: Pick<PlacementResolver, 'routableDaemon'> = PLACEMENT_ONLY,
+    /** §14.8: which of a gated install's reported DMs seed to the ordinary DM default
+     *  because their counterpart is in the agent's own audience. Late-bound in the
+     *  composition root; absent ⇒ every gated conversation keeps the §14.2 Off default. */
+    private readonly gatedDmSeeds?: GatedDmSeedResolver
   ) {}
 
   /**
@@ -558,6 +564,28 @@ export class HttpBotOrchestrator {
   }
 
   /**
+   * What a GATED owner's conversation defaults to. Off is §14.2's answer for a room —
+   * its membership is a place, and only an editor can vouch for it. A 1:1 DM with a
+   * member of the agent's own `sharedWith` audience is §14.8's exception: that person
+   * can already see, edit and run the agent in the Console, so closing their DM hides
+   * it from someone it was explicitly shared with. Everything else, including every
+   * unresolvable case, stays Off.
+   */
+  private async gatedConversationTrigger(
+    agent: AgentRecord,
+    bot: Pick<BotRecord, 'platform' | 'teamId'>,
+    conversation: { id: string; kind?: ConversationKind; dmUserId?: string | null }
+  ): Promise<ChannelTrigger> {
+    if (!this.gatedDmSeeds || conversation.kind !== 'im' || !conversation.dmUserId) return 'off'
+    const seeds = await this.gatedDmSeeds(
+      [{ id: conversation.id, kind: 'im', dmUserId: conversation.dmUserId }],
+      agent,
+      bot
+    )
+    return seeds.get(conversation.id) ?? 'off'
+  }
+
+  /**
    * Fan an INCREMENTAL direct-conversation report across every install as a
    * `kind:'im'` / `kind:'mpim'` membership row. The shared bot converges the rows to
    * one owner and trigger, just like an enumerated channel; restricted installs still
@@ -578,13 +606,15 @@ export class HttpBotOrchestrator {
       const agent = await this.agents.getUnscoped(install.agentId)
       if (!agent) continue
       const kind = conversation.kind === 'mpim' ? ('mpim' as const) : ('im' as const)
-      await this.channels.upsertConversation(
-        install.id,
-        { ...conversation, kind },
-        {
-          defaultTrigger: isGatedAgent(agent) ? 'off' : kind === 'im' ? 'any' : 'mention'
-        }
-      )
+      const reported = { ...conversation, kind }
+      // Resolved per install, because a shared bot's installs are different agents with
+      // different audiences — the same DM may be open for one and Off for the next.
+      const defaultTrigger = isGatedAgent(agent)
+        ? await this.gatedConversationTrigger(agent, bot, reported)
+        : kind === 'im'
+          ? ('any' as const)
+          : ('mention' as const)
+      await this.channels.upsertConversation(install.id, reported, { defaultTrigger })
     }
     await this.syncRoutes(botId)
   }
@@ -633,7 +663,9 @@ export class HttpBotOrchestrator {
         targetAgent && isGatedAgent(targetAgent)
           ? ('off' as const)
           : (patch.trigger ?? currentRow?.trigger ?? rows[0]?.trigger ?? updated.trigger)
-      await this.syncConversationTrigger(installs, channelId, trigger, rows)
+      // This call IS the human's action (console patch or the in-Slack modal), so the
+      // resulting trigger is a decision on every sibling row, not a default (§14.8).
+      await this.syncConversationTrigger(installs, channelId, trigger, rows, { chosen: true })
       updated = { ...updated, trigger }
       await this.syncRoutes(botId)
       return updated
@@ -704,27 +736,64 @@ export class HttpBotOrchestrator {
     installs: IntegrationRecord[],
     channelId: string,
     trigger: ChannelTrigger,
-    knownRows: IntegrationChannelRecord[]
+    knownRows: IntegrationChannelRecord[],
+    opts?: { chosen?: boolean }
   ): Promise<void> {
     const known = new Map(knownRows.map((row) => [row.integrationId, row]))
-    const template = knownRows.find((row) => row.name !== null) ?? knownRows[0]
+    // Conversation-level metadata, taken PER FIELD from whichever sibling knows it: one
+    // row may carry the name while another carries the DM counterpart, and picking a
+    // single template row would silently drop whatever that row happens not to know. A
+    // committed direct kind wins over 'channel' for the same reason `replaceSnapshot`
+    // never downgrades one.
+    const first = <T>(get: (row: IntegrationChannelRecord) => T | null | undefined): T | undefined => {
+      for (const row of knownRows) {
+        const value = get(row)
+        if (value !== null && value !== undefined) return value
+      }
+      return undefined
+    }
+    const template = {
+      name: first((row) => row.name),
+      spaceId: first((row) => row.spaceId),
+      space: first((row) => row.space),
+      dmUserId: first((row) => row.dmUserId),
+      isPrivate: first((row) => row.isPrivate) ?? false,
+      kind: knownRows.find((row) => row.kind !== 'channel')?.kind ?? knownRows[0]?.kind ?? 'channel'
+    }
     for (const integration of installs) {
       const row = known.get(integration.id)
-      if (row?.trigger === trigger) continue
+      // A human decision has to reach EVERY sibling row, including one that already
+      // carries the value and one this call is about to create. `triggerChosen` is what
+      // tells a decision from an untouched default later (§14.8), so under `chosen` a
+      // trigger that needs no change is still a write — otherwise the marker would be
+      // missing on exactly the rows the shared-bot paths converge, and a later catch-up
+      // would read a deliberate Off as pending and reopen it.
+      const marked = opts?.chosen !== true || row?.triggerChosen === true
+      if (row?.trigger === trigger && marked) continue
       if (!row) {
+        // The template carries the CONVERSATION's own metadata, so a sibling gets all
+        // of it rather than a subset. `dmUserId` is the load-bearing one: it is the
+        // whole §14.8 input, and a sibling that inherits `kind:'im'` without it becomes
+        // a DM whose counterpart is unknown — so when owner removal leaves that sibling
+        // as the only surviving row, a linked audience member re-derives to Off, and
+        // the later report that finally supplies the id cannot reopen a row that
+        // already exists.
         const backfilled = await this.channels.upsertConversation(
           integration.id,
           {
             id: channelId,
-            ...(template?.name ? { name: template.name } : {}),
-            isPrivate: template?.isPrivate ?? false,
-            kind: template?.kind ?? 'channel'
+            ...(template.name ? { name: template.name } : {}),
+            ...(template.spaceId ? { spaceId: template.spaceId } : {}),
+            ...(template.space ? { space: template.space } : {}),
+            ...(template.dmUserId ? { dmUserId: template.dmUserId } : {}),
+            isPrivate: template.isPrivate,
+            kind: template.kind
           },
           { defaultTrigger: trigger }
         )
-        if (backfilled.trigger === trigger) continue
+        if (backfilled.trigger === trigger && opts?.chosen !== true) continue
       }
-      await this.channels.setTrigger(integration.id, channelId, trigger)
+      await this.channels.setTrigger(integration.id, channelId, trigger, opts)
     }
   }
 
@@ -733,16 +802,42 @@ export class HttpBotOrchestrator {
     if (installs.length === 0) return
     const rows = await this.channels.listForBot(botId)
     const conversationIds = [...new Set(rows.map((row) => row.channelId))]
+    // Only the gated arm below reads it, and only for a conversation whose owner is
+    // not yet persisted — so it is fetched once and lazily rather than per row.
+    let bot: BotRecord | null | undefined
     for (const channelId of conversationIds) {
       const conversationRows = rows.filter((row) => row.channelId === channelId)
       const owner = pickConversationOwner(installs, conversationRows)
       if (!owner) continue
       const persistedOwner = conversationRows.some((row) => row.agentId === owner.agentId)
       const ownerRow = conversationOwnerRow(owner, conversationRows)
+      // Provenance is CONVERSATION-level, exactly like the trigger it qualifies, and is
+      // read from ANY row: a human decides a conversation once, but the decision is
+      // repeated per install, and the row that recorded it can be deleted with its
+      // integration while siblings survive. Reading it from the owner row alone would
+      // lose the decision on precisely the owner-removal path this method exists for.
+      const chosen = conversationRows.some((row) => row.triggerChosen)
       let trigger = ownerRow?.trigger
-      if (!persistedOwner) {
+      // A decision outranks every default: a conversation a human has ruled on is not
+      // re-derived, whoever ends up owning it. Only an undecided one falls through to
+      // the gated rule below.
+      if (!persistedOwner && !chosen) {
         const ownerAgent = await this.agents.getUnscoped(owner.agentId)
-        if (ownerAgent && isGatedAgent(ownerAgent)) trigger = 'off'
+        // A gated agent inheriting a conversation it never owned fails closed — with
+        // §14.8's one exception, re-derived here rather than trusted from the row: the
+        // audience may have changed since the row was seeded, and this is the write
+        // that would otherwise freeze a stale answer in as the owner's trigger.
+        if (ownerAgent && isGatedAgent(ownerAgent)) {
+          if (bot === undefined) bot = await this.bots.getUnscoped(botId)
+          const direct = conversationRows.find((row) => row.kind === 'im' && row.dmUserId)
+          trigger = bot
+            ? await this.gatedConversationTrigger(ownerAgent, bot, {
+                id: channelId,
+                kind: direct?.kind,
+                dmUserId: direct?.dmUserId
+              })
+            : 'off'
+        }
       }
       const canonical = conversationRows.some((row) => row.integrationId === owner.id && row.agentId === owner.agentId)
       const conflicting = conversationRows.some(
@@ -750,7 +845,11 @@ export class HttpBotOrchestrator {
       )
       if (!canonical || conflicting)
         await this.persistConversationOwner(installs, channelId, owner, conversationRows[0])
-      if (trigger !== undefined) await this.syncConversationTrigger(installs, channelId, trigger, conversationRows)
+      // Replicating, not introducing: `chosen` came from the rows themselves, so a
+      // sibling backfilled here — including one added long after the decision — carries
+      // the same provenance as the value it is given.
+      if (trigger !== undefined)
+        await this.syncConversationTrigger(installs, channelId, trigger, conversationRows, { chosen })
     }
   }
 

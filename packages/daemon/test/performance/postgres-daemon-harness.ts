@@ -188,6 +188,11 @@ export function createFakeK8sRuntimePlane(workspaceRoot: string): FakeK8sRuntime
       claimName: (agentId: string) => `capacity-${agentId}`
     } as unknown as K8sDriver,
     dialer: {} as ShimDialer,
+    memberId: 'capacity-member',
+    // No pool template behind the fake, so the probe path stays on its "probe alone" arm.
+    runtimeImage: async (): Promise<string> => {
+      throw new Error('the fake plane pins no pool runtime image')
+    },
     ensureChannelCalls: [] as string[],
     get stopped() {
       return stopped
@@ -199,7 +204,9 @@ export function createFakeK8sRuntimePlane(workspaceRoot: string): FakeK8sRuntime
     probeRuntimes: async () => ({ runtimes: [{ id: RUNTIME_ID, version: 'test', models: [] }] }),
     gitRunnerFor: () => undefined,
     workspaceFilesFor: () => undefined,
+    workspaceFsFor: () => undefined,
     memoryFsFor: () => undefined,
+    autoMergeFor: () => undefined,
     runsInSandbox: () => true,
     clearPath: async () => undefined,
     workspaceRootFor: () => workspaceRoot,

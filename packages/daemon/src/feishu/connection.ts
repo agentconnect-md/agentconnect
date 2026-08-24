@@ -16,7 +16,13 @@ import type { NormalizedMessage } from '../messages/normalized.js'
 import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
-import { feishuEventToMessageLike, normalizeFeishuMessage, type FeishuRawEvent } from './normalize.js'
+import {
+  extractFeishuMessageText,
+  feishuEventToMessageLike,
+  normalizeFeishuMessage,
+  type FeishuMention,
+  type FeishuRawEvent
+} from './normalize.js'
 import {
   buildCompletedReplyCard,
   buildPermissionUpdateCard,
@@ -26,7 +32,12 @@ import {
   FEISHU_REPLY_CANCEL_OPTION,
   FEISHU_STREAMING_ELEMENT_ID
 } from './render.js'
-import type { InteractionActor, PlatformConnection } from '../platforms/contract.js'
+import type {
+  InteractionActor,
+  PlatformChannelHistoryOptions,
+  PlatformChannelHistoryPage,
+  PlatformConnection
+} from '../platforms/contract.js'
 
 /**
  * §Feishu / Lark edge unit. Mirrors discord/connection.ts but over the official
@@ -111,6 +122,30 @@ export interface FeishuDeps {
  * nests message/chat ids under `context`; root-level fallbacks cover older payloads. */
 export type FeishuRawCardActionEvent = WireFeishuCardActionEvent
 export type FeishuCardActionResponse = WireFeishuCardActionResponse
+
+export interface FeishuHistoryItem {
+  message_id?: string
+  thread_id?: string
+  msg_type?: string
+  create_time?: string
+  sender?: { id: string; sender_type: string; open_bot_id?: string }
+  body?: { content: string }
+  mentions?: { key: string; id: string; name: string }[]
+}
+
+export interface FeishuHistoryPage {
+  items: FeishuHistoryItem[]
+  hasMore: boolean
+  nextCursor?: string
+}
+
+export interface FeishuHistoryRequest {
+  cursor?: string
+  limit: number
+  startTime?: string
+  endTime?: string
+}
+
 /**
  * The slice of the Lark SDK the connection drives — hand-declared (like Telegram's
  * `TelegramApi` / Slack's `AppLike`) so the connection is testable with a fake and
@@ -127,6 +162,8 @@ export interface FeishuApi {
   replyText(messageId: string, text: string): Promise<{ messageId?: string }>
   /** im.message.reply (msg_type 'interactive', reply_in_thread). */
   replyCard(messageId: string, card: Record<string, unknown>): Promise<{ messageId?: string }>
+  /** im.message.list, newest-first and limited to chat/thread roots. */
+  listMessages(chatId: string, request: FeishuHistoryRequest): Promise<FeishuHistoryPage>
   /** cardkit.card.create. */
   createCardEntity(card: Record<string, unknown>): Promise<{ cardId?: string }>
   /** im.message.create/reply with an interactive CardKit `card_id` reference. */
@@ -134,9 +171,10 @@ export interface FeishuApi {
   replyCardEntityMessage(messageId: string, cardId: string): Promise<{ messageId?: string }>
   /** cardkit.cardElement.content (native typewriter update). */
   updateCardEntityElement(cardId: string, elementId: string, text: string, sequence: number): Promise<void>
-  /** cardkit.card.settings + card.update terminal lifecycle. */
+  /** cardkit.card.settings closes the native stream before the final message patch. */
   setCardEntityStreaming(cardId: string, streaming: boolean, sequence: number): Promise<void>
-  updateCardEntity(cardId: string, card: Record<string, unknown>, sequence: number): Promise<void>
+  /** im.message.patch materializes the final card JSON so message history can read it. */
+  patchCardMessage(messageId: string, card: Record<string, unknown>): Promise<void>
   /** im.message.delete (retract an unfinished/no-response card). */
   deleteMessage(messageId: string): Promise<void>
   /** im.message.update (in-place text edit). */
@@ -252,6 +290,31 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
     createCard: (chatId, card) => createMessage(chatId, 'interactive', card),
     replyText: (messageId, text) => replyMessage(messageId, 'text', { text }),
     replyCard: (messageId, card) => replyMessage(messageId, 'interactive', card),
+    async listMessages(chatId, request) {
+      const res = assertApiSuccess(
+        await client.im.message.list({
+          params: {
+            container_id_type: 'chat',
+            container_id: chatId,
+            sort_type: 'ByCreateTimeDesc',
+            page_size: request.limit,
+            card_msg_content_type: 'user_card_content',
+            only_thread_root_messages: true,
+            ...(request.cursor ? { page_token: request.cursor } : {}),
+            ...(request.startTime ? { start_time: request.startTime } : {}),
+            ...(request.endTime ? { end_time: request.endTime } : {})
+          }
+        }),
+        'im.message.list'
+      )
+      const data = res.data ?? {}
+      const nextCursor = data.page_token?.trim() || undefined
+      return {
+        items: data.items ?? [],
+        hasMore: Boolean(data.has_more || nextCursor),
+        ...(nextCursor ? { nextCursor } : {})
+      }
+    },
     createImage: (chatId, imageKey) => createMessage(chatId, 'image', { image_key: imageKey }),
     replyImage: (messageId, imageKey) => replyMessage(messageId, 'image', { image_key: imageKey }),
     async uploadImage(bytes) {
@@ -299,17 +362,13 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
         'cardkit.card.settings'
       )
     },
-    async updateCardEntity(cardId, card, sequence) {
+    async patchCardMessage(messageId, card) {
       assertApiSuccess(
-        await client.cardkit.v1.card.update({
-          path: { card_id: cardId },
-          data: {
-            card: { type: 'card_json', data: JSON.stringify(card) },
-            sequence,
-            uuid: `u_${cardId}_${sequence}`
-          }
+        await client.im.message.patch({
+          path: { message_id: messageId },
+          data: { content: JSON.stringify(card) }
         }),
-        'cardkit.card.update'
+        'im.message.patch'
       )
     },
     async deleteMessage(messageId) {
@@ -413,6 +472,8 @@ const DEFAULT_MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 /** Cap on channels/members enumerated per read call (bounds the response). */
 const CHANNEL_CAP = 200
 const MEMBER_CAP = 50
+const FEISHU_CHANNEL_HISTORY_DEFAULT_LIMIT = 50
+const FEISHU_CHANNEL_HISTORY_MAX_LIMIT = 50
 const PERMISSION_NOTICE_RETRY_MS = 5 * 60_000
 
 type FeishuPermissionIssue = 'app-permissions' | 'bot-capability' | 'app-availability' | 'chat-access'
@@ -586,8 +647,7 @@ export class FeishuConnection implements PlatformConnection {
   // All outbound writes funnel through one queue so streamed edits are FIFO-ordered
   // per connection (keeps a post-then-edit pair from racing on the same progress msg).
   private queue: PlatformSendQueue
-  /** CardKit sequence numbers are scoped to a card entity and must increase across
-   * element, settings, and full-card updates. */
+  /** CardKit sequence numbers are scoped to a card entity and increase across element and settings updates. */
   private streamingCards = new Map<
     string,
     { sequence: number; lastText: string; messageId: string; sessionUrl?: string }
@@ -920,13 +980,11 @@ export class FeishuConnection implements PlatformConnection {
         this.deps.log?.debug(`feishu: streaming card close failed (${card.cardId}): ${(err as Error).message}`)
       }
 
-      state.sequence += 1
       let updated = false
       try {
-        await this.handle.api.updateCardEntity(
-          card.cardId,
-          buildCompletedReplyCard(text, attribution, state.sessionUrl),
-          state.sequence
+        await this.handle.api.patchCardMessage(
+          state.messageId,
+          buildCompletedReplyCard(text, attribution, state.sessionUrl)
         )
         updated = true
       } catch (err) {
@@ -1134,6 +1192,59 @@ export class FeishuConnection implements PlatformConnection {
   }
 
   // ── MCP MessageGateway: read helpers backing the injected channel tools ──
+
+  /** Fetch one bounded, provider-paginated page of Feishu/Lark chat roots. */
+  async getChannelHistory(
+    channel: string,
+    options: PlatformChannelHistoryOptions = {}
+  ): Promise<PlatformChannelHistoryPage> {
+    const limit = Math.min(
+      Math.max(options.limit ?? FEISHU_CHANNEL_HISTORY_DEFAULT_LIMIT, 1),
+      FEISHU_CHANNEL_HISTORY_MAX_LIMIT
+    )
+    try {
+      const oldest = options.oldest === undefined ? undefined : Number(options.oldest)
+      const latest = options.latest === undefined ? undefined : Number(options.latest)
+      if ((oldest !== undefined && !Number.isFinite(oldest)) || (latest !== undefined && !Number.isFinite(latest))) {
+        throw new Error('invalid timestamp bound')
+      }
+      const page = await this.handle.api.listMessages(channel, {
+        limit,
+        ...(options.cursor ? { cursor: options.cursor } : {}),
+        ...(oldest !== undefined ? { startTime: String(Math.floor(oldest / 1000)) } : {}),
+        ...(latest !== undefined ? { endTime: String(Math.ceil(latest / 1000)) } : {})
+      })
+      const messages = page.items.flatMap((message) => {
+        if (!message.create_time || !/^\d+$/.test(message.create_time)) return []
+        const timestamp = Number(message.create_time)
+        if ((oldest !== undefined && timestamp < oldest) || (latest !== undefined && timestamp > latest)) return []
+        const mentions: FeishuMention[] = (message.mentions ?? []).map((mention) => ({
+          key: mention.key,
+          id: { open_id: mention.id },
+          name: mention.name
+        }))
+        return [
+          {
+            sender: message.sender?.id || message.sender?.open_bot_id || 'unknown',
+            ts: message.create_time,
+            text: extractFeishuMessageText(message.msg_type ?? 'text', message.body?.content ?? '', mentions),
+            isBot: message.sender?.sender_type === 'app',
+            ...(message.thread_id ? { threadTs: message.thread_id } : {})
+          }
+        ]
+      })
+      return {
+        messages,
+        hasMore: page.hasMore,
+        ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
+      }
+    } catch (err) {
+      this.rememberPermissionIssue(err, channel)
+      const code = feishuErrorCode(err)
+      this.deps.log?.debug(`feishu: channel history failed (ch=${channel}): ${code ?? 'unknown'}`)
+      throw new Error(code === undefined ? 'Feishu channel history failed' : `Feishu channel history failed: ${code}`)
+    }
+  }
 
   async getChannelInfo(channel: string): Promise<{ id: string; name?: string; isIm?: boolean; isPrivate?: boolean }> {
     try {

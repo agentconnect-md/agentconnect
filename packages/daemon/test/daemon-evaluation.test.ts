@@ -7,6 +7,12 @@ import { Daemon } from '../src/daemon.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT } from '../src/memory/distill.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
 
+// The outward `sessionId` a frame carries for the slot behind an ACP hop id (session-concept.md §1.1).
+const outwardId = async (daemon: any, acpSessionId: string): Promise<string> => {
+  const slot = await daemon.store.getSessionByAcpId(acpSessionId)
+  return slot!.sessionId ?? (await daemon.store.ensureOutwardSessionId(slot!.key, slot!.agentId ?? undefined))
+}
+
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
 // Give every poll in this file the same generous budget instead.
@@ -163,7 +169,7 @@ describe('Daemon evaluation surface', () => {
       modelOptions: vi.fn(() => ({ current: 'test-model', models: ['test-model'] })),
       permissionModeOptions: vi.fn(() => ({ modes: ['read-only'] })),
       setSessionPermissionMode: vi.fn(async () => true),
-      prompt: vi.fn(async (sessionId: string) => {
+      prompt: vi.fn(async (sessionId: string, _blocks: { text?: string }[]) => {
         onUpdate(sessionId, {
           sessionUpdate: 'agent_thought_chunk',
           content: { type: 'text', text: 'PRIVATE MEMORY REASONING' }
@@ -217,14 +223,18 @@ describe('Daemon evaluation surface', () => {
     }
 
     const started = await (daemon as any).dreamRunner().start(AGENT_ID, { trigger: 'manual' })
-    let dream
+    let dream: Record<string, unknown> | undefined
     await vi.waitFor(async () => {
       dream = await (daemon as any).store.getDream(AGENT_ID, started.dreamId)
       expect(dream?.status).toBe('adopted')
     }, WAIT)
 
+    // The dream row names its execution session outwardly (§1.1), stored at write time so the
+    // record keeps one identity after the session itself is purged.
+    const outwardExecution = (await (daemon as any).store.getSessionByAcpId('dream-session-1'))!.sessionId
+    expect(outwardExecution).not.toBe('dream-session-1')
     expect(dream).toMatchObject({
-      executionSessionId: 'dream-session-1',
+      executionSessionId: outwardExecution,
       runtime: 'test',
       model: 'test-model',
       stopReason: 'end_turn',
@@ -279,7 +289,7 @@ describe('Daemon evaluation surface', () => {
     // the teardown window is covered by the ignore-cancel test below.
     expect((daemon as any).memoryExtractionQuarantines.size).toBe(0)
     expect(usageReports.at(-1)).toMatchObject({
-      sessionId: 'dream-session-1',
+      sessionId: await outwardId(daemon, 'dream-session-1'),
       agentId: AGENT_ID,
       platform: 'dream',
       channel: 'memory'
@@ -292,7 +302,8 @@ describe('Daemon evaluation surface', () => {
     })
     expect(collector.events().at(-1)).toMatchObject({
       type: 'memory.dream.skill_accepted',
-      sessionId: 'dream-session-1',
+      // The evaluation event carries the dream's own record, which names its session outwardly.
+      sessionId: outwardExecution,
       data: { dreamId: started.dreamId, skillName: 'deploy-staging' }
     })
     const reviewedHistory = (await (daemon as any).store.threadTranscript('memory', started.dreamId))
@@ -339,7 +350,7 @@ describe('Daemon evaluation surface', () => {
     await daemon.start()
 
     const started = await (daemon as any).dreamRunner().start(AGENT_ID, { trigger: 'manual' })
-    let dream
+    let dream: Record<string, unknown> | undefined
     await vi.waitFor(async () => {
       dream = await (daemon as any).store.getDream(AGENT_ID, started.dreamId)
       expect(dream?.status).toBe('adopted')
@@ -614,7 +625,7 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
       permissionModeOptions: vi.fn(() => ({ modes: opts.modes ?? ['read-only'] })),
       setSessionPermissionMode: vi.fn(async () => true),
       discardSession: vi.fn((id: string) => void discarded.add(id)),
-      prompt: vi.fn(async (sessionId: string) => {
+      prompt: vi.fn(async (sessionId: string, _blocks: { text?: string }[]) => {
         if (opts.promptFails) throw new Error('runtime exploded')
         onUpdate(sessionId, {
           sessionUpdate: 'agent_message_chunk',
@@ -645,7 +656,7 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     // created WITH an MCP server rather than the old tool-less shape.
     expect(host.newSession).toHaveBeenCalledWith(expect.any(String), expect.arrayContaining([expect.anything()]))
     // …the policy is prepended inline to the prompt instead, still leading the turn.
-    const text = host.prompt.mock.calls[0][1][0].text as string
+    const text = host.prompt.mock.calls[0]![1][0]!.text as string
     expect(text.startsWith(MEMORY_DISTILLATION_SYSTEM_PROMPT)).toBe(true)
     expect(text).toContain('DISTILL THIS')
     await daemon.stop()
@@ -662,7 +673,7 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
       MEMORY_DISTILLATION_SYSTEM_PROMPT
     )
     // Trusted: the prompt carries only the turn data, not the inline policy.
-    expect(host.prompt.mock.calls[0][1][0].text).toBe('DISTILL THIS')
+    expect(host.prompt.mock.calls[0]![1][0]!.text).toBe('DISTILL THIS')
     await daemon.stop()
   }, 15_000)
 

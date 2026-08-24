@@ -22,13 +22,59 @@ import { AgentId, HookId } from '../../domain/ids.js'
 import { GitCredDeniedError } from '../../github/service.js'
 import { frameOrgId } from './frame-org.js'
 import type { Handler } from './index.js'
+import type { HookRecord } from '../../persistence/ports.js'
+
+/** §17.1 verify-if-present: the GitHub arms resolve by NAME, so a named numeric id must match what they resolved. */
+function githubRepoIdMismatch(requested: string | undefined, resolved: bigint | null | undefined): boolean {
+  return requested !== undefined && (resolved === null || resolved === undefined || resolved.toString() !== requested)
+}
+
+/** §17.3 grant echo for an explicitly github-qualified request; the absent-provider form answers unqualified. */
+function githubEcho(qualified: boolean, repoId?: bigint): { provider?: 'github'; externalRepoId?: string } {
+  if (!qualified) return {}
+  return { provider: 'github', ...(repoId !== undefined ? { externalRepoId: repoId.toString() } : {}) }
+}
+
+/** §13.1 hook authorization: the named hook must be an ENABLED gitlab hook of this agent on that very project. */
+function gitlabHookAuthorizes(
+  hook: HookRecord | null,
+  agentId: AgentId,
+  projectId: bigint
+): hook is HookRecord & { repoId: bigint } {
+  return (
+    hook !== null && hook.agentId === agentId && hook.kind === 'gitlab' && hook.enabled && hook.repoId === projectId
+  )
+}
 
 export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   if (!isFrame('gitcred/request')(frame)) return
-  const { agentId, capabilities, repoFullName, purpose, hookId, forceRefresh } = frame.payload
+  const {
+    agentId,
+    capabilities,
+    repoFullName,
+    purpose,
+    hookId,
+    forceRefresh,
+    provider,
+    externalRepoId,
+    requestedAccess
+  } = frame.payload
 
-  if (!deps.github) {
+  // v2 provider fail-per-value (§17.1): only gitlab has a non-GitHub arm here.
+  if (provider !== undefined && provider !== 'github' && provider !== 'gitlab') {
+    conn.sendError(frame.id, 'SCOPE_DENIED', `unknown git credential provider ${provider}`, false)
+    return
+  }
+  const gitlabRequest = provider === 'gitlab'
+  // §17.3: an explicit 'github' takes exactly the arms the absent form takes and adds the echo the
+  // daemon verifies. The absent form stays unqualified — old daemons upgrade slowly and still send it.
+  const githubQualified = provider === 'github'
+  if (!gitlabRequest && !deps.github) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'github-app workspaces are not enabled on this control plane', false)
+    return
+  }
+  if (gitlabRequest && !deps.gitlabGitcred) {
+    conn.sendError(frame.id, 'SCOPE_DENIED', 'gitlab workspaces are not enabled on this control plane', false)
     return
   }
 
@@ -49,6 +95,64 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
   }
 
   try {
+    if (gitlabRequest) {
+      if (purpose === 'gitlab_hook_reply') {
+        // §14.1: the daemon-owned note poster — its authority is the ENABLED gitlab hook itself, not the workspace clamp.
+        if (hookId === undefined || externalRepoId === undefined) {
+          conn.sendError(frame.id, 'SCOPE_DENIED', 'gitlab hook reply credentials require a hook and a project', false)
+          return
+        }
+        const hook = await deps.hook.get(orgId, HookId(hookId))
+        if (!gitlabHookAuthorizes(hook, AgentId(agentId), BigInt(externalRepoId))) {
+          conn.sendError(
+            frame.id,
+            'SCOPE_DENIED',
+            'hook is not an enabled gitlab hook of this agent on that project',
+            false
+          )
+          return
+        }
+        const grant = await deps.gitlabGitcred!.grantForHookReply(orgId, agentId, hook.repoId)
+        conn.replyTo(frame, 'gitcred/grant', grant)
+        return
+      }
+      if (purpose === 'gitlab_effect') {
+        // §14.2: the structured broker's action-time lease. Either the agent's own GitLab workspace
+        // binding or an enabled gitlab hook on the project authorizes it (§13.1); the service echoes
+        // the clamp the broker then enforces per operation.
+        if (externalRepoId === undefined) {
+          conn.sendError(frame.id, 'SCOPE_DENIED', 'gitlab effect credentials require a project', false)
+          return
+        }
+        const projectId = BigInt(externalRepoId)
+        // A NAMED hook is a fence, not a hint: a stale or foreign one is refused rather than ignored.
+        let hookAuthorized = false
+        if (hookId !== undefined) {
+          const hook = await deps.hook.get(orgId, HookId(hookId))
+          if (!gitlabHookAuthorizes(hook, AgentId(agentId), projectId)) {
+            conn.sendError(
+              frame.id,
+              'SCOPE_DENIED',
+              'hook is not an enabled gitlab hook of this agent on that project',
+              false
+            )
+            return
+          }
+          hookAuthorized = true
+        }
+        const grant = await deps.gitlabGitcred!.grantForBrokerEffect(agent, projectId, hookAuthorized)
+        conn.replyTo(frame, 'gitcred/grant', grant)
+        return
+      }
+      // The binding's PAT under the workspace access clamp (§13.1).
+      const grant = await deps.gitlabGitcred!.grantForAgent(
+        agent,
+        externalRepoId !== undefined ? BigInt(externalRepoId) : undefined,
+        requestedAccess
+      )
+      conn.replyTo(frame, 'gitcred/grant', grant)
+      return
+    }
     if (purpose === 'github_hook_reply') {
       const requested = new Set(capabilities)
       const commentOnly =
@@ -76,7 +180,12 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
         conn.sendError(frame.id, 'SCOPE_DENIED', 'hook is not an enabled github hook of this agent', false)
         return
       }
-      const cred = await deps.github.mintForHookReply(
+      // The hook already carries the numeric identity, so a disagreeing ask is refused before any mint.
+      if (githubRepoIdMismatch(externalRepoId, hook.repoId)) {
+        conn.sendError(frame.id, 'SCOPE_DENIED', 'the named repository is not the one this hook watches', false)
+        return
+      }
+      const cred = await deps.github!.mintForHookReply(
         agent,
         repoFullName,
         hook.repoId ?? undefined,
@@ -91,7 +200,8 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
         repoFullName: cred.repoFullName,
         // The wire access field describes contents capability. This token has
         // no contents permission at all, so read is the conservative label.
-        access: 'read'
+        access: 'read',
+        ...githubEcho(githubQualified, cred.repoId)
       })
       return
     }
@@ -100,19 +210,33 @@ export const handleGitCredRequest: Handler = async (frame, conn, deps) => {
     // through the agent's explicit AgentRepoAuthorization rows (multi-repo
     // design §2). GithubPoster requests take the purpose-gated path above;
     // general agent git/gh credentials stay constrained by this allowlist.
-    const cred = await deps.github.mintForAgent(
+    // `requestedAccess` is the §17.1 access floor; every pre-v2 caller leaves it absent and keeps the tier.
+    const cred = await deps.github!.mintForAgent(
       agent,
       [`daemon:${conn.daemonId}`, `org:${agent.orgId}`],
       capabilities,
-      repoFullName
+      repoFullName,
+      requestedAccess
     )
+    // This arm resolves the repo INSIDE the mint, so a named numeric id is verified on the way out —
+    // the grant is discarded rather than served, exactly as a daemon discards a mismatched echo.
+    if (githubRepoIdMismatch(externalRepoId, cred.repoId)) {
+      conn.sendError(
+        frame.id,
+        'SCOPE_DENIED',
+        `github repository ${externalRepoId} is not the repository this request resolves to`,
+        false
+      )
+      return
+    }
     conn.replyTo(frame, 'gitcred/grant', {
       username: 'x-access-token',
       token: cred.token,
       ttlSec: cred.ttlSec,
       expiresAt: cred.expiresAt,
       repoFullName: cred.repoFullName,
-      access: cred.access
+      access: cred.access,
+      ...githubEcho(githubQualified, cred.repoId)
     })
   } catch (e) {
     if (e instanceof GitCredDeniedError) {

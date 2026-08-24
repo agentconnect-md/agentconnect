@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, renameSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
@@ -25,7 +25,13 @@ const env = {
   GIT_COMMITTER_NAME: 'Ada Lovelace',
   GIT_COMMITTER_EMAIL: 'ada@example.invalid'
 }
-const git = (root: string, ...args: string[]) => execFileSync('git', ['-C', root, ...args], { env, stdio: 'ignore' })
+// No background maintenance: `git commit` detaches `maintenance run --auto` (git >= 2.47), and that
+// child's objects/maintenance.lock teardown races this file's fixture surgery and afterAll sweep.
+const git = (root: string, ...args: string[]) =>
+  execFileSync('git', ['-C', root, '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args], {
+    env,
+    stdio: 'ignore'
+  })
 
 let base: string
 let repo: string // a real checkout with an upstream ref and one unpushed commit
@@ -301,7 +307,7 @@ describe('createWorkspaceGit.log against a real repo', () => {
         workspaces,
         async () => root,
         () => undefined,
-        () => target
+        async () => target
       )
 
     it('lists only what the checked-out branch adds over the configured base, and names it', async () => {
@@ -394,19 +400,19 @@ describe('createWorkspaceGit.log against a real repo', () => {
   })
 
   it('classifies a checkout git itself does not recognise as not-a-repo, not as an empty history', async () => {
-    // MEASURED, because the classification is git's and not ours: a repo whose `.git/objects` is
-    // missing OR unreadable answers `rev-parse --is-inside-work-tree` with the same
-    // "not a git repository" fatal a plain directory does. So this is not a corrupt repository the
-    // seam should report on — it is not a repository, and the preflight says so before `log` runs.
-    // The `isUnbornHead` guard still exists for the failures that DO reach it (a read timeout, a
-    // spawn failure), and those have no constructible fixture here — see the M3 follow-ups.
+    // MEASURED, because the classification is git's and not ours: a gitdir without `.git/objects`
+    // answers with the same "not a git repository" fatal a plain directory does — not a repo, said
+    // by the preflight before `log` runs. `isUnbornHead` still covers the failures that DO reach it
+    // (read timeout, spawn failure); those have no constructible fixture here — see M3 follow-ups.
     const broken = join(base, 'broken')
     mkdirSync(broken, { recursive: true })
     git(broken, 'init', '-b', 'main')
     writeFileSync(join(broken, 'a.ts'), 'x\n')
     git(broken, 'add', 'a.ts')
     git(broken, 'commit', '-m', 'seed')
-    rmSync(join(broken, '.git', 'objects'), { recursive: true, force: true })
+    // Rename, not rmSync: a recursive rm swallows ENOENT under force and once left an EMPTY objects/
+    // behind when a stray git child unlinked inside it mid-sweep — an atomic move has no partial state.
+    renameSync(join(broken, '.git', 'objects'), join(base, 'broken-objects-gone'))
 
     expect(await createWorkspaceGit(workspaces, async () => broken).log({ agentId: AGENT, limit: 20 })).toEqual({
       agentId: AGENT,

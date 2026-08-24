@@ -4,9 +4,9 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { McpControlServer } from '../src/mcp/control-server.js'
+import { McpControlServer, type McpControlDeps } from '../src/mcp/control-server.js'
 import { encodeFrame, decodeFrames, type IpcPrivateRequest, type IpcResponse } from '../src/mcp/ipc.js'
-import type { SlackGateway, SessionContext } from '../src/mcp/ops.js'
+import type { MessageGateway, SessionContext } from '../src/mcp/ops.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
 
 const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
@@ -21,18 +21,23 @@ function socketPath() {
   return join(root, 'mcp.sock')
 }
 
-function gateway(): SlackGateway {
+function gateway(): MessageGateway {
   return {
     postMessage: vi.fn(async () => 'ts-9'),
-    getChannelInfo: vi.fn(async (id) => ({ id, name: 'general' })),
+    getChannelInfo: vi.fn(async (id: string) => ({ id, name: 'general' })),
     listMembers: vi.fn(async () => []),
     listChannels: vi.fn(async () => []),
-    getUserProfile: vi.fn(async (u) => ({ id: u }))
-  }
+    getUserProfile: vi.fn(async (u: string) => ({ id: u }))
+  } as unknown as MessageGateway
 }
 
 const tools = toolsForIntegrations([
-  { id: 'int-1', platform: 'slack', core: { bindRules: [] }, config: { botToken: 'x', appToken: 'y' } }
+  {
+    id: 'int-1',
+    platform: 'slack',
+    core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+    config: { botToken: 'x', appToken: 'y' }
+  }
 ])
 
 const ctx = (over: Partial<SessionContext> = {}): SessionContext => ({
@@ -46,8 +51,10 @@ const ctx = (over: Partial<SessionContext> = {}): SessionContext => ({
   ...over
 })
 
+type Unsent<T> = T extends unknown ? Omit<T, 'id'> : never
+
 /** Open a client socket and run one request/response exchange. */
-function rpc(path: string, req: Omit<IpcPrivateRequest, 'id'>): Promise<IpcResponse> {
+function rpc(path: string, req: Unsent<IpcPrivateRequest>): Promise<IpcResponse> {
   return new Promise((resolve, reject) => {
     const sock = net.connect(path)
     let buf = ''
@@ -65,6 +72,9 @@ function rpc(path: string, req: Omit<IpcPrivateRequest, 'id'>): Promise<IpcRespo
   })
 }
 
+/** The tests drive only the IPC surface, so the ops deps behind it stay unbuilt. */
+const controlDeps = (over: Partial<McpControlDeps>): McpControlDeps => over as McpControlDeps
+
 let server: McpControlServer | undefined
 afterEach(async () => {
   await server?.stop()
@@ -75,7 +85,9 @@ afterEach(async () => {
 describe('McpControlServer IPC', () => {
   it('listTools returns the registered session tools', async () => {
     const path = socketPath()
-    server = new McpControlServer({ socketPath: path, gatewayFor: gateway, recordOutbound: () => {}, now: () => 0 })
+    server = new McpControlServer(
+      controlDeps({ socketPath: path, gatewayFor: gateway, recordOutbound: async () => {}, now: () => 0 })
+    )
     await server.start()
     const token = server.register(ctx())
 
@@ -89,12 +101,16 @@ describe('McpControlServer IPC', () => {
     const path = socketPath()
     const gw = gateway()
     const recorded: unknown[] = []
-    server = new McpControlServer({
-      socketPath: path,
-      gatewayFor: () => gw,
-      recordOutbound: (_c, channel, _t, text, ts) => recorded.push({ channel, text, ts }),
-      now: () => 0
-    })
+    server = new McpControlServer(
+      controlDeps({
+        socketPath: path,
+        gatewayFor: () => gw,
+        recordOutbound: async (_c, channel, _t, text, ts) => {
+          recorded.push({ channel, text, ts })
+        },
+        now: () => 0
+      })
+    )
     await server.start()
     const token = server.register(ctx())
 
@@ -113,7 +129,9 @@ describe('McpControlServer IPC', () => {
 
   it('rejects an unknown/expired token', async () => {
     const path = socketPath()
-    server = new McpControlServer({ socketPath: path, gatewayFor: gateway, recordOutbound: () => {}, now: () => 0 })
+    server = new McpControlServer(
+      controlDeps({ socketPath: path, gatewayFor: gateway, recordOutbound: async () => {}, now: () => 0 })
+    )
     await server.start()
 
     const res = await rpc(path, { token: 'bogus', op: 'listTools' })
@@ -123,7 +141,9 @@ describe('McpControlServer IPC', () => {
 
   it('rejects the private attach op without affecting ordinary shared bridge requests', async () => {
     const path = socketPath()
-    server = new McpControlServer({ socketPath: path, gatewayFor: gateway, recordOutbound: () => {}, now: () => 0 })
+    server = new McpControlServer(
+      controlDeps({ socketPath: path, gatewayFor: gateway, recordOutbound: async () => {}, now: () => 0 })
+    )
     await server.start()
     const token = server.register(ctx())
 
@@ -133,7 +153,9 @@ describe('McpControlServer IPC', () => {
 
   it('stop() resolves promptly even with a live client connection open', async () => {
     const path = socketPath()
-    const srv = new McpControlServer({ socketPath: path, gatewayFor: gateway, recordOutbound: () => {}, now: () => 0 })
+    const srv = new McpControlServer(
+      controlDeps({ socketPath: path, gatewayFor: gateway, recordOutbound: async () => {}, now: () => 0 })
+    )
     await srv.start()
     // Hold an open connection; without socket teardown server.close() would hang.
     const client = net.connect(path)
@@ -146,7 +168,9 @@ describe('McpControlServer IPC', () => {
     const path = socketPath()
     const gw = gateway()
     ;(gw.postMessage as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('slack down'))
-    server = new McpControlServer({ socketPath: path, gatewayFor: () => gw, recordOutbound: () => {}, now: () => 0 })
+    server = new McpControlServer(
+      controlDeps({ socketPath: path, gatewayFor: () => gw, recordOutbound: async () => {}, now: () => 0 })
+    )
     await server.start()
     const token = server.register(ctx())
 

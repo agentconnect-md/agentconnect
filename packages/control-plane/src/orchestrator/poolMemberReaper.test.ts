@@ -11,6 +11,8 @@ const INTERVAL_MS = 5 * 60_000
 const member = (id: string, sessionEpoch = 7n): DaemonRecord =>
   ({ id: DaemonId(id), orgId: null, sessionEpoch }) as DaemonRecord
 
+type Retire = (member: { daemonId: DaemonId; sessionEpoch: bigint }, retiredBefore: Date) => Promise<boolean>
+
 /** No inert delegation to collect unless a case says otherwise. */
 const noDelegations = () => ({ revokeUnplaced: vi.fn(async () => 0) })
 
@@ -22,7 +24,7 @@ describe('PoolMemberReaper', () => {
   it('retires every member unheard-from since now − retireAfterMs', async () => {
     const clock = new FakeClock(1_700_000_000_000)
     const findRetiredPoolMembers = vi.fn(async () => [member('a'), member('b')])
-    const retire = vi.fn(async () => true)
+    const retire = vi.fn<Retire>(async () => true)
     const reaper = new PoolMemberReaper({ findRetiredPoolMembers }, noDelegations(), retire, liveness(), clock, {
       retireAfterMs: RETIRE_AFTER_MS,
       intervalMs: INTERVAL_MS
@@ -39,7 +41,7 @@ describe('PoolMemberReaper', () => {
     // The worklist is a nomination, not a decision: whoever deletes has to prove the row is
     // still the one that was read, or a member that reconnected mid-sweep loses its agents.
     const clock = new FakeClock(1_700_000_000_000)
-    const retire = vi.fn(async () => true)
+    const retire = vi.fn<Retire>(async () => true)
     const reaper = new PoolMemberReaper(
       { findRetiredPoolMembers: async () => [member('a', 12n)] },
       noDelegations(),
@@ -76,7 +78,7 @@ describe('PoolMemberReaper', () => {
 
   it('leaves a member that is connected here, however stale its last heartbeat looks', async () => {
     const clock = new FakeClock()
-    const retire = vi.fn(async () => true)
+    const retire = vi.fn<Retire>(async () => true)
     const reaper = new PoolMemberReaper(
       { findRetiredPoolMembers: async () => [member('live'), member('gone')] },
       noDelegations(),

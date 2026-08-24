@@ -52,7 +52,11 @@ export async function runGitCredential(action: string, agentId: string, socketPa
   agentId = effectiveAgentId(agentId)
 
   const input = parseStdin(await readStdin())
-  const repo = input.path !== undefined ? repoFromPath(input.path) : undefined
+  const host = input.host?.toLowerCase()
+  // gitlab.com paths keep their FULL namespaced depth (subgroups, §13.2);
+  // github stays at owner/repo.
+  const gitlab = host === 'gitlab.com'
+  const repo = input.path !== undefined ? (gitlab ? projectFromPath(input.path) : repoFromPath(input.path)) : undefined
 
   if (action === 'erase') {
     // Route the invalidation to the same (agent, repo) key the get used.
@@ -61,13 +65,14 @@ export async function runGitCredential(action: string, agentId: string, socketPa
       agentId,
       capability: process.env[GITCRED_CAPABILITY_ENV],
       password: input.password,
-      repoFullName: repo
+      repoFullName: repo,
+      ...(gitlab ? { provider: 'gitlab' } : {})
     }).catch(() => undefined) // best-effort
     return
   }
   if (action !== 'get') return // unknown actions are ignored per the helper contract
 
-  if (input.host !== undefined && input.host.toLowerCase() !== 'github.com') {
+  if (host !== undefined && host !== 'github.com' && host !== 'gitlab.com') {
     // Not ours — stay silent so git can try other helpers / fail cleanly.
     return
   }
@@ -76,7 +81,8 @@ export async function runGitCredential(action: string, agentId: string, socketPa
     op: 'get',
     agentId,
     capability: process.env[GITCRED_CAPABILITY_ENV],
-    repoFullName: repo
+    repoFullName: repo,
+    ...(gitlab ? { provider: 'gitlab' } : {})
   })
   if (!res.ok || !res.username || !res.password) {
     process.stderr.write(
@@ -106,6 +112,16 @@ function normalizeRepoPath(p: string): string {
     .replace(/^\/+/, '')
     .replace(/\.git$/i, '')
     .toLowerCase()
+}
+
+/** The full namespaced GitLab project path from git's credential `path` —
+ *  arbitrary subgroup depth, tolerating a leading slash, a `.git` suffix, and
+ *  LFS-ish subpaths (`group/sub/project.git/info/lfs`). */
+export function projectFromPath(p: string): string | undefined {
+  const cleaned = p.replace(/^\/+/, '')
+  const gitSuffix = cleaned.search(/\.git(?:\/|$)/i)
+  const path = (gitSuffix >= 0 ? cleaned.slice(0, gitSuffix) : cleaned).replace(/\/+$/, '')
+  return path.includes('/') ? path.toLowerCase() : undefined
 }
 
 /** "owner/repo" from git's credential `path` — tolerates a leading slash, a

@@ -57,7 +57,7 @@ function ws(repo: boolean): string {
   return dir
 }
 
-const githubTarget = () => ({
+const githubTarget = async () => ({
   repo: 'https://github.com/acme/repo.git',
   branch: 'main',
   githubApp: false
@@ -287,7 +287,7 @@ describe('createWorkspaceGit.pull', () => {
         credentialScopes.push(repo)
         return repo ? id : undefined
       },
-      (_id, repo) =>
+      async (_id, repo) =>
         repo
           ? { repo: 'https://github.com/acme/infra.git', branch: 'trunk', githubApp: true }
           : { repo: 'https://github.com/acme/repo.git', branch: 'main', githubApp: false }
@@ -348,7 +348,7 @@ describe('createWorkspaceGit.pull', () => {
       workspaces,
       async () => dir,
       () => undefined,
-      () => ({ repo: 'https://github.com/acme/repo.git', branch: 'main', githubApp: true })
+      async () => ({ repo: 'https://github.com/acme/repo.git', branch: 'main', githubApp: true })
     )
 
     expect(await git.pull('a')).toMatchObject({
@@ -424,7 +424,7 @@ describe('createWorkspaceGit.pull', () => {
       workspaces,
       async () => dir,
       () => undefined,
-      () => ({ repo: 'https://github.com/acme/repo.git', branch: 'release/v2', githubApp: true })
+      async () => ({ repo: 'https://github.com/acme/repo.git', branch: 'release/v2', githubApp: true })
     )
 
     await expect(git.pull('a')).resolves.toMatchObject({ ok: true })

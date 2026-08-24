@@ -17,6 +17,7 @@ import {
   DEPLOYMENT_CONFIG_SCHEMA_VERSION,
   DEPLOYMENT_SECRET_KEYS,
   DeploymentConfigConflictError,
+  DeploymentConfigGitlabBaseUrlLockedError,
   DeploymentConfigMissingSecretsError,
   DeploymentConfigSecretRefreshRequiredError,
   DeploymentConfigValuesV1Schema,
@@ -32,6 +33,7 @@ import { loadDeploymentEnvironment } from '../deployment-environment.js'
 import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNECTOR_ID } from '../logto-connectors.js'
 import {
   githubDeploymentPut,
+  gitlabDeploymentPut,
   localAuthLogtoPut,
   logtoGoogleConnectorPut,
   logtoGithubConnectorPut,
@@ -44,6 +46,8 @@ import {
   githubConfiguredUrls,
   githubManifestRegistrationUrl
 } from '../github-app.js'
+import { gitlabConfiguredUrls } from '../gitlab-app.js'
+import { probeBlocksSave, probeGitlabInstance } from '../gitlab-probe.js'
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
@@ -110,6 +114,17 @@ const CreateSlackBody = z.strictObject({
   name: z.string().trim().min(1).max(80),
   configToken: z.string().trim().min(1).max(10_000),
   connectLogto: z.boolean().optional().default(false)
+})
+
+const ConfigureGitlabBody = z.strictObject({
+  application: z
+    .strictObject({
+      clientId: z.string().trim().min(1).max(500),
+      clientSecret: z.string().min(1).max(10_000).optional(),
+      /** Empty or absent means GitLab.com — the default value of the axis (§24.1). */
+      baseUrl: z.string().trim().max(500).nullable().optional()
+    })
+    .nullable()
 })
 
 const ConfigureGoogleBody = z.strictObject({
@@ -504,8 +519,15 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     } catch {
       // Slack requires HTTPS startup URLs; the UI keeps creation/check disabled.
     }
+    let gitlab: ReturnType<typeof gitlabConfiguredUrls> | null = null
+    try {
+      gitlab = gitlabConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+    } catch {
+      // GitLab needs an HTTPS Control Plane URL before its redirect URI is publishable.
+    }
     return {
       github,
+      gitlab,
       slack,
       google: values.logto?.browser
         ? {
@@ -589,6 +611,9 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       return problem(reply, 400, error.message, error.code)
     }
     if (error instanceof DeploymentConfigConflictError) {
+      return problem(reply, 409, error.message, error.code)
+    }
+    if (error instanceof DeploymentConfigGitlabBaseUrlLockedError) {
       return problem(reply, 409, error.message, error.code)
     }
     if (error instanceof LogtoManagementError) {
@@ -839,6 +864,30 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       return { revision: saved.revision, restartRequired: true as const }
     })
   )
+
+  app.post('/api/v1/configure/gitlab', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = ConfigureGitlabBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'a valid GitLab OAuth application id is required')
+    const application = parsed.data.application
+    const requestedBaseUrl = application?.baseUrl?.trim()
+    // The staged probe (§24.2): shape refuses the save, everything else is a
+    // warning the operator reads, because this process and the Control Plane
+    // need not share a network position.
+    const probe = requestedBaseUrl ? await probeGitlabInstance(requestedBaseUrl, fetchImpl) : null
+    if (probe && probeBlocksSave(probe)) return problem(reply, 400, probe.message, probe.status)
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current) return problem(reply, 409, 'save deployment settings before configuring GitLab')
+      let put: ReturnType<typeof gitlabDeploymentPut>
+      try {
+        put = gitlabDeploymentPut(current, application ? { ...application, baseUrl: probe?.baseUrl ?? null } : null)
+      } catch (error) {
+        return problem(reply, 400, error instanceof Error ? error.message : 'invalid GitLab OAuth application')
+      }
+      const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+      return { revision: saved.revision, restartRequired: true as const, ...(probe ? { probe } : {}) }
+    })
+  })
 
   app.post('/api/v1/configure/google', { preHandler: requireConfigurationAccess }, async (request, reply) => {
     const parsed = ConfigureGoogleBody.safeParse(request.body)
@@ -1580,6 +1629,9 @@ export async function serveSetupServer(env: NodeJS.ProcessEnv = process.env): Pr
   }
   const handle = openDeploymentConfigStore({
     databaseUrl: config.DATABASE_URL,
+    // The no-document GitLab axis this deployment already serves: a first write
+    // that would move it while GitLab state exists is refused.
+    ...(env.GITLAB_BASE_URL ? { gitlabBaseUrl: env.GITLAB_BASE_URL } : {}),
     SECRET_CIPHER: config.SECRET_CIPHER,
     VAULT_TRANSIT_KEY: config.VAULT_TRANSIT_KEY,
     VAULT_TRANSIT_MOUNT: config.VAULT_TRANSIT_MOUNT,

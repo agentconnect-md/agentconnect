@@ -1,9 +1,9 @@
 # `@agentconnect.md/setup`
 
 Browser-based Setup Server for AgentConnect self-hosting. It configures Logto,
-GitHub, Slack, Google, Feishu, and Lark through one authenticated local operator
-surface. Provider identities and write-only credentials are stored in the
-deployment database; the UI never returns stored secret values.
+GitHub, GitLab, Slack, Google, Feishu, and Lark through one authenticated local
+operator surface. Provider identities and write-only credentials are stored in
+the deployment database; the UI never returns stored secret values.
 
 This package has no command-line setup interface. Provider creation, match
 checks, edits, secret replacement, and clearing a provider configuration all
@@ -54,8 +54,8 @@ AGENTCONNECT_PUBLIC_CP_URL=https://gateway.example.test/cp
 AGENTCONNECT_PUBLIC_RELAY_URL=https://gateway.example.test/relay
 ```
 
-Setup shows these values at the top because GitHub and Slack manifests
-derive their callbacks from them. Change the environment and restart Setup
+Setup shows these values at the top because GitHub and Slack manifests, and the
+GitLab redirect URI, derive their callbacks from them. Change the environment and restart Setup
 Server before applying updated provider settings.
 
 ## Configuration ownership

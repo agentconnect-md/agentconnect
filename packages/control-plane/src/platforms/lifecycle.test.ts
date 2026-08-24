@@ -23,7 +23,7 @@ const SLACK_TTL_MS = 3600 * 1000
 const SWEEP_MS = 600 * 1000
 
 function reapSpy() {
-  return { reapExpired: vi.fn(async () => 0) }
+  return { reapExpired: vi.fn<(staleBefore: Date) => Promise<number>>(async () => 0) }
 }
 
 /** The four providers exactly as `buildContainer` composes them: the Slack

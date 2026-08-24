@@ -8,6 +8,9 @@ import { HookService, type HookAgentReads } from './hook.service.js'
 import type {
   AgentRecord,
   GithubInstallationRecord,
+  GitlabAgentAccountRecord,
+  GitlabProjectBindingRecord,
+  GitlabWebhookSecretStore,
   HookRecord,
   HookRepo,
   HookSecretStore
@@ -21,6 +24,7 @@ const HOOK = HookId('11111111-1111-4111-8111-111111111111')
 const AGENT = AgentId('22222222-2222-4222-8222-222222222222')
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 
+// A legacy row: `compile` branches explicitly on the revision columns being absent.
 function hook(over: Partial<HookRecord> = {}): HookRecord {
   return {
     id: HOOK,
@@ -48,7 +52,7 @@ function hook(over: Partial<HookRecord> = {}): HookRecord {
     lastModifiedAt: new Date(),
     lastModifiedBy: null,
     ...over
-  }
+  } as HookRecord
 }
 
 /** Minimal installation rows for the github-compile fakes. */
@@ -60,8 +64,50 @@ function installation(id: bigint, over: Partial<GithubInstallationRecord> = {}):
     accountLogin: 'acme',
     accountType: 'Organization',
     repositorySelection: 'all',
+    permissions: {},
     suspendedAt: null,
     revokedAt: null,
+    createdAt: new Date(),
+    ...over
+  }
+}
+
+/** One agent's ready service account on the binding (§7.2). */
+function account(agentId: string, userId: bigint): GitlabAgentAccountRecord {
+  return {
+    id: `account-${userId}`,
+    orgId: 'org',
+    agentId,
+    rootGroupId: 77n,
+    serviceAccountUserId: userId,
+    username: `review-agent-${agentId.replace(/-/g, '').slice(0, 12)}-25`,
+    displayName: 'review-agent',
+    avatarFingerprint: null,
+    createAttempt: null,
+    credentialEpoch: 1n,
+    administeringConnectionId: null,
+    generation: 1n,
+    lifecycle: 'active',
+    state: 'ready',
+    stateReason: null
+  }
+}
+
+/** A ready gitlab binding — the gitlab-compile source (§11.3). */
+function binding(over: Partial<GitlabProjectBindingRecord> = {}): GitlabProjectBindingRecord {
+  return {
+    id: 'binding-1',
+    orgId: 'org',
+    projectId: 4455667n,
+    projectPath: 'example-group/example-project',
+    defaultBranch: 'main',
+    installerConnectionId: null,
+    webhookId: 12n,
+    desiredEventsHash: null,
+    credentialEpoch: 1n,
+    convergeOwedAt: null,
+    state: 'ready',
+    stateReason: null,
     createdAt: new Date(),
     ...over
   }
@@ -75,13 +121,21 @@ function make(
     installations?: GithubInstallationRecord[]
     appSlug?: string
     hooks?: Partial<HookRepo>
+    pause?: boolean | null
+    gitlabBinding?: Partial<GitlabProjectBindingRecord> | null
+    gitlabAccounts?: GitlabAgentAccountRecord[]
   } = {}
 ) {
   const agents: HookAgentReads = {
     getUnscoped: vi.fn(async () =>
       opts.daemonId === null
         ? null
-        : ({ id: AGENT, name: 'review-agent', daemonId: opts.daemonId ?? DAEMON } as AgentRecord)
+        : ({
+            id: AGENT,
+            name: 'review-agent',
+            daemonId: opts.daemonId ?? DAEMON,
+            ...(opts.pause !== undefined ? { pause: opts.pause } : {})
+          } as AgentRecord)
     )
   }
   const secrets = { get: vi.fn(async () => opts.secret ?? null) } as unknown as HookSecretStore
@@ -93,8 +147,29 @@ function make(
     hookRemove: (id: string) => removes.push(id)
   } as unknown as RelayControlSender
   const installations = opts.installations ? { listForOrg: vi.fn(async () => opts.installations!) } : undefined
+  const gitlabBindings =
+    opts.gitlabBinding === undefined
+      ? undefined
+      : { byProject: vi.fn(async () => (opts.gitlabBinding ? binding(opts.gitlabBinding) : null)) }
+  const gitlabWebhookSecrets = { get: vi.fn(async () => 'whsec_example') } as unknown as GitlabWebhookSecretStore
+  const gitlabAccounts =
+    opts.gitlabBinding === undefined
+      ? undefined
+      : { listForBinding: vi.fn(async () => opts.gitlabAccounts ?? [account(AGENT, 9042n)]) }
   return {
-    svc: new HookService(hooks, secrets, agents, relayControl, undefined, installations, opts.appSlug),
+    svc: new HookService(
+      hooks,
+      secrets,
+      agents,
+      relayControl,
+      undefined,
+      installations,
+      opts.appSlug,
+      undefined,
+      gitlabBindings,
+      gitlabWebhookSecrets,
+      gitlabAccounts
+    ),
     assigns,
     removes
   }
@@ -141,6 +216,23 @@ describe('HookService.compile', () => {
 
   it('returns null for a tokenless webhook hook', async () => {
     expect(await make().svc.compile(hook({ urlToken: null }))).toBeNull()
+  })
+
+  it('keeps a paused agent out of the pool, and converges the rule to a removal', async () => {
+    const { svc, assigns, removes } = make({ pause: true })
+
+    expect(await svc.compile(hook())).toBeNull()
+    await svc.broadcast(hook())
+    expect(assigns).toEqual([])
+    expect(removes).toEqual([HOOK])
+  })
+
+  it('compiles again once the agent resumes', async () => {
+    const { svc, assigns, removes } = make({ pause: false })
+
+    await svc.broadcast(hook())
+    expect(removes).toEqual([])
+    expect(assigns).toHaveLength(1)
   })
 
   const ghHook = (over: Partial<HookRecord> = {}) =>
@@ -291,5 +383,36 @@ describe('HookService.broadcast', () => {
     await off.svc.broadcast(hook({ enabled: false }))
     expect(off.assigns).toHaveLength(0)
     expect(off.removes).toEqual([HOOK])
+  })
+})
+
+const GITLAB_HOOK: Partial<HookRecord> = {
+  kind: 'gitlab',
+  sessionMode: 'perThread',
+  urlToken: null,
+  repoId: 4455667n,
+  events: ['issues:*']
+}
+
+describe('HookService.compile — gitlab', () => {
+  it('names the HOOK AGENT’s own account and vetoes every account bound to the project', async () => {
+    const sibling = account('11111111-2222-3333-4444-555555555555', 9043n)
+    const { svc } = make({ gitlabBinding: {}, gitlabAccounts: [account(AGENT, 9042n), sibling] })
+    const rule = await svc.compile(hook({ ...GITLAB_HOOK }))
+    expect(rule?.gitlab?.serviceAccountUserId).toBe('9042')
+    expect(rule?.gitlab?.serviceAccountUsername).toBe(account(AGENT, 9042n).username)
+    expect(rule?.gitlab?.boundServiceAccountUserIds).toEqual(['9042', '9043'])
+  })
+
+  it('leaves the pool while the hook agent has no ready account of its own', async () => {
+    const unready = { ...account(AGENT, 9042n), state: 'provisioning' as const }
+    const { svc } = make({ gitlabBinding: {}, gitlabAccounts: [unready] })
+    expect(await svc.compile(hook({ ...GITLAB_HOOK }))).toBeNull()
+    // A sibling agent's ready account is not this hook's identity either.
+    const foreign = make({
+      gitlabBinding: {},
+      gitlabAccounts: [account('11111111-2222-3333-4444-555555555555', 9043n)]
+    })
+    expect(await foreign.svc.compile(hook({ ...GITLAB_HOOK }))).toBeNull()
   })
 })

@@ -730,6 +730,37 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     expect((await post(a, other, { repoFullName: 'acme/tools' })).statusCode).toBe(200)
   })
 
+  it('POST does not read a same-numbered GitLab project as a duplicate GitHub repository', async () => {
+    // The hosts number their repositories independently and the unique key permits
+    // both, so the duplicate preflight has to qualify by provider (§8.1). Before it
+    // did, holding GitLab project 111 blocked authorizing GitHub repository 111.
+    await seedDaemon(prisma, DAEMON)
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const a = app()
+    await prisma.agentRepoAuthorization.create({
+      data: {
+        agentId,
+        provider: 'gitlab',
+        repoId: 111n,
+        repoFullName: 'example-group/example-project',
+        access: 'read'
+      }
+    })
+
+    expect((await post(a, agentId, { repoFullName: 'acme/tools' })).statusCode).toBe(200)
+    expect(
+      await prisma.agentRepoAuthorization.findMany({
+        where: { agentId, repoId: 111n },
+        orderBy: { provider: 'asc' },
+        select: { provider: true, repoFullName: true }
+      })
+    ).toEqual([
+      { provider: 'github', repoFullName: 'acme/tools' },
+      { provider: 'gitlab', repoFullName: 'example-group/example-project' }
+    ])
+  })
+
   it('lets a manual GitHub workspace explicitly authorize only its own repo', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await manualWorkspaceAgent()

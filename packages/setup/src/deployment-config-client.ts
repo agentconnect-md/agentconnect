@@ -68,6 +68,38 @@ export function githubDeploymentPut(
   })
 }
 
+export interface GitlabDeploymentCredentials {
+  clientId: string
+  /** Omitted keeps the sealed secret; GitLab shows it only once at registration. */
+  clientSecret?: string
+  /** The instance base URL (§24.1); null or omitted means GitLab.com. */
+  baseUrl?: string | null
+}
+
+/** Null clears the application. GitLab OAuth applications are registered by hand (§18.3). */
+export function gitlabDeploymentPut(
+  current: CurrentDeploymentConfig,
+  application: GitlabDeploymentCredentials | null
+): DeploymentConfigPut {
+  // A different instance is a different application, so its secret is required
+  // whenever either half of the identity moves (§24.1).
+  const baseUrl = application?.baseUrl ?? null
+  const identityChanged =
+    application !== null &&
+    (current.values.gitlab?.clientId !== application.clientId || (current.values.gitlab?.baseUrl ?? null) !== baseUrl)
+  if (application && !application.clientSecret && identityChanged) {
+    throw new Error('the GitLab OAuth application secret is required for a new application id or instance')
+  }
+  const secret = application ? application.clientSecret : null
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      gitlab: application ? { clientId: application.clientId, baseUrl } : null
+    },
+    ...(secret === undefined ? {} : { secrets: { 'gitlab.clientSecret': secret } })
+  })
+}
+
 export interface LogtoGithubConnectorCredentials {
   appId: string
   slug: string

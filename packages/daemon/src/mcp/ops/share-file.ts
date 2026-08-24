@@ -172,7 +172,8 @@ export async function shareFile(
         'shareFile: the upload timed out and MAY still have been delivered — do NOT retry; say the image may have gone through instead.'
       )
     }
-    throw new Error(UPLOAD_REFUSALS[outcome.reason](platformLabel(target.platform)))
+    const refusal = UPLOAD_REFUSALS[outcome.reason](platformLabel(target.platform))
+    throw new Error(outcome.detail ? `${refusal} (${outcome.detail})` : refusal)
   }
 
   // Provenance (docs §4): the model-chosen path plus what was ACTUALLY published — sniffed

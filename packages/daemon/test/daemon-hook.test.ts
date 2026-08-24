@@ -12,10 +12,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import {
+  CODEHOST_NOTE_PROJECTION_V1_FEATURE,
+  CODEHOST_REVIEW_V1_FEATURE,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
   type EventSession,
   type HookReport,
+  type HookStart,
   type RdMsgHook
 } from '@agentconnect.md/protocol'
 import {
@@ -26,6 +29,7 @@ import {
   UNTRUSTED_CONTENT_END
 } from '../src/messages/hook-message.js'
 import { GithubReplyCollector } from '../src/github/poster.js'
+import { NO_ACTIVE_REVIEW_TURN } from '../src/codehost/review-adapter.js'
 import { transcriptCoords } from '../src/session/session-manager.js'
 import { DatabaseSync } from 'node:sqlite'
 import { sessionKey } from '../src/store/local-store.js'
@@ -128,6 +132,48 @@ const fire = (over: Partial<RdMsgHook> = {}): RdMsgHook => ({
   ...over
 })
 
+const GITLAB_PROJECT = '4455667'
+
+/** A gitlab MR delivery — `githubReply` rides the same pipe with repo = project id, number = IID (14.1). */
+const gitlabFire = (): RdMsgHook =>
+  fire({
+    sessionKey: `gitlab:${GITLAB_PROJECT}:merge_request:42`,
+    event: 'merge_request:opened',
+    gitlab: {
+      projectId: GITLAB_PROJECT,
+      projectPath: 'example-group/example-project',
+      target: { kind: 'merge_request', iid: 42 }
+    },
+    context: {
+      source: 'gitlab',
+      event: 'merge_request',
+      action: 'opened',
+      repo: 'example-group/example-project',
+      number: 42,
+      title: 'fix the primary',
+      htmlUrl: 'https://gitlab.com/example-group/example-project/-/merge_requests/42',
+      truncated: false
+    }
+  })
+
+/** The same delivery with a complete accepted dispatch tuple and an authoritative head (§17.2). */
+const gitlabReviewFire = (dispatchDaemonId: string): RdMsgHook => {
+  const base = gitlabFire()
+  return {
+    ...base,
+    configRevision: '1',
+    dispatchRevision: '1',
+    dispatchDaemonId,
+    reviewPolicy: 'full',
+    reportingMode: 'off',
+    gateMode: 'informational',
+    gitlab: {
+      ...base.gitlab!,
+      target: { kind: 'merge_request', iid: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) }
+    }
+  }
+}
+
 describe('Daemon rd/msg hook fires', () => {
   it('uses the display agent, runtime, and session model in GitHub attribution', async () => {
     const { factory, host } = streamingHost()
@@ -162,12 +208,16 @@ describe('Daemon rd/msg hook fires', () => {
     expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
 
     await vi.waitFor(() => expect(cp.hookReports.length).toBe(1), WAIT)
+    // The CP files this run against `session_meta.id` and deep-links the console from it, so the
+    // report names the session outwardly (session-concept.md §1.1), never the runtime's id.
+    const outward = (await (daemon as any).store.getSessionByAcpId('acp-hook-1'))!.sessionId
+    expect(outward).not.toBe('acp-hook-1')
     expect(cp.hookReports[0]).toMatchObject({
       hookId: HOOK_ID,
       agentId: AGENT_ID,
       deliveryKey: 'd-1',
       status: 'success',
-      sessionId: 'acp-hook-1'
+      sessionId: outward
     })
     expect(cp.hookReports[0]!.durationMs).toBeGreaterThanOrEqual(0)
     // Exactly one turn ran through the shared engine.
@@ -234,6 +284,375 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   }, 15_000)
 
+  // §17.2: the gitlab arm of `hook/start` records the head this turn runs on, but only against a CP
+  // that advertises it — an older one cannot route a provider member and the frame would be fatal.
+  it.each([
+    { name: 'advertises the run-projection feature', features: [CODEHOST_NOTE_PROJECTION_V1_FEATURE], calls: 1 },
+    { name: 'advertises no code-host features', features: [] as string[], calls: 0 }
+  ])(
+    'sends the gitlab hook/start barrier only when the control plane $name',
+    async ({ features, calls }) => {
+      const { factory } = streamingHost()
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const startHook = vi.fn(async (_payload: HookStart, _orgId?: string) => ({ accepted: true }))
+      const cp = {
+        ...fakeCpClient(),
+        startHook,
+        supportsServerFeature: (feature: string) => features.includes(feature)
+      }
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+        poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
+        collector: new GithubReplyCollector()
+      }))
+      const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+
+      await (daemon as any).handleRelayMsg(gitlabReviewFire(dispatchDaemonId), () => {})
+
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(startHook).toHaveBeenCalledTimes(calls)
+      if (calls === 1) {
+        const payload = startHook.mock.calls[0]![0]
+        expect(payload).toMatchObject({
+          hookId: HOOK_ID,
+          deliveryKey: 'd-1',
+          event: 'merge_request:opened',
+          dispatchDaemonId,
+          reviewPolicy: 'full',
+          gitlab: { projectId: GITLAB_PROJECT, target: { iid: 42, headSha: 'a'.repeat(40) } }
+        })
+        // The one-of is exclusive on the wire: a gitlab start never carries github metadata.
+        expect(payload.github).toBeUndefined()
+        expect(payload.sessionId).toBeTruthy()
+      }
+      // The terminal report carries the same subject, whatever the start barrier did: the control
+      // plane projects the §16 note's terminal edge only from a report that names its merge request.
+      const report = cp.hookReports[0]!
+      expect(report.gitlab).toEqual(gitlabReviewFire(dispatchDaemonId).gitlab)
+      expect(report.github).toBeUndefined()
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  // Round 2: an advertised barrier that is refused must not fall through to the pre-barrier legacy
+  // branch — the ordinary turn continues, but no formal-review surface exists to reach a lease.
+  it.each([
+    {
+      name: 'refuses an advertised barrier',
+      features: [CODEHOST_NOTE_PROJECTION_V1_FEATURE, CODEHOST_REVIEW_V1_FEATURE],
+      barrierFails: true,
+      startCalls: 3,
+      installed: 0
+    },
+    {
+      name: 'does not advertise the barrier at all',
+      features: [CODEHOST_REVIEW_V1_FEATURE],
+      barrierFails: true,
+      startCalls: 0,
+      installed: 1
+    },
+    {
+      name: 'accepts the barrier',
+      features: [CODEHOST_NOTE_PROJECTION_V1_FEATURE, CODEHOST_REVIEW_V1_FEATURE],
+      barrierFails: false,
+      startCalls: 1,
+      installed: 1
+    }
+  ])(
+    'installs the formal-review turn only when the control plane $name',
+    async ({ features, barrierFails, startCalls, installed }) => {
+      let observed = -1
+      let submitError: Error | undefined
+      const { factory, host } = streamingHost()
+      const stream = host.prompt.getMockImplementation()!
+      host.prompt.mockImplementation(async (sid: string) => {
+        observed = (daemon as any).gitlabReviews.turns.size
+        // With no turn installed, nothing owns the session key and the router refuses the tool
+        // before any control-plane or provider call — the agent keeps its ordinary reply.
+        if (observed === 0) {
+          await (daemon as any).codeReviews
+            .submit({
+              agentId: AGENT_ID,
+              platform: 'hook',
+              channel: HOOK_ID,
+              thread: `gitlab:${GITLAB_PROJECT}:merge_request:42`,
+              transportScope: `gitlab:${GITLAB_PROJECT}`,
+              event: 'COMMENT',
+              verdict: 'neutral',
+              body: 'This must not reach a publication lease.'
+            })
+            .catch((err: Error) => {
+              submitError = err
+            })
+        }
+        return stream(sid)
+      })
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const authorizeCodeHostReview = vi.fn(async () => {
+        throw new Error('must not authorize')
+      })
+      const cp = {
+        ...fakeCpClient(),
+        startHook: vi.fn(async () => {
+          if (barrierFails) throw new Error('start barrier refused')
+          return { accepted: true }
+        }),
+        authorizeCodeHostReview,
+        supportsServerFeature: (feature: string) => features.includes(feature)
+      }
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+        poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
+        collector: new GithubReplyCollector()
+      }))
+      const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+
+      await (daemon as any).handleRelayMsg(gitlabReviewFire(dispatchDaemonId), () => {})
+
+      // The ordinary turn always runs to completion; only the review surface is withheld.
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(cp.hookReports[0]).toMatchObject({ status: 'success' })
+      expect(cp.startHook).toHaveBeenCalledTimes(startCalls)
+      expect(observed).toBe(installed)
+      if (installed === 0) {
+        expect(submitError?.message).toBe(NO_ACTIVE_REVIEW_TURN)
+        expect(authorizeCodeHostReview).not.toHaveBeenCalled()
+      }
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  // gitlab-com-integration.md 14.1/19.3: a note the poster could not publish must fail the run.
+  it.each([
+    { name: 'a refused effect lease', failure: 'token_unavailable' },
+    { name: 'an exhausted auth retry', failure: 'auth_rejected' },
+    { name: 'an abandoned publish', failure: 'publish_timeout' }
+  ])(
+    'fails the hook run when the gitlab note publish reports $name',
+    async ({ failure }) => {
+      const { factory } = streamingHost()
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const cp = fakeCpClient()
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+        poster: { publish: vi.fn(async () => undefined), failure },
+        collector: new GithubReplyCollector()
+      }))
+
+      const ack = await (daemon as any).handleRelayMsg(gitlabFire(), () => {})
+
+      expect(ack).toEqual({ msgId: `${HOOK_ID}:d-1`, accepted: true })
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(cp.hookReports[0]).toMatchObject({ status: 'failed', reason: `note_publish_failed:${failure}` })
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  it.each([
+    {
+      name: 'a failed publish carries its code into the settled write',
+      failure: 'post_failed',
+      expected: 'post_failed'
+    },
+    { name: 'a published note leaves the durable record clean', failure: undefined, expected: undefined }
+  ])(
+    'persists the note outcome with settlement: $name',
+    async ({ failure, expected }) => {
+      const { factory } = streamingHost()
+      const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+      await daemon.start()
+      const cp = fakeCpClient()
+      ;(daemon as never as { cpClient: unknown }).cpClient = cp
+      ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+        poster: {
+          publish: vi.fn(async () => (failure ? undefined : { provider: 'gitlab', kind: 'note', externalId: '9001' })),
+          ...(failure ? { failure } : {})
+        },
+        collector: new GithubReplyCollector()
+      }))
+      // Capture what the 'settled' write actually serializes — the reason must ride that same record.
+      const settled: Array<string | undefined> = []
+      const realPersist = (daemon as any).persistHookState.bind(daemon)
+      ;(daemon as any).persistHookState = async (entry: any, state: any, required: any) => {
+        if (state === 'settled') settled.push(entry.hookContext?.notePublishFailure)
+        return realPersist(entry, state, required)
+      }
+
+      await (daemon as any).handleRelayMsg(gitlabFire(), () => {})
+
+      await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+      expect(settled).toEqual([expected])
+      await daemon.stop()
+    },
+    15_000
+  )
+
+  it('clears a stale barrier marker when the retry publishes: no row carries both a note and a failure', async () => {
+    const root = scaffold()
+    const seed = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await seed.start()
+    const replayFire = gitlabFire()
+    const replayMessage = buildHookMessage(replayFire, 'trace-gitlab-barrier-retry')
+    // The barrier refused BEFORE any POST, so the row stays retryable — with a marker already on it.
+    const replayHook = {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'd-1',
+      firedAt: replayFire.firedAt,
+      event: replayFire.event,
+      gitlab: replayFire.gitlab,
+      githubReply: {
+        hookId: HOOK_ID,
+        provider: 'gitlab',
+        subjectKind: 'merge_request',
+        repo: GITLAB_PROJECT,
+        number: 42
+      },
+      notePublishFailure: 'publish_barrier_failed'
+    }
+    expect(
+      await (seed as any).store.appendInbox({
+        id: replayMessage.msgId,
+        sessionKey: `hook:gitlab:${GITLAB_PROJECT}:42:${AGENT_ID}`,
+        agentId: AGENT_ID,
+        msg: JSON.stringify(replayMessage),
+        hookContext: JSON.stringify(replayHook),
+        posterPublishState: 'not_started',
+        loopGuardCounted: 1,
+        enqueuedAt: '1'
+      })
+    ).toBe(true)
+    await seed.stop()
+
+    const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    const cp = fakeCpClient()
+    ;(restarted as never as { cpClient: unknown }).cpClient = cp
+    const poster = { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) }
+    ;(restarted as any).githubReviews.makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+    const settled: Array<string | undefined> = []
+    const realPersist = (restarted as any).persistHookState.bind(restarted)
+    ;(restarted as any).persistHookState = async (entry: any, state: any, required: any) => {
+      if (state === 'settled') settled.push(entry.hookContext?.notePublishFailure)
+      return realPersist(entry, state, required)
+    }
+
+    await restarted.start()
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(poster.publish).toHaveBeenCalledWith('done!')
+    expect(cp.hookReports[0]).toMatchObject({
+      status: 'success',
+      publishedOutput: { provider: 'gitlab', kind: 'note', externalId: '9001' }
+    })
+    expect(cp.hookReports[0]!.reason).toBeUndefined()
+    // The settled write dropped the marker, so a later replay cannot resurrect it either.
+    expect(settled).toEqual([undefined])
+    await restarted.stop()
+  }, 20_000)
+
+  it('re-derives the failed completion from the persisted outcome after a restart', async () => {
+    const root = scaffold()
+    const seed = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await seed.start()
+    const replayFire = gitlabFire()
+    const replayMessage = buildHookMessage(replayFire, 'trace-gitlab-replay')
+    // The crash window: `settled` and the reason were made durable, the completion was not sent.
+    const replayHook = {
+      hookId: HOOK_ID,
+      agentId: AGENT_ID,
+      deliveryKey: 'd-1',
+      firedAt: replayFire.firedAt,
+      event: replayFire.event,
+      gitlab: replayFire.gitlab,
+      githubReply: {
+        hookId: HOOK_ID,
+        provider: 'gitlab',
+        subjectKind: 'merge_request',
+        repo: GITLAB_PROJECT,
+        number: 42
+      },
+      notePublishFailure: 'post_failed'
+    }
+    expect(
+      await (seed as any).store.appendInbox({
+        id: replayMessage.msgId,
+        sessionKey: `hook:gitlab:${GITLAB_PROJECT}:42:${AGENT_ID}`,
+        agentId: AGENT_ID,
+        msg: JSON.stringify(replayMessage),
+        hookContext: JSON.stringify(replayHook),
+        posterPublishState: 'settled',
+        loopGuardCounted: 1,
+        enqueuedAt: '1'
+      })
+    ).toBe(true)
+    await seed.stop()
+
+    const restarted = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    const cp = fakeCpClient()
+    ;(restarted as never as { cpClient: unknown }).cpClient = cp
+    const makeGithubReply = vi.fn(() => ({ poster: { publish: vi.fn() }, collector: new GithubReplyCollector() }))
+    ;(restarted as any).githubReviews.makeGithubReply = makeGithubReply
+
+    await restarted.start()
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({ status: 'failed', reason: 'note_publish_failed:post_failed' })
+    // A settled row builds no poster at all, so the reason can only have come from the durable record.
+    expect(makeGithubReply).not.toHaveBeenCalled()
+    await restarted.stop()
+  }, 20_000)
+
+  it('records publish_barrier_failed and never reaches the poster when the durable barrier write fails', async () => {
+    const { factory } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    const poster = { publish: vi.fn(async () => undefined) }
+    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({ poster, collector: new GithubReplyCollector() }))
+    const realPersist = (daemon as any).persistHookState.bind(daemon)
+    ;(daemon as any).persistHookState = async (entry: any, state: any, required: any) => {
+      if (state === 'in_flight') throw new Error('durable inbox row is missing')
+      return realPersist(entry, state, required)
+    }
+
+    await (daemon as any).handleRelayMsg(gitlabFire(), () => {})
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({
+      status: 'failed',
+      reason: 'note_publish_failed:publish_barrier_failed'
+    })
+    // Fail-closed is preserved: the barrier never opened, so no public write was attempted.
+    expect(poster.publish).not.toHaveBeenCalled()
+    await daemon.stop()
+  }, 15_000)
+
+  it('still reports success when the gitlab note published — the poster reports no failure', async () => {
+    const { factory } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).githubReviews.makeGithubReply = vi.fn(() => ({
+      poster: { publish: vi.fn(async () => ({ provider: 'gitlab', kind: 'note', externalId: '9001' })) },
+      collector: new GithubReplyCollector()
+    }))
+
+    await (daemon as any).handleRelayMsg(gitlabFire(), () => {})
+
+    await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
+    expect(cp.hookReports[0]).toMatchObject({ status: 'success' })
+    expect(cp.hookReports[0]!.reason).toBeUndefined()
+    await daemon.stop()
+  }, 15_000)
+
   it.each([
     {
       name: 'provider quota exhaustion',
@@ -281,7 +700,7 @@ describe('Daemon rd/msg hook fires', () => {
         hookId: HOOK_ID,
         deliveryKey: 'd-1',
         status: 'failed',
-        sessionId: 'acp-hook-1',
+        sessionId: (await (daemon as any).store.getSessionByAcpId('acp-hook-1'))!.sessionId,
         reason
       })
       await daemon.stop()
@@ -568,6 +987,106 @@ describe('Daemon rd/msg hook fires', () => {
     },
     15_000
   )
+
+  it('seals a batch only after a coalesce already in flight lands in it', async () => {
+    // The durable coalesce awaits mid-flight. If the seal could run in that window it would build
+    // the prompt without the follower while the follower was reported as coalesced into it.
+    const clock = new FakeClock(Date.parse('2026-08-12T00:00:00.000Z'))
+    let onUpdate!: (sid: string, update: unknown) => void
+    const prompts: string[] = []
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-review-race-1'),
+      modelOptions: vi.fn(() => null),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sid: string, blocks: unknown) => {
+        prompts.push(JSON.stringify(blocks))
+        onUpdate(sid, {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Batch replies posted.' }
+        })
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      clock,
+      hostFactory: (_agent, cb) => {
+        onUpdate = cb
+        return host as never
+      }
+    })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as never as { cpClient: unknown }).cpClient = cp
+    ;(daemon as any).githubReviews.makeGithubReviewBatchReplies = undefined
+    ;(daemon as any).githubReviews.replyGithubReviewThreads = vi.fn(async () => ({ replies: [] }))
+
+    // Hold the durable coalesce open so the seal deadline elapses while it is still in flight.
+    const store = (daemon as any).store
+    const realCoalesce = store.coalesceHookInbox.bind(store)
+    let openCoalesce!: () => void
+    const coalesceReached = new Promise<void>((reachedResolve) => {
+      const gate = new Promise<void>((releaseResolve) => (openCoalesce = releaseResolve))
+      store.coalesceHookInbox = async (args: unknown) => {
+        reachedResolve()
+        await gate
+        return realCoalesce(args)
+      }
+    })
+
+    const reviewComment = (deliveryKey: string, commentId: string, rootId: string, body: string): RdMsgHook =>
+      fire({
+        sessionKey: 'acme/infra#42',
+        msgId: `${HOOK_ID}:${deliveryKey}`,
+        deliveryKey,
+        firedAt: `2026-08-12T00:00:0${deliveryKey === 'root-1' ? '0' : '1'}.000Z`,
+        event: 'pull_request_review_comment:created',
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 42,
+          pullRequestReviewId: '900',
+          reviewCommentId: commentId,
+          reviewThreadRootCommentId: rootId
+        },
+        context: {
+          source: 'github',
+          event: 'pull_request_review_comment',
+          action: 'created',
+          repo: 'acme/infra',
+          number: 42,
+          senderLogin: 'reviewer',
+          bodyExcerpt: body,
+          truncated: false
+        }
+      })
+
+    await expect(
+      (daemon as any).handleRelayMsg(reviewComment('root-1', '101', '101', 'First finding.'), () => {})
+    ).resolves.toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect((daemon as any).activeGateEntries.size).toBe(1), WAIT)
+
+    const second = (daemon as any).handleRelayMsg(reviewComment('root-2', '102', '102', 'Second finding.'), () => {})
+    await coalesceReached
+    // The seal is now due, but the coalesce owns the batch until it commits.
+    clock.advance(5_000)
+    await Promise.resolve()
+    expect(host.prompt).not.toHaveBeenCalled()
+
+    openCoalesce()
+    await expect(second).resolves.toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
+    expect(prompts[0]).toContain('First finding.')
+    expect(prompts[0]).toContain('Second finding.')
+    expect(prompts[0]).toContain('Authorized thread roots: 101, 102')
+    await daemon.stop()
+  }, 15_000)
 
   it('grants formal-review authority only when an issue_comment explicitly requests review', async () => {
     const daemon = new Daemon({
@@ -1176,7 +1695,7 @@ describe('Daemon rd/msg hook fires', () => {
         hookId: HOOK_ID,
         deliveryKey: 'd-1',
         status: 'success',
-        sessionId: `acp-${event}`
+        sessionId: (await (daemon as any).store.getSessionByAcpId(`acp-${event}`))!.sessionId
       })
 
       await daemon.stop()
@@ -2902,7 +3421,7 @@ describe('Daemon rd/msg hook fires', () => {
     const firstCp = fakeCpClient()
     ;(first as never as { cpClient: unknown }).cpClient = firstCp
     const firstAnchor = {
-      postMessage: vi.fn(async () => 'anchor-1'),
+      postMessage: vi.fn<(channel: string, text: string) => Promise<string>>(async () => 'anchor-1'),
       postBlocks: vi.fn(async () => 'reply-1'),
       postContext: vi.fn(async () => {}),
       setStatus: vi.fn(async () => {})
@@ -3110,7 +3629,7 @@ describe('buildHookMessage', () => {
       expect(draftText).toContain('Draft: true')
       expect(draftText).toContain('opens a review generation for the current PR revision')
       expect(draftText).toContain('use APPROVE + pass when it passes')
-      expect(draftText).toContain('submitGithubReview')
+      expect(draftText).toContain('submitCodeReview')
       expect(draftText).not.toContain('cannot accept a formal review')
 
       const convertedText = buildHookText(
@@ -3175,7 +3694,7 @@ describe('buildHookMessage', () => {
       expect(withThread).toContain('posts that final back to acme/infra#42 automatically')
       expect(withThread).toContain('exclusively owns the reply')
       expect(withThread).toContain('Formal GitHub review submission is unavailable')
-      expect(withThread).not.toContain('submitGithubReview')
+      expect(withThread).not.toContain('submitCodeReview')
       expect(withThread).toContain('Do NOT create, update, or delete GitHub comments or formal reviews')
       expect(withThread).toContain('`gh`, another CLI, a connector, or a direct API call')
       expect(withThread).toContain('Other GitHub tools are for READ-only inspection')
@@ -3183,7 +3702,7 @@ describe('buildHookMessage', () => {
       // formal verdict. A mention identified by the relay opens a review below.
       const issueComment = buildHookText(ghFire({ event: 'issue_comment', action: 'created' }))
       expect(issueComment).toContain('Formal GitHub review submission is unavailable')
-      expect(issueComment).not.toContain('submitGithubReview')
+      expect(issueComment).not.toContain('submitCodeReview')
       const prConversation = buildHookText(
         ghFire(
           { event: 'issue_comment', action: 'created' },
@@ -3201,7 +3720,7 @@ describe('buildHookMessage', () => {
       )
       expect(prConversation).toContain('does not prove its files match the PR revision')
       expect(prConversation).toContain('revision-addressed Git object reads')
-      expect(prConversation).not.toContain('submitGithubReview')
+      expect(prConversation).not.toContain('submitCodeReview')
       const revisionReview = buildHookText(
         ghFire(
           { event: 'pull_request', action: 'synchronize' },
@@ -3221,7 +3740,7 @@ describe('buildHookMessage', () => {
         )
       )
       expect(revisionReview).toContain('opens a review generation for the current PR revision')
-      expect(revisionReview).toContain('structured `submitGithubReview` tool')
+      expect(revisionReview).toContain('structured `submitCodeReview` tool')
       expect(revisionReview).toContain(`Base SHA: ${'b'.repeat(40)}`)
       expect(revisionReview).toContain(`Head SHA: ${'a'.repeat(40)}`)
       expect(revisionReview).toContain('Before trusting local files or repository traces')
@@ -3267,7 +3786,7 @@ describe('buildHookMessage', () => {
       )
       expect(inlineReply).toContain('daemon posts it back to the existing review thread automatically')
       expect(inlineReply).toContain('exclusively owns every inline reply')
-      expect(inlineReply).not.toContain('submitGithubReview')
+      expect(inlineReply).not.toContain('submitCodeReview')
       expect(inlineReply).not.toContain('ordinary GitHub comment')
       const batchableInline = buildHookText(
         ghFire(
@@ -3311,7 +3830,7 @@ describe('buildHookMessage', () => {
       expect(missingRoot).toContain('automatically as one ordinary GitHub comment')
       expect(missingRoot).toContain('Formal GitHub reviews are unavailable')
       expect(missingRoot).not.toContain('existing review thread')
-      expect(missingRoot).not.toContain('submitGithubReview')
+      expect(missingRoot).not.toContain('submitCodeReview')
       // push events have no issue/PR number → no poster runs → no hint.
       const push = buildHookText(
         ghFire({ event: 'push', action: undefined, number: undefined, bodyExcerpt: undefined })
@@ -3386,7 +3905,7 @@ describe('buildHookMessage', () => {
       expect(text).not.toContain('opens a review generation for the current PR revision')
       expect(text).not.toContain('use APPROVE + pass when it passes')
       expect(text).toContain('Formal GitHub review submission is unavailable')
-      expect(text).not.toContain('submitGithubReview')
+      expect(text).not.toContain('submitCodeReview')
     })
 
     it('a body quoting the delimiters cannot close the fence (delimiter lines are defanged)', async () => {

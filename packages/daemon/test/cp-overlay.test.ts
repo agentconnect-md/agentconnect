@@ -22,7 +22,11 @@ describe('cpRuntimeEnv', () => {
     expect(cpRuntimeEnv(base())).toEqual({})
     expect(
       cpRuntimeEnv(
-        base({ runtimeOverrides: { model: 'opus', env: [] }, reasoningEffort: 'high', executionMode: 'yolo' })
+        base({
+          runtimeOverrides: { model: 'opus', env: [], secrets: [] },
+          reasoningEffort: 'high',
+          executionMode: 'yolo'
+        })
       )
     ).toEqual({
       AGENTCONNECT_MODEL: 'opus',

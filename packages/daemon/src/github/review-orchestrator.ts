@@ -25,6 +25,8 @@ import type { Logger } from '../log.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from '../messages/hook-message.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { ReplyGithubReviewThreadsReq, ReplyGithubReviewThreadsResult, SubmitGithubReviewReq } from '../mcp/ops.js'
+import type { CodeHostReviewAdapter } from '../codehost/review-adapter.js'
+import { hookCoordinates, openReviewBatch, reviewSubjectLane } from '../codehost/hook-admission.js'
 import { sessionKey, type SessionRecord } from '../store/local-store.js'
 import { formatErr, formatErrWithCauses } from '../daemon/text.js'
 import {
@@ -32,9 +34,6 @@ import {
   authorizedReviewTargetMatches,
   githubDeletedHookEvent,
   githubFallbackAllowed,
-  githubHookCoordinates,
-  githubPullRequestLane,
-  githubReviewBatchStream,
   githubThreadWorktreeCleanup,
   hookSnapshot,
   isGithubReviewCommentHook,
@@ -53,6 +52,7 @@ import type { WebchatTurnContext } from '../webchat/types.js'
 import { initiatorLabel } from '../workspace/session-branch.js'
 import type { PrepareSessionWorkspaceRequest } from '../workspace/workspace-manager.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './poster.js'
+import { GitlabFinalPoster } from '../gitlab/poster.js'
 import { GithubReviewClient, type GithubReviewEffect } from './review.js'
 
 /** Dispatch options this seam needs; a subset of the daemon's own. */
@@ -75,11 +75,14 @@ export interface GithubReviewHost {
   getSession(key: string): Promise<SessionRecord | undefined>
   displayNames(ids: string[]): Promise<Map<string, string>>
   getPostToken(agentId: string, repo: string, hookId: string): Promise<{ token: string }>
+  /** §14.1 effect lease: the binding's effect PAT gated by the enabled gitlab hook. */
+  getGitlabPostToken(agentId: string, projectId: string, hookId: string): Promise<{ token: string }>
+  invalidateGitlabPost(agentId: string, projectId: string, presentedToken?: string): void
   invalidatePost(agentId: string, repo: string, presentedToken?: string): void
   paused(agentId: string): boolean
   draining(agentId: string): boolean
   safetyDraining(agentId: string): boolean
-  safetyDrainAllows(agentId: string, key: string, githubLane?: string): boolean
+  safetyDrainAllows(agentId: string, key: string, reviewLane?: string): boolean
   /** Generic hook-report plumbing stays on the Daemon; this seam only calls it. */
   persistInbox(
     entry: QueueEntry,
@@ -115,7 +118,7 @@ export interface GithubReviewHost {
     target: { channel?: string; integrationId?: string } | undefined,
     anchorText: string,
     label: string,
-    safetyGithubLane?: string
+    safetyReviewLane?: string
   ): Promise<NormalizedMessage | null>
   dispatch(
     agentId: string,
@@ -131,13 +134,23 @@ export interface GithubReviewHost {
   activeGithubTurn(key: string): ActiveGithubTurnMeta | undefined
   activeGithubReplyBatch(key: string): ActiveGithubReplyBatchMeta | undefined
   agentLink(agentId: string): string
-  sessionLink(acpSessionId: string, source?: string): string
+  /** Takes the session's OUTWARD id (session-concept.md §1.1), which {@link outwardSessionId} resolves. */
+  sessionLink(sessionId: string, source?: string): string
+  outwardSessionId(agentId: string, acpSessionId: string): Promise<string | undefined>
   runtimeNames(): Record<string, string>
   hostForStoredSession(agentId: string, acpSessionId: string): Promise<AcpHost | undefined>
 }
 
 export class GithubReviewOrchestrator {
   readonly githubReviewClient = new GithubReviewClient()
+
+  /** The §6.5 code-host review adapter, GitHub side — extracted so GitLab can implement
+   *  the same member instead of core branching on a provider name. */
+  readonly reviewAdapter: CodeHostReviewAdapter = {
+    provider: 'github',
+    owns: (key, agentId) => this.host.activeGithubTurn(key)?.hook.agentId === agentId,
+    submit: (_key, req) => this.submitGithubReview(req)
+  }
 
   constructor(private readonly host: GithubReviewHost) {}
 
@@ -175,14 +188,11 @@ export class GithubReviewOrchestrator {
       msg.agentId,
       normalized.transportScope
     )
-    const githubLane = githubPullRequestLane(
-      msg,
-      githubHookCoordinates(msg.agentId, normalized, msg.target?.integrationId)
-    )
+    const reviewLane = reviewSubjectLane(msg, hookCoordinates(msg.agentId, normalized, msg.target?.integrationId))
     if (
       !maintenance &&
       this.host.safetyDraining(msg.agentId) &&
-      !this.host.safetyDrainAllows(msg.agentId, normalizedKey, githubLane)
+      !this.host.safetyDrainAllows(msg.agentId, normalizedKey, reviewLane)
     ) {
       this.log.info(`hook: agent "${msg.agentId}" is stopping an interrupted turn — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'busy' }
@@ -230,7 +240,8 @@ export class GithubReviewOrchestrator {
       firedAt: msg.firedAt,
       ...(msg.event ? { event: msg.event } : {}),
       ...(snapshot ? { snapshot } : {}),
-      ...(msg.github ? { github: msg.github } : {})
+      ...(msg.github ? { github: msg.github } : {}),
+      ...(msg.gitlab ? { gitlab: msg.gitlab } : {})
     }
     if (cleanup || deleted) {
       const key = sessionKey(nmsg.platform, nmsg.channel, nmsg.thread ?? nmsg.msgId, msg.agentId, nmsg.transportScope)
@@ -271,49 +282,41 @@ export class GithubReviewOrchestrator {
     // Inline coordinates and their PR target are one body-free trusted unit.
     // A mixed-version frame without that unit keeps the rolling-compatible
     // ordinary issue/PR comment path derived from HookContext.
+    // GitLab (§14.1) rides the same pipe: repo = numeric project id, number = IID; pushes have no thread and stay silent.
+    const gitlabReply =
+      c?.source === 'gitlab' && msg.gitlab && msg.gitlab.target.kind !== 'push'
+        ? {
+            hookId: msg.hookId,
+            provider: 'gitlab' as const,
+            subjectKind: msg.gitlab.target.kind,
+            repo: msg.gitlab.projectId,
+            number: msg.gitlab.target.iid
+          }
+        : undefined
     const githubReply =
       trustedInlineTarget ??
+      gitlabReply ??
       (c?.source === 'github' && c.repo && c.number !== undefined
         ? { hookId: msg.hookId, repo: c.repo, number: c.number }
         : undefined)
     if (githubReply) hookContext.githubReply = githubReply
-    const githubLane = githubPullRequestLane(
-      hookContext,
-      githubHookCoordinates(msg.agentId, nmsg, msg.target?.integrationId)
-    )
+    const reviewLane = reviewSubjectLane(hookContext, hookCoordinates(msg.agentId, nmsg, msg.target?.integrationId))
     const anchored = await this.host.anchorTrigger(
       msg.agentId,
       nmsg,
       msg.target,
       hookAnchorText(msg),
       `hook "${msg.hookId}"`,
-      githubLane
+      reviewLane
     )
     if (!anchored) return { accepted: false, reason: 'dropped' }
-    const batchReply =
-      githubReviewBatchStream(hookContext, githubHookCoordinates(msg.agentId, anchored, msg.target?.integrationId)) &&
-      githubReply &&
-      'reviewThreadRootCommentId' in githubReply &&
-      githubReply.reviewThreadRootCommentId
-        ? githubReply
-        : undefined
-    if (batchReply) {
-      const now = this.host.now()
-      hookContext.githubReviewBatch = {
-        reviewId: hookContext.github!.pullRequestReviewId!,
-        openedAt: now,
-        updatedAt: now,
-        items: [
-          {
-            deliveryKey: hookContext.deliveryKey,
-            firedAt: hookContext.firedAt,
-            text: anchored.text,
-            reply: { ...batchReply, reviewThreadRootCommentId: batchReply.reviewThreadRootCommentId },
-            publishState: 'not_started'
-          }
-        ]
-      }
-    }
+    const batch = openReviewBatch(
+      hookContext,
+      hookCoordinates(msg.agentId, anchored, msg.target?.integrationId),
+      anchored.text,
+      this.host.now()
+    )
+    if (batch) hookContext.githubReviewBatch = batch
     let settleAdmission!: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
     const admitted = new Promise<{ accepted: boolean; reason?: string; duplicate?: boolean }>((resolve) => {
       settleAdmission = resolve
@@ -602,7 +605,9 @@ export class GithubReviewOrchestrator {
       hookId: hook.hookId,
       agentId: hook.agentId,
       deliveryKey: hook.deliveryKey,
-      sessionId,
+      // The CP files the run against `session_meta.id` and deep-links the console from it, so
+      // this is the session's outward id (§1.1) — the caller holds the ACP hop's.
+      sessionId: (await this.host.outwardSessionId(hook.agentId, sessionId)) ?? sessionId,
       ...(hook.event ? { event: hook.event } : {}),
       github: { ...trusted, reportSha: trusted.reportSha ?? trusted.headSha },
       ...snapshot
@@ -869,7 +874,9 @@ export class GithubReviewOrchestrator {
       throw new Error('batched GitHub replies are only available during the active submitted-review comment turn')
     }
     if (active.called) throw new Error('this GitHub review-comment batch already used its reply tool')
-    const expected = new Set(batch.items.map((item) => item.reply.reviewThreadRootCommentId))
+    // Every GitHub batch item is opened from a trusted inline-thread root, so each carries its own reply target.
+    const items = batch.items.filter((item) => item.reply !== undefined)
+    const expected = new Set(items.map((item) => item.reply!.reviewThreadRootCommentId))
     const supplied = new Map<string, string>()
     for (const reply of req.replies) {
       if (supplied.has(reply.threadRootCommentId)) {
@@ -882,8 +889,9 @@ export class GithubReviewOrchestrator {
     }
     active.called = true
     const results: ReplyGithubReviewThreadsResult['replies'] = []
-    for (const item of batch.items) {
-      const root = item.reply.reviewThreadRootCommentId
+    for (const item of items) {
+      const reply = item.reply!
+      const root = reply.reviewThreadRootCommentId
       if (item.publishState === 'in_flight') {
         results.push({ threadRootCommentId: root, state: 'ambiguous' })
         continue
@@ -898,16 +906,18 @@ export class GithubReviewOrchestrator {
       }
       item.publishState = 'in_flight'
       await this.host.persistHookState(active.entry, undefined, true)
-      const published = await this.makeGithubReply(req.agentId, item.reply, active.sessionId).poster.publish(
+      const published = await this.makeGithubReply(req.agentId, reply, active.sessionId).poster.publish(
         supplied.get(root)!
       )
-      if (published) item.publishedComment = published
+      // Batch replies are a GitHub-only surface (inline review threads) — narrow away the gitlab arm of the shared poster union.
+      const comment = published && !('provider' in published) ? published : undefined
+      if (comment) item.publishedComment = comment
       item.publishState = 'settled'
       await this.host.persistHookState(active.entry, undefined, true)
       results.push({
         threadRootCommentId: root,
-        state: published ? 'published' : 'settled',
-        ...(published ? { commentId: published.commentId } : {})
+        state: comment ? 'published' : 'settled',
+        ...(comment ? { commentId: comment.commentId } : {})
       })
     }
     return { replies: results }
@@ -920,7 +930,24 @@ export class GithubReviewOrchestrator {
     agentId: string,
     ref: GithubReplyTarget,
     sessionId: string
-  ): { poster: GithubFinalPoster; collector: GithubReplyCollector } {
+  ): { poster: GithubFinalPoster | GitlabFinalPoster; collector: GithubReplyCollector } {
+    if (ref.provider === 'gitlab') {
+      return {
+        collector: new GithubReplyCollector(),
+        poster: new GitlabFinalPoster(
+          {
+            token: async () => (await this.host.getGitlabPostToken(agentId, ref.repo, ref.hookId)).token,
+            invalidateToken: (token) => this.host.invalidateGitlabPost(agentId, ref.repo, token),
+            log: { warn: (m: string) => this.log.warn(m) }
+          },
+          ref.repo,
+          ref.subjectKind ?? 'issue',
+          ref.number,
+          () =>
+            this.agents.get(agentId)?.output.showFooter ? this.githubCommentAttribution(agentId, sessionId) : undefined
+        )
+      }
+    }
     return {
       collector: new GithubReplyCollector(),
       poster: new GithubFinalPoster(
@@ -941,6 +968,8 @@ export class GithubReviewOrchestrator {
   async githubCommentAttribution(agentId: string, sessionId: string): Promise<GithubCommentAttribution> {
     const agent = this.agents.get(agentId)
     const runtime = agent?.runtime
+    // The footer links the console, which knows this session by its outward id (§1.1).
+    const outward = await this.host.outwardSessionId(agentId, sessionId)
     return {
       agentName: agent?.displayName?.trim() || agent?.name || agentId,
       agentUrl: this.host.agentLink(agentId),
@@ -949,7 +978,7 @@ export class GithubReviewOrchestrator {
         (await this.host.hostForStoredSession(agentId, sessionId))?.modelOptions?.(sessionId)?.current ??
         agent?.runtimeOverrides?.model ??
         'default',
-      sessionUrl: this.host.sessionLink(sessionId, 'github'),
+      sessionUrl: this.host.sessionLink(outward ?? sessionId, 'github'),
       // Same CP-resolved public avatar Slack uses for icon_url; GitHub renders it
       // inline ahead of the footer sentence.
       ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})

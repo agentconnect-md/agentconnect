@@ -473,8 +473,13 @@ node <bundled skills@1.5.21 bin> add <absoluteSnapshot> \
   hashes a canonical `{path, mode, size, sha256}` manifest for each bundle.
 - One atomic daemon-owned ledger keyed by canonical cwd records the owning agent
   ID even for an empty skill set, plus the plan fingerprint, exact CLI version,
-  source identity, CLI-derived roots, and file manifests. The unchanged fast path
-  re-hashes every owned live tree; existence alone is insufficient.
+  source identity, CLI-derived roots, and file manifests. A CLI-derived root is
+  canonicalized through contained workspace-local aliases before it is compared or
+  recorded, so one directory has one owner no matter which harness named it — a
+  repository that exposes `.agents/skills` as a link to `.claude/skills` gets a
+  renamed receipt on a runtime switch, not a second installation over the first.
+  The unchanged fast path re-hashes every owned live tree; existence alone is
+  insufficient.
 - An external SQLite lease serializes every process that can mutate the same
   canonical workspace. `BEGIN IMMEDIATE` protects the workspace key,
   owner-PID/token, and optional detached-helper process-group ID. A live owner or
@@ -495,7 +500,10 @@ node <bundled skills@1.5.21 bin> add <absoluteSnapshot> \
   or receipt-bound tree. Before that authority exists it may remove only
   content-free crash shapes: an empty target directory, or an empty target that
   contains only the expected empty marker. Any other partial tree fails closed.
-  Unowned/manual destinations are never overwritten or adopted.
+  Unowned/manual destinations are never overwritten or adopted. A candidate whose
+  destination is unowned is skipped and reported as a conflict rather than failing
+  the workspace: leaving that path untouched is what the refusal wanted, and one
+  foreign directory must not cost the agent its other skills or its host startup.
 - A source/CLI failure clears previously owned content and starts without managed
   skills. A refused stale removal, corrupt journal, or failed rollback blocks the
   workspace so disabled executable instructions cannot remain silently active.

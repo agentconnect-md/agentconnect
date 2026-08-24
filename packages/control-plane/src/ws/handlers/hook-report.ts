@@ -14,6 +14,7 @@
  */
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, HookId } from '../../domain/ids.js'
+import { reportedNoteState } from '../../codehost/note-projection.service.js'
 import { githubProjectionIntent } from '../../github/projection-intent.js'
 import { hookRuntimeProjectionState } from '../../github/projection-state.js'
 import { frameOrgId } from './frame-org.js'
@@ -24,7 +25,8 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
   const p = frame.payload
   // The hook must live in the org the frame acts in (M4): a cross-org id reads as absent through the scoped read.
   const orgId = frameOrgId(frame, conn)
-  if (!orgId || !(await deps.hook.get(orgId, HookId(p.hookId)))) {
+  const hook = orgId ? await deps.hook.get(orgId, HookId(p.hookId)) : null
+  if (!orgId || !hook) {
     conn.sendError(frame.id, 'SCOPE_DENIED', 'hook is not in the organization this frame acts in', false)
     return
   }
@@ -103,6 +105,22 @@ export const handleHookReport: Handler = async (frame, conn, deps) => {
   }
   try {
     await deps.githubRunCoordinator?.afterReport(HookId(p.hookId), p.deliveryKey)
+    // §16 terminal edge. Only a gitlab hook projects a note; the desired generation is recorded
+    // before the ACK so a daemon that retries its report cannot outrun the ledger.
+    if (p.gitlab && hook.kind === 'gitlab') {
+      await deps.codeHostNoteProjection?.afterReport({
+        hookId: p.hookId,
+        agentId: p.agentId,
+        deliveryKey: p.deliveryKey,
+        orgId,
+        state: reportedNoteState(p.status, p.reason),
+        reason: p.reason ?? null,
+        ...(p.sessionId ? { sessionId: p.sessionId } : {}),
+        gitlab: p.gitlab,
+        snapshot: p,
+        at: completedAt
+      })
+    }
     conn.replyTo(frame, 'ack', { ok: true })
   } catch {
     conn.sendError(frame.id, 'INTERNAL', 'hook completion projection failed', true)

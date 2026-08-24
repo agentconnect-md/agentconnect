@@ -23,7 +23,7 @@ vi.mock('../../src/slack/connection.js', async (importActual) => {
 })
 
 import { Daemon } from '../../src/daemon.js'
-import type { IntegrationSpec } from '@agentconnect.md/protocol'
+import type { IntegrationSpec, RegisterOk } from '@agentconnect.md/protocol'
 import { fakeSlackAppFactory } from '../fakes/slack-app.js'
 
 function root1(): string {
@@ -179,7 +179,7 @@ describe('Daemon CP integration → memory-only effective config', () => {
       leases: [],
       integrations: [INTEGRATION],
       drop: { assignments: [], crons: [] }
-    })
+    } as unknown as RegisterOk)
     await daemon.reconcile()
 
     const eff = (daemon as unknown as { agents: Map<string, { integrations: { id: string }[] }> }).agents.get('bot-a')!
@@ -206,7 +206,7 @@ describe('Daemon CP integration → memory-only effective config', () => {
       leases: [],
       integrations: [],
       drop: { assignments: [], crons: [], agents: [], integrations: [INTEGRATION.integrationId] }
-    })
+    } as unknown as RegisterOk)
     await daemon.reconcile()
 
     const onDisk = JSON.parse(readFileSync(join(root, 'agents', 'bot-a', 'agent.json'), 'utf8'))

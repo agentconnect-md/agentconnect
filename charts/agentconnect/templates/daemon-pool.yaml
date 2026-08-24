@@ -1,0 +1,316 @@
+{{- if .Values.daemonPool.enabled }}
+{{- $dataPlaneSecret := required "daemonPool.dataPlane.existingSecret is required when daemonPool.enabled" .Values.daemonPool.dataPlane.existingSecret }}
+{{- $sandboxNamespace := .Values.daemonPool.sandboxNamespace | default .Release.Namespace }}
+{{- $daemonTag := .Values.daemonPool.tag | default (include "agentconnect.imageTag" .) }}
+# The install-wide daemon pool. Its Pods are pool members.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  # NOT renamed with the rest: this literal is the daemon pool's identity contract. The app pins
+  # it (CLOUD_DAEMON_SA_NAME) and the TokenReview binding in cluster-rbac.yaml names it as a
+  # subject, so moving it is an auth migration, not a rename.
+  name: ac-cloud-daemon
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "daemon-pool") | nindent 4 }}
+---
+# The runtime plane creates, watches and retires claims, reads the configured
+# warm-pool template, and sleeps/wakes bound Sandboxes. It never reads Pods.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-daemon-pool-runtime
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ['extensions.agents.x-k8s.io']
+    resources: ['sandboxclaims']
+    verbs: ['get', 'list', 'watch', 'create', 'delete']
+  - apiGroups: ['extensions.agents.x-k8s.io']
+    resources: ['sandboxwarmpools', 'sandboxtemplates']
+    verbs: ['get']
+  - apiGroups: ['agents.x-k8s.io']
+    resources: ['sandboxes']
+    # delete: the orphan reconciler collects a claimless Sandbox whose agent is gone.
+    verbs: ['get', 'list', 'watch', 'patch', 'delete']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-daemon-pool-runtime
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: ac-cloud-daemon
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "agentconnect.fullname" . }}-daemon-pool-runtime
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-daemon-pool-shim
+  namespace: {{ $sandboxNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  # Every sandbox pod, not only the claimed ones. Selecting an ownership label applied at claim
+  # time would leave a warm spare outside this policy until it is claimed, and the default-deny
+  # baseline then drops the member's first dials while the CNI settles the pod's new identity —
+  # seconds of silent loss, paid on the first turn of every agent the pool mints.
+  podSelector:
+    matchLabels:
+      agentconnect.md/sandbox: 'true'
+  policyTypes: ['Ingress']
+  ingress:
+    - from:
+        # Both selectors belong to one peer, so namespace and daemon-pool identity are ANDed.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "daemon-pool") | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.daemonPool.shimPort }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-daemon-pool
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "daemon-pool") | nindent 4 }}
+spec:
+  replicas: {{ .Values.daemonPool.replicas }}
+  # A member states "registered and probed" itself through the probe below,
+  # so Ready already means servable and this is a settle margin only: a replacement must hold
+  # Ready this long before the controller counts it and may retire an old member, so one flap
+  # right after the first success starts no retirement.
+  minReadySeconds: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Bring the whole replacement set up front and let the old members drain slowly.
+      # A member's runtime probe claims a member-unique SandboxClaim name (AC_K8S_MEMBER_ID
+      # below is hashed into it), so a simultaneous start is safe.
+      # This is NOT a full-pool barrier: once one replacement has been Available for
+      # minReadySeconds the controller may retire one old member, and the old members still running
+      # are not draining yet — they can re-claim a group the retiring one just released, and that
+      # agent moves twice. "At most once" needs the control-plane rule where members report their
+      # generation (AC_POD_TEMPLATE_HASH below) and the ledger lets only the newest live generation
+      # claim vacated groups. Until that lands, the property is "usually once".
+      maxSurge: 100%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "daemon-pool") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Runtime discovery happens at daemon startup. Roll the daemon pool when its
+        # install-wide sandbox image changes so every member probes the new image — keyed
+        # from the EFFECTIVE full reference, so a `runtime.image` pin or digest change
+        # rolls the members exactly like a tag change does.
+        agentconnect.md/runtime-sandbox-image: {{ include "agentconnect.runtimeSandboxImage" . | quote }}
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "daemon-pool") | nindent 8 }}
+    spec:
+      serviceAccountName: ac-cloud-daemon
+      # The ordinary mount is the daemon's Kubernetes API credential. The separate
+      # projected token below has only the CP/Relay audience.
+      automountServiceAccountToken: true
+      # SIGTERM starts the duty drain: the member stops claiming, lets in-flight turns finish, and
+      # hands every held group back with an acknowledged `duty/release` before the control-plane
+      # socket closes. The daemon bounds that at `limits.poolShutdownDrainMs` (300s by default) —
+      # a config-file key with no env override, so the chart cannot set it and instead sizes the
+      # window around it: 300s + 30s margin. Move both together, or the kubelet SIGKILLs mid-drain
+      # and the released groups wait out their leases instead.
+      terminationGracePeriodSeconds: 330
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10002
+        runAsGroup: 10002
+        fsGroup: 10002
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: daemon-pool
+          image: "{{ .Values.image.registry }}/{{ .Values.daemonPool.image }}:{{ $daemonTag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            # Shared with the orphan-reconciler CronJob (daemon-pool-reconciler.yaml): the CP
+            # address, the warm pool, the sandbox namespace and the supervisor declaration come
+            # from one partial, so a member and the job sweeping after it cannot disagree.
+            {{- include "agentconnect.daemonPoolClusterEnv" . | nindent 12 }}
+            - name: AC_K8S_SHIM_PORT
+              value: {{ .Values.daemonPool.shimPort | quote }}
+            # The sink the readiness probe below reads: the daemon serves GET /readyz here and
+            # answers 200 only once startup finished, the control plane acknowledged registration
+            # and the install-wide runtime probe returned — 503 otherwise, including from SIGTERM
+            # through the whole drain. Off in the daemon unless this is set. Probe surface only:
+            # no Service may route this port.
+            - name: AC_READINESS_PORT
+              value: {{ .Values.daemonPool.readiness.port | quote }}
+            # Per-member identity, also what the runtime probe hashes into its claim name so
+            # simultaneous member startup cannot race on one claim. Pod UID is what the control
+            # plane already treats as an install-wide member's durable identity.
+            - name: AC_K8S_MEMBER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            # This member's generation: the ReplicaSet hash of the pod template it came from. The
+            # control plane will use it to stop an older generation re-claiming what a draining peer
+            # released; inert for a daemon that does not read it yet.
+            - name: AC_POD_TEMPLATE_HASH
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['pod-template-hash']
+            # Downward-API values that extraEnv below can reference via K8s $(…) expansion — the
+            # node-local OTel collector agent, OTEL_EXPORTER_OTLP_ENDPOINT=http://$(OTEL_COLLECTOR_HOST):4317,
+            # the same convention control-plane.yaml and relay.yaml use. Inert on their own.
+            - name: OTEL_COLLECTOR_HOST
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.hostIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            {{- if .Values.modelEgress.enabled }}
+            # The authoritative half of the same `modelEgress` contract the SandboxTemplate carries
+            # as a floor: the daemon writes each runtime's own provider variables when it spawns
+            # one, and what it writes wins over the pod's AC_* fill-in. Vendor-prefixed because the
+            # daemon keys them by runtime, not by provider — Claude Code appends /v1/messages to its
+            # base while Codex appends /responses, so one gateway is two different bases and each
+            # client's `baseUrl` must already be the exact string its runtime appends to.
+            {{- include "agentconnect.modelEgressEnv" (dict "ctx" . "prefixes" (dict "claude" "ANTHROPIC" "codex" "OPENAI" "deepseek" "DEEPSEEK") "urlSuffix" "_MODEL_BASE_URL" "keySuffix" "_MODEL_TOKEN") | nindent 12 }}
+            {{- with (get .Values.modelEgress.clients "codex" | default dict).sessionConfig }}
+            # The same codex session-config floor the SandboxTemplate carries, on the DAEMON: the
+            # pod copy is a frozen snapshot that never reaches an agent whose sandbox predates the
+            # value, while the daemon merges this under its spawn-time CODEX_CONFIG — and what the
+            # daemon writes wins. One value, rendered to both surfaces, so they cannot disagree.
+            - name: AC_CODEX_CONFIG
+              value: {{ toJson . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if not .Values.daemonPool.usageReporting }}
+            # One writer per session: an upstream collector meters these sessions, so the member
+            # must not also report them. Env, not config file — an in-cluster member has no file
+            # to carry the preference.
+            - name: AC_USAGE_REPORTING
+              value: 'false'
+            {{- end }}
+            {{- if .Values.daemonPool.keyServer.url }}
+            # Session-scoped model credentials (`agentconnect.key-server/v1`): the daemon fetches
+            # a per-session grant from this endpoint and injects it into the sandbox at spawn,
+            # overriding the static `modelEgress` floor. Either scheme is accepted — a plaintext
+            # address that does not look in-cluster only warns, since the bearer sent with it is
+            # this member's own projected token.
+            - name: KEY_SERVER
+              value: {{ .Values.daemonPool.keyServer.url | quote }}
+            - name: KEY_SERVER_TOKEN_PATH
+              value: /var/run/ac-key-server/token
+            {{- if .Values.daemonPool.keyServer.caSecret }}
+            # A private CA is trusted explicitly, never by disabling verification.
+            - name: NODE_EXTRA_CA_CERTS
+              value: /var/run/ac-key-server-ca/ca.crt
+            {{- end }}
+            {{- end }}
+            {{- range $k, $v := .Values.daemonPool.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          # Ready ⇔ servable: startup complete, CP-registered, runtime probe done, not draining.
+          # It is what holds a replacement back until it can take duty groups, and what removes a
+          # draining member from readiness while its pod keeps running out the grace period.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.daemonPool.readiness.port }}
+            initialDelaySeconds: {{ .Values.daemonPool.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.daemonPool.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.daemonPool.readiness.timeoutSeconds }}
+            successThreshold: {{ .Values.daemonPool.readiness.successThreshold }}
+            failureThreshold: {{ .Values.daemonPool.readiness.failureThreshold }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ['ALL']
+          resources:
+            {{- toYaml .Values.daemonPool.resources | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/agentconnect
+            - name: data-plane
+              mountPath: /var/run/ac-data-plane
+              readOnly: true
+            - name: cp-identity
+              mountPath: /var/run/ac-cp-identity
+              readOnly: true
+            {{- if .Values.daemonPool.keyServer.url }}
+            - name: key-server-identity
+              mountPath: /var/run/ac-key-server
+              readOnly: true
+            {{- if .Values.daemonPool.keyServer.caSecret }}
+            - name: key-server-ca
+              mountPath: /var/run/ac-key-server-ca
+              readOnly: true
+            {{- end }}
+            {{- end }}
+      volumes:
+        # Per-pod daemon id/config survives container restarts but not Pod replacement;
+        # Pod UID is the CP's durable identity for an install-wide member.
+        - name: state
+          emptyDir: {}
+        - name: data-plane
+          secret:
+            secretName: {{ $dataPlaneSecret }}
+            defaultMode: 0400
+            items:
+              - key: {{ .Values.daemonPool.dataPlane.key }}
+                path: config.json
+        - name: cp-identity
+          projected:
+            defaultMode: 0400
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: ac-control-plane
+                  expirationSeconds: 3600
+        {{- if .Values.daemonPool.keyServer.url }}
+        # The member's identity toward the key server — its OWN audience, so neither this token
+        # nor the CP one is spendable on the other hop. The key server verifies it with a
+        # TokenReview against this ServiceAccount's name.
+        - name: key-server-identity
+          projected:
+            defaultMode: 0400
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: {{ .Values.daemonPool.keyServer.tokenAudience | quote }}
+                  expirationSeconds: 3600
+        {{- if .Values.daemonPool.keyServer.caSecret }}
+        - name: key-server-ca
+          secret:
+            secretName: {{ .Values.daemonPool.keyServer.caSecret }}
+        {{- end }}
+        {{- end }}
+{{- end }}

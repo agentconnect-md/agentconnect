@@ -34,6 +34,9 @@ import type {
   DreamFilesPage,
   DreamFileReadContent
 } from '@agentconnect.md/protocol'
+import { gitlabWorkspaceAccessLevel } from '../../gitlab/api.js'
+import type { GitlabLiveProject } from '../../gitlab/provisioner.js'
+import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import {
   MAX_WORKSPACE_EDIT_BYTES,
   AGENT_CONFIG_REVISION_FEATURE,
@@ -63,6 +66,7 @@ import {
 } from '../../persistence/ports.js'
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, OrgId, SessionId } from '../../domain/ids.js'
+import { advertises, requiredGitlabFeatures } from '../../domain/daemon-features.js'
 import {
   dutyEligibility,
   onSet,
@@ -92,6 +96,7 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { AgentMoveConflict, AgentMoveFailed } from '../../orchestrator/agentMove.js'
 import { AgentWakeCoordinator } from '../../orchestrator/agentWake.js'
 import { convergeIntegrationGating } from '../../orchestrator/integrationPush.js'
+import { reconcileAgentLinkedDms } from '../../orchestrator/linkedDmReconcile.js'
 import { ProtocolError } from '../../domain/errors.js'
 import {
   AGENT_WORKSPACE_INTEGRATION_CONFLICT_MESSAGE,
@@ -255,15 +260,28 @@ function configRevisionSupportedOn(daemon: DaemonView | null): boolean {
 /** No assigned organization rows — the shape a minimal/legacy graph resolves to. */
 const NO_ORGANIZATION_ENVIRONMENT: AssignedOrganizationMetadata = { variables: [], secretKeys: [] }
 
-function workspaceToDto(workspace: AgentWorkspace): AgentDtoT['workspace'] {
+function workspaceToDto(workspace: AgentWorkspace, workspaceRepoId?: bigint): AgentDtoT['workspace'] {
   if (workspace.mode === 'scratch') return { mode: 'scratch' }
+  if (workspace.mode === 'gitlab') {
+    return {
+      mode: 'gitlab',
+      worktree: workspace.isolation === 'session',
+      gitRepo: workspace.gitRepo,
+      ...(workspace.gitBranch !== undefined ? { gitBranch: workspace.gitBranch } : {}),
+      ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
+      ...(workspaceRepoId !== undefined ? { projectId: workspaceRepoId.toString() } : {}),
+      ...(workspace.gitAccess !== undefined ? { gitAccess: workspace.gitAccess } : {})
+    }
+  }
   return {
     mode: 'github',
     worktree: workspace.isolation === 'session',
     gitRepo: workspace.gitRepo,
     ...(workspace.gitBranch !== undefined ? { gitBranch: workspace.gitBranch } : {}),
     ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
-    ...(workspace.installationId !== undefined ? { installationId: workspace.installationId } : {}),
+    ...(workspace.mode === 'github' && workspace.installationId !== undefined
+      ? { installationId: workspace.installationId }
+      : {}),
     ...(workspace.gitAccess !== undefined ? { gitAccess: workspace.gitAccess } : {})
   }
 }
@@ -320,7 +338,7 @@ function toDto(
     daemonName: a.daemonId ? placementView.daemonName : null,
     setId: a.setId,
     placementReady: placementView.ready,
-    workspace: workspaceToDto(a.workspace),
+    workspace: workspaceToDto(a.workspace, a.workspaceRepoId),
     workspaceRepoId: a.workspaceRepoId?.toString() ?? null,
     capabilities: a.capabilities,
     createdAt: a.createdAt.toISOString(),
@@ -1068,6 +1086,27 @@ export function agentRoutes(deps: HttpDeps) {
         app.log.debug({ agentId: agent.id, daemonId: target }, 'agent/remove skipped: daemon offline')
       })
 
+    // A gitlab workspace write changes who consumes the project, so the §7.2
+    // accounts and memberships must reconverge — the same kick a gitlab hook
+    // write does. Retargeting converges BOTH projects, IN THE ORDER GIVEN: the
+    // agent joins one and leaves the other, and joining must land first.
+    // Fire-and-forget, like every post-write convergence here.
+    const convergeGitlabProjects = (orgId: OrgId, projectIds: Iterable<bigint | undefined>): void => {
+      const gitlab = deps.gitlab
+      if (!gitlab) return
+      const projects = [...new Set([...projectIds].filter((id): id is bigint => id !== undefined))]
+      // SEQUENTIAL: two projects under one top-level group share the agent's
+      // single account, so converging them in parallel would have them contend
+      // for its mutation lease and back off against each other.
+      void (async () => {
+        for (const projectId of projects) {
+          await gitlab.provisioner
+            .convergeProject(orgId, projectId)
+            .catch((err) => app.log.warn({ err, projectId: projectId.toString() }, 'gitlab workspace converge failed'))
+        }
+      })()
+    }
+
     // The alive relay's HTTP origin for MCP proxy defs (ws→http/wss→https), or null
     // when no relay is live. Mirrors the mcp-providers route's relayBaseUrl.
     const relayProxyBase = async (): Promise<string | null> => {
@@ -1485,10 +1524,45 @@ export function agentRoutes(deps: HttpDeps) {
                 ...(ws.installationId !== undefined ? { installationId: ws.installationId } : {}),
                 ...(ws.gitAccess !== undefined ? { gitAccess: ws.gitAccess } : {})
               }
-            : ws
-              ? { mode: 'scratch', isolation: 'shared' }
-              : undefined
+            : ws?.mode === 'gitlab'
+              ? undefined // resolved below against the managed binding
+              : ws
+                ? { mode: 'scratch', isolation: 'shared' }
+                : undefined
         let workspaceRepoId: bigint | undefined
+        if (ws?.mode === 'gitlab') {
+          if (!deps.gitlab) return conflict('gitlab workspaces are not enabled on this control plane')
+          const projectId = BigInt(ws.projectId)
+          const binding = await deps.repos.gitlabProjectBinding.byProject(orgOf(req), projectId)
+          if (!binding || binding.state === 'cleanup_pending') {
+            return conflict('the project is not a managed GitLab binding in this organization')
+          }
+          // §17.3/§24.4: a DIRECT placement must advertise the features NOW — the
+          // delivery/reconcile gates would otherwise strand a 201'd agent
+          // assigned to a daemon that can never materialize it.
+          if (req.body.daemonId !== undefined) {
+            const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId))
+            if (!advertises(daemon?.capabilities.features, requiredGitlabFeatures(deps.gitlab?.api.baseUrl))) {
+              return conflict('the selected daemon does not support GitLab workspaces yet — upgrade it first')
+            }
+          }
+          // The persisted catalog row, not caller input and never a composed
+          // URL, is the authority for the clone URL (§24.1); the binding still
+          // is for the default branch absent an explicit one.
+          const catalogRow = await deps.repos.codeHostRepository.byExternalId(orgOf(req), 'gitlab', projectId)
+          if (!catalogRow?.cloneUrl) {
+            return conflict('the GitLab project binding has no clone URL yet — repair the project first')
+          }
+          workspace = {
+            mode: 'gitlab',
+            isolation: ws.worktree === false ? 'shared' : 'session',
+            gitRepo: catalogRow.cloneUrl,
+            gitBranch: ws.gitBranch ?? binding.defaultBranch ?? 'main',
+            ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {}),
+            gitAccess: ws.gitAccess ?? 'write'
+          }
+          workspaceRepoId = projectId
+        }
         if (ws?.mode === 'github' && ws.installationId === undefined && ws.gitAccess === 'write') {
           return conflict('github write access requires a GitHub App installation')
         }
@@ -1512,6 +1586,15 @@ export function agentRoutes(deps: HttpDeps) {
               return conflict(`${owner}/${repo} is not granted to the installation — re-select it on GitHub`)
             }
             workspaceRepoId = ref.repoId
+            // Readers-first catalog convergence (gitlab-com-integration.md §8.1).
+            await deps.repos.codeHostRepository.upsert({
+              orgId: orgOf(req),
+              provider: 'github',
+              externalId: ref.repoId,
+              displayPath: ref.fullName,
+              cloneUrl: `https://github.com/${ref.fullName}`,
+              defaultBranch: ref.defaultBranch
+            })
             // The installation lookup, not the caller's clone host/path, is the
             // authority for an App-backed workspace.
             workspace = {
@@ -1679,6 +1762,36 @@ export function agentRoutes(deps: HttpDeps) {
           const connect = req.query.connect
             ? await provisionDaemonConnect(deps.apiKeys, deps.config, req.orgCtx!.orgId, req.principal?.userId)
             : undefined
+          // §7.2 BEFORE the spec push: the daemon prepares a gitlab workspace by
+          // minting credentials from this agent's OWN account. The row is
+          // created first on purpose — a crash here leaves an agent the next
+          // convergence adopts as a consumer, where the reverse order would
+          // leave an account no agent owns.
+          if (agent.workspace.mode === 'gitlab' && agent.workspaceRepoId !== undefined && deps.gitlab) {
+            const gitlab = deps.gitlab
+            // The agent row IS the authorization here and is already committed,
+            // so nothing has to run inside the lease alongside the ensure.
+            const ensured = await gitlab.provisioner.provisionAgentAccount(
+              agent.orgId,
+              agent.workspaceRepoId,
+              { agentId: agent.id, accessLevel: gitlabWorkspaceAccessLevel(agent.workspace.gitAccess) },
+              async () => undefined
+            )
+            if (!ensured.ok) {
+              // Nothing was pushed yet, so the create can still be withdrawn
+              // whole rather than leaving an agent whose workspace cannot start.
+              // The account rows go with it: they carry no agent foreign key on
+              // purpose, so a dropped agent would otherwise orphan whatever the
+              // failed provisioning already created at GitLab (§19.4).
+              await deps.repos.agent
+                .delete(agent.orgId, agent.id)
+                .catch((err) => app.log.warn({ err, agentId: agent.id }, 'agent rollback after gitlab account failure'))
+              await gitlab.accounts
+                .retireAgentAccounts(agent.orgId, agent.id)
+                .catch((err) => app.log.warn({ err, agentId: agent.id }, 'gitlab account rollback failed'))
+              return conflict(gitlabAccountUnavailableMessage(ensured.reason))
+            }
+          }
           // Issue the private definition first. Even if its probe ACK is lost,
           // the WebSocket preserves frame order and daemon admission remains
           // closed until the registry validates it.
@@ -1712,6 +1825,8 @@ export function agentRoutes(deps: HttpDeps) {
             }
           }
           await syncMcpDefsForAgent(agent, [], agent.mcpServers)
+          // A gitlab workspace makes this agent a consumer of its project (§7.2).
+          if (agent.workspace.mode === 'gitlab') convergeGitlabProjects(agent.orgId, [agent.workspaceRepoId])
           return reply.code(201).send({
             ...toDto(
               agent,
@@ -2173,7 +2288,15 @@ export function agentRoutes(deps: HttpDeps) {
           }
           await pushExternalMemoryBeforeAgent(agent)
           await replicateUpsert(agent)
-          if (req.body.icon !== undefined) void syncAgentBotIcons(deps, agent, app.log)
+          // Pause decides whether this agent's hooks belong in the relay pool at all, so a toggle
+          // needs the rule convergence a placement change gets — nothing else recomputes it.
+          if ((existing.pause === true) !== (agent.pause === true)) {
+            await deps.hooks.rebroadcastForAgent(AgentId(agent.id))
+          }
+          if (req.body.icon !== undefined) {
+            void syncAgentBotIcons(deps, agent, app.log)
+            void deps.gitlab?.accounts.syncAgentAvatars(agent.orgId, agent.id)
+          }
           await removeUnusedExternalMemoryAfterAgent(existing, agent)
           // Provision/drop MCP proxy defs for an enable-list change with the placement
           // unchanged (a daemon move goes through AgentMoveService + reconcile, not
@@ -2277,6 +2400,15 @@ export function agentRoutes(deps: HttpDeps) {
             }
             const ref = await deps.github.repoRefFor(installation, owner, repo)
             if (!ref) return conflict(`${owner}/${repo} is not granted to the GitHub installation`)
+            // Readers-first catalog convergence (gitlab-com-integration.md §8.1).
+            await deps.repos.codeHostRepository.upsert({
+              orgId: existing.orgId,
+              provider: 'github',
+              externalId: ref.repoId,
+              displayPath: ref.fullName,
+              cloneUrl: `https://github.com/${ref.fullName}`,
+              defaultBranch: ref.defaultBranch
+            })
             if (deps.githubUserAuthz) {
               await deps.githubUserAuthz.assertAccess(
                 req.principal!.userId,
@@ -2299,6 +2431,40 @@ export function agentRoutes(deps: HttpDeps) {
               gitAccess: req.body.gitAccess
             }
             workspaceRepoId = ref.repoId
+          }
+          if (req.body.mode === 'gitlab') {
+            if (!deps.gitlab) return conflict('gitlab workspaces are not enabled on this control plane')
+            // §17.3: the daemon that will re-activate this workspace must
+            // decode the gitlab spec arm — direct placement or a pool/duty
+            // incumbent alike (the earlier check only proves workspace-edit-v2).
+            const servingId = (await deps.placementResolver.servingDaemon(existing)) ?? existing.daemonId
+            if (servingId) {
+              const serving = await deps.registry.getAvailable(existing.orgId, servingId)
+              if (!advertises(serving?.capabilities.features, requiredGitlabFeatures(deps.gitlab?.api.baseUrl))) {
+                return conflict('the serving daemon does not support GitLab workspaces yet — upgrade it first')
+              }
+            }
+            const projectId = BigInt(req.body.projectId)
+            const binding = await deps.repos.gitlabProjectBinding.byProject(existing.orgId, projectId)
+            if (!binding || binding.state === 'cleanup_pending') {
+              return conflict('the project is not a managed GitLab binding in this organization')
+            }
+            const catalogRow = await deps.repos.codeHostRepository.byExternalId(existing.orgId, 'gitlab', projectId)
+            if (!catalogRow?.cloneUrl) {
+              return conflict('the GitLab project binding has no clone URL yet — repair the project first')
+            }
+            const worktree =
+              req.body.worktree ??
+              (existing.workspace.mode !== 'scratch' ? existing.workspace.isolation === 'session' : true)
+            workspace = {
+              mode: 'gitlab',
+              isolation: worktree ? 'session' : 'shared',
+              gitRepo: catalogRow.cloneUrl,
+              gitBranch: req.body.gitBranch ?? binding.defaultBranch ?? 'main',
+              ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
+              gitAccess: req.body.gitAccess
+            }
+            workspaceRepoId = projectId
           }
 
           const writableRepoId =
@@ -2326,7 +2492,56 @@ export function agentRoutes(deps: HttpDeps) {
             return conflict(AGENT_WORKSPACE_INTEGRATION_CONFLICT_MESSAGE)
           }
 
-          const converted = await agentMoves.setWorkspace(existing, workspace, workspaceRepoId, req.principal?.userId)
+          // §7.2 BEFORE activation: the daemon prepares the workspace by minting
+          // credentials from this agent's OWN GitLab account, so the account,
+          // its membership, and its PATs must already exist. A post-write kick
+          // cannot serve this — activation would be refused, the edit would roll
+          // back, and the agent would never become the consumer that convergence
+          // needs a reason to provision for.
+          // A gitlab clone URL is read from the catalog BEFORE the lease, and the
+          // lease's own project read converges every replicated path. Taking the
+          // live answer keeps this write from putting the stale one back.
+          const applyWorkspace = (live?: GitlabLiveProject): Promise<AgentRecord> =>
+            agentMoves.setWorkspace(
+              existing,
+              live?.cloneUrl && workspace.mode === 'gitlab' ? { ...workspace, gitRepo: live.cloneUrl } : workspace,
+              workspaceRepoId,
+              req.principal?.userId
+            )
+          let converted: AgentRecord
+          if (workspace.mode === 'gitlab' && workspaceRepoId !== undefined && deps.gitlab) {
+            let applied
+            try {
+              // The edit itself runs under the binding lease this takes, so the
+              // membership and the workspace row that authorizes it commit
+              // together as far as convergence can see.
+              applied = await deps.gitlab.provisioner.provisionAgentAccount(
+                existing.orgId,
+                workspaceRepoId,
+                { agentId: existing.id, accessLevel: gitlabWorkspaceAccessLevel(workspace.gitAccess) },
+                applyWorkspace
+              )
+            } catch (err) {
+              // The edit rolled back, so the membership just bound belongs to an
+              // agent that does not consume the project: converge it away.
+              convergeGitlabProjects(existing.orgId, [workspaceRepoId])
+              throw err
+            }
+            if (!applied.ok) return conflict(gitlabAccountUnavailableMessage(applied.reason))
+            converted = applied.result
+          } else {
+            converted = await applyWorkspace()
+          }
+          // Joining, leaving, or re-clamping a gitlab project moves its §7.2
+          // membership set. DESTINATION FIRST, and the order is load-bearing: an
+          // account with no membership left in its root retires, so converging
+          // the project being left first would retire the very account the
+          // destination is about to bind — deleting it at GitLab and recreating
+          // it under a new user id. Binding the destination first leaves the
+          // source unbind with a still-bound account to spare.
+          if (existing.workspace.mode === 'gitlab' || converted.workspace.mode === 'gitlab') {
+            convergeGitlabProjects(converted.orgId, [converted.workspaceRepoId, existing.workspaceRepoId])
+          }
           return toDto(
             converted,
             ctxOf(req),
@@ -2743,6 +2958,14 @@ export function agentRoutes(deps: HttpDeps) {
             await removeExternalMemoryFromDaemonIfUnused(current.orgId, current.daemonId, current.memory.connectionId)
           }
           for (const h of removedHooks) deps.hooks.remove(h.id)
+          // §19.4: the agent's GitLab accounts retire — memberships removed,
+          // PATs revoked, accounts deleted. Best-effort here; an account whose
+          // external cleanup fails stays `cleanup_pending` for a repair.
+          if (deps.gitlab) {
+            void deps.gitlab.accounts
+              .retireAgentAccounts(current.orgId, current.id)
+              .catch((err) => app.log.warn({ err, agentId: current.id }, 'gitlab account retirement failed'))
+          }
           return reply.code(204).send(null)
         } catch (e) {
           if (e instanceof MemoryConnectionBusy) {
@@ -2809,6 +3032,23 @@ export function agentRoutes(deps: HttpDeps) {
           if (agent.visibility !== existing.visibility) {
             await convergeIntegrationGating(deps, agent, req.log)
           }
+          // §14.8: an audience that GAINED members may authorize DMs those members
+          // already have open with this agent. The diff, never the whole audience — a
+          // later edit must not reassert the default over an editor's own Off.
+          // Best-effort: the sharing write has landed, and a failure leaves those rows
+          // Off, which is where they already were.
+          const gained = agent.sharedWith.filter((id) => !existing.sharedWith.includes(id))
+          await reconcileAgentLinkedDms(agent, gained, {
+            users: deps.repos.user,
+            orgs: deps.repos.org,
+            agents: deps.repos.agent,
+            integrations: deps.repos.integration,
+            bots: deps.repos.bot,
+            channels: deps.repos.integrationChannel,
+            ...(deps.logtoIdentity ? { identity: deps.logtoIdentity } : {}),
+            push: (target) => convergeIntegrationGating(deps, target, req.log),
+            log: req.log
+          }).catch((err: unknown) => req.log.warn({ err, agentId: agent.id }, 'gated DM: sharing catch-up failed'))
           return toDto(
             agent,
             ctxOf(req),

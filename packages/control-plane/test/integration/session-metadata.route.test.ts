@@ -489,6 +489,184 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     )
   })
 
+  it('gives gitlab hook sessions their own integration facet and filter', async () => {
+    // GitLab rows carry platform 'hook' like every other hook session, so without the
+    // per-host promotion they were counted as generic webhooks — and the webhook filter
+    // returned them, mixing two unrelated sources under one entry.
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const webhookId = randomUUID()
+    await prisma.hookDef.create({
+      data: {
+        id: webhookId,
+        orgId: DEFAULT_ORG_ID,
+        agentId: AGENT,
+        kind: 'webhook',
+        name: 'acme/build',
+        sessionMode: 'perDelivery',
+        urlToken: `whk_${randomUUID().replace(/-/g, '')}`,
+        targetPlatform: 'slack'
+      }
+    })
+    const gitlabId = randomUUID()
+    await prisma.hookDef.create({
+      data: {
+        id: gitlabId,
+        orgId: DEFAULT_ORG_ID,
+        agentId: AGENT,
+        kind: 'gitlab',
+        name: 'acme/platform',
+        sessionMode: 'perThread',
+        repoId: 4210n,
+        repoFullName: 'acme/platform',
+        events: ['merge_request:*'],
+        targetPlatform: 'slack'
+      }
+    })
+    running = buildHttpApp(prisma)
+
+    await reportSession({
+      sessionId: 'acp-webhook-gl',
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'hook',
+      channel: webhookId,
+      thread: 'delivery-1',
+      title: 'Reply with a one-line hello',
+      triggeredBy: `hook:${webhookId}`,
+      ts: '2026-08-22T00:00:00.000Z'
+    })
+    await reportSession({
+      sessionId: 'acp-gitlab-1',
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'hook',
+      channel: gitlabId,
+      title: 'Answer the merge request',
+      triggeredBy: `hook:${gitlabId}`,
+      channelName: 'acme/platform',
+      triggeredByName: 'acme/platform',
+      ts: '2026-08-22T00:00:00.000Z'
+    })
+
+    const facets = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/facets` })
+    expect(facets.statusCode).toBe(200)
+    const facetBody = facets.json() as {
+      integrations: string[]
+      triggers: Array<{ value: string; integration: string; hookKind: string | null }>
+    }
+    expect([...facetBody.integrations].sort()).toEqual(['gitlab', 'hook'])
+    expect(facetBody.triggers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: `hook:${gitlabId}`, integration: 'gitlab', hookKind: 'gitlab' }),
+        expect.objectContaining({ value: `hook:${webhookId}`, integration: 'hook', hookKind: 'webhook' })
+      ])
+    )
+
+    const gitlabOnly = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?view=flat&integration=gitlab`
+    })
+    expect(gitlabOnly.statusCode).toBe(200)
+    expect((gitlabOnly.json() as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)).toEqual([
+      'acp-gitlab-1'
+    ])
+    expect((gitlabOnly.json() as { total: number }).total).toBe(1)
+
+    const genericOnly = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&integration=hook` })
+    expect(genericOnly.statusCode).toBe(200)
+    expect((genericOnly.json() as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)).toEqual(
+      ['acp-webhook-gl']
+    )
+  })
+
+  it('keeps a code-host session on its own source after the hook is deleted and recreated', async () => {
+    // Found in live testing: a hook can be deleted and recreated, which leaves its past
+    // sessions pointing at an id that resolves to nothing. Reading the kind live then
+    // rewrote their history as generic webhooks. The kind is snapshotted at creation, so
+    // the source of a session that already ran cannot change afterwards.
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    const gitlabId = randomUUID()
+    await prisma.hookDef.create({
+      data: {
+        id: gitlabId,
+        orgId: DEFAULT_ORG_ID,
+        agentId: AGENT,
+        kind: 'gitlab',
+        name: 'acme/platform',
+        sessionMode: 'perThread',
+        repoId: 4210n,
+        repoFullName: 'acme/platform',
+        events: ['merge_request:*'],
+        targetPlatform: 'slack'
+      }
+    })
+    running = buildHttpApp(prisma)
+
+    // No triggeredByName: the unnamed case is exactly where the label used to read "Webhook".
+    await reportSession({
+      sessionId: 'acp-gitlab-orphan',
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'hook',
+      channel: gitlabId,
+      title: 'Answer the merge request',
+      triggeredBy: `hook:${gitlabId}`,
+      ts: '2026-08-22T00:00:00.000Z'
+    })
+    // A legacy row: written before the snapshot column existed, so it has no kind of its own.
+    await reportSession({
+      sessionId: 'acp-gitlab-legacy',
+      agentId: AGENT,
+      phase: 'start',
+      platform: 'hook',
+      channel: gitlabId,
+      title: 'An older merge request',
+      triggeredBy: `hook:${gitlabId}`,
+      ts: '2026-08-22T00:01:00.000Z'
+    })
+    await prisma.sessionMeta.update({ where: { id: 'acp-gitlab-legacy' }, data: { hookKind: null } })
+
+    expect((await prisma.sessionMeta.findUnique({ where: { id: 'acp-gitlab-orphan' } }))?.hookKind).toBe('gitlab')
+
+    await prisma.hookDef.delete({ where: { id: gitlabId } })
+
+    const rows = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat` })
+    expect(rows.statusCode).toBe(200)
+    const byId = new Map(
+      (
+        rows.json() as { sessions: Array<{ sessionId: string; hookKind: string | null; triggeredByName: string }> }
+      ).sessions.map((session) => [session.sessionId, session])
+    )
+    // The snapshot survives the definition; the pre-snapshot row degrades as it always did.
+    expect(byId.get('acp-gitlab-orphan')?.hookKind).toBe('gitlab')
+    expect(byId.get('acp-gitlab-orphan')?.triggeredByName).toBe('GitLab')
+    expect(byId.get('acp-gitlab-legacy')?.hookKind).toBeNull()
+    expect(byId.get('acp-gitlab-legacy')?.triggeredByName).toBe('Webhook')
+
+    // The facet list still promotes it out of the generic bucket with no hook to read.
+    const facets = await running.app.inject({ method: 'GET', url: `${ORG}/sessions/facets` })
+    expect(facets.statusCode).toBe(200)
+    expect((facets.json() as { integrations: string[] }).integrations).toEqual(expect.arrayContaining(['gitlab']))
+
+    const gitlabOnly = await running.app.inject({
+      method: 'GET',
+      url: `${ORG}/sessions?view=flat&integration=gitlab`
+    })
+    expect(gitlabOnly.statusCode).toBe(200)
+    expect((gitlabOnly.json() as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)).toEqual([
+      'acp-gitlab-orphan'
+    ])
+
+    // And it is no longer double-counted: the generic filter returns only the legacy row.
+    const genericOnly = await running.app.inject({ method: 'GET', url: `${ORG}/sessions?view=flat&integration=hook` })
+    expect(genericOnly.statusCode).toBe(200)
+    expect((genericOnly.json() as { sessions: Array<{ sessionId: string }> }).sessions.map((s) => s.sessionId)).toEqual(
+      ['acp-gitlab-legacy']
+    )
+  })
+
   it('serves the multi-agent webchat roster on the detail route; single-agent stays null', async () => {
     // An adopted/refreshed webchat session has no relay socket to deliver the
     // verified roster — the composer/header read it from this DTO field instead.

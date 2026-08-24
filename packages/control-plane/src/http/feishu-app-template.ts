@@ -17,6 +17,7 @@ export const AGENTCONNECT_FEISHU_SCOPES = [
   'im:chat.members:bot_access',
   'im:chat.members:read',
   'im:message',
+  'im:message.group_msg',
   'im:message.group_at_msg:readonly',
   'im:message.p2p_msg:readonly',
   'im:message:send_as_bot',

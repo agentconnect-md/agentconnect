@@ -2,13 +2,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mock the version layer so the bootstrap never touches the registry/filesystem;
 // we only assert HOW ensureDaemonInstalled drives it.
-const versionInstall = vi.fn(async () => {})
+const versionInstall = vi.fn<(root: string, opts: unknown) => Promise<void>>(async () => {})
 vi.mock('../src/version-commands.js', () => ({
   versionInstall: (root: string, opts: unknown) => versionInstall(root, opts)
 }))
 
 const currentVersion = vi.fn<(root: string) => string | null>()
-const readMeta = vi.fn(() => ({ channel: 'stable', previous: null }))
+const readMeta = vi.fn<(root: string) => { channel: string; previous: string | null }>(() => ({
+  channel: 'stable',
+  previous: null
+}))
 vi.mock('../src/version-store.js', () => ({
   currentVersion: (root: string) => currentVersion(root),
   readMeta: (root: string) => readMeta(root)

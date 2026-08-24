@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { scaffold } from './webchat-continuation-fixture.js'
+import type { LocalStore } from '../src/store/local-store.js'
 import { createRuntimeCommandsReader } from '../src/cp/runtime-commands-reader.js'
 import { pendingTurnKey } from '../src/daemon/turn-types.js'
 import {
@@ -140,7 +142,7 @@ describe('the daemon records only its own host’s advertisement', () => {
   it('ignores a session the agent’s host does not own, and takes one it does', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const host = daemon as unknown as {
-      hosts: Map<string, { hasSession(id: string): boolean }>
+      hosts: Map<string, { hasSession(id: string): boolean; isLoadingSession(id: string): boolean }>
       onAcpUpdate(agentId: string, sessionId: string, update: unknown): Promise<void>
       runtimeCommands: RuntimeCommandsCache
     }
@@ -158,6 +160,77 @@ describe('the daemon records only its own host’s advertisement', () => {
     expect(reported.sessionId).toBe('own-session')
     expect(reported.commands.map((c) => c.name)).toEqual(['code-review', 'superpowers:brainstorming', 'model'])
   })
+
+  // Production ordering, not a hand-driven one: the fake runtime advertises from INSIDE
+  // `newSession()`, in the window where the host has the id but has not returned it — the daemon
+  // has no row and, before the binding moved to the raw response, nothing to resolve through.
+  it('names an advertisement the runtime makes from inside session creation', async () => {
+    const root = scaffold(['agent-1'])
+    const advertise: { run: () => Promise<void> } = { run: async () => {} }
+    const acpSessionId = 'fresh-acp'
+    const hostFactory = (): unknown => {
+      // Ownership follows the real host: false until `newSession()` has announced and made the
+      // session live, so an advertisement in that window would be DROPPED, not merely misnamed.
+      let live = false
+      const host = {
+        start: async () => {},
+        stop: async () => {},
+        hasSession: (id: string) => live && id === acpSessionId,
+        isLoadingSession: () => false,
+        newSession: async (
+          _cwd: string,
+          _servers: unknown,
+          _effort: unknown,
+          _append: unknown,
+          _dirs: unknown,
+          announce?: (id: string) => void
+        ) => {
+          announce?.(acpSessionId)
+          live = true
+          // Where `applySessionConfig()`'s awaited round trips would be.
+          await advertise.run()
+          return acpSessionId
+        },
+        prompt: async () => ({ stopReason: 'end_turn' })
+      }
+      return host
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      sandboxMechanism: null,
+      hostFactory: hostFactory as never
+    })
+    const inner = daemon as unknown as {
+      onAcpUpdate(agentId: string, sessionId: string, update: unknown): Promise<void>
+      runtimeCommands: RuntimeCommandsCache
+      store: LocalStore
+    }
+    advertise.run = async () => {
+      // No row yet — this is precisely the reported window.
+      expect(await inner.store.getSessionByAcpId(acpSessionId)).toBeUndefined()
+      await inner.onAcpUpdate('agent-1', acpSessionId, advertisement)
+    }
+    await daemon.start()
+
+    await (daemon as any).dispatch('agent-1', {
+      msgId: 'slack:C1:100.1',
+      traceId: 't1',
+      source: 'user',
+      platform: 'slack',
+      channel: 'C1',
+      thread: '100.1',
+      sender: { id: 'U1', isBot: false },
+      text: 'hi',
+      mentionedBots: [],
+      isDm: true
+    })
+
+    const recorded = inner.runtimeCommands.get('agent-1').sessionId
+    expect(recorded).not.toBe(acpSessionId)
+    expect(recorded).toBe((await inner.store.getSessionByAcpId(acpSessionId))!.sessionId)
+    await daemon.stop()
+  }, 15_000)
 
   // claude-agent-acp advertises AFTER the session/load response, so `live` already holds the session
   // by then — but that is one adapter's ordering, and the guard must not depend on it. A session the

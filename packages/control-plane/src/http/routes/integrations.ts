@@ -873,10 +873,12 @@ export function integrationRoutes(deps: HttpDeps) {
                 message: 'default agent applies only to shared bot conversations'
               })
             }
+            // A human picked this, so it outranks every later default (§14.8).
             updated = await deps.repos.integrationChannel.setTrigger(
               integration.id,
               req.params.channelId,
-              req.body.trigger!
+              req.body.trigger!,
+              { chosen: true }
             )
           }
           if (!updated)

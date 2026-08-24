@@ -115,12 +115,31 @@ Three refusal classes, and only the first is port-probeable — the doc'd earlie
 
 ### 3.3 Identity, caption, and the result
 
-**The file post is _not_ identity-stamped today, on any platform** — three `uploadFile`
-implementations do not even declare the identity parameter, Telegram ignores identity by
-platform design, and Slack's share carries `username`/`icon_url` but not the
-`agentAuthorId` metadata every other agent post carries. On a shared Slack app that makes
-a shared file invisible to peer backfill and mis-attributable to whichever agent looks at
-it. Phase 1 states this degradation per platform rather than claiming otherwise; if
+**The file post carries no message id of its own, and Slack needs a second read to get
+one.** `files.completeUploadExternal` answers with the FILE, not the message it became — and
+an unnamed post is not an ANCHOR: a human replying under a shared image lands in a thread
+whose root the daemon does not recognize as its own, so the reply wakes nobody, while the
+same reply under a forwarded TEXT message (a `chat.postMessage`, which returns its `ts`)
+always worked. `uploadFile` therefore reads `files.info` after the share and returns
+`shares.public|private[channel][0].ts` as the outcome's `messageId`. The read is
+best-effort by construction: the file is already in the conversation, so a failure degrades
+to an unanchored share, never to a failed one.
+
+**Only Slack can identity-stamp a file post, and the API's own arguments are the only way
+to do it.** `chat.postMessage` cannot attach a file at all, so the upload's completion IS
+the message — which is why the file path and the text path diverge in the first place, and
+why every consequence of that divergence lands here. `files.completeUploadExternal`
+documents `username`/`icon_url`/`icon_emoji` for the share message (behind
+`chat:write.customize`), so `uploadFile` passes the turn's identity there and falls back to
+the undecorated call when — and only when — Slack refused the DECORATION itself
+(`missing_scope`, `invalid_arguments`). The completion is one-shot, and Slack documents
+`internal_error`/`fatal_error` as possibly raised after part of it succeeded, so those join
+"no provider code at all" as outcomes that forfeit the proof of refusal and stay
+`indeterminate` rather than being retried into a second share. The other three
+implementations do not declare the parameter, and Telegram ignores identity by platform
+design. A file post still carries no `agentAuthorId`, so on a shared bot it stays invisible
+to peer backfill; the fix for that remains a paired anchor post, deferred until shared-bot
+usage demands it. Phase 1 states this degradation per platform rather than claiming otherwise; if
 attribution matters on shared bots, the fix is a paired zero-content anchor post stamped
 with `agentAuthorId` — which would also supply Slack's missing message id — and it is
 deferred until shared-bot usage demands it.
@@ -298,8 +317,29 @@ shim boundary, and generalizes to none of the other three platforms.
 
 1. **Telegram:** does `sendPhoto` re-encode a ≤8 MB PNG chart badly enough to blur axis
    labels? Decides whether the `preview | file` hint is deferrable.
-2. **Slack:** wall time of an 8 MB three-step share on a typical self-hosted uplink vs the
+2. **Slack:** wall time of an 8 MB external upload on a typical self-hosted uplink vs the
    30 s queue bound — decides whether the default cap drops, the byte transfer gets its
    own lane, or `indeterminate` carries the weight.
-3. **Demand:** is there a concrete request behind "produced file → different
+3. **Slack transport (settled):** the external upload's middle step is a POST to a reserved
+   URL that is not a Slack API endpoint and has no published wire contract. Driving it by
+   hand was refused with HTTP 500 on every live attempt. Matching the SDK's multipart shape
+   — one part named `body`, an untyped `Blob` — did not lift the 500; the one divergence
+   left was that the SDK sends `Authorization: Bearer <token>` to the reserved URL, which
+   the hand-written POST asserted in a comment was unnecessary. Rather than test that guess
+   in production, `uploadFile` now calls `files.uploadV2`, which owns all three steps and
+   inherits the `WebClient` agent/proxy/timeout configuration. Two consequences: it builds
+   its completion arguments from an explicit key list, which is what removed the identity
+   decoration above; and it raises one `WebAPIHTTPError` for every non-200 across all three
+   steps, so an HTTP failure can never prove which step it came from. Only Slack answering
+   `{ok:false}` counts as proof that nothing was published — everything else is
+   `indeterminate`.
+4. **Why the two paths differ at all (settled).** Slack has no way to attach a file to a
+   message: `chat.postMessage` takes no file, and the upload's completion creates its own
+   message instead. So a caption rides as `initial_comment` on a message the UPLOAD endpoint
+   built, and everything `chat.postMessage` returns for free — a `ts`, per-message identity —
+   has to be recovered separately here. `blocks` + `slack_file` would collapse the two paths
+   into one, but a file uploaded without `channel_id` is documented as private, and whether a
+   block reference makes it visible to anyone else is not documented either way; that is the
+   open question standing between this design and one code path.
+5. **Demand:** is there a concrete request behind "produced file → different
    conversation", or only the table's symmetry? Decides whether `attachFile` leaves §7.

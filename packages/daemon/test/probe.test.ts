@@ -281,19 +281,21 @@ describe('installedRuntimes', () => {
     const packageRuntime = npx()
     const curatedCatalog: ResolvedRuntimeCatalog = {
       entries: {
-        'hermes-agent': { runtime: direct, source: 'curated', name: 'Hermes', version: '' }
+        'hermes-agent': { runtime: direct, source: 'curated', name: 'Hermes', version: '', skillsAgentId: null }
       },
       runtimes: { 'hermes-agent': direct }
     }
     const userCatalog: ResolvedRuntimeCatalog = {
       entries: {
-        'hermes-agent': { runtime: user, source: 'user', name: 'Wrapped Hermes', version: '' },
-        hermes: { runtime: user, source: 'user', name: 'Legacy wrapped Hermes', version: '' }
+        'hermes-agent': { runtime: user, source: 'user', name: 'Wrapped Hermes', version: '', skillsAgentId: null },
+        hermes: { runtime: user, source: 'user', name: 'Legacy wrapped Hermes', version: '', skillsAgentId: null }
       },
       runtimes: { 'hermes-agent': user, hermes: user }
     }
     const registryCatalog: ResolvedRuntimeCatalog = {
-      entries: { omp: { runtime: packageRuntime, source: 'registry', name: 'OMP package', version: '' } },
+      entries: {
+        omp: { runtime: packageRuntime, source: 'registry', name: 'OMP package', version: '', skillsAgentId: null }
+      },
       runtimes: { omp: packageRuntime }
     }
 

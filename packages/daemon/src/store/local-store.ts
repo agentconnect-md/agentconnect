@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -9,6 +10,8 @@ import {
   type QuotedMessage,
   type SessionImageAttachment
 } from '@agentconnect.md/protocol'
+import type { NoteProjectionOutcome, NoteProjectionPhase, NoteProjectionRow } from '../gitlab/note-projection.js'
+import type { ReviewIntentRow } from '../gitlab/review-adapter.js'
 import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 import type { ScheduleRun } from '../scheduler/scheduler.js'
 import { AsyncMutex } from './async-mutex.js'
@@ -199,7 +202,11 @@ export interface SessionRecord {
   thread: string
   /** Opaque physical-bot scope for transcript/session lookup isolation. */
   transportScope?: string | null
+  /** What the RUNTIME knows this session by, used on the ACP hop alone (§1.1). Null until it exists. */
   acpSessionId: string | null
+  /** The session's OUTWARD identity (§1.1), minted when the slot resolves — so it exists before
+   *  the runtime does. Null only on a pre-v12 row that had no ACP id to backfill from. */
+  sessionId?: string | null
   // §7.3 session lifecycle. `prompting` ⇒ a turn is in flight; `cancelling` ⇒
   // a `!stop` was issued and we're awaiting the agent (with a force backstop);
   // `resuming` ⇒ re-attaching a persisted session after a restart/host eviction;
@@ -386,15 +393,14 @@ export interface TranscriptEntry {
   orgAgentId?: string
 }
 
-/** A transcript row as read back, including its insertion-order sequence. The
- *  `toolCallId`/`body` columns carry through raw (NULL on text/reasoning rows). */
+/** A transcript row as read back (raw `SELECT *`), including its insertion-order sequence. */
 export interface TranscriptRow extends TranscriptEntry {
   seq: number
   /** Monotonic mutation watermark; changes when a stable row is updated in place. */
   revision: number
   /** Normalized epoch microseconds used by chronological Slack history pagination. */
   eventTimeUs: number
-  toolCallId?: string | null
+  tool_call_id?: string | null // the one snake_case column; readers never alias it. NULL off tool rows
   body?: string | null // JSON.stringify(ToolBody); NULL for text/reasoning rows
   attachmentsJson?: string | null // JSON.stringify(SessionImageAttachment[]); inline webchat only
 }
@@ -641,6 +647,100 @@ export interface WebchatMcpGrantLedgerRow {
   ownerId: string | null
 }
 
+/** The stored §16 run-projection write marker, as the column types present it. */
+interface CodeHostNoteProjectionRow {
+  projectionKey: string
+  projectionId: string
+  hookId: string
+  agentId: string
+  orgId: string | null
+  provider: string
+  projectId: string
+  mergeRequestIid: number
+  headSha: string
+  generation: string
+  writeMarker: string
+  state: string
+  body: string
+  noteId: string | null
+  credentialEpoch: string
+  phase: string
+  outcome: string | null
+  code: string | null
+  updatedAt: number
+  daemonId: string
+  ownerId: string | null
+}
+
+const NOTE_PROJECTION_PHASES: readonly NoteProjectionPhase[] = ['in_flight', 'settled_unreported', 'settled']
+const NOTE_PROJECTION_OUTCOMES: readonly NoteProjectionOutcome[] = ['written', 'skipped', 'failed']
+
+function toNoteProjectionRow(row: CodeHostNoteProjectionRow): NoteProjectionRow {
+  const outcome = NOTE_PROJECTION_OUTCOMES.find((o) => o === row.outcome)
+  return {
+    projectionKey: row.projectionKey,
+    projectionId: row.projectionId,
+    hookId: row.hookId,
+    agentId: row.agentId,
+    ...(row.orgId ? { orgId: row.orgId } : {}),
+    provider: row.provider,
+    projectId: row.projectId,
+    mergeRequestIid: row.mergeRequestIid,
+    headSha: row.headSha,
+    generation: row.generation,
+    writeMarker: row.writeMarker,
+    state: row.state as NoteProjectionRow['state'],
+    body: row.body,
+    ...(row.noteId ? { noteId: row.noteId } : {}),
+    credentialEpoch: row.credentialEpoch,
+    daemonId: row.daemonId,
+    // An unknown phase reads as fully settled: it can neither be rewritten nor replayed.
+    phase: NOTE_PROJECTION_PHASES.find((p) => p === row.phase) ?? 'settled',
+    ...(outcome ? { outcome } : {}),
+    ...(row.code ? { code: row.code } : {})
+  }
+}
+
+/** One upsert for both projection phases: the row is identical, only the phase and outcome differ. */
+const NOTE_PROJECTION_UPSERT = `INSERT INTO code_host_note_projection
+   (projectionKey, projectionId, hookId, agentId, orgId, provider, projectId, mergeRequestIid, headSha,
+    generation, writeMarker, state, body, noteId, credentialEpoch, phase, outcome, code, updatedAt,
+    daemonId, ownerId)
+ VALUES (@projectionKey, @projectionId, @hookId, @agentId, @orgId, @provider, @projectId, @mergeRequestIid,
+    @headSha, @generation, @writeMarker, @state, @body, @noteId, @credentialEpoch, @phase, @outcome, @code,
+    @now, @daemonId, @ownerId)
+ ON CONFLICT (projectionKey) DO UPDATE SET
+   projectionId = excluded.projectionId, hookId = excluded.hookId, agentId = excluded.agentId,
+   orgId = excluded.orgId, provider = excluded.provider, projectId = excluded.projectId,
+   mergeRequestIid = excluded.mergeRequestIid, headSha = excluded.headSha,
+   generation = excluded.generation, writeMarker = excluded.writeMarker, state = excluded.state,
+   body = excluded.body, noteId = excluded.noteId, credentialEpoch = excluded.credentialEpoch,
+   phase = excluded.phase, outcome = excluded.outcome, code = excluded.code,
+   updatedAt = excluded.updatedAt, daemonId = excluded.daemonId, ownerId = excluded.ownerId`
+
+function noteProjectionParams(row: NoteProjectionRow, now: number, ownerId: string | null): SqlParams {
+  return {
+    projectionKey: row.projectionKey,
+    projectionId: row.projectionId,
+    hookId: row.hookId,
+    agentId: row.agentId,
+    orgId: row.orgId ?? null,
+    provider: row.provider,
+    projectId: row.projectId,
+    mergeRequestIid: row.mergeRequestIid,
+    headSha: row.headSha,
+    generation: row.generation,
+    writeMarker: row.writeMarker,
+    state: row.state,
+    body: row.body,
+    noteId: row.noteId ?? null,
+    credentialEpoch: row.credentialEpoch,
+    now,
+    daemonId: row.daemonId,
+    ownerId
+  }
+}
+
 /** §3.4/§6.8 main-agent orchestration record (daemon-local). `status` is the
  *  orchestration-level lifecycle; per-subtask status lives on {@link SubtaskRow}. */
 export interface OrchestrationRow {
@@ -729,7 +829,7 @@ function restrictPath(path: string, mode: number): void {
  * change that edits a `CREATE TABLE` below, and append the matching step to
  * {@link SCHEMA_MIGRATIONS}.
  */
-const SCHEMA_VERSION = 11
+const SCHEMA_VERSION = 12
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -847,7 +947,20 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
       DROP TABLE transcript_recipient;
       ALTER TABLE transcript_recipient_orged RENAME TO transcript_recipient;
     `)
-  }
+  },
+  // The outward id (§1.1), split from the ACP hop's. Existing sessions are backfilled with the id
+  // they already answer to, so nothing the CP or the console knows changes name.
+  async (db) =>
+    await db.exec(`
+      ALTER TABLE sessions ADD COLUMN sessionId TEXT;
+      UPDATE sessions SET sessionId = acpSessionId WHERE acpSessionId IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS session_outward_ids (
+        key TEXT PRIMARY KEY,
+        agentId TEXT,
+        sessionId TEXT NOT NULL,
+        mintedAt INTEGER NOT NULL
+      );
+    `)
 ]
 
 export class LocalStore {
@@ -938,7 +1051,7 @@ export class LocalStore {
     await this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
-        transportScope TEXT, acpSessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
+        transportScope TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
         usage TEXT, muted INTEGER, triggeredBy TEXT, title TEXT, threadUrl TEXT, modelOverride TEXT,
         observedModel TEXT, observedModelSet INTEGER NOT NULL DEFAULT 0,
         effortOverride TEXT, permissionModeOverride TEXT, fastModeOverride INTEGER,
@@ -998,6 +1111,16 @@ export class LocalStore {
         ON session_metadata_outbox (queuedAt);
       CREATE INDEX IF NOT EXISTS session_metadata_outbox_attempt
         ON session_metadata_outbox (nextAttemptAt, queuedAt);
+      -- Outward session ids minted BEFORE their session row exists — a credential is issued to
+      -- start the runtime, and the turn writes the session only once it dispatches (§1.1). The
+      -- insert adopts the mint, so this table holds only what has not become a session yet: an
+      -- in-flight slot, or an internal:* key (dream / memory / commit) that never will.
+      CREATE TABLE IF NOT EXISTS session_outward_ids (
+        key TEXT PRIMARY KEY,
+        agentId TEXT,
+        sessionId TEXT NOT NULL,
+        mintedAt INTEGER NOT NULL
+      );
       -- Retention-GC receipts (#485): sessions this daemon has already deleted
       -- locally, still owed to the CP as an event/session-purged report. Durable
       -- because the local row is GONE — unlike every other D→C report, an
@@ -1375,6 +1498,64 @@ export class LocalStore {
         agentId TEXT PRIMARY KEY,
         generation INTEGER NOT NULL
       );
+      -- gitlab-com-integration.md §16 run projection: the write marker this daemon persists BEFORE
+      -- every provider mutation. An 'in_flight' row surviving a restart is reconciled by listing the
+      -- merge request's notes and matching the hidden marker, never by replaying the write. A
+      -- 'settled_unreported' row holds a definite outcome the control plane has not acknowledged yet:
+      -- it is replayed until acked, so a dropped result cannot wedge the control plane's write mutex.
+      CREATE TABLE IF NOT EXISTS code_host_note_projection (
+        projectionKey TEXT PRIMARY KEY,
+        projectionId TEXT NOT NULL,
+        hookId TEXT NOT NULL,
+        agentId TEXT NOT NULL,
+        orgId TEXT,
+        provider TEXT NOT NULL,
+        projectId TEXT NOT NULL,
+        mergeRequestIid INTEGER NOT NULL,
+        headSha TEXT NOT NULL,
+        generation TEXT NOT NULL,
+        writeMarker TEXT NOT NULL,
+        state TEXT NOT NULL,
+        body TEXT NOT NULL,
+        noteId TEXT,
+        credentialEpoch TEXT NOT NULL,
+        phase TEXT NOT NULL CHECK (phase IN ('in_flight', 'settled_unreported', 'settled')),
+        outcome TEXT,                     -- the definite outcome awaiting acknowledgement
+        code TEXT,                        -- its normalized reason code
+        updatedAt INTEGER NOT NULL,
+        -- The STABLE daemon identity the control plane dispatches to, not a process incarnation: a
+        -- restarted daemon must find its own unfinished writes, and the control plane keeps an
+        -- ambiguous marker on that identity, so no peer is ever dispatched to finish them.
+        daemonId TEXT NOT NULL,
+        ownerId TEXT                      -- process incarnation that started the write; informational only
+      );
+      CREATE INDEX IF NOT EXISTS code_host_note_projection_pending
+        ON code_host_note_projection (daemonId, phase, updatedAt);
+      -- Daemon-local secrets that must survive a restart. Nothing here authenticates to a peer:
+      -- the only entry today is the formal-review marker key, whose whole claim is "this daemon's
+      -- attempt authored this draft", so a key that changed every boot would make same-attempt
+      -- crash recovery unverifiable (gitlab-com-integration.md §15.1).
+      CREATE TABLE IF NOT EXISTS daemon_secret (
+        name TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        createdAt INTEGER NOT NULL
+      );
+      -- gitlab-com-integration.md §15.1: control-plane frames a finished review still OWES. Both
+      -- the operation settle and the terminal result are idempotent REQs, so an unacknowledged one
+      -- is replayed verbatim until the control plane takes it; a lost ack must never leave an
+      -- operation record started forever or an outcome unreconciled.
+      CREATE TABLE IF NOT EXISTS code_host_review_intent (
+        intentId TEXT PRIMARY KEY,
+        daemonId TEXT NOT NULL,
+        attemptId TEXT NOT NULL,
+        orgId TEXT,
+        kind TEXT NOT NULL CHECK (kind IN ('operation', 'result')),
+        frame TEXT NOT NULL,              -- the exact payload replayed, verbatim
+        attempts INTEGER NOT NULL DEFAULT 0,
+        updatedAt INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS code_host_review_intent_pending
+        ON code_host_review_intent (daemonId, updatedAt);
     `)
     // Stamped only once the CREATE block above has actually emitted that schema, so
     // a store that failed halfway through creation is not left claiming to be current.
@@ -1446,6 +1627,51 @@ export class LocalStore {
 
   async getSession(key: string): Promise<SessionRecord | undefined> {
     return (await this.db.prepare('SELECT * FROM sessions WHERE key = ?').get(key)) as SessionRecord | undefined
+  }
+
+  /**
+   * The slot's OUTWARD session id (§1.1), minted on first ask and stable for the slot's life.
+   * Asked before a credential is issued — earlier than the runtime, so earlier than any ACP id,
+   * and usually earlier than the session ROW, which the turn writes only once it dispatches.
+   *
+   * A mint therefore lands in `session_outward_ids`, never in a half-built `sessions` row: the
+   * turn's own insert adopts it, and a key that never becomes a session — the pool also runs
+   * dream / memory / commit work under `internal:*` keys — leaves nothing behind that looks like
+   * one. Idempotent without depending on a driver's `changes`, since a pool's members share one
+   * store: each step is a no-op for the loser and the final read settles who won.
+   *
+   * THE SESSION ROW WINS. A full insert can land between the first read and the stage — its own
+   * id already generated, since the stage it would have adopted did not exist yet — and the
+   * adopting UPDATE below then finds nothing to fill. Answering with the stage there would split
+   * one session's identity in two: the credential under one name, its metadata and usage under
+   * another, which is the very failure this column exists to end. So the row is re-read after the
+   * UPDATE, and where it disagrees the stage is settled onto it.
+   */
+  async ensureOutwardSessionId(key: string, agentId?: string, now = Date.now()): Promise<string> {
+    const onSession = (
+      (await this.db.prepare('SELECT sessionId FROM sessions WHERE key = ?').get(key)) as
+        { sessionId: string | null } | undefined
+    )?.sessionId
+    if (onSession) return onSession
+    await this.db
+      .prepare('INSERT OR IGNORE INTO session_outward_ids (key, agentId, sessionId, mintedAt) VALUES (?, ?, ?, ?)')
+      .run(key, agentId ?? null, randomUUID(), now)
+    const minted = (
+      (await this.db.prepare('SELECT sessionId FROM session_outward_ids WHERE key = ?').get(key)) as
+        { sessionId: string } | undefined
+    )?.sessionId
+    if (!minted) throw new Error(`could not mint an outward session id for ${key}`)
+    // A session row written before this column existed adopts the mint rather than a second name.
+    await this.db.prepare('UPDATE sessions SET sessionId = ? WHERE key = ? AND sessionId IS NULL').run(minted, key)
+    const settled = (
+      (await this.db.prepare('SELECT sessionId FROM sessions WHERE key = ?').get(key)) as
+        { sessionId: string | null } | undefined
+    )?.sessionId
+    if (settled && settled !== minted) {
+      await this.db.prepare('UPDATE session_outward_ids SET sessionId = ? WHERE key = ?').run(settled, key)
+      return settled
+    }
+    return minted
   }
 
   async createPermissionRequest(record: PermissionRequestRecord): Promise<void> {
@@ -1683,6 +1909,17 @@ export class LocalStore {
       .get(agentId, acpSessionId)) as SessionRecord | undefined
   }
 
+  /** Resolve a slot from the id the OUTSIDE world addresses it by (session-concept.md §1.1).
+   *  Falls back to the ACP id so a caller still holding the runtime's name — and a control
+   *  plane that recorded one before the outward column existed — still lands on the session. */
+  async getSessionByOutwardId(sessionId: string, agentId?: string): Promise<SessionRecord | undefined> {
+    const scope = agentId === undefined ? '' : ' AND agentId = @agentId'
+    const params = { sessionId, ...(agentId === undefined ? {} : { agentId }) }
+    return ((await this.db.prepare(`SELECT * FROM sessions WHERE sessionId = @sessionId${scope}`).get(params)) ??
+      (await this.db.prepare(`SELECT * FROM sessions WHERE acpSessionId = @sessionId${scope}`).get(params))) as
+      SessionRecord | undefined
+  }
+
   /**
    * The org partition one transcript read or write belongs to. A store no pool shares owns
    * a single partition whatever the agent; a shared store resolves the agent's org through
@@ -1736,15 +1973,17 @@ export class LocalStore {
 
   /** Addressable session ids whose authorized transcript scope may have changed. */
   async sessionIdsForTranscript(agentId: string, channel: string, thread: string): Promise<string[]> {
+    // Outward ids (§1.1): the only consumer is the CP's transcript-activity signal, and the CP
+    // invalidates by the id it filed the session under. A pre-v12 row answers with its ACP id.
     const rows = (await this.db
       .prepare(
-        `SELECT DISTINCT acpSessionId, channel, transportScope FROM sessions
+        `SELECT DISTINCT COALESCE(sessionId, acpSessionId) AS sessionId, channel, transportScope FROM sessions
          WHERE agentId = ? AND thread = ? AND acpSessionId IS NOT NULL`
       )
-      .all(agentId, thread)) as { acpSessionId: string; channel: string; transportScope: string | null }[]
+      .all(agentId, thread)) as { sessionId: string; channel: string; transportScope: string | null }[]
     return rows
       .filter((row) => transcriptChannelKey(row.channel, row.transportScope) === channel)
-      .map((row) => row.acpSessionId)
+      .map((row) => row.sessionId)
   }
 
   async currentTranscriptRevision(agentId?: string, orgId?: string): Promise<number> {
@@ -1976,16 +2215,24 @@ export class LocalStore {
     await this.db
       .prepare(
         `INSERT INTO sessions
-           (key, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, threadUrl, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
+           (key, sessionId, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, threadUrl, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
             externalProvider, externalRealmKey, externalResourceKind, externalResourceKey, externalIntegrationId,
             externalOriginJson, sourceBindingKind)
          VALUES
-           (@key, @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
+           (@key, COALESCE((SELECT sessionId FROM session_outward_ids WHERE key = @key), @sessionId), @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
             @triggeredBy, @threadUrl, @memoryProvider, @workspaceIsolation, @originSessionId, @needsParentReply,
             @externalProvider, @externalRealmKey, @externalResourceKind, @externalResourceKey, @externalIntegrationId,
             @externalOriginJson, @sourceBindingKind)
          ON CONFLICT(key) DO UPDATE SET
+           sessionId=COALESCE(sessions.sessionId, excluded.sessionId),
+           -- The key's own components. A row this daemon minted an outward id into before the
+           -- session existed (ensureOutwardSessionId) carries none of them, and they are immutable
+           -- once written, so COALESCE hydrates that skeleton exactly once and never rewrites a
+           -- real row. Without this the session could not be read back from its own coordinates.
+           platform=COALESCE(sessions.platform, excluded.platform),
+           channel=COALESCE(sessions.channel, excluded.channel),
+           thread=COALESCE(sessions.thread, excluded.thread),
            acpSessionId=excluded.acpSessionId, state=excluded.state,
            lastDeliveredTs=excluded.lastDeliveredTs, updatedAt=excluded.updatedAt,
            transportScope=excluded.transportScope,
@@ -2020,6 +2267,7 @@ export class LocalStore {
       )
       .run({
         key: rec.key,
+        sessionId: rec.sessionId ?? randomUUID(),
         agentId: rec.agentId,
         platform: rec.platform,
         channel: rec.channel,
@@ -2127,10 +2375,13 @@ export class LocalStore {
 
   /** The one agent holding this ACP id locally, or undefined when none or several
    *  do — how a push from a CP too old to name the agent is attributed. */
-  async soleAgentForAcpSession(acpSessionId: string): Promise<string | undefined> {
+  async soleAgentForAcpSession(sessionId: string): Promise<string | undefined> {
     const rows = (await this.db
-      .prepare('SELECT DISTINCT agentId FROM sessions WHERE acpSessionId = ? AND agentId IS NOT NULL LIMIT 2')
-      .all(acpSessionId)) as { agentId: string }[]
+      .prepare(
+        `SELECT DISTINCT agentId FROM sessions
+         WHERE (sessionId = @sessionId OR acpSessionId = @sessionId) AND agentId IS NOT NULL LIMIT 2`
+      )
+      .all({ sessionId })) as { agentId: string }[]
     return rows.length === 1 ? rows[0]!.agentId : undefined
   }
 
@@ -2642,19 +2893,25 @@ export class LocalStore {
       // fact "this session's content is gone" must not be able to exist without
       // the report that carries it, in either direction. Only a session that bound
       // an ACP id was ever reported to the CP, so only that one has a row to mark.
+      // How the CONTROL PLANE knows this session (§1.1): the id its receipt marks and its outbox
+      // row is keyed by. A pre-v12 row answers with its ACP id, which is what it was reported under.
+      const outward = rec.sessionId ?? rec.acpSessionId
       // OR IGNORE keeps the FIRST stamp if a still-unacked receipt is somehow
       // re-created for the same id — the console should show when the content
       // actually went away, not when the daemon last retried.
       if (purge && rec.acpSessionId) {
-        // Stamped to the deleting member on a shared store: its drain owns the receipt.
+        // Stamped to the deleting member on a shared store: its drain owns it.
         await tx
           .prepare(
             `INSERT OR IGNORE INTO session_purges (agentId, sessionId, reason, purgedAt, ownerId, claimedAt)
              VALUES (?, ?, ?, ?, ?, ?)`
           )
-          .run(rec.agentId, rec.acpSessionId, purge.reason, purge.at, purge.ownerId ?? null, purge.at)
+          .run(rec.agentId, outward, purge.reason, purge.at, purge.ownerId ?? null, purge.at)
       }
       await tx.prepare('DELETE FROM sessions WHERE key = ?').run(key)
+      // Its identity goes with it: the receipt just reported this id as purged, so the next
+      // session on the same slot must be a new one, not this one's name reused.
+      await tx.prepare('DELETE FROM session_outward_ids WHERE key = ?').run(key)
       await tx.prepare('DELETE FROM session_mutes WHERE key = ?').run(key)
       await tx.prepare('DELETE FROM inbox WHERE sessionKey = ? AND terminalReport IS NULL').run(key)
       if (rec.acpSessionId) {
@@ -2663,7 +2920,7 @@ export class LocalStore {
         // obsolete snapshot; an existing CP row is handled by session_purges.
         await tx
           .prepare('DELETE FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ?')
-          .run(rec.agentId, rec.acpSessionId)
+          .run(rec.agentId, outward)
         await tx
           .prepare('DELETE FROM session_gates WHERE agentId = ? AND acpSessionId = ?')
           .run(rec.agentId, rec.acpSessionId)
@@ -3266,7 +3523,11 @@ export class LocalStore {
   > {
     const rows = (await this.db
       .prepare(
-        `SELECT acpSessionId AS sessionId, channel, thread, transportScope, updatedAt FROM sessions
+        // Outward ids (§1.1): these become the citations the model grounds a skill candidate in,
+        // and from there the dream's durable, CP-visible provenance. A pre-v12 row answers with
+        // its ACP id, which is what that session was reported under.
+        `SELECT COALESCE(sessionId, acpSessionId) AS sessionId, channel, thread, transportScope, updatedAt
+         FROM sessions
          WHERE agentId = ? AND acpSessionId IS NOT NULL AND platform <> 'dream'
          ORDER BY updatedAt DESC LIMIT ?`
       )
@@ -3317,7 +3578,7 @@ export class LocalStore {
     limit: number,
     includeTools = false,
     transportScope?: string | null
-  ): Promise<{ sender: string; text: string; kind?: string }[]> {
+  ): Promise<{ sender: string; text: string; kind?: string; input?: string }[]> {
     const transcriptChannel = transcriptChannelKey(channel, transportScope)
     const rows = (await this.db
       .prepare(
@@ -5090,6 +5351,133 @@ export class LocalStore {
            AND authorityGeneration = @authorityGeneration AND state = 'revoking'`
       )
       .run({ conversationId, authorityId, authorityGeneration, nextAttemptAt, now })
+  }
+
+  /** The §16 projection THIS daemon identity last wrote for a merge-request head, or nothing yet.
+   *  Scoped by the stable daemon id on every store: a pool peer's row is not this daemon's to read. */
+  async getNoteProjection(daemonId: string, projectionKey: string): Promise<NoteProjectionRow | undefined> {
+    const row = (await this.db
+      .prepare('SELECT * FROM code_host_note_projection WHERE projectionKey = @projectionKey AND daemonId = @daemonId')
+      .get({ projectionKey, daemonId })) as CodeHostNoteProjectionRow | undefined
+    return row ? toNoteProjectionRow(row) : undefined
+  }
+
+  /** Record the write marker BEFORE the provider mutation, so an interrupted write is reconcilable. */
+  async beginNoteProjectionWrite(row: NoteProjectionRow, now: number): Promise<void> {
+    await this.db
+      .prepare(NOTE_PROJECTION_UPSERT)
+      .run({ ...noteProjectionParams(row, now, this.ownerId ?? null), phase: 'in_flight', outcome: null, code: null })
+  }
+
+  /** Persist a definite outcome as UNREPORTED: it is replayed until the control plane acknowledges it. */
+  async recordNoteProjectionOutcome(
+    row: NoteProjectionRow,
+    outcome: NoteProjectionOutcome,
+    code: string | undefined,
+    now: number
+  ): Promise<void> {
+    await this.db.prepare(NOTE_PROJECTION_UPSERT).run({
+      ...noteProjectionParams(row, now, this.ownerId ?? null),
+      phase: 'settled_unreported',
+      outcome,
+      code: code ?? null
+    })
+  }
+
+  /** The control plane acknowledged the result: only then does the row stop being replayed. */
+  async markNoteProjectionReported(
+    daemonId: string,
+    projectionKey: string,
+    writeMarker: string,
+    now: number
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE code_host_note_projection
+         SET phase = 'settled', updatedAt = @now
+         WHERE projectionKey = @projectionKey AND daemonId = @daemonId AND writeMarker = @writeMarker
+           AND phase = 'settled_unreported'`
+      )
+      .run({ projectionKey, daemonId, writeMarker, now })
+  }
+
+  /**
+   * Writes THIS DAEMON IDENTITY has not carried to a reported outcome: reconcile or replay.
+   *
+   * Keyed by the stable daemon id, never the process incarnation, because a restart is exactly when
+   * recovery is owed — and the control plane keeps an ambiguous write marker on that same identity,
+   * so a row no restarted daemon could see would never be settled by anyone.
+   */
+  async listUnsettledNoteProjections(daemonId: string, limit = 100): Promise<NoteProjectionRow[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT * FROM code_host_note_projection
+         WHERE daemonId = @daemonId AND phase IN ('in_flight', 'settled_unreported')
+         ORDER BY updatedAt ASC LIMIT @limit`
+      )
+      .all({ daemonId, limit })) as unknown as CodeHostNoteProjectionRow[]
+    return rows.map(toNoteProjectionRow)
+  }
+
+  /**
+   * A restart-stable daemon-local secret, minted once on first use.
+   *
+   * The insert is `ON CONFLICT DO NOTHING` and the read follows it, so two callers racing
+   * the same name both observe the one stored value rather than each keeping its own.
+   */
+  async getOrCreateDaemonSecret(name: string, mint: () => string, now: number): Promise<string> {
+    await this.db
+      .prepare('INSERT INTO daemon_secret (name, value, createdAt) VALUES (@name, @value, @now) ON CONFLICT DO NOTHING')
+      .run({ name, value: mint(), now })
+    const row = (await this.db.prepare('SELECT value FROM daemon_secret WHERE name = @name').get({ name })) as
+      { value: string } | undefined
+    if (!row) throw new Error(`daemon secret ${name} could not be stored`)
+    return row.value
+  }
+
+  /** Remember a control-plane frame this review attempt still owes, so a lost ack is replayed. */
+  async recordReviewIntent(row: ReviewIntentRow, now: number): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO code_host_review_intent (intentId, daemonId, attemptId, orgId, kind, frame, attempts, updatedAt)
+         VALUES (@intentId, @daemonId, @attemptId, @orgId, @kind, @frame, @attempts, @now)
+         ON CONFLICT (intentId) DO UPDATE SET
+           attempts = excluded.attempts, frame = excluded.frame, updatedAt = excluded.updatedAt`
+      )
+      .run({
+        intentId: row.intentId,
+        daemonId: row.daemonId,
+        attemptId: row.attemptId,
+        orgId: row.orgId ?? null,
+        kind: row.kind,
+        frame: row.frame,
+        attempts: row.attempts,
+        now
+      })
+  }
+
+  /** The control plane took it; nothing is owed for that frame any more. */
+  async clearReviewIntent(intentId: string): Promise<void> {
+    await this.db.prepare('DELETE FROM code_host_review_intent WHERE intentId = @intentId').run({ intentId })
+  }
+
+  /** Scoped to the stable daemon identity, so a restart replays its own frames and no peer's. */
+  async listReviewIntents(daemonId: string, limit = 100): Promise<ReviewIntentRow[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT intentId, daemonId, attemptId, orgId, kind, frame, attempts FROM code_host_review_intent
+         WHERE daemonId = @daemonId ORDER BY updatedAt ASC LIMIT @limit`
+      )
+      .all({ daemonId, limit })) as unknown as Array<ReviewIntentRow & { orgId: string | null }>
+    return rows.map((row) => ({
+      intentId: row.intentId,
+      daemonId: row.daemonId,
+      attemptId: row.attemptId,
+      ...(row.orgId ? { orgId: row.orgId } : {}),
+      kind: row.kind,
+      frame: row.frame,
+      attempts: row.attempts
+    }))
   }
 
   /** Record one turn admission against a conversation-wide fixed window. A trusted

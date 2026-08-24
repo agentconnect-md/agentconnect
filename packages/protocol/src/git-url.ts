@@ -19,7 +19,13 @@ const CONTROL_RE = /[\u0000-\u001f\u007f]/
 
 /** Conservative daemon default. Operators may explicitly add exact origins
  * for GitLab, Bitbucket, or self-managed Git services. */
-export const DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS = ['https://github.com', 'ssh://github.com'] as const
+// gitlab-com-integration.md §13.2: managed GitLab workspaces are HTTPS-only and
+// exactly this origin. An operator-supplied allowlist stays authoritative.
+export const DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS = [
+  'https://github.com',
+  'ssh://github.com',
+  'https://gitlab.com'
+] as const
 
 /**
  * Hard cap on an untrusted repo reference. Real clone addresses are far under

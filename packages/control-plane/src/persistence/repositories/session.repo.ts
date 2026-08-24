@@ -5,7 +5,14 @@
  * `sessionId`, advancing `phase` and keeping the latest `link`/`summary`; the
  * `end` phase stamps `endedAt`. The launch tie (`launchId`) is set on create.
  */
-import type { Platform } from '@agentconnect.md/protocol'
+import {
+  CODE_HOST_PROVIDERS,
+  isCodeHostProvider,
+  GENERIC_HOOK_KIND,
+  type CodeHostProvider,
+  type HookKind,
+  type Platform
+} from '@agentconnect.md/protocol'
 import {
   Prisma,
   type ExternalScope,
@@ -66,6 +73,7 @@ function toRecord(s: SessionMeta): SessionMetaRecord {
     triggeredBy: s.triggeredBy,
     channelName: s.channelName,
     triggeredByName: s.triggeredByName,
+    hookKind: (s.hookKind as HookKind | null) ?? null,
     threadUrl: s.threadUrl,
     runtime: s.runtime,
     model: s.model,
@@ -221,29 +229,67 @@ function hookTriggerSql(hookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
   `
 }
 
-function githubHookSql(githubHookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
-  return Prisma.sql`${a}."platform" = 'hook' AND ${hookTriggerSql(githubHookIds, a)}`
+/** The hook definition a reported session fires from. `triggeredBy` is authoritative;
+ *  the channel fallback covers legacy headless hook rows that predate that identity. */
+function hookIdOfEvent(ev: EventSessionInput): string | null {
+  const fromTrigger = ev.triggeredBy?.startsWith(HOOK_TRIGGER_PREFIX)
+    ? ev.triggeredBy.slice(HOOK_TRIGGER_PREFIX.length)
+    : ''
+  const id = fromTrigger || (ev.platform === 'hook' ? (ev.channel ?? '') : '')
+  return UUID_RE.test(id) ? id : null
 }
 
-function genericHookSql(githubHookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
-  if (githubHookIds.length === 0) return Prisma.sql`${a}."platform" = 'hook'`
-  const triggers = githubHookIds.map((id) => `${HOOK_TRIGGER_PREFIX}${id}`)
+/** One code host's hook sessions. The row's own snapshot decides when it has one — that
+ *  survives the definition being deleted — and only rows written before the column fall
+ *  back to matching the live hook ids. */
+function codeHostHookSql(provider: CodeHostProvider, hookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
   return Prisma.sql`
     ${a}."platform" = 'hook'
-    AND (${a}."triggeredBy" IS NULL OR ${a}."triggeredBy" NOT IN (${Prisma.join(triggers)}))
     AND (
-      (${a}."triggeredBy" LIKE ${`${HOOK_TRIGGER_PREFIX}%`} AND ${a}."triggeredBy" <> ${HOOK_TRIGGER_PREFIX})
-      OR ${a}."channel" IS NULL
-      OR ${a}."channel" NOT IN (${Prisma.join(githubHookIds)})
+      ${a}."hookKind" = ${provider}::"HookKind"
+      OR (${a}."hookKind" IS NULL AND ${hookTriggerSql(hookIds, a)})
     )
   `
 }
 
+/** Hook sessions that belong to NO code host — a snapshot naming one is excluded on its
+ *  own, and pre-snapshot rows are excluded by promoted id, or a GitLab session would be
+ *  counted twice: once as gitlab, once as a webhook. */
+function genericHookSql(codeHostHookIds: string[], a: Prisma.Sql = S): Prisma.Sql {
+  const byId =
+    codeHostHookIds.length === 0
+      ? Prisma.sql`TRUE`
+      : Prisma.sql`
+          (${a}."triggeredBy" IS NULL OR ${a}."triggeredBy" NOT IN (${Prisma.join(
+            codeHostHookIds.map((id) => `${HOOK_TRIGGER_PREFIX}${id}`)
+          )}))
+          AND (
+            (${a}."triggeredBy" LIKE ${`${HOOK_TRIGGER_PREFIX}%`} AND ${a}."triggeredBy" <> ${HOOK_TRIGGER_PREFIX})
+            OR ${a}."channel" IS NULL
+            OR ${a}."channel" NOT IN (${Prisma.join(codeHostHookIds)})
+          )
+        `
+  return Prisma.sql`
+    ${a}."platform" = 'hook'
+    AND (
+      ${a}."hookKind" = ${GENERIC_HOOK_KIND}::"HookKind"
+      OR (${a}."hookKind" IS NULL AND ${byId})
+    )
+  `
+}
+
+/** Every promoted code-host hook id, in one list, for the generic-hook exclusion. */
+function allCodeHostHookIds(q: Pick<SessionFilterQuery, 'codeHostHookIds'>): string[] {
+  return CODE_HOST_PROVIDERS.flatMap((provider) => q.codeHostHookIds?.[provider] ?? [])
+}
+
 function integrationSql(q: SessionFilterQuery, a: Prisma.Sql = S): Prisma.Sql | null {
   if (!q.integration) return null
-  const githubHookIds = q.githubHookIds ?? []
-  if (q.integration === 'github') return githubHookSql(githubHookIds, a)
-  if (q.integration === 'hook') return genericHookSql(githubHookIds, a)
+  // Each code host reads its own promoted ids; asking the shared provider list means a
+  // new host is filterable here without an arm of its own.
+  if (isCodeHostProvider(q.integration))
+    return codeHostHookSql(q.integration, q.codeHostHookIds?.[q.integration] ?? [], a)
+  if (q.integration === 'hook') return genericHookSql(allCodeHostHookIds(q), a)
   return platformSql(q.integration, a)
 }
 
@@ -306,11 +352,16 @@ function pageWhereSql(
   return Prisma.sql`WHERE ${Prisma.join(filters, ' AND ')}`
 }
 
-function integrationFacetSql(githubHookIds: string[]): Prisma.Sql {
-  if (githubHookIds.length === 0) return Prisma.sql`COALESCE(s."platform", 'slack')`
+/** One CASE arm per code host, built from the shared provider list so a new host projects
+ *  its own facet value without an arm written by hand. Every provider gets an arm whether
+ *  or not it still has live hooks: a snapshot alone is enough to classify a row. */
+function integrationFacetSql(codeHostHookIds: Partial<Record<CodeHostProvider, string[]>>): Prisma.Sql {
+  const arms = CODE_HOST_PROVIDERS.map(
+    (provider) => Prisma.sql`WHEN ${codeHostHookSql(provider, codeHostHookIds[provider] ?? [])} THEN ${provider}`
+  )
   return Prisma.sql`
     CASE
-      WHEN ${githubHookSql(githubHookIds)} THEN 'github'
+      ${Prisma.join(arms, ' ')}
       WHEN s."platform" IS NULL THEN 'slack'
       ELSE s."platform"
     END
@@ -351,6 +402,7 @@ type SessionFacetDbRow = {
   triggeredBy: string | null
   channelName: string | null
   triggeredByName: string | null
+  hookKind: HookKind | null
   lastActivityAt: Date
   startedAt: Date
 }
@@ -781,7 +833,7 @@ export class PgSessionRepo implements SessionRepo {
       INSERT INTO "session_meta" (
         "id", "parentSessionId", "agentId", "launchId", "platform", "channel",
         "thread", "tenantScope", "phase", "link", "summary", "title", "status",
-        "lastActivityAt", "triggeredBy", "channelName", "triggeredByName",
+        "lastActivityAt", "triggeredBy", "channelName", "triggeredByName", "hookKind",
         "threadUrl", "runtime", "model", "effort", "fastMode",
         "permissionMode", "outputMode", "daemonId", "contentSetId", "workspaceIsolation", "orgId", "visibility",
         "ownerIdentity", "visibilitySource", "externalProvider",
@@ -793,7 +845,11 @@ export class PgSessionRepo implements SessionRepo {
         ${ev.thread ?? null}, ${ev.transportScope ?? null}, ${ev.phase}::"SessionPhase", ${ev.link ?? null},
         ${ev.summary ?? null}, ${ev.title ?? null}, ${ev.status ?? null},
         ${lastActivityAt}, ${ev.triggeredBy ?? null}, ${ev.channelName ?? null},
-        ${ev.triggeredByName ?? null}, ${ev.threadUrl ?? null},
+        ${ev.triggeredByName ?? null},
+        -- Snapshot the hook KIND beside the trigger id, resolved in this same statement.
+        -- The definition can be deleted and recreated; the session's own source cannot.
+        (SELECT h."kind" FROM "hook_def" h WHERE h."id" = ${hookIdOfEvent(ev)}::uuid),
+        ${ev.threadUrl ?? null},
         ${ev.runtime ?? null}, ${ev.model ?? null}, ${ev.effort ?? null},
         ${ev.fastMode ?? null}, ${ev.permissionMode ?? null},
         ${ev.outputMode ?? null}, ${ev.daemonId ?? null},
@@ -843,6 +899,9 @@ export class PgSessionRepo implements SessionRepo {
           EXCLUDED."triggeredByName",
           "session_meta"."triggeredByName"
         ),
+        -- First non-null wins: a snapshot is a record of what fired the session, so a
+        -- later report can fill it in but never rewrite it.
+        "hookKind" = COALESCE("session_meta"."hookKind", EXCLUDED."hookKind"),
         "threadUrl" = COALESCE(EXCLUDED."threadUrl", "session_meta"."threadUrl"),
         "runtime" = COALESCE(EXCLUDED."runtime", "session_meta"."runtime"),
         "model" = CASE
@@ -1178,7 +1237,7 @@ export class PgSessionRepo implements SessionRepo {
     delete triggerQuery.triggeredBy
     delete triggerQuery.hookTriggerIds
 
-    const integrationFacet = integrationFacetSql(q.githubHookIds ?? [])
+    const integrationFacet = integrationFacetSql(q.codeHostHookIds ?? {})
     const [agents, integrations, channels, triggers] = await Promise.all([
       this.db.$queryRaw<SessionAgentFacetDbRow[]>(Prisma.sql`
         SELECT DISTINCT s."agentId"
@@ -1189,15 +1248,15 @@ export class PgSessionRepo implements SessionRepo {
       this.db.$queryRaw<SessionFacetDbRow[]>(Prisma.sql`
         SELECT
           "id", "agentId", "platform", "channel", "triggeredBy",
-          "channelName", "triggeredByName", "lastActivityAt", "startedAt"
+          "channelName", "triggeredByName", "hookKind", "lastActivityAt", "startedAt"
         FROM (
           SELECT DISTINCT ON ("facetValue")
             "id", "agentId", "platform", "channel", "triggeredBy",
-            "channelName", "triggeredByName", "lastActivityAt", "startedAt"
+            "channelName", "triggeredByName", "hookKind", "lastActivityAt", "startedAt"
           FROM (
             SELECT
               s."id", s."agentId", s."platform", s."channel", s."triggeredBy",
-              s."channelName", s."triggeredByName", s."lastActivityAt", s."startedAt",
+              s."channelName", s."triggeredByName", s."hookKind", s."lastActivityAt", s."startedAt",
               ${integrationFacet} AS "facetValue"
             FROM "session_meta" AS s
             ${pageWhereSql(integrationQuery, false)}
@@ -1209,11 +1268,11 @@ export class PgSessionRepo implements SessionRepo {
       this.db.$queryRaw<SessionFacetDbRow[]>(Prisma.sql`
         SELECT
           "id", "agentId", "platform", "channel", "triggeredBy",
-          "channelName", "triggeredByName", "lastActivityAt", "startedAt"
+          "channelName", "triggeredByName", "hookKind", "lastActivityAt", "startedAt"
         FROM (
           SELECT DISTINCT ON (s."channel")
             s."id", s."agentId", s."platform", s."channel", s."triggeredBy",
-            s."channelName", s."triggeredByName", s."lastActivityAt", s."startedAt"
+            s."channelName", s."triggeredByName", s."hookKind", s."lastActivityAt", s."startedAt"
           FROM "session_meta" AS s
           ${pageWhereSql(channelQuery, false)}
             AND s."channel" IS NOT NULL
@@ -1225,11 +1284,11 @@ export class PgSessionRepo implements SessionRepo {
       this.db.$queryRaw<SessionFacetDbRow[]>(Prisma.sql`
         SELECT
           "id", "agentId", "platform", "channel", "triggeredBy",
-          "channelName", "triggeredByName", "lastActivityAt", "startedAt"
+          "channelName", "triggeredByName", "hookKind", "lastActivityAt", "startedAt"
         FROM (
           SELECT DISTINCT ON (s."triggeredBy")
             s."id", s."agentId", s."platform", s."channel", s."triggeredBy",
-            s."channelName", s."triggeredByName", s."lastActivityAt", s."startedAt"
+            s."channelName", s."triggeredByName", s."hookKind", s."lastActivityAt", s."startedAt"
           FROM "session_meta" AS s
           ${pageWhereSql(triggerQuery, false)}
             AND s."triggeredBy" IS NOT NULL

@@ -44,7 +44,13 @@ export class KeyServerClient {
     } = {}
   ) {
     this.baseUrl = new URL(address)
-    if (this.baseUrl.protocol !== 'https:') throw new Error('key-server must use https')
+    // The scheme is the deployment's decision, not this client's: the bearer is a projected
+    // ServiceAccount token, and the same process already carries one over an in-cluster `ws://`
+    // socket to the control plane. Refusing http made one hop stricter than the boundary it lives
+    // in, at the price of a private CA on the one service dialled directly rather than via the edge.
+    if (this.baseUrl.protocol !== 'https:' && this.baseUrl.protocol !== 'http:') {
+      throw new Error(`key-server address must be http or https, got ${this.baseUrl.protocol}`)
+    }
     if (this.baseUrl.username || this.baseUrl.password) throw new Error('key-server URL must not contain credentials')
   }
 

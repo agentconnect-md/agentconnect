@@ -19,7 +19,9 @@ function orgAgent(over: Partial<OrgAgentRecord>): OrgAgentRecord {
     displayName: null,
     description: null,
     status: 'active',
+    placementKind: 'daemon',
     daemonId: DAEMON_1,
+    setId: null,
     callPolicy: 'all',
     allowedCallerAgentIds: [],
     outboundPolicy: 'all',
@@ -61,8 +63,8 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
     expect(snap.generation).toBe(7)
     expect(snap.channels).toHaveLength(1)
     expect(snap.channels[0]).toMatchObject({ orgId: DEFAULT_ORG_ID, platform: 'slack', channelId: 'C1' })
-    expect(snap.channels[0].agents.map((a) => a.daemonId).sort()).toEqual([DAEMON_1, DAEMON_2].sort())
-    expect(snap.channels[0].agents.map((a) => a.botAppId).sort()).toEqual(['A111', 'A222'])
+    expect(snap.channels[0]!.agents.map((a) => a.daemonId).sort()).toEqual([DAEMON_1, DAEMON_2].sort())
+    expect(snap.channels[0]!.agents.map((a) => a.botAppId).sort()).toEqual(['A111', 'A222'])
     // §6.1: every snapshot ships the emitter's origin-kind classification so an older
     // peer can classify a platform id this CP introduces.
     expect(snap.platformKinds).toEqual(
@@ -140,7 +142,7 @@ describe('buildCollabSnapshot (agent-collaboration P2)', () => {
       []
     )
     expect(CollabRoutesSnapshot.parse(snap)).toEqual(snap)
-    expect(snap.channels[0].agents[0]).toMatchObject({ name: 'deploy-bot', displayName: 'Deploy Bot' })
+    expect(snap.channels[0]!.agents[0]).toMatchObject({ name: 'deploy-bot', displayName: 'Deploy Bot' })
   })
 
   it('carries an integration-less agent in the flat org directory (the whole point of agents[])', () => {

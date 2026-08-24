@@ -8,6 +8,7 @@ import { Daemon } from '../src/daemon.js'
 import { transcriptChannelKey, type TranscriptEntry } from '../src/store/local-store.js'
 import { stableTurnId } from '../src/messages/normalized.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import type { SlackPostOptions } from '../src/slack/connection.js'
 
 // vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
 // cold session boot (workspace + host + session/new) can stall well past a second.
@@ -95,13 +96,31 @@ function makeRoutable(daemon: Daemon) {
     workspaceId: vi.fn(() => 'T1'),
     setStatus: vi.fn(async () => {}),
     // Hand back a distinct ts per post so transcript rows don't collide on PK.
-    postMessage: vi.fn(async () => `reply-${++n}`),
-    postBlocks: vi.fn(async () => 'status-bar'),
-    updateBlocks: vi.fn(async () => {})
+    postMessage: vi.fn<PostMessageFake>(async () => `reply-${++n}`),
+    postBlocks: vi.fn<PostBlocksFake>(async () => 'status-bar'),
+    updateBlocks: vi.fn<UpdateBlocksFake>(async () => {})
   }
   ;(daemon as any).connByIntegration.set('int-a', conn)
   return conn
 }
+
+type PostMessageFake = (channel: string, text: string, threadTs?: string, options?: SlackPostOptions) => Promise<string>
+type PostBlocksFake = (
+  channel: string,
+  blocks: unknown[],
+  text: string,
+  threadTs?: string,
+  options?: SlackPostOptions
+) => Promise<string>
+type UpdateBlocksFake = (
+  channel: string,
+  ts: string,
+  blocks: unknown[],
+  text?: string,
+  chrome?: boolean,
+  agentAuthorId?: string,
+  chromeOwnerAgentId?: string
+) => Promise<void>
 
 const dm = (ts: string, text: string) => ({
   msgId: `slack:C1:${ts}`,
@@ -138,13 +157,22 @@ async function activity(daemon: Daemon): Promise<{ kind: string; sender: string;
   }))
 }
 
+// The footer deep-links the console, which knows the session by its OUTWARD id (§1.1) — a
+// minted UUID, not the runtime's `acp-1`. Matched loosely on that segment alone: the exact value
+// belongs to the store, and daemon-message-agent covers what it must be.
+const SESSION_URL = /https:\/\/app\.example\.com\/sessions\/[0-9a-f-]{36}\?source=slack/
+
 function classicFooter(botName = 'bot-a', runtime = 'claude', model = 'default') {
   return {
     type: 'context',
     elements: [
       {
         type: 'mrkdwn',
-        text: `sent by <https://app.example.com/agents/bot-a|${botName}> (${runtime} · ${model}) · <https://app.example.com/sessions/acp-1?source=slack|open in session>`
+        text: expect.stringMatching(
+          new RegExp(
+            `^sent by <https://app\\.example\\.com/agents/bot-a\\|${botName}> \\(${runtime} · ${model}\\) · <${SESSION_URL.source}\\|open in session>$`
+          )
+        )
       }
     ]
   }

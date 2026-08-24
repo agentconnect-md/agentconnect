@@ -53,6 +53,8 @@ function build(opts: { verify?: () => Promise<RcVerifyResult>; relayId?: string 
     relayId: () => ('relayId' in opts ? opts.relayId : RELAY_ID),
     clock: new FakeClock(),
     onChat: () => {},
+    onWebchatPost: () => {},
+    onAgentMsg: async () => ({ deliveryId: 'unused', delivered: false }),
     onReady,
     onClosed,
     log: silentLog

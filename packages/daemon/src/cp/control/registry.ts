@@ -10,6 +10,7 @@ import {
   agentWake,
   type AgentControlDeps
 } from './agent.js'
+import { codeHostNoteDesired, type CodeHostControlDeps } from './codehost.js'
 import { configPush, type ConfigApplyDeps } from './config.js'
 import type { ControlHandler } from './context.js'
 import { cronRemove, cronRun, cronUpsert } from './cron.js'
@@ -91,6 +92,7 @@ import {
 export interface ControlDeps
   extends
     AgentControlDeps,
+    CodeHostControlDeps,
     ConfigApplyDeps,
     DaemonOpsDeps,
     DreamControlDeps,
@@ -186,5 +188,6 @@ export const CONTROL_HANDLERS: Map<string, ControlHandler<ControlDeps>> = new Ma
   ['skills/local', skillsLocal],
   ['runtime/commands', runtimeCommands],
   ['knowledge/suggestion/read', knowledgeSuggestionRead],
-  ['knowledge/suggestion/review', knowledgeSuggestionReview]
+  ['knowledge/suggestion/review', knowledgeSuggestionReview],
+  ['codehost/note-desired', codeHostNoteDesired]
 ])

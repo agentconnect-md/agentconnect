@@ -14,6 +14,7 @@ import {
   effortField,
   enrichSessionWithAgent,
   flattenFiles,
+  isGitWorkspace,
   isPoolPlacementKind,
   MOCK_MODE,
   MOCK_PREFIX,
@@ -32,6 +33,7 @@ import {
   fetchSessionDetail,
   sessionFromDetailDto,
   updateGithubHook,
+  updateGitlabHook,
   uploadAgentIcon,
   type GithubInstallationDto,
   type HookDto,
@@ -50,6 +52,7 @@ import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
 import { RecentSessionsCard } from '@/components/console/RecentSessionsCard'
+import { TriggerSelect } from '@/components/console/TriggerSelect'
 import { discordBotInviteUrl } from '@/components/console/platforms/discord/invite'
 import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
 import { WorkspaceFiles, workspaceReadModelKey } from '@/components/console/WorkspaceFiles'
@@ -60,12 +63,29 @@ import { FileBrowserShell } from '@/components/console/FileBrowser'
 import { MemoryPanel } from '@/components/console/MemoryPanel'
 import { LocalSkillsList } from '@/components/console/LocalSkillsList'
 import { GithubReviewSettings } from '@/components/console/GithubReviewSettings'
+import { GitlabReviewSettings } from '@/components/console/GitlabReviewSettings'
 import { VisibilityValue } from '@/components/console/VisibilityField'
 import LarkFeishuSwitcher from '@/components/LarkFeishuSwitcher'
-import { AgentMark, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { AgentMark, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
-import { INTEGRATION_BLURB, PLATFORMS } from '@/components/console/platforms/host-projections'
+import { INTEGRATION_BLURB, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
+import {
+  GL_TRIGGER_MODES,
+  GL_TRIGGER_PILL,
+  commentFamiliesForGitlabFamilies,
+  eventsForGitlabFamilies,
+  gitlabCadencePick,
+  gitlabCommentFamilies,
+  gitlabFamCovered,
+  gitlabFamilyToggle,
+  gitlabHookNeedsNormalization,
+  gitlabRowFamilies,
+  gitlabTriggerModeOf,
+  gitlabTriggerTooltip,
+  type GlFamily,
+  type GlTriggerMode
+} from '@/lib/gitlab-events'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
@@ -79,6 +99,7 @@ import {
   GH_TRIGGER_MODES,
   GH_TRIGGER_PILL,
   commentFamiliesForFamilies,
+  githubCommentFamilies,
   eventsForFamilies,
   famCovered,
   githubHookNeedsNormalization,
@@ -119,8 +140,9 @@ function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 
   )
 }
 
-interface GithubReviewSettingsDraft {
+interface CodeHostReviewSettingsDraft {
   hookId: string
+  kind: 'github' | 'gitlab'
   reviewPolicy: HookReviewPolicy
   reportingMode: HookReportingMode
 }
@@ -209,10 +231,11 @@ export default function AgentDetailView() {
   })
   const agentHooks = agentHooksData ?? []
   const hooksLoadError = agentHooksData === undefined && hooksError
-  // GitHub subscriptions render as ONE "GitHub" group with a row per watched
-  // repo (design); webhooks stay flat rows.
-  const webhookHooks = agentHooks.filter((h) => h.kind !== 'github')
+  // Each code host renders as ONE group with a row per watched repository or
+  // project (design); webhooks stay flat rows.
+  const webhookHooks = agentHooks.filter((h) => h.kind === 'webhook')
   const githubHooks = agentHooks.filter((h) => h.kind === 'github')
+  const gitlabHooks = agentHooks.filter((h) => h.kind === 'gitlab')
   const githubInstallationsKey =
     activeOrg && githubHooks.length > 0 ? (['github-review-installations', activeOrg.id] as const) : null
   const { data: githubInstallationsData } = useSWR<GithubInstallationDto[]>(githubInstallationsKey, () =>
@@ -272,11 +295,12 @@ export default function AgentDetailView() {
     return owners.length === 1 ? owners[0]! : 'GitHub'
   }, [githubHooks])
 
-  const [reviewSettingsDraft, setReviewSettingsDraft] = useState<GithubReviewSettingsDraft | null>(null)
+  const [reviewSettingsDraft, setReviewSettingsDraft] = useState<CodeHostReviewSettingsDraft | null>(null)
   const [reviewSettingsSaving, setReviewSettingsSaving] = useState(false)
   const [reviewSettingsError, setReviewSettingsError] = useState<string | null>(null)
+  const isGitlabReviewDraft = reviewSettingsDraft?.kind === 'gitlab'
   const reviewSettingsHook = reviewSettingsDraft
-    ? githubHooks.find((hook) => hook.id === reviewSettingsDraft.hookId)
+    ? (isGitlabReviewDraft ? gitlabHooks : githubHooks).find((hook) => hook.id === reviewSettingsDraft.hookId)
     : undefined
   const reviewSettingsRepoAccess = effectiveRepoAccess({
     repoId: reviewSettingsHook?.repoId,
@@ -286,19 +310,23 @@ export default function AgentDetailView() {
   })
   const reviewSettingsInstallation = installationForRepo(reviewSettingsHook?.repoFullName, githubInstallations)
   const reviewSettingsNeededAccess = reviewSettingsDraft ? requiredRepoAccess(reviewSettingsDraft) : 'none'
+  // Only the github surface has a config-time blocker; GitLab's writer is the
+  // project bot, which carries no per-agent access tier to satisfy first.
   const reviewSettingsBlocked =
-    !repoAccessSatisfies(reviewSettingsRepoAccess, reviewSettingsNeededAccess) ||
-    (reviewSettingsDraft?.reviewPolicy !== undefined &&
-      reviewSettingsDraft.reviewPolicy !== 'off' &&
-      !hasPullRequestsWritePermission(reviewSettingsInstallation)) ||
-    (reviewSettingsDraft?.reportingMode === 'check' &&
-      (!hasChecksWritePermission(reviewSettingsInstallation) ||
-        !hasPullRequestsReadPermission(reviewSettingsInstallation)))
+    !isGitlabReviewDraft &&
+    (!repoAccessSatisfies(reviewSettingsRepoAccess, reviewSettingsNeededAccess) ||
+      (reviewSettingsDraft?.reviewPolicy !== undefined &&
+        reviewSettingsDraft.reviewPolicy !== 'off' &&
+        !hasPullRequestsWritePermission(reviewSettingsInstallation)) ||
+      (reviewSettingsDraft?.reportingMode === 'check' &&
+        (!hasChecksWritePermission(reviewSettingsInstallation) ||
+          !hasPullRequestsReadPermission(reviewSettingsInstallation))))
 
   const openReviewSettings = (hook: HookDto) => {
     setReviewSettingsError(null)
     setReviewSettingsDraft({
       hookId: hook.id,
+      kind: hook.kind === 'gitlab' ? 'gitlab' : 'github',
       reviewPolicy: hook.reviewPolicy,
       reportingMode: hook.reportingMode
     })
@@ -311,32 +339,46 @@ export default function AgentDetailView() {
   }
 
   const saveReviewSettings = async () => {
-    if (
-      reviewSettingsSaving ||
-      reviewSettingsBlocked ||
-      !reviewSettingsDraft ||
-      !reviewSettingsHook?.agentId ||
-      !reviewSettingsHook.repoFullName
-    ) {
+    if (reviewSettingsSaving || reviewSettingsBlocked || !reviewSettingsDraft || !reviewSettingsHook?.agentId) {
       return
     }
+    const agentId = reviewSettingsHook.agentId
+    const hook = reviewSettingsHook
+    const { reviewPolicy, reportingMode } = reviewSettingsDraft
+    const common = { agentId, name: hook.name, enabled: hook.enabled, events: hook.events }
+    // Each host's PUT re-sends its own whole block; only the two effect axes move.
+    const save =
+      hook.kind === 'gitlab'
+        ? hook.repoId
+          ? () =>
+              updateGitlabHook(hook.id, {
+                ...common,
+                projectId: hook.repoId!,
+                commentFamilies: gitlabCommentFamilies(hook.commentFamilies),
+                mentionOnly: hook.mentionOnly,
+                reviewPolicy,
+                reportingMode
+              })
+          : null
+        : hook.repoFullName
+          ? () =>
+              updateGithubHook(hook.id, {
+                ...common,
+                repoFullName: hook.repoFullName!,
+                commentFamilies: githubCommentFamilies(hook.commentFamilies),
+                labelFilter: hook.labelFilter,
+                mentionOnly: hook.mentionOnly,
+                reviewPolicy,
+                reportingMode,
+                gateMode: 'informational'
+              })
+          : null
+    if (!save) return
     setReviewSettingsSaving(true)
     setReviewSettingsError(null)
     try {
-      const updated = await updateGithubHook(reviewSettingsHook.id, {
-        agentId: reviewSettingsHook.agentId,
-        name: reviewSettingsHook.name,
-        enabled: reviewSettingsHook.enabled,
-        repoFullName: reviewSettingsHook.repoFullName,
-        events: reviewSettingsHook.events,
-        commentFamilies: reviewSettingsHook.commentFamilies,
-        labelFilter: reviewSettingsHook.labelFilter,
-        mentionOnly: reviewSettingsHook.mentionOnly,
-        reviewPolicy: reviewSettingsDraft.reviewPolicy,
-        reportingMode: reviewSettingsDraft.reportingMode,
-        gateMode: 'informational'
-      })
-      void mutateHooks((rows) => rows?.map((row) => (row.id === reviewSettingsHook.id ? updated : row)), {
+      const updated = await save()
+      void mutateHooks((rows) => rows?.map((row) => (row.id === hook.id ? updated : row)), {
         revalidate: false
       })
       setReviewSettingsDraft(null)
@@ -374,6 +416,39 @@ export default function AgentDetailView() {
     } finally {
       setHookBusy(null)
     }
+  }
+  // The GitLab counterpart of saveHookEvents — same two axes, no review knobs
+  // yet (the M6 slice adds those, and the row must not imply them).
+  const saveGitlabHookEvents = async (h: HookDto, families: GlFamily[], mode: GlTriggerMode) => {
+    if (hookBusy || !h.agentId || !h.repoId) return
+    setHookBusy(h.id)
+    try {
+      const updated = await updateGitlabHook(h.id, {
+        agentId: h.agentId,
+        name: h.name,
+        enabled: h.enabled,
+        projectId: h.repoId,
+        events: eventsForGitlabFamilies(families, mode),
+        commentFamilies: commentFamiliesForGitlabFamilies(families, mode),
+        mentionOnly: mode === 'mention',
+        reviewPolicy: h.reviewPolicy,
+        reportingMode: h.reportingMode
+      })
+      void mutateHooks((rows) => rows?.map((r) => (r.id === h.id ? updated : r)), { revalidate: false })
+    } catch {
+      /* controls stay as they were — the next refresh interval reconciles */
+    } finally {
+      setHookBusy(null)
+    }
+  }
+  // Pure helpers decide both edits: the toggle refuses to drop the last family, and the cadence pick refuses a no-op write, which is what leaves an inexpressible stored rule untouched.
+  const toggleGitlabHookFam = async (h: HookDto, fam: GlFamily) => {
+    const edit = gitlabFamilyToggle(h, fam)
+    if (edit) await saveGitlabHookEvents(h, edit.families, edit.mode)
+  }
+  const setGitlabHookCadence = async (h: HookDto, mode: GlTriggerMode) => {
+    const edit = gitlabCadencePick(h, mode)
+    if (edit) await saveGitlabHookEvents(h, edit.families, edit.mode)
   }
   const toggleHookFam = async (h: HookDto, fam: GhFamily) => {
     const fams = GH_FAMILIES.map((f) => f.fam).filter((f) =>
@@ -446,14 +521,14 @@ export default function AgentDetailView() {
   const ws = da.workspace
   // Demo agents have no daemon to read git state from, so the workspace card's
   // live half comes straight from their static mock workspace instead.
-  const mockWorkspaceHeader: WorkspaceHeaderInfo =
-    ws.mode === 'github'
-      ? {
-          status: workspaceStatus(ws),
-          ...(ws.commitMsg ? { commit: { sha: ws.commit, time: ws.commitTime, title: ws.commitMsg } } : {}),
-          repoUrl: ws.repoUrl ?? `https://github.com/${ws.repo}`
-        }
-      : { status: workspaceStatus(ws) }
+  const mockWorkspaceHeader: WorkspaceHeaderInfo = isGitWorkspace(ws)
+    ? {
+        status: workspaceStatus(ws),
+        ...(ws.commitMsg ? { commit: { sha: ws.commit, time: ws.commitTime, title: ws.commitMsg } } : {}),
+        repoUrl: ws.repoUrl ?? `https://${ws.mode === 'gitlab' ? 'gitlab.com' : 'github.com'}/${ws.repo}`,
+        remoteLabel: ws.mode === 'gitlab' ? 'GitLab' : 'GitHub'
+      }
+    : { status: workspaceStatus(ws) }
   // Counts walk the whole mock tree (files are nested under folder children).
   const allFiles = flattenFiles(ws.files)
   const changedFiles = allFiles.filter((f) => f.tag).length
@@ -475,11 +550,7 @@ export default function AgentDetailView() {
   // Slack" card / the funnel mint CP-side rows whose delivery converges at
   // placement; the modal + server gate what genuinely needs a daemon.
   const integrationPlatformAvailable = (key: Platform) =>
-    key === 'webhook' ||
-    key === 'github' ||
-    daemonsLoading ||
-    !owningDaemon ||
-    owningDaemon.caps.platforms.includes(key)
+    isCoreTriggerKind(key) || daemonsLoading || !owningDaemon || owningDaemon.caps.platforms.includes(key)
   // Effective (intersection) peer sets for the read-only Access summary.
   const inboundEffectiveIds = agentReach.incomingByAgentId.get(da.id) ?? []
   const outboundEffectiveIds = agentReach.outgoingByAgentId.get(da.id) ?? []
@@ -1329,6 +1400,45 @@ export default function AgentDetailView() {
                       </button>
                     </div>
                   ))}
+                  {gitlabHooks.map((h, i) => (
+                    <div
+                      key={h.id}
+                      className={`flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3 ${
+                        agentInts.length + webhookHooks.length + githubHooks.length + i > 0 ? 'border-t' : ''
+                      }`}
+                    >
+                      <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
+                        <span className="flex h-[18px] w-[18px] items-center justify-center">
+                          <PlatformMark platform="gitlab" fillPct={100} />
+                        </span>
+                      </span>
+                      <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                        <span className="mono min-w-0 truncate text-[13px] font-semibold">
+                          {h.repoFullName ?? h.name}
+                        </span>
+                        <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                          {gitlabRowFamilies(h.events)
+                            .filter((f) => gitlabFamCovered(h.events, f.fam))
+                            .map((f) => f.pill)
+                            .join(' · ') || 'no events'}
+                          {` · ${GL_TRIGGER_PILL[gitlabTriggerModeOf(h)]}`}
+                        </span>
+                        {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
+                          <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                            {reviewPolicyLabel(h.reviewPolicy)} review
+                            {h.reportingMode === 'check' ? ' · run note' : ''}
+                          </span>
+                        )}
+                      </span>
+                      <button
+                        className="iconbtn flex-none"
+                        title="MR review and run note settings"
+                        onClick={() => openReviewSettings(h)}
+                      >
+                        <Icon name="settings-2" size={15} />
+                      </button>
+                    </div>
+                  ))}
                 </div>
                 <div className="hidden flex-col gap-3 px-4 py-[14px] desktop:flex">
                   {agentInts.map((g, i) => (
@@ -1489,33 +1599,20 @@ export default function AgentDetailView() {
                                   )
                                 })}
                               </div>
-                              {/* Trigger bar — same ⚡ + segmented control as the IM
-                                    channel rows, mention last, hover copy per segment. */}
-                              <span className="inline-flex flex-none items-center gap-[7px]">
-                                <span title="Trigger — when this agent runs" className="flex-none leading-none">
-                                  <Icon name="zap" size={14} color="var(--text-tertiary)" />
-                                </span>
-                                <div className="inline-flex gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[2px]">
-                                  {GH_TRIGGER_MODES.map((mode) => {
-                                    const active = triggerModeOf(h) === mode
-                                    return (
-                                      <button
-                                        key={mode}
-                                        onClick={() => void setHookCadence(h, mode)}
-                                        disabled={hookBusy === h.id}
-                                        title={githubTriggerTooltip(mode, da.name)}
-                                        className={`cursor-pointer rounded-[7px] border-0 px-3 py-[5px] font-sans text-[12.5px] leading-normal ${
-                                          active
-                                            ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
-                                            : 'bg-transparent font-normal text-(--text-tertiary)'
-                                        } ${hookBusy === h.id ? 'opacity-60' : ''}`}
-                                      >
-                                        {GH_TRIGGER_PILL[mode]}
-                                      </button>
-                                    )
-                                  })}
-                                </div>
-                              </span>
+                              {/* Trigger — the same ⚡ dropdown the IM channel rows carry, mention last. */}
+                              <TriggerSelect
+                                className="flex-none"
+                                options={GH_TRIGGER_MODES.map((mode) => ({
+                                  value: mode,
+                                  label: GH_TRIGGER_PILL[mode],
+                                  hint: githubTriggerTooltip(mode, da.name)
+                                }))}
+                                value={triggerModeOf(h)}
+                                onChange={(mode) => void setHookCadence(h, mode)}
+                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name}`}
+                                hint="Trigger — when this agent runs"
+                                busy={hookBusy === h.id}
+                              />
                               <span className="inline-flex flex-none gap-[2px]">
                                 <button
                                   className="iconbtn h-[26px] w-[26px] flex-none"
@@ -1559,6 +1656,127 @@ export default function AgentDetailView() {
                           <Icon name="info" size={12} className="flex-none" />
                           Pick which repos to watch and which events run the agent — it replies on the same PR, issue or
                           commit thread.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {/* GitLab group — the same one-card shape as GitHub, minus the
+                      review and Check controls the M6 slice has not landed yet. */}
+                  {gitlabHooks.length > 0 && (
+                    <div className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
+                      <div className="flex items-center gap-3 px-[14px] py-3">
+                        <span className="flex h-[34px] w-[34px] flex-none items-center justify-center">
+                          <span className="flex h-[26px] w-[26px] items-center justify-center">
+                            <GitlabMark fillPct={100} />
+                          </span>
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-sans text-[13.5px] font-semibold leading-normal">GitLab</span>
+                            <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
+                              <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
+                              connected
+                            </span>
+                          </div>
+                          <div className="mono mt-[3px] text-[11.5px] font-normal text-(--text-tertiary)">
+                            gitlab.com
+                          </div>
+                        </div>
+                      </div>
+                      <div className="border-t border-(--border-subtle) bg-(--surface-app)">
+                        {gitlabHooks.map((h) => (
+                          <div key={h.id} className="border-b border-(--border-subtle)">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-[6px] px-[14px] py-[9px]">
+                              <Icon name="folder-git-2" size={14} color="var(--text-tertiary)" className="flex-none" />
+                              <span className="mono min-w-[90px] flex-1 truncate text-[12px] text-(--text-primary)">
+                                {h.repoFullName ?? h.name}
+                              </span>
+                              {gitlabHookNeedsNormalization(h) && (
+                                <span
+                                  className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
+                                  title="The stored subscription matches no trigger exactly — the nearest one is shown. Picking a trigger replaces it."
+                                >
+                                  custom rule
+                                </span>
+                              )}
+                              <div className="ml-auto inline-flex flex-none gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]">
+                                {/* Pushes appear only on a hook that already listens to them — visible and removable, never addable. */}
+                                {gitlabRowFamilies(h.events).map((f) => {
+                                  const on = gitlabFamCovered(h.events, f.fam)
+                                  return (
+                                    <button
+                                      key={f.fam}
+                                      onClick={() => void toggleGitlabHookFam(h, f.fam)}
+                                      disabled={hookBusy === h.id}
+                                      title={on ? `Stop listening for ${f.label}` : `Listen for ${f.label}`}
+                                      className={`cursor-pointer rounded-[7px] border-0 px-[9px] py-[3px] font-sans text-[11.5px] leading-normal ${
+                                        on
+                                          ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
+                                          : 'bg-transparent font-normal text-(--text-tertiary)'
+                                      } ${hookBusy === h.id ? 'opacity-60' : ''}`}
+                                    >
+                                      {f.pill}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                              {/* Trigger — the same ⚡ dropdown the GitHub rows carry. */}
+                              <TriggerSelect
+                                className="flex-none"
+                                options={GL_TRIGGER_MODES.map((mode) => ({
+                                  value: mode,
+                                  label: GL_TRIGGER_PILL[mode],
+                                  hint: gitlabTriggerTooltip(mode, da.name)
+                                }))}
+                                value={gitlabTriggerModeOf(h)}
+                                onChange={(mode) => void setGitlabHookCadence(h, mode)}
+                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name}`}
+                                hint="Trigger — when this agent runs"
+                                busy={hookBusy === h.id}
+                              />
+                              <span className="inline-flex flex-none gap-[2px]">
+                                <button
+                                  className="iconbtn h-[26px] w-[26px] flex-none"
+                                  title="MR review and run note settings"
+                                  onClick={() => openReviewSettings(h)}
+                                >
+                                  <Icon name="settings-2" size={13} />
+                                </button>
+                                <button
+                                  className="iconbtn h-[26px] w-[26px] flex-none"
+                                  title="Recent deliveries"
+                                  onClick={() => setHookRunsFor(hookRunsFor === h.id ? null : h.id)}
+                                >
+                                  <Icon name={hookRunsFor === h.id ? 'chevron-up' : 'history'} size={13} />
+                                </button>
+                                <button
+                                  className="iconbtn h-[26px] w-[26px] flex-none"
+                                  title="Remove project"
+                                  onClick={() => openModal('deleteHook', h)}
+                                >
+                                  <Icon name="x" size={13} />
+                                </button>
+                              </span>
+                            </div>
+                            {hookRunsFor === h.id && (
+                              <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
+                            )}
+                          </div>
+                        ))}
+                        <div className="px-[14px] py-2">
+                          {/* Straight to the GitLab pane — this button adds a project, not a bot. */}
+                          <button
+                            className="lnk text-[12px]"
+                            onClick={() => openModal('integration', da, { platform: 'gitlab' })}
+                          >
+                            <Icon name="plus" size={13} />
+                            Add project
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-[7px] px-[14px] pt-0 pb-2 font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                          <Icon name="info" size={12} className="flex-none" />
+                          Pick which projects to watch and which events run the agent — it replies on the same issue,
+                          merge request thread.
                         </div>
                       </div>
                     </div>
@@ -1664,13 +1882,13 @@ export default function AgentDetailView() {
               {...(selectedWorktreeSessionId ? { sessionId: selectedWorktreeSessionId } : {})}
               {...(selectedRepo ? { repo: selectedRepo } : {})}
               repoOptions={workspaceRepoOptions}
-              {...(da.workspace.mode === 'github' ? { primaryRepoLabel: da.workspace.repo } : {})}
+              {...(isGitWorkspace(da.workspace) ? { primaryRepoLabel: da.workspace.repo } : {})}
               onRepoChange={selectRepoScope}
               workdir={da.workdir}
               canEdit={selectedWorktreeSessionId === null && da.workspace.mode === 'scratch' && da.canEdit}
               sandboxed={isPoolPlacementKind(da.placementKind)}
               renderWorkspacePicker={(primaryBranch) =>
-                da.workspace.mode === 'github' ? (
+                isGitWorkspace(da.workspace) ? (
                   <WorkspaceScopePicker
                     primaryBranch={primaryBranch ?? da.workspace.branch}
                     sessions={workspaceSessions}
@@ -1700,7 +1918,7 @@ export default function AgentDetailView() {
             <FileBrowserShell
               title="Files"
               headerEnd={
-                ws.mode === 'github' ? (
+                isGitWorkspace(ws) ? (
                   <div className="flex w-1/4 min-w-0 flex-none items-center gap-2 max-desktop:w-[min(210px,56vw)]">
                     <WorkspaceScopePicker
                       primaryBranch={ws.branch}
@@ -1817,22 +2035,22 @@ export default function AgentDetailView() {
           <div
             role="dialog"
             aria-modal="true"
-            aria-labelledby="github-review-settings-title"
+            aria-labelledby="code-host-review-settings-title"
             onClick={(event) => event.stopPropagation()}
             className="flex max-h-[88vh] w-full flex-col rounded-t-xl bg-(--surface-card) shadow-[0_-8px_32px_rgba(0,0,0,.18)] desktop:max-w-[620px] desktop:rounded-xl desktop:shadow-(--shadow-xl)"
           >
             <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-[13px] desktop:px-5">
               <span className="flex h-8 w-8 flex-none items-center justify-center rounded-md bg-(--surface-inverse)">
                 <span className="flex h-[17px] w-[17px] items-center justify-center">
-                  <GithubMark color="#fff" />
+                  {isGitlabReviewDraft ? <GitlabMark fillPct={100} /> : <GithubMark color="#fff" />}
                 </span>
               </span>
               <div className="min-w-0 flex-1">
                 <div
-                  id="github-review-settings-title"
+                  id="code-host-review-settings-title"
                   className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary)"
                 >
-                  PR review &amp; Checks
+                  {isGitlabReviewDraft ? 'MR review & run note' : 'PR review & Checks'}
                 </div>
                 <div className="mono mt-[2px] truncate text-[11.5px] text-(--text-tertiary)">
                   {reviewSettingsHook.repoFullName ?? reviewSettingsHook.name}
@@ -1843,20 +2061,35 @@ export default function AgentDetailView() {
               </button>
             </div>
             <div className="overflow-y-auto px-4 py-4 desktop:px-5">
-              <GithubReviewSettings
-                value={reviewSettingsDraft}
-                onReviewPolicyChange={(reviewPolicy) => {
-                  setReviewSettingsError(null)
-                  setReviewSettingsDraft((draft) => (draft ? { ...draft, reviewPolicy } : draft))
-                }}
-                onReportingModeChange={(reportingMode) => {
-                  setReviewSettingsError(null)
-                  setReviewSettingsDraft((draft) => (draft ? { ...draft, reportingMode } : draft))
-                }}
-                repoAccess={reviewSettingsRepoAccess}
-                installation={reviewSettingsInstallation}
-                defaultExpanded
-              />
+              {isGitlabReviewDraft ? (
+                <GitlabReviewSettings
+                  value={reviewSettingsDraft}
+                  onReviewPolicyChange={(reviewPolicy) => {
+                    setReviewSettingsError(null)
+                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reviewPolicy } : draft))
+                  }}
+                  onReportingModeChange={(reportingMode) => {
+                    setReviewSettingsError(null)
+                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reportingMode } : draft))
+                  }}
+                  defaultExpanded
+                />
+              ) : (
+                <GithubReviewSettings
+                  value={reviewSettingsDraft}
+                  onReviewPolicyChange={(reviewPolicy) => {
+                    setReviewSettingsError(null)
+                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reviewPolicy } : draft))
+                  }}
+                  onReportingModeChange={(reportingMode) => {
+                    setReviewSettingsError(null)
+                    setReviewSettingsDraft((draft) => (draft ? { ...draft, reportingMode } : draft))
+                  }}
+                  repoAccess={reviewSettingsRepoAccess}
+                  installation={reviewSettingsInstallation}
+                  defaultExpanded
+                />
+              )}
               {reviewSettingsError && (
                 <div className="mt-3 flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
                   <Icon name="triangle-alert" size={14} className="mt-[2px] flex-none" />

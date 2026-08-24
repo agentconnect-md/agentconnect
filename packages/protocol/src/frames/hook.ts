@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { CodeHostExternalId, CodeHostProviderString, HOOK_KINDS } from '../code-host.js'
 
 /** Decimal wire form for Prisma/GitHub bigint values. */
 export const HookBigIntString = z.string().regex(/^(?:0|[1-9]\d*)$/)
@@ -89,6 +90,39 @@ export const GithubHookMetadata = z
   })
 export type GithubHookMetadata = z.infer<typeof GithubHookMetadata>
 
+/** One GitLab hook subject: issue/MR by IID, or a standalone push ref (gitlab-com-integration.md §17.2). */
+export const GitlabHookTarget = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('issue'), iid: z.number().int().positive() }),
+  z.object({
+    kind: z.literal('merge_request'),
+    iid: z.number().int().positive(),
+    // Source-project + revision facts, present when the verified payload carries them.
+    sourceProjectId: HookBigIntString.optional(),
+    headSha: z.string().min(1).optional(),
+    baseSha: z.string().min(1).optional(),
+    isDraft: z.boolean().optional(),
+    // Relay-derived trusted routing fact (reviewer request / authorized mention);
+    // authored text stays off the CP wire, exactly like explicitReviewRequest above.
+    explicitReviewRequest: z.boolean().optional()
+  }),
+  z.object({ kind: z.literal('push'), ref: z.string().min(1) })
+])
+export type GitlabHookTarget = z.infer<typeof GitlabHookTarget>
+
+/** Signature-verified, body-free GitLab subject metadata — the trusted normalization
+ *  discriminator the daemon recomputes session keys from; never inferred from model-visible text. */
+export const GitlabHookMetadata = z.object({
+  projectId: HookBigIntString,
+  projectPath: z.string().min(1), // current namespaced path — display only, never a match key
+  webhookId: HookBigIntString.optional(),
+  // The instance this delivery came from, copied from the compiled rule and never read
+  // off the payload (§24.4). The turn-time fence: a delivery whose host disagrees with the
+  // session's spec-carried host is refused, never re-targeted. Absent means GitLab.com.
+  host: z.string().optional(),
+  target: GitlabHookTarget
+})
+export type GitlabHookMetadata = z.infer<typeof GitlabHookMetadata>
+
 export const HookReviewEvent = z.enum(['COMMENT', 'REQUEST_CHANGES', 'APPROVE'])
 export type HookReviewEvent = z.infer<typeof HookReviewEvent>
 
@@ -129,6 +163,15 @@ export const GithubPublishedComment = z.object({
 })
 export type GithubPublishedComment = z.infer<typeof GithubPublishedComment>
 
+/** Provider-neutral counterpart of GithubPublishedComment: the one published output's
+ *  identity (e.g. a GitLab note id). `kind` is provider vocabulary, open by design. */
+export const PublishedHookOutput = z.object({
+  provider: CodeHostProviderString,
+  kind: z.string().min(1), // e.g. 'note'
+  externalId: CodeHostExternalId
+})
+export type PublishedHookOutput = z.infer<typeof PublishedHookOutput>
+
 /**
  * Hook (inbound-webhook trigger) frames — webhook-triggers-and-github-events.md.
  *
@@ -151,7 +194,7 @@ export type GithubPublishedComment = z.infer<typeof GithubPublishedComment>
  * (P2) are untrusted third-party content the daemon fences in the prompt.
  */
 export const HookContext = z.object({
-  source: z.enum(['webhook', 'github']),
+  source: z.enum(HOOK_KINDS),
   // ── github (P2) ──
   event: z.string().optional(), // 'issues' | 'pull_request' | 'issue_comment'
   action: z.string().optional(), // 'opened' | 'synchronize' | 'created' | …
@@ -207,16 +250,19 @@ export const HookReport = z
     ...OptionalHookConfigSnapshot.shape,
     event: z.string().min(1).optional(), // 'pull_request:synchronize', etc.
     github: GithubHookMetadata.optional(),
+    gitlab: GitlabHookMetadata.optional(),
     status: z.enum(['success', 'failed']),
     durationMs: z.number().int().nonnegative().optional(), // dispatch → turn end
-    sessionId: z.string().optional(), // ACP session the run prompted (console deep-link)
+    sessionId: z.string().optional(), // the session the run prompted, by its outward id (§1.1)
     reason: z.string().optional(), // short failure text (status "failed")
     // A submitted result is repeated here as recovery if the immediate
     // github/review-result request was lost. No review/comment body crosses CP.
     reviewAttemptId: z.string().uuid().optional(),
     reviewResult: HookReviewResult.optional(),
     // Exact public fallback location. The comment body remains daemon-owned.
-    publishedComment: GithubPublishedComment.optional()
+    publishedComment: GithubPublishedComment.optional(),
+    // Provider-neutral counterpart (one of the two, never both).
+    publishedOutput: PublishedHookOutput.optional()
   })
   .superRefine((report, ctx) => {
     if ((report.reviewAttemptId === undefined) !== (report.reviewResult === undefined)) {
@@ -226,11 +272,25 @@ export const HookReport = z
         message: 'reviewAttemptId and reviewResult must be reported together'
       })
     }
-    if (report.publishedComment && report.reviewResult?.state === 'submitted') {
+    if ((report.publishedComment || report.publishedOutput) && report.reviewResult?.state === 'submitted') {
       ctx.addIssue({
         code: 'custom',
-        path: ['publishedComment'],
+        path: [report.publishedComment ? 'publishedComment' : 'publishedOutput'],
         message: 'a submitted formal review and fallback comment are mutually exclusive'
+      })
+    }
+    if (report.publishedComment && report.publishedOutput) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['publishedOutput'],
+        message: 'publishedComment and publishedOutput are mutually exclusive'
+      })
+    }
+    if (report.github && report.gitlab) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['gitlab'],
+        message: 'github and gitlab metadata are mutually exclusive'
       })
     }
   })
@@ -242,15 +302,28 @@ export type HookReport = z.infer<typeof HookReport>
  * attached the authoritative revision to the accepted HookRun and, for R2a,
  * advanced its informational projection to in_progress.
  */
-export const HookStart = z.object({
-  hookId: z.string().uuid(),
-  agentId: z.string().uuid(),
-  deliveryKey: z.string().min(1),
-  sessionId: z.string().min(1).optional(), // ACP session already created for this turn (rolling-compatible)
-  event: z.string().min(1).optional(),
-  github: GithubHookMetadata,
-  ...HookConfigSnapshot.shape
-})
+export const HookStart = z
+  .object({
+    hookId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    deliveryKey: z.string().min(1),
+    sessionId: z.string().min(1).optional(), // the turn's session by its outward id (§1.1); rolling-compatible
+    event: z.string().min(1).optional(),
+    // Provider one-of: exactly one member carries the trusted subject metadata.
+    // `github` was required pre-GitLab, so every existing sender stays valid.
+    github: GithubHookMetadata.optional(),
+    gitlab: GitlabHookMetadata.optional(),
+    ...HookConfigSnapshot.shape
+  })
+  .superRefine((start, ctx) => {
+    if ((start.github === undefined) === (start.gitlab === undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['github'],
+        message: 'exactly one provider metadata member is required'
+      })
+    }
+  })
 export type HookStart = z.infer<typeof HookStart>
 
 export const HookStartOk = z.object({ accepted: z.literal(true) })

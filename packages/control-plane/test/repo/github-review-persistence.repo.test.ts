@@ -364,6 +364,7 @@ describe('R1/R2a persistence foundation', () => {
     })
     const duplicate = await grants.create({
       agentId: legacyAgent,
+      provider: 'github',
       repoId,
       repoFullName: 'acme/infra',
       access: 'write'
@@ -404,7 +405,7 @@ describe('R1/R2a persistence foundation', () => {
         installationId: 'legacy-installation'
       })
       await Promise.allSettled([
-        grants.create({ agentId, repoId, repoFullName: 'acme/infra', access: 'write' }),
+        grants.create({ agentId, provider: 'github', repoId, repoFullName: 'acme/infra', access: 'write' }),
         agents.setWorkspaceRepoId(agentId, repoId)
       ])
       expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
@@ -425,7 +426,7 @@ describe('R1/R2a persistence foundation', () => {
       installationId: 'workspace-installation',
       gitAccess: 'write'
     })
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: repoId } })
+    await prisma.agent.update({ where: { id: agentId }, data: { workspaceMode: 'github', workspaceRepoId: repoId } })
     const original = await agents.get(OrgId(DEFAULT_ORG_ID), agentId)
     if (!original || original.workspace.mode !== 'github') throw new Error('expected GitHub workspace fixture')
 
@@ -700,7 +701,7 @@ describe('R1/R2a persistence foundation', () => {
     const repoId = 777n
     const reportSha = 'c'.repeat(40)
     await seedAgent(prisma, agentId, { daemonId: D1, gitAccess: 'write', name: 'concurrent-agent' })
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: repoId } })
+    await prisma.agent.update({ where: { id: agentId }, data: { workspaceMode: 'github', workspaceRepoId: repoId } })
     const hook = await repo.upsert({
       hookId,
       orgId: OrgId(DEFAULT_ORG_ID),
@@ -1608,8 +1609,21 @@ describe('R1/R2a persistence foundation', () => {
     await prisma.agentRepoAuthorization.create({
       data: {
         agentId,
+        provider: 'github',
         repoId: 44n,
         repoFullName: 'acme/old-name',
+        access: 'read'
+      }
+    })
+    // The SAME agent may hold GitLab project 44 — the hosts number their
+    // repositories independently, so the unique key permits both. A GitHub rename
+    // must not reach across and rewrite this one's path (§8.1).
+    await prisma.agentRepoAuthorization.create({
+      data: {
+        agentId,
+        provider: 'gitlab',
+        repoId: 44n,
+        repoFullName: 'example-group/example-project',
         access: 'read'
       }
     })
@@ -1681,10 +1695,17 @@ describe('R1/R2a persistence foundation', () => {
     )
     expect(
       await prisma.agentRepoAuthorization.findUniqueOrThrow({
-        where: { agentId_repoId: { agentId, repoId: 44n } },
+        where: { agentId_provider_repoId: { agentId, provider: 'github', repoId: 44n } },
         select: { repoFullName: true }
       })
     ).toEqual({ repoFullName: 'acme/new-name' })
+    // The same-numbered GitLab grant kept its own path and its owner was counted once.
+    expect(
+      await prisma.agentRepoAuthorization.findUniqueOrThrow({
+        where: { agentId_provider_repoId: { agentId, provider: 'gitlab', repoId: 44n } },
+        select: { repoFullName: true }
+      })
+    ).toEqual({ repoFullName: 'example-group/example-project' })
     expect(await agents.get(OrgId(DEFAULT_ORG_ID), workspaceAgentId)).toMatchObject({
       workspace: { mode: 'github', gitRepo: 'https://github.com/acme/new-name' },
       workspaceRepoId: 44n,
@@ -1756,7 +1777,10 @@ describe('R1/R2a persistence foundation', () => {
     await seedDaemon(prisma, D1)
     const agentId = AgentId(randomUUID())
     await seedAgent(prisma, agentId, { daemonId: D1, name: 'review-agent' })
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: 22n, gitAccess: 'write' } })
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { workspaceMode: 'github', workspaceRepoId: 22n, gitAccess: 'write' }
+    })
     const repo = new PgHookRepo(prisma)
     const hookId = HookId(randomUUID())
     const hook = await repo.upsert({
@@ -2197,7 +2221,10 @@ describe('R1/R2a persistence foundation', () => {
     await seedDaemon(prisma, D1)
     const agentId = AgentId(randomUUID())
     await seedAgent(prisma, agentId, { daemonId: D1, name: 'review-agent' })
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: 24n, gitAccess: 'write' } })
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { workspaceMode: 'github', workspaceRepoId: 24n, gitAccess: 'write' }
+    })
     const repo = new PgHookRepo(prisma)
     const hookId = HookId(randomUUID())
     const hook = await repo.upsert({
@@ -2351,7 +2378,7 @@ describe('R1/R2a persistence foundation', () => {
     await seedAgent(prisma, agentId, { daemonId: D1, name: 'quota-agent' })
     await prisma.agent.update({
       where: { id: agentId },
-      data: { status: 'active', workspaceRepoId: 23n, gitAccess: 'write' }
+      data: { status: 'active', workspaceMode: 'github', workspaceRepoId: 23n, gitAccess: 'write' }
     })
     const repo = new PgHookRepo(prisma)
     const hookId = HookId(randomUUID())

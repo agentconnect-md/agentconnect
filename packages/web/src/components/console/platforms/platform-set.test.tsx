@@ -9,6 +9,7 @@ import {
   INTEGRATION_BLURB,
   PLATFORMS,
   botMatchesPlatformTab,
+  isCoreTriggerKind,
   platformTiles
 } from './host-projections'
 import { PLATFORM_MARK_IDS, platformMark } from './marks'
@@ -32,9 +33,9 @@ import { botCardCopy, platformRegistry } from './registry'
  */
 const ALIASES = ['lark']
 
-/** Not a module and never will be: picking either mints an inbound trigger, not
- *  a bot identity (contract, registry doc). The picker still offers them. */
-const CORE_TRIGGER_KINDS = ['webhook', 'github']
+/** Not modules and never will be: picking one mints an inbound trigger, not a
+ *  bot identity (contract, registry doc). The picker still offers them. */
+const CORE_TRIGGER_KINDS = ['webhook', 'github', 'gitlab']
 
 describe('platform set', () => {
   it('gives every registered module a mark and a label', () => {
@@ -53,7 +54,7 @@ describe('platform set', () => {
   it('keeps the prose name and the picker label distinct only where they must be', () => {
     // One platform id, two clouds: prose picks the international brand, the
     // picker names both so a Feishu user recognizes their own tile.
-    expect(platformLabel('feishu')).toEqual({ name: 'Lark', picker: 'Lark / Feishu' })
+    expect(platformLabel('feishu')).toEqual({ name: 'Lark', picker: 'Lark/Feishu' })
     expect(platformLabel('lark')).toEqual(platformLabel('feishu'))
     for (const id of ['slack', 'telegram', 'discord']) {
       const label = platformLabel(id)!
@@ -61,9 +62,9 @@ describe('platform set', () => {
     }
   })
 
-  it('offers exactly the registered platforms as picker tiles, plus the two core triggers', () => {
-    // The tile SET is the registry's, in registry order; the two trigger kinds
-    // are appended by the chassis because they are not modules.
+  it('offers exactly the registered platforms as picker tiles, plus the core triggers', () => {
+    // The tile SET is the registry's, in registry order; the trigger kinds are
+    // appended by the chassis because they are not modules.
     expect(BOT_PLATFORMS.map((tile) => tile.key)).toEqual([...platformRegistry.ids()])
     expect(PLATFORMS.map((tile) => tile.key)).toEqual([...platformRegistry.ids(), ...CORE_TRIGGER_KINDS])
   })
@@ -78,6 +79,16 @@ describe('platform set', () => {
       expect(INTEGRATION_BLURB[tile.key], tile.key).toBeTruthy()
     }
     expect(Object.keys(INTEGRATION_BLURB).sort()).toEqual([...platformRegistry.ids(), ...CORE_TRIGGER_KINDS].sort())
+  })
+
+  it('treats exactly the non-module choices as relay-backed trigger kinds', () => {
+    // Both pickers gate a chat platform on the owning daemon's advertised adapters
+    // and must NEVER gate a trigger kind that way — GitLab's empty-state tile
+    // rendered disabled for a normally placed agent while this set named only two.
+    expect(PLATFORMS.map((tile) => tile.key).filter(isCoreTriggerKind)).toEqual(CORE_TRIGGER_KINDS)
+    expect(isCoreTriggerKind('gitlab')).toBe(true)
+    for (const id of platformRegistry.ids()) expect(isCoreTriggerKind(id), id).toBe(false)
+    expect(isCoreTriggerKind('zulip')).toBe(false)
   })
 
   it('passes an id no module claims straight through the tile projection', () => {

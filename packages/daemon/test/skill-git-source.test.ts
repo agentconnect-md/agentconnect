@@ -72,7 +72,7 @@ function tarGzip(entries: TarFixtureEntry[]): Buffer {
 interface FetchCall {
   url: string
   authorization: string | null
-  redirect: RequestRedirect | undefined
+  redirect: RequestInit['redirect']
 }
 
 function offlineGitHubFetch(opts: {
@@ -179,7 +179,7 @@ describe('Git skill source policy boundary', () => {
 
   it('rejects disallowed hosts, private addresses, and custom ports', () => {
     for (const source of [
-      'https://gitlab.com/acme/skills.git',
+      'https://code.example.test/acme/skills.git',
       'https://127.0.0.1/acme/skills.git',
       'https://github.com:8443/acme/skills.git',
       'ssh://git@github.com:2222/acme/skills.git'
@@ -189,7 +189,13 @@ describe('Git skill source policy boundary', () => {
   })
 
   it('honors an operator-authorized exact non-default origin', () => {
-    configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS, 'https://gitlab.com'])
+    configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS, 'https://git.example.test'])
+    expect(parseGitSkillSource(entry('https://git.example.test/acme/skills.git')).cloneUrl).toBe(
+      'https://git.example.test/acme/skills.git'
+    )
+    // §13.2: gitlab.com is a DEFAULT origin now — skill sources may name it
+    // without operator opt-in (credentialed acquisition stays GitHub-only).
+    configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS])
     expect(parseGitSkillSource(entry('https://gitlab.com/acme/skills.git')).cloneUrl).toBe(
       'https://gitlab.com/acme/skills.git'
     )
@@ -200,12 +206,22 @@ describe('Git skill source policy boundary', () => {
     const destination = join(root, 'acquired')
     try {
       await expect(
-        acquireGitSkillSource(entry('https://gitlab.com/acme/skills.git'), {
+        acquireGitSkillSource(entry('https://code.example.test/acme/skills.git'), {
           destination,
           agentId: 'agent-1',
           useGitCredential: true
         })
       ).rejects.toThrow(/origin is not allowed/i)
+      expect(existsSync(destination)).toBe(false)
+      // A default-allowed gitlab origin still refuses the CREDENTIALED path,
+      // which remains canonical-GitHub-only, before any directory or Git work.
+      await expect(
+        acquireGitSkillSource(entry('https://gitlab.com/acme/skills.git'), {
+          destination,
+          agentId: 'agent-1',
+          useGitCredential: true
+        })
+      ).rejects.toThrow(/canonical GitHub/i)
       expect(existsSync(destination)).toBe(false)
     } finally {
       await rm(root, { recursive: true, force: true })

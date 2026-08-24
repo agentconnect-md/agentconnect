@@ -20,12 +20,15 @@ import {
   type Agent,
   type Session
 } from '@/lib/data'
-import { fmtDate, memberDisplayName, type MemberDto, type SessionListFilters } from '@/lib/api'
+import { fmtDate, memberDisplayName, type HookKind, type MemberDto, type SessionListFilters } from '@/lib/api'
 import {
   githubRepoIdFromSessionTriggerFilter,
   sessionSenderLabel,
   sessionTriggerFilterValue,
-  sessionTriggerKind
+  sessionTriggerKind,
+  HOOK_KIND_GROUP_LABEL,
+  HOOK_TRIGGER_KINDS,
+  type SessionTriggerKind
 } from '@/lib/session-trigger'
 import { useConsoleData } from '@/lib/data-context'
 import { useSessionFacets } from '@/lib/use-session-facets'
@@ -34,7 +37,7 @@ import { isFlatSessionView, sessionListSearchParams } from '@/lib/session-list-v
 import { useProfile } from '@/lib/profile'
 import { usePlayground } from '@/components/console/PlaygroundProvider'
 import { useMobileFilterSlot } from '@/components/console/Shell'
-import { AgentIconView, GithubMark, LoadingState, PlatformMark } from '@/components/marks'
+import { AgentIconView, GithubMark, GitlabMark, LoadingState, PlatformMark } from '@/components/marks'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { Avatar, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
@@ -280,26 +283,25 @@ export default function SessionsView() {
   }
   // Triggerers are keyed by raw triggeredBy id so same-named entries stay distinct.
   // Agent ids resolve only through the caller-visible agent roster; hook sessions use
-  // their CP-enriched source kind to keep GitHub distinct from generic webhooks.
+  // their CP-enriched source kind to keep each code host distinct from generic webhooks.
   const triggerAgentSet = new Map<string, Agent>()
   const peopleSet = new Map<string, { label: string; platform: string; member?: MemberDto }>()
-  const githubSet = new Map<string, string>()
-  const webhookSet = new Map<string, string>()
+  // One bucket per hook kind, keyed by the shared vocabulary rather than by hand — a
+  // hook trigger can no longer land in a bucket nobody collects, which is how GitLab
+  // sessions used to disappear from this menu instead of getting their own group.
+  const hookSets = new Map<HookKind, Map<string, string>>(HOOK_TRIGGER_KINDS.map((kind) => [kind, new Map()]))
   const cronSet = new Map<string, string>()
   for (const [triggeredBy, source] of triggerSources) {
     const label = sessionSenderLabel(triggeredBy, source.name, agentNameById, memberNameByIdentity, me)
-    switch (sessionTriggerKind({ triggeredBy, hookKind: source.hookKind }, agentById)) {
+    const kind = sessionTriggerKind({ triggeredBy, hookKind: source.hookKind }, agentById)
+    switch (kind) {
+      case null:
+        break
       case 'schedule': {
         const id = triggeredBy.slice(5)
         cronSet.set(triggeredBy, cronById.get(id)?.name?.trim() || `Schedule ${id.slice(0, 8)}`)
         break
       }
-      case 'github':
-        if (!githubSet.has(source.filterValue)) githubSet.set(source.filterValue, label)
-        break
-      case 'webhook':
-        webhookSet.set(triggeredBy, label)
-        break
       case 'agent': {
         const agent = agentById.get(triggeredBy)
         if (agent) triggerAgentSet.set(triggeredBy, agent)
@@ -311,6 +313,15 @@ export default function SessionsView() {
           platform: source.platform,
           member: memberByIdentity.get(triggeredBy)
         })
+        break
+      // Everything left is a hook kind — the arms above narrow it, so a new NON-hook
+      // trigger kind fails to compile here rather than being silently dropped.
+      default: {
+        // GitHub subscriptions collapse per repository through `filterValue`; every
+        // other kind, GitLab included, filters by its own raw trigger value.
+        const bucket = hookSets.get(kind)!
+        if (!bucket.has(source.filterValue)) bucket.set(source.filterValue, label)
+      }
     }
   }
   const catFace = (name: string) => <Icon name={name} size={15} color="var(--text-tertiary)" />
@@ -415,37 +426,41 @@ export default function SessionsView() {
       rightFace: <PlatformMark platform={p.platform} fillPct={100} />
     }))
     .sort(byLabel)
-  const triggerGithub: FilterOption[] = [...githubSet]
-    .map(([v, label]) => ({
-      v,
-      label,
-      kind: 'github' as const,
-      face: (
-        <span className="flex h-[15px] w-[15px] items-center justify-center">
-          <GithubMark color="var(--text-tertiary)" />
-        </span>
-      )
-    }))
-    .sort(byLabel)
-  const triggerWebhooks: FilterOption[] = [...webhookSet]
-    .map(([v, label]) => ({ v, label, kind: 'webhook' as const, face: catFace('webhook') }))
-    .sort(byLabel)
+  // Total over the hook-kind vocabulary: a new code host has to be given a face here.
+  const hookTriggerFace: Record<HookKind, ReactNode> = {
+    github: (
+      <span className="flex h-[15px] w-[15px] items-center justify-center">
+        <GithubMark color="var(--text-tertiary)" />
+      </span>
+    ),
+    gitlab: (
+      <span className="flex h-[15px] w-[15px] items-center justify-center">
+        <GitlabMark />
+      </span>
+    ),
+    webhook: catFace('webhook')
+  }
+  // One group per hook kind in display order, code hosts before generic webhooks.
+  const hookTriggerGroups: FilterGroup[] = HOOK_TRIGGER_KINDS.map((kind) => ({
+    label: HOOK_KIND_GROUP_LABEL[kind],
+    options: [...hookSets.get(kind)!]
+      .map(([v, label]) => ({ v, label, kind, face: hookTriggerFace[kind] }))
+      .sort(byLabel)
+  }))
   const triggerScheds: FilterOption[] = [...cronSet]
     .map(([v, label]) => ({ v, label, kind: 'schedule' as const, face: catFace('timer') }))
     .sort(byLabel)
   const triggerGroups: FilterGroup[] = [
     { label: 'Agents', options: triggerAgents },
     { label: 'People', options: triggerPeople },
-    { label: 'GitHub', options: triggerGithub },
-    { label: 'Webhooks', options: triggerWebhooks },
+    ...hookTriggerGroups,
     { label: 'Schedules', options: triggerScheds }
   ]
   const triggerFlat: FilterOption[] = [
     triggerAll,
     ...triggerAgents,
     ...triggerPeople,
-    ...triggerGithub,
-    ...triggerWebhooks,
+    ...hookTriggerGroups.flatMap((group) => group.options),
     ...triggerScheds
   ]
 
@@ -813,7 +828,8 @@ type FilterOption = {
   // left/right). Defaults to `face`; channels override it to the platform mark
   // (their desktop `face` is the `#` glyph, but the pill wants the platform).
   pillFace?: ReactNode
-  kind?: 'agent' | 'person' | 'github' | 'webhook' | 'schedule'
+  /** The trigger category this option came from — one vocabulary with `sessionTriggerKind`. */
+  kind?: SessionTriggerKind
 }
 type FilterGroup = { label: string; options: FilterOption[] }
 

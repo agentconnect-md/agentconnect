@@ -1,6 +1,7 @@
 import type { MemoryWriteSource } from '../../memory/store.js'
 import type { MemoryScope } from '../../memory/types.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
+import type { PlatformChannelHistoryOptions, PlatformChannelHistoryPage } from '../../platforms/contract.js'
 
 /**
  * The platform-neutral slice a session's tools need. `SlackConnection` and
@@ -47,7 +48,12 @@ export interface UploadAnchor {
 export type UploadFailReason =
   'missing_scope' | 'too_large' | 'not_found' | 'forbidden' | 'indeterminate' | 'platform_error'
 
-export type UploadOutcome = { ok: true; messageId?: string; warning?: string } | { ok: false; reason: UploadFailReason }
+export type UploadOutcome =
+  | { ok: true; messageId?: string; warning?: string }
+  /** `detail` is the PROVIDER's own error code, carried because a category alone is not
+   *  diagnosable: `platform_error` is the catch-all every unclassified refusal lands in, and
+   *  a report that omits what the platform actually said cannot be acted on. */
+  | { ok: false; reason: UploadFailReason; detail?: string }
 
 export interface MessageGateway {
   /** Layer-1 `openDirectMessage`: resolve one platform user to the app's real
@@ -67,6 +73,8 @@ export interface MessageGateway {
   listMembers(channel: string): Promise<{ id: string; name?: string; isBot?: boolean }[]>
   listChannels(): Promise<{ id: string; name?: string; isPrivate?: boolean }[]>
   getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
+  /** Read one bounded page from the conversation bound to the current session. */
+  getChannelHistory?(channel: string, options?: PlatformChannelHistoryOptions): Promise<PlatformChannelHistoryPage>
   /** Download an auth-gated file (Slack url_private / Telegram file_id) with the
    *  bot credentials; null on failure / over-cap. Backs the `read*File` tools so
    *  the agent can read attachments without ever holding the token. */

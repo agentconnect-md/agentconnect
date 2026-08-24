@@ -3,6 +3,7 @@ import type { AnyFrame } from '@agentconnect.md/protocol'
 import type { DaemonConnection } from '../connection.js'
 import type { DaemonWsDeps } from '../deps.js'
 import type { SessionMetaRecord, SessionMilestoneResult } from '../../persistence/ports.js'
+import { SessionId } from '../../domain/ids.js'
 import { handleEventSession, handleEventSessionSync } from './event-session.js'
 
 const DAEMON_ID = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
@@ -188,7 +189,9 @@ describe('handleEventSession', () => {
   it('inherits an A2A webchat child without treating its synthetic channel as a conversation UUID', async () => {
     const recordMilestone = vi
       .fn()
-      .mockResolvedValue(recorded({ parentSessionId: 'parent-session', visibilitySource: 'inherited_pending' }))
+      .mockResolvedValue(
+        recorded({ parentSessionId: SessionId('parent-session'), visibilitySource: 'inherited_pending' })
+      )
     const findOwner = vi.fn().mockRejectedValue(new Error('must not query a synthetic A2A channel'))
     const deps = scopedDeps({
       session: { recordMilestone },
@@ -584,7 +587,7 @@ describe('handleEventSession', () => {
   })
 
   it('inherits a hook A2A child audience without querying its synthetic channel as a hook id', async () => {
-    const recordMilestone = vi.fn().mockResolvedValue(recorded({ parentSessionId: 'parent-session' }))
+    const recordMilestone = vi.fn().mockResolvedValue(recorded({ parentSessionId: SessionId('parent-session') }))
     const get = vi.fn().mockRejectedValue(new Error('synthetic channel reached HookRepo'))
     const replyTo = vi.fn()
     const sendError = vi.fn()

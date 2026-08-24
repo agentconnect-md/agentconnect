@@ -1,0 +1,129 @@
+{{- /*
+Centralized (org-wide) external-memory wrapper, rendered only when mem0.enabled.
+
+This is the "remote / centralized" external-memory mode: instead of every daemon
+running the Mem0 wrapper as a local stdio subprocess, one wrapper runs here and any
+agent in the org binds a REMOTE memory connection pointed at it. The wrapper is the
+`@agentconnect.md/memory-plugin-mem0` CLI in HTTP mode (MCP_TRANSPORT=http): it serves
+the AgentConnect memory-plugin MCP contract at /mcp and forwards to a Mem0 OSS backend.
+
+INTERNAL-ONLY: a ClusterIP Service reached in-cluster by the relay (like open-connector),
+never the public gateway. The daemon does NOT connect here directly — it dials the relay
+with a CP-minted grant, and the relay proxies to this Service. Register the remote memory
+installation with endpoint = http://<release>-mem0-wrapper:<port>/mcp, and ensure the
+relay's egress policy permits that endpoint.
+
+NO SECRET IN THIS POD: the wrapper holds no Mem0 credential at startup. Each org
+connection's Mem0 API key is injected per-request by the relay as the `X-Mem0-Api-Key`
+header (from the connection's SecretCipher value), and the wrapper forwards it to the
+Mem0 backend. The wrapper is a stateless proxy, so it scales horizontally.
+
+BACKEND: mem0.backendUrl must point at a reachable Mem0 OSS REST server (the heavy,
+stateful piece — vector store + LLM/embedder credentials for `infer`). Deploy that
+separately (or reuse an existing org-wide Mem0 server) and set backendUrl to it.
+*/ -}}
+{{- if .Values.mem0.enabled }}
+{{- $m := .Values.mem0 }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-mem0-wrapper
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "mem0-wrapper") | nindent 4 }}
+spec:
+  replicas: {{ $m.replicas }}
+  # Stateless proxy: a normal surge-first rolling update is safe (no local state).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "mem0-wrapper") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentconnect.labels" . | nindent 8 }}
+        {{- include "agentconnect.componentLabels" (dict "ctx" . "component" "mem0-wrapper") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mem0-wrapper
+          # The wrapper ships on the AgentConnect release train, published to
+          # {{ .Values.image.registry }}/{{ $m.image }}. Pin by digest when set.
+          {{- $mImage := printf "%s/%s" .Values.image.registry $m.image }}
+          {{- if $m.digest }}
+          image: "{{ $mImage }}@{{ $m.digest }}"
+          imagePullPolicy: IfNotPresent
+          {{- else }}
+          image: "{{ $mImage }}:{{ $m.tag | default (include "agentconnect.imageTag" .) }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $m.port }}
+          env:
+            - name: PORT
+              value: {{ $m.port | quote }}
+            - name: HOST
+              value: "0.0.0.0"
+            # HTTP (remote) mode — serve the MCP contract at /mcp; no local stdio child,
+            # no MEM0_API_KEY in the environment (the relay supplies it per request).
+            - name: MCP_TRANSPORT
+              value: "http"
+            - name: MEM0_DIALECT
+              value: {{ $m.dialect | quote }}
+            # The Mem0 OSS REST backend this wrapper forwards to (vector store + LLM behind it).
+            - name: MEM0_OSS_BASE_URL
+              value: {{ $m.backendUrl | quote }}
+            {{- range $k, $v := $m.config }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- range $k, $v := $m.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          # The wrapper serves GET /healthz (200 = process up). It has no backend-dependent
+          # readiness signal — Mem0 reachability surfaces per-request as a degraded connection.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml $m.resources | nindent 12 }}
+---
+# ClusterIP only — reached in-cluster by the relay (which proxies daemon→plugin traffic
+# for the remote memory transport). Never exposed on the public gateway.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-mem0-wrapper
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentconnect.selectorLabels" (dict "ctx" . "component" "mem0-wrapper") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $m.port }}
+      targetPort: http
+{{- end }}

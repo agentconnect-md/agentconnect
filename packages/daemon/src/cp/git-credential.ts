@@ -39,6 +39,9 @@ const HANDOUT_MIN_MS = 10 * 60 * 1000
 /** Repo-level denials are retried after this — the console-authorization lag. */
 const REPO_DENIAL_TTL_MS = 60 * 1000
 
+/** Daemon-owned GitLab writers: project-keyed, re-resolved live per call, so a refusal is never durable. */
+const GITLAB_EFFECT_PURPOSES = new Set(['gitlab_hook_reply', 'gitlab_effect'])
+
 /** The baseline scope set behind `GH_TOKEN` (P2.5 write-back): git contents plus the
  *  issue/PR scopes `gh issue comment` / `gh pr comment` need. The CP clamps
  *  every capability — the workspace repo to the agent's gitAccess, an
@@ -48,18 +51,26 @@ const GH_TOKEN_CAPABILITIES: readonly GitCredCapability[] = ['contents', 'issues
 
 /** The credential plane: 'git' = contents-only (the credential helper), 'gh' =
  *  the widened GH_TOKEN set. Distinct capability sets are distinct tokens. */
-export type CredPlane = 'git' | 'gh'
+export type CredPlane = 'git' | 'gh' | 'glab'
 type CachePlane = CredPlane | 'gh-actions'
 
 /** Cache key — NUL-joined so no owner/repo string can collide across fields
- *  (the GH_KEY precedent). */
-const keyOf = (agentId: string, plane: CachePlane, repo?: string): string =>
-  `${plane}\u0000${agentId}\u0000${repo?.toLowerCase() ?? ''}`
+ *  (the GH_KEY precedent). GitHub is the EMPTY provider segment whether the request went out
+ *  v1-shaped or github-qualified: one logical credential must stay one entry across a CP up- or
+ *  downgrade, and the request shape is a wire negotiation, not part of the credential's identity. */
+const keyOf = (agentId: string, plane: CachePlane, repo?: string, provider?: 'gitlab'): string =>
+  `${plane}\u0000${agentId}\u0000${repo?.toLowerCase() ?? ''}\u0000${provider ?? ''}`
 
 /** Cache key for a repo-targeted COMMENT token (the GithubPoster's — issues/PR
  *  only, no contents requested; its capability set differs from both planes so
  *  it gets its own keyspace). One per (agent, repo). */
 const POST_KEY = (agentId: string, repo: string): string => `post\u0000${agentId}\u0000${repo.toLowerCase()}`
+
+/** Cache key for the gitlab note poster's effect token (§14.1) — its own keyspace. */
+const GITLAB_POST_KEY = (agentId: string, projectId: string): string => `postglab\u0000${agentId}\u0000${projectId}`
+
+/** Cache key for the structured broker's effect lease (§14.2) — a third keyspace, per (agent, project). */
+const GITLAB_EFFECT_KEY = (agentId: string, projectId: string): string => `fxglab\u0000${agentId}\u0000${projectId}`
 
 export class GitCredUnavailableError extends Error {
   constructor(
@@ -76,7 +87,10 @@ interface Entry {
   username: string
   token: string
   repoFullName: string
-  access: 'read' | 'write'
+  /** §13.1 authorization level as the CP echoed it — 'comment' rides an effect lease only. */
+  access: GitCredGrant['access']
+  /** The purge fence the CP minted this grant under; absent when the CP echoed none. */
+  credentialEpoch?: string
   /** Monotonic deadline (ms on the injected monotonic clock). */
   expiresAtMono: number
 }
@@ -88,15 +102,29 @@ export interface GitCredentialCacheDeps {
     reason?: 'clone' | 'fetch' | 'pull' | 'push' | 'helper'
     capabilities?: GitCredCapability[]
     repoFullName?: string
-    purpose?: 'github_hook_reply'
+    purpose?: 'github_hook_reply' | 'gitlab_hook_reply' | 'gitlab_effect'
     hookId?: string
     forceRefresh?: boolean
+    provider?: 'github' | 'gitlab'
+    externalRepoId?: string
+    requestedAccess?: 'read' | 'write'
   }) => Promise<GitCredGrant>
   log: { warn: (msg: string) => void }
   /** Rolling-upgrade gate: old CPs reject the new enum value, so request Actions
    *  only after register/ok advertises support. The cache key changes with this
    *  value so reconnecting to an upgraded CP mints a fresh widened grant. */
   actionsSupported?: () => boolean
+  /** §17.1 negotiation: a provider may be named only after register/ok carries
+   *  gitcred-provider-v2 — an older CP would strip the field and answer a
+   *  GitHub workspace grant for the wrong provider. */
+  providerV2Supported?: () => boolean
+  /** §17.3 negotiation: GitHub requests carry `provider: 'github'` only after the CP advertises
+   *  gitcred-github-v2 — an older CP strips the field and answers an unqualified grant, which the
+   *  echo check below would then have to refuse. Never part of the cache key (see keyOf). */
+  githubV2Supported?: () => boolean
+  /** §17.3 negotiation: `purpose: 'gitlab_effect'` is a NEW ENUM VALUE, so naming it to an
+   *  older CP is frame-fatal rather than silently stripped — ask only after gitlab-effect-v1. */
+  gitlabEffectSupported?: () => boolean
   /** Monotonic ms; injectable for tests. */
   monoNow?: () => number
 }
@@ -129,18 +157,33 @@ export class GitCredentialCache {
   async get(
     agentId: string,
     reason: 'clone' | 'fetch' | 'pull' | 'push' | 'helper',
-    opts: { plane?: CredPlane; repo?: string } = {}
+    opts: {
+      plane?: CredPlane
+      repo?: string
+      provider?: 'gitlab'
+      externalRepoId?: string
+      requestedAccess?: 'read' | 'write'
+    } = {}
   ): Promise<Entry> {
     const plane = opts.plane ?? 'git'
+    if (opts.provider === 'gitlab' && this.deps.providerV2Supported?.() !== true) {
+      throw new GitCredUnavailableError(
+        'the control plane is too old for gitlab credentials (gitcred-provider-v2 not advertised)',
+        false
+      )
+    }
     const withActions = plane === 'gh' && this.deps.actionsSupported?.() === true
     const cachePlane = withActions ? 'gh-actions' : plane
-    return this.getKeyed(keyOf(agentId, cachePlane, opts.repo), agentId, {
+    return this.getKeyed(keyOf(agentId, cachePlane, opts.repo, opts.provider), agentId, {
       agentId,
       reason,
-      ...(plane === 'gh'
+      ...(plane === 'gh' && opts.provider === undefined
         ? { capabilities: [...GH_TOKEN_CAPABILITIES, ...(withActions ? (['actions'] as const) : [])] }
         : {}),
-      ...(opts.repo !== undefined ? { repoFullName: opts.repo } : {})
+      ...(opts.repo !== undefined ? { repoFullName: opts.repo } : {}),
+      ...(opts.provider !== undefined ? { provider: opts.provider } : this.githubProvider()),
+      ...(opts.externalRepoId !== undefined ? { externalRepoId: opts.externalRepoId } : {}),
+      ...(opts.requestedAccess !== undefined ? { requestedAccess: opts.requestedAccess } : {})
     })
   }
 
@@ -162,21 +205,91 @@ export class GitCredentialCache {
       repoFullName: repo,
       purpose: 'github_hook_reply',
       hookId,
+      ...this.githubProvider(),
       ...(forceRefresh ? { forceRefresh: true } : {})
     })
     if (forceRefresh) this.refreshPosts.delete(key)
     return entry
   }
 
-  /** Drop the cached GithubPoster token after GitHub rejects it. Matching the
-   *  presented token avoids deleting a newer grant that won a concurrent race. */
-  invalidatePost(agentId: string, repo: string, presentedToken?: string): void {
-    const key = POST_KEY(agentId, repo)
+  /** The GitlabPoster's note token (§14.1): the binding's effect PAT, gated CP-side by the enabled gitlab hook. */
+  async getGitlabPostToken(agentId: string, projectId: string, hookId: string): Promise<Entry> {
+    if (this.deps.providerV2Supported?.() !== true) {
+      throw new GitCredUnavailableError(
+        'the control plane is too old for gitlab credentials (gitcred-provider-v2 not advertised)',
+        false
+      )
+    }
+    const key = GITLAB_POST_KEY(agentId, projectId)
+    const forceRefresh = this.refreshPosts.has(key)
+    const entry = await this.getKeyed(key, agentId, {
+      agentId,
+      reason: 'helper',
+      provider: 'gitlab',
+      externalRepoId: projectId,
+      purpose: 'gitlab_hook_reply',
+      hookId,
+      ...(forceRefresh ? { forceRefresh: true } : {})
+    })
+    if (forceRefresh) this.refreshPosts.delete(key)
+    return entry
+  }
+
+  /** The structured broker's effect lease (§14.2): the never-agent-visible effect PAT, authorized by the
+   *  agent's GitLab workspace binding or the NAMED enabled hook, carrying the §13.1 clamp it enforces. */
+  async getGitlabEffectToken(agentId: string, projectId: string, hookId?: string): Promise<Entry> {
+    if (this.deps.providerV2Supported?.() !== true) {
+      throw new GitCredUnavailableError(
+        'the control plane is too old for gitlab credentials (gitcred-provider-v2 not advertised)',
+        false
+      )
+    }
+    if (this.deps.gitlabEffectSupported?.() !== true) {
+      throw new GitCredUnavailableError('the control plane does not support GitLab effect leases yet', false)
+    }
+    const key = GITLAB_EFFECT_KEY(agentId, projectId)
+    const forceRefresh = this.refreshPosts.has(key)
+    const entry = await this.getKeyed(key, agentId, {
+      agentId,
+      reason: 'helper',
+      provider: 'gitlab',
+      externalRepoId: projectId,
+      purpose: 'gitlab_effect',
+      ...(hookId !== undefined ? { hookId } : {}),
+      ...(forceRefresh ? { forceRefresh: true } : {})
+    })
+    if (forceRefresh) this.refreshPosts.delete(key)
+    return entry
+  }
+
+  /** Drop the cached gitlab note token after GitLab rejects it. */
+  invalidateGitlabPost(agentId: string, projectId: string, presentedToken?: string): void {
+    this.dropCached(GITLAB_POST_KEY(agentId, projectId), presentedToken)
+  }
+
+  /** Drop the cached broker effect lease after GitLab rejects it, so the single retry re-mints. */
+  invalidateGitlabEffect(agentId: string, projectId: string, presentedToken?: string): void {
+    this.dropCached(GITLAB_EFFECT_KEY(agentId, projectId), presentedToken)
+  }
+
+  /** Evict one daemon-owned writer's cached token and force its next mint past the CP cache. */
+  private dropCached(key: string, presentedToken?: string): void {
     const entry = this.entries.get(key)
     if (!entry) return
     if (presentedToken !== undefined && entry.token !== presentedToken) return
     this.entries.delete(key)
     this.refreshPosts.add(key)
+  }
+
+  /** Drop the cached GithubPoster token after GitHub rejects it. Matching the
+   *  presented token avoids deleting a newer grant that won a concurrent race. */
+  invalidatePost(agentId: string, repo: string, presentedToken?: string): void {
+    this.dropCached(POST_KEY(agentId, repo), presentedToken)
+  }
+
+  /** The provider field a GitHub request may name: present once the CP advertises it, absent before. */
+  private githubProvider(): { provider?: 'github' } {
+    return this.deps.githubV2Supported?.() === true ? { provider: 'github' } : {}
   }
 
   private async getKeyed(
@@ -228,10 +341,14 @@ export class GitCredentialCache {
    * fresh grant from being wiped by a stale erase. `repo` routes the erase to
    * the same key the `get` used; absent ⇒ the workspace git-plane entry.
    */
-  invalidate(agentId: string, presentedPassword?: string, opts: { plane?: CredPlane; repo?: string } = {}): void {
+  invalidate(
+    agentId: string,
+    presentedPassword?: string,
+    opts: { plane?: CredPlane; repo?: string; provider?: 'gitlab' } = {}
+  ): void {
     const plane = opts.plane ?? 'git'
     const cachePlane = plane === 'gh' && this.deps.actionsSupported?.() === true ? 'gh-actions' : plane
-    const key = keyOf(agentId, cachePlane, opts.repo)
+    const key = keyOf(agentId, cachePlane, opts.repo, opts.provider)
     const entry = this.entries.get(key)
     if (!entry) return
     if (presentedPassword !== undefined && entry.token !== presentedPassword) return
@@ -254,6 +371,12 @@ export class GitCredentialCache {
     } catch (e) {
       const code = (e as { code?: string }).code
       if (code === 'SCOPE_DENIED') {
+        // §14.1/§14.2: these leases are re-resolved live and hook/binding lifecycle changes never
+        // replicate an agent spec, so a refusal is never durable — the next turn asks the CP again.
+        if (payload.purpose !== undefined && GITLAB_EFFECT_PURPOSES.has(payload.purpose)) {
+          this.entries.delete(key)
+          throw new GitCredUnavailableError((e as Error).message, false)
+        }
         if (payload.repoFullName !== undefined) {
           // Repo-keyed: negative-cache and retry in a minute — the operator may
           // be authorizing the repo in the console right now.
@@ -268,6 +391,8 @@ export class GitCredentialCache {
         this.entries.delete(key)
         throw new GitCredUnavailableError((e as Error).message, true)
       }
+      // 19.3: LEASE_DENIED is an authoritative refusal of new effects, not an outage — evict so no revoked token keeps serving.
+      if (code === 'LEASE_DENIED') this.entries.delete(key)
       throw new GitCredUnavailableError((e as Error).message, false)
     }
     // Old-CP mismatch guard (multi-repo design §Protocol Changes): a CP that predates
@@ -282,11 +407,28 @@ export class GitCredentialCache {
         false
       )
     }
+    // v2 echo verification (§17.1/§17.3): a stripped provider means the CP answered unqualified —
+    // an older peer, or one that never saw our provider. Never serve that for a request that named one.
+    if (payload.provider !== undefined && grant.provider !== payload.provider) {
+      throw new GitCredUnavailableError(
+        `control plane answered provider ${grant.provider ?? 'github (unqualified)'} for a ${payload.provider} request`,
+        false
+      )
+    }
+    // …and a mismatched numeric identity is a wrong-project credential: local
+    // replica and CP record disagree — fail, never serve.
+    if (payload.externalRepoId !== undefined && grant.externalRepoId !== payload.externalRepoId) {
+      throw new GitCredUnavailableError(
+        `control plane answered project ${grant.externalRepoId ?? 'unknown'} for project ${payload.externalRepoId}`,
+        false
+      )
+    }
     const entry: Entry = {
       username: grant.username,
       token: grant.token,
       repoFullName: grant.repoFullName,
       access: grant.access,
+      ...(grant.credentialEpoch !== undefined ? { credentialEpoch: grant.credentialEpoch } : {}),
       expiresAtMono: this.monoNow() + grant.ttlSec * 1000
     }
     this.entries.set(key, entry)

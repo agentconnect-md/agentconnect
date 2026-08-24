@@ -113,7 +113,7 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.env.HOME).toBe(join(scopeDir, 'home'))
     expect(launch.env.AGENT_VALUE).toBe('yes')
     expect(launch.env.XDG_RUNTIME_DIR).toBe(realpathSync(join(scopeDir, 'home', '.run')))
-    expect(statSync(launch.env.XDG_RUNTIME_DIR).mode & 0o777).toBe(0o700)
+    expect(statSync(launch.env.XDG_RUNTIME_DIR!).mode & 0o777).toBe(0o700)
     expect(launch.env.SSH_AUTH_SOCK).toBeUndefined()
     expect(launch.env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined()
     expect(launch.env.DOCKER_HOST).toBeUndefined()
@@ -541,7 +541,7 @@ describe('composeRuntimeLaunch', () => {
 
     expect(runtimeMemoryCapabilities(runtime('custom-wrapper', ['serve-acp']), 'hermes').none).toBe(true)
     expect(composed.launch.env.HERMES_HOME).toBe(join(scopeDir, 'home', '.hermes'))
-    expect(readFileSync(join(composed.launch.env.HERMES_HOME, 'config.yaml'), 'utf8')).toContain(
+    expect(readFileSync(join(composed.launch.env.HERMES_HOME!, 'config.yaml'), 'utf8')).toContain(
       'memory_enabled: false'
     )
   })

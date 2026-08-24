@@ -130,7 +130,7 @@ export function SessionVisibilityControl({
             ? 'Lark'
             : feishuRegion === 'feishu'
               ? 'Feishu'
-              : 'Feishu / Lark'
+              : 'Feishu/Lark'
           : 'External'
     const title =
       externalResolution === 'settled'

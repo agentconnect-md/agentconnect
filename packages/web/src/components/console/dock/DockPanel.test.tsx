@@ -48,6 +48,22 @@ vi.mock('@/components/console/Shell', () => ({
   useMobileActionSlot: () => ({ action: null, register: () => {} })
 }))
 
+// The Sessions panel's "New session" action opens a playground then routes to it.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+    prefetch: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+    refresh: vi.fn()
+  })
+}))
+
+vi.mock('@/components/console/PlaygroundProvider', () => ({
+  usePlayground: () => ({ openPlayground: vi.fn(() => 'pg_new') })
+}))
+
 import { DockPanel, SessionDock, type DockTab } from './SessionDock'
 import { FilesPanel, filesTabStatus } from './FilesPanel'
 import { SessionsPanel } from './SessionsPanel'

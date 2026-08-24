@@ -48,7 +48,9 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
             upload_url: 'https://files.slack.com/upload/v1/fake',
             file_id: 'F_FAKE'
           }),
-          completeUploadExternal: async () => ({ files: [{ id: 'F_FAKE' }] })
+          completeUploadExternal: async () => ({ files: [{ id: 'F_FAKE' }] }),
+          uploadV2: async () => ({ ok: true, files: [{ ok: true, files: [{ id: 'F_FAKE' }] }] }),
+          info: async () => ({ file: { shares: { public: { C1: [{ ts: '1700000000.000100' }] } } } })
         },
         conversations: {
           open: async () => ({ channel: { id: 'D_FAKE' } }),
@@ -56,7 +58,8 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           members: async () => ({ members: [] }),
           leave: ok,
           list: async () => ({ channels: [] }),
-          replies: async () => ({ messages: [] })
+          replies: async () => ({ messages: [] }),
+          history: async () => ({ messages: [] })
         },
         users: {
           info: async () => ({}),

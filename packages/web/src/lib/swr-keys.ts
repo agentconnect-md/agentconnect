@@ -88,6 +88,10 @@ export const consoleKeys = {
     agentId ? consoleKey(orgId, 'agent-hooks', agentId) : null,
   agentRepos: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-repos', agentId) : null,
+  /** The Integrations card's bot roster. The bound-project signature is part of the key, so
+   *  binding or removing a project makes the entry recorded under the old set unreachable. */
+  gitlabAccounts: (orgId: string | null | undefined, bindings: string) =>
+    consoleKey(orgId, 'gitlab-accounts', bindings),
   agentPermissionRequests: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-permission-requests', agentId) : null,
   hookRuns: (orgId: string | null | undefined, hookId: string) => consoleKey(orgId, 'hook-runs', hookId)

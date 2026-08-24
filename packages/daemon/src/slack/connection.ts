@@ -27,7 +27,12 @@ import {
   type StatusBarInfo,
   type StatusModalIdentity
 } from './render.js'
-import type { InteractionActor, PlatformConnection } from '../platforms/contract.js'
+import type {
+  InteractionActor,
+  PlatformChannelHistoryOptions,
+  PlatformChannelHistoryPage,
+  PlatformConnection
+} from '../platforms/contract.js'
 
 export interface ConsolidatedGroup {
   appToken: string
@@ -352,11 +357,15 @@ export type AppLike = {
       update: (a: unknown) => Promise<{ ts?: string }>
       delete: (a: unknown) => Promise<unknown>
     }
-    // The external upload flow (`files:write`). chat.postMessage cannot carry bytes at
-    // all, so this three-step dance is the ONLY way to put a file in a conversation.
+    // The external upload flow (`files:write`). chat.postMessage cannot carry bytes at all,
+    // so this is the ONLY way to put a file in a conversation.
     files: {
       getUploadURLExternal: (a: unknown) => Promise<{ upload_url?: string; file_id?: string }>
-      completeUploadExternal: (a: unknown) => Promise<{ files?: { id?: string }[] }>
+      completeUploadExternal: (a: unknown) => Promise<unknown>
+      uploadV2: (a: unknown) => Promise<unknown>
+      info: (a: unknown) => Promise<{
+        file?: { shares?: { public?: SlackFileShares; private?: SlackFileShares } }
+      }>
     }
     conversations: {
       open: (a: unknown) => Promise<{ channel?: { id?: string } }>
@@ -388,6 +397,22 @@ export type AppLike = {
             event_type?: string
             event_payload?: { author_agent_id?: unknown; owner_agent_id?: unknown }
           }
+        }[]
+        has_more?: boolean
+        response_metadata?: { next_cursor?: string }
+      }>
+      history: (a: unknown) => Promise<{
+        messages?: {
+          user?: string
+          bot_id?: string
+          app_id?: string
+          bot_profile?: { app_id?: string }
+          ts?: string
+          text?: string
+          blocks?: unknown
+          attachments?: unknown
+          thread_ts?: string
+          reply_count?: number
         }[]
         has_more?: boolean
         response_metadata?: { next_cursor?: string }
@@ -453,6 +478,8 @@ function isRoutableMessageEvent(ev: SlackMessageEvent): boolean {
 
 /** Cap on members enriched per `listChannelMembers` call (bounds users.info fan-out). */
 const MEMBER_ENRICH_CAP = 50
+const SLACK_CHANNEL_HISTORY_DEFAULT_LIMIT = 100
+const SLACK_CHANNEL_HISTORY_MAX_LIMIT = 200
 const SLACK_FILE_ORIGIN = 'https://files.slack.com'
 
 /**
@@ -504,6 +531,36 @@ const SLACK_API_TIMEOUT_MS = 30_000
 
 /** Map a Slack API error to the port's typed failure vocabulary — every arm already had the
  *  raw material (`missing_scope` payloads, stable error codes); this only names them. */
+/** The `files.info` share record, keyed by channel id (docs: `shares.public|private`). */
+type SlackFileShares = Record<string, { ts?: string }[] | undefined>
+
+/**
+ * Completion outcomes that do NOT prove the share was refused. Slack documents both as
+ * possibly raised AFTER some aspect of the operation succeeded, so a one-shot completion that
+ * answers with either may already be visible in the channel.
+ */
+const COMPLETION_MAY_HAVE_LANDED = new Set(['internal_error', 'fatal_error'])
+
+/**
+ * The only completion refusals worth a second, undecorated attempt: pure request validation
+ * (so provably before publication) AND plausibly caused by `username`/`icon_url` themselves,
+ * which is the one thing the retry can change. A pre-publication refusal this set omits —
+ * `not_in_channel`, `channel_not_found` — would fail identically undecorated, so retrying it
+ * only spends a call and replaces the real error with its echo.
+ */
+const DECORATION_REFUSALS = new Set(['missing_scope', 'invalid_arguments', 'invalid_arg_name', 'invalid_array_arg'])
+
+/** `uploadV2` answers with one `completeUploadExternal` response per file. */
+type SlackUploadV2Result = { files?: { files?: { id?: string }[] }[] } | undefined
+
+/** The provider's own words, for the arm that has no category: without this a refusal
+ *  reports only `platform error`, which no operator can act on. */
+function slackErrorDetail(err: unknown): { detail?: string } {
+  const code = slackApiErrorCode(err)
+  const text = code ?? (err as Error | undefined)?.message
+  return text ? { detail: text.slice(0, 120) } : {}
+}
+
 function classifySlackUploadError(err: unknown): UploadFailReason {
   if (missingScopesFrom(err).length > 0) return 'missing_scope'
   const code = slackApiErrorCode(err)
@@ -1257,6 +1314,54 @@ export class SlackConnection implements PlatformConnection {
     return out
   }
 
+  /** Fetch one bounded, cursor-paginated page of Slack channel messages. */
+  async getChannelHistory(
+    channel: string,
+    options: PlatformChannelHistoryOptions = {}
+  ): Promise<PlatformChannelHistoryPage> {
+    const limit = Math.min(
+      Math.max(options.limit ?? SLACK_CHANNEL_HISTORY_DEFAULT_LIMIT, 1),
+      SLACK_CHANNEL_HISTORY_MAX_LIMIT
+    )
+    const hasTimeBounds = Boolean(options.oldest || options.latest)
+    try {
+      const res = await this.app.client.conversations.history({
+        channel,
+        limit,
+        ...(options.cursor ? { cursor: options.cursor } : {}),
+        ...(options.oldest ? { oldest: options.oldest } : {}),
+        ...(options.latest ? { latest: options.latest } : {}),
+        ...(hasTimeBounds ? { inclusive: true } : {})
+      })
+      const nextCursor = res.response_metadata?.next_cursor?.trim() || undefined
+      const messages = (res.messages ?? []).flatMap((m) => {
+        if (!m.ts) return []
+        const appId = m.app_id ?? m.bot_profile?.app_id
+        const replyCount = typeof m.reply_count === 'number' && m.reply_count > 0 ? m.reply_count : undefined
+        return [
+          {
+            sender: m.bot_id ?? m.user ?? 'unknown',
+            ts: m.ts,
+            text: extractSlackMessageText(m),
+            isBot: Boolean(m.bot_id || appId),
+            ...(m.thread_ts ? { threadTs: m.thread_ts } : {}),
+            ...(replyCount !== undefined ? { replyCount } : {})
+          }
+        ]
+      })
+      return {
+        messages,
+        hasMore: Boolean(res.has_more || nextCursor),
+        ...(nextCursor ? { nextCursor } : {})
+      }
+    } catch (err) {
+      const code = slackApiErrorCode(err)
+      const safeCode = code && /^[a-z0-9._:-]{1,64}$/i.test(code) ? code : undefined
+      this.deps.log?.debug('slack: conversations.history failed (ch=' + channel + '): ' + (safeCode ?? 'unknown'))
+      throw new Error(safeCode ? 'Slack channel history failed: ' + safeCode : 'Slack channel history failed')
+    }
+  }
+
   /**
    * Put a file INTO a conversation — Slack's three-step external upload (`files:write`).
    *
@@ -1280,38 +1385,62 @@ export class SlackConnection implements PlatformConnection {
     const threadTs = anchor?.thread
     const task: Promise<UploadOutcome> = this.queue.enqueue(async () => {
       try {
-        const reserved = await this.app.client.files.getUploadURLExternal({
-          filename: file.name,
-          length: file.bytes.byteLength
-        })
-        const uploadUrl = reserved.upload_url
-        const fileId = reserved.file_id
-        if (!uploadUrl || !fileId) {
-          this.deps.log?.debug(`slack: uploadFile got no upload url for ${file.name}`)
-          return { ok: false, reason: 'platform_error' }
-        }
-        const put = await this.putUploadBytes(uploadUrl, file)
-        if (!put.ok) return put
+        // `uploadV2` IS the three-step external upload — reserve a URL, POST the bytes, share
+        // the file — and we call it instead of driving those steps ourselves because the
+        // middle one is not a Slack API request and its exact wire shape is undocumented.
+        // Two live failures came out of reimplementing it (a multipart part Slack answers
+        // with HTTP 500 unless it is named `body`, and at least one more), so the transport
+        // now belongs to the SDK that Slack maintains, along with the agent/proxy/timeout
+        // configuration the rest of this client already got from `WebClient`.
+        //
+        // The cost is the file share's identity decoration: `completeUploadExternal` accepts
+        // `username`/`icon_url` per the docs but not per the SDK's types, and `uploadV2`
+        // builds its completion arguments from an explicit key list that omits both. So a
+        // shared file posts under the app's identity while the agent's text reply posts under
+        // the agent's. That decoration was never verified against live Slack anyway — it was
+        // already being dropped on any rejection — so this gives up nothing that worked.
+        //
         // Sharing is what makes the file a message; without `channel_id` it stays a private
         // upload nobody can see. `thread_ts` must be the PARENT's ts, never a reply's.
-        // A CAPTION IS MRKDWN HERE, unlike every other send in this file. `postMessage` renders
-        // through a Block Kit `markdown` block, but this method documents `blocks` as IGNORED
-        // whenever `initial_comment` is set — and it has no separate `text` argument, so
-        // blocks-only would buy CommonMark at the price of the notification preview for every
-        // forwarded file. Keeping the comment is the better half of that trade; the cost is
-        // that `**bold**` and `[label](url)` read literally on a forward.
-        const share: Record<string, unknown> = {
-          files: [{ id: fileId, title: file.name }],
+        // A CAPTION IS MRKDWN HERE, unlike every other send in this file. `postMessage`
+        // renders through a Block Kit `markdown` block, but the completion step documents
+        // `blocks` as IGNORED whenever `initial_comment` is set — and it has no separate
+        // `text` argument, so blocks-only would buy CommonMark at the price of the
+        // notification preview for every forwarded file. Keeping the comment is the better
+        // half of that trade; the cost is that `**bold**` and `[label](url)` read literally.
+        // The identity path first: `completeUploadExternal` documents `username`/`icon_url`
+        // for the share message, which is the ONLY way a file post can carry the agent's own
+        // name and avatar — no manifest field sets an app icon, and `uploadV2` drops both
+        // arguments when it builds its completion from an explicit key list.
+        const shared = await this.shareWithIdentity(channel, file, comment, threadTs, options)
+        if (shared !== undefined) return { ok: true, ...(await this.shareMessageTs(shared, channel)) }
+        // Only a refused BYTE POST lands here, and that step runs before anything reaches the
+        // conversation — which is what makes retrying through the SDK's own transport safe
+        // rather than a double post. It costs the identity; the delivery outranks it.
+        this.deps.log?.debug(`slack: uploadFile falling back to the SDK transport for ${file.name}`)
+        const done = (await this.app.client.files.uploadV2({
+          file: file.bytes,
+          filename: file.name,
           channel_id: channel,
           ...(threadTs ? { thread_ts: threadTs } : {}),
           ...(comment ? { initial_comment: comment } : {})
-        }
-        await this.completeUpload(share, options)
-        return { ok: true }
+        })) as SlackUploadV2Result
+        // `uploadV2` answers with one completion response per file, each carrying the FILE.
+        const fileId = done?.files?.[0]?.files?.[0]?.id
+        return { ok: true, ...(await this.shareMessageTs(fileId, channel)) }
       } catch (err) {
         this.rememberMissingScopes(err)
         this.deps.log?.debug(`slack: uploadFile ${file.name} → ch=${channel} failed: ${(err as Error).message}`)
-        return { ok: false, reason: classifySlackUploadError(err) }
+        // A share whose outcome Slack never confirmed must say "may have landed", never
+        // "nothing was sent" — the same rule the send queue's abandonment already follows.
+        // Two things forfeit that proof, and BOTH have to be read here: a completion Slack
+        // marked as possibly-partial (`completeShare` stamps it), and any failure with no
+        // provider code at all — the SDK raises one `WebAPIHTTPError` for every non-200, so a
+        // rejected byte POST and a lost response to an accepted share look identical.
+        const mayHaveLanded = (err as { shareMayHaveLanded?: unknown } | null)?.shareMayHaveLanded === true
+        return !mayHaveLanded && slackApiErrorCode(err) !== undefined
+          ? { ok: false, reason: classifySlackUploadError(err), ...slackErrorDetail(err) }
+          : { ok: false, reason: 'indeterminate', ...slackErrorDetail(err) }
       }
     })
     // The queue abandons a task at 30 s but the task KEEPS RUNNING — the share may still
@@ -1322,17 +1451,57 @@ export class SlackConnection implements PlatformConnection {
     }))
   }
 
-  /** Step 2 of the upload: POST the bytes to the reserved URL. It is NOT a Slack API
-   *  endpoint (no token, no JSON envelope), so it goes out through undici with the same
-   *  proxy dispatcher the Web API client uses rather than through `this.app.client`. */
-  private async putUploadBytes(
-    uploadUrl: string,
-    file: { bytes: Buffer; name: string }
-  ): Promise<{ ok: true } | { ok: false; reason: UploadFailReason }> {
+  /**
+   * Steps 1-3 with the agent's identity on the share. Returns the file id once the share is
+   * PUBLISHED, or `undefined` when the byte POST was refused — the one failure that provably
+   * happened before anything reached the conversation, which is what lets the caller retry
+   * through the SDK. Every later failure throws, because it may have landed.
+   */
+  private async shareWithIdentity(
+    channel: string,
+    file: { bytes: Buffer; name: string },
+    comment: string | undefined,
+    threadTs: string | undefined,
+    options?: SlackPostOptions
+  ): Promise<string | undefined> {
+    const reserved = await this.app.client.files.getUploadURLExternal({
+      filename: file.name,
+      length: file.bytes.byteLength
+    })
+    const uploadUrl = reserved.upload_url
+    const fileId = reserved.file_id
+    if (!uploadUrl || !fileId) return undefined
+    if (!(await this.putUploadBytes(uploadUrl, file))) return undefined
+    // Sharing is what makes the file a message; without `channel_id` it stays a private
+    // upload nobody can see. `thread_ts` must be the PARENT's ts, never a reply's.
+    // A CAPTION IS MRKDWN HERE, unlike every other send in this file: this method documents
+    // `blocks` as IGNORED whenever `initial_comment` is set and has no separate `text`
+    // argument, so blocks-only would buy CommonMark at the price of the notification preview.
+    await this.completeUpload(
+      {
+        files: [{ id: fileId, title: file.name }],
+        channel_id: channel,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+        ...(comment ? { initial_comment: comment } : {})
+      },
+      options
+    )
+    return fileId
+  }
+
+  /**
+   * Step 2: POST the bytes to the reserved URL. Not a Slack API endpoint — no JSON envelope,
+   * no published wire contract — so it goes out through undici with the same proxy dispatcher
+   * the Web API client uses. Every field here is copied from what the SDK sends, because two
+   * live failures came out of choosing any of them differently: the multipart part is named
+   * `body` and carries an untyped Blob, and the reserved URL is given the bot token. That
+   * last one is not optional despite reading like it should be — a POST without it is
+   * answered with HTTP 500. Returns false rather than throwing: nothing is published yet, so
+   * the caller may still fall back.
+   */
+  private async putUploadBytes(uploadUrl: string, file: { bytes: Buffer; name: string }): Promise<boolean> {
     const form = new FormData()
-    form.append('file', new Blob([new Uint8Array(file.bytes)]), file.name)
-    // This runs inside the serial send queue, so it carries the same bound the WebClient
-    // does: a stuck upload must not wedge every other message on this connection.
+    form.append('body', new Blob([new Uint8Array(file.bytes)]), file.name)
     const dispatcher = proxyDispatcher()
     try {
       // Same cast seam as `fetchWithDispatcher`: undici's own FormData/RequestInit types and
@@ -1340,29 +1509,45 @@ export class SlackConnection implements PlatformConnection {
       const init = {
         method: 'POST',
         body: form,
+        headers: { Authorization: `Bearer ${this.deps.group.botToken}` },
         signal: AbortSignal.timeout(SLACK_API_TIMEOUT_MS),
         ...(dispatcher ? { dispatcher } : {})
       }
       const res = await undiciFetch(uploadUrl, init as Parameters<typeof undiciFetch>[1])
-      // Only `ok` is read, so the body is never drained — and an unread body leaves the
-      // request in flight, which is exactly what the graceful `close()` below waits for. That
-      // wait sits inside the send queue and outside the signal's reach, so it would trade the
-      // socket-pool leak for the wedge the timeout was added to prevent.
+      // An unread body leaves the request in flight, and the graceful close below waits for
+      // exactly that — outside the signal's reach.
       await res.body?.cancel().catch(() => {})
-      if (!res.ok) {
-        this.deps.log?.debug(`slack: uploadFile byte POST for ${file.name} → HTTP ${res.status}`)
-        return { ok: false, reason: res.status === 413 ? 'too_large' : 'platform_error' }
-      }
-      return { ok: true }
+      if (!res.ok) this.deps.log?.debug(`slack: uploadFile byte POST for ${file.name} → HTTP ${res.status}`)
+      return res.ok
+    } catch (err) {
+      this.deps.log?.debug(`slack: uploadFile byte POST for ${file.name} failed: ${(err as Error).message}`)
+      return false
     } finally {
-      // Unlike the two long-lived clients, this agent serves one request — closing it keeps
-      // a proxied deployment from leaking a keep-alive socket pool per forward.
+      // Unlike the two long-lived clients this agent serves one request; closing it keeps a
+      // proxied deployment from leaking a keep-alive socket pool per share.
       await dispatcher?.close()
     }
   }
 
-  /** Step 3 of the upload, with the same `chat:write.customize` fallback the text send has:
-   *  an installation without the scope still shares the file, under the app's own identity. */
+  /** `completeUploadExternal` is ONE-SHOT — a second call after a lost response would double
+   *  post — so any outcome that does not PROVE a refusal is marked ambiguous, not retried.
+   *  A lost response is one such outcome; so is Slack answering with a partial-success code. */
+  private async completeShare(payload: Record<string, unknown>): Promise<void> {
+    try {
+      await this.app.client.files.completeUploadExternal(payload)
+    } catch (err) {
+      const code = slackApiErrorCode(err)
+      if (code === undefined || COMPLETION_MAY_HAVE_LANDED.has(code)) {
+        throw Object.assign(err as Error, { shareMayHaveLanded: true })
+      }
+      throw err
+    }
+  }
+
+  /** Step 3. The identity decoration is BEST-EFFORT: `username`/`icon_url` are documented for
+   *  this method but absent from the SDK's argument type, so a rejection can be the arguments
+   *  rather than the `chat:write.customize` scope. Any DEFINITE refusal is retried once
+   *  undecorated — the file lands either way, and the agent's name on it is what we can lose. */
   private async completeUpload(share: Record<string, unknown>, options?: SlackPostOptions): Promise<void> {
     const customize: Record<string, unknown> = {}
     const username = options?.username?.trim()
@@ -1370,18 +1555,47 @@ export class SlackConnection implements PlatformConnection {
     if (username) customize.username = username
     if (iconUrl) customize.icon_url = iconUrl
     if (Object.keys(customize).length === 0 || Date.now() < this.customUsernameRetryAt) {
-      await this.app.client.files.completeUploadExternal(share)
+      await this.completeShare(share)
       return
     }
     try {
-      await this.app.client.files.completeUploadExternal({ ...share, ...customize })
+      await this.completeShare({ ...share, ...customize })
       this.customUsernameRetryAt = 0
     } catch (err) {
       this.rememberMissingScopes(err)
-      if (!isMissingCustomizeScope(err)) throw err
-      this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
-      this.deps.log?.debug('slack: chat:write.customize missing — sharing the file with the app default identity')
-      await this.app.client.files.completeUploadExternal(share)
+      // A second completion is only safe when the FIRST provably published nothing and the
+      // decoration is what it refused — anything else is re-sending a share that may already
+      // be visible, which is the double post this whole vocabulary exists to prevent.
+      const code = slackApiErrorCode(err)
+      if (code === undefined || !DECORATION_REFUSALS.has(code)) throw err
+      if (isMissingCustomizeScope(err)) this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
+      this.deps.log?.debug(`slack: decorated file share refused (${code}) — retrying under the app identity`)
+      await this.completeShare(share)
+    }
+  }
+
+  /**
+   * The ts of the message a shared file became. Slack's completion answers with the FILE, not
+   * the message, so a share has no timestamp of its own — and a post the daemon cannot name is
+   * not an ANCHOR: replying under it lands in a thread whose root the daemon does not
+   * recognize as its own, so the reply wakes nobody. `files.info` publishes the share record
+   * that does carry the ts, which is why the file post costs one extra read.
+   *
+   * Best-effort by construction: the file is already in the conversation by the time this
+   * runs, so a failure here must degrade to an unanchored share, never to a failed one.
+   */
+  private async shareMessageTs(fileId: string | undefined, channel: string): Promise<{ messageId?: string }> {
+    if (!fileId) return {}
+    try {
+      const info = await this.app.client.files.info({ file: fileId })
+      const shares = info.file?.shares
+      // A share is filed under the channel's own visibility, so read both arms by channel id.
+      const ts = (shares?.public?.[channel] ?? shares?.private?.[channel])?.[0]?.ts
+      if (!ts) this.deps.log?.debug(`slack: uploadFile share of ${fileId} carried no ts for ${channel}`)
+      return ts ? { messageId: ts } : {}
+    } catch (err) {
+      this.deps.log?.debug(`slack: uploadFile could not read the share ts of ${fileId}: ${(err as Error).message}`)
+      return {}
     }
   }
 

@@ -23,7 +23,7 @@ import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
 import { isGatedAgent } from '../../orchestrator/placement.js'
 import { servedAgents } from '../../orchestrator/servedAgents.js'
 import type { DaemonWsDeps } from '../deps.js'
-import type { IntegrationRecord } from '../../persistence/ports.js'
+import type { AgentRecord, ChannelTrigger, IntegrationRecord } from '../../persistence/ports.js'
 import type { Handler } from './index.js'
 
 /** Active integrations of the agents this daemon serves — a pool member is the placement of
@@ -53,6 +53,9 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
   }
   const release = deps.agentMutations.tryBeginMutation(integration.agentId)
   if (!release) return // a placement move owns this agent; its authoritative bundle wins
+  // Read after the lease releases, to decide whether the report opened anything (§14.8).
+  let owner: AgentRecord | null = null
+  let seeded: ReadonlyMap<string, ChannelTrigger> | undefined
   try {
     // Ownership may have changed while the first repository read was in flight.
     // Re-check under the shared mutation lease before accepting this daemon's
@@ -66,14 +69,20 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     // integration's fresh conversations start Off — an editor must enable them in
     // the console. Known rows keep their operator-chosen trigger either way.
     // Fenced on the org of the integration row this daemon just proved it owns.
-    const owner = await deps.agent.get(OrgId(integration.orgId), AgentId(integration.agentId))
+    owner = await deps.agent.get(OrgId(integration.orgId), AgentId(integration.agentId))
     const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
+    // §14.8: a gated DM whose counterpart is already in the agent's audience seeds to
+    // the ordinary DM default instead. Only the gated arm asks — a public install has
+    // no Off to override — and a resolver that answers nothing leaves §14.2 intact.
+    const bot = defaultTrigger && deps.bot ? await deps.bot.get(OrgId(integration.orgId), integration.botId) : null
+    seeded = owner && bot && deps.gatedDmSeeds ? await deps.gatedDmSeeds(p.channels, owner, bot) : undefined
     await deps.integrationChannel.replaceSnapshot(
       integration.id,
       p.channels,
       defaultTrigger || p.authoritative === false || p.removed?.length
         ? {
             ...(defaultTrigger ? { defaultTrigger } : {}),
+            ...(seeded?.size ? { defaultTriggerByChannel: seeded } : {}),
             ...(p.authoritative === false ? { authoritative: false } : {}),
             ...(p.removed?.length ? { removed: p.removed } : {})
           }
@@ -81,6 +90,19 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     )
   } finally {
     release()
+  }
+
+  // §14.8 is the one path where a REPORT can create an ENABLED row, so it is also the
+  // only one that has to push: the reporting daemon still holds bindRules assembled
+  // before this write, and it has already cached the conversation, so no later message
+  // re-reports and repairs it. Outside the mutation lease and best-effort — the
+  // register snapshot remains the durable backstop.
+  if (seeded?.size && owner && deps.integrationConverge) {
+    try {
+      await deps.integrationConverge(owner)
+    } catch {
+      // The daemon converges on its next register snapshot.
+    }
   }
 
   // Conversation availability is part of the effective agent-call edge. Refresh

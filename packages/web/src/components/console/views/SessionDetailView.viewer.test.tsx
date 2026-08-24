@@ -15,6 +15,8 @@ const wire = vi.hoisted(() => ({
   listCalls: [] as Array<{ path: string; sessionId?: string }>,
   /** Whether the open session has a worktree of its own; a shared workspace must never be asked for one. */
   isolation: 'session' as 'session' | 'shared',
+  /** Which code host backs the checkout. Both are git, so both have session worktrees. */
+  workspaceMode: 'github' as 'github' | 'gitlab',
   /** The Git tab's two reads. A from-scratch workspace by default, so every case that predates the tab sees what it saw. */
   git: { isRepo: false } as unknown,
   log: { isRepo: false, commits: [], truncated: false, tracking: null } as unknown,
@@ -181,7 +183,7 @@ const session: Session = {
 
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
-    agents: [agent],
+    agents: [{ ...agent, workspace: { ...agent.workspace, mode: wire.workspaceMode } }],
     allSessions: [
       {
         ...session,
@@ -243,6 +245,7 @@ vi.mock('@/components/console/PlaygroundProvider', () => ({
     getPgWorktree: () => false,
     isPgBusy: () => false,
     setPgImage: () => {},
+    openPlayground: () => 'pg_new',
     pgSend: () => {},
     getPgQueue: () => [],
     pgCancelQueued: () => {},
@@ -305,6 +308,7 @@ beforeEach(() => {
   wire.fileCalls = []
   wire.listCalls = []
   wire.isolation = 'session'
+  wire.workspaceMode = 'github'
   wire.git = { isRepo: false }
   wire.log = { isRepo: false, commits: [], truncated: false, tracking: null }
   wire.diffCalls = []
@@ -484,6 +488,15 @@ describe('the collapsed-band overlay', () => {
 
 describe('the workspace scope both surfaces read', () => {
   it('reads this session\u2019s own worktree when it has one', async () => {
+    nav.search = 'file=src%2Fnotes.md'
+    await render()
+    expect(wire.fileCalls.at(-1)).toEqual({ path: 'src/notes.md', sessionId: 'session-1' })
+    expect(wire.listCalls[0]).toEqual({ path: '', sessionId: 'session-1' })
+  })
+
+  it('reads a GitLab checkout\u2019s own worktree too \u2014 the gate is git, not one host', async () => {
+    // The gate used to name GitHub, so a GitLab worktree session silently read the agent's PRIMARY checkout.
+    wire.workspaceMode = 'gitlab'
     nav.search = 'file=src%2Fnotes.md'
     await render()
     expect(wire.fileCalls.at(-1)).toEqual({ path: 'src/notes.md', sessionId: 'session-1' })

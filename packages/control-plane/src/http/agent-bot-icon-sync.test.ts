@@ -87,6 +87,10 @@ function bot(
     revokedAt: options.revoked ? new Date(0) : null,
     credentialRevision: 1,
     credentialInstalledAt: new Date(0),
+    grantedScopes: null,
+    externalAppId: null,
+    externalTenantId: null,
+    platformConfig: null,
     discordAppId: null,
     feishuAppId: options.feishuAppId ?? null,
     feishuRegion: options.feishuRegion ?? null,
@@ -126,11 +130,13 @@ describe('syncAgentBotIcons', () => {
       integration(slackId, 'slack'),
       integration(feishuId, 'feishu')
     ]
-    const telegramSync = vi.fn(async () => {
+    const telegramSync = vi.fn<(token: string, agent: BotProfileIconAgent) => Promise<void>>(async () => {
       throw new Error('rate limited')
     })
-    const discordSync = vi.fn(async () => {})
-    const feishuSync = vi.fn(async () => {})
+    const discordSync = vi.fn<(token: string, agent: BotProfileIconAgent) => Promise<void>>(async () => {})
+    const feishuSync = vi.fn<
+      (appId: string, appSecret: string, region: 'feishu' | 'lark', agent: BotProfileIconAgent) => Promise<void>
+    >(async () => {})
     const secretGets: string[] = []
     const warn = vi.fn()
     const currentAgent = agentRecord(agent.icon)

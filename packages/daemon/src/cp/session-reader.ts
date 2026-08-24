@@ -144,10 +144,11 @@ function parseUsage(raw: string | null): SessionUsage | undefined {
   }
 }
 
-/** Current CPs send the authorized owner. The unscoped branch preserves rolling
- * compatibility only while a newly upgraded daemon is still connected to an old CP. */
+/** The console addresses a session by its OUTWARD id (session-concept.md §1.1), so that is what
+ *  a read resolves. Current CPs send the authorized owner; the unscoped branch preserves rolling
+ *  compatibility only while a newly upgraded daemon is still connected to an old CP. */
 async function sessionForRead(store: LocalStore, agentId: string | undefined, sessionId: string) {
-  return agentId ? await store.getSessionByAcpIdForAgent(agentId, sessionId) : await store.getSessionByAcpId(sessionId)
+  return await store.getSessionByOutwardId(sessionId, agentId)
 }
 
 /** Rough character budget to trim a free-form value to when shrinking a preview. A
@@ -264,7 +265,10 @@ export function createSessionReader(
         // for legacy rows without moving platform branches into this reader.
         const threadUrl = r.threadUrl ?? threadUrlFor?.(r)
         return {
-          sessionId: r.acpSessionId!, // listSessions filters out null acpSessionId
+          // The console addresses what it is shown, and the CP stores the row under this id
+          // (session-concept.md §1.1). A row from before the column answers with its ACP id,
+          // which is exactly what such a session was reported under.
+          sessionId: r.sessionId ?? r.acpSessionId!,
           ...(r.originSessionId ? { parentSessionId: r.originSessionId } : {}),
           // store `platform` is a free string; the daemon only ever writes a valid Platform.
           sessionKey: { platform: r.platform as Platform, channel: r.channel, thread: r.thread },
@@ -373,7 +377,7 @@ export function createSessionReader(
           return base // unparseable body → fall back to the title-only row
         }
         const bytes = Buffer.byteLength(r.body)
-        base.toolCallId = full.toolCallId ?? r.toolCallId ?? undefined
+        base.toolCallId = full.toolCallId ?? r.tool_call_id ?? undefined
         if (full.status !== undefined) base.toolStatus = full.status
         if (full.kind !== undefined) base.toolKind = full.kind
         if (bytes <= PREVIEW_CAP) {

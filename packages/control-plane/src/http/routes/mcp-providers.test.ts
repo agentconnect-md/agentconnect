@@ -8,6 +8,7 @@ const provider: McpProviderRecord = {
   id: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
   orgId: 'org-1' as OrgId,
   name: 'linear',
+  kind: 'custom',
   transport: 'http',
   url: 'https://mcp.linear.app/sse',
   visibility: 'org',
@@ -55,7 +56,13 @@ describe('rotateProviderGrant', () => {
       provider,
       [],
       provider.orgId,
-      { ...repo, revoke: async (id) => (calls.push('revoke'), revoked.push(id)) },
+      {
+        ...repo,
+        revoke: async (id) => {
+          calls.push('revoke')
+          revoked.push(id)
+        }
+      },
       async (_p, _h, grant) => {
         calls.push('assign')
         pushed.push(grant.key)
@@ -162,7 +169,7 @@ describe('rotateProviderGrant', () => {
         active.delete(id)
       }
     }
-    const pushAssign = async (_p: McpProviderRecord, _h: McpHeader[], grant: GrantView) => {
+    const pushAssign = async (_p: McpProviderRecord, _h: McpHeader[], grant: GrantView, _org: OrgId) => {
       await yieldTick()
       published = grant.key
     }
@@ -170,7 +177,7 @@ describe('rotateProviderGrant', () => {
     await Promise.all([
       rotateProviderGrant(provider, [], provider.orgId, repo, pushAssign, () => {}),
       serializeByProvider(provider.orgId, provider.name, async () => {
-        const grant = currentMcpGrant(await repo.activeForProvider(provider.id))
+        const grant = currentMcpGrant(await repo.activeForProvider(provider.orgId, provider.id))
         if (grant) await pushAssign(provider, [], grant, provider.orgId)
       })
     ])

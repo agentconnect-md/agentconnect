@@ -1,0 +1,41 @@
+{{- $agentsNamespace := .Values.daemonPool.sandboxNamespace | default .Release.Namespace }}
+{{- if and .Values.daemonPool.enabled (ne $agentsNamespace .Release.Namespace) }}
+# The namespace agent sandboxes run in — the agents side of the control/agents split. It
+# carries what the control namespace must not: the `restricted` Pod Security level (agent
+# pods are the one untrusted workload of the install) and a default-deny NetworkPolicy
+# baseline that the agent-sandbox controller's per-template policy and this chart's
+# shim-ingress policy then open exactly as far as they need to. Rendered only when
+# `daemonPool.sandboxNamespace` names a namespace other than the release's own, so a
+# single-namespace install never tries to create the namespace it is already deployed in.
+# `restricted` is not a value: it is the level this chart's SandboxTemplate is written to
+# pass, and any other level would silently loosen it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $agentsNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    # Uninstalling the release must never cascade into live Sandboxes and the workspace
+    # PVCs bound to them.
+    helm.sh/resource-policy: keep
+---
+# Baseline for anything in the agents namespace that no more specific policy selects:
+# nothing in, nothing out. Sandbox pods are additionally selected by the controller's
+# `<release>-runtime-network-policy` (their egress allowlist) and this chart's
+# `<release>-daemon-pool-shim` (their one ingress peer); policies are additive, so this only
+# ever narrows.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentconnect.fullname" . }}-agents-default-deny
+  namespace: {{ $agentsNamespace }}
+  labels:
+    {{- include "agentconnect.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ['Ingress', 'Egress']
+{{- end }}

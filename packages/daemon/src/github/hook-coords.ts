@@ -1,16 +1,25 @@
-import type {
-  GithubHookMetadata,
-  GithubPublishedComment,
-  GithubReviewAuthorized,
-  HookConfigSnapshot,
-  HookReport,
-  HookReviewResult,
-  RdMsgHook
+import {
+  codeHostReviewPublicEffect,
+  type CodeHostReviewExternalRef,
+  type CodeHostReviewOpKind,
+  type CodeHostReviewOpOutcome,
+  type CodeHostReviewState,
+  type HookReviewEvent,
+  type HookReviewVerdict,
+  type GithubHookMetadata,
+  type GitlabHookMetadata,
+  type GithubPublishedComment,
+  type PublishedHookOutput,
+  type GithubReviewAuthorized,
+  type HookConfigSnapshot,
+  type HookReport,
+  type HookReviewResult,
+  type RdMsgHook
 } from '@agentconnect.md/protocol'
 import type { GithubReviewEffect, GithubReviewEvent, GithubReviewTarget, GithubReviewVerdict } from './review.js'
 import type { SessionWorktreeRemoval } from '../workspace/workspace-manager.js'
-import type { NormalizedMessage } from '../messages/normalized.js'
 import type { QueueEntry } from '../daemon/turn-types.js'
+import type { GitlabPublishFailure } from '../gitlab/poster.js'
 
 export function hookSnapshot(msg: RdMsgHook): HookConfigSnapshot | undefined {
   if (
@@ -57,6 +66,9 @@ export function foreignHookDispatch(report: HookReport, daemonId?: string): bool
 
 export interface GithubReplyTarget {
   hookId: string
+  /** Provider discriminator: absent ⇒ github; 'gitlab' sets `repo` = numeric project id and `number` = the subject IID (§14.1). */
+  provider?: 'gitlab'
+  subjectKind?: 'issue' | 'merge_request'
   repo: string
   number: number
   /** The review-comment delivery that triggered this turn (diagnostic identity). */
@@ -69,17 +81,50 @@ export interface GithubReviewBatchItem {
   deliveryKey: string
   firedAt: string
   text: string
-  reply: GithubReplyTarget & { reviewThreadRootCommentId: string }
+  /** The per-item reply target, present only where the provider publishes each item itself. */
+  reply?: GithubReplyTarget & { reviewThreadRootCommentId: string }
   publishState?: 'not_started' | 'in_flight' | 'settled'
   publishedComment?: GithubPublishedComment
 }
 
+/** One code host's coalesced comment deliveries; how a sealed batch publishes is the admission seam's to say. */
 export interface GithubReviewBatch {
   reviewId: string
   openedAt: number
   updatedAt: number
   sealed?: boolean
   items: GithubReviewBatchItem[]
+}
+
+/** Bounded normalized note outcomes on the durable hook context (14.1); `publish_barrier_failed` is core's own — the poster was never reached. */
+export type NotePublishFailure = GitlabPublishFailure | 'publish_barrier_failed'
+
+const NOTE_PUBLISH_FAILURES = new Set<string>([
+  'publish_timeout',
+  'auth_rejected',
+  'token_unavailable',
+  'post_failed',
+  'publish_barrier_failed'
+] satisfies NotePublishFailure[])
+
+/** Clamp a note outcome that round-tripped through the durable row's JSON back onto the bounded set. */
+function notePublishFailureOf(value: unknown): NotePublishFailure | undefined {
+  return typeof value === 'string' && NOTE_PUBLISH_FAILURES.has(value) ? (value as NotePublishFailure) : undefined
+}
+
+/** Terminal hook reason for a cleanly finished turn, undefined ⇒ success: an unfinished multi-reply review batch, else a final that never became a note (14.1 — a silently absent note must never read as a successful run). */
+export function hookOutcomeFailure(
+  batch: GithubReviewBatch | undefined,
+  perItemPublication: boolean,
+  notePublishFailure: unknown
+): string | undefined {
+  // The seam's answer for this provider: a batch answered by one ordinary reply owes no per-item receipts.
+  if (perItemPublication && batch && batch.items.length > 1) {
+    if (batch.items.some((item) => item.publishState === 'in_flight')) return 'review_batch_publish_ambiguous'
+    if (batch.items.some((item) => item.publishState !== 'settled')) return 'review_batch_replies_missing'
+  }
+  const code = notePublishFailureOf(notePublishFailure)
+  return code ? `note_publish_failed:${code}` : undefined
 }
 
 /** Durable daemon-private hook identity; coalesced prompt excerpts stay local and HookReport omits them. */
@@ -91,6 +136,8 @@ export interface HookDispatchContext {
   event?: string
   snapshot?: HookConfigSnapshot
   github?: GithubHookMetadata
+  /** GitLab twin of `github` — the trusted subject discriminator (§12.3). */
+  gitlab?: GitlabHookMetadata
   githubReply?: GithubReplyTarget
   githubReviewBatch?: GithubReviewBatch
   turnStartedAt?: string
@@ -104,6 +151,70 @@ export interface HookDispatchContext {
   reviewReportResult?: HookReviewResult
   /** Exact body-free identity of the fallback comment published for this turn. */
   publishedComment?: GithubPublishedComment
+  /** Provider-neutral twin (§14.1): e.g. the GitLab note id this turn published. */
+  publishedOutput?: PublishedHookOutput
+  /** The provider-neutral formal-review attempt (§15) — durable, so a replay cannot resurrect the fallback. */
+  codeReview?: CodeReviewAttempt
+  /** Its twin for an absent note — persisted WITH settlement so a replay cannot report success (§14.1). */
+  notePublishFailure?: NotePublishFailure
+}
+
+/**
+ * One reserved formal-review attempt, written to the durable hook row BEFORE the
+ * first provider operation (§15). `state` appears only once the attempt is durably
+ * classified; its absence means the effect is unknown and the ordinary reply is
+ * blocked, exactly as an uncorrelated GitHub attempt is.
+ */
+export interface CodeReviewAttempt {
+  attemptId: string
+  event: HookReviewEvent
+  verdict: HookReviewVerdict
+  headSha: string
+  state?: CodeHostReviewState
+  /** The publication lease's fence, so an owed ledger frame stays derivable after a restart. */
+  fence?: string
+  /** Published objects this attempt named; replayed verbatim with a reconstructed result. */
+  externalIds?: CodeHostReviewExternalRef[]
+  /** The classification exists but the control plane has not taken it yet (§15.1). */
+  resultOwed?: boolean
+  /** Next operation-ledger ordinal per kind — monotonic, so a replay never reuses a spent coordinate. */
+  ordinals?: Record<string, number>
+  /** Operations whose one outbound request was permitted but not yet settled (§15.1). */
+  operations?: CodeReviewOperation[]
+}
+
+/**
+ * The coordinates of ONE permitted provider request, written before it is sent.
+ *
+ * `phase` is the LOCAL view of the control plane's record: `issued` means the start
+ * transition had not been acknowledged, so a replay returns the permit unused rather
+ * than settling a record no request was ever permitted under.
+ */
+export interface CodeReviewOperation {
+  recordId: string
+  startToken: string
+  kind: CodeHostReviewOpKind
+  ordinal: number
+  target: string
+  phase: 'issued' | 'started'
+  /** The settle this operation owes, kept here when its frame could not be made durable —
+   *  a restart replays it from these coordinates alone, with no provider evidence. */
+  outcome?: CodeHostReviewOpOutcome
+  /** Draft ordinal for a `draft_create`, so its marker can identify the effect on replay. */
+  draftOrdinal?: number
+}
+
+/** §15.2 single-writer gate: only a PROVEN no-effect attempt leaves the ordinary reply available. */
+export function codeHostReviewFallbackAllowed(hook: HookDispatchContext | undefined): boolean {
+  const attempt = hook?.codeReview
+  if (!attempt) return true
+  return attempt.state !== undefined && codeHostReviewPublicEffect(attempt.state) === 'absent'
+}
+
+/** THE gate the turn-final surface asks: may the daemon still publish its ordinary reply?
+ *  Either provider's unresolved formal attempt is enough to answer no. */
+export function hookOutputFallbackAllowed(hook: HookDispatchContext | undefined): boolean {
+  return githubFallbackAllowed(hook) && codeHostReviewFallbackAllowed(hook)
 }
 
 export type GithubThreadWorktreeCleanup = 'pull_request_merged' | 'issue_closed' | 'issue_deleted'
@@ -119,142 +230,24 @@ export function githubDeletedHookEvent(hook: Pick<HookDispatchContext, 'event'> 
   return hook?.event !== undefined && GITHUB_DELETED_HOOK_EVENTS.has(hook.event)
 }
 
-export interface GithubHookCoordinates {
-  agentId: string
-  platform: string
-  channel: string
-  integrationId?: string
-}
-
-export type GithubCoordinatedHook = Pick<HookDispatchContext, 'hookId' | 'agentId' | 'event' | 'github'>
-
-export function githubHookCoordinates(
-  agentId: string,
-  msg: Pick<NormalizedMessage, 'platform' | 'channel'>,
-  integrationId?: string
-): GithubHookCoordinates {
-  return {
-    agentId,
-    platform: msg.platform,
-    channel: msg.channel,
-    ...(integrationId !== undefined ? { integrationId } : {})
-  }
-}
-
-export function githubPullRequestLane(
-  hook: GithubCoordinatedHook | undefined,
-  coords: GithubHookCoordinates
-): string | undefined {
-  const github = hook?.github
-  if (hook?.agentId !== coords.agentId || github?.subjectKind !== 'pull_request' || github.pullNumber === undefined)
-    return undefined
-  return JSON.stringify([
-    hook.hookId,
-    hook.agentId,
-    github.repoId,
-    github.pullNumber,
-    coords.platform,
-    coords.channel,
-    coords.integrationId ?? null
-  ])
-}
-
-/** Deliveries that establish a new head. */
-const GITHUB_PULL_REVISION_EVENTS = new Set(['pull_request:opened', 'pull_request:synchronize'])
-
-/** Deliveries that re-run the head already current; a burst of them is one review asked for repeatedly. */
-const GITHUB_PULL_RERUN_EVENTS = new Set([
-  'pull_request:review_requested',
-  'check_run:rerequested',
-  'check_suite:rerequested',
-  'check_run:requested_action'
-])
-
-/** One lane's contest for the next generation; a re-run is `pinned` to its own head and contests that alone. */
-export interface GithubRevisionStream {
-  lane: string
-  headSha: string
-  pinned: boolean
-}
-
-export function githubPullRevisionStream(
-  hook: GithubCoordinatedHook | undefined,
-  coords: GithubHookCoordinates
-): GithubRevisionStream | undefined {
-  const lane = githubPullRequestLane(hook, coords)
-  const headSha = hook?.github?.headSha
-  if (!lane || !headSha) return undefined
-  const event = hook?.event ?? ''
-  if (GITHUB_PULL_REVISION_EVENTS.has(event)) return { lane, headSha, pinned: false }
-  if (GITHUB_PULL_RERUN_EVENTS.has(event)) return { lane, headSha, pinned: true }
-  return undefined
-}
-
-/** Contenders share a lane, and share a head whenever either only re-runs its own. */
-export function githubRevisionStreamsContest(a: GithubRevisionStream, b: GithubRevisionStream): boolean {
-  return a.lane === b.lane && (!(a.pinned || b.pinned) || a.headSha === b.headSha)
-}
-
-/** A re-run means re-run: only the winner's generation is reported, so an older one is dead work. */
-export function githubRerunsCurrentHead(hook: Pick<HookDispatchContext, 'event'> | undefined): boolean {
-  return GITHUB_PULL_RERUN_EVENTS.has(hook?.event ?? '')
-}
-
-export function githubReviewBatchStream(
-  hook: GithubCoordinatedHook | undefined,
-  coords: GithubHookCoordinates
-): string | undefined {
-  const github = hook?.github
-  const lane = githubPullRequestLane(hook, coords)
-  if (
-    !github ||
-    !lane ||
-    hook?.event !== 'pull_request_review_comment:created' ||
-    github.pullRequestReviewId === undefined ||
-    github.reviewCommentId === undefined ||
-    github.reviewThreadRootCommentId === undefined ||
-    github.reviewCommentId !== github.reviewThreadRootCommentId
-  ) {
-    return undefined
-  }
-  return JSON.stringify(['review', lane, github.pullRequestReviewId])
-}
-
-export function renderGithubReviewBatchPrompt(batch: GithubReviewBatch): string {
-  const items = [...batch.items].sort(
-    (a, b) => a.firedAt.localeCompare(b.firedAt) || a.deliveryKey.localeCompare(b.deliveryKey)
-  )
-  return [
-    `GitHub submitted-review inline comment batch (review ${batch.reviewId})`,
-    `Authorized thread roots: ${items.map((item) => item.reply.reviewThreadRootCommentId).join(', ')}`,
-    '',
-    ...items.flatMap((item, index) => [
-      `===== REVIEW THREAD ${index + 1} · ROOT ${item.reply.reviewThreadRootCommentId} =====`,
-      item.text,
-      `===== END REVIEW THREAD ${index + 1} =====`,
-      ''
-    ]),
-    'Inspect shared PR context once, then call `replyGithubReviewThreads` exactly once with one complete answer for every authorized root above. Do not omit, combine, or add roots. The tool owns all public replies; keep the final answer transcript-only.'
-  ].join('\n')
-}
-
-export function compareGithubPullRevisionRecency(a: HookDispatchContext, b: HookDispatchContext): number {
-  if (a.firedAt !== b.firedAt) return a.firedAt < b.firedAt ? -1 : 1
-  if (a.deliveryKey === b.deliveryKey) return 0
-  return a.deliveryKey < b.deliveryKey ? -1 : 1
-}
-
 /** Relay-authored lifecycle events that remove the isolated checkout without
  * opening a model turn. Pair the normalized event with trusted subject metadata
  * so an old or malformed frame cannot turn an ordinary hook into maintenance. */
 export function githubThreadWorktreeCleanup(
-  hook: Pick<HookDispatchContext, 'event' | 'github'> | undefined
+  hook: Pick<HookDispatchContext, 'event' | 'github' | 'gitlab'> | undefined
 ): GithubThreadWorktreeCleanup | undefined {
   if (hook?.event === 'pull_request:merged' && hook.github?.subjectKind === 'pull_request') {
     return 'pull_request_merged'
   }
   if (hook?.event === 'issues:closed' && hook.github?.subjectKind === 'issue') return 'issue_closed'
   if (hook?.event === 'issues:deleted' && hook.github?.subjectKind === 'issue') return 'issue_deleted'
+  // The GitLab counterpart (gitlab-com-integration.md §12): merged MRs and
+  // closed issues retire the per-thread checkout, fenced on the SAME pairing of
+  // normalized event + trusted subject metadata.
+  if (hook?.event === 'merge_request:merged' && hook.gitlab?.target.kind === 'merge_request') {
+    return 'pull_request_merged'
+  }
+  if (hook?.event === 'issues:closed' && hook.gitlab?.target.kind === 'issue') return 'issue_closed'
   return undefined
 }
 
@@ -336,10 +329,6 @@ export interface ActiveGithubReplyBatchMeta {
   called: boolean
 }
 
-export const GITHUB_REVIEW_BATCH_QUIET_MS = 5_000
-export const GITHUB_REVIEW_BATCH_MAX_WAIT_MS = 30_000
-export const GITHUB_REVIEW_BATCH_MAX_COMMENTS = 25
-
 /** Review-comment follow-ups already belong to one existing inline thread.
  * They may receive exactly one daemon-owned inline reply, but must never gain
  * authority to create a second, top-level formal PR review. */
@@ -382,17 +371,6 @@ export function authorizedReviewTarget(
     attemptId,
     ...(recovering ? { recovering: true } : {})
   }
-}
-
-export interface GithubQueueCandidate {
-  key: string
-  entry: QueueEntry
-  state: 'active' | 'queued' | 'incoming'
-}
-
-export interface GithubRevisionAdmissionPlan {
-  winner: GithubQueueCandidate
-  superseded: GithubQueueCandidate[]
 }
 
 /** The narrow persistence ownership needed to terminalize a hook delivery.

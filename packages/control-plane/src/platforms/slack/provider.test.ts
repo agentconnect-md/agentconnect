@@ -29,7 +29,6 @@ import { integrationToSpec, httpIntegrationToSpec } from '../../orchestrator/pla
 import { SLACK_BOT_SCOPES } from '../../http/slack-manifest.js'
 import { HttpBotOrchestrator } from '../../orchestrator/httpBot.js'
 import { AgentDelivery } from '../../orchestrator/agentDelivery.js'
-import { systemClock as clock } from '../../domain/clock.js'
 import { RelayRegistry, type RelayChannel } from '../../ws/relay-registry.js'
 import { buildCreateIntegrationBody } from '../../http/dto/create-integration-body.js'
 import { buildCpPlatformRegistry } from '../registry.js'
@@ -97,6 +96,7 @@ function bot(over: Partial<BotRecord> = {}): BotRecord {
     revokedAt: null,
     credentialRevision: 1,
     credentialInstalledAt: null,
+    grantedScopes: null,
     externalAppId: null,
     externalTenantId: null,
     platformConfig: null,
@@ -131,9 +131,13 @@ const channel = (
   integrationId: INTEGRATION.id,
   channelId,
   name: channelId.toLowerCase(),
+  spaceId: null,
+  space: null,
   isPrivate: false,
   kind,
   trigger,
+  dmUserId: null,
+  triggerChosen: false,
   agentId: null
 })
 
@@ -647,7 +651,7 @@ async function liveAssignFrame(botRow: BotRecord, secret: BotSecretMaterial): Pr
     { info() {}, warn() {}, debug() {} },
     PLATFORMS,
     // No duty ledger ⇒ the spec goes to the placement alone, as this fixture expects.
-    new AgentDelivery({ control: { integrationUpsert: async () => {} } as never, specs: undefined as never, clock })
+    new AgentDelivery({ control: { integrationUpsert: async () => {} } as never, specs: undefined as never })
   )
   await orch.syncBot(botRow.id)
   const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign | undefined

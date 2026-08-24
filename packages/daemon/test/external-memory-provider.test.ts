@@ -107,7 +107,7 @@ function harness(operations?: MemoryPluginManifest['capabilities']['operations']
       specFor,
       markRecovered,
       markDegraded
-    },
+    } as unknown as ExternalMemoryRuntimeDeps['registry'],
     outbox: { enqueue },
     metrics: { recall: vi.fn(), recallInjected: vi.fn(), captureState: vi.fn(), outbox: vi.fn() }
   }

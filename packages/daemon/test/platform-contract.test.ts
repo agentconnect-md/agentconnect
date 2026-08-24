@@ -62,11 +62,15 @@ describe('Layer-1 platform contract (§7.1)', () => {
     // (`membershipEnumeration: 'authoritative'`) and provider thread history.
     expect(has(SlackConnection, 'listBotChannels')).toBe(true)
     expect(has(SlackConnection, 'getThreadReplies')).toBe(true)
+    expect(has(SlackConnection, 'getChannelHistory')).toBe(true)
     expect(has(SlackConnection, 'openDirectMessage')).toBe(true)
     for (const ctor of [TelegramConnection, DiscordConnection, FeishuConnection]) {
       expect(has(ctor, 'listBotChannels')).toBe(false)
       expect(has(ctor, 'getThreadReplies')).toBe(false)
     }
+    expect(has(DiscordConnection, 'getChannelHistory')).toBe(true)
+    expect(has(FeishuConnection, 'getChannelHistory')).toBe(true)
+    expect(has(TelegramConnection, 'getChannelHistory')).toBe(false)
 
     // leaveGranularity: Slack/Telegram leave a CONVERSATION, Discord leaves the
     // enclosing SPACE (a bot joins servers, not channels), Feishu leaves neither.
@@ -82,6 +86,9 @@ describe('Layer-1 platform contract (§7.1)', () => {
     // The interface was lifted FROM these, so a drift on either side breaks the
     // eval suite's ability to substitute for a real platform.
     expect(has(VirtualSlackConnection, 'getThreadReplies')).toBe(true)
+    expect(has(VirtualSlackConnection, 'getChannelHistory')).toBe(true)
+    expect(has(VirtualDiscordConnection, 'getChannelHistory')).toBe(true)
+    expect(has(VirtualTelegramConnection, 'getChannelHistory')).toBe(false)
     expect(has(VirtualSlackConnection, 'listBotChannels')).toBe(true)
     expect(has(VirtualSlackConnection, 'openDirectMessage')).toBe(true)
     expect(has(VirtualSlackConnection, 'leaveChannel')).toBe(true)
