@@ -5,7 +5,7 @@
 import { homedir } from 'node:os'
 import { findInstanceUnit, listInstances } from './discover.js'
 import { defaultExec } from './exec.js'
-import { clearInstancePointer, resolveServiceTarget, writeInstancePointer } from './instance.js'
+import { clearInstancePointer, commandSelector, resolveServiceTarget, writeInstancePointer } from './instance.js'
 import { LaunchdController } from './launchd.js'
 import { SystemdController } from './systemd.js'
 import type { ControllerDeps, Exec, InstalledUnit, InstallOpts, ServiceController } from './types.js'
@@ -80,11 +80,25 @@ export async function installService(target: ControllerTarget, opts: InstallOpts
       `root ${root} already belongs to ${conflict.label} — uninstall that service first, or give this instance its own --root`
     )
   }
-  // Moving an instance to a new root leaves the old root's pointer claiming this
-  // unit, which would make a later `--root <old>` address a unit that no longer
-  // drives it. Drop it as part of the move.
+  // Moving an instance to another root is only safe while it is stopped:
+  // rewriting the unit does not move the RUNNING process, so discovery would
+  // report the new root while the live daemon still serves the old one. Refuse,
+  // and name the command that makes the move safe.
   const previous = findInstanceUnit(instance, scope)
-  if (previous && previous.root !== root) clearInstancePointer(previous.root)
+  if (previous && previous.root !== root) {
+    const running = await controllerFor(previous, {
+      ...scope,
+      ...(target.exec !== undefined ? { exec: target.exec } : {})
+    }).status()
+    if (running.running) {
+      throw new Error(
+        `${previous.label} is running against ${previous.root} — run \`agentconnect${commandSelector({ root: previous.root, ...(instance ? { instance } : {}) })} down\` before moving this instance to ${root}`
+      )
+    }
+    // The old root's pointer would otherwise keep claiming a unit that no longer
+    // drives it, so a later `--root <old>` would address the wrong service.
+    clearInstancePointer(previous.root)
+  }
   const controller = resolveController(target)
   await controller.install(opts)
   writeInstancePointer(root, { ...(instance ? { instance } : {}), label: controller.label })

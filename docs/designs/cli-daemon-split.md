@@ -284,7 +284,10 @@ that separates them (`packages/cli/src/service/instance.ts`):
   only when nothing is installed yet. Resolving from the name alone would let
   `--instance dev restart` drive a unit on `/srv/ac-dev` while
   `--instance dev chat` delegated to `~/.agentconnect-dev`: one selector, two
-  daemons. Moving an instance to a new root clears the abandoned root's pointer;
+  daemons. Moving an instance to a new root clears the abandoned root's pointer,
+  and is refused outright while that service is still running — rewriting the
+  unit does not move the live process, so discovery would report the new root
+  while the running daemon still served the old one;
 - `install-service` records `{ instance, label }` in `<root>/service.json`, so a
   command that knows only the root — notably the CP-commanded
   `upgrade --to <v> --root <root>` the daemon spawns (§6.2) — addresses that

@@ -132,7 +132,28 @@ describe('named instance root resolution', () => {
     })
   })
 
-  it("moves an instance to a new root and drops the abandoned root's pointer", async () => {
+  it('refuses to move an instance whose service is still running', async () => {
+    const home = tmp('ac-home-')
+    const [oldRoot, newRoot] = [tmp('ac-root-'), tmp('ac-root-')]
+    const opts = { execPath: '/usr/bin/node', includeRootEnv: true }
+    await installService({ root: oldRoot, instance: 'dev', platform: 'linux', home, exec }, opts)
+
+    // Rewriting the unit would not move the RUNNING daemon off oldRoot.
+    const activeExec = async (_cmd: string, args: string[]) => ({
+      code: 0,
+      stdout: args.includes('is-active') ? 'active\n' : '',
+      stderr: ''
+    })
+    await expect(
+      installService({ root: newRoot, instance: 'dev', platform: 'linux', home, exec: activeExec }, opts)
+    ).rejects.toThrow(/is running against .* down` before moving this instance/)
+
+    // The move is refused before anything is rewritten or forgotten.
+    expect(listInstances({ home, platform: 'linux' })[0]!.root).toBe(oldRoot)
+    expect(existsSync(join(oldRoot, 'service.json'))).toBe(true)
+  })
+
+  it("moves a stopped instance to a new root and drops the abandoned root's pointer", async () => {
     const home = tmp('ac-home-')
     const [oldRoot, newRoot] = [tmp('ac-root-'), tmp('ac-root-')]
     const opts = { execPath: '/usr/bin/node', includeRootEnv: true }
