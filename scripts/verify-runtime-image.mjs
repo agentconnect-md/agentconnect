@@ -236,7 +236,7 @@ check('the published runtime table matches a fresh ACP probe of this image', () 
 // The workspace surface runs git INSIDE the sandbox over the shim's exec channel, so a missing
 // git is not a degraded feature — it is every workspace operation failing at the far end.
 check('provides the executables the shim must resolve', () => {
-  const required = ['git', 'gh', 'node', 'claude-agent-acp', 'codex-acp', 'opencode', 'dsh-acp']
+  const required = ['git', 'gh', 'node', 'claude-agent-acp', 'codex-acp', 'dsh-acp']
   const missing = required.filter((bin) => inImage(`command -v ${bin} >/dev/null && echo y || echo n`) === 'n')
   if (missing.length > 0) throw new Error(`missing: ${missing.join(', ')}`)
   return required.join(' ')

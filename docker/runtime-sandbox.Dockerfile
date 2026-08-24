@@ -91,7 +91,6 @@ FROM node:24-bookworm-slim AS runtime-sandbox
 # Exact pins keep the published runtime table truthful.
 ARG CLAUDE_ACP_VERSION=0.70.0
 ARG CODEX_ACP_VERSION=1.6.2-agentconnect.1
-ARG OPENCODE_VERSION=1.18.20
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.16
 
 # git and ca-certificates are load-bearing — the workspace surface runs git IN here over the
@@ -107,13 +106,10 @@ RUN apt-get update \
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 
 # Global installs give `--k8s` fixed PATH binaries without registry egress at spawn time.
-# Keep scripts enabled because opencode-ai copies its platform binary during postinstall.
 RUN npm install --global --no-fund --no-audit \
   "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}" \
   "@agentconnect.md/codex-acp@${CODEX_ACP_VERSION}" \
-  "opencode-ai@${OPENCODE_VERSION}" \
   "@openma/deepseek-harness-acp@${DEEPSEEK_HARNESS_ACP_VERSION}" \
-  && opencode --version \
   && npm cache clean --force
 
 # Root-owned and read-only: the runtime is the untrusted party in this image, and a shim it can
