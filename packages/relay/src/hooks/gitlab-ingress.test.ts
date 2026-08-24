@@ -4,6 +4,8 @@ import { createHmac, randomBytes } from 'node:crypto'
 import { FakeClock } from '@agentconnect.md/connection'
 import {
   GITLAB_COM_V1_FEATURE,
+  GITLAB_DEFAULT_BASE_URL,
+  GITLAB_INSTANCE_V1_FEATURE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   type RcCodeHostMembershipAuthz,
   type RcHookAssign,
@@ -135,6 +137,7 @@ interface Harness {
   ack: RdAck
   offline: boolean
   gitlabSupported: boolean
+  gitlabInstanceSupported: boolean
   /** The same deps the ingress runs on — the rerun path reuses them verbatim. */
   deps: GitlabRerunDeps
 }
@@ -148,7 +151,8 @@ function makeHarness(): Harness {
     authzResult: true,
     ack: { msgId: 'x', accepted: true },
     offline: false,
-    gitlabSupported: true
+    gitlabSupported: true,
+    gitlabInstanceSupported: true
   }
   const app = Fastify()
   const table = new HookTable()
@@ -158,7 +162,11 @@ function makeHarness(): Harness {
       get: () => {
         if (h.offline) return undefined
         return {
-          supports: (capability: string) => (capability === GITLAB_COM_V1_FEATURE ? h.gitlabSupported === true : true),
+          supports: (capability: string) => {
+            if (capability === GITLAB_COM_V1_FEATURE) return h.gitlabSupported === true
+            if (capability === GITLAB_INSTANCE_V1_FEATURE) return h.gitlabInstanceSupported === true
+            return true
+          },
           sendMsg: async (msg: RdMsg) => {
             h.sent.push(msg)
             return h.ack!
@@ -431,6 +439,49 @@ describe('gitlab ingress', () => {
     expect((await post(h, summoned, { 'webhook-id': 'msg_delivery_2' })).statusCode).toBe(202)
     await flush()
     expect(h.sent).toHaveLength(1)
+  })
+
+  it('copies the rule host onto the trusted metadata as opaque data (§24.4)', async () => {
+    const SELF_MANAGED = 'https://gitlab.example.test/gitlab'
+    h.table.upsert(rule({}, { host: SELF_MANAGED }))
+    expect((await post(h, issuePayload())).statusCode).toBe(202)
+    await flush()
+    // Copied from the RULE, never read off the payload, and never parsed here: the relay
+    // does not dial GitLab, and the daemon fences the turn on this value.
+    expect((h.sent[0] as RdMsgHook).gitlab?.host).toBe(SELF_MANAGED)
+
+    h.sent.length = 0
+    h.table.upsert(rule())
+    expect((await post(h, issuePayload(), { 'webhook-id': 'msg_delivery_2' })).statusCode).toBe(202)
+    await flush()
+    expect((h.sent[0] as RdMsgHook).gitlab?.host).toBeUndefined()
+  })
+
+  it('a daemon without gitlab-instance-v1 fails a self-managed dispatch closed (§24.4)', async () => {
+    const SELF_MANAGED = 'https://gitlab.example.test/gitlab'
+    h.gitlabInstanceSupported = false
+    h.table.upsert(rule({}, { host: SELF_MANAGED }))
+    expect((await post(h, issuePayload())).statusCode).toBe(202)
+    await flush()
+    // The daemon would resolve the host to GitLab.com and act on the wrong instance.
+    expect(h.sent).toHaveLength(0)
+    expect(h.reports).toEqual([expect.objectContaining({ status: 'failed', reason: 'rejected:unsupported' })])
+
+    // The default value of the axis needs nothing new from the same daemon…
+    h.reports.length = 0
+    h.table.upsert(rule({}, { host: GITLAB_DEFAULT_BASE_URL }))
+    expect((await post(h, issuePayload(), { 'webhook-id': 'msg_delivery_2' })).statusCode).toBe(202)
+    await flush()
+    expect(h.sent).toHaveLength(1)
+
+    // …and the fence is re-read per attempt, so a daemon that gains the bit heals with no
+    // convergence pass: the same standing rule now dispatches.
+    h.sent.length = 0
+    h.gitlabInstanceSupported = true
+    h.table.upsert(rule({}, { host: SELF_MANAGED }))
+    expect((await post(h, issuePayload(), { 'webhook-id': 'msg_delivery_3' })).statusCode).toBe(202)
+    await flush()
+    expect((h.sent[0] as RdMsgHook).gitlab?.host).toBe(SELF_MANAGED)
   })
 
   it('a daemon without gitlab-com-v1 fails the dispatch closed', async () => {

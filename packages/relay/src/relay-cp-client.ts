@@ -16,6 +16,7 @@ import {
   buildRelayCpFrame,
   decodeRelayCpFrame,
   GITLAB_COM_V1_FEATURE,
+  GITLAB_INSTANCE_V1_FEATURE,
   GITLAB_RERUN_V1_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   RELAY_CP_SCHEMAS,
@@ -535,7 +536,14 @@ export class RelayCpClient {
         // webhooks, so the CP may send it gitlab-kind compiled rules (§17.3).
         // gitlab-rerun-v1: this relay decodes rc/hook-rerun and answers its
         // admission REP — strictly newer than gitlab-com-v1 (§17.3).
-        features: [WEBCHAT_SESSION_CONTINUATION_FEATURE, GITLAB_COM_V1_FEATURE, GITLAB_RERUN_V1_FEATURE]
+        // gitlab-instance-v1: this relay carries the compiled rule's host through onto the
+        // trusted metadata it forwards, so a self-managed rule is dispatchable here (§24.4).
+        features: [
+          WEBCHAT_SESSION_CONTINUATION_FEATURE,
+          GITLAB_COM_V1_FEATURE,
+          GITLAB_RERUN_V1_FEATURE,
+          GITLAB_INSTANCE_V1_FEATURE
+        ]
       })
     )
     this.relayId = (registered.payload as RcRegistered).relayId

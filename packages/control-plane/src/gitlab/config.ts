@@ -8,10 +8,12 @@
  * both client vars set ⇒ enabled, none ⇒ module not assembled, partial ⇒ fail
  * fast — and a base URL without the pair is a configuration error too.
  */
+import { GITLAB_DEFAULT_BASE_URL } from '@agentconnect.md/protocol'
 import type { AppConfig } from '../config/env.js'
 
-/** The default value of the host axis: an unset base URL means GitLab.com (§24.1). */
-export const GITLAB_DEFAULT_BASE_URL = 'https://gitlab.com'
+// The default value of the host axis: an unset base URL means GitLab.com (§24.1). It is
+// the protocol's, not this module's — the same absence means GitLab.com on the wire.
+export { GITLAB_DEFAULT_BASE_URL }
 
 /** The public callback path, in its gateway form (deploy-public-url-prefix decision). */
 export const GITLAB_OAUTH_CALLBACK_PATH = '/v1/gitlab/oauth/callback'

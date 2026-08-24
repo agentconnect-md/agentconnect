@@ -27,6 +27,9 @@ export interface GitlabGitcredDeps {
   /** The §8.3 additional-project allowlist — the second authority beside the workspace. */
   repoAuths: Pick<AgentRepoAuthorizationRepo, 'listForAgent'>
   clock: Clock
+  /** The normalized instance base URL (§24.1), echoed on every grant so the consumer can
+   *  verify the host exactly as it verifies provider and project id (§24.4). */
+  baseUrl: string
 }
 
 /**
@@ -97,7 +100,8 @@ export class GitlabGitcredService {
       provider: 'gitlab',
       externalRepoId: projectId.toString(),
       credentialEpoch: account.credentialEpoch.toString(),
-      providerExpiresAt: credential.providerExpiresAt.toISOString()
+      providerExpiresAt: credential.providerExpiresAt.toISOString(),
+      host: this.deps.baseUrl
     }
   }
 
@@ -207,7 +211,8 @@ export class GitlabGitcredService {
       provider: 'gitlab',
       externalRepoId: projectId.toString(),
       credentialEpoch: account.credentialEpoch.toString(),
-      providerExpiresAt: credential.providerExpiresAt.toISOString()
+      providerExpiresAt: credential.providerExpiresAt.toISOString(),
+      host: this.deps.baseUrl
     }
   }
 }

@@ -121,7 +121,10 @@ export const GitCredGrant = z
     credentialEpoch: CodeHostExternalId.optional(),
     // Provider-side expiry of the UNDERLYING credential (observability only; the
     // local lease above is always the shorter authority).
-    providerExpiresAt: z.string().datetime().optional()
+    providerExpiresAt: z.string().datetime().optional(),
+    // The instance the credential authenticates against (§24.4), echoed for the consumer to
+    // verify exactly as it verifies provider and externalRepoId. Absent means GitLab.com.
+    host: z.string().optional()
   })
   .superRefine((grant, ctx) => {
     const isGithub = grant.provider === undefined || grant.provider === 'github'

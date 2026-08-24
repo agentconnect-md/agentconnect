@@ -8,6 +8,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import { GITLAB_COM_V1_FEATURE, GITLAB_DEFAULT_BASE_URL, GITLAB_INSTANCE_V1_FEATURE } from '@agentconnect.md/protocol'
 import { FakeGitlab } from '../fakes/gitlab-api.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
 import { GitlabProvisioner } from '../../src/gitlab/provisioner.js'
@@ -55,10 +56,13 @@ afterEach(async () => {
   running = undefined
 })
 
-async function harness(liveness?: DaemonLiveness) {
+async function harness(liveness?: DaemonLiveness, baseUrl?: string) {
   // The second project answers with its own path, so a test holding both can tell
   // which one a grant or a credential resolved to.
-  const fake = new FakeGitlab({ pathById: { [String(SECOND_PROJECT)]: 'example-group/example-second' } })
+  const fake = new FakeGitlab({
+    pathById: { [String(SECOND_PROJECT)]: 'example-group/example-second' },
+    ...(baseUrl !== undefined ? { baseUrl } : {})
+  })
   const bindings = new PgGitlabProjectBindingRepo(prisma)
   const connections = new PgGitlabConnectionRepo(prisma)
   const oauth = new GitlabOauthService({
@@ -129,15 +133,15 @@ async function harness(liveness?: DaemonLiveness) {
     scopes: ['api'],
     accessExpiresAt: new Date(Date.now() + 3600_000),
     sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' },
-    axisBaseUrl: 'https://gitlab.com'
+    axisBaseUrl: fake.opts.baseUrl
   })
   const binding = await bindings.createWithClaim({
     orgId: DEFAULT_ORG_ID,
     projectId: PROJECT,
     projectPath: 'example-group/example-project',
-    cloneUrl: 'https://gitlab.com/example-group/example-project.git',
+    cloneUrl: `${fake.opts.baseUrl}/example-group/example-project.git`,
     installerConnectionId: connection.id,
-    axisBaseUrl: 'https://gitlab.com'
+    axisBaseUrl: fake.opts.baseUrl
   })
   // The consuming agent exists BEFORE convergence, so the run gives it its own
   // account and project membership (§7.2) — the grants below resolve through it.
@@ -147,14 +151,15 @@ async function harness(liveness?: DaemonLiveness) {
   return { fake, a: running, bindings, accounts, binding, account, provisioner, connection, settled }
 }
 
-function credService(bindings: PgGitlabProjectBindingRepo) {
+function credService(bindings: PgGitlabProjectBindingRepo, baseUrl = GITLAB_DEFAULT_BASE_URL) {
   return new GitlabGitcredService({
     bindings,
     accounts: new PgGitlabAgentAccountRepo(prisma),
     credentials: new PgGitlabProjectCredentialRepo(prisma),
     credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
     repoAuths: new PgAgentRepoAuthorizationRepo(prisma),
-    clock: systemClock
+    clock: systemClock,
+    baseUrl
   })
 }
 
@@ -235,6 +240,31 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     expect(
       (await h.a.app.inject({ method: 'POST', url: `${ORG}/agents`, payload: payload(NEW_DAEMON) })).statusCode
     ).toBe(201)
+  })
+
+  it('refuses a DIRECT placement on a self-managed axis without gitlab-instance-v1 (§24.4)', async () => {
+    const SELF_MANAGED = 'https://gitlab.example.test/gitlab'
+    const h = await harness(undefined, SELF_MANAGED)
+    const OLD_DAEMON = 'd3d3d3d3-dddd-4ddd-8ddd-dddddddddddd'
+    const NEW_DAEMON = 'd4d4d4d4-dddd-4ddd-8ddd-dddddddddddd'
+    const caps = (features: string[]) => ({
+      capabilities: { platforms: [], runtimes: ['claude'], acp: true, features }
+    })
+    // Carries the older bit only: it can decode the gitlab workspace arm but would
+    // resolve its host to GitLab.com.
+    await seedDaemon(prisma, OLD_DAEMON, caps([GITLAB_COM_V1_FEATURE]))
+    await seedDaemon(prisma, NEW_DAEMON, caps([GITLAB_COM_V1_FEATURE, GITLAB_INSTANCE_V1_FEATURE]))
+    const payload = (daemonId: string) => ({
+      name: `gl-${daemonId.slice(0, 4)}`,
+      runtime: 'claude',
+      daemonId,
+      workspace: { mode: 'gitlab', projectId: PROJECT.toString() }
+    })
+    expect(
+      (await h.a.app.inject({ method: 'POST', url: `${ORG}/agents`, payload: payload(OLD_DAEMON) })).statusCode
+    ).toBe(409)
+    const created = await h.a.app.inject({ method: 'POST', url: `${ORG}/agents`, payload: payload(NEW_DAEMON) })
+    expect(created.statusCode).toBe(201)
   })
 
   it('creation inherits the binding default branch when the caller names none', async () => {
@@ -599,6 +629,18 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
     expect(grant.token).not.toBe(await store.get(DEFAULT_ORG_ID, (await creds.get(h.account.id, 'git_write'))!.id))
     expect(grant.access).toBe('read')
     expect(grant.provider).toBe('gitlab')
+    // §24.4: the host rides beside provider and project id, for the consumer to verify
+    // against the host its spec carried. GitLab.com is the default value of the axis.
+    expect(grant.host).toBe(GITLAB_DEFAULT_BASE_URL)
+    expect(
+      (
+        await credService(h.bindings, 'https://gitlab.example.test/gitlab').grantForHookReply(
+          DEFAULT_ORG_ID,
+          AGENT,
+          PROJECT
+        )
+      ).host
+    ).toBe('https://gitlab.example.test/gitlab')
     expect(grant.username).toBe(gitlabAgentAccountUsername(AGENT, 'workspace-agent', ROOT_GROUP))
     expect(grant.externalRepoId).toBe(PROJECT.toString())
     expect(grant.repoFullName).toBe('example-group/example-project')

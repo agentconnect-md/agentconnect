@@ -297,6 +297,25 @@ export const AGENT_EXISTS_FEATURE = 'agent-exists-v1'
  *  and rule broadcast — a GitLab-shaped value sent without it is frame-fatal downstream. */
 export const GITLAB_COM_V1_FEATURE = 'gitlab-com-v1'
 
+/** The default value of the GitLab host axis (§24.1). An absent host on a replicated
+ *  agent spec, a compiled hook rule, trusted hook metadata, or a credential grant means
+ *  this — the default of one axis, never a separate mode. */
+export const GITLAB_DEFAULT_BASE_URL = 'https://gitlab.com'
+
+/** Daemon/relay serves the self-managed-instance slice: the host carried per agent rather
+ *  than assumed (§24.4). Gates placement, snapshot projection, hook assignment, and hook
+ *  dispatch ONLY when the configured host is not `GITLAB_DEFAULT_BASE_URL`; on GitLab.com
+ *  nothing is gated. Fail-closed by omission — a peer without it never sees self-managed
+ *  work, so it cannot fall back to GitLab.com for it. */
+export const GITLAB_INSTANCE_V1_FEATURE = 'gitlab-instance-v1'
+
+/** True when a carried host names an instance other than GitLab.com — the only case anything
+ *  gates (§24.4). Absent is the default value of the axis, so it is never self-managed. Lives
+ *  here, not in one consumer: the control plane, the relay, and the daemon all read it. */
+export function isSelfManagedGitlabHost(host: string | undefined): boolean {
+  return host !== undefined && host !== GITLAB_DEFAULT_BASE_URL
+}
+
 /** Relay decodes `rc/hook-rerun` and answers its correlated admission REP
  *  (§16.1 Console "Run again"). Strictly newer than `gitlab-com-v1`: a relay
  *  advertising only that one cannot decode the frame, so the CP must select

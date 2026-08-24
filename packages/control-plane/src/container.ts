@@ -545,6 +545,10 @@ export function buildContainer(
     ...(config.S3_PUBLIC_BASE_URL ? { store: config.S3_PUBLIC_BASE_URL } : {})
   }
 
+  // GitLab OAuth app config, resolved before the spec assembler because the host axis
+  // rides every projected spec with a GitLab consumer (§24.4); absent ⇒ gitlab disabled.
+  const gitlabAppCfg = resolveGitlabAppConfig(config)
+
   // The ONE assembler of CP→daemon AgentSpecs — owns secret loading (the only
   // AgentSecretStore VALUE reader) + icon bases, shared by every emission path:
   // reconcile roster, agent/upsert replicate, icon refresh, move activation.
@@ -572,7 +576,11 @@ export function buildContainer(
         'organization environment keys resolved to nothing and were removed from the agent projection'
       ),
     // The additional-repository allowlist the workspace projection mirrors.
-    repos.agentRepoAuth
+    repos.agentRepoAuth,
+    // §24.4 host carriage: the axis, and the hook read that reveals the one GitLab
+    // consumer neither the workspace nor the allowlist does.
+    gitlabAppCfg?.baseUrl,
+    repos.hook
   )
 
   // Browser webchat token mint/verify (§10, A4): a short-lived HS256 JWT bound to
@@ -685,9 +693,6 @@ export function buildContainer(
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
   // broadcast through it, and a (re)registering relay gets the full-set replay.
   // The installation repo feeds the github-kind compile (installationIds gate).
-  // GitLab OAuth app config resolves here (not at the service block below) so the
-  // hook compiler can receive its gitlab-kind sources; absent ⇒ gitlab hooks never compile.
-  const gitlabAppCfg = resolveGitlabAppConfig(config)
   // §24.1: the resolved instance base, bound once here. Every GitLab URL in the
   // process is composed from this client, so nothing can address another host.
   const gitlabApi = gitlabAppCfg ? new GitlabApiClient(gitlabAppCfg.baseUrl, opts.gitlabFetch) : undefined
@@ -703,7 +708,20 @@ export function buildContainer(
     undefined,
     gitlabAppCfg ? repos.gitlabProjectBinding : undefined,
     gitlabWebhookSecretStore,
-    gitlabAppCfg ? repos.gitlabAgentAccount : undefined
+    gitlabAppCfg ? repos.gitlabAgentAccount : undefined,
+    gitlabAppCfg?.baseUrl,
+    async (orgId, agentId) => {
+      // Re-read: the hook write advanced this agent's configRevision in its own transaction.
+      const agent = await repos.agent.get(orgId, agentId)
+      if (!agent) return
+      await agentDelivery.upsert(agent, (err, daemonId) => {
+        if (err instanceof NoConnection) {
+          http.log.debug({ agentId, daemonId }, 'agent/upsert skipped: daemon offline')
+        } else {
+          http.log.warn({ err, agentId, daemonId }, 'hook converge: agent spec reconcile failed')
+        }
+      })
+    }
   )
 
   // The single fencing site (allocates seq, stamps epoch/launchId on C→D frames).
@@ -1799,7 +1817,8 @@ export function buildContainer(
             credentials: new PgGitlabProjectCredentialRepo(prisma),
             credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, secretCipher),
             repoAuths: repos.agentRepoAuth,
-            clock
+            clock,
+            baseUrl: gitlab.api.baseUrl
           })
         }
       : {}),

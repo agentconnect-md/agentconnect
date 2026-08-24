@@ -98,11 +98,14 @@ export class AgentDelivery {
     const candidates = await this.daemonsFor(agent)
     if (candidates.length === 0) return
     const spec = await this.deps.specs.assemble(agent)
-    // §17.3 projection gate, judged on the ASSEMBLED spec: a gitlab additional
-    // repository is only visible there (grants are their own table), and a target
-    // that has not advertised the required features is skipped rather than sent a
-    // frame it would decode into the wrong host.
-    const shaped = spec.workspace ? { workspace: spec.workspace } : agent
+    // §17.3/§24.4 projection gate, judged on the ASSEMBLED spec: a gitlab additional
+    // repository and the host axis are only visible there (grants and hooks are their
+    // own tables), and a target that has not advertised the required features is skipped
+    // rather than sent a frame it would decode into the wrong host.
+    const shaped = {
+      workspace: spec.workspace ?? agent.workspace,
+      ...(spec.gitlabHost !== undefined ? { gitlabHost: spec.gitlabHost } : {})
+    }
     const targets = candidates.filter((daemonId) => daemonSupportsAgent(shaped, this.deps.daemonFeatures?.(daemonId)))
     if (targets.length === 0) return
     await this.fanOut(targets, onError, (daemonId) =>

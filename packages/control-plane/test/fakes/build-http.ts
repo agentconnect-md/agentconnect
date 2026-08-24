@@ -298,6 +298,12 @@ export function buildHttpApp(
   )
   const presetAgentRepo = new PgPresetAgentStore(prisma)
   const hookRepo = new PgHookRepo(prisma)
+  const registryService = new DaemonRegistryService(
+    daemonRepo,
+    new PgRuntimeProfileRepo(prisma),
+    daemonLifecycleOpRepo,
+    clock
+  )
   const hookSecretStore = new PgHookSecretStore(prisma, cipher)
   const githubInstallationRepo = new PgGithubInstallationRepo(prisma)
   const agentRepoAuthRepo = new PgAgentRepoAuthorizationRepo(prisma)
@@ -344,7 +350,9 @@ export function buildHttpApp(
     undefined,
     organizationEnvironmentResolver,
     undefined,
-    agentRepoAuthRepo
+    agentRepoAuthRepo,
+    depsOverrides?.gitlab?.api.baseUrl,
+    hookRepo
   )
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 
@@ -404,7 +412,15 @@ export function buildHttpApp(
     undefined,
     depsOverrides?.gitlab ? new PgGitlabProjectBindingRepo(prisma) : undefined,
     depsOverrides?.gitlab ? new PgGitlabWebhookSecretStore(prisma, cipher) : undefined,
-    depsOverrides?.gitlab ? new PgGitlabAgentAccountRepo(prisma) : undefined
+    depsOverrides?.gitlab ? new PgGitlabAgentAccountRepo(prisma) : undefined,
+    // §24.4: the axis the fake GitLab edge serves rides every compiled gitlab rule, and the
+    // hook agent's spec is re-projected in the same ordered sequence production uses.
+    depsOverrides?.gitlab?.api.baseUrl,
+    async (orgId, agentId) => {
+      const agent = await agentRepo.get(orgId, agentId)
+      if (!agent) return
+      await (depsOverrides?.agentDelivery ?? agentDelivery).upsert(agent, () => {})
+    }
   )
   // The §16.1 rerun authorizer rides the gitlab seam; a suite may still override it.
   if (coreOverrides.gitlab && !coreOverrides.gitlab.hookRerun) {
@@ -480,7 +496,7 @@ export function buildHttpApp(
       webchatMcpOperation: webchatMcpOperationRepo,
       oauth: oauthRepo
     },
-    registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),
+    registry: registryService,
     platforms,
     agentSpecs,
     liveness,

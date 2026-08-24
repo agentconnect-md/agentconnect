@@ -24,6 +24,8 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Clock } from '@agentconnect.md/connection'
 import {
   GITLAB_COM_V1_FEATURE,
+  GITLAB_INSTANCE_V1_FEATURE,
+  isSelfManagedGitlabHost,
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
@@ -204,6 +206,15 @@ export async function dispatchHookFire(
       // gitlab-com-v1 capability (§12.3): an older daemon would fall back to
       // generic parsing and mis-scope the thread, so fail closed instead.
       if (dispatchMsg.gitlab && !conn.supports(GITLAB_COM_V1_FEATURE)) {
+        deps.report({ ...base, status: 'failed', reason: 'rejected:unsupported' })
+        resolve()
+        return
+      }
+      // §24.4, the same shape one bit newer: a self-managed host needs a daemon that
+      // resolves the host from its spec rather than assuming GitLab.com. Fenced HERE, on the
+      // live connection, because a daemon's advertisement changes under a standing rule —
+      // and re-read on every retry attempt, so a rollout heals without a convergence pass.
+      if (isSelfManagedGitlabHost(dispatchMsg.gitlab?.host) && !conn.supports(GITLAB_INSTANCE_V1_FEATURE)) {
         deps.report({ ...base, status: 'failed', reason: 'rejected:unsupported' })
         resolve()
         return

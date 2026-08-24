@@ -28,6 +28,7 @@ import { GITLAB_ACCESS_DEVELOPER } from '../../gitlab/api.js'
 import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import { GitCredDeniedError, type ResolvedAgentRepoAuthorization } from '../../github/service.js'
 import { AgentId, HookId, IntegrationId, OrgId } from '../../domain/ids.js'
+import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
 import { toDbPlatform, type DbPlatform } from '../../persistence/platform.js'
@@ -127,8 +128,34 @@ export function hookRoutes(deps: HttpDeps) {
 
     // Re-converge the relay pool after a write. Fire-and-forget: a push failure
     // never fails the CRUD (a relay converges via its register replay).
-    const converge = (hook: HookRecord): void => {
-      void deps.hooks.broadcast(hook).catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
+    //
+    // `afterAssigned` runs once the rule has actually been assigned, for work that is only
+    // safe on the far side of it. It is deliberately skipped when the broadcast REJECTS: the
+    // old rule may still be live in the pool, and its callers use this to drop state that
+    // rule still depends on. Leaving that state stale is safe and the roster reconciles it.
+    const converge = (hook: HookRecord, afterAssigned?: () => Promise<void>): void => {
+      void deps.hooks
+        .broadcast(hook)
+        .then(() => afterAssigned?.())
+        .catch((err) => app.log.warn({ hookId: hook.id, err }, 'hook broadcast failed'))
+    }
+
+    // §24.4: the hook's OWN agent is re-projected by `HookService.broadcast`, which is the
+    // only place that sees every rule assignment. This covers the two an assign cannot: the
+    // agent a retarget moved the hook OFF, and a delete, which leaves no row to broadcast.
+    // Best-effort, like the agents route's replicateUpsert: the register/ok roster backstops.
+    const replicateUpsert = async (orgId: OrgId, agentId: AgentId | null): Promise<void> => {
+      if (!agentId) return
+      // Re-read: the hook write advanced the agent's configRevision in its own transaction.
+      const fresh = await deps.repos.agent.get(orgId, agentId)
+      if (!fresh) return
+      await deps.agentDelivery.upsert(fresh, (err, daemonId) => {
+        if (err instanceof NoConnection) {
+          app.log.debug({ agentId, daemonId }, 'agent/upsert skipped: daemon offline')
+        } else {
+          app.log.warn({ err, agentId, daemonId }, 'hook write: agent spec reconcile failed')
+        }
+      })
     }
 
     // §7.2 identity bracket for a gitlab hook write: the hook agent's own account
@@ -898,7 +925,12 @@ export function hookRoutes(deps: HttpDeps) {
             details: { hookId: hook.id, kind: hook.kind, enabled: hook.enabled }
           })
           .catch(() => {})
-        converge(hook)
+        // A retarget moved the hook OFF this agent, which may have just lost its last GitLab
+        // consumer — so it is re-projected only once the rule has actually MOVED. Until
+        // `hookAssign` runs, the pool still holds the old rule targeting this very agent, and
+        // dropping its host first would have a delivery in that window refused.
+        const retargetedFrom = existing.agentId && existing.agentId !== agent.id ? existing.agentId : null
+        converge(hook, retargetedFrom ? () => replicateUpsert(orgOf(req), retargetedFrom) : undefined)
         if (hook.kind === 'gitlab') {
           convergeGitlabWebhook(orgOf(req), hook.repoId)
           // A retarget moved this hook off `existing.repoId`: the source
@@ -944,6 +976,9 @@ export function hookRoutes(deps: HttpDeps) {
           })
           .catch(() => {})
         deps.hooks.remove(existing.id)
+        // Losing: no rule can fire any more, so dropping the host now cannot orphan a
+        // delivery that still quotes it.
+        await replicateUpsert(orgOf(req), existing.agentId)
         if (existing.kind === 'gitlab') convergeGitlabWebhook(orgOf(req), existing.repoId)
         return reply.code(204).send(null)
       }

@@ -2395,10 +2395,41 @@ Merge order, GitLab.com green at every step:
   the base URL is saved, and only `invalid_url` refuses the save; `unreachable`,
   `tls_untrusted`, and `not_a_gitlab_api_root` are returned with the saved
   revision as warnings.
-- **N2 — protocol carriage.** `gitlabHost` on the agent spec, derived from
+- **N2 — protocol carriage. Landed.** `gitlabHost` on the agent spec, derived from
   all three consumer sources; `host` on the hook rule, hook metadata, and
   grant; the placement, projection, hook-assignment, and hook-dispatch gates
-  on `gitlab-instance-v1`. Exit: mixed-version tests in both directions,
+  on `gitlab-instance-v1`. The host rides the spec whenever a consumer does,
+  carrying the axis whatever its value, so nothing branches on "is this
+  GitLab.com" (§24.1) — only the gates read the value, and a default one gates
+  nothing. The two feature lists stay apart: the projection and
+  hook-assignment gates extend the §17.3 requirement, while the hook's
+  dispatch-target daemon — never gated on `gitlab-com-v1` — is gated on the new
+  bit alone. That target gate is a DISPATCH-time fence at the relay, beside the
+  `gitlab-com-v1` one it mirrors, not a compile-time decision: a compiled rule
+  caches the daemon's advertisement, which changes under a standing rule in both
+  directions — a daemon gaining the bit would stay ruleless until an unrelated
+  event, and one losing it would keep a live rule, the very thing the gate
+  exists to prevent. The fence sits on the live connection and is re-read per
+  delivery attempt, so a rollout heals with no convergence pass; both the
+  webhook path and the authorized re-run reach it through the same dispatch,
+  which is what makes one fence cover delivery, retries, and re-runs alike. The
+  relay advertises the feature because carrying the host through is its whole
+  share of the work. The rerun walk also takes the host into its relay
+  ELIGIBILITY, not just its frame: a relay denied the self-managed rule holds
+  none, so asking it would collect a `replay_pending` refusal — and the first
+  answered verdict is final, so that refusal would end the walk before an
+  eligible peer was asked. And because an enabled hook is a spec consumer, a
+  hook write is a spec edit, ordered against the rule: the agent GAINING the
+  consumer is re-projected before the rule is assigned, the one LOSING it after
+  the rule is gone. That ordering lives in the rule convergence itself, not in
+  the CRUD routes, because a route is not the only thing that assigns a rule —
+  the GitLab provisioning bracket commits the row and rebroadcasts from inside
+  the write, before any route code after it runs, so a route-level push is
+  simply too late. Convergence therefore projects and then assigns as one
+  sequence, and every caller inherits it. The routes keep only the two cases an
+  assign cannot see: the agent a retarget moved the hook off, and a delete,
+  which leaves no row to converge.
+  Exit: mixed-version tests in both directions,
   including a self-managed additional repository on a scratch workspace and
   a hook targeting a non-GitLab-workspace agent on an old daemon.
 - **N3 — daemon plumbing.** The managed host resolved from the spec's

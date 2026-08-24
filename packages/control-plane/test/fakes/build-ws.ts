@@ -41,6 +41,7 @@ import {
   PgHookSecretStore
 } from '../../src/persistence/index.js'
 import { PgMemberSetRepo } from '../../src/persistence/repositories/member-set.repo.js'
+import { PgAgentRepoAuthorizationRepo } from '../../src/persistence/repositories/agent-repo-auth.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { EpochService } from '../../src/orchestrator/epoch.js'
 import { Placement } from '../../src/orchestrator/placement.js'
@@ -119,6 +120,8 @@ export interface HarnessOpts {
   relays?: RelayRosterEntry[]
   /** Duty lease knobs (defaults suit tests; recoveryGraceMs 0 so grants flow immediately). */
   dutyLease?: Partial<DutyLeaseConfig>
+  /** The §24.1 GitLab host axis this control plane serves; absent ⇒ GitLab unconfigured. */
+  gitlabBaseUrl?: string
 }
 
 /** One compiled hook rule as the relay would receive it — the routing projection under test. */
@@ -224,7 +227,18 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     repos.lease,
     repos.integration,
     repos.botSecret,
-    new AgentSpecAssembler(repos.agentSecret),
+    new AgentSpecAssembler(
+      repos.agentSecret,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      new PgAgentRepoAuthorizationRepo(prisma),
+      opts.gitlabBaseUrl,
+      repos.hook
+    ),
     repos.integrationChannel,
     repos.bot,
     PLATFORMS,

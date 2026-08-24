@@ -115,6 +115,10 @@ export const GitlabHookMetadata = z.object({
   projectId: HookBigIntString,
   projectPath: z.string().min(1), // current namespaced path — display only, never a match key
   webhookId: HookBigIntString.optional(),
+  // The instance this delivery came from, copied from the compiled rule and never read
+  // off the payload (§24.4). The turn-time fence: a delivery whose host disagrees with the
+  // session's spec-carried host is refused, never re-targeted. Absent means GitLab.com.
+  host: z.string().optional(),
   target: GitlabHookTarget
 })
 export type GitlabHookMetadata = z.infer<typeof GitlabHookMetadata>

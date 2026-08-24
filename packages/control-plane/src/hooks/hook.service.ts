@@ -16,7 +16,8 @@
  * holds is always dispatchable. Compiled rules carry the hook's hmacSecret:
  * NEVER log.
  */
-import { GITLAB_COM_V1_FEATURE, type RcHookAssign } from '@agentconnect.md/protocol'
+import { type RcHookAssign } from '@agentconnect.md/protocol'
+import { advertises, requiredGitlabFeatures } from '../domain/daemon-features.js'
 import type { AgentId, OrgId } from '../domain/ids.js'
 import type {
   AgentRecord,
@@ -64,7 +65,16 @@ export class HookService {
      *  Absent ⇒ gitlab hooks never compile (deployment without the OAuth app). */
     private readonly gitlabBindings?: Pick<GitlabProjectBindingRepo, 'byProject'>,
     private readonly gitlabWebhookSecrets?: GitlabWebhookSecretStore,
-    private readonly gitlabAccounts?: Pick<GitlabAgentAccountRepo, 'listForBinding'>
+    private readonly gitlabAccounts?: Pick<GitlabAgentAccountRepo, 'listForBinding'>,
+    /** The deployment's normalized GitLab instance base URL (§24.1); it rides every
+     *  compiled gitlab rule as the turn-time fence host. */
+    private readonly gitlabHost?: string,
+    /** Re-project the hook agent's spec (§24.4). An enabled gitlab hook is a GitLab consumer,
+     *  so it puts `gitlabHost` on that agent's spec — and the spec is what the daemon fences a
+     *  delivery against. It lives HERE rather than in the CRUD routes because a route is not
+     *  the only thing that assigns a rule: the gitlab provisioning bracket commits the row and
+     *  rebroadcasts from inside the write, before any route code after it runs. Best-effort. */
+    private readonly projectAgentSpec?: (orgId: OrgId, agentId: AgentId) => Promise<void>
   ) {}
 
   /**
@@ -176,7 +186,8 @@ export class HookService {
           serviceAccountUsername: account.username,
           // §12.1 veto set: every managed account bound to the project.
           boundServiceAccountUserIds: [...new Set(bound)],
-          signingToken
+          signingToken,
+          ...(this.gitlabHost !== undefined ? { host: this.gitlabHost } : {})
         }
       }
     }
@@ -216,11 +227,24 @@ export class HookService {
     }
   }
 
-  /** Converge the pool on one hook: assign when compilable, remove otherwise. */
+  /**
+   * Converge the pool on one hook: assign when compilable, remove otherwise.
+   *
+   * The spec projection is ordered against the rule, never merely paired with it (§24.4): the
+   * agent must carry the host for as long as a rule that can fire exists, so a GAINING
+   * projection lands before the assign and a LOSING one after the remove. Every caller
+   * inherits that — the CRUD routes, the gitlab provisioning rebroadcast, and a placement
+   * re-converge alike — which is the point of it living here.
+   */
   async broadcast(hook: HookRecord): Promise<void> {
     const rule = await this.compile(hook)
-    if (rule) this.relayControl.hookAssign(rule)
-    else this.relayControl.hookRemove(hook.id)
+    if (rule) {
+      if (hook.agentId) await this.projectAgentSpec?.(hook.orgId, hook.agentId)
+      this.relayControl.hookAssign(rule)
+    } else {
+      this.relayControl.hookRemove(hook.id)
+      if (hook.agentId) await this.projectAgentSpec?.(hook.orgId, hook.agentId)
+    }
   }
 
   /** Explicit pool-wide removal (hook deleted — no row left to compile). */
@@ -257,8 +281,8 @@ export class HookService {
     for (const hook of await this.hooks.listEnabled()) {
       try {
         const rule = await this.compile(hook)
-        // The §17.3 negotiation gate, per channel (mirrors RelayControlSender).
-        if (rule?.kind === 'gitlab' && !ch.features?.includes(GITLAB_COM_V1_FEATURE)) continue
+        // The §17.3/§24.4 negotiation gate, per channel (mirrors RelayControlSender).
+        if (rule?.kind === 'gitlab' && !advertises(ch.features, requiredGitlabFeatures(rule.gitlab?.host))) continue
         if (rule) ch.send('rc/hook-assign', rule)
       } catch (err) {
         this.log?.warn({ hookId: hook.id, err }, 'hook replay: compile/send failed — skipped')
