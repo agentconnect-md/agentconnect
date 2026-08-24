@@ -1492,7 +1492,7 @@ export interface SessionPullRequestFeedbackRepo {
     pullNumber: number
   }): Promise<boolean>
   /** Idempotently dirty one PR wake. */
-  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, nextAttemptAt: Date): Promise<void>
+  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, signalAt: Date, nextAttemptAt: Date): Promise<void>
   /** Cross-process lease for the next due linked or discovery wake. */
   claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null>
   /** Clear only the delivery key that was accepted; a concurrent newer wake remains dirty. */

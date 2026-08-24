@@ -67,6 +67,7 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
   async enqueue(
     orgId: OrgId,
     signal: Parameters<SessionPullRequestFeedbackRepo['enqueue']>[1],
+    signalAt: Date,
     nextAttemptAt: Date
   ): Promise<void> {
     const key = { orgId, repoId: BigInt(signal.repoId), pullNumber: signal.pullNumber }
@@ -79,6 +80,7 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
           installationId,
           repoFullName: signal.repoFullName,
           deliveryKey: signal.deliveryKey,
+          signalAt,
           nextAttemptAt
         },
         update: {}
@@ -90,6 +92,7 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
           installationId,
           repoFullName: signal.repoFullName,
           deliveryKey: signal.deliveryKey,
+          signalAt,
           nextAttemptAt
         }
       })
@@ -103,7 +106,7 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
         nextAttemptAt: { lte: now },
         OR: [{ claimUntil: null }, { claimUntil: { lt: now } }]
       },
-      orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }, { repoId: 'asc' }, { pullNumber: 'asc' }],
+      orderBy: [{ nextAttemptAt: 'asc' }, { signalAt: 'asc' }, { repoId: 'asc' }, { pullNumber: 'asc' }],
       take: 20
     })
     for (const candidate of candidates) {
@@ -154,7 +157,7 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
 
   async deleteExpired(unmatchedBefore: Date): Promise<number> {
     const deleted = await this.db.sessionPullRequest.deleteMany({
-      where: { sessionId: null, createdAt: { lt: unmatchedBefore } }
+      where: { sessionId: null, signalAt: { lt: unmatchedBefore } }
     })
     return deleted.count
   }

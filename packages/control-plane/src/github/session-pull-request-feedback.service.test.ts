@@ -124,7 +124,7 @@ describe('SessionPullRequestFeedbackService', () => {
     await h.service.settle()
     h.service.stop()
 
-    expect(h.feedbackRepo.enqueue).toHaveBeenCalledWith(ORG_ID, signal, new Date(NOW + 15_000))
+    expect(h.feedbackRepo.enqueue).toHaveBeenCalledWith(ORG_ID, signal, new Date(NOW + 5_000), new Date(NOW + 15_000))
     expect(h.feedbackRepo.complete).toHaveBeenCalledWith(due, expect.any(String))
   })
 

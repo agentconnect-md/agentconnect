@@ -1209,7 +1209,7 @@ model SessionPullRequest {
   nextAttemptAt  DateTime? @db.Timestamptz(6)
   claimOwner     String?   @db.Uuid
   claimUntil     DateTime? @db.Timestamptz(6)
-  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+  signalAt       DateTime? @db.Timestamptz(6)
 
   session SessionMeta? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 

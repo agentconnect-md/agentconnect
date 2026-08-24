@@ -357,7 +357,8 @@ the current review and check state from GitHub, so payload detail is
 unnecessary. Successful admission clears the wake only if its delivery key is
 still current, so a concurrent delivery remains pending. Deferred delivery
 moves only that PR's next-attempt time forward, allowing the worker to continue
-with other due PRs in the same pass.
+with other due PRs in the same pass. Unowned rows expire from the latest
+distinct signal time; claim and discovery retries do not extend that lifetime.
 
 The relay acknowledges GitHub only after the marker is durable. A transient
 persistence failure returns 503 instead of falsely acknowledging the delivery;

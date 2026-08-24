@@ -9,7 +9,7 @@ CREATE TABLE "session_pull_request" (
   "nextAttemptAt" TIMESTAMPTZ(6),
   "claimOwner" UUID,
   "claimUntil" TIMESTAMPTZ(6),
-  "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "signalAt" TIMESTAMPTZ(6),
   CONSTRAINT "session_pull_request_pkey" PRIMARY KEY ("orgId", "repoId", "pullNumber")
 );
 
