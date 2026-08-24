@@ -52,6 +52,7 @@ export const canonicalColumns = [
   'defaultModel',
   'defaultPermissionMode',
   'deliveryReason',
+  'directDestination',
   'dispatchId',
   'dreamId',
   'dueAt',

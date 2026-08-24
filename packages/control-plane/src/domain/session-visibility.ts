@@ -39,6 +39,9 @@ export interface SessionClassificationInput {
   triggeredBy?: string
   /** Present ⇒ an A2A child: it inherits from its parent under a row lock (§4.5). */
   parentSessionId?: string
+  /** Daemon-reported: this row's coordinates ARE its own conversation (an agent's channel-ROOT
+   *  post, or a peer woken by a platform mention there), so a parent link is lineage only. */
+  directDestination?: boolean
   /** Resolved `WebchatConversation.userId`, or null when the lookup missed. */
   webchatOwnerUserId?: string | null
   /** Present ⇒ a Web API launch (§4.4); the value is its resolved principal or null. */
@@ -71,6 +74,7 @@ function imOwnerIdentity(input: SessionClassificationInput): string | null {
  * | origin                        | visibility      | ownerIdentity                    |
  * | ----------------------------- | --------------- | -------------------------------- |
  * | A2A child (`parentSessionId`) | inherits parent | inherits parent                  |
+ * | …that child's own conversation| `private` (DM) / `org` | null (the trigger is the agent) |
  * | webchat / Playground          | `private`       | `user:<WebchatConversation.userId>` |
  * | Web API launch (§4.4)         | `private`       | `user:<launch principal>`        |
  * | cron / hook / dream           | `org`           | null                             |
@@ -82,7 +86,19 @@ export function classifySession(input: SessionClassificationInput): SessionClass
   // DM or Playground session copies the delegated prompt into the child
   // transcript, so classifying children `org` would expose it to every viewer
   // of the target agent. Resolution needs the parent row under a lock (§4.5).
-  if (input.parentSessionId) return { inherit: true }
+  if (input.parentSessionId) {
+    // …unless the child IS its own conversation: an agent's channel-ROOT post, or a peer woken
+    // by a mention observed there. Nothing of the parent's is copied into such a row — its
+    // content is what the agent published in that conversation and what people reply there — so
+    // inheriting would give it the readers of a conversation it does not live in (§4.2). It
+    // classifies by its own shape, unowned: the reporting trigger is the agent, not a person,
+    // and a shared external destination is re-bound from the row's own trusted candidate.
+    if (input.directDestination) {
+      const visibility: SessionVisibility = input.conversationKind === 'dm' ? 'private' : 'org'
+      return { visibility, ownerIdentity: null, source: 'default' }
+    }
+    return { inherit: true }
+  }
 
   // Webchat/Playground. `triggeredBy` here is the console user's email, which
   // degrades under devAuth and is not a stable key — the binding lookup is the

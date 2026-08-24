@@ -53,6 +53,7 @@ async function classifyMilestone(p: EventSession, agentId: AgentId, deps: Daemon
     ...(p.transportScope !== undefined ? { transportScope: p.transportScope } : {}),
     ...(p.triggeredBy !== undefined ? { triggeredBy: p.triggeredBy } : {}),
     ...(p.parentSessionId !== undefined ? { parentSessionId: p.parentSessionId } : {}),
+    ...(p.directDestination !== undefined ? { directDestination: p.directDestination } : {}),
     ...(p.launchCorrelationId !== undefined ? { launchCorrelationId: p.launchCorrelationId } : {}),
     webchatOwnerUserId,
     launchOwnerUserId

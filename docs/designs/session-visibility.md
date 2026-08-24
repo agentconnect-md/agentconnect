@@ -205,7 +205,7 @@ hidden unresolved candidate after GitHub sync is enabled.
 
 ### 4.1 Protocol: new telemetry fields
 
-`EventSession` (`packages/protocol/src/frames/telemetry.ts`) gains four
+`EventSession` (`packages/protocol/src/frames/telemetry.ts`) gains five
 optional fields:
 
 ```ts
@@ -213,6 +213,7 @@ conversationKind?: 'dm' | 'group_dm' | 'channel'
 transportScope?: string // trusted workspace/tenant scope for ownerIdentity, §2
 launchCorrelationId?: string // Web API launch provenance, §4.4
 sourceBindingKind?: 'local' | 'external' // daemon-pinned source provenance
+directDestination?: true // this row's coordinates are its own conversation, §4.2
 ```
 
 Shared-source sessions additionally report a provider-specific
@@ -336,6 +337,11 @@ Notes:
   origin session travels as lineage only: inheriting its scope would bind the
   seed to a conversation it does not live in — readable by that channel's
   audience, and rejecting the first human reply as a cross-source turn.
+  Such a row reports `directDestination` and is classified here rather than by
+  inheritance, even though it keeps `parentSessionId`: a DM destination (which
+  binds no audience by design) becomes `private`, any other conversation `org`,
+  and both are unowned — the reporting trigger is the agent, not a person. A
+  shared destination re-binds its own trusted candidate, which outranks both.
 
 ### 4.3 Changing visibility after the fact
 

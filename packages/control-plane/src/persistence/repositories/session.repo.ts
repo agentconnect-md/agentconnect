@@ -473,6 +473,18 @@ export class PgSessionRepo implements SessionRepo {
             legacyUnresolved: false,
             classifiedPolicyRev: null
           }
+    // A row that keeps a parent link but classifies ITSELF (a direct destination, or a
+    // trusted candidate of its own) still serializes against a concurrent §4.3 tightening
+    // cascade: that cascade re-scans each level only after locking it `FOR UPDATE`, so a
+    // child committing without `FOR SHARE` on its parent could slip past the scan. The
+    // inheriting path below takes the same lock, for the values too.
+    if (ev.parentSessionId && (direct || ev.externalCandidate)) {
+      await tx.$queryRaw(Prisma.sql`
+        SELECT 1 FROM "session_meta"
+        WHERE "id" = ${ev.parentSessionId} AND "orgId" = ${orgId}
+        FOR SHARE
+      `)
+    }
     if (ev.externalCandidate) {
       const candidate = ev.externalCandidate
       await tx.sessionExternalAccessPolicy.upsert({

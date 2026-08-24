@@ -479,6 +479,46 @@ describe('session visibility — external conversation audiences', () => {
     expect((await repo.getExternalAccessPolicy(OrgId(DEFAULT_ORG_ID), 'slack'))?.state).toBe('degraded')
   })
 
+  // §4.2 direct destination: a child whose coordinates are its OWN conversation (an agent's
+  // channel-ROOT post) reports a settled classification instead of `inherit`. It keeps the
+  // parent for lineage, but must not take the parent's audience — a DM seeded from a public
+  // channel session would otherwise be readable by that channel's audience.
+  it('keeps a direct-destination child out of its parent audience while keeping the lineage', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-dd-parent-${randomUUID()}`
+    const childId = `s-dd-child-${randomUUID()}`
+
+    // The origin turn: an org-visible Slack channel session with a human owner.
+    await seedSessionMeta(prisma, parentId, agentId, {
+      daemonId,
+      channel: 'C_ORIGIN',
+      ownerIdentity: 'slack:T1:U1'
+    })
+
+    const child = await repo.recordMilestone({
+      sessionId: SessionId(childId),
+      parentSessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'slack',
+      channel: 'D_PEER',
+      at: new Date(),
+      classification: { visibility: 'private', ownerIdentity: null, source: 'default' }
+    })
+    expect(child.session).toMatchObject({
+      parentSessionId: parentId,
+      visibility: 'private',
+      ownerIdentity: null,
+      // Not `inherited`/`inherited_pending`: this row classified itself, so no settlement
+      // scan will ever hand it the parent's audience either.
+      visibilitySource: 'default',
+      externalProvider: null,
+      externalScopeId: null
+    })
+  })
+
   // The post-commit settlement path (§4.5) inherits the parent's audience after
   // the child's own transaction closed — including the interleaving where the
   // parent lands and is stamped legacy in between. Provenance must ride along, or

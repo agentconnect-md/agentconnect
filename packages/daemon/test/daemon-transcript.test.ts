@@ -368,6 +368,9 @@ describe('Daemon transcript records the agent reply', () => {
     }, WAIT)
     expect(await (daemon as any).store.getSession(seededKey)).toMatchObject({
       sourceBindingKind: 'external',
+      // Reported to the CP so the row is classified by THIS conversation instead of
+      // inheriting the parent's audience (session-visibility.md §4.2).
+      directDestination: 1,
       externalProvider: 'slack',
       externalRealmKey: 'T1',
       externalResourceKind: 'conversation',

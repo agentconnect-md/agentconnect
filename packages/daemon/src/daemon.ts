@@ -12611,6 +12611,11 @@ export class Daemon {
       ...(tenantScope ? { tenantScope } : {}),
       ...(launchCorrelationId ? { launchCorrelationId } : {}),
       sourceBindingKind: externalSource ? 'external' : 'local',
+      // A platform-observed child (a self-post channel root, or a peer woken by a mention in
+      // that very conversation) lives in a conversation of its own, so its parent link is
+      // lineage: the CP must classify it here rather than inherit an audience it was never
+      // posted to. Only the true case is written — absent keeps ordinary inheritance.
+      ...(callMeta?.platformOrigin === true ? { directDestination: true } : {}),
       ...(externalSource ?? {})
     })
     // An external-source binding (Slack/Feishu channel) no longer marks the
