@@ -800,6 +800,51 @@ describe('GET /usage — aggregates the persisted usage store by agent over a ra
     }
   })
 
+  it('withholds a private session on a VISIBLE agent into the same residual', async () => {
+    // The predicate is agent visibility AND session visibility, so the residual is not
+    // "hidden agents": here the agent is listed in the very same table, and what it holds
+    // is one of that agent's sessions belonging to somebody else. Which is why every
+    // surface names the residual for the USAGE and never for agents.
+    await seedAgent(prisma, AGENT_A)
+    const repo = new PgSessionUsageRepo(prisma)
+    const at = new Date(Date.now() - 60_000)
+    await seedSessionMeta(prisma, 'shared', AGENT_A, { lastActivityAt: at })
+    await seedSessionMeta(prisma, 'someone-elses', AGENT_A, {
+      lastActivityAt: at,
+      visibility: 'private',
+      ownerIdentity: SOMEONE_ELSE
+    })
+    for (const [sessionId, costAmount] of [
+      ['shared', '4'],
+      ['someone-elses', '7']
+    ] as const) {
+      await repo.record({
+        agentId: AgentId(AGENT_A),
+        sessionId,
+        source: 'daemon',
+        lastActivityAt: at,
+        usage: { totalTokens: 100, costAmount, costCurrency: 'USD' }
+      })
+    }
+
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const res = await app.inject({ method: 'GET', url: `${ORG}/usage?${preset('d1')}` })
+      expect(res.statusCode).toBe(200)
+      const body = res.json() as {
+        totals: { costAmount: string }
+        agents: { agentId: string; costAmount: string }[]
+        unattributed?: { costAmount: string }
+      }
+      expect(body.totals.costAmount).toBe('11')
+      // The agent is right there, carrying only the session this reader may attribute.
+      expect(body.agents).toEqual([expect.objectContaining({ agentId: AGENT_A, costAmount: '4' })])
+      expect(body.unattributed?.costAmount).toBe('7')
+    } finally {
+      await close()
+    }
+  })
+
   it('omits the residual entirely when the reader can attribute every row', async () => {
     // Absent, never a zero: a caller must be able to tell "nothing was hidden" from
     // "something was hidden and it cost nothing".

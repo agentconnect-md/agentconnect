@@ -388,10 +388,23 @@ export class PgSessionUsageRepo implements SessionUsageRepo {
     // adding up perfectly, while an independent sum turns `Σ agents + unattributed =
     // totals` into an invariant that a bug BREAKS, and that the check below catches.
     //
-    // The SERIES stays viewer-scoped, splits and per-bucket total alike. A residual
-    // resolved per hour is a spend curve for a restricted agent — when it ran and how
-    // much it cost — and that is attribution by another route. The window's one residual
-    // figure is not: it is already implied by an accurate total.
+    // The SERIES stays viewer-scoped, splits and per-bucket total alike, so a bucket never
+    // hands over withheld spend resolved in time.
+    //
+    // Be exact about what that is and is not worth, because the comfortable version is
+    // wrong: it is NOT a security boundary. `from`/`to` are the caller's, bounded only by
+    // a maximum span, so a member who wants the timeline can ask for consecutive narrow
+    // windows — and split them again by `source` — and difference the residual out at
+    // whatever resolution they choose. An accurate total over a caller-chosen window IS a
+    // timeline; no scoping inside the response changes that, and no k-anonymity rule can,
+    // because the residual is implied by subtraction whether or not it is sent.
+    //
+    // What the scoping does buy is that the timeline is never handed over incidentally —
+    // it takes a deliberate scripted read rather than one glance at a chart, which is a
+    // real difference between an accidental disclosure and an attack, and not much more
+    // than that. Bounding it properly would mean a minimum window span (day resolution at
+    // best, and the 24-hour view stops reconciling) or dropping accurate totals. Neither
+    // is free, and the trade as it stands is recorded in session-visibility.md.
     //
     // The INGRESS rollup counts every row, unlike the other two, because `daemon` vs
     // `gateway` is not a resource identity — nobody is named by it — and keeping it whole

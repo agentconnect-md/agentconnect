@@ -34,8 +34,9 @@ const MOBILE_RANGES: { key: UsageRange; label: string }[] = [
 const GRID = 'grid-cols-[2fr_1fr_1fr_1fr_1.4fr]'
 
 /** Stands in for the residual row's icon. Deliberately not an agent avatar: the row is a
- *  sum over agents this viewer cannot name, and dressing it as one agent would say the
- *  opposite of what it means. */
+ *  sum over usage this viewer cannot attribute — a restricted agent's, but equally another
+ *  user's private session on an agent right there in the table — and dressing it as one
+ *  agent would say the opposite of what it means. */
 const ResidualMark = () => (
   <span className="flex h-full w-full items-center justify-center bg-(--surface-active) text-(--text-tertiary)">
     <Icon name="eye-off" size={14} />
@@ -197,6 +198,10 @@ export default function UsageView() {
   // silently fails to reach 100 — so the difference gets a row of its own, in every
   // grouping, appended after the sort so it reads as a footnote and not as the top agent.
   //
+  // Named for the USAGE and not for agents: the server withholds a row when EITHER agent
+  // visibility or session visibility fails, so this also holds another user's private
+  // session on an agent listed right above it.
+  //
   // It is the server's own independently-summed figure, never `totals` minus these rows:
   // a subtraction here would absorb any bug in the rollup and still add up perfectly.
   if (data?.unattributed) {
@@ -206,7 +211,7 @@ export default function UsageView() {
         key: '\0unattributed',
         kind: groupBy,
         residual: true,
-        name: 'Restricted agents',
+        name: 'Restricted usage',
         runtime: '',
         model: '',
         totalTokens: data.unattributed.totalTokens,
@@ -530,7 +535,7 @@ export default function UsageView() {
                     figures side by side: neither is a bug, so name which is which. */}
                 {data.unattributed && (
                   <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                    · visible agents only
+                    · visible usage only
                   </span>
                 )}
                 <span className="mono ml-auto text-[11px] text-(--text-tertiary)">

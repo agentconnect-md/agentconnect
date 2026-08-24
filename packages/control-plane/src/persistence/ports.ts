@@ -1859,12 +1859,17 @@ export interface UsageAggregate {
    *  `Σ agents + unattributed = totals` and `Σ models + unattributed = totals`. Absent
    *  when the reader could attribute everything (which is every read with no `viewer`).
    *
+   *  Withheld by EITHER predicate: a restricted agent, or another user's private session
+   *  on an agent the reader can see. So it is unattributable usage, not hidden agents.
+   *
    *  Aggregated independently, never `totals` minus the visible rows: a subtraction is a
    *  plug figure that would absorb any attribution bug and leave the caller adding up
    *  perfectly, where an independent sum makes the equality a checkable invariant. */
   unattributed?: Omit<AgentUsageAggregate, 'agentId'>
-  /** Viewer-scoped, splits and per-bucket total alike, so no bucket resolves a restricted
-   *  agent's spend in time. It therefore does NOT sum to `totals` — see `unattributed`. */
+  /** Viewer-scoped, splits and per-bucket total alike, so a bucket never hands over
+   *  withheld spend resolved in time. It therefore does NOT sum to `totals` — see
+   *  `unattributed`. This is a convenience boundary, NOT a security one: `from`/`to` are
+   *  the caller's, so consecutive narrow windows reconstruct the residual timeline anyway. */
   series: { bucket: 'hour' | 'day'; points: SpendBucket[] }
 }
 
