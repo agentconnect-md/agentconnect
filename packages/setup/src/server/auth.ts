@@ -49,6 +49,9 @@ export function urlAtOrigin(value: string, origin: string): URL {
   const target = new URL(origin)
   url.protocol = target.protocol
   url.host = target.host
+  // The host setter keeps the port the value already carried when the assigned host names none, so
+  // a URL discovered on a management endpoint's :3001 would keep it at a public origin serving 443.
+  url.port = target.port
   return url
 }
 
