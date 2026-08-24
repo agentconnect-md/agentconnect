@@ -16,6 +16,8 @@ command = [
   '--set', 'daemonPool.tag=v1.41.0-rc.89',
   '--set', 'daemonPool.sandboxNamespace=agentconnect-example-agents',
   '--set', 'daemonPool.dataPlane.existingSecret=example-data-plane',
+  # Install-wide model credentials arrive by reference, so the render must never carry a value.
+  '--set', 'daemonPool.modelCredentials.existingSecret=example-model-credentials',
   # Placement is per-install, so the contract only holds if a consumer's values can set it.
   '--set-json', 'daemonPool.runtime.nodeSelector={"example.com/agents":"true"}',
   '--set-json', 'daemonPool.runtime.tolerations=' \
@@ -72,6 +74,35 @@ abort('install-wide daemon pool must not be pinned to one org') if env.key?('AC_
 # The member publishes readiness only when told which port to serve it on, and the probe must
 # read that same port — a mismatch is a pool that never becomes Ready and a wedged rollout.
 abort('daemon pool must serve its readiness endpoint') unless env['AC_READINESS_PORT'] == '8081'
+
+# Install-wide model credentials: BY REFERENCE, every entry optional, and the key is the variable
+# name the daemon reads. A rendered `value:` here would put a provider key in the pod spec, and a
+# non-optional entry would wedge every member of an install whose Secret names one provider.
+model_credential_env = container.fetch('env').select { |item| item.fetch('name').end_with?('MODEL_TOKEN', 'MODEL_BASE_URL') }
+%w[MODEL_TOKEN MODEL_BASE_URL ANTHROPIC_MODEL_TOKEN ANTHROPIC_MODEL_BASE_URL
+   OPENAI_MODEL_TOKEN OPENAI_MODEL_BASE_URL DEEPSEEK_MODEL_TOKEN DEEPSEEK_MODEL_BASE_URL].each do |name|
+  entry = model_credential_env.find { |item| item.fetch('name') == name } ||
+          abort("daemon pool must project #{name} from the model-credential Secret")
+  abort("#{name} must be a Secret reference, never a value") if entry.key?('value')
+  abort("#{name} must read its own name from the named Secret") unless
+    entry.dig('valueFrom', 'secretKeyRef') == { 'name' => 'example-model-credentials', 'key' => name, 'optional' => true }
+end
+
+# One source per install. An entry the Secret omits is a supported shape, so a second source
+# filling that same variable assembles a pair out of two halves — a provider key aimed at a
+# gateway base URL, or a gateway key at a provider's. The chart cannot see inside the Secret, so
+# it must refuse the overlap rather than render it.
+[['daemonPool.extraEnv.DEEPSEEK_MODEL_TOKEN=example-key', 'collides'],
+ ['modelEgress.enabled=true', 'both write this pool']].each do |setting, expected|
+  extra = setting.start_with?('modelEgress') ? [
+    '--set', setting, '--set-json', 'modelEgress.ports=[8080]',
+    '--set', 'modelEgress.clients.claude.baseUrl=http://gateway.example.test:8080',
+    '--set', 'modelEgress.clients.claude.apiKey=example'
+  ] : ['--set', setting]
+  _, refused, refused_status = Open3.capture3(*command, *extra)
+  abort("#{setting} must be refused beside a model-credential Secret") if refused_status.success?
+  abort("refusal for #{setting} must say why:\n#{refused}") unless refused.include?(expected)
+end
 readiness = container['readinessProbe'] || abort('daemon pool member must have a readiness probe')
 abort('readiness probe must GET /readyz on the readiness port') unless readiness['httpGet'] == { 'path' => '/readyz', 'port' => 8081 }
 abort('readiness probe timings must match #1056') unless readiness.reject { |key, _| key == 'httpGet' } == {

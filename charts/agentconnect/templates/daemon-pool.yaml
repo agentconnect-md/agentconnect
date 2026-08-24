@@ -238,6 +238,34 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            {{- $modelCredentials := .Values.daemonPool.modelCredentials.existingSecret }}
+            {{- if $modelCredentials }}
+            {{- $modelVars := list "MODEL_TOKEN" "MODEL_BASE_URL" "ANTHROPIC_MODEL_TOKEN" "ANTHROPIC_MODEL_BASE_URL" "OPENAI_MODEL_TOKEN" "OPENAI_MODEL_BASE_URL" "DEEPSEEK_MODEL_TOKEN" "DEEPSEEK_MODEL_BASE_URL" }}
+            {{- /* One source per install, because a HALF of a pair is worse than none: a Secret
+                   holding only a token is a supported shape, and an entry it omits would fall
+                   through to whatever another source left in that variable — a real provider key
+                   aimed at a gateway's base URL, or the reverse. The chart cannot see which
+                   entries a Secret holds, so it refuses the overlap instead of guessing. */ -}}
+            {{- range $name := $modelVars }}
+            {{- if hasKey $.Values.daemonPool.extraEnv $name }}
+            {{- fail (printf "daemonPool.extraEnv.%s collides with daemonPool.modelCredentials.existingSecret: put every model credential in the Secret, so a pair cannot be assembled from two sources" $name) }}
+            {{- end }}
+            {{- end }}
+            {{- if and $.Values.modelEgress.enabled $.Values.modelEgress.clients }}
+            {{- fail "modelEgress.clients and daemonPool.modelCredentials.existingSecret both write this pool's model credentials: name the gateway's base URL and key as Secret entries (<PREFIX>MODEL_BASE_URL / <PREFIX>MODEL_TOKEN) instead" }}
+            {{- end }}
+            # Install-wide model credentials, by reference and from this one Secret. Every entry is
+            # optional: it names only the providers this install pays for, and an entry it omits
+            # leaves that runtime on whatever credential it already had.
+            {{- range $name := $modelVars }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $modelCredentials }}
+                  key: {{ $name }}
+                  optional: true
+            {{- end }}
+            {{- end }}
           # Ready ⇔ servable: startup complete, CP-registered, runtime probe done, not draining.
           # It is what holds a replacement back until it can take duty groups, and what removes a
           # draining member from readiness while its pod keeps running out the grace period.
