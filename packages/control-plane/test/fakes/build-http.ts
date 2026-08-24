@@ -76,6 +76,7 @@ import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import { runWithSharedTx, withSharedTxRouting } from '../../src/persistence/ambient-tx.js'
 import { AgentSpecAssembler } from '../../src/orchestrator/agentSpecAssembler.js'
 import { DaemonRegistryService } from '../../src/registry/registryService.js'
+import { DaemonId } from '../../src/domain/ids.js'
 import { DaemonAuthService } from '../../src/registry/authService.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { ApiKeyService } from '../../src/registry/apiKeyService.js'
@@ -298,6 +299,12 @@ export function buildHttpApp(
   )
   const presetAgentRepo = new PgPresetAgentStore(prisma)
   const hookRepo = new PgHookRepo(prisma)
+  const registryService = new DaemonRegistryService(
+    daemonRepo,
+    new PgRuntimeProfileRepo(prisma),
+    daemonLifecycleOpRepo,
+    clock
+  )
   const hookSecretStore = new PgHookSecretStore(prisma, cipher)
   const githubInstallationRepo = new PgGithubInstallationRepo(prisma)
   const agentRepoAuthRepo = new PgAgentRepoAuthorizationRepo(prisma)
@@ -344,7 +351,9 @@ export function buildHttpApp(
     undefined,
     organizationEnvironmentResolver,
     undefined,
-    agentRepoAuthRepo
+    agentRepoAuthRepo,
+    depsOverrides?.gitlab?.api.baseUrl,
+    hookRepo
   )
   const agentDelivery = new AgentDelivery({ control: sender, specs: agentSpecs, placement: placementResolver })
 
@@ -404,7 +413,11 @@ export function buildHttpApp(
     undefined,
     depsOverrides?.gitlab ? new PgGitlabProjectBindingRepo(prisma) : undefined,
     depsOverrides?.gitlab ? new PgGitlabWebhookSecretStore(prisma, cipher) : undefined,
-    depsOverrides?.gitlab ? new PgGitlabAgentAccountRepo(prisma) : undefined
+    depsOverrides?.gitlab ? new PgGitlabAgentAccountRepo(prisma) : undefined,
+    // §24.4: the axis the fake GitLab edge serves, and the persisted advertisement of the
+    // rule's dispatch-target daemon.
+    depsOverrides?.gitlab?.api.baseUrl,
+    async (daemonId) => (await registryService.getUnscoped(DaemonId(daemonId)))?.capabilities.features
   )
   // The §16.1 rerun authorizer rides the gitlab seam; a suite may still override it.
   if (coreOverrides.gitlab && !coreOverrides.gitlab.hookRerun) {
@@ -480,7 +493,7 @@ export function buildHttpApp(
       webchatMcpOperation: webchatMcpOperationRepo,
       oauth: oauthRepo
     },
-    registry: new DaemonRegistryService(daemonRepo, new PgRuntimeProfileRepo(prisma), daemonLifecycleOpRepo, clock),
+    registry: registryService,
     platforms,
     agentSpecs,
     liveness,

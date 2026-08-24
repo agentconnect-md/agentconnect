@@ -10,7 +10,12 @@
  * Runs over the `InMemoryDaemonStub` against real Testcontainers Postgres.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { isFrame } from '@agentconnect.md/protocol'
+import {
+  GITLAB_COM_V1_FEATURE,
+  GITLAB_DEFAULT_BASE_URL,
+  GITLAB_INSTANCE_V1_FEATURE,
+  isFrame
+} from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { buildWsHarness } from '../fakes/build-ws.js'
@@ -441,6 +446,145 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       mode: 'gitlab',
       gitRepo: 'https://gitlab.com/example-group/example-project',
       projectId: '4455667'
+    })
+  })
+
+  describe('§24.4 self-managed host carriage and the projection gate', () => {
+    const SELF_MANAGED = 'https://gitlab.example.test/gitlab'
+    const CONSUMER_AGENT = 'c4c4c4c4-c4c4-4c4c-8c4c-c4c4c4c4c4c4'
+    const REG_ID3 = '55555555-5555-4555-8555-555555555555'
+
+    /** Register once against an axis with exactly these advertised features. */
+    async function roster(features: string[], gitlabBaseUrl?: string, id = REG_ID) {
+      const h = buildWsHarness(prisma, gitlabBaseUrl !== undefined ? { gitlabBaseUrl } : {})
+      const { stub } = await authThenAwaitOk(h)
+      const payload = registerPayload()
+      ;(payload.capabilities as { features?: string[] }).features = features
+      stub.inject('register', payload, { id })
+      const ok = await stub.expectFrame('register/ok')
+      if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
+      return ok.payload.agents
+    }
+
+    /** A gitlab-workspace agent placed on DAEMON. */
+    const seedGitlabWorkspaceAgent = () =>
+      prisma.agent.create({
+        data: {
+          id: CONSUMER_AGENT,
+          orgId: DEFAULT_ORG_ID,
+          name: 'gitlab-workspace-agent',
+          runtime: 'claude',
+          daemonId: DAEMON,
+          workspaceMode: 'gitlab',
+          gitRepo: `${SELF_MANAGED}/example-group/example-project`,
+          gitBranch: 'main',
+          workspaceRepoId: 4455667n
+        }
+      })
+
+    /** A SCRATCH agent whose only GitLab consumer is an additional-repository authorization. */
+    async function seedAdditionalRepoAgent(): Promise<void> {
+      await prisma.agent.create({
+        data: {
+          id: CONSUMER_AGENT,
+          orgId: DEFAULT_ORG_ID,
+          name: 'scratch-with-gitlab-repo',
+          runtime: 'claude',
+          daemonId: DAEMON,
+          workspaceMode: 'scratch'
+        }
+      })
+      await prisma.agentRepoAuthorization.create({
+        data: {
+          agentId: CONSUMER_AGENT,
+          provider: 'gitlab',
+          repoId: 4455667n,
+          repoFullName: 'example-group/example-project',
+          access: 'write'
+        }
+      })
+    }
+
+    /** A GITHUB-workspace agent whose only GitLab consumer is an enabled gitlab hook. */
+    async function seedHookOnlyAgent(): Promise<void> {
+      await prisma.agent.create({
+        data: {
+          id: CONSUMER_AGENT,
+          orgId: DEFAULT_ORG_ID,
+          name: 'github-workspace-with-gitlab-hook',
+          runtime: 'claude',
+          daemonId: DAEMON,
+          workspaceMode: 'github',
+          gitRepo: 'https://github.com/example-co/infra',
+          gitBranch: 'main'
+        }
+      })
+      await prisma.hookDef.create({
+        data: {
+          orgId: DEFAULT_ORG_ID,
+          agentId: CONSUMER_AGENT,
+          kind: 'gitlab',
+          name: 'mr-review',
+          sessionMode: 'perThread',
+          enabled: true,
+          repoId: 4455667n,
+          repoFullName: 'example-group/example-project',
+          events: ['merge_request:opened']
+        }
+      })
+    }
+
+    const consumers: Array<[string, () => Promise<unknown>]> = [
+      ['a gitlab workspace', seedGitlabWorkspaceAgent],
+      ['an additional-repository authorization on a scratch workspace', seedAdditionalRepoAgent],
+      ['an enabled gitlab hook on a github workspace', seedHookOnlyAgent]
+    ]
+
+    for (const [label, seed] of consumers) {
+      it(`withholds a spec whose GitLab consumer is ${label} from a daemon without gitlab-instance-v1`, async () => {
+        await seedReconcileState()
+        await seed()
+
+        // The daemon carrying only the older bit cannot resolve a host per agent, so it
+        // would fall back to GitLab.com for self-managed work. Fail closed by OMISSION.
+        expect((await roster([GITLAB_COM_V1_FEATURE], SELF_MANAGED)).map((a) => a.agentId)).toEqual([AGENT])
+
+        const advertised = await roster(
+          [GITLAB_COM_V1_FEATURE, GITLAB_INSTANCE_V1_FEATURE],
+          SELF_MANAGED,
+          '66666666-6666-4666-8666-666666666666'
+        )
+        expect(advertised.map((a) => a.agentId).sort()).toEqual([AGENT, CONSUMER_AGENT].sort())
+        expect(advertised.find((a) => a.agentId === CONSUMER_AGENT)?.gitlabHost).toBe(SELF_MANAGED)
+        // The agent with no GitLab consumer at all carries no host on the same axis.
+        expect(advertised.find((a) => a.agentId === AGENT)?.gitlabHost).toBeUndefined()
+      })
+    }
+
+    it('gates nothing on the GitLab.com axis — an older daemon gets the same roster it does today', async () => {
+      await seedReconcileState()
+      await seedGitlabWorkspaceAgent()
+
+      const specs = await roster([GITLAB_COM_V1_FEATURE], GITLAB_DEFAULT_BASE_URL)
+      expect(specs.map((a) => a.agentId).sort()).toEqual([AGENT, CONSUMER_AGENT].sort())
+      // The axis has one value, and GitLab.com is its default — not a separate mode (§24.1).
+      expect(specs.find((a) => a.agentId === CONSUMER_AGENT)?.gitlabHost).toBe(GITLAB_DEFAULT_BASE_URL)
+
+      const advertised = await roster(
+        [GITLAB_COM_V1_FEATURE, GITLAB_INSTANCE_V1_FEATURE],
+        GITLAB_DEFAULT_BASE_URL,
+        REG_ID3
+      )
+      expect(advertised.map((a) => a.agentId).sort()).toEqual([AGENT, CONSUMER_AGENT].sort())
+    })
+
+    it('carries no host at all when GitLab is unconfigured, whatever the daemon advertises', async () => {
+      await seedReconcileState()
+      await seedGitlabWorkspaceAgent()
+
+      const specs = await roster([GITLAB_COM_V1_FEATURE])
+      expect(specs.map((a) => a.agentId).sort()).toEqual([AGENT, CONSUMER_AGENT].sort())
+      expect(specs.find((a) => a.agentId === CONSUMER_AGENT)?.gitlabHost).toBeUndefined()
     })
   })
 

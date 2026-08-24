@@ -156,6 +156,9 @@ interface MoveBundle {
   /** The agent's authorized additional repositories — pinned for the same reason
    *  as skills: a bare project() would ship [] and clear them on the target. */
   additionalRepos: AgentAdditionalRepo[]
+  /** Whether an enabled gitlab hook rides the agent — the §24.4 consumer no other
+   *  bundle field reveals, and the host must be on the spec before the agent spawns. */
+  gitlabHook: boolean
 }
 
 interface ActivationSnapshot {
@@ -831,16 +834,25 @@ export class AgentMoveService {
 
   /** Read every placement-dependent wire definition. */
   private async snapshot(agent: AgentRecord): Promise<MoveBundle> {
-    const [integrations, cronRows, secrets, skills, managedSkills, organizationEnvironment, additionalRepos] =
-      await Promise.all([
-        this.deps.integrations.listForAgent(agent.id),
-        this.deps.crons.listForAgent(agent.id),
-        this.deps.specs.secretsOf(agent),
-        this.deps.specs.skillsOf(agent),
-        this.deps.specs.managedSkillsOf(agent),
-        this.deps.specs.organizationEnvironmentOf(agent),
-        this.deps.specs.additionalReposOf(agent)
-      ])
+    const [
+      integrations,
+      cronRows,
+      secrets,
+      skills,
+      managedSkills,
+      organizationEnvironment,
+      additionalRepos,
+      gitlabHook
+    ] = await Promise.all([
+      this.deps.integrations.listForAgent(agent.id),
+      this.deps.crons.listForAgent(agent.id),
+      this.deps.specs.secretsOf(agent),
+      this.deps.specs.skillsOf(agent),
+      this.deps.specs.managedSkillsOf(agent),
+      this.deps.specs.organizationEnvironmentOf(agent),
+      this.deps.specs.additionalReposOf(agent),
+      this.deps.specs.gitlabHookOf(agent)
+    ])
     const specs = await Promise.all(
       integrations.map(async (integration) => {
         const [bot, secret, channels] = await Promise.all([
@@ -876,7 +888,8 @@ export class AgentMoveService {
       skills,
       managedSkills,
       organizationEnvironment,
-      additionalRepos
+      additionalRepos,
+      gitlabHook
     }
   }
 
@@ -892,7 +905,8 @@ export class AgentMoveService {
         bundle.skills,
         bundle.managedSkills,
         bundle.organizationEnvironment,
-        bundle.additionalRepos
+        bundle.additionalRepos,
+        bundle.gitlabHook
       ),
       integrations: bundle.integrations.map(({ spec }) => spec),
       crons: bundle.crons

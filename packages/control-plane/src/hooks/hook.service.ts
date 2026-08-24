@@ -16,7 +16,8 @@
  * holds is always dispatchable. Compiled rules carry the hook's hmacSecret:
  * NEVER log.
  */
-import { GITLAB_COM_V1_FEATURE, type RcHookAssign } from '@agentconnect.md/protocol'
+import { type RcHookAssign } from '@agentconnect.md/protocol'
+import { advertises, requiredGitlabFeatures, requiredGitlabInstanceFeatures } from '../domain/daemon-features.js'
 import type { AgentId, OrgId } from '../domain/ids.js'
 import type {
   AgentRecord,
@@ -64,7 +65,15 @@ export class HookService {
      *  Absent ⇒ gitlab hooks never compile (deployment without the OAuth app). */
     private readonly gitlabBindings?: Pick<GitlabProjectBindingRepo, 'byProject'>,
     private readonly gitlabWebhookSecrets?: GitlabWebhookSecretStore,
-    private readonly gitlabAccounts?: Pick<GitlabAgentAccountRepo, 'listForBinding'>
+    private readonly gitlabAccounts?: Pick<GitlabAgentAccountRepo, 'listForBinding'>,
+    /** The deployment's normalized GitLab instance base URL (§24.1); it rides every
+     *  compiled gitlab rule as the turn-time fence host. */
+    private readonly gitlabHost?: string,
+    /** What the rule's dispatch-target daemon last ADVERTISED — the persisted row, not the
+     *  live socket: a momentarily disconnected daemon must not have its rules torn out of
+     *  the pool. §24.4 gates the target itself, not just the relay, because a hook may fire
+     *  at an agent whose workspace never passed the placement gate. */
+    private readonly daemonFeatures?: (daemonId: string) => Promise<readonly string[] | undefined>
   ) {}
 
   /**
@@ -139,6 +148,13 @@ export class HookService {
       if (hook.repoId === null || !this.gitlabBindings || !this.gitlabWebhookSecrets || !this.gitlabAccounts) {
         return null
       }
+      // §24.4 dispatch gate, fail-closed by omission: no rule at all rather than one
+      // naming a daemon that would resolve the host to GitLab.com. It covers delivery,
+      // the relay's retry ladder, and the authorized re-run alike, because all three
+      // dispatch the rule this compile either produced or did not.
+      if (!advertises(await this.daemonFeatures?.(agentDaemonId), requiredGitlabInstanceFeatures(this.gitlabHost))) {
+        return null
+      }
       const binding = await this.gitlabBindings.byProject(hook.orgId, hook.repoId)
       if (!binding || binding.state === 'cleanup_pending' || binding.webhookId === null) return null
       // §7.2: the rule names the HOOK AGENT's own account, and vetoes every
@@ -176,7 +192,8 @@ export class HookService {
           serviceAccountUsername: account.username,
           // §12.1 veto set: every managed account bound to the project.
           boundServiceAccountUserIds: [...new Set(bound)],
-          signingToken
+          signingToken,
+          ...(this.gitlabHost !== undefined ? { host: this.gitlabHost } : {})
         }
       }
     }
@@ -257,8 +274,8 @@ export class HookService {
     for (const hook of await this.hooks.listEnabled()) {
       try {
         const rule = await this.compile(hook)
-        // The §17.3 negotiation gate, per channel (mirrors RelayControlSender).
-        if (rule?.kind === 'gitlab' && !ch.features?.includes(GITLAB_COM_V1_FEATURE)) continue
+        // The §17.3/§24.4 negotiation gate, per channel (mirrors RelayControlSender).
+        if (rule?.kind === 'gitlab' && !advertises(ch.features, requiredGitlabFeatures(rule.gitlab?.host))) continue
         if (rule) ch.send('rc/hook-assign', rule)
       } catch (err) {
         this.log?.warn({ hookId: hook.id, err }, 'hook replay: compile/send failed — skipped')

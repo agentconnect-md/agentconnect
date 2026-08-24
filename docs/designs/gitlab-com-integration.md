@@ -2395,10 +2395,21 @@ Merge order, GitLab.com green at every step:
   the base URL is saved, and only `invalid_url` refuses the save; `unreachable`,
   `tls_untrusted`, and `not_a_gitlab_api_root` are returned with the saved
   revision as warnings.
-- **N2 — protocol carriage.** `gitlabHost` on the agent spec, derived from
+- **N2 — protocol carriage. Landed.** `gitlabHost` on the agent spec, derived from
   all three consumer sources; `host` on the hook rule, hook metadata, and
   grant; the placement, projection, hook-assignment, and hook-dispatch gates
-  on `gitlab-instance-v1`. Exit: mixed-version tests in both directions,
+  on `gitlab-instance-v1`. The host rides the spec whenever a consumer does,
+  carrying the axis whatever its value, so nothing branches on "is this
+  GitLab.com" (§24.1) — only the gates read the value, and a default one gates
+  nothing. The two feature lists stay apart: the projection and
+  hook-assignment gates extend the §17.3 requirement, while the hook's
+  dispatch-target daemon — never gated on `gitlab-com-v1` — is gated on the new
+  bit alone, so a GitLab.com fleet is unchanged. That target gate sits in the
+  rule compile, which is why one omission covers delivery, the relay's retry
+  ladder, and an authorized re-run alike, and why it reads the daemon's
+  PERSISTED advertisement rather than its live socket: a momentarily
+  disconnected daemon must not have its rules torn out of the pool.
+  Exit: mixed-version tests in both directions,
   including a self-managed additional repository on a scratch workspace and
   a hook targeting a non-GitLab-workspace agent on an old daemon.
 - **N3 — daemon plumbing.** The managed host resolved from the spec's

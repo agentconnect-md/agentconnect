@@ -347,13 +347,13 @@ export class ControlSender {
   async agentActivate(daemonId: string, a: AgentActivate, orgId?: string): Promise<Ack> {
     let c = await this.activationConnection(daemonId)
     for (let connectionTry = 1; ; connectionTry += 1) {
-      // §17.3 at the SEND, against the connection actually selected — and again
-      // after every reconnect retry, because a re-registered daemon may have
-      // come back with different advertised features. The activate bundle
-      // carries the complete spec, so a gitlab-shaped workspace would be
-      // frame-fatal on a target that has not advertised gitlab-com-v1.
-      if (a.spec.workspace && !daemonSupportsAgent({ workspace: a.spec.workspace }, c.capabilities?.features)) {
-        throw new Error(`daemon ${daemonId} lacks a feature required by agent ${a.agentId}'s workspace`)
+      // §17.3/§24.4 at the SEND, against the connection actually selected — and again
+      // after every reconnect retry, because a re-registered daemon may have come back
+      // with different advertised features. The activate bundle carries the complete
+      // spec, so a gitlab-shaped workspace or a self-managed host would be frame-fatal
+      // or silently mis-hosted on a target that has not advertised the feature.
+      if (!daemonSupportsAgent(a.spec, c.capabilities?.features)) {
+        throw new Error(`daemon ${daemonId} lacks a feature required by agent ${a.agentId}'s spec`)
       }
       try {
         return await c.conn.request<Ack>(

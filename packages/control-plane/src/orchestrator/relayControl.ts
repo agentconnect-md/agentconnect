@@ -23,7 +23,8 @@ import type {
   RcMemoryConnectionAssign,
   RcMemoryConnectionUnassign
 } from '@agentconnect.md/protocol'
-import { GITLAB_COM_V1_FEATURE, GITLAB_RERUN_V1_FEATURE, RcHookRerunResult } from '@agentconnect.md/protocol'
+import { GITLAB_RERUN_V1_FEATURE, RcHookRerunResult } from '@agentconnect.md/protocol'
+import { advertises, requiredGitlabFeatures } from '../domain/daemon-features.js'
 
 /** What one Console rerun attempt achieved across the eligible relay pool. */
 export type RelayRerunOutcome =
@@ -53,10 +54,12 @@ export class RelayControlSender {
   /** Upsert one compiled hook rule on every connected relay (the frame is NEVER
    *  logged — it carries the hook's hmacSecret). A gitlab rule goes only to
    *  relays advertising the feature: the widened `kind` is frame-fatal on an
-   *  older relay's decoder (§17.3), so gating here IS the negotiation. */
+   *  older relay's decoder (§17.3), so gating here IS the negotiation. A rule on a
+   *  self-managed host needs the §24.4 bit too — a relay without it would forward
+   *  metadata missing the fence host. */
   hookAssign(rule: RcHookAssign): void {
     this.broadcast((ch) => {
-      if (rule.kind === 'gitlab' && !ch.features?.includes(GITLAB_COM_V1_FEATURE)) return
+      if (rule.kind === 'gitlab' && !advertises(ch.features, requiredGitlabFeatures(rule.gitlab?.host))) return
       ch.send('rc/hook-assign', rule)
     })
   }

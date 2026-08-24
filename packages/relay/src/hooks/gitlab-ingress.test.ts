@@ -433,6 +433,22 @@ describe('gitlab ingress', () => {
     expect(h.sent).toHaveLength(1)
   })
 
+  it('copies the rule host onto the trusted metadata as opaque data (§24.4)', async () => {
+    const SELF_MANAGED = 'https://gitlab.example.test/gitlab'
+    h.table.upsert(rule({}, { host: SELF_MANAGED }))
+    expect((await post(h, issuePayload())).statusCode).toBe(202)
+    await flush()
+    // Copied from the RULE, never read off the payload, and never parsed here: the relay
+    // does not dial GitLab, and the daemon fences the turn on this value.
+    expect((h.sent[0] as RdMsgHook).gitlab?.host).toBe(SELF_MANAGED)
+
+    h.sent.length = 0
+    h.table.upsert(rule())
+    expect((await post(h, issuePayload(), { 'webhook-id': 'msg_delivery_2' })).statusCode).toBe(202)
+    await flush()
+    expect((h.sent[0] as RdMsgHook).gitlab?.host).toBeUndefined()
+  })
+
   it('a daemon without gitlab-com-v1 fails the dispatch closed', async () => {
     h.gitlabSupported = false
     h.table.upsert(rule({}, { events: ['push:*'] }))

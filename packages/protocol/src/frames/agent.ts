@@ -336,6 +336,16 @@ export const AgentSpec = z.object({
   // agent.json pause untouched — same contract as fastMode/permissionMode.
   pause: z.boolean().optional(),
   workspace: AgentWorkspace.optional(), // where it runs; absent ⇒ daemon defaults to scratch
+  // The GitLab instance every GitLab consumer on this spec addresses (§24.4). The daemon
+  // needs the host BEFORE the agent spawns — the credential git-config block, the helper
+  // table, and the session export are all established there — and a GitLab consumer is not
+  // always the workspace: an additional-repository authorization rides on a scratch or
+  // github workspace, and a hook can reach an already-running session. So the CP sets this
+  // whenever the assembled spec has ANY GitLab consumer (gitlab workspace, gitlab
+  // additional repository, or an enabled gitlab hook), and absent means GitLab.com, which
+  // is what every spec an older CP projects means. One field rather than a per-consumer
+  // table is the one-instance axiom (§24.1) made wire-visible.
+  gitlabHost: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(), // extra env injected into the runtime
   // Write-only secret env vars: same injection as `env` (merged into the spawned
   // child's environment, secrets winning on a key collision), but their VALUES never

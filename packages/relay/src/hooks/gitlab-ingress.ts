@@ -391,6 +391,9 @@ export function buildTrustedGitlabMetadata(
   }
   return {
     projectId: gitlab.projectId,
+    // §24.4: opaque pass-through. The relay never dials GitLab and never parses this — the
+    // daemon fences the turn on it against the session's spec-carried host.
+    ...(gitlab.host !== undefined ? { host: gitlab.host } : {}),
     projectPath: payload.project?.path_with_namespace ?? gitlab.projectPath,
     target
   }
@@ -482,6 +485,7 @@ export function registerGitlabIngress(app: FastifyInstance, deps: GitlabIngressD
           if (rule.kind !== 'gitlab' || !rule.gitlab) continue
           const gitlab: GitlabHookMetadata = {
             projectId: rule.gitlab.projectId,
+            ...(rule.gitlab.host !== undefined ? { host: rule.gitlab.host } : {}),
             projectPath: payload.project?.path_with_namespace ?? rule.gitlab.projectPath,
             target: { kind, iid: cleanupIid }
           }

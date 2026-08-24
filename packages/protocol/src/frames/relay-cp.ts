@@ -383,7 +383,11 @@ export const RcHookAssign = z
         // Additive optional (§17.3) — a rule without it vetoes only the account it names.
         boundServiceAccountUserIds: z.array(z.string().regex(/^[1-9]\d*$/)).optional(),
         // whsec_ Standard Webhooks signing key for §11.2 verification.
-        signingToken: z.string().min(1)
+        signingToken: z.string().min(1),
+        // The instance this rule addresses (§24.4). The relay treats it as opaque data and
+        // copies it onto the trusted metadata it forwards, where it is the turn-time fence
+        // against the session's spec-carried host. Absent means GitLab.com.
+        host: z.string().optional()
       })
       .optional()
   })

@@ -4,9 +4,12 @@
  * agent-move fingerprint path), and the instance-owned icon bases reach the spec.
  */
 import { describe, it, expect } from 'vitest'
-import { AgentSpecAssembler } from './agentSpecAssembler.js'
-import type { AgentRepoAuthorizationRepo, AgentRecord, AgentSecretStore } from '../persistence/ports.js'
+import { GITLAB_DEFAULT_BASE_URL } from '@agentconnect.md/protocol'
+import { AgentSpecAssembler, gitlabHost } from './agentSpecAssembler.js'
+import type { AgentRepoAuthorizationRepo, AgentRecord, AgentSecretStore, HookRepo } from '../persistence/ports.js'
 import { AgentId, OrgId } from '../domain/ids.js'
+
+const SELF_MANAGED = 'https://gitlab.example.test'
 
 const AGENT: AgentRecord = {
   id: AgentId('77777777-7777-4777-8777-777777777777'),
@@ -245,6 +248,45 @@ describe('AgentSpecAssembler', () => {
     const spec = specs.project(AGENT, {}, [], [], undefined, pinned)
 
     expect(spec.workspace).toMatchObject({ additionalRepos: pinned })
+  })
+
+  it('derives the §24.4 host from each consumer in turn, and from none', () => {
+    const gitlabRepo = [{ repoFullName: 'example-group/example-project', repoId: '4455667', provider: 'gitlab' }]
+    const githubRepo = [{ repoFullName: 'example-co/shared-library', repoId: '815', provider: 'github' }]
+
+    expect(gitlabHost(SELF_MANAGED, 'gitlab', [], false)).toBe(SELF_MANAGED)
+    expect(gitlabHost(SELF_MANAGED, 'scratch', gitlabRepo, false)).toBe(SELF_MANAGED)
+    expect(gitlabHost(SELF_MANAGED, 'github', [], true)).toBe(SELF_MANAGED)
+    expect(gitlabHost(SELF_MANAGED, 'github', githubRepo, false)).toBeUndefined()
+    // The axis has one value whether or not it is the default; only an UNCONFIGURED
+    // deployment carries nothing, because then no consumer can exist.
+    expect(gitlabHost(GITLAB_DEFAULT_BASE_URL, 'gitlab', [], false)).toBe(GITLAB_DEFAULT_BASE_URL)
+    expect(gitlabHost(undefined, 'gitlab', gitlabRepo, true)).toBeUndefined()
+  })
+
+  it('projects the host only for a spec with a GitLab consumer', async () => {
+    const hooks = { listForAgent: async () => [] } as unknown as HookRepo
+    const configured = (host?: string) =>
+      new AgentSpecAssembler(
+        storeWith({}),
+        {},
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        repoAuthWith([]),
+        host,
+        hooks
+      )
+    const gitlabAgent = {
+      ...AGENT,
+      workspace: { mode: 'gitlab' as const, gitRepo: 'https://gitlab.example.test/example-group/example-project' },
+      workspaceRepoId: 4455667n
+    }
+    expect((await configured(SELF_MANAGED).assemble(gitlabAgent)).gitlabHost).toBe(SELF_MANAGED)
+    expect((await configured(SELF_MANAGED).assemble(AGENT)).gitlabHost).toBeUndefined()
+    expect((await configured().assemble(gitlabAgent)).gitlabHost).toBeUndefined()
   })
 
   it('applies the instance-owned icon bases to the spec iconUrl', async () => {

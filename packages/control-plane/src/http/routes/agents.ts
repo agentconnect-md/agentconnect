@@ -38,7 +38,6 @@ import { gitlabWorkspaceAccessLevel } from '../../gitlab/api.js'
 import type { GitlabLiveProject } from '../../gitlab/provisioner.js'
 import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import {
-  GITLAB_COM_V1_FEATURE,
   MAX_WORKSPACE_EDIT_BYTES,
   AGENT_CONFIG_REVISION_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -67,6 +66,7 @@ import {
 } from '../../persistence/ports.js'
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, OrgId, SessionId } from '../../domain/ids.js'
+import { advertises, requiredGitlabFeatures } from '../../domain/daemon-features.js'
 import {
   dutyEligibility,
   onSet,
@@ -1537,12 +1537,12 @@ export function agentRoutes(deps: HttpDeps) {
           if (!binding || binding.state === 'cleanup_pending') {
             return conflict('the project is not a managed GitLab binding in this organization')
           }
-          // §17.3: a DIRECT placement must advertise the feature NOW — the
+          // §17.3/§24.4: a DIRECT placement must advertise the features NOW — the
           // delivery/reconcile gates would otherwise strand a 201'd agent
           // assigned to a daemon that can never materialize it.
           if (req.body.daemonId !== undefined) {
             const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId))
-            if (!daemon?.capabilities.features.includes(GITLAB_COM_V1_FEATURE)) {
+            if (!advertises(daemon?.capabilities.features, requiredGitlabFeatures(deps.gitlab?.api.baseUrl))) {
               return conflict('the selected daemon does not support GitLab workspaces yet — upgrade it first')
             }
           }
@@ -2440,7 +2440,7 @@ export function agentRoutes(deps: HttpDeps) {
             const servingId = (await deps.placementResolver.servingDaemon(existing)) ?? existing.daemonId
             if (servingId) {
               const serving = await deps.registry.getAvailable(existing.orgId, servingId)
-              if (!serving?.capabilities.features.includes(GITLAB_COM_V1_FEATURE)) {
+              if (!advertises(serving?.capabilities.features, requiredGitlabFeatures(deps.gitlab?.api.baseUrl))) {
                 return conflict('the serving daemon does not support GitLab workspaces yet — upgrade it first')
               }
             }

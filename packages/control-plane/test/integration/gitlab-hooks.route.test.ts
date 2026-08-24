@@ -39,6 +39,8 @@ import { AgentId, HookId, OrgId } from '../../src/domain/ids.js'
 import {
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
+  GITLAB_DEFAULT_BASE_URL,
+  GITLAB_INSTANCE_V1_FEATURE,
   GITLAB_RERUN_V1_FEATURE,
   type CodeHostNoteDesired,
   type RcHookAssign,
@@ -63,7 +65,7 @@ afterEach(async () => {
   running = undefined
 })
 
-async function harness(options: FakeGitlabOptions = {}) {
+async function harness(options: FakeGitlabOptions = {}, daemonFeatures?: string[]) {
   const fake = new FakeGitlab(options)
   const hookRepo = new PgHookRepo(prisma)
   const bindings = new PgGitlabProjectBindingRepo(prisma)
@@ -154,18 +156,22 @@ async function harness(options: FakeGitlabOptions = {}) {
     scopes: ['api'],
     accessExpiresAt: new Date(Date.now() + 3600_000),
     sealedPair: { accessToken: 'at-1', refreshToken: 'rt-1' },
-    axisBaseUrl: 'https://gitlab.com'
+    axisBaseUrl: fake.opts.baseUrl
   })
   const binding = await bindings.createWithClaim({
     orgId: DEFAULT_ORG_ID,
     projectId: PROJECT,
     projectPath: 'example-group/example-project',
     installerConnectionId: connection.id,
-    axisBaseUrl: 'https://gitlab.com'
+    axisBaseUrl: fake.opts.baseUrl
   })
   expect(await provisioner.provision(DEFAULT_ORG_ID, binding.id)).toEqual({ state: 'ready' })
   const daemonId = randomUUID()
-  await seedDaemon(prisma, daemonId)
+  await seedDaemon(
+    prisma,
+    daemonId,
+    daemonFeatures ? { capabilities: { platforms: [], runtimes: ['claude'], acp: true, features: daemonFeatures } } : {}
+  )
   const agentId = randomUUID()
   await seedAgent(prisma, agentId, { daemonId })
   // A second agent, so a test needing two hooks on one project clears the per-agent fence.
@@ -1144,5 +1150,68 @@ describe('gitlab run projection — the fence follows the agent account (§7.2/�
     // Fail closed, like every other missing-authority early return.
     expect(sent).toHaveLength(0)
     expect(await prisma.codeHostRunProjection.count({ where: { hookId } })).toBe(0)
+  })
+})
+
+/**
+ * §24.4: on a self-managed axis a gitlab hook needs `gitlab-instance-v1` from BOTH
+ * peers on its path — the relay it is assigned to and the daemon it dispatches at.
+ * The hook here fires at a NON-GitLab-workspace agent, the case the placement gate
+ * never sees. On the GitLab.com axis nothing is gated and the rule is today's rule.
+ */
+describe('§24.4 the gitlab hook on a self-managed instance', () => {
+  const SELF_MANAGED = 'https://gitlab.example.test/gitlab'
+  const BOTH = [GITLAB_COM_V1_FEATURE, GITLAB_INSTANCE_V1_FEATURE]
+
+  /** The latest rule a relay was assigned, or undefined if it was assigned none. */
+  const assigned = (frames: Array<{ type: string; payload: unknown }>): RcHookAssign | undefined =>
+    frames.filter((frame) => frame.type === 'rc/hook-assign').at(-1)?.payload as RcHookAssign | undefined
+
+  const removed = (frames: Array<{ type: string; payload: unknown }>): number =>
+    frames.filter((frame) => frame.type === 'rc/hook-remove').length
+
+  it('assigns nothing while the dispatch-target daemon has not advertised the feature', async () => {
+    // The agent's own workspace is not GitLab-backed, so no placement gate ever ran on it.
+    const h = await harness({ baseUrl: SELF_MANAGED }, [GITLAB_COM_V1_FEATURE])
+    const relay = channel(BOTH)
+    h.a.relayReg.add(relay.ch)
+
+    const res = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(res.statusCode).toBe(200)
+    await h.settled()
+
+    // Fail closed by OMISSION: no rule, so delivery, the relay's retry ladder, and an
+    // authorized re-run all have nothing to dispatch.
+    expect(assigned(relay.sent)).toBeUndefined()
+    expect(removed(relay.sent)).toBeGreaterThan(0)
+  })
+
+  it('assigns the host-carrying rule once both the target daemon and the relay advertise it', async () => {
+    const h = await harness({ baseUrl: SELF_MANAGED }, BOTH)
+    const modern = channel(BOTH)
+    const legacy = channel([GITLAB_COM_V1_FEATURE])
+    h.a.relayReg.add(modern.ch)
+    h.a.relayReg.add(legacy.ch)
+
+    const res = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(res.statusCode).toBe(200)
+    await vi.waitFor(() => expect(assigned(modern.sent)?.gitlab?.signingToken).toBeDefined(), { timeout: 20_000 })
+
+    expect(assigned(modern.sent)?.gitlab?.host).toBe(SELF_MANAGED)
+    // The relay that cannot forward the fence host is not a target for this rule.
+    expect(assigned(legacy.sent)).toBeUndefined()
+  })
+
+  it('gates nothing on the GitLab.com axis, whatever either peer advertises', async () => {
+    const h = await harness()
+    const legacy = channel([GITLAB_COM_V1_FEATURE])
+    h.a.relayReg.add(legacy.ch)
+
+    const res = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
+    expect(res.statusCode).toBe(200)
+    await vi.waitFor(() => expect(assigned(legacy.sent)?.gitlab?.signingToken).toBeDefined(), { timeout: 20_000 })
+
+    // The daemon advertised nothing at all and still gets the rule — today's fleet.
+    expect(assigned(legacy.sent)?.gitlab?.host).toBe(GITLAB_DEFAULT_BASE_URL)
   })
 })

@@ -426,7 +426,7 @@ export class Placement implements ReconcileService {
     // is a data-plane read of the DERIVED boolean only — identities never ride the
     // wire, and the roster itself stays unfiltered (§9 graceful degradation).
     const gatedAgentIds = new Set(ownedAgents.filter((a) => a.visibility === 'restricted').map((a) => a.id))
-    const [desiredAgents, assembledIntegrations] = await Promise.all([
+    const [assembledAgents, assembledIntegrations] = await Promise.all([
       this.specs.assembleAll(deliverableAgents, (agent) => {
         quarantinedAgentIds.add(agent.id)
         this.orch?.log?.warn({ agentId: agent.id }, 'quarantining agent with an unsafe historical git repository')
@@ -467,6 +467,18 @@ export class Placement implements ReconcileService {
     // no-op'd (agent.json not on disk yet), so filtering to one platform silently
     // strands the others' tokens off the daemon. integrationToSpec emits the
     // right per-platform variant.
+    // Second pass on the ASSEMBLED spec: the additional-repository allowlist and the
+    // §24.4 host live only there, so the domain-record pass above cannot see either.
+    const desiredAgents = assembledAgents.filter((spec) => {
+      if (daemonSupportsAgent(spec, req.capabilities.features)) return true
+      quarantinedAgentIds.add(spec.agentId)
+      this.orch?.log?.warn(
+        { agentId: spec.agentId, daemonId, required: requiredDaemonFeatures(spec) },
+        'withholding agent from snapshot: daemon lacks a feature its assembled spec requires'
+      )
+      return false
+    })
+
     const desiredIntegrations = assembledIntegrations.filter(
       (spec): spec is IntegrationSpec => spec !== null && !quarantinedAgentIds.has(spec.agentId)
     )
