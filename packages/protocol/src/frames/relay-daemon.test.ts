@@ -444,6 +444,7 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
         channelId: 'C123',
         threadTs: '1720000000.000100'
       },
+      { kind: 'agent-session-stopped', channelId: 'C123', threadTs: '1720000000.000100' },
       { kind: 'set-model', model: 'opus-4.8' },
       { kind: 'set-effort', effort: 'high' },
       { kind: 'set-permission-mode', permissionMode: 'plan' },
@@ -470,6 +471,7 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
         threadTs: ''
       }).success
     ).toBe(false)
+    expect(RdSlackAction.safeParse({ kind: 'agent-session-stopped', channelId: 'C123' }).success).toBe(false)
     // Envelope-level identity stays schema-enforced.
     expect(RdMsg.safeParse({ ...base, integrationId: 'not-a-uuid', payload: { kind: 'cancel' } }).success).toBe(false)
   })

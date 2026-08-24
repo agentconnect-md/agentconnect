@@ -18,20 +18,16 @@ import {
   PLATFORM_APP_DESCRIPTION,
   SLACK_BOT_EVENTS,
   SLACK_BOT_SCOPES,
-  slackBotEvents,
   slackEventsRequestUrl,
-  slackInteractionsRequestUrl,
-  SLACK_SOCKET_ONLY_BOT_EVENTS
+  slackInteractionsRequestUrl
 } from '@agentconnect.md/protocol/slack-app-manifest'
 
 export {
   DEFAULT_SLACK_APP_NAME,
   SLACK_BOT_EVENTS,
   SLACK_BOT_SCOPES,
-  slackBotEvents,
   slackEventsRequestUrl,
-  slackInteractionsRequestUrl,
-  SLACK_SOCKET_ONLY_BOT_EVENTS
+  slackInteractionsRequestUrl
 }
 
 /**
@@ -211,7 +207,7 @@ export function mergeManagedSlackManifest(
       event_subscriptions: {
         ...managedEvents,
         ...currentEvents,
-        bot_events: unionStrings(currentEvents.bot_events, slackBotEvents(http)),
+        bot_events: unionStrings(currentEvents.bot_events, SLACK_BOT_EVENTS),
         // HTTP mode: force the relay pool's Events API request_url (a socket refresh
         // leaves the exported value — there is none — untouched).
         ...(http ? { request_url: slackEventsRequestUrl(httpRelayBase!) } : {})

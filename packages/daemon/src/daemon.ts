@@ -6261,6 +6261,12 @@ export class Daemon {
       void conn.openStatusModal(payload.triggerId, rec.key, privateMetadata)
       return { msgId: msg.msgId, accepted: true }
     }
+    // Conversation-addressed like the shortcut above: the Slack event names no session, so the
+    // connection resolves the one this thread owns and runs the same cancel + transition.
+    if (payload.kind === 'agent-session-stopped') {
+      await conn.agentSessionStopped(payload.channelId, payload.threadTs, msg.userId)
+      return { msgId: msg.msgId, accepted: true }
+    }
 
     const rec = await this.store.getSession(msg.sessionKey)
     if (!rec || rec.agentId !== msg.agentId || rec.platform !== 'slack') {
