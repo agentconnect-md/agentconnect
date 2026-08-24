@@ -53,6 +53,7 @@ import {
 import type { LocalStore } from '../store/local-store.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { WorkspaceManager, PrepareSessionWorkspaceRequest } from '../workspace/workspace-manager.js'
+import { unauthorizedWorkspaceGitOrigin } from '../workspace/git-origin-policy.js'
 import type { KeyServerClient } from '../key-server/client.js'
 import type { GitCredentialCache } from './git-credential.js'
 import type { GitCredServer } from './gitcred-server.js'
@@ -326,9 +327,29 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
   await host.flushReconcile()
 }
 
+/**
+ * §24.4 spec admission: the operator's `workspaceGitAllowedOrigins` stays authoritative, and the
+ * managed GitLab feature never widens it. A GitLab workspace whose instance the policy excludes is
+ * refused HERE, naming the origin an operator has to add, and the refusal travels back on the
+ * upsert ack — the control plane's own record of why this daemon will not serve the agent.
+ */
+function gitlabOriginRefusal(spec: AgentUpsert['spec']): string | undefined {
+  const workspace = spec.workspace
+  if (workspace?.mode !== 'gitlab') return undefined
+  const origin = unauthorizedWorkspaceGitOrigin(workspace.gitRepo)
+  return origin === undefined
+    ? undefined
+    : `workspace refused: security.workspaceGitAllowedOrigins on this daemon excludes ${origin} — add that origin to serve this GitLab instance`
+}
+
 export function applyAgentUpsert(host: ConfigApplyHost, { agentId, spec }: AgentUpsert): Promise<Ack> {
   return host.queueAgentLifecycle(agentId, async () => {
     if (host.moveStagedAgents().has(agentId)) return { ok: false, reason: 'agent is staged for a move' }
+    const originRefusal = gitlabOriginRefusal(spec)
+    if (originRefusal !== undefined) {
+      host.log().warn(`cp: agent "${agentId}" ${originRefusal}`)
+      return { ok: false, reason: originRefusal }
+    }
     if (host.agentRemovalPending(agentId)) return { ok: false, reason: 'agent is pending removal' }
     const cpAgents = host.cpAgents()
     if (!cpAgents) return { ok: false, reason: 'agent registry is not ready' }

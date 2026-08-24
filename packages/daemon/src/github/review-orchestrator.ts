@@ -10,6 +10,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import {
+  GITLAB_DEFAULT_BASE_URL,
   normalizeGitCloneUrl,
   normalizeGithubRepoUrl,
   type GithubHookMetadata,
@@ -18,6 +19,7 @@ import {
   type RdMsgHook
 } from '@agentconnect.md/protocol'
 import type { Agent } from '../agents/agent-schema.js'
+import { gitlabApiBaseUrl } from '../gitlab/api-base.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { CpClient } from '../cp/client.js'
@@ -53,6 +55,7 @@ import { initiatorLabel } from '../workspace/session-branch.js'
 import type { PrepareSessionWorkspaceRequest } from '../workspace/workspace-manager.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './poster.js'
 import { GitlabFinalPoster } from '../gitlab/poster.js'
+import { GITLAB_HOST_MISMATCH_REASON } from '../gitlab/host-fence.js'
 import { GithubReviewClient, type GithubReviewEffect } from './review.js'
 
 /** Dispatch options this seam needs; a subset of the daemon's own. */
@@ -172,9 +175,21 @@ export class GithubReviewOrchestrator {
   async dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
     const cleanup = githubThreadWorktreeCleanup(msg)
     const maintenance = cleanup !== undefined || githubDeletedHookEvent(msg)
-    if (!this.agents.has(msg.agentId)) {
+    const agent = this.agents.get(msg.agentId)
+    if (!agent) {
       this.log.warn(`hook: no agent "${msg.agentId}" on this daemon — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
+    }
+    // §24.4: a delivery naming another instance than the spec is REFUSED, never re-targeted.
+    if (msg.gitlab !== undefined) {
+      const expected = agent.gitlabHost ?? GITLAB_DEFAULT_BASE_URL
+      const delivered = msg.gitlab.host ?? GITLAB_DEFAULT_BASE_URL
+      if (delivered !== expected) {
+        this.log.warn(
+          `hook: fire ${msg.msgId} for agent "${msg.agentId}" names gitlab instance ${delivered} but its spec is bound to ${expected} — refusing`
+        )
+        return { msgId: msg.msgId, accepted: false, reason: GITLAB_HOST_MISMATCH_REASON }
+      }
     }
     if (!maintenance && this.host.paused(msg.agentId)) {
       this.log.info(`hook: agent "${msg.agentId}" is paused — rejecting fire ${msg.msgId}`)
@@ -938,6 +953,8 @@ export class GithubReviewOrchestrator {
           {
             token: async () => (await this.host.getGitlabPostToken(agentId, ref.repo, ref.hookId)).token,
             invalidateToken: (token) => this.host.invalidateGitlabPost(agentId, ref.repo, token),
+            // §24.4: the instance this agent's spec names, read when the note is actually posted.
+            apiBaseUrl: () => gitlabApiBaseUrl(this.agents.get(agentId)?.gitlabHost),
             log: { warn: (m: string) => this.log.warn(m) }
           },
           ref.repo,

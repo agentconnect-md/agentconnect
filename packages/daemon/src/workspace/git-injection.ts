@@ -31,10 +31,21 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { tlsTrustEnv } from '../config/tls-trust-env.js'
 import type { GitPullSummary, GitRunner } from './git-runner.js'
 import { simpleGit, type SimpleGit } from 'simple-git'
 import { normalizeGitCloneUrl, type GitCommitIdentity } from '@agentconnect.md/protocol'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../cp/gitcred-server.js'
+import {
+  encodeManagedHostTable,
+  gitlabManagedHost,
+  GITCRED_HOSTS_ENV,
+  GITHUB_MANAGED_HOST,
+  managedHostTableFor,
+  parseManagedBaseUrl,
+  stripHostPathPrefix,
+  type ManagedCredentialHost
+} from '../gitcred/managed-hosts.js'
 import { SANDBOX_GIT_CONFIG_DIR, SANDBOX_GIT_CREDENTIAL_HELPER } from '../shim/sandbox-paths.js'
 import { SANDBOX_TUNNEL_PATHS } from '../shim/tunnel.js'
 
@@ -87,6 +98,8 @@ const HOST_ENV_STRIP = new Set([
   GITCRED_CAPABILITY_ENV,
   GITCRED_AGENT_ENV,
   GITCRED_SOCKET_ENV,
+  // The managed-host table is WRITTEN at injection time; an inherited value is never a hint.
+  GITCRED_HOSTS_ENV,
   'EDITOR',
   'VISUAL',
   'PAGER',
@@ -172,6 +185,8 @@ function workspaceGitProcessEnv(): Record<string, string> {
   env.GIT_GRAFT_FILE = EMPTY_GIT_CONFIG
   env.GIT_LFS_SKIP_SMUDGE = '1'
   env.GIT_NO_LAZY_FETCH = '1'
+  // §24.5: re-assert the operator's authority bundle so a later narrowing cannot break TLS trust.
+  Object.assign(env, tlsTrustEnv())
   return env
 }
 
@@ -250,15 +265,14 @@ export function workspaceGitEnvBase(repository?: string): Record<string, string>
  */
 export function workspaceGitRemoteTarget(
   repository: string,
-  credentialAgentId?: string
+  credentialAgentId?: string,
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
 ): { remote: string; env: Record<string, string> } {
   const normalized = normalizeGitCloneUrl(repository)
   const remote = `agentconnect-${randomUUID()}`
   const pairs = [
     ...workspaceGitConfigPairs(normalized),
-    ...(credentialAgentId
-      ? credentialConfigPairs(credentialAgentId, managedCredentialHostOf(normalized) ?? 'github.com')
-      : []),
+    ...(credentialAgentId ? credentialConfigPairs(credentialAgentId, scope) : []),
     // Never an empty value first: Git reads it as the first fetch URL and fails before the authorized target.
     [`remote.${remote}.url`, normalized] as const,
     [`remote.${remote}.proxy`, ''] as const
@@ -270,7 +284,7 @@ export function workspaceGitRemoteTarget(
     env: {
       ...env,
       ...gitConfigEnv(pairs),
-      ...(credentialAgentId ? gitCredentialEnv(credentialAgentId) : {}),
+      ...(credentialAgentId ? gitCredentialEnv(credentialAgentId, targetOf(credentialAgentId), scope) : {}),
       // A missing credential must fail immediately rather than block on a prompt nobody answers.
       GIT_TERMINAL_PROMPT: '0'
     }
@@ -332,24 +346,92 @@ export async function pullWorkspaceRef(git: GitRunner, remote: string, branch: s
   return git.pull(remote, refspec, ['--ff-only', '--no-recurse-submodules'])
 }
 
-/** The managed-credential hosts the helper may answer for (§13.2: exact origins). */
-export type ManagedCredentialHost = 'github.com' | 'gitlab.com'
+/**
+ * How one agent's git reaches its managed hosts (§13.2, §24.4). Resolved from the REPLICATED SPEC —
+ * the provider decides which host the credential config block pins, and `gitlabHost` decides that
+ * host's address. A clone URL is checked against the result, never the source of it.
+ */
+export interface ManagedCredentialScope {
+  /** The host the `credential.<base>` block pins for this operation. */
+  host: ManagedCredentialHost
+  /** The GitLab instance this spec's GitLab consumers address, for the injected classifier table. */
+  gitlabHost?: string
+  /**
+   * The spec carries a REPO-BEARING GitLab consumer — a gitlab workspace, or at least one gitlab
+   * additional-repository authorization (§24.4). Such an agent already accepts that the managed
+   * identity owns that instance's credential path, so the session config pins the helper there too.
+   * A hook-only host does NOT set this: a hook holds no repository authorization, so pinning would
+   * cut the agent's ambient credentials with nothing to serve in their place.
+   */
+  gitlabRepoBearing?: boolean
+}
 
-/** Which managed host a workspace repository URL belongs to; undefined ⇒ neither. */
-export function managedCredentialHostOf(repository: string | undefined): ManagedCredentialHost | undefined {
-  if (!repository) return undefined
-  try {
-    const host = new URL(normalizeGitCloneUrl(repository)).host.toLowerCase()
-    return host === 'github.com' ? 'github.com' : host === 'gitlab.com' ? 'gitlab.com' : undefined
-  } catch {
-    return undefined
+/** Anonymous and github-app operations both pin github.com; only a gitlab consumer moves the axis. */
+export const GITHUB_CREDENTIAL_SCOPE: ManagedCredentialScope = { host: GITHUB_MANAGED_HOST }
+
+export { GITHUB_MANAGED_HOST, gitlabManagedHost }
+export type { ManagedCredentialHost }
+
+/** The classifier table an injection carries: GitHub plus the one GitLab instance the scope names. */
+function scopeHostTable(scope: ManagedCredentialScope): ManagedCredentialHost[] {
+  return managedHostTableFor(scope.gitlabHost ?? (scope.host.provider === 'gitlab' ? scope.host.baseUrl : undefined))
+}
+
+export function managedCredentialScope(
+  provider: 'github' | 'gitlab' | undefined,
+  gitlabHost?: string,
+  gitlabRepoBearing = false
+): ManagedCredentialScope {
+  const host = provider === 'gitlab' ? gitlabManagedHost(gitlabHost) : GITHUB_MANAGED_HOST
+  return {
+    host,
+    ...(gitlabHost !== undefined ? { gitlabHost } : {}),
+    // A gitlab workspace is repo-bearing by construction; the flag only adds the other consumer.
+    ...(gitlabRepoBearing || provider === 'gitlab' ? { gitlabRepoBearing: true } : {})
   }
 }
 
-// The address daemon Git may dial: gitlab.com 301s the suffix-less HTTPS probe and we refuse redirects, so its remote carries `.git`.
-export function canonicalWorkspaceGitUrl(repository: string): string {
+/**
+ * The hosts the SESSION config pins the helper for: the operation's own host, plus the GitLab
+ * instance when the spec carries a repo-bearing consumer that is not the workspace (§24.4). Only
+ * the session channel widens — a daemon-run clone, fetch or push always knows its exact target.
+ */
+function sessionCredentialBases(scope: ManagedCredentialScope): string[] {
+  const bases = [scope.host.baseUrl]
+  if (scope.gitlabRepoBearing !== true || scope.host.provider === 'gitlab') return bases
+  const instance = gitlabManagedHost(scope.gitlabHost).baseUrl
+  if (instance !== scope.host.baseUrl) bases.push(instance)
+  return bases
+}
+
+/**
+ * Whether a remote address sits on the scope's managed host — the address is CHECKED against the
+ * resolved host, never the source of it. A prefixed instance matches only on an exact segment
+ * boundary, so a neighbouring path root on the same host does not. Transport-agnostic, like the
+ * host comparison it replaces: an `scp` or `ssh` remote of the same host is still that host's.
+ */
+export function originOnManagedHost(input: string, host: ManagedCredentialHost): boolean {
+  const base = parseManagedBaseUrl(host.baseUrl)
+  if (!base) return false
+  const raw = input.trim()
+  if (raw.includes('\\')) return false
+  const scp = /^[\w.-]+@([\w.-]+):(.*)$/.exec(raw)
+  if (scp) return scp[1]!.toLowerCase() === base.host && stripHostPathPrefix(scp[2]!, base.pathPrefix) !== undefined
+  if (!/^(?:https|ssh):\/\//i.test(raw)) return false
+  try {
+    const parsed = new URL(normalizeGitCloneUrl(raw))
+    return (
+      parsed.host.toLowerCase() === base.host && stripHostPathPrefix(parsed.pathname, base.pathPrefix) !== undefined
+    )
+  } catch {
+    return false
+  }
+}
+
+// GitLab 301s the suffix-less HTTPS probe and we refuse redirects, so a gitlab remote carries `.git`.
+export function canonicalWorkspaceGitUrl(repository: string, provider?: 'github' | 'gitlab'): string {
   const normalized = normalizeGitCloneUrl(repository)
-  if (managedCredentialHostOf(normalized) !== 'gitlab.com') return normalized
+  if (provider !== 'gitlab') return normalized
   if (!/^https:/i.test(normalized) || /\.git$/i.test(normalized)) return normalized
   return `${normalized}.git`
 }
@@ -433,12 +515,15 @@ function targetOf(agentId: string): GitCredentialTarget {
  *  derive a daemon root it does not have. */
 export function gitCredentialEnv(
   agentId: string,
-  target: GitCredentialTarget = targetOf(agentId)
+  target: GitCredentialTarget = targetOf(agentId),
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
 ): Record<string, string> {
   if (!capabilityFor) throw new Error('git credential injection is not initialized')
   return {
     [GITCRED_CAPABILITY_ENV]: capabilityFor(agentId),
     [GITCRED_AGENT_ENV]: agentId,
+    // §24.4: which hosts are ours is injected, never sniffed by the helper from two literals.
+    [GITCRED_HOSTS_ENV]: encodeManagedHostTable(scopeHostTable(scope)),
     ...(target.socketPath ? { [GITCRED_SOCKET_ENV]: target.socketPath } : {})
   }
 }
@@ -449,13 +534,17 @@ function quotedHelper(agentId: string, target: GitCredentialTarget = targetOf(ag
 }
 
 /** The three host-scoped config pairs both channels share. The host defaults to
- *  github.com; a gitlab workspace pins gitlab.com instead (§13.2) — never both,
+ *  github.com; a gitlab workspace pins its instance base instead (§13.2, §24.4) — never both,
  *  so a non-gitlab agent keeps whatever machine gitlab credentials exist. */
-function credentialConfigPairs(agentId: string, host: ManagedCredentialHost = 'github.com'): Array<[string, string]> {
+function credentialConfigPairs(
+  agentId: string,
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
+): Array<[string, string]> {
+  const base = scope.host.baseUrl
   return [
-    [`credential.https://${host}.helper`, ''], // reset: machine helpers must never answer for this host
-    [`credential.https://${host}.helper`, quotedHelper(agentId)],
-    [`credential.https://${host}.useHttpPath`, 'true'] // git strips `path` otherwise — the helper wants it
+    [`credential.${base}.helper`, ''], // reset: machine helpers must never answer for this host
+    [`credential.${base}.helper`, quotedHelper(agentId)],
+    [`credential.${base}.useHttpPath`, 'true'] // git strips `path` otherwise — the helper wants it
   ]
 }
 
@@ -464,13 +553,14 @@ function credentialConfigPairs(agentId: string, host: ManagedCredentialHost = 'g
  * Spread over `process.env` by the caller: simple-git's `.env()` REPLACES the
  * child environment (v3.36 verified), a bare object would strip PATH/HOME.
  */
-export function cloneGitEnv(agentId: string, repository?: string): Record<string, string> {
-  const pairs = [
-    ...workspaceGitConfigPairs(repository),
-    ...credentialConfigPairs(agentId, managedCredentialHostOf(repository) ?? 'github.com')
-  ]
+export function cloneGitEnv(
+  agentId: string,
+  repository?: string,
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
+): Record<string, string> {
+  const pairs = [...workspaceGitConfigPairs(repository), ...credentialConfigPairs(agentId, scope)]
   const env: Record<string, string> = {
-    ...gitCredentialEnv(agentId),
+    ...gitCredentialEnv(agentId, targetOf(agentId), scope),
     GIT_TERMINAL_PROMPT: '0',
     ...gitConfigEnv(pairs)
   }
@@ -492,24 +582,27 @@ export function sessionGitConfig(
   // Explicit for a spawn that KNOWS where the runtime will run (a --k8s launch always lands in the
   // pod), so the env cannot depend on whether the shim channel happens to be attached right now.
   target: GitCredentialTarget = targetOf(agentId),
-  host: ManagedCredentialHost = 'github.com'
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
 ): { path: string; content: string; env: Record<string, string> } {
   const file = join(target.configDir, `${agentId}.gitconfig`)
+  const bases = sessionCredentialBases(scope)
   const lines = [
     '# agentconnect session git config — regenerated on agent start; NO secrets.',
-    `# Keeps non-identity host config, then pins ${host} credentials to the daemon helper.`,
+    `# Keeps non-identity host config, then pins ${bases.join(' + ')} credentials to the daemon helper.`,
     ...(target.hostConfig ? ['[include]', `\tpath = ${target.hostConfig}`] : []),
-    `[credential "https://${host}"]`,
-    '\thelper = ', // reset the accumulated helper list for this host
-    `\thelper = ${quotedHelper(agentId, target)}`,
-    '\tuseHttpPath = true',
+    ...bases.flatMap((base) => [
+      `[credential "${base}"]`,
+      '\thelper = ', // reset the accumulated helper list for this host
+      `\thelper = ${quotedHelper(agentId, target)}`,
+      '\tuseHttpPath = true'
+    ]),
     ''
   ]
   return {
     path: file,
     content: lines.join('\n'),
     env: {
-      ...gitCredentialEnv(agentId, target),
+      ...gitCredentialEnv(agentId, target, scope),
       ...sessionGitPolicyEnv(),
       GIT_CONFIG_GLOBAL: file,
       GIT_TERMINAL_PROMPT: '0',
@@ -529,12 +622,12 @@ export function sessionGitConfig(
 export function sessionGitEnv(
   agentId: string,
   commitIdentity?: GitCommitIdentity,
-  host: ManagedCredentialHost = 'github.com'
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
 ): Record<string, string> {
   if (targetOf(agentId).kind !== 'daemon') {
     throw new Error(`agent ${agentId} runs its git in a sandbox — materialize its gitconfig instead of writing it`)
   }
-  const { path: file, content, env } = sessionGitConfig(agentId, commitIdentity, targetOf(agentId), host)
+  const { path: file, content, env } = sessionGitConfig(agentId, commitIdentity, targetOf(agentId), scope)
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   writeFileSync(file, content, { mode: 0o644 })
   return env
@@ -557,14 +650,15 @@ export function gitCommitIdentityEnv(identity: GitCommitIdentity): Record<string
 export async function writeRepoHelperConfig(
   runner: GitRunner,
   agentId: string,
-  host: ManagedCredentialHost = 'github.com'
+  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
 ): Promise<void> {
   const git = runner.withEnv(workspaceGitLocalEnv())
+  const base = scope.host.baseUrl
   // `--replace-all` on the first write resets any stale helper list from a
   // previous agent generation; addConfig(append=true) accumulates the rest.
-  await git.raw(['config', '--replace-all', `credential.https://${host}.helper`, ''])
-  await git.raw(['config', '--add', `credential.https://${host}.helper`, quotedHelper(agentId)])
-  await git.raw(['config', `credential.https://${host}.useHttpPath`, 'true'])
+  await git.raw(['config', '--replace-all', `credential.${base}.helper`, ''])
+  await git.raw(['config', '--add', `credential.${base}.helper`, quotedHelper(agentId)])
+  await git.raw(['config', `credential.${base}.useHttpPath`, 'true'])
 }
 
 /** Pre-warm hook for workspace-manager (no-op until initialized). */

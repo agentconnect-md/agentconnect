@@ -109,7 +109,8 @@ export interface GitlabReviewAdapterDeps {
   invalidateToken: (turn: GitlabReviewTurn, token: string) => void
   attribution?: (turn: GitlabReviewTurn) => Promise<GithubCommentAttribution | undefined>
   log: { warn: (message: string) => void }
-  baseUrl?: string
+  /** The instance's `/api/v4` root for THIS turn's agent, resolved per turn (§24.4). */
+  apiBaseUrl: (turn: GitlabReviewTurn) => string
   fetchImpl?: typeof fetch
   newAttemptId?: () => string
   newStartToken?: () => string
@@ -136,7 +137,6 @@ export interface GitlabReviewOutcome {
   externalIds?: CodeHostReviewExternalRef[]
 }
 
-const DEFAULT_BASE_URL = 'https://gitlab.com/api/v4'
 const DEFAULT_TIMEOUT_MS = 20_000
 const DEFAULT_AMBIGUOUS_WINDOW_MS = 30_000
 const DEFAULT_MERGE_STATUS_WINDOW_MS = 30_000
@@ -1108,7 +1108,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
       await this.markOperationStarted(attempt, issued.recordId)
       let result: SendResult
       try {
-        result = await this.send(method, target, undefined, body, attempt.token)
+        result = await this.send(method, target, undefined, body, attempt.token, attempt.turn)
       } catch (err) {
         if (err instanceof AmbiguousSend) {
           await this.settleAndClear(cp, attempt, issued.recordId, { kind: 'ambiguous', code: err.code }, true)
@@ -1555,7 +1555,7 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     for (let tries = 0; tries < 2; tries += 1) {
       let result: SendResult
       try {
-        result = await this.send('GET', path, query, undefined, session.token)
+        result = await this.send('GET', path, query, undefined, session.token, session.turn)
       } catch {
         throw new Error(`GitLab GET ${path} did not complete`)
       }
@@ -1574,10 +1574,11 @@ export class GitlabReviewAdapter implements CodeHostReviewAdapter {
     path: string,
     query: string | undefined,
     body: Record<string, unknown> | undefined,
-    token: string
+    token: string,
+    turn: GitlabReviewTurn
   ): Promise<SendResult> {
     const doFetch = this.deps.fetchImpl ?? fetch
-    const url = `${this.deps.baseUrl ?? DEFAULT_BASE_URL}${path}${query ? `?${query}` : ''}`
+    const url = `${this.deps.apiBaseUrl(turn)}${path}${query ? `?${query}` : ''}`
     let response: Response
     try {
       response = await doFetch(url, {

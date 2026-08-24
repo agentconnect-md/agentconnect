@@ -57,7 +57,7 @@ function broker(
   const instance = new GitlabBroker({
     lease: async () => ({ token: tokens[Math.min(minted++, tokens.length - 1)]!, access: opts.access ?? 'write' }),
     invalidateLease: (_target, token) => opts.invalidate?.(token),
-    baseUrl: BASE,
+    apiBaseUrl: () => BASE,
     fetchImpl
   })
   return { instance, minted: () => minted }

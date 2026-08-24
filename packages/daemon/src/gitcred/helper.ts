@@ -15,6 +15,11 @@
  * is routing, not authorization — the CP gate decides; token scope enforces
  * the real boundary at GitHub either way.
  *
+ * WHICH hosts are ours comes from the injected table (§24.4), never from two literals and never
+ * from the agent's own environment as a hint: the daemon writes it beside the capability at
+ * injection time, each entry carrying the full base URL, so a prefixed install's path prefix is
+ * stripped before the project path is parsed.
+ *
  * Exit style: on ANY failure print a human-actionable line to stderr and exit 1
  * — since #251 surfaces turn failures to end users, this text is user-facing.
  * NEVER print or log the token outside the protocol response.
@@ -26,6 +31,7 @@
  */
 import { createConnection } from 'node:net'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from './env.js'
+import { decodeManagedHostTable, GITCRED_HOSTS_ENV, matchManagedHost } from './managed-hosts.js'
 
 interface HelperInput {
   protocol?: string
@@ -52,11 +58,13 @@ export async function runGitCredential(action: string, agentId: string, socketPa
   agentId = effectiveAgentId(agentId)
 
   const input = parseStdin(await readStdin())
-  const host = input.host?.toLowerCase()
-  // gitlab.com paths keep their FULL namespaced depth (subgroups, §13.2);
-  // github stays at owner/repo.
-  const gitlab = host === 'gitlab.com'
-  const repo = input.path !== undefined ? (gitlab ? projectFromPath(input.path) : repoFromPath(input.path)) : undefined
+  const match = matchManagedHost(decodeManagedHostTable(process.env[GITCRED_HOSTS_ENV]), input)
+  // GitLab keeps full subgroup depth from the instance's path prefix (§13.2); github stays owner/repo.
+  const gitlab = match?.entry.provider === 'gitlab'
+  const repo = match?.path === undefined ? undefined : gitlab ? projectFromPath(match.path) : repoFromPath(match.path)
+
+  // Not ours — stay silent so git can try other helpers; an absent host still means the workspace.
+  if (input.host !== undefined && match === undefined) return
 
   if (action === 'erase') {
     // Route the invalidation to the same (agent, repo) key the get used.
@@ -71,11 +79,6 @@ export async function runGitCredential(action: string, agentId: string, socketPa
     return
   }
   if (action !== 'get') return // unknown actions are ignored per the helper contract
-
-  if (host !== undefined && host !== 'github.com' && host !== 'gitlab.com') {
-    // Not ours — stay silent so git can try other helpers / fail cleanly.
-    return
-  }
 
   const res = await ipc(socketPath, {
     op: 'get',

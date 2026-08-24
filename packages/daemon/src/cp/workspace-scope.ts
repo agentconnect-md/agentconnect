@@ -116,17 +116,27 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
         const root = await deps.workspaces.consoleSecondaryRoot(agent, repo)
         // Rows exist only for App-covered repositories, so a secondary root always rides the helper;
         // the branch is the one its `.materialization.json` attests, never the primary's.
-        return root ? { repo: root.cloneUrl, branch: root.branch, githubApp: true } : undefined
+        return root
+          ? {
+              repo: root.cloneUrl,
+              branch: root.branch,
+              githubApp: true,
+              remoteProvider: 'github',
+              ...(root.managed ? { managed: root.managed } : {})
+            }
+          : undefined
       }
       const workspace = agent.workspace
+      if (workspace.mode !== 'git-repo' || !workspace.gitRepo) return undefined
+      const remoteProvider = deps.workspaces.remoteProviderOf(agent, workspace.gitRepo)
       // The flag's name is historical: it means MANAGED credential, gitlab as much as github-app.
-      return workspace.mode === 'git-repo' && workspace.gitRepo
-        ? {
-            repo: workspace.gitRepo,
-            branch: workspace.gitBranch,
-            githubApp: deps.workspaces.usesManagedCredential(agent)
-          }
-        : undefined
+      return {
+        repo: workspace.gitRepo,
+        branch: workspace.gitBranch,
+        githubApp: deps.workspaces.usesManagedCredential(agent),
+        managed: deps.workspaces.managedScopeOf(agent),
+        ...(remoteProvider !== undefined ? { remoteProvider } : {})
+      }
     },
     usesGithubApp: (agentId, repo) => {
       const agent = deps.agentOf(agentId)

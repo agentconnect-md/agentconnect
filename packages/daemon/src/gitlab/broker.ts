@@ -123,7 +123,8 @@ export interface GitlabBrokerDeps {
   lease: (target: GitlabBrokerTarget) => Promise<GitlabBrokerLease>
   /** Drop a cached lease GitLab just rejected (401/403) so the single retry re-mints. */
   invalidateLease?: (target: GitlabBrokerTarget, token: string) => void
-  baseUrl?: string
+  /** The instance's `/api/v4` root for THIS target's agent, resolved per turn (§24.4). */
+  apiBaseUrl: (target: GitlabBrokerTarget) => string
   fetchImpl?: typeof fetch
 }
 
@@ -398,7 +399,7 @@ export class GitlabBroker {
     const doFetch = this.deps.fetchImpl ?? fetch
     const search = new URLSearchParams(plan.query ?? {}).toString()
     const path = renderPath(endpoint.path, plan.params)
-    const url = `${this.deps.baseUrl ?? 'https://gitlab.com/api/v4'}${path}${search ? `?${search}` : ''}`
+    const url = `${this.deps.apiBaseUrl(target)}${path}${search ? `?${search}` : ''}`
     let current = lease
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const res = await doFetch(url, {

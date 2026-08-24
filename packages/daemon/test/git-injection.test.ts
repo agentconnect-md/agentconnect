@@ -598,43 +598,53 @@ describe('cloneGitEnv', () => {
 })
 
 describe('canonicalWorkspaceGitUrl', () => {
-  // gitlab.com 301s the suffix-less ref probe to the `.git` form and daemon Git pins http.followRedirects=false.
-  it('gives a gitlab.com HTTPS remote its `.git` form, at any subgroup depth', () => {
-    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project')).toBe(
+  // GitLab 301s the suffix-less ref probe to the `.git` form and daemon Git pins http.followRedirects=false.
+  it('gives a gitlab HTTPS remote its `.git` form, at any subgroup depth and on any host', () => {
+    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project', 'gitlab')).toBe(
       'https://gitlab.com/example-group/example-project.git'
     )
-    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/sub/deeper/example-project')).toBe(
+    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/sub/deeper/example-project', 'gitlab')).toBe(
       'https://gitlab.com/example-group/sub/deeper/example-project.git'
     )
     // A trailing slash is the same repository, so it must not produce `…/.git`.
-    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project/')).toBe(
+    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project/', 'gitlab')).toBe(
       'https://gitlab.com/example-group/example-project.git'
     )
+    // §24.4: the suffix rule keys on the PROVIDER, so a self-managed instance gets it too.
+    expect(
+      canonicalWorkspaceGitUrl('https://gitlab.example.test:8443/gitlab/example-group/example-project', 'gitlab')
+    ).toBe('https://gitlab.example.test:8443/gitlab/example-group/example-project.git')
   })
 
   it('is idempotent: a remote that already carries the suffix is left exactly as configured', () => {
-    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project.git')).toBe(
+    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project.git', 'gitlab')).toBe(
       'https://gitlab.com/example-group/example-project.git'
     )
     // Git matches the suffix case-insensitively; appending a second one would name a different path.
-    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project.GIT')).toBe(
+    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project.GIT', 'gitlab')).toBe(
       'https://gitlab.com/example-group/example-project.GIT'
     )
   })
 
-  it('leaves github and every non-gitlab HTTPS remote byte-identical', () => {
-    expect(canonicalWorkspaceGitUrl('https://github.com/acme/infra')).toBe('https://github.com/acme/infra')
-    expect(canonicalWorkspaceGitUrl('https://github.com/acme/infra.git')).toBe('https://github.com/acme/infra.git')
+  it('leaves every non-gitlab provider byte-identical, whatever host the URL names', () => {
+    expect(canonicalWorkspaceGitUrl('https://github.com/acme/infra', 'github')).toBe('https://github.com/acme/infra')
+    expect(canonicalWorkspaceGitUrl('https://github.com/acme/infra.git', 'github')).toBe(
+      'https://github.com/acme/infra.git'
+    )
     expect(canonicalWorkspaceGitUrl('https://code.example.test/acme/infra')).toBe(
       'https://code.example.test/acme/infra'
+    )
+    // An anonymous workspace on a gitlab-looking host is not a gitlab CONSUMER, so no suffix.
+    expect(canonicalWorkspaceGitUrl('https://gitlab.com/example-group/example-project')).toBe(
+      'https://gitlab.com/example-group/example-project'
     )
   })
 
   it('leaves gitlab SSH alone — only the HTTPS ref probe redirects', () => {
-    expect(canonicalWorkspaceGitUrl('ssh://git@gitlab.com/example-group/example-project')).toBe(
+    expect(canonicalWorkspaceGitUrl('ssh://git@gitlab.com/example-group/example-project', 'gitlab')).toBe(
       'ssh://git@gitlab.com/example-group/example-project'
     )
-    expect(canonicalWorkspaceGitUrl('git@gitlab.com:example-group/example-project')).toBe(
+    expect(canonicalWorkspaceGitUrl('git@gitlab.com:example-group/example-project', 'gitlab')).toBe(
       'git@gitlab.com:example-group/example-project'
     )
   })

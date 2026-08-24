@@ -200,6 +200,8 @@ export const AgentSchema = z.object({
   // managed (the default). External keeps only connection id + bounded policy on
   // disk; endpoint/grant/config live in the daemon-private CP registry.
   memory: AgentMemoryBinding.optional(),
+  // The instance every GitLab consumer here addresses (§24.4); absent ⇒ GitLab.com, the axis default.
+  gitlabHost: z.string().optional(),
   workspace: z.object({
     mode: z.enum(['git-repo', 'from-scratch']),
     // Internal isolation policy. Product surfaces call the session mode

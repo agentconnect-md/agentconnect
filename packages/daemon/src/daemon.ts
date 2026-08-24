@@ -56,6 +56,7 @@ import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
 import type { CodeHostEffectReq, SetSessionTitleReq } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
+import { gitlabApiBaseUrl } from './gitlab/api-base.js'
 import { CodeHostNoteProjector } from './gitlab/note-projection.js'
 import {
   CONFIG_FILE_CONVENTIONS,
@@ -64,18 +65,19 @@ import {
   materializeConfigFiles
 } from './shim/config-file-env.js'
 import { writeGhShim } from './cp/gh-shim.js'
-import { writeGlabShim } from './cp/glab-shim.js'
+import { glabSessionEnv, writeGlabShim } from './cp/glab-shim.js'
 import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } from './cp/gitcred-server.js'
 import {
   daemonGitCredentialTarget,
   initGitInjection,
+  managedCredentialScope,
   probeGitVersion,
   sandboxGitCredentialTarget,
   sessionGitConfig,
   sessionGitEnv,
   sessionGitPolicyEnv
 } from './workspace/git-injection.js'
-import { configureWorkspaceGitOrigins } from './workspace/git-origin-policy.js'
+import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
 import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-servers.js'
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
@@ -266,6 +268,7 @@ import {
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
   GITLAB_COM_V1_FEATURE,
+  GITLAB_INSTANCE_V1_FEATURE,
   encodeSharedSlackStatusTarget,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
@@ -1582,11 +1585,10 @@ export class Daemon {
     })
     this.cfg = cfg
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
-    // §13.2 readiness: an explicit operator policy stays authoritative — but say
-    // plainly when it excludes managed GitLab rather than silently widening it.
-    if (!cfg.security.workspaceGitAllowedOrigins.some((origin) => origin.toLowerCase() === 'https://gitlab.com')) {
+    // §24.4: an excluded origin is named at SPEC admission; only the degenerate case is known here.
+    if (permitsNoHttpsOrigin()) {
       this.log.warn(
-        'workspace policy: workspaceGitAllowedOrigins excludes https://gitlab.com — managed GitLab workspaces will refuse to clone on this daemon'
+        'workspace policy: workspaceGitAllowedOrigins permits no https origin — no managed GitLab workspace can clone on this daemon'
       )
     }
     return { root, cfg }
@@ -1696,10 +1698,12 @@ export class Daemon {
       actionsSupported: () => this.cpClient?.supportsServerFeature?.('gitcred-actions-v1') ?? false,
       providerV2Supported: () => this.cpClient?.supportsServerFeature?.('gitcred-provider-v2') ?? false,
       githubV2Supported: () => this.cpClient?.supportsServerFeature?.(GITCRED_GITHUB_V2_FEATURE) ?? false,
-      gitlabEffectSupported: () => this.cpClient?.supportsServerFeature?.(GITLAB_EFFECT_V1_FEATURE) ?? false
+      gitlabEffectSupported: () => this.cpClient?.supportsServerFeature?.(GITLAB_EFFECT_V1_FEATURE) ?? false,
+      gitlabHostFor: (agentId) => this.agents.get(agentId)?.gitlabHost
     })
     // §14.2: the broker holds the effect lease; the agent environment never sees the token.
     this.gitlabBroker = new GitlabBroker({
+      apiBaseUrl: (target) => this.gitlabApiBase(target.agentId),
       lease: async (target) => {
         const entry = await this.gitCreds.getGitlabEffectToken(target.agentId, target.projectId, target.hookId)
         return { token: entry.token, access: entry.access }
@@ -1709,6 +1713,7 @@ export class Daemon {
     // §16: the same hook-authorized effect lease, on a writer the model never sees or influences.
     this.noteProjector = new CodeHostNoteProjector({
       daemonId: () => this.cfg.daemonId,
+      apiBaseUrl: (row) => this.gitlabApiBase(row.agentId),
       store: {
         getNoteProjection: (daemonId, key) => this.store.getNoteProjection(daemonId, key),
         beginNoteProjectionWrite: (row, now) => this.store.beginNoteProjectionWrite(row, now),
@@ -3503,7 +3508,13 @@ export class Daemon {
     const githubAppCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'github-app'
     const gitlabCredentials = !excludeAgentToolCredentials && agent.workspace.gitCredential === 'gitlab'
     const managedCredentials = githubAppCredentials || gitlabCredentials
-    const managedCredentialHost = gitlabCredentials ? ('gitlab.com' as const) : ('github.com' as const)
+    // §24.4: the pinned host comes from the SPEC, and a repo-bearing GitLab consumer that is not
+    // the workspace pins its instance beside it. A dream host gets no tool credentials at all.
+    const managedScope = managedCredentialScope(
+      gitlabCredentials ? 'gitlab' : githubAppCredentials ? 'github' : undefined,
+      agent.gitlabHost,
+      !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
+    )
     // The Git session policy runs for every configured repository, not only
     // GitHub review: repository hooks/fsmonitor stay disabled without rewriting
     // checkout config. sessionGitEnv additionally supplies GitHub App identity.
@@ -3524,7 +3535,7 @@ export class Daemon {
     // The daemon-local write (sessionGitEnv) would land the file on this daemon's disk instead.
     const sandboxSessionGit =
       this.k8sPlane && managedCredentials
-        ? sessionGitConfig(agent.id, this.gitCommitIdentity, sandboxGitCredentialTarget(), managedCredentialHost)
+        ? sessionGitConfig(agent.id, this.gitCommitIdentity, sandboxGitCredentialTarget(), managedScope)
         : undefined
     const env: Record<string, string> = {
       ...baseEnv,
@@ -3536,7 +3547,7 @@ export class Daemon {
       // App identity rides with the CREDENTIAL mode, not the workspace mode: a scratch workspace with
       // authorized repositories needs the capability for its git and gh exactly like a clone does.
       ...(managedCredentials
-        ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, this.gitCommitIdentity, managedCredentialHost))
+        ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, this.gitCommitIdentity, managedScope))
         : agent.workspace.mode === 'git-repo'
           ? sessionGitPolicyEnv()
           : {})
@@ -3584,6 +3595,8 @@ export class Daemon {
     if (gitlabCredentials && this.glabBinDir && !this.k8sPlane) {
       // glab wrapper (§13.3): read-only project tokens for the managed workspace.
       env.AC_AGENT_ID = agent.id
+      // §24.4: point the real CLI at the deployment's instance, prefix and port included.
+      Object.assign(env, glabSessionEnv(managedScope.host.baseUrl))
       shimDirs.add(this.glabBinDir)
     }
     if (shimDirs.size > 0) {
@@ -3787,6 +3800,8 @@ export class Daemon {
       ...(this.remoteWebchatGrants ? [WEBCHAT_REMOTE_MCP_FEATURE] : []),
       // The CP withholds gitlab-workspace specs and gitlab hook assignments until this is advertised.
       GITLAB_COM_V1_FEATURE,
+      // §24.4: the instance is resolved from the spec, not assumed; no self-managed work without this.
+      GITLAB_INSTANCE_V1_FEATURE,
       // §16: this daemon renders and updates the run-projection note. The CP leaves the desired
       // generation pending rather than opening a second provider egress path without this bit.
       CODEHOST_NOTE_PROJECTION_V1_FEATURE,
@@ -6640,6 +6655,12 @@ export class Daemon {
     return projectId === undefined ? undefined : { projectId }
   }
 
+  /** The instance every GitLab client on this turn addresses (§24.4). Resolved per turn off the
+   *  agent's replicated spec; the turn-time hook fence is what keeps hook metadata agreeing with it. */
+  private gitlabApiBase(agentId: string): string {
+    return gitlabApiBaseUrl(this.agents.get(agentId)?.gitlabHost)
+  }
+
   /** The agent's managed GitLab workspace project from the REPLICATED SPEC — never a tool argument. */
   private gitlabWorkspaceProject(agentId: string): string | undefined {
     const agent = this.agents.get(agentId)
@@ -6663,6 +6684,7 @@ export class Daemon {
         }
       },
       orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
+      apiBaseUrl: (turn) => this.gitlabApiBase(turn.agentId),
       daemonId: () => this.cfg.daemonId,
       store: {
         recordReviewIntent: (row, now) => this.store.recordReviewIntent(row, now),

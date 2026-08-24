@@ -68,6 +68,17 @@ export function glabShimDir(root: string): string {
   return join(root, 'run', 'bin')
 }
 
+/**
+ * The session export that points the real glab at this deployment's instance (§24.4).
+ *
+ * It rides the per-AGENT session environment rather than the wrapper text, because the wrapper is
+ * generated once per boot while the host comes off each agent's replicated spec. A user-configured
+ * `GITLAB_TOKEN` still wins in the wrapper; this only decides which instance glab talks to.
+ */
+export function glabSessionEnv(gitlabBaseUrl: string): Record<string, string> {
+  return { GITLAB_HOST: gitlabBaseUrl }
+}
+
 /** (Re)write `run/bin/glab` and return the bin dir to prepend to agent PATHs. */
 export function writeGlabShim(root: string, cliEntry: string): string {
   const dir = glabShimDir(root)

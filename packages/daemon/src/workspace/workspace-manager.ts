@@ -35,7 +35,11 @@ import {
   workspaceGitLocalEnv,
   workspaceGitRemoteTarget,
   writeRepoHelperConfig,
-  managedCredentialHostOf
+  GITHUB_CREDENTIAL_SCOPE,
+  gitlabManagedHost,
+  managedCredentialScope,
+  originOnManagedHost,
+  type ManagedCredentialScope
 } from './git-injection.js'
 import { LocalGitRunner, type GitRunner } from './git-runner.js'
 import { localWorkspaceFs, type WorkspaceFs, type WorkspacePlacement } from './workspace-fs.js'
@@ -91,6 +95,8 @@ export interface WorkspaceRoot {
   worktreesPath: string
   /** Credentials ride the github-app helper (vs anonymous). */
   githubApp: boolean
+  /** The managed host this root's credential channel pins, resolved from the spec (§24.4). */
+  managed?: ManagedCredentialScope
 }
 
 /** One authorized additional repository as a root beside the primary (design decision 1). */
@@ -282,13 +288,46 @@ export class WorkspaceManager {
     return this.managedCredentialProvider(agent) !== undefined
   }
 
+  /**
+   * Whether the spec carries a REPO-BEARING GitLab consumer (§24.4): a gitlab workspace, or an
+   * authorized gitlab additional repository. A hook is deliberately not one — it authorizes a turn,
+   * not a repository, so it must not take over the instance's credential path.
+   */
+  gitlabRepoBearing(agent: Agent): boolean {
+    if (this.managedCredentialProvider(agent) === 'gitlab') return true
+    return (agent.workspace.additionalRepos ?? []).some((row) => (row.provider ?? 'github') === 'gitlab')
+  }
+
+  /** The credential scope this agent's primary workspace pins: its provider plus the spec's
+   *  GitLab instance (§24.4). Anonymous workspaces resolve to github.com, as they always did. */
+  managedScopeOf(agent: Agent): ManagedCredentialScope {
+    return managedCredentialScope(
+      this.managedCredentialProvider(agent),
+      agent.gitlabHost,
+      this.gitlabRepoBearing(agent)
+    )
+  }
+
+  /**
+   * Whose URL conventions a remote follows. The spec's credential provider answers for a managed
+   * workspace; an ANONYMOUS remote has no provider on the spec, so its address is CHECKED against
+   * the deployment's GitLab instance (§24.4) — a public clone from that instance still needs
+   * GitLab's `.git` suffix rule, and checking is not the same as sniffing a host out of the URL.
+   */
+  remoteProviderOf(agent: Agent, repository: string): 'github' | 'gitlab' | undefined {
+    const managed = this.managedCredentialProvider(agent)
+    if (managed !== undefined) return managed
+    return originOnManagedHost(repository, gitlabManagedHost(agent.gitlabHost)) ? 'gitlab' : undefined
+  }
+
   gitRepoOf(agent: Agent): string {
     if (agent.workspace.mode !== 'git-repo' || !agent.workspace.gitRepo) {
       throw new Error(`workspace clone: agent "${agent.id}" has git-repo mode but no gitRepo configured`)
     }
     return authorizeWorkspaceGitUrl(
       canonicalWorkspaceGitUrl(
-        this.usesGithubApp(agent) ? normalizeGithubRepoUrl(agent.workspace.gitRepo) : agent.workspace.gitRepo
+        this.usesGithubApp(agent) ? normalizeGithubRepoUrl(agent.workspace.gitRepo) : agent.workspace.gitRepo,
+        this.remoteProviderOf(agent, agent.workspace.gitRepo)
       )
     )
   }
@@ -309,8 +348,9 @@ export class WorkspaceManager {
       path: mount === undefined ? agent.workspace.path : this.clusterWorkspaceCheckout(agent, mount),
       worktreesPath: this.worktreesPathAt(agent, mount),
       // The MANAGED-credential flag (name is historical): a gitlab workspace
-      // rides the same helper pin/pre-warm/clone-env paths, host-derived.
-      githubApp: this.usesManagedCredential(agent)
+      // rides the same helper pin/pre-warm/clone-env paths, spec-derived.
+      githubApp: this.usesManagedCredential(agent),
+      managed: this.managedScopeOf(agent)
     }
   }
 
@@ -375,7 +415,8 @@ export class WorkspaceManager {
           branch: '',
           path: join(base, 'checkout'),
           worktreesPath: join(base, 'worktrees'),
-          githubApp: true
+          githubApp: true,
+          managed: GITHUB_CREDENTIAL_SCOPE
         })
       } catch (err) {
         workspaceLog.warn(
@@ -715,7 +756,7 @@ export class WorkspaceManager {
   async resolveRemoteDefaultBranch(agentId: string, root: SecondaryWorkspaceRoot): Promise<string> {
     if (root.githubApp) await preWarmGitCred(agentId, 'clone')
     const env = root.githubApp
-      ? { ...workspaceGitEnvBase(root.cloneUrl), ...cloneGitEnv(agentId, root.cloneUrl) }
+      ? { ...workspaceGitEnvBase(root.cloneUrl), ...cloneGitEnv(agentId, root.cloneUrl, root.managed) }
       : { ...workspaceGitEnvBase(root.cloneUrl), GIT_TERMINAL_PROMPT: '0' }
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), LS_REMOTE_TIMEOUT_MS)
@@ -731,20 +772,10 @@ export class WorkspaceManager {
     }
   }
 
-  /** A managed root's origin must stay on ITS provider host, derived from the
-   *  authorized clone URL (github.com unless the root is a gitlab.com one). */
-  isTrustedManagedOrigin(input: string, cloneUrl: string): boolean {
-    const host = managedCredentialHostOf(cloneUrl) ?? 'github.com'
-    const raw = input.trim()
-    if (raw.includes('\\')) return false
-    const scp = /^[\w.-]+@([\w.-]+):/.exec(raw)
-    if (scp) return scp[1]!.toLowerCase() === host
-    if (!/^(?:https|ssh):\/\//i.test(raw)) return false
-    try {
-      return new URL(normalizeGitCloneUrl(redactGitUrlSecrets(raw))).hostname.toLowerCase() === host
-    } catch {
-      return false
-    }
+  /** A managed root's origin must stay on the host its SPEC resolved (§24.4), never on a host
+   *  read back out of the checkout. A prefixed instance additionally pins the path prefix. */
+  isTrustedManagedOrigin(input: string, scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE): boolean {
+    return originOnManagedHost(redactGitUrlSecrets(input), scope.host)
   }
 
   isTrustedGithubOrigin(input: string): boolean {
@@ -833,9 +864,8 @@ export class WorkspaceManager {
       if (root.githubApp) throw new UntrustedGithubWorkspaceOriginError({ cause })
       return
     }
-    // Managed roots trust exactly their provider's host: a gitlab root's
-    // origin must be gitlab.com, a github one github.com (§13.2).
-    if (root.githubApp && !this.isTrustedManagedOrigin(current, root.cloneUrl)) {
+    // Managed roots trust exactly the host their spec resolved (§13.2, §24.4).
+    if (root.githubApp && !this.isTrustedManagedOrigin(current, root.managed)) {
       throw new UntrustedGithubWorkspaceOriginError()
     }
     const normalizedCurrent = normalizeGitUrl(current)
@@ -856,8 +886,8 @@ export class WorkspaceManager {
   materializationKey(agent: Agent): string {
     if (agent.workspace.mode === 'from-scratch') return JSON.stringify({ mode: 'scratch' })
     const repo = this.gitRepoOf(agent)
-    // Both hosts treat `.git` as the same repository, so neither canonicalization may replace a checkout over an access-only edit.
-    const suffixInsensitive = this.usesGithubApp(agent) || managedCredentialHostOf(repo) === 'gitlab.com'
+    // Both providers treat `.git` as the same repository, so neither canonicalization may replace a checkout over an access-only edit.
+    const suffixInsensitive = this.remoteProviderOf(agent, agent.workspace.gitRepo ?? '') !== undefined
     return JSON.stringify({
       mode: 'github',
       repo: (suffixInsensitive ? repo.replace(/\.git$/i, '') : repo).toLowerCase(),
@@ -977,7 +1007,7 @@ export class WorkspaceManager {
     const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
     try {
       await assertSafeWorkspaceGitConfig(this.runnerFor(agentId, cwd))
-      const pullTarget = workspaceGitRemoteTarget(root.cloneUrl, root.githubApp ? agentId : undefined)
+      const pullTarget = workspaceGitRemoteTarget(root.cloneUrl, root.githubApp ? agentId : undefined, root.managed)
       const git = this.runnerFor(agentId, cwd, abort.signal).withEnv({
         ...workspaceGitLocalEnv(),
         ...pullTarget.env
@@ -1028,11 +1058,7 @@ export class WorkspaceManager {
       // The CP follows repository renames by numeric repo id. Repoint the existing
       // checkout instead of treating that canonical URL refresh as a new workspace.
       await this.convergeWorkspaceOrigin(agent, cwd)
-      await writeRepoHelperConfig(
-        this.runnerFor(agent.id, cwd),
-        agent.id,
-        managedCredentialHostOf(root.cloneUrl) ?? 'github.com'
-      ).catch(() => undefined)
+      await writeRepoHelperConfig(this.runnerFor(agent.id, cwd), agent.id, root.managed).catch(() => undefined)
     } else {
       // Historical anonymous checkouts may still have credential-bearing or
       // disallowed origins even after their CP row has been sanitized.
@@ -1410,7 +1436,7 @@ export class WorkspaceManager {
     const mergeRef = `${refRoot}/merge`
     await assertSafeWorkspaceGitConfig(this.runnerFor(agentId, root.path))
     if (root.githubApp) await preWarmGitCred(agentId, 'pull')
-    const pullTarget = workspaceGitRemoteTarget(root.cloneUrl, root.githubApp ? agentId : undefined)
+    const pullTarget = workspaceGitRemoteTarget(root.cloneUrl, root.githubApp ? agentId : undefined, root.managed)
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), REVIEW_FETCH_TIMEOUT_MS)
     try {
@@ -1809,11 +1835,9 @@ export class WorkspaceManager {
       // `.git/config`, whose agent id goes stale when an agent is recreated over a surviving volume.
       await this.convergeOriginInPlace(agent, checkout)
       if (githubApp) {
-        await writeRepoHelperConfig(
-          this.runnerFor(agent.id, checkout),
-          agent.id,
-          managedCredentialHostOf(repository) ?? 'github.com'
-        ).catch(() => undefined)
+        await writeRepoHelperConfig(this.runnerFor(agent.id, checkout), agent.id, this.managedScopeOf(agent)).catch(
+          () => undefined
+        )
       }
     }
 
@@ -1824,7 +1848,11 @@ export class WorkspaceManager {
       const timer = setTimeout(() => abort.abort(), PULL_TIMEOUT_MS)
       try {
         await assertSafeWorkspaceGitConfig(this.runnerFor(agent.id, checkout))
-        const pullTarget = workspaceGitRemoteTarget(repository, githubApp ? agent.id : undefined)
+        const pullTarget = workspaceGitRemoteTarget(
+          repository,
+          githubApp ? agent.id : undefined,
+          this.managedScopeOf(agent)
+        )
         const git = this.runnerFor(agent.id, checkout, abort.signal).withEnv({
           ...workspaceGitLocalEnv(),
           ...pullTarget.env
@@ -1959,7 +1987,7 @@ export class WorkspaceManager {
     const githubApp = this.usesManagedCredential(agent)
     if (githubApp) await preWarmGitCred(agent.id, 'clone')
     const env = githubApp
-      ? { ...workspaceGitEnvBase(repository), ...cloneGitEnv(agent.id, repository) }
+      ? { ...workspaceGitEnvBase(repository), ...cloneGitEnv(agent.id, repository, this.managedScopeOf(agent)) }
       : { ...workspaceGitEnvBase(repository), GIT_TERMINAL_PROMPT: '0' }
     try {
       await this.runnerFor(agent.id, root)
@@ -1972,11 +2000,7 @@ export class WorkspaceManager {
       throw err
     }
     if (githubApp) {
-      await writeRepoHelperConfig(
-        this.runnerFor(agent.id, checkout),
-        agent.id,
-        managedCredentialHostOf(repository) ?? 'github.com'
-      )
+      await writeRepoHelperConfig(this.runnerFor(agent.id, checkout), agent.id, this.managedScopeOf(agent))
     }
   }
 
@@ -2259,14 +2283,17 @@ export class WorkspaceManager {
     const inflight = this.cloneInFlight.get(key)
     if (inflight) return inflight
 
-    const { cloneUrl, branch, githubApp } = root
+    const { cloneUrl, branch, githubApp, managed } = root
 
     const p = (async () => {
       // github-app: credentials ride the env-injected helper (no repo config exists
       // yet). SPREAD over process.env — withEnv REPLACES the child env, as .env() did.
       if (githubApp) await preWarmGitCred(agentId, 'clone')
       const git = githubApp
-        ? this.runnerFor(agentId).withEnv({ ...workspaceGitEnvBase(cloneUrl), ...cloneGitEnv(agentId, cloneUrl) })
+        ? this.runnerFor(agentId).withEnv({
+            ...workspaceGitEnvBase(cloneUrl),
+            ...cloneGitEnv(agentId, cloneUrl, managed)
+          })
         : this.runnerFor(agentId).withEnv({ ...workspaceGitEnvBase(cloneUrl), GIT_TERMINAL_PROMPT: '0' })
       try {
         await git.clone(cloneUrl, cwd, ['--branch', branch, '--single-branch'])
@@ -2280,11 +2307,7 @@ export class WorkspaceManager {
       // through the daemon too — the "no credentials on the machine, but the agent
       // can still push" half of the design.
       if (githubApp) {
-        await writeRepoHelperConfig(
-          this.runnerFor(agentId, cwd),
-          agentId,
-          managedCredentialHostOf(cloneUrl) ?? 'github.com'
-        )
+        await writeRepoHelperConfig(this.runnerFor(agentId, cwd), agentId, managed)
       }
     })().finally(() => {
       this.cloneInFlight.delete(key)

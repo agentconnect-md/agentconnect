@@ -463,7 +463,7 @@ function harness(
     },
     invalidateToken: (_turn, token) => void invalidated.push(token),
     log: { warn: () => {} },
-    baseUrl: BASE,
+    apiBaseUrl: () => BASE,
     fetchImpl: gitlab.fetchImpl,
     newAttemptId: () => attemptIds[Math.min(mintedAttempts++, attemptIds.length - 1)]!,
     newStartToken: () => `start-${control.ops.filter((op) => op.op === 'issue').length}`,
