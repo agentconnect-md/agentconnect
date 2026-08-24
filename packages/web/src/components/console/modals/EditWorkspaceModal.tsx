@@ -506,9 +506,11 @@ export default function EditWorkspaceModal({
                 </div>
               ) : noProjects ? (
                 <GitlabNoProjectsNotice
-                  integrationsHref={orgPath('/integrations')}
                   connected={gl.connected}
                   enabled={gl.enabled}
+                  onConnect={() => void gl.connect()}
+                  onSync={gl.reload}
+                  syncing={gl.reloading}
                 />
               ) : (
                 <>

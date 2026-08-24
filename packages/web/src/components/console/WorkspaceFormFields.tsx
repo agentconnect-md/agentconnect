@@ -411,14 +411,56 @@ export function GitlabProjectOption({
  *  account is connected, or the connected one administers nothing this
  *  organization may set up. */
 export function GitlabNoProjectsNotice({
-  integrationsHref,
   connected,
-  enabled = true
+  enabled = true,
+  onConnect,
+  onSync,
+  syncing = false
 }: {
-  integrationsHref: string
   connected: boolean
   enabled?: boolean
+  onConnect: () => void
+  onSync?: () => void
+  syncing?: boolean
 }) {
+  // Connecting belongs where the project is picked, exactly as installing the GitHub app does.
+  if (enabled && !connected) {
+    return (
+      <div className="rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] desktop:col-span-2">
+        <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
+          Connect GitLab to watch projects
+        </div>
+        <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+          Authorize AgentConnect on GitLab to subscribe this agent to issue and merge-request events. You pick the
+          project it watches here — you need Maintainer or Owner access to it.
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <Button size="sm" onClick={onConnect}>
+            <Icon name="external-link" size={13} />
+            Connect GitLab
+          </Button>
+          {onSync && (
+            <button
+              type="button"
+              className="lnk inline-flex items-center gap-[6px]"
+              onClick={onSync}
+              disabled={syncing}
+            >
+              <Icon
+                name={syncing ? 'loader' : 'refresh-cw'}
+                size={13}
+                className={syncing ? 'animate-spin' : undefined}
+              />
+              I&rsquo;ve connected it — sync
+            </button>
+          )}
+          <span className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+            Opens GitLab in a new tab
+          </span>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
       <span className="mt-[1px] flex h-[14px] w-[14px] flex-none items-center justify-center">
@@ -426,18 +468,10 @@ export function GitlabNoProjectsNotice({
       </span>
       {!enabled ? (
         <span>GitLab is not enabled on this deployment — no GitLab application is configured.</span>
-      ) : connected ? (
+      ) : (
         <span>
           The connected GitLab account has no project to offer. You need Maintainer or Owner access to a project before
           it can be set up here.
-        </span>
-      ) : (
-        <span>
-          No GitLab account is connected yet. Connect GitLab under{' '}
-          <a className="lnk font-medium" href={integrationsHref}>
-            Integrations
-          </a>
-          , then pick a project here.
         </span>
       )}
     </div>

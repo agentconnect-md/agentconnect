@@ -19,6 +19,7 @@ import {
   fetchGitlabConnections,
   fetchGitlabProjects,
   searchGitlabProjects,
+  startGitlabOauth,
   type GitlabProjectBindingDto,
   type GitlabProjectDto
 } from './api'
@@ -53,6 +54,14 @@ export interface GitlabProjectPicker {
   error: string | null
   /** A connection that can still talk to GitLab exists. */
   connected: boolean
+  /** Authorize a GitLab account in a new tab. The grant lands on the connection,
+   *  so the picker learns about it through `reload`, not through this call. */
+  connect: () => Promise<void>
+  /** Re-read the added projects and the connections — what a caller offers after
+   *  sending someone off to connect. */
+  reload: () => void
+  /** A `reload` is in flight. */
+  reloading: boolean
   /** Project id whose setup saga is running right now. */
   provisioning: string | null
   /** The last failed setup, in GitLab words. */
@@ -70,6 +79,8 @@ export function useGitlabProjects(active: boolean, query: string): GitlabProject
   const [error, setError] = useState<string | null>(null)
   const [provisioning, setProvisioning] = useState<string | null>(null)
   const [provisionError, setProvisionError] = useState<string | null>(null)
+  const [reloadToken, setReloadToken] = useState(0)
+  const [reloading, setReloading] = useState(false)
   const busy = useRef(false)
 
   // One request per active lifecycle, and no one-shot guard: the guard would
@@ -87,17 +98,19 @@ export function useGitlabProjects(active: boolean, query: string): GitlabProject
         setBindings(bound)
         // Only a connection GitLab still accepts can add a project (§10.1).
         setConnectionId(connections.find((c) => c.state === 'connected')?.id ?? null)
+        setReloading(false)
       },
       (e) => {
         if (!alive) return
         setBindings([])
         setError(errorText(e))
+        setReloading(false)
       }
     )
     return () => {
       alive = false
     }
-  }, [active])
+  }, [active, reloadToken])
 
   // Candidates are searched on GitLab, so keystrokes settle through a debounce.
   // A failed search leaves the added projects pickable rather than emptying the list.
@@ -139,6 +152,22 @@ export function useGitlabProjects(active: boolean, query: string): GitlabProject
     [connectionId]
   )
 
+  // The authorization URL carries a one-shot state, so it is minted per click.
+  const connect = useCallback(async (): Promise<void> => {
+    setError(null)
+    try {
+      const url = await startGitlabOauth(typeof window === 'undefined' ? undefined : window.location.pathname)
+      window.open(url, '_blank', 'noopener')
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }, [])
+
+  const reload = useCallback((): void => {
+    setReloading(true)
+    setReloadToken((token) => token + 1)
+  }, [])
+
   const choices = useMemo(() => mergeGitlabProjectChoices(bindings ?? [], candidates), [bindings, candidates])
 
   // Sticky: once the picker has offered something, a search that matches nothing
@@ -156,6 +185,9 @@ export function useGitlabProjects(active: boolean, query: string): GitlabProject
     empty: !loading && !everOffered && choices.length === 0,
     error,
     connected: connectionId !== null,
+    connect,
+    reload,
+    reloading,
     provisioning,
     provisionError,
     provision

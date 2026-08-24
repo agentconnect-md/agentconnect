@@ -173,14 +173,14 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
     })
   })
 
-  it('points at the connection surface when no GitLab account is connected', async () => {
+  it('offers the connect action in place when no GitLab account is connected', async () => {
     mocks.fetchGitlabProjects.mockResolvedValue([])
     mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [] })
     await render()
     await act(async () => buttonsNamed('From GitLab')[0]?.click())
 
-    expect(document.body.textContent).toContain('No GitLab account is connected yet')
-    expect(document.querySelector('a[href="/acme/integrations"]')).not.toBeNull()
+    expect(buttonsNamed('Connect GitLab').length).toBe(1)
+    expect(document.querySelector('a[href="/acme/integrations"]')).toBeNull()
     expect(mocks.searchGitlabProjects).not.toHaveBeenCalled()
   })
 

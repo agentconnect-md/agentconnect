@@ -1476,9 +1476,11 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   </div>
                 ) : glNoProjects ? (
                   <GitlabNoProjectsNotice
-                    integrationsHref={orgPath('/integrations')}
                     connected={gl.connected}
                     enabled={gl.enabled}
+                    onConnect={() => void gl.connect()}
+                    onSync={gl.reload}
+                    syncing={gl.reloading}
                   />
                 ) : (
                   <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-2 desktop:gap-x-7">

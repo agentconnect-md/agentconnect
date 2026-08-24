@@ -1667,9 +1667,11 @@ export default function AddIntegrationModal({
             ) : gl.empty ? (
               <div className="mb-4">
                 <GitlabNoProjectsNotice
-                  integrationsHref={orgPath('/integrations')}
                   connected={gl.connected}
                   enabled={gl.enabled}
+                  onConnect={() => void gl.connect()}
+                  onSync={gl.reload}
+                  syncing={gl.reloading}
                 />
               </div>
             ) : (
