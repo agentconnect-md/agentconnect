@@ -62,6 +62,12 @@ export interface SlackTurnState {
    *  action feeds this buffer instead of a message, so nothing the converger already
    *  converged — or already queued — is silently dropped. */
   streamFallback?: string
+  /** Whether the RESPONSE has moved off the stream to the fallback. Deliberately NOT derived
+   *  from the buffer's length: each flush empties the buffer, so a stop retried after one
+   *  would read "no fallback body" and re-anoint the retained old stream as the final,
+   *  attributed message. One-way for the turn — once the fallback owns the response, nothing
+   *  hands it back. */
+  streamResponseMoved?: boolean
   /** A stop Slack has not accepted yet, kept verbatim so settlement reissues THAT stop: a
    *  bare abort retry would settle the message but drop its attribution footer. */
   streamStopOwed?: Extract<SlackAction, { kind: 'stream-stop' }>
@@ -407,6 +413,14 @@ function streamChunkText(chunks: SlackStreamChunk[]): string {
   return chunks.map((chunk) => (chunk.type === 'markdown_text' ? chunk.text : '')).join('')
 }
 
+/** Route display text to the fallback buffer, opening it if needed, and record ownership the
+ *  moment real body text lands there. Ownership is tracked separately from the buffer BECAUSE
+ *  the buffer empties on every flush — see `streamResponseMoved`. */
+function bufferStreamFallback(state: SlackTurnState, body: string): void {
+  state.streamFallback = (state.streamFallback ?? '') + body
+  if (body) state.streamResponseMoved = true
+}
+
 /**
  * Issue one stop and decide whether the handle may be retired. Slack answering "not settled"
  * (a rate limit, a dropped connection, a send-queue timeout) is the one case that must NOT
@@ -692,7 +706,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       // BEFORE the refusal — and the terminal ones after it — are still arriving; they carry
       // display text Slack never took, so they feed the buffer instead of no-opping (§7).
       if (state.streamFallback !== undefined) {
-        state.streamFallback += body
+        bufferStreamFallback(state, body)
         return
       }
       if (!state.stream) return
@@ -708,7 +722,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       // A mid-turn append failure must not lose the answer. Open the buffer with exactly the
       // text this append carried — the converger has already advanced its cursor past it, so
       // this is the only remaining copy.
-      state.streamFallback = body
+      bufferStreamFallback(state, body)
       // Settle the message only when the answer has actually MOVED off it. A refusal that
       // dropped nothing but task chrome leaves the stream holding the whole visible answer,
       // so it stays open for its terminal attributed stop — aborting it here is what left a
@@ -718,14 +732,14 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     }
     case 'stream-stop': {
       if (state.streamStopped) return
-      // Degradation moves the RESPONSE off the stream only once the buffer actually holds
-      // body text. A refusal that dropped nothing but task chrome leaves the accepted stream
-      // holding the whole visible answer, so it must still be closed as the attributed final
-      // message — otherwise a "body → tool card → end" turn ends footerless and with nothing
-      // for §5.5 to finalize.
+      // Degradation moves the RESPONSE off the stream only once real body text has landed in
+      // the fallback. A refusal that dropped nothing but task chrome leaves the accepted
+      // stream holding the whole visible answer, so it must still be closed as the attributed
+      // final message — otherwise a "body → tool card → end" turn ends footerless and with
+      // nothing for §5.5 to finalize. Read from the one-way ownership flag, never from the
+      // buffer: a stop retried after the flush emptied it would re-anoint the old message.
       const degraded = state.streamFallback !== undefined
-      const fallbackOwnsResponse = (state.streamFallback ?? '').length > 0
-      const final = action.settle === 'final' && !fallbackOwnsResponse
+      const final = action.settle === 'final' && !state.streamResponseMoved
       if (state.stream) {
         const agentOptions = final
           ? slackAgentPostOptions({ ...p.plan, ...(p.reply.responseId ? { responseId: p.reply.responseId } : {}) })

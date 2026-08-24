@@ -517,6 +517,39 @@ describe('applySlackAction — streaming actions', () => {
     expect(conn.stopTurnStream.mock.calls.at(-1)![1]).toEqual({})
   })
 
+  it('never re-anoints the old message when BOTH the rollover and the terminal stop fail', async () => {
+    // The flush empties the buffer, so ownership read from its length would flip back to "the
+    // stream owns the response" on the settlement retry — putting the footer and the §5.5
+    // anchor on the old message, with the tail's text under the old ts.
+    let acceptStops = false
+    const { apply, conn, turn, state } = fixture({
+      stopTurnStream: vi.fn(async (_s: SlackTurnStream, _o?: Record<string, unknown>) => acceptStops)
+    })
+    await apply({ kind: 'stream-start' })
+    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'the prefix' }] })
+    await apply({ kind: 'stream-stop', settle: 'rollover', text: 'the prefix' })
+    await apply({ kind: 'stream-start' })
+    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'the tail' }] })
+    // Terminal stop ALSO refused — the tail still posts, and the stop stays owed.
+    await apply({ kind: 'stream-stop', settle: 'final', text: 'the tail' })
+    expect(conn.postMessage).toHaveBeenCalledOnce()
+    expect(turn.reply.lastResponse).toEqual({ ts: 'p1', text: 'the tail' })
+    expect(state.streamFallback).toBe('')
+    expect(state.streamStopOwed).toMatchObject({ settle: 'final' })
+
+    // Settlement replays that owed stop against the still-open OLD message.
+    acceptStops = true
+    await apply(state.streamStopOwed!)
+
+    // It settles BARE: no footer, no response metadata…
+    expect(conn.stopTurnStream.mock.calls.at(-1)![1]).toEqual({})
+    // …and the response anchor still names the message that actually holds the answer.
+    expect(turn.reply.lastResponse).toEqual({ ts: 'p1', text: 'the tail' })
+    expect(turn.reply.lastReply).toMatchObject({ ts: 'p1' })
+    expect(conn.postMessage).toHaveBeenCalledOnce()
+    expect(state.stream).toBeUndefined()
+  })
+
   it('stops everything when the append reports the person pressed Stop', async () => {
     const { apply, conn, turn, state } = fixture({
       appendTurnStream: vi.fn(

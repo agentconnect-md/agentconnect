@@ -405,6 +405,12 @@ Two consequences follow from "the answer lands exactly once", and both are easy 
   stay OPEN until the terminal stop rather than being settled at the refusal. Settling it
   early, or treating "degraded" as "the fallback owns the response", ends a
   `body → tool card → end` turn footerless and with nothing for §5.5 to finalize.
+  **That ownership is explicit state, not a length check on the buffer.** The buffer empties
+  on every flush, so a stop retried afterwards — the double-failure case, where the rollover
+  stop and then the terminal stop are both left unresolved — would read "no fallback body" and
+  re-anoint the retained old message as final, moving the footer and the §5.5 anchor onto it
+  and restamping it with the tail's text. Ownership is therefore one-way for the turn: once
+  the fallback has taken the response, no later retry hands it back.
 - **A failed ROLLOVER stop degrades its tail instead of reusing the old handle.** The retained
   handle (§3.4/§5 keep it for the settlement retry) is the message the rollover was trying to
   leave. Appending the tail there would undo the whole point — post-boundary output back above
