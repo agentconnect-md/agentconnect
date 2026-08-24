@@ -506,6 +506,7 @@ import {
   MAX_TURN_CONTEXT_REGENERATION_MS,
   MAX_TURN_CONTEXT_REGENERATIONS,
   PROBE_ROOT_SWEEP_INTERVAL_MS,
+  SANDBOX_BOOTSTRAP_NOTICE,
   SESSION_RETENTION_SWEEP_INTERVAL_MS
 } from './daemon/constants.js'
 import type {
@@ -9225,6 +9226,8 @@ export class Daemon {
       // Read here, not in the planner: the sticky override is live daemon state.
       stickyOutputMode: await this.store.getOutputModeOverride(key),
       hostAlreadyRunning: this.hostStarts.has(agentId) || this.modelSessions.hasStartedHost(key),
+      // Synchronous and exact: an attached shim session IS the pod being up, so no cluster read.
+      clusterPodBootstrap: this.k8sPlane !== undefined && !this.k8sPlane.runsInSandbox(agentId),
       protectedAddresses: this.compoundMentionAddresses(agentId, msg),
       codexUsageIsPerPrompt: this.isCodexRuntime(agentId),
       features: { turnFinalContextRefresh: this.cfg.features.turnFinalContextRefresh },
@@ -9239,7 +9242,15 @@ export class Daemon {
     const conv = plan.turnSurface.createConverger(plan.turnCtx)
     const replyConn = plan.suppressReplyConn ? undefined : this.replyConnFor(agentId, integrationId)
     const run: TurnRun = { entry, key, plan, agent, replyConn, evaluation }
+    // Add the streaming fields onto the SAME webchat object held by QueueEntry. Sharing
+    // `doneSent` closes a Pending-vs-gate race where cancel could otherwise terminally
+    // signal each copy once. Seeded HERE, before `openSession`, because the sandbox-bootstrap
+    // notice below streams on this turn's `index` and must not collide with the reply's.
+    const pendingWebchat = webchat
+      ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
+      : undefined
     this.showActivity(replyConn, msg.channel, plan.statusThread, plan.startupActivityLabel, plan.statusOptions)
+    if (plan.clusterPodBootstrap) this.announceSandboxBootstrap(run, pendingWebchat)
     const releaseReplyConn = this.holdReplyConnection(replyConn)
     const opened = await this.openSession(run, releaseReplyConn)
     if (opened.kind === 'cancelled') return null
@@ -9278,12 +9289,6 @@ export class Daemon {
       this.log.info(`dispatch: initialized session ${key} from self-authored channel root without a model turn`)
       return sessionId
     }
-    // Add the streaming fields onto the SAME webchat object held by QueueEntry. Sharing
-    // `doneSent` closes a Pending-vs-gate race where cancel could otherwise terminally
-    // signal each copy once.
-    const pendingWebchat = webchat
-      ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
-      : undefined
     // Resolved once for the turn: the console addresses this session by its outward id (§1.1),
     // and most of the turn's link/status producers are synchronous.
     const outwardSessionId = await this.store.ensureOutwardSessionId(
@@ -9340,6 +9345,29 @@ export class Daemon {
   /** Clear this turn's transient platform activity indicator ("is thinking…"). */
   private clearTurnActivity(run: TurnRun): void {
     this.showActivity(run.replyConn, run.plan.channel, run.plan.statusThread, '')
+  }
+
+  /** Say that this turn is waiting on a cluster Sandbox pod, before the wait starts.
+   *  Live-only chrome: nothing is recorded, because the wait is not part of the conversation.
+   *  A platform with a PUSHED status bar already carries it as this turn's activity label
+   *  (`startupActivityLabel`), so only the surfaces without one get a message of their own. */
+  private announceSandboxBootstrap(run: TurnRun, webchat: Pending['webchat']): void {
+    const { plan, entry, replyConn } = run
+    if (webchat) {
+      webchat.sink.output({
+        conversationId: webchat.conversationId,
+        turnId: webchat.turnId,
+        index: webchat.index++,
+        event: { kind: 'notice', text: SANDBOX_BOOTSTRAP_NOTICE }
+      })
+    }
+    // Chat origins only: a hook/code-host turn publishes one artifact at the end and must not
+    // grow a second message of its own. A pushed status bar (Slack) already says it.
+    if (!replyConn || originKindOf(plan.platform) !== 'chat') return
+    if (turnChromeFor(plan.platform).statusSurface === 'turn-bar') return
+    void replyConn
+      .postMessage(plan.channel, SANDBOX_BOOTSTRAP_NOTICE, entry.msg.thread)
+      .catch((err) => this.log.warn(`cluster: sandbox bootstrap notice failed (${formatErr(err)})`))
   }
 
   /** §3.3 source gate: bind this session to the inbound envelope's external audience, then — only

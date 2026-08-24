@@ -77,3 +77,7 @@ export const MAX_BG_TASK_WAKES_PER_SESSION = 20
  *  or the host is reclaimed. 20 is a display depth, not a durability promise — the panel is a
  *  live view, and the retained records are strictly outside the liveness set (see `settled`). */
 export const MAX_SETTLED_TASKS_PER_SESSION = 20
+
+/** Shown while a cluster turn waits for its Sandbox pod to come up and bind — up to
+ *  `K8sDriver.podUpTimeoutMs` of silence otherwise, with nothing to read as progress. */
+export const SANDBOX_BOOTSTRAP_NOTICE = '⏳ Allocating a sandbox pod…'
