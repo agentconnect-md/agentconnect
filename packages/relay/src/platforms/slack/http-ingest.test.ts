@@ -333,6 +333,7 @@ describe('SlackHttpIngest.handleInteraction', () => {
     onSelectThreadAgent: vi.fn(),
     onSessionAction: vi.fn(),
     onSessionShortcut: vi.fn(() => false),
+    onSessionStopped: vi.fn(),
     log: silentLog,
     ...over
   })
@@ -403,6 +404,7 @@ describe('SlackHttpIngest channel membership events', () => {
     onSelectThreadAgent: vi.fn(),
     onSessionAction: vi.fn(),
     onSessionShortcut: vi.fn(() => false),
+    onSessionStopped: vi.fn(),
     webClientFactory: () => web as never,
     log: silentLog,
     ...over
@@ -457,6 +459,69 @@ describe('SlackHttpIngest channel membership events', () => {
 
     expect(onChannelsChanged).toHaveBeenCalledWith([{ id: 'C1', name: 'remaining' }])
   })
+
+  // The native Stop. Also not a chat event, and the event id is the receipt a Slack
+  // redelivery reuses, so the daemon-side dedup id it mints is stable.
+  it('forwards the agent-session stop with its conversation and the tapping user', async () => {
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
+    const onSessionStopped = vi.fn()
+    const onMessage = vi.fn(async () => {})
+    const ingest = new SlackHttpIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      deps(web, { onSessionStopped, onMessage })
+    )
+    await ingest.start()
+
+    await ingest.handleEvent(
+      { type: 'agent_session_stopped', channel: 'C1', thread_ts: '200.1', user: 'U-ALICE' },
+      1_700_000_000_000,
+      'Ev123'
+    )
+
+    expect(onSessionStopped).toHaveBeenCalledWith({
+      channelId: 'C1',
+      threadTs: '200.1',
+      interactionId: 'Ev123',
+      userId: 'U-ALICE'
+    })
+    expect(onMessage).not.toHaveBeenCalled()
+  })
+
+  it('omits the actor when the stop names none, and drops one without a thread', async () => {
+    const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
+    const onSessionStopped = vi.fn()
+    const ingest = new SlackHttpIngest('bot', { botToken: 'xoxb', signingSecret: 's' }, deps(web, { onSessionStopped }))
+    await ingest.start()
+
+    await ingest.handleEvent({ type: 'agent_session_stopped', channel: 'C1', thread_ts: '200.1' }, undefined, 'Ev124')
+    await ingest.handleEvent({ type: 'agent_session_stopped', channel: 'C1' }, undefined, 'Ev125')
+
+    expect(onSessionStopped).toHaveBeenCalledTimes(1)
+    expect(onSessionStopped.mock.calls[0]![0]).not.toHaveProperty('userId')
+  })
+
+  // Subscribed so a future feature needs no manifest-refresh cycle, but nothing acts on them:
+  // they fall through to the same drop every unrecognized event takes.
+  it.each(['agent_session_title_changed', 'assistant_thread_context_changed'] as const)(
+    'drops the inert %s subscription',
+    async (type) => {
+      const web = { auth: { test: vi.fn(async () => ({ user_id: 'UBOT' })) } }
+      const onSessionStopped = vi.fn()
+      const onMessage = vi.fn(async () => {})
+      const ingest = new SlackHttpIngest(
+        'bot',
+        { botToken: 'xoxb', signingSecret: 's' },
+        deps(web, { onSessionStopped, onMessage })
+      )
+      await ingest.start()
+
+      await ingest.handleEvent({ type, channel: 'C1', thread_ts: '200.1', user: 'U-ALICE' })
+
+      expect(onSessionStopped).not.toHaveBeenCalled()
+      expect(onMessage).not.toHaveBeenCalled()
+    }
+  )
 
   // App lifecycle (preset-agents.md §5.3): the workspace pulled the app / revoked
   // its tokens. Not a chat event — it has no user/bot_id, so without the explicit
@@ -589,6 +654,7 @@ describe('SlackHttpIngest message events', () => {
         onSelectThreadAgent: vi.fn(),
         onSessionAction: vi.fn(),
         onSessionShortcut: vi.fn(() => false),
+        onSessionStopped: vi.fn(),
         webClientFactory: () => web as never,
         log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
       }

@@ -448,12 +448,17 @@ export class ConnectionReconciler {
       let conn = this.slackSharedPool.find(slackSharedKey(group))
       let bound = false
       if (!conn) {
-        conn = new SlackConnection(
+        // `created` (not `conn`) so the shortcut resolver reads this exact connection's bindings.
+        const created: SlackConnection = new SlackConnection(
           {
             group,
             sendOnly: true,
             newTraceId: () => randomUUID(),
             onMessage: () => {}, // never called (relay owns inbound)
+            // Registered on this transport too: the relay forwards the native Stop, which resolves
+            // the conversation's session the same way a Socket Mode stop does.
+            onMessageShortcut: (shortcut) =>
+              this.host.slackShortcutSession(shortcut, this.host.srcIntegrationIds(created)),
             onStatusAction: (a) => this.host.handleStatusAction(a),
             onStatusInfo: (key) => this.host.statusInfoForKey(key),
             onPermissionChoice: (a) => this.host.handlePermissionChoice(a),
@@ -462,6 +467,7 @@ export class ConnectionReconciler {
           },
           this.host.slackAppFactory()
         )
+        conn = created
         try {
           await conn.start()
           this.slackSharedPool.add(conn)
