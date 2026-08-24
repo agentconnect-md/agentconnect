@@ -342,6 +342,10 @@ Notes:
   binds no audience by design) becomes `private`, any other conversation `org`,
   and both are unowned — the reporting trigger is the agent, not a person. A
   shared destination re-binds its own trusted candidate, which outranks both.
+  Classifying itself does not exempt it from privacy travelling DOWN the
+  lineage: a settled-private parent tightens it exactly as §4.3 would, whichever
+  of the two rows arrives first, and its own `explicit` re-classification
+  survives that convergence (only a human tighten of the parent overrides it).
 
 ### 4.3 Changing visibility after the fact
 

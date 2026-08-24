@@ -759,8 +759,13 @@ export class PgSessionRepo implements SessionRepo {
       `)
       if (rows.length !== 1) return []
       const self = toRecord(rows[0]!)
-      // We just settled — anything that was waiting on US can settle now too.
-      return [self, ...(await this.settlePendingChildren(tx, self))]
+      // We just settled — anything that was waiting on US can settle now too, and a private
+      // outcome converges the descendants that classified themselves (see `upsertMilestone`).
+      const settled = await this.settlePendingChildren(tx, self)
+      if (self.visibility === 'private') {
+        settled.push(...(await this.tightenDescendants(tx, self, { includeExplicit: false })))
+      }
+      return [self, ...settled]
     })
   }
 
@@ -998,6 +1003,13 @@ export class PgSessionRepo implements SessionRepo {
     // would drop it out of the scan when the real ancestor finally lands.
     const settled =
       session.visibilitySource === 'inherited_pending' ? [] : await this.settlePendingChildren(tx, session)
+    // Settlement alone only rewrites `inherited_pending` descendants, so a descendant that
+    // classified ITSELF (a direct destination, §4.2) would stay org-visible under a private
+    // parent purely because it arrived first. Converge it the way a §4.3 tighten would — its
+    // own explicit re-classification survives, and a non-private parent changes nothing.
+    if (session.visibility === 'private' && session.visibilitySource !== 'inherited_pending') {
+      settled.push(...(await this.tightenDescendants(tx, session, { includeExplicit: false })))
+    }
     if (rebound) settled.push(...(await this.settleExternalDescendants(tx, session)))
     // Keep the durable policy state aligned with the actual unresolved set.
     // A trusted retry may settle the final historical candidate after enable;
@@ -1640,63 +1652,90 @@ export class PgSessionRepo implements SessionRepo {
       `)
       const affected = target.map(toRecord)
       if (visibility === 'org') return { affected }
-
-      const seen = new Set<string>([sessionId])
-      let frontier: string[] = [sessionId]
-      while (frontier.length > 0) {
-        // Lock this level's children BEFORE reading them as a set to update: a
-        // concurrent child insert either waits here or is caught by the re-scan.
-        // `parentSessionId` is a daemon-reported free string with NO foreign key,
-        // so a session in another organization can name this one as its parent.
-        // Every lineage hop is therefore confined to the root's org: without it a
-        // tighten here would lock, rewrite, and push another tenant's row
-        // (org-scoped-data-layer.md §3 — the fence is per-hop, not just per-root).
-        const children = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-          SELECT "id" FROM "session_meta"
-          WHERE "parentSessionId" = ANY(${frontier}::text[]) AND "orgId" = ${orgId}
-          ORDER BY "id"
-          FOR UPDATE
-        `)
-        const next = children.map((c) => c.id).filter((id) => !seen.has(id))
-        if (next.length === 0) break
-        for (const id of next) seen.add(id)
-        // Every descendant is rewritten, including ones ALREADY private: their
-        // transcripts hold text copied from this session, so they must inherit
-        // ITS owner. Leaving a private-but-differently-owned child alone would
-        // keep that other owner's access to the tightened session's content.
-        const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
-          UPDATE "session_meta" SET
-            "visibility" = CASE
-              WHEN "externalProvider" IS NULL THEN 'private'::"SessionVisibility"
-              ELSE 'external'::"SessionVisibility"
-            END,
-            "ownerIdentity" = CASE
-              WHEN "externalProvider" IS NULL THEN ${ownerIdentity}
-              ELSE NULL
-            END,
-            "externalResolution" = CASE
-              WHEN "externalProvider" IS NULL THEN "externalResolution"
-              ELSE 'invalid'::"ExternalResolution"
-            END,
-            "visibilitySource" = 'inherited'::"VisibilitySource",
-            "visibilityRev" = "visibilityRev" + 1,
-            "updatedAt" = CURRENT_TIMESTAMP
-          WHERE "id" = ANY(${next}::text[])
-            AND "orgId" = ${orgId}
-            AND (
-              ("externalProvider" IS NULL AND "visibility" <> 'private'::"SessionVisibility")
-              OR ("externalProvider" IS NULL AND "ownerIdentity" IS DISTINCT FROM ${ownerIdentity})
-              OR ("externalProvider" IS NOT NULL AND "visibility" <> 'external'::"SessionVisibility")
-              OR ("externalProvider" IS NOT NULL AND "externalResolution" <> 'invalid'::"ExternalResolution")
-              OR "visibilitySource" <> 'inherited'::"VisibilitySource"
-            )
-          RETURNING *
-        `)
-        affected.push(...rows.map(toRecord))
-        frontier = next
-      }
+      // A human tightening overrides a descendant's own re-classification — privacy wins.
+      affected.push(
+        ...(await this.tightenDescendants(
+          tx,
+          { id: sessionId, orgId, ownerIdentity: current.ownerIdentity },
+          { includeExplicit: true }
+        ))
+      )
       return { affected }
     })
+  }
+
+  /**
+   * The §4.3 descendant rewrite, shared with §4.5 settlement: privacy travels DOWN a lineage.
+   * A plain descendant takes the root's owner — including one already private, whose transcript
+   * holds text copied from the root and must not keep a different owner's access. A shared
+   * descendant's audience is immutable, so it is quarantined (`invalid`) rather than hidden.
+   *
+   * Lock-then-scan per level: a concurrent child insert either waits on the level's lock or is
+   * caught by the next scan. `parentSessionId` is a daemon-reported free string with NO foreign
+   * key, so a session in another organization can name this one as its parent — every hop is
+   * confined to the root's org, or a tighten here would rewrite and push another tenant's row
+   * (org-scoped-data-layer.md §3: the fence is per-hop, not just per-root).
+   *
+   * `includeExplicit` separates the callers. A human tightening (§4.3) overrides a descendant's
+   * own decision; convergence on data ARRIVAL must not, because widening a child stays its
+   * owner's own decision (§4.5) and would otherwise be undone by the parent's next milestone.
+   * Idempotent either way — the predicate matches only rows that still differ.
+   */
+  private async tightenDescendants(
+    tx: PrismaLike,
+    root: { id: string; orgId: string; ownerIdentity: string | null },
+    { includeExplicit }: { includeExplicit: boolean }
+  ): Promise<SessionMetaRecord[]> {
+    const { id, orgId, ownerIdentity } = root
+    const keepExplicit = includeExplicit
+      ? Prisma.empty
+      : Prisma.sql`AND "visibilitySource" <> 'explicit'::"VisibilitySource"`
+    const affected: SessionMetaRecord[] = []
+    const seen = new Set<string>([id])
+    let frontier: string[] = [id]
+    while (frontier.length > 0) {
+      const children = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT "id" FROM "session_meta"
+        WHERE "parentSessionId" = ANY(${frontier}::text[]) AND "orgId" = ${orgId}
+        ORDER BY "id"
+        FOR UPDATE
+      `)
+      const next = children.map((c) => c.id).filter((childId) => !seen.has(childId))
+      if (next.length === 0) break
+      for (const childId of next) seen.add(childId)
+      const rows = await tx.$queryRaw<SessionMeta[]>(Prisma.sql`
+        UPDATE "session_meta" SET
+          "visibility" = CASE
+            WHEN "externalProvider" IS NULL THEN 'private'::"SessionVisibility"
+            ELSE 'external'::"SessionVisibility"
+          END,
+          "ownerIdentity" = CASE
+            WHEN "externalProvider" IS NULL THEN ${ownerIdentity}
+            ELSE NULL
+          END,
+          "externalResolution" = CASE
+            WHEN "externalProvider" IS NULL THEN "externalResolution"
+            ELSE 'invalid'::"ExternalResolution"
+          END,
+          "visibilitySource" = 'inherited'::"VisibilitySource",
+          "visibilityRev" = "visibilityRev" + 1,
+          "updatedAt" = CURRENT_TIMESTAMP
+        WHERE "id" = ANY(${next}::text[])
+          AND "orgId" = ${orgId}
+          AND (
+            ("externalProvider" IS NULL AND "visibility" <> 'private'::"SessionVisibility")
+            OR ("externalProvider" IS NULL AND "ownerIdentity" IS DISTINCT FROM ${ownerIdentity})
+            OR ("externalProvider" IS NOT NULL AND "visibility" <> 'external'::"SessionVisibility")
+            OR ("externalProvider" IS NOT NULL AND "externalResolution" <> 'invalid'::"ExternalResolution")
+            OR "visibilitySource" <> 'inherited'::"VisibilitySource"
+          )
+          ${keepExplicit}
+        RETURNING *
+      `)
+      affected.push(...rows.map(toRecord))
+      frontier = next
+    }
+    return affected
   }
 
   async recordVisibilityAck(sessionId: SessionId, visibilityRev: number): Promise<void> {

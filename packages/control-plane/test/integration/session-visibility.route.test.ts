@@ -566,6 +566,57 @@ describe('session visibility — external conversation audiences', () => {
     expect(after.session).toMatchObject(expected)
   })
 
+  // The inverse arrival order: the self-classifying child lands FIRST, so there is no parent to
+  // read. Settlement alone only rewrites `inherited_pending` rows, so without convergence on the
+  // parent's own milestone this row would stay org-visible under a private parent — the same
+  // lineage, a different outcome, decided by which telemetry arrived first.
+  it('converges a direct-destination child that arrived before its private parent', async () => {
+    const daemonId = await seedDaemon(prisma, randomUUID())
+    const agentId = await seedAgent(prisma, randomUUID(), { daemonId })
+    const repo = new PgSessionRepo(prisma)
+    const parentId = `s-dd-first-parent-${randomUUID()}`
+    const childId = `s-dd-first-child-${randomUUID()}`
+    const widened = `s-dd-first-widened-${randomUUID()}`
+
+    // Two self-classifying children of a parent that has not been reported yet.
+    for (const id of [childId, widened]) {
+      await repo.recordMilestone({
+        sessionId: SessionId(id),
+        parentSessionId: SessionId(parentId),
+        agentId,
+        phase: 'start',
+        platform: 'slack',
+        channel: 'C_POSTED',
+        at: new Date(),
+        classification: { visibility: 'org', ownerIdentity: null, source: 'default' }
+      })
+    }
+    // …one of which its owner then deliberately widened. A human decision on the CHILD is not
+    // reconciliation's to undo (§4.5): only an explicit tighten of the parent may override it.
+    await prisma.sessionMeta.update({ where: { id: widened }, data: { visibilitySource: 'explicit' } })
+
+    // The parent finally arrives, private from birth (a webchat/DM origin).
+    await repo.recordMilestone({
+      sessionId: SessionId(parentId),
+      agentId,
+      phase: 'start',
+      platform: 'webchat',
+      channel: randomUUID(),
+      at: new Date(),
+      classification: { visibility: 'private', ownerIdentity: 'user:someone', source: 'default' }
+    })
+
+    expect(await prisma.sessionMeta.findUnique({ where: { id: childId } })).toMatchObject({
+      visibility: 'private',
+      ownerIdentity: 'user:someone',
+      visibilitySource: 'inherited'
+    })
+    expect(await prisma.sessionMeta.findUnique({ where: { id: widened } })).toMatchObject({
+      visibility: 'org',
+      visibilitySource: 'explicit'
+    })
+  })
+
   // The post-commit settlement path (§4.5) inherits the parent's audience after
   // the child's own transaction closed — including the interleaving where the
   // parent lands and is stamped legacy in between. Provenance must ride along, or
