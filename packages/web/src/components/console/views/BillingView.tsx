@@ -50,6 +50,18 @@ import { Button, Icon } from '@/components/ui'
 // Mobile scrolls the card sideways (globals' `.card:has(.row)`), so one template serves both.
 const TX_GRID = 'grid-cols-[34px_minmax(0,1fr)_132px_24px_190px] gap-2'
 
+// The Transactions filter, the same Usage / Top-ups split the Activity chart offers — plus
+// `all`, which is the table's own default and the whole ledger it always showed. `type` goes
+// to the service: the feed is keyset-paginated over both ledger sides at once, so narrowing
+// it here rather than on a page already fetched is what keeps the cursor, the loaded count
+// and "end of ledger" describing the rows actually on screen.
+const TX_SIDES = [
+  { key: 'all', label: 'All', type: undefined },
+  { key: 'debit', label: 'Usage', type: 'debit' },
+  { key: 'credit', label: 'Top-ups', type: 'credit' }
+] as const
+type TxSide = (typeof TX_SIDES)[number]['key']
+
 const KIND_LABEL: Record<string, string> = {
   purchase: 'Credit purchase',
   adjustment: 'Adjustment',
@@ -592,15 +604,33 @@ export default function BillingView() {
   const fetching = offered && orgId !== null
 
   const account = useSWR(fetching ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
-  const transactions = useSWR(fetching ? consoleKeys.billingTransactions(orgId) : null, () =>
+
+  const [side, setSide] = useState<TxSide>('all')
+  const sideType = TX_SIDES.find((s) => s.key === side)!.type
+  // The table's own feed, one page one per side. `all` is the same key the unfiltered ledger
+  // below uses, so the default view still costs ONE request — SWR dedupes them.
+  const transactions = useSWR(fetching ? consoleKeys.billingTransactions(orgId, side) : null, () =>
+    // The unfiltered call on `all`, not `{ type: undefined }`: it shares its key with the
+    // ledger read below, and SWR runs ONE of the two fetchers for a shared key — so they
+    // have to be the same request, not two spellings of it.
+    sideType ? fetchBillingTransactions(orgId!, undefined, { type: sideType }) : fetchBillingTransactions(orgId!)
+  )
+  // The balance card's own read, deliberately NOT the table's: "last deduction" is a fact
+  // about the account, and reading it off whatever the table happens to have loaded made it
+  // vanish the moment someone filtered to Top-ups.
+  const ledger = useSWR(fetching ? consoleKeys.billingTransactions(orgId) : null, () =>
     fetchBillingTransactions(orgId!)
   )
 
-  // Pages past the first, keyed to their org so a switch drops them without an effect.
-  // SWR owns page one (and revalidates it); this only ever appends behind it.
-  const [tail, setTail] = useState<{ orgId: string; items: BillingTransaction[]; nextCursor: string | null } | null>(
-    null
-  )
+  // Pages past the first, keyed to their org AND side so a switch of either drops them
+  // without an effect — a cursor belongs to the feed it came from and means nothing in
+  // another. SWR owns page one (and revalidates it); this only ever appends behind it.
+  const [tail, setTail] = useState<{
+    orgId: string
+    side: TxSide
+    items: BillingTransaction[]
+    nextCursor: string | null
+  } | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [tailError, setTailError] = useState<string | null>(null)
 
@@ -624,13 +654,16 @@ export default function BillingView() {
   const { mutate: mutateKey } = useSWRConfig()
   const refreshMoney = useCallback(() => {
     void account.mutate()
-    void transactions.mutate()
+    // Every side's page one, not only the visible one: a settled top-up belongs to the All
+    // and Top-ups feeds alike, and leaving the others cached had a filter switch show a
+    // ledger that predated the purchase.
+    if (orgId) for (const s of TX_SIDES) void mutateKey(consoleKeys.billingTransactions(orgId, s.key))
     // The Activity chart reads the same ledger through its OWN key, one per range, and its
     // fetch usually landed while the purchase was still pending. Settlement has to reach
     // every range it can show — leaving the cached ones alone had the Top-ups chart disagree
     // with the table right beside it until a refocus or a reload.
     if (orgId) for (const r of ACTIVITY_RANGES) void mutateKey(consoleKeys.billingActivity(orgId, r.key))
-  }, [account.mutate, transactions.mutate, mutateKey, orgId])
+  }, [account.mutate, mutateKey, orgId])
   useEffect(() => {
     if (!orgId || checkout?.phase !== 'confirming') return
     const { purchaseId, attempt } = checkout
@@ -702,18 +735,23 @@ export default function BillingView() {
 
   // Page one from SWR plus the appended tail, deduped: a revalidated page one can
   // grow into rows the tail already fetched.
-  const tailItems = tail && tail.orgId === orgId ? tail.items : []
+  const mine = tail && tail.orgId === orgId && tail.side === side ? tail : null
+  const tailItems = mine ? mine.items : []
   const firstIds = new Set(transactions.data?.items.map((t) => t.id))
-  const txItems = transactions.data ? [...transactions.data.items, ...tailItems.filter((t) => !firstIds.has(t.id))] : []
-  const nextCursor = tail && tail.orgId === orgId ? tail.nextCursor : (transactions.data?.nextCursor ?? null)
+  const loaded = transactions.data ? [...transactions.data.items, ...tailItems.filter((t) => !firstIds.has(t.id))] : []
+  // The side is a REQUEST: a billing image that predates `type` ignores it and answers with
+  // the whole ledger. Cutting again here is what stops that image from rendering top-ups
+  // under a pill that says Usage — a wrong answer is worse than a narrower one.
+  const txItems = sideType ? loaded.filter((t) => t.type === sideType) : loaded
+  const nextCursor = mine ? mine.nextCursor : (transactions.data?.nextCursor ?? null)
 
   const loadMore = async () => {
     if (!nextCursor || loadingMore) return
     setLoadingMore(true)
     setTailError(null)
     try {
-      const page = await fetchBillingTransactions(orgId, nextCursor)
-      setTail({ orgId, items: [...tailItems, ...page.items], nextCursor: page.nextCursor })
+      const page = await fetchBillingTransactions(orgId, nextCursor, { type: sideType })
+      setTail({ orgId, side, items: [...tailItems, ...page.items], nextCursor: page.nextCursor })
     } catch (e) {
       setTailError((e as Error).message)
     }
@@ -723,7 +761,8 @@ export default function BillingView() {
   // Design's balance-card stats, from what the wire actually carries: the latest debit
   // comes off the loaded ledger, the threshold off the account. The design's
   // "Billed this period" needs a service field that does not exist — still out.
-  const lastDebit = txItems.find((t) => t.type === 'debit')
+  const ledgerItems = ledger.data?.items ?? []
+  const lastDebit = ledgerItems.find((t) => t.type === 'debit')
   const thresholdMicro = acct?.lowBalanceMicro ?? 0
   const threshold = thresholdMicro > 0 ? fmtMicroUsd(thresholdMicro) : '—'
   // Design: still Serving below the threshold, but the pill turns amber with the banner.
@@ -769,7 +808,11 @@ export default function BillingView() {
         <>
           <BalanceBannerCard
             acct={acct}
-            hasHistory={ledgerHistory(transactions.data)}
+            // The UNFILTERED read, like "last deduction" below: whether this account has ever
+            // moved money is a fact about the account, and reading it off the table's current
+            // side told a suspended org with usage and no top-ups that it had never been
+            // funded the moment someone pressed Top-ups.
+            hasHistory={ledgerHistory(ledger.data)}
             canPay={myRole === 'owner'}
             // The banner's CTA leads INTO the inline form (the design's modal equivalent):
             // scroll to it, blink the card, and land focus in the amount field.
@@ -831,18 +874,27 @@ export default function BillingView() {
 
           {/* Design: the chart only appears once the ledger has something to draw — an
               unfunded org gets the banner and the empty table, not an empty plot. */}
-          {txItems.length > 0 && <ActivityCard orgId={orgId} />}
+          {ledgerItems.length > 0 && <ActivityCard orgId={orgId} />}
 
           <div className="card">
-            <div className="cardhead justify-between">
+            <div className="cardhead flex-wrap justify-between gap-2">
               <span className="inline-flex items-baseline gap-2">
                 <span className="cardtitle">Transactions</span>
                 {transactions.data && (
                   <span className="mono text-[11.5px] text-(--text-tertiary)">{txItems.length} loaded</span>
                 )}
               </span>
-              <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                Newest first · amounts in USD
+              <span className="flex items-center gap-2">
+                <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                  Newest first · amounts in USD
+                </span>
+                <span className="pillbar">
+                  {TX_SIDES.map((s) => (
+                    <button key={s.key} className={side === s.key ? 'pill on' : 'pill'} onClick={() => setSide(s.key)}>
+                      {s.label}
+                    </button>
+                  ))}
+                </span>
               </span>
             </div>
             {/* The two requests fail independently, so this card carries its own
@@ -887,9 +939,17 @@ export default function BillingView() {
                 <span className="flex h-11 w-11 items-center justify-center rounded-[11px] border border-(--border-subtle) bg-(--surface-sunken) text-(--text-tertiary)">
                   <Icon name="receipt-text" size={20} />
                 </span>
-                <div className="mt-3 font-sans text-[14px] font-semibold leading-normal">No transactions yet</div>
+                <div className="mt-3 font-sans text-[14px] font-semibold leading-normal">
+                  {side === 'debit' ? 'No usage yet' : side === 'credit' ? 'No top-ups yet' : 'No transactions yet'}
+                </div>
+                {/* Under a filter this is "nothing on this side", not "nothing at all" — the
+                    unfiltered ledger may be full, and saying otherwise reads as data loss. */}
                 <div className="mt-1 max-w-[340px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
-                  Purchases and usage deductions will appear here once your org is funded.
+                  {side === 'debit'
+                    ? 'Usage deductions will appear here once your agents start spending.'
+                    : side === 'credit'
+                      ? 'Purchases and operator credits will appear here.'
+                      : 'Purchases and usage deductions will appear here once your org is funded.'}
                 </div>
               </div>
             ) : (
@@ -932,6 +992,19 @@ export default function BillingView() {
                         >
                           {credit ? t.kind : 'usage'}
                         </span>
+                        {/* No agent attribution here, deliberately: this feed is authorized on
+                            org membership alone, so naming the agent behind a charge would
+                            hand every member a resource-existence oracle. See billing-api.ts. */}
+                        {/* Free operator text, rendered as TEXT — truncated, with the whole
+                            note on hover, so a long one cannot push the amount column out. */}
+                        {credit && t.note && (
+                          <span
+                            className="truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+                            title={t.note}
+                          >
+                            {t.note}
+                          </span>
+                        )}
                         {credit && t.receiptUrl && (
                           <a
                             className="inline-flex flex-none items-center gap-0.5 font-sans text-[12px] font-medium text-(--text-brand) hover:underline"

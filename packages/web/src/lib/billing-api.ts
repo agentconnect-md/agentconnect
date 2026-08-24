@@ -53,6 +53,16 @@ export interface BillingAccount {
 //            a statement line is a reconciliation fact. The service rounds in exactly
 //            two places and a history row is neither of them, so it hands the exact
 //            value over and formatting it for a human is this side's job.
+// `note` is optional for the same reason `type` is: a service that predates it omits it, and
+// the console routinely runs ahead of that image. Absent or null ⇒ the row renders without it.
+//
+// The debit arm's `agents` — the control plane's per-agent split of a charge — is DELIBERATELY
+// not mirrored. The billing service authorizes on org membership alone; it holds no Agent or
+// Session visibility, so its `agentId`s are the org's, not the viewer's. Naming one to every
+// member is the discovery that `docs/designs/authorization-policy.md` §4 forbids and a second
+// attribution surface beside the viewer-scoped one in `session-visibility.md` §5, whose whole
+// rule is that withheld usage comes back id-less. An opaque id is still an existence
+// disclosure. Mirroring it needs a viewer-scoped response first — see #1480.
 export interface BillingCredit {
   type: 'credit'
   id: string
@@ -64,6 +74,9 @@ export interface BillingCredit {
   // `type` is: a service that predates it omits it, and the console runs ahead of that
   // image. Absent or null ⇒ the row renders with no receipt link, never a broken one.
   receiptUrl?: string | null
+  /** Why an operator moved this money, on an `adjustment` row only — null on every other
+   *  kind. Free operator text, so it renders as TEXT: never as markup, never as a link. */
+  note?: string | null
 }
 
 export interface BillingDebit {
@@ -218,10 +231,16 @@ export function assertTransactionsPage(
       // A non-string, non-null receipt is a shape error; ABSENT is the older contract.
       if (!(t.receiptUrl === undefined || t.receiptUrl === null || typeof t.receiptUrl === 'string'))
         throw new BillingShapeError('transaction')
+      // An operator's note, on `adjustment` only. ABSENT is the older contract.
+      if (!(t.note === undefined || t.note === null || typeof t.note === 'string'))
+        throw new BillingShapeError('transaction')
     } else if (t.type === 'debit') {
       // A string, and never coerced to a number here — the exact value is what the
       // service sent, and only the display rounds it.
       if (typeof t.amount !== 'string' || typeof t.period !== 'string') throw new BillingShapeError('transaction')
+      // `agents` is checked by its ABSENCE from this list, not by a rule: an unmirrored field
+      // passes through unread, which is what keeps a service that sends one from failing the
+      // page. Nothing downstream can render what nothing here declares.
     } else {
       throw new BillingShapeError('transaction')
     }
@@ -261,21 +280,24 @@ export async function fetchBillingAccount(orgId: string): Promise<BillingAccount
   return body
 }
 
-/** `window` narrows the feed to a half-open `[from, to)` on the row's own instant, the same
- *  shape the CP's usage query takes; both ends are optional and an omitted one is open.
+/** `filter` narrows the feed. `from`/`to` are a half-open `[from, to)` on the row's own
+ *  instant, the same shape the CP's usage query takes; both ends are optional and an omitted
+ *  one is open. `type` narrows it to one ledger side, and an omitted one is both.
  *
- *  It is a REQUEST, not a guarantee: a billing image that predates the parameters ignores
- *  them and answers with the whole ledger, and this console routinely runs ahead of that
- *  image. A caller that needs the window to hold must still check `at` on the rows it keeps. */
+ *  Every part is a REQUEST, not a guarantee: a billing image that predates a parameter
+ *  ignores it and answers with the whole ledger, and this console routinely runs ahead of
+ *  that image. A caller that needs a narrowing to hold must check the rows it keeps — `at`
+ *  for the window, `type` for the side. */
 export async function fetchBillingTransactions(
   orgId: string,
   cursor?: string,
-  window?: { from?: string; to?: string }
+  filter?: { from?: string; to?: string; type?: 'credit' | 'debit' }
 ): Promise<BillingTransactionsPage> {
   const params = new URLSearchParams()
   if (cursor) params.set('cursor', cursor)
-  if (window?.from) params.set('from', window.from)
-  if (window?.to) params.set('to', window.to)
+  if (filter?.from) params.set('from', filter.from)
+  if (filter?.to) params.set('to', filter.to)
+  if (filter?.type) params.set('type', filter.type)
   const query = params.size > 0 ? `?${params}` : ''
   const body = await request<unknown>(`${orgPath(orgId)}/transactions${query}`)
   assertTransactionsPage(body)
