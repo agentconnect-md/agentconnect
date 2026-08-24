@@ -15,7 +15,10 @@ const mocks = vi.hoisted(() => ({
   fetchGitlabConnections: vi.fn()
 }))
 
-mocks.fetchGitlabConnections.mockImplementation(async () => ({ enabled: true, connections: mocks.connections }))
+function answerWithConnections(): void {
+  mocks.fetchGitlabConnections.mockImplementation(async () => ({ enabled: true, connections: mocks.connections }))
+}
+answerWithConnections()
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'agent-1' }),
@@ -110,7 +113,8 @@ afterEach(async () => {
   root = undefined
   host = undefined
   mocks.connections = []
-  mocks.fetchGitlabConnections.mockClear()
+  mocks.fetchGitlabConnections.mockReset()
+  answerWithConnections()
 })
 
 describe('AgentDetailView, GitLab triggers panel', () => {
@@ -121,8 +125,25 @@ describe('AgentDetailView, GitLab triggers panel', () => {
     expect(text).not.toContain('gitlab.com')
   })
 
-  it('falls back to GitLab.com when no connection answers', async () => {
+  it('names no host while the read is still in flight', async () => {
+    mocks.fetchGitlabConnections.mockImplementation(() => new Promise(() => {}))
     const text = await render()
-    expect(text).toContain('gitlab.com')
+    expect(text).toContain('group/project')
+    expect(text).not.toContain('gitlab.')
+  })
+
+  it('names no host when the read fails', async () => {
+    mocks.fetchGitlabConnections.mockImplementation(async () => {
+      throw new Error('unreachable')
+    })
+    const text = await render()
+    expect(text).toContain('group/project')
+    expect(text).not.toContain('gitlab.')
+  })
+
+  it('names no host when the deployment reports no connection', async () => {
+    const text = await render()
+    expect(text).toContain('group/project')
+    expect(text).not.toContain('gitlab.')
   })
 })
