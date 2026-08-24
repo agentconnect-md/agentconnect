@@ -451,6 +451,34 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(res.target).toEqual({ agentId: ALICE, daemonId: D1 })
     })
 
+    it('treats different Feishu apps in one region as sibling tenant routes', async () => {
+      botRow = bot({
+        platform: 'feishu',
+        externalAppId: 'cli_a',
+        externalTenantId: '-',
+        feishuAppId: 'cli_a',
+        feishuRegion: null
+      })
+      siblingBots = [
+        bot({
+          id: OTHER_BOT,
+          platform: 'feishu',
+          externalAppId: 'cli_b',
+          externalTenantId: '-',
+          feishuAppId: 'cli_b',
+          feishuRegion: 'feishu',
+          shareable: false,
+          agentIds: [ALICE]
+        })
+      ]
+      threadOwner = { agentId: ALICE }
+
+      const res = await makeOrch().lookupThread({ botId: BOT, sessionKey: SK })
+
+      expect(res.target).toBeNull()
+      expect(res.participants).toEqual([])
+    })
+
     it('persists and broadcasts participant joins independently of the compatibility owner', async () => {
       const orch = makeOrch()
       await orch.recordThreadParticipant({ botId: BOT, sessionKey: SK, agentId: BOB, daemonId: D2 })

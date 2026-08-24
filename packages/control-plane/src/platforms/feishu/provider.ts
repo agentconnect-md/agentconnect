@@ -375,10 +375,8 @@ export function createFeishuCpProvider(deps: FeishuCpProviderDeps): CpPlatformPr
       }
     },
 
-    threadFallbackRealm: (bot) => {
-      const appId = bot.feishuAppId ?? bot.externalAppId
-      return appId ? `${bot.feishuRegion ?? 'feishu'}:${appId}` : null
-    },
+    // Every Bot App admitted in a region was verified against that region's one configured Login App tenant.
+    threadFallbackRealm: (bot) => bot.feishuRegion ?? 'feishu',
 
     // Feishu reuses the established two-slot shape (`install-feishu.ts`):
     // botToken = app SECRET (the credential), appToken = app ID (the
