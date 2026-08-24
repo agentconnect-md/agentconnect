@@ -1358,22 +1358,17 @@ function SessionDetailFrame({ children, withDock = true }: { children: ReactNode
 }
 
 function sessionUnavailableReasons(providerName: string | undefined, profileLinked: boolean | undefined): string[] {
+  const base = ['The session doesn’t exist or has been removed.', 'You aren’t authorized to see this session.']
   if (!providerName) {
-    return ['The session doesn’t exist or has been removed.']
+    return base
   }
   if (profileLinked === false) {
-    return ['The session doesn’t exist or has been removed.', `Your ${providerName} profile isn’t linked.`]
+    return [...base, `Your ${providerName} profile isn’t linked.`]
   }
   if (profileLinked === true) {
-    return [
-      'The session doesn’t exist or has been removed.',
-      `Your linked ${providerName} profile belongs to a different workspace.`
-    ]
+    return [...base, `Your linked ${providerName} profile belongs to a different workspace.`]
   }
-  return [
-    'The session doesn’t exist or has been removed.',
-    `Your ${providerName} profile isn’t linked or belongs to a different workspace.`
-  ]
+  return [...base, `Your ${providerName} profile isn’t linked or belongs to a different workspace.`]
 }
 
 export default function SessionDetailView() {
