@@ -19,8 +19,11 @@ import { agentLabel } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
 import {
+  GITLAB_ACCOUNT_STATE,
   GITLAB_CONVERGENCE_POLL_MS,
+  GITLAB_DEFAULT_INSTANCE_URL,
   GITLAB_PROJECT_STATE,
+  gitlabInstanceHost,
   gitlabProfileUrl,
   gitlabStateReasonText,
   gitlabWebhookBadge
@@ -437,6 +440,9 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     }
   }
 
+  // One deployment, one instance (§24.1), so any connection answers for all of
+  // them; before the first one there is nothing to link to anyway.
+  const instanceUrl = connections[0]?.instanceUrl ?? GITLAB_DEFAULT_INSTANCE_URL
   const accounts = bots?.accounts ?? []
   const rows = botRows(accounts)
   const orphans = orphanBindings(accounts, projects)
@@ -496,7 +502,10 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                   </span>
                 </span>
                 <span className="mono min-w-0 truncate text-[12.5px]">{c.gitlabUsername}</span>
-                <span className="badge bg-(--surface-active) text-(--text-tertiary)">gitlab.com</span>
+                {/* The instance, not a literal: one deployment talks to exactly one. */}
+                <span className="badge bg-(--surface-active) text-(--text-tertiary)" title={c.instanceUrl}>
+                  {gitlabInstanceHost(c.instanceUrl)}
+                </span>
                 {c.state === 'reauth_required' && (
                   <span className="badge bg-(--status-paused-soft) text-(--amber-500)">reconnect needed</span>
                 )}
@@ -546,6 +555,24 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                 {c.assignedProjects === 1
                   ? 'This account still administers 1 project below. Transfer that project to your own GitLab account, or reconnect this one to keep managing it, before this row can go.'
                   : `This account still administers ${c.assignedProjects} projects below. Transfer those projects to your own GitLab account, or reconnect this one to keep managing them, before this row can go.`}
+              </div>
+            )}
+            {/* What the instance reports, and whether it clears the floor project
+                setup needs. Silent until the first credentialed contact answers. */}
+            {c.instanceVersion !== null && (
+              <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+                <span>GitLab {c.instanceVersion}</span>
+                {c.instanceVersionSupported === false && (
+                  <>
+                    <span className="badge bg-(--status-paused-soft) text-(--amber-500)">
+                      below {c.instanceVersionFloor}
+                    </span>
+                    <span>
+                      Setting up new projects and bots needs {c.instanceVersionFloor} or later. Projects already set up
+                      keep working until their credentials expire.
+                    </span>
+                  </>
+                )}
               </div>
             )}
             {c.state === 'reauth_required' && (
@@ -623,7 +650,7 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                               The handle is deterministic, so it links only once the account exists. */}
                           {account.userId ? (
                             <a
-                              href={gitlabProfileUrl(account.username)}
+                              href={gitlabProfileUrl(instanceUrl, account.username)}
                               target="_blank"
                               rel="noopener noreferrer"
                               title={`@${account.username}`}
@@ -642,8 +669,8 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                           )}
                           {/* A healthy bot says nothing; only trouble and departure are worth a badge. */}
                           {account.state !== 'ready' && (
-                            <span className={`badge flex-none ${GITLAB_PROJECT_STATE[account.state].badge}`}>
-                              {GITLAB_PROJECT_STATE[account.state].label}
+                            <span className={`badge flex-none ${GITLAB_ACCOUNT_STATE[account.state].badge}`}>
+                              {GITLAB_ACCOUNT_STATE[account.state].label}
                             </span>
                           )}
                           {account.lifecycle === 'retiring' && (
