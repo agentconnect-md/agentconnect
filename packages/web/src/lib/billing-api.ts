@@ -56,13 +56,18 @@ export interface BillingAccount {
 // `note` is optional for the same reason `type` is: a service that predates it omits it, and
 // the console routinely runs ahead of that image. Absent or null ⇒ the row renders without it.
 //
-// The debit arm's `agents` — the control plane's per-agent split of a charge — is DELIBERATELY
-// not mirrored. The billing service authorizes on org membership alone; it holds no Agent or
-// Session visibility, so its `agentId`s are the org's, not the viewer's. Naming one to every
-// member is the discovery that `docs/designs/authorization-policy.md` §4 forbids and a second
-// attribution surface beside the viewer-scoped one in `session-visibility.md` §5, whose whole
-// rule is that withheld usage comes back id-less. An opaque id is still an existence
-// disclosure. Mirroring it needs a viewer-scoped response first — see #1480.
+// The debit arm's `agents` — the billing service's per-agent split of a charge — is
+// DELIBERATELY not mirrored. The service authorizes on org membership alone; it holds no Agent
+// or Session visibility, so its `agentId`s are the org's, not the viewer's, and its per-agent
+// AMOUNTS are the org's too. Naming one to every member is the discovery that
+// `docs/designs/authorization-policy.md` §4 forbids and a second attribution surface beside the
+// viewer-scoped one in `session-visibility.md` §5, whose whole rule is that withheld usage comes
+// back id-less. An opaque id is still an existence disclosure.
+//
+// The usage row DOES show attribution, and it gets every part of it — ids and amounts alike —
+// from the CP's viewer-scoped `/usage` projection instead (`fetchGatewayAttribution`, rendered
+// by `rowAttribution` in BillingView). Nothing this file declares is involved, which is the
+// point: a field nothing declares is a field nothing can render.
 export interface BillingCredit {
   type: 'credit'
   id: string

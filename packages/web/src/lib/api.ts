@@ -3555,6 +3555,24 @@ export function usageWindow(range: UsageRange, now: Date = new Date()): { from: 
   return { from: from.toISOString(), to: to.toISOString() }
 }
 
+// The viewer-scoped, gateway-metered per-agent spend for one explicit window.
+//
+// `/usage` is the CP's attribution projection: it intersects Agent visibility with the
+// request-time Session predicate and returns what it withholds as one id-less `unattributed`
+// rollup (`session-visibility.md` §5). What comes back per agent is therefore the amount this
+// viewer may attribute — NOT an authorization for that agent's whole month. An agent with $1
+// of readable spend and $99 of private spend appears here with $1, and the $99 stays in the
+// residual; a caller that reduced this to a set of ids would reattach the $99 to the name.
+//
+// `source=gateway` because that is the ingress a billing charge settles from (see the route's
+// own note): unscoped, a readable DAEMON session could qualify an agent whose gateway spend is
+// entirely private.
+export async function fetchGatewayAttribution(from: string, to: string, orgId?: string): Promise<Map<string, string>> {
+  const query = new URLSearchParams({ from, to, source: 'gateway' })
+  const usage = await apiGet<UsageDto>(`${orgBase(orgId)}/usage?${query.toString()}`)
+  return new Map(usage.agents.map((a) => [a.agentId, a.costAmount]))
+}
+
 export async function fetchUsage(range: UsageRange, orgId?: string, source?: UsageSource): Promise<UsageDto> {
   // Send the viewer's tz offset so the CP buckets the spend series to local
   // day/hour (getTimezoneOffset ⇒ UTC − local; stable per client, not in the key).

@@ -7,7 +7,7 @@
 // the purchase until the service says the payment settled. The return redirect
 // itself is never treated as proof of payment.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR, { useSWRConfig } from 'swr'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
@@ -37,10 +37,13 @@ import {
 } from '@/lib/billing-activity'
 import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
+import { fetchAgents, fetchGatewayAttribution } from '@/lib/api'
+import { agentLabel, type Agent } from '@/lib/data'
+import { sumAmounts } from '@/lib/amount'
 import { useOrgs } from '@/lib/org-context'
 import { SEG_FILL, tickInterval } from '@/lib/spend-chart'
 import { consoleKeys } from '@/lib/swr-keys'
-import { LoadingState } from '@/components/marks'
+import { AgentIconView, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
 // `.row` is a bare grid — the column template is the caller's, as a full literal.
@@ -49,6 +52,62 @@ import { Button, Icon } from '@/components/ui'
 // `auto` track sizes per-row and pulls the header out of line with the body below it.
 // Mobile scrolls the card sideways (globals' `.card:has(.row)`), so one template serves both.
 const TX_GRID = 'grid-cols-[34px_minmax(0,1fr)_132px_24px_190px] gap-2'
+
+// Named agent chips a usage row shows before the tail becomes a `+N` count. The withheld
+// rollup is never one of them — it is appended after, so it cannot be capped out of view.
+const TX_AGENT_CHIPS = 4
+
+/** One chip on a usage row. `agent` absent ⇒ the withheld rollup: no id, no count, no name. */
+export interface TxAgentChip {
+  key: string
+  agent?: Agent
+  /** Exact decimal string, added with `sumAmounts` — never a float. */
+  amount: string
+}
+
+// What a usage row may say about who spent the money.
+//
+// Every figure here comes from `projection` — the CP's viewer-scoped `/usage` read for this
+// row's period, gateway-scoped like the charge itself. That is the whole point: the billing
+// service's own split is org-scoped in BOTH its ids and its amounts, so an agent with $1 of
+// readable spend and $99 of private spend would be named for $100. The projection hands over
+// the $1 and keeps the $99 in the residual, which is `session-visibility.md` §5's rule that
+// withheld usage comes back id-less — and what is withheld is withheld by EITHER predicate.
+//
+// `agentById` supplies only the name and icon: an id the roster cannot resolve is not named,
+// and its amount falls into the residual like any other withheld spend.
+//
+// The residual is the ROW's total minus what was named, so the chips always add up to the line
+// they sit on. If naming exceeds the row — a partial period, or a settlement this projection's
+// window does not describe — the row is not reconcilable and gets NO attribution rather than an
+// overstated chip.
+export function rowAttribution(
+  rowAmount: string,
+  projection: ReadonlyMap<string, string> | undefined,
+  agentById: Map<string, Agent>
+): TxAgentChip[] {
+  if (!projection?.size) return []
+  const named: { chip: TxAgentChip; value: number }[] = []
+  for (const [agentId, amount] of projection) {
+    const agent = agentById.get(agentId)
+    const value = Number(amount)
+    if (!agent || !Number.isFinite(value) || value === 0) continue
+    named.push({ chip: { key: agentId, agent, amount }, value })
+  }
+  const residual = sumAmounts([rowAmount, ...named.map(({ chip }) => `-${chip.amount}`)])
+  if (residual.startsWith('-')) return []
+  named.sort((a, b) => b.value - a.value)
+  const chips = named.map(({ chip }) => chip)
+  if (Number(residual) > 0) chips.push({ key: 'withheld', amount: residual })
+  return chips
+}
+
+// A debit's `period` is a UTC calendar month (`YYYY-MM`); these are its half-open window.
+const periodStart = (period: string) => `${period}-01T00:00:00.000Z`
+const nextPeriod = (period: string) => {
+  const [y, m] = period.split('-').map(Number) as [number, number]
+  return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`
+}
 
 // The Transactions filter, the same Usage / Top-ups split the Activity chart offers — plus
 // `all`, which is the table's own default and the whole ledger it always showed. `type` goes
@@ -592,6 +651,19 @@ function MembersDontPayCard() {
 
 export default function BillingView() {
   const { activeOrg, myRole, loading: orgLoading } = useOrgs()
+  // The viewer's OWN roster, for the name and icon of an agent this row may name. Read on the
+  // console data provider's own SWR key so it shares that cache instead of fetching twice.
+  //
+  // `error` is read, not just `data`: SWR keeps the last successful roster when a revalidation
+  // fails, so ignoring it would keep naming agents from a roster that may since have had
+  // visibility revoked. A failed refresh reads as EMPTY — fail closed, name nothing.
+  const { data: agents, error: agentsError } = useSWR<Agent[]>(consoleKeys.agents(activeOrg?.id ?? null), ([, orgId]) =>
+    fetchAgents(orgId as string)
+  )
+  const agentById = useMemo(
+    () => (agentsError ? new Map<string, Agent>() : new Map((agents ?? []).map((a) => [a.id, a]))),
+    [agents, agentsError]
+  )
   const orgId = activeOrg?.id ?? null
   const router = useRouter()
   const pathname = usePathname()
@@ -711,6 +783,35 @@ export default function BillingView() {
     }
   }, [orgId, checkout, refreshMoney])
 
+  // Page one from SWR plus the appended tail, deduped: a revalidated page one can
+  // grow into rows the tail already fetched.
+  const mine = tail && tail.orgId === orgId && tail.side === side ? tail : null
+  const tailItems = mine ? mine.items : []
+  const firstIds = new Set(transactions.data?.items.map((t) => t.id))
+  const loaded = transactions.data ? [...transactions.data.items, ...tailItems.filter((t) => !firstIds.has(t.id))] : []
+  // The side is a REQUEST: a billing image that predates `type` ignores it and answers with
+  // the whole ledger. Cutting again here is what stops that image from rendering top-ups
+  // under a pill that says Usage — a wrong answer is worse than a narrower one.
+  const txItems = sideType ? loaded.filter((t) => t.type === sideType) : loaded
+  const nextCursor = mine ? mine.nextCursor : (transactions.data?.nextCursor ?? null)
+
+  // Where a usage row's attribution comes from: the CP's viewer-scoped `/usage` projection,
+  // one read per period on screen. Per PERIOD and never unioned across them — spend a viewer
+  // may attribute in one month says nothing about another. Fail closed on error.
+  const periods = [...new Set(txItems.filter((t) => t.type === 'debit').map((t) => t.period))].sort()
+  const attribution = useSWR<Map<string, Map<string, string>>>(
+    orgId && periods.length ? consoleKeys.billingAttribution(orgId, periods.join(',')) : null,
+    async ([, , , joined]) => {
+      const wanted = (joined as string).split(',')
+      const reads = await Promise.all(
+        wanted.map((p) => fetchGatewayAttribution(periodStart(p), periodStart(nextPeriod(p)), orgId!))
+      )
+      return new Map(wanted.map((p, i) => [p, reads[i]!]))
+    }
+  )
+  const attributionIn = (period: string): ReadonlyMap<string, string> | undefined =>
+    attribution.error ? undefined : attribution.data?.get(period)
+
   // Deep-link landing for a console that does not offer billing: the rail hides
   // the entry, so anyone here typed the URL or followed an old bookmark. Gated on
   // the flag, not on BILLING_URL — with the flag on and no endpoint configured the
@@ -737,18 +838,6 @@ export default function BillingView() {
   if (!account.data && !account.error) return <LoadingState fill />
 
   const acct = account.data
-
-  // Page one from SWR plus the appended tail, deduped: a revalidated page one can
-  // grow into rows the tail already fetched.
-  const mine = tail && tail.orgId === orgId && tail.side === side ? tail : null
-  const tailItems = mine ? mine.items : []
-  const firstIds = new Set(transactions.data?.items.map((t) => t.id))
-  const loaded = transactions.data ? [...transactions.data.items, ...tailItems.filter((t) => !firstIds.has(t.id))] : []
-  // The side is a REQUEST: a billing image that predates `type` ignores it and answers with
-  // the whole ledger. Cutting again here is what stops that image from rendering top-ups
-  // under a pill that says Usage — a wrong answer is worse than a narrower one.
-  const txItems = sideType ? loaded.filter((t) => t.type === sideType) : loaded
-  const nextCursor = mine ? mine.nextCursor : (transactions.data?.nextCursor ?? null)
 
   const loadMore = async () => {
     if (!nextCursor || loadingMore) return
@@ -998,9 +1087,63 @@ export default function BillingView() {
                         >
                           {credit ? t.kind : 'usage'}
                         </span>
-                        {/* No agent attribution here, deliberately: this feed is authorized on
-                            org membership alone, so naming the agent behind a charge would
-                            hand every member a resource-existence oracle. See billing-api.ts. */}
+                        {/* Who the charge is attributed to. An agent is named only when BOTH
+                            visibility predicates clear; everything else is one id-less rollup
+                            with a default avatar. See `agentSplit` and billing-api.ts. */}
+                        {!credit &&
+                          (() => {
+                            const split = rowAttribution(t.amount, attributionIn(t.period), agentById)
+                            // The description column shares the row with the amount, so the
+                            // NAMED chips are capped. The rollup is appended after the cap: it
+                            // is the one chip that must never be hidden behind a `+N`.
+                            const named = split.filter((c) => c.agent)
+                            const rollup = split.find((c) => !c.agent)
+                            const shown = named.slice(0, TX_AGENT_CHIPS)
+                            const rest = named.length - shown.length
+                            return (
+                              <>
+                                {[...shown, ...(rollup ? [rollup] : [])].map((chip) => (
+                                  <span
+                                    key={chip.key}
+                                    data-tx-agent="true"
+                                    className="inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] pr-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
+                                  >
+                                    <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
+                                      {chip.agent ? (
+                                        <AgentIconView icon={chip.agent.icon} runtime={chip.agent.runtime} size={17} />
+                                      ) : (
+                                        // The default avatar. This viewer may not learn which
+                                        // agents these are, how many, or how the amount splits
+                                        // between them — only that the rest of the charge is
+                                        // theirs. Labelled for assistive tech, since the glyph
+                                        // alone says nothing.
+                                        <span
+                                          data-tx-agent-default="true"
+                                          role="img"
+                                          aria-label="Agents you don’t have access to"
+                                          className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
+                                        >
+                                          <Icon name="bot" size={10} strokeWidth={2} />
+                                        </span>
+                                      )}
+                                    </span>
+                                    {chip.agent && (
+                                      <span className="max-w-[110px] truncate">{agentLabel(chip.agent)}</span>
+                                    )}
+                                    {/* Visible, not a tooltip: the console's tooltip ignores
+                                        touch and this chip is not focusable, so a `title` would
+                                        put the amount out of reach on mobile and by keyboard. */}
+                                    <span className="mono flex-none text-(--text-tertiary)">
+                                      {fmtDecimalUsd(chip.amount)}
+                                    </span>
+                                  </span>
+                                ))}
+                                {rest > 0 && (
+                                  <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{rest}</span>
+                                )}
+                              </>
+                            )
+                          })()}
                         {/* Free operator text, rendered as TEXT — truncated, with the whole
                             note on hover, so a long one cannot push the amount column out. */}
                         {credit && t.note && (
