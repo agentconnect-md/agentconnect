@@ -147,7 +147,8 @@ pinning, secrets, and optional Mem0 configuration, follow the
 
 If AgentConnect looks useful, here's how you can support the project:
 
-- ⭐ **Star this repo** to help more teams discover the project.
+- ⭐ **[Star this repo](https://github.com/agentconnect-md/agentconnect)** to
+  help more teams discover the project.
 - 💬 [Join the Slack community](https://slack.agentconnect.md) for questions,
   ideas, and product discussions.
 - 📣 Share AgentConnect on
