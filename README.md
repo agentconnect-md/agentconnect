@@ -72,10 +72,10 @@ work can begin from a message, issue, pull request, webhook, or schedule.
 
 ## Why AgentConnect?
 
-An agent is more than a model API call. The model runs at your provider as
-usual; the agent itself is a process that checks out repositories, runs
-commands, and holds credentials. Your agents can touch real things. Something
-has to manage that.
+AI agents are taking on work across the team, but most still live in
+individual terminals. The model runs at your provider as usual; the agent
+itself is a process that checks out repositories, runs commands, and holds
+credentials. Your agents can touch real things. Something has to manage that.
 
 AgentConnect is that layer. Teams use it to:
 
