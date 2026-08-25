@@ -56,7 +56,7 @@ const TX_GRID = 'grid-cols-[34px_minmax(0,1fr)_132px_24px_190px] gap-2'
 // it here rather than on a page already fetched is what keeps the cursor, the loaded count
 // and "end of ledger" describing the rows actually on screen.
 const TX_SIDES = [
-  { key: 'all', label: 'All', type: undefined },
+  // { key: 'all', label: 'All', type: undefined },
   { key: 'debit', label: 'Usage', type: 'debit' },
   { key: 'credit', label: 'Top-ups', type: 'credit' }
 ] as const
@@ -605,7 +605,7 @@ export default function BillingView() {
 
   const account = useSWR(fetching ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
 
-  const [side, setSide] = useState<TxSide>('all')
+  const [side, setSide] = useState<TxSide>('debit')
   const sideType = TX_SIDES.find((s) => s.key === side)!.type
   // The table's own feed, one page one per side. `all` is the same key the unfiltered ledger
   // below uses, so the default view still costs ONE request — SWR dedupes them.
@@ -878,11 +878,8 @@ export default function BillingView() {
 
           <div className="card">
             <div className="cardhead flex-wrap justify-between gap-2">
-              <span className="inline-flex items-baseline gap-2">
+              <span className="inline-flex items-center gap-2">
                 <span className="cardtitle">Transactions</span>
-                {transactions.data && (
-                  <span className="mono text-[11.5px] text-(--text-tertiary)">{txItems.length} loaded</span>
-                )}
                 {/* `self-center`: the group stays baseline-aligned so the title and the count
                     keep sitting on one line, while the pillbar — a control with its own box,
                     taller than both — centres in the line instead of hanging off its text. */}
@@ -893,6 +890,9 @@ export default function BillingView() {
                     </button>
                   ))}
                 </span>
+                {transactions.data && (
+                  <span className="mono text-[11.5px] text-(--text-tertiary)">{txItems.length} loaded</span>
+                )}
               </span>
               <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                 Newest first · amounts in USD
