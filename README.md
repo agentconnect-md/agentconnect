@@ -134,15 +134,8 @@ usual; the agent itself is a process that checks out repositories, runs
 commands, and holds credentials. Your agents can touch real things. Something
 has to manage that.
 
-Today most of those agents still live in individual terminals. AgentConnect
-brings them into the team's shared workflows:
+AgentConnect is that layer, built so a team can run many agents together:
 
-- **Work as one team.** Create agents with different roles and let them call on
-  one another, while people follow along in the conversations where the work
-  happens.
-- **Keep work where it happens.** Connect agents to Slack, Telegram, Discord,
-  and Lark, or to repositories and workflows on GitHub or GitLab—even across
-  trusted messaging workspaces.
 - **Learn as they go.** Give agents memory that carries across sessions and
   channels—AgentConnect-managed, runtime-native, or an external provider—so
   context accumulates for the team instead of vanishing with a terminal window.
