@@ -6,7 +6,7 @@
   role="img"
   aria-labelledby="title description"
 >
-  <title id="title">AgentConnect daemon-centric architecture</title>
+  <title id="title">AgentConnect message paths</title>
   <desc id="description">
     Direct platform connections terminate on daemons. Slack and Lark / Feishu HTTP
     callbacks, GitHub and generic webhooks, and webchat enter through an optional

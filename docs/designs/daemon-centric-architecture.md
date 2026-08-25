@@ -49,7 +49,7 @@ The direct consequences are:
 
 ## 3. Architecture Overview
 
-![Daemon-centric architecture with optional relay ingress](daemon-centric-architecture.svg)
+![AgentConnect message paths with optional relay ingress](daemon-centric-architecture.svg)
 
 The equivalent ASCII representation below makes the same design easier to diff
 and search.
