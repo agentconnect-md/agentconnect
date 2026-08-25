@@ -69,7 +69,7 @@ model Org {
   // Optional display name; when absent the console falls back to `slug`.
   name                   String?
   slug                   String          @unique
-  // Immutable provenance: the user credited with creating the org; personal orgs use their recipient.
+  // Immutable provenance: the user credited with creating the org — what the creation quota counts.
   createdByUserId        String?
   // Console avatar descriptor (protocol AgentIcon): {kind:'runtime'} | {kind:'glyph',glyph,color}
   // | {kind:'image'}. Null ⇒ generated default (glyph plate keyed off the org id). An `image`

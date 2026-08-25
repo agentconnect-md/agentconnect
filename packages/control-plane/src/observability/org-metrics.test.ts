@@ -31,7 +31,7 @@ describe('orgObservations', () => {
     expect(valueOf(obs, 'sessions', 'total')).toBe(900)
     expect(valueOf(obs, 'sessions', '30d')).toBe(120)
     expect(valueOf(obs, 'sessions', '24h')).toBe(5)
-    // The ID, never the slug: a slug is mutable, and a personal org's is built from its owner's name.
+    // The ID, never the slug: a slug is mutable and is user-chosen text.
     expect(obs.every((o) => o.attrs.org === 'org_acme')).toBe(true)
   })
 

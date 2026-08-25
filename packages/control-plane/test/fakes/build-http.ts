@@ -230,9 +230,6 @@ export function buildHttpApp(
     }
 ): HttpApp {
   const clock = systemClock
-  // Mirror the prod graph: WAITLIST_MODE gates JIT personal-org creation and drives
-  // the admission checks (waitlist-and-login.md §6/§8). Read from the test's overrides.
-  const waitlistMode = configOverrides?.WAITLIST_MODE ?? false
 
   // Mirror the composition root's shared-transaction seam (§8): repos see the
   // router; transaction OPENING stays on the root client.
@@ -457,7 +454,7 @@ export function buildHttpApp(
       session: sessionRepo,
       sessionUsage: sessionUsageRepo,
       webchatConversation: webchatConversationRepo,
-      user: new PgUserRepo(prisma, !waitlistMode),
+      user: new PgUserRepo(prisma),
       org: orgRepo,
       waitlist: waitlistRepo,
       githubInstallation: githubInstallationRepo,

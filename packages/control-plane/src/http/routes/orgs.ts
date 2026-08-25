@@ -3,8 +3,8 @@
  *
  * Root surface (identity-scoped, outside the org boundary):
  *   GET  /orgs → every org the caller belongs to + their role (the picker).
- *                Self-heals an interrupted signup: a user with no memberships
- *                gets their personal org (re)created here.
+ *                An empty list is a legitimate state — the console sends that
+ *                caller to org onboarding.
  *   POST /orgs → create an org; the caller becomes its first owner.
  *
  * Org surface (mounted under `/orgs/:orgId` behind the org-scope guard):
@@ -14,9 +14,10 @@
  *   DELETE / → delete the org (owner-only; refused while it still has
  *              daemons — remove them first; everything else cascades)
  *
- * Personal orgs are created at signup by the JIT provisioner. In no-auth mode
- * (devAuth) the fixed principal owns the seeded default org, so `GET /orgs`
- * returns exactly that one — the console hides the picker.
+ * Signup creates no organization: every membership comes from an explicit act
+ * (POST /orgs, or accepting an invite). In no-auth mode (devAuth) the fixed
+ * principal owns the seeded default org, so `GET /orgs` returns exactly that
+ * one — the console hides the picker.
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -65,23 +66,13 @@ export function orgRoutes(deps: HttpDeps) {
           tags: [Tag.Organizations],
           summary: 'List your organizations',
           description:
-            'Every organization the caller belongs to, with their role. Self-heals an interrupted signup by (re)creating the caller’s personal org.',
+            'Every organization the caller belongs to, with their role. An empty list means the caller belongs to none yet and should create or join one.',
           operationId: 'listOrganizations',
           response: { 200: OrgListDto }
         }
       },
       async (req) => {
-        let rows = await deps.repos.org.listForUser(req.principal!.userId)
-        // An interrupted signup (user row committed, org creation never landed)
-        // must not brick the account — restore the personal org and re-list.
-        // BUT under WAITLIST_MODE this self-heal is DISABLED (waitlist-and-login.md
-        // §8/§10): a Stranger who lists their orgs must NOT get an org auto-created,
-        // which would flip orgCount to 1 = "active" and bypass the admission gate.
-        // The personal org is created only on join-link redemption there.
-        if (rows.length === 0 && !deps.config.WAITLIST_MODE) {
-          await deps.repos.user.healPersonalOrg(req.principal!.userId)
-          rows = await deps.repos.org.listForUser(req.principal!.userId)
-        }
+        const rows = await deps.repos.org.listForUser(req.principal!.userId)
         return rows.map((o) => toDto(o, deps))
       }
     )
@@ -220,7 +211,7 @@ export function orgScopedRoutes(deps: HttpDeps) {
     // remove them first (the daemons page). If an R2a Check may exist, the first
     // request irreversibly retires the current hook lifecycles and returns 409
     // while cleanup converges; retrying performs the final cascade. Deleting
-    // your LAST org is fine: the next GET /orgs self-heals a personal org.
+    // your LAST org is fine: the console then sends you to org onboarding.
     r.delete(
       '/',
       {

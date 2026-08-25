@@ -2,7 +2,9 @@
  * PgWaitlistRepo — the CP side of closed-beta admission (waitlist-and-login.md §4-§6).
  *
  * The CP writes ONLY the redemption columns (`redeemedAt` / `redeemedByUserId`) plus
- * `User.activatedAt`; the external admin app owns approval/mint columns (§7). Redeem
+ * `User.activatedAt`; the external admin app owns approval/mint columns (§7). Activation
+ * grants ADMISSION, not an organization — the activated user then creates or joins one
+ * from org onboarding, like any other new account. Redeem
  * serializes with the admin's revoke/rotate via `SELECT … FOR UPDATE` on the entry
  * row and re-checks every condition inside the transaction before committing —
  * field-level ownership alone does not remove the race (§4).
@@ -16,21 +18,11 @@ import {
   type WaitlistRedeemResult,
   type WaitlistRepo
 } from '../ports.js'
-import { ensurePersonalOrg } from './user.repo.js'
-import type { PresetPoolPlacement } from '../preset-agents.js'
 
 const isP2002 = (err: unknown): boolean => (err as { code?: string }).code === 'P2002'
 
 export class PgWaitlistRepo implements WaitlistRepo {
-  constructor(
-    private readonly db: PrismaLike,
-    /** Provision preset agents with the activation-time personal org
-     *  (preset-agents.md §3.2); deploy-time opt-out via PRESET_AGENTS_ENABLED. */
-    private readonly presetAgents = true,
-    /** Exec config the preset is born with on a pool-backed install (§3.2); null ⇒ born
-     *  unplaced. Rides PRESET_AGENT_POOL_RUNTIME/_MODEL. */
-    private readonly presetPool: PresetPoolPlacement | null = null
-  ) {}
+  constructor(private readonly db: PrismaLike) {}
 
   private inTransaction<T>(run: (tx: PrismaLike) => Promise<T>): Promise<T> {
     return '$transaction' in this.db ? (this.db as PrismaClient).$transaction((tx) => run(tx)) : run(this.db)
@@ -112,33 +104,19 @@ export class PgWaitlistRepo implements WaitlistRepo {
         return { status: 'email_mismatch', expectedEmail: entry.email }
       }
 
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { displayName: true, email: true, activatedAt: true }
-      })
+      const user = await tx.user.findUnique({ where: { id: userId }, select: { activatedAt: true } })
       if (!user) return { status: 'invalid' }
-      const realEmail = isSyntheticEmail(user.email) ? normalizedEmail : user.email
 
       // An ALREADY-ACTIVATED account gains nothing from a BEARER link, so don't burn
       // one: report success (they may enter the app) and leave the one-time link for
       // someone who still needs it. A BOUND link is minted for this exact person, so
       // it still records its redemption below (audit).
-      if (entry.email === null && user.activatedAt) {
-        await ensurePersonalOrg(tx, userId, user.displayName, realEmail, {
-          presetAgents: this.presetAgents,
-          presetPool: this.presetPool
-        }) // idempotent
-        return { status: 'activated' }
-      }
+      if (entry.email === null && user.activatedAt) return { status: 'activated' }
 
-      // Activate (idempotent) + create the personal org (idempotent) + stamp the
-      // redemption. All within this locked transaction. `redeemedByUserId` is null
-      // here (the same-user short-circuit and different-user reject are both above).
+      // Activate (idempotent) + stamp the redemption, within this locked transaction.
+      // `redeemedByUserId` is null here (the same-user short-circuit and different-user
+      // reject are both above).
       if (!user.activatedAt) await tx.user.update({ where: { id: userId }, data: { activatedAt: now } })
-      await ensurePersonalOrg(tx, userId, user.displayName, realEmail, {
-        presetAgents: this.presetAgents,
-        presetPool: this.presetPool
-      })
       await tx.waitlistEntry.update({
         where: { tokenHash },
         data: { redeemedByUserId: userId, redeemedAt: now, redeemedEmail: normalizedEmail }

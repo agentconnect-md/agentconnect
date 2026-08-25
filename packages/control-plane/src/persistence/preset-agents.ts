@@ -2,8 +2,8 @@
  * Preset-agent provisioning seam (docs/designs/preset-agents.md §3, M0).
  *
  * `provisionPresetAgents` is THE org-creation seam: every path that mints an org
- * (`POST /orgs`, JIT personal orgs, the waitlist redeem, the no-auth default
- * tenant) calls it so the org is born with the `agentconnect` general preset —
+ * (`POST /orgs`, the no-auth default tenant) calls it so the org is born with the
+ * `agentconnect` general preset —
  * unplaced, runtime deferred, or placed on the daemon pool when this install runs
  * one (`pool`, §3.2) — plus its `preset_agent` state row, in the SAME transaction
  * as the org itself. The one-time backfill for pre-existing orgs
@@ -15,9 +15,9 @@
  * `created` OR `skipped` — permanently stops re-provisioning, so a preset the
  * user deleted is never resurrected (creation has no later trigger).
  *
- * Ambient-transaction discipline (see `ensurePersonalOrg`): this may run inside
- * an interactive transaction (waitlist redeem), where ANY failed statement
- * poisons the whole tx — so the guard is a read, never a caught unique
+ * Ambient-transaction discipline: this may run inside an interactive transaction
+ * (the backfill, the default-tenant seed), where ANY failed statement poisons the
+ * whole tx — so the guard is a read, never a caught unique
  * violation. A new org cannot collide (it has no agents and no preset rows);
  * the backfill pre-checks collisions itself and writes `skipped`.
  *

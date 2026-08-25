@@ -331,7 +331,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const params = useParams<{ slug?: string }>()
-  const { orgPath, orgs, activeOrg, setActiveOrg } = useOrgs()
+  const { orgPath, orgs, activeOrg, setActiveOrg, loading: orgsLoading, error: orgsError } = useOrgs()
   const { openModal } = useModal()
   const { daemons, agents, crons, allSessions, memberSets, sessionAccessSnapshot, usageAccessSnapshot } =
     useConsoleData()
@@ -379,9 +379,10 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
 
   // Auth + admission gate. When auth is configured but nobody is signed in, bounce
   // to /login. When closed-beta (waitlist) mode is on and the user isn't admitted
-  // yet, bounce to /waitlist and keep the gate spinner (never flash the console).
-  // No-auth OSS mode is left untouched. Fails OPEN on a transient /me/access error
-  // — the server still enforces the gate on every write.
+  // yet, bounce to /waitlist; when the caller belongs to no organization at all,
+  // bounce to /welcome — and keep the gate spinner either way (never flash the
+  // console). No-auth OSS mode is left untouched. Fails OPEN on a transient
+  // /me/access error — the server still enforces the gate on every write.
   useEffect(() => {
     if (!isAuthConfigured()) return
     let active = true
@@ -397,6 +398,12 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
         if (!active) return
         if (access.waitlistMode && access.status !== 'active') {
           router.replace('/waitlist')
+          return
+        }
+        // Signup mints no org, so belonging to none is an ordinary new-account
+        // state — org onboarding, not a console with nothing to scope requests to.
+        if (access.orgCount === 0) {
+          router.replace('/welcome')
           return
         }
         setCanCreateOrg(!access.waitlistMode || access.activated)
@@ -492,6 +499,14 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     next.delete('github')
     router.replace(`${pathname}${next.size ? `?${next}` : ''}`, { scroll: false })
   }, [activeOrg, githubCallback, pathname, router, searchParams])
+
+  // Losing the LAST org (deleting it, or leaving it) empties every console scope —
+  // the same place a fresh account starts. The gate above only runs once per mount,
+  // so this watches the live list; a failed or in-flight /orgs must not trigger it.
+  useEffect(() => {
+    if (!isAuthConfigured() || !authReady || orgsLoading || orgsError != null) return
+    if (orgs.length === 0) router.replace('/welcome')
+  }, [authReady, orgs, orgsLoading, orgsError, router])
 
   // No-auth mode has no identity and a single implicit org, so Profile / Settings
   // don't exist — bounce any direct navigation to those routes back to the home landing.

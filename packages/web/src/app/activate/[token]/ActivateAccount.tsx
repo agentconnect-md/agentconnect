@@ -4,9 +4,9 @@
 // Unlike join/[token], activation NEVER reuses whatever session the browser is
 // already holding: it signs that session out and only redeems once the OIDC
 // callback has proved a sign-in happened for THIS link (lib/activation-handshake).
-// On success the user is a formal user with a personal org — enter the console.
-// Lives OUTSIDE the (app) route group so it never triggers the console's admission
-// redirect before it can redeem.
+// On success the user is a formal user — enter the console, which sends them on to
+// org onboarding when they belong to none yet. Lives OUTSIDE the (app) route group
+// so it never triggers the console's admission redirect before it can redeem.
 
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'

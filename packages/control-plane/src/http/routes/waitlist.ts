@@ -107,7 +107,7 @@ export function waitlistRoutes(deps: HttpDeps) {
           tags: [Tag.Profile],
           summary: 'Redeem a waitlist activation link',
           description:
-            'Redeem an activation link, making the signed-in user a formal (activated) user with a personal org. A link minted for a specific email must be redeemed by that verified email; an email-less bearer link may be redeemed by any verified identity and binds to the first redeemer (one use), except that an already-activated account is admitted without consuming it. Optionally send `expectSubject` to assert which signed-in identity the client meant: if it disagrees with the verified token, the request is refused (409 IDENTITY_CHANGED) instead of activating a different account. Idempotent on repeat by the same user. Requires OIDC sign-in with a verified email.',
+            'Redeem an activation link, making the signed-in user a formal (activated) user. Activation grants admission, not an organization — the user creates or joins one afterwards. A link minted for a specific email must be redeemed by that verified email; an email-less bearer link may be redeemed by any verified identity and binds to the first redeemer (one use), except that an already-activated account is admitted without consuming it. Optionally send `expectSubject` to assert which signed-in identity the client meant: if it disagrees with the verified token, the request is refused (409 IDENTITY_CHANGED) instead of activating a different account. Idempotent on repeat by the same user. Requires OIDC sign-in with a verified email.',
           operationId: 'redeemWaitlistLink',
           body: WaitlistRedeemBody,
           response: {

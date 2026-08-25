@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { buildHttpApp } from '../fakes/build-http.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
+import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
 import { seedDutyGroup } from '../fixtures/seed.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
@@ -623,15 +624,13 @@ describe('DELETE /orgs/:orgId', () => {
     }
   })
 
-  it('deleting the LAST org self-heals a fresh personal org on the next /orgs', async () => {
+  it('deleting the LAST org leaves the caller in none — nothing is conjured back', async () => {
     const { app, close } = buildHttpApp(prisma)
     try {
       const res = await app.inject({ method: 'DELETE', url: ORG })
       expect(res.statusCode).toBe(204)
       const list = (await (await app.inject({ method: 'GET', url: '/api/v1/orgs' })).json()) as OrgBody[]
-      expect(list).toHaveLength(1) // healed personal org, not the deleted one
-      expect(list[0]!.id).not.toBe(DEFAULT_ORG_ID)
-      expect(list[0]!.role).toBe('owner')
+      expect(list).toEqual([]) // the console sends this caller to org onboarding
     } finally {
       await close()
     }
@@ -673,13 +672,15 @@ describe('org scoping — cross-org key revocation is refused', () => {
 
 describe('org scoping — cross-org isolation on console reads', () => {
   it('agents created in another org are invisible to the caller’s active org', async () => {
-    // Signup creates a personal org for stranger; put an agent in it.
+    // A stranger with an org of their own; put an agent in it.
     const stranger = await new PgUserRepo(prisma).provisionOidcUser({
       oidcSubject: 'sub-x',
       email: 'x@x.dev',
       emailVerified: true
     })
-    const strangerOrg = (await prisma.membership.findFirstOrThrow({ where: { userId: stranger.userId } })).orgId
+    const strangerOrg = (
+      await new PgOrgRepo(prisma).create({ name: null, slug: 'stranger-org', ownerUserId: stranger.userId })
+    ).id
     await prisma.agent.create({
       data: { id: '99999999-9999-4999-8999-999999999999', orgId: strangerOrg, name: 'foreign-agent', runtime: 'claude' }
     })

@@ -50,7 +50,7 @@ export interface HumanAuthConfig {
 
 /**
  * JIT user resolver — maps a verified OIDC `sub` to a LOCAL user (creating the
- * `app_user` + their personal org on first sight = signup). Injected by the
+ * `app_user` on first sight = signup; no organization comes with it). Injected by the
  * composition root so `auth.ts` stays decoupled from the persistence ports.
  * When absent, oidcAuth falls back to using the raw `sub` as the principal id
  * (no DB write).

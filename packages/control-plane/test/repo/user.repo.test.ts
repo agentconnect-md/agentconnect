@@ -2,8 +2,9 @@
  * PgUserRepo — WebUI identity JIT-provisioned from a verified OIDC `sub` (§3.2).
  *
  * First sight of a subject is SIGNUP: the user row is created (or an invited,
- * email-only row is claimed) and a personal org is created with the user as its
- * owner. Synthetic `<sub>@oidc.local` placeholder emails behave as before
+ * email-only row is claimed) and NO organization is created — a fresh account
+ * belongs to none until it creates or joins one. Synthetic `<sub>@oidc.local`
+ * placeholder emails behave as before
  * (stored when no email is known, upgraded later, never surfaced). Org context
  * is resolved per request via `resolveOrgContext`.
  */
@@ -18,8 +19,8 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 
 const repo = () => new PgUserRepo(prisma)
 
-describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () => {
-  it('creates the user (real email + display name) and a personal org they own', async () => {
+describe('PgUserRepo.provisionOidcUser — signup creates no organization', () => {
+  it('creates the user (real email + display name) and no membership at all', async () => {
     const { userId } = await repo().provisionOidcUser({
       oidcSubject: 'sub-real',
       email: 'dana@acme.com',
@@ -30,14 +31,10 @@ describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () 
     expect(u?.email).toBe('dana@acme.com')
     expect(u?.displayName).toBe('Dana Reyes')
 
-    const memberships = await prisma.membership.findMany({ where: { userId }, include: { org: true } })
-    expect(memberships).toHaveLength(1)
-    expect(memberships[0]!.role).toBe('owner')
-    expect(memberships[0]!.org.name).toBe("Dana's organization")
-    expect(memberships[0]!.org.slug).toBe('dana')
+    expect(await prisma.membership.count({ where: { userId } })).toBe(0)
   })
 
-  it('is idempotent — a second login does not create a second org', async () => {
+  it('is idempotent — a second login returns the same user', async () => {
     const first = await repo().provisionOidcUser({
       oidcSubject: 'sub-again',
       email: 'again@acme.com',
@@ -49,7 +46,7 @@ describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () 
       emailVerified: true
     })
     expect(second.userId).toBe(first.userId)
-    expect(await prisma.membership.count({ where: { userId: first.userId } })).toBe(1)
+    expect(await prisma.membership.count({ where: { userId: first.userId } })).toBe(0)
   })
 
   it('stores the avatar on signup and refreshes it when the picture changes', async () => {
@@ -214,10 +211,8 @@ describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () 
     // The invited row is untouched — still unclaimed, still holding the invite.
     const invited = await prisma.user.findUnique({ where: { email: 'victim@corp.com' } })
     expect(invited?.oidcSubject).toBeNull()
-    // Attacker got only their personal org, never the invited org membership.
-    const memberships = await prisma.membership.findMany({ where: { userId } })
-    expect(memberships).toHaveLength(1)
-    expect(memberships[0]!.orgId).not.toBe(DEFAULT_ORG_ID)
+    // The attacker belongs to nothing — the invited org membership never moved.
+    expect(await prisma.membership.count({ where: { userId } })).toBe(0)
   })
 
   it('never overwrites a real email that is already stored', async () => {
@@ -230,7 +225,7 @@ describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () 
     expect((await prisma.user.findUnique({ where: { id: first.userId } }))?.email).toBe('real@acme.com')
   })
 
-  it('claims an invited (email-only) row: same user, invited membership kept, personal org added', async () => {
+  it('claims an invited (email-only) row: same user, invited membership kept, nothing added', async () => {
     // An owner pre-adds the email to the default org…
     const invited = await repo().addMemberByEmail(DEFAULT_ORG_ID, 'newhire@acme.com', 'collaborator')
     // …then the person signs in with SSO for the first time.
@@ -243,38 +238,10 @@ describe('PgUserRepo.provisionOidcUser — signup creates the personal org', () 
     expect(userId).toBe(invited.userId) // claimed, not duplicated
     expect((await prisma.user.findUnique({ where: { id: userId } }))?.oidcSubject).toBe('sub-newhire')
 
-    const memberships = await prisma.membership.findMany({ where: { userId }, include: { org: true } })
-    expect(memberships).toHaveLength(2) // invited org + fresh personal org
-    expect(memberships.map((m) => m.role).sort()).toEqual(['collaborator', 'owner'])
-  })
-
-  it('allocates a suffixed slug when the personal slug is taken', async () => {
-    await repo().provisionOidcUser({ oidcSubject: 'sub-a', email: 'sam@a.com', emailVerified: true })
-    await repo().provisionOidcUser({ oidcSubject: 'sub-b', email: 'sam@b.com', emailVerified: true })
-    const slugs = (await prisma.org.findMany({ where: { slug: { startsWith: 'sam' } } })).map((o) => o.slug).sort()
-    expect(slugs).toEqual(['sam', 'sam-2'])
-  })
-})
-
-describe('PgUserRepo.healPersonalOrg — interrupted-signup recovery', () => {
-  it('restores the personal org for a membership-less user', async () => {
-    // Simulate an interrupted signup: user row exists, org creation never landed.
-    const u = await prisma.user.create({ data: { oidcSubject: 'sub-brick', email: 'brick@acme.com' } })
-    await repo().healPersonalOrg(u.id)
-    const m = await prisma.membership.findFirstOrThrow({ where: { userId: u.id }, include: { org: true } })
-    expect(m.role).toBe('owner')
-    expect(m.org.slug).toBe('brick')
-  })
-
-  it('is a no-op for a user who already owns an org, and for an unknown user', async () => {
-    const { userId } = await repo().provisionOidcUser({
-      oidcSubject: 'sub-ok',
-      email: 'ok@acme.com',
-      emailVerified: true
-    })
-    await repo().healPersonalOrg(userId)
-    expect(await prisma.membership.count({ where: { userId } })).toBe(1) // no duplicate org
-    await repo().healPersonalOrg('usr_nobody') // must not throw
+    const memberships = await prisma.membership.findMany({ where: { userId } })
+    expect(memberships).toHaveLength(1) // the invited org, and only that
+    expect(memberships[0]!.orgId).toBe(DEFAULT_ORG_ID)
+    expect(memberships[0]!.role).toBe('collaborator')
   })
 })
 
@@ -285,11 +252,14 @@ describe('PgOrgRepo', () => {
       email: 'list@acme.com',
       emailVerified: true
     })
+    const repos = new PgOrgRepo(prisma)
+    const owned = await repos.create({ name: null, slug: 'list-own', ownerUserId: userId })
     await repo().addMemberByEmail(DEFAULT_ORG_ID, 'list@acme.com', 'collaborator')
 
-    const orgs = await new PgOrgRepo(prisma).listForUser(userId)
+    const orgs = await repos.listForUser(userId)
     expect(orgs).toHaveLength(2)
-    expect(orgs[0]!.role).toBe('owner') // personal org first (insertion order)
+    expect(orgs[0]!.id).toBe(owned.id) // the org they created, first (insertion order)
+    expect(orgs[0]!.role).toBe('owner')
     expect(orgs[0]!.memberCount).toBe(1)
     const def = orgs.find((o) => o.id === DEFAULT_ORG_ID)!
     expect(def.role).toBe('collaborator')
@@ -306,6 +276,8 @@ describe('PgOrgRepo', () => {
     const other = await prisma.user.create({ data: { email: 'quota-other@acme.com' } })
     const invitedOrg = await orgs.create({ name: null, slug: 'quota-invited', ownerUserId: other.id })
     await prisma.membership.create({ data: { orgId: invitedOrg.id, userId, role: 'owner' } })
+    // The org they create for themselves in onboarding — the one the quota counts.
+    await orgs.create({ name: null, slug: 'quota-first', ownerUserId: userId, maxOrgsPerUser: 1 })
 
     await expect(
       orgs.create({ name: null, slug: 'quota-denied', ownerUserId: userId, maxOrgsPerUser: 1 })

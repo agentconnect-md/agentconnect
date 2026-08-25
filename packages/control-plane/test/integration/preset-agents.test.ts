@@ -20,7 +20,7 @@ import {
   provisionPresetAgents
 } from '../../src/persistence/index.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
-import { ensurePersonalOrg } from '../../src/persistence/repositories/user.repo.js'
+import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { ensureDefaultTenant } from '../../src/persistence/ensure-default-tenant.js'
 import type { PrismaClient } from '../../src/generated/prisma/client.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
@@ -323,12 +323,12 @@ describe('one-time backfill', () => {
 })
 
 /**
- * The JIT-signup path reaches the seam with the ROOT client, not a transaction —
- * so `ensurePersonalOrg` must open one itself. Without that, a crash after the
- * agent commit but before the `preset_agent` marker would leave an org whose
- * reserved slug is taken by an agent no marker describes: the next boot's
- * backfill sees the collision and writes a PERMANENT `skipped`, and nothing ever
- * repairs it (creation has no later trigger).
+ * `POST /orgs` reaches the seam with the ROOT client, not a transaction — so
+ * `PgOrgRepo.create` must open one itself. Without that, a crash after the agent
+ * commit but before the `preset_agent` marker would leave an org whose reserved
+ * slug is taken by an agent no marker describes: the next boot's backfill sees the
+ * collision and writes a PERMANENT `skipped`, and nothing ever repairs it
+ * (creation has no later trigger).
  */
 describe('org-creation atomicity (§3.2)', () => {
   // Fault injection at the LAST write of the seam. Wrapping `$transaction` is what
@@ -354,14 +354,15 @@ describe('org-creation atomicity (§3.2)', () => {
     }) as PrismaClient
   }
 
-  it('a failed preset write rolls the whole personal org back (JIT signup, no ambient tx)', async () => {
+  it('a failed preset write rolls the whole org back (POST /orgs, no ambient tx)', async () => {
     const user = await prisma.user.create({
       data: { id: randomUUID(), email: `rollback-${randomUUID().slice(0, 8)}@example.com`, displayName: 'Rollback' }
     })
+    const slug = `rollback-${randomUUID().slice(0, 8)}`
 
-    await expect(ensurePersonalOrg(prismaFailingPresetMarker(), user.id, 'Rollback', user.email)).rejects.toThrow(
-      /injected/
-    )
+    await expect(
+      new PgOrgRepo(prismaFailingPresetMarker()).create({ name: null, slug, ownerUserId: user.id })
+    ).rejects.toThrow(/injected/)
 
     // Nothing partially committed: no org, no membership, and above all no agent
     // squatting the reserved slug with no marker to describe it.
@@ -370,7 +371,7 @@ describe('org-creation atomicity (§3.2)', () => {
 
     // And the path is genuinely re-runnable afterwards — the failure left no trace
     // that would make the retry collide.
-    await ensurePersonalOrg(prisma, user.id, 'Rollback', user.email)
+    await new PgOrgRepo(prisma).create({ name: null, slug, ownerUserId: user.id })
     const membership = await prisma.membership.findFirstOrThrow({ where: { userId: user.id } })
     const row = await prisma.presetAgent.findUnique({
       where: { orgId_preset: { orgId: membership.orgId, preset: 'general' } }
@@ -382,16 +383,20 @@ describe('org-creation atomicity (§3.2)', () => {
     expect(agent?.id).toBe(row?.agentId)
   })
 
-  it('composes under an ambient transaction instead of nesting (waitlist redeem)', async () => {
+  it('composes under an ambient transaction instead of nesting', async () => {
     const user = await prisma.user.create({
       data: { id: randomUUID(), email: `ambient-${randomUUID().slice(0, 8)}@example.com`, displayName: 'Ambient' }
     })
 
-    // The redeem's own transaction wraps the seam; a rollback out here must undo
-    // the preset too (the whole point of composing rather than opening a nested one).
+    // A caller's own transaction wraps the seam; a rollback out here must undo the
+    // preset too (the whole point of composing rather than opening a nested one).
     await expect(
       prisma.$transaction(async (tx) => {
-        await ensurePersonalOrg(tx, user.id, 'Ambient', user.email)
+        await new PgOrgRepo(tx).create({
+          name: null,
+          slug: `ambient-${randomUUID().slice(0, 8)}`,
+          ownerUserId: user.id
+        })
         // The seam's writes ARE visible inside the caller's transaction.
         const m = await tx.membership.findFirstOrThrow({ where: { userId: user.id } })
         expect(
