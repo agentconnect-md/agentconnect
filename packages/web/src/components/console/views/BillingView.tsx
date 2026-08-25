@@ -1115,11 +1115,12 @@ export default function BillingView() {
                             const rest = named.length - shown.length
                             return (
                               <>
-                                {/* The per-agent amount lives on HOVER (`title`), not in the
-                                    chip — eight visible dollar figures per row drowned the row's
-                                    own amount. `aria-label` carries the same text, so a reader
-                                    that cannot hover still gets it. A product trade: touch gets
-                                    the row total only. */}
+                                {/* On desktop the per-agent amount is disclosure, not decoration:
+                                    eight visible dollar figures per row drowned the row's own
+                                    amount, so it lives in `title` — the console TooltipLayer shows
+                                    it on hover AND on keyboard focus (the chip is tabbable for
+                                    exactly that). Touch has neither, so ≤768px keeps the amount
+                                    visible in the chip; that card already scrolls sideways. */}
                                 {[...shown, ...(rollup ? [rollup] : [])].map((chip) => {
                                   const share = chip.agent
                                     ? `${agentLabel(chip.agent)} — ${fmtDecimalUsd(chip.amount)}`
@@ -1128,10 +1129,11 @@ export default function BillingView() {
                                     <span
                                       key={chip.key}
                                       data-tx-agent="true"
+                                      tabIndex={0}
                                       title={share}
                                       aria-label={share}
-                                      className={`inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) ${
-                                        chip.agent ? 'pr-[7px]' : ''
+                                      className={`inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] pr-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) ${
+                                        chip.agent ? '' : 'desktop:pr-[2px]'
                                       }`}
                                     >
                                       <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
@@ -1157,6 +1159,11 @@ export default function BillingView() {
                                       {chip.agent && (
                                         <span className="max-w-[110px] truncate">{agentLabel(chip.agent)}</span>
                                       )}
+                                      {/* Touch's reachable copy of the share; desktop keeps it
+                                          in the tooltip. */}
+                                      <span className="mono flex-none text-(--text-tertiary) desktop:hidden">
+                                        {fmtDecimalUsd(chip.amount)}
+                                      </span>
                                     </span>
                                   )
                                 })}

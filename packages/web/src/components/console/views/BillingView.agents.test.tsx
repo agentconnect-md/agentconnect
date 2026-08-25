@@ -180,15 +180,18 @@ describe('the usage row', () => {
     // what blanked all three of these before, so each one is asserted.
     const host = await render()
     const chips = [...host.querySelectorAll('[data-tx-agent]')]
-    // The chip shows only the name; the per-agent amount is on hover (`title`) and mirrored to
-    // `aria-label`. Sub-cent amounts keep significant digits rather than rounding to `$0.00`.
-    expect(chips.map((c) => c.textContent)).toEqual(['reviewer', 'reviewer', 'reviewer'])
+    // Desktop shows the name; the share is disclosure — `title`, which the TooltipLayer opens on
+    // hover and on keyboard focus (hence tabbable). The trailing amount span is the ≤768px copy
+    // (visible where touch has neither hover nor focus), CSS-hidden on desktop but present in
+    // textContent here. Sub-cent amounts keep significant digits rather than rounding to `$0.00`.
+    expect(chips.map((c) => c.textContent)).toEqual(['reviewer$0.006823', 'reviewer$0.01522', 'reviewer$0.001036'])
     expect(chips.map((c) => c.getAttribute('title'))).toEqual([
       'reviewer — $0.006823',
       'reviewer — $0.01522',
       'reviewer — $0.001036'
     ])
     expect(chips[0]!.getAttribute('aria-label')).toBe('reviewer — $0.006823')
+    expect(chips.every((c) => c.getAttribute('tabindex') === '0')).toBe(true)
     expect(host.querySelector('[data-tx-agent-default]')).toBeNull()
   })
 })
