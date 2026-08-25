@@ -2458,7 +2458,7 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   })
 
-  it('keeps a post-free drain race safe to redeliver', async () => {
+  it('treats an indeterminate anchor send as nonretryable', async () => {
     const { factory, host } = streamingHost()
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
     await daemon.start()
@@ -2476,11 +2476,28 @@ describe('Daemon rd/msg hook fires', () => {
       () => {}
     )
 
-    expect(ack).toMatchObject({ accepted: false, reason: 'draining' })
+    expect(ack).toMatchObject({ accepted: false, reason: 'anchor_side_effect' })
     expect(conn.postMessage).toHaveBeenCalledOnce()
     expect(host.prompt).not.toHaveBeenCalled()
     expect(await (daemon as any).store.hasInbox(`${HOOK_ID}:d-1`)).toBe(false)
     ;(daemon as any).drainingAgents.delete(AGENT_ID)
+    await daemon.stop()
+  })
+
+  it('re-evaluates a draining refusal when the same GUID is redelivered', async () => {
+    const { factory, host } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).drainingAgents.add(AGENT_ID)
+    const msg = fire()
+
+    await expect((daemon as any).handleRelayMsg(msg, () => {})).resolves.toMatchObject({
+      accepted: false,
+      reason: 'draining'
+    })
+    ;(daemon as any).drainingAgents.delete(AGENT_ID)
+    await expect((daemon as any).handleRelayMsg(msg, () => {})).resolves.toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledOnce(), WAIT)
     await daemon.stop()
   })
 

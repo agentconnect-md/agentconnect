@@ -66,6 +66,11 @@ export interface GithubHookDispatchOptions {
   onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
 }
 
+export interface AnchorTriggerResult {
+  message: NormalizedMessage | null
+  postAttempted: boolean
+}
+
 /** Exactly what the GitHub review orchestration touches on the Daemon — nothing wider. */
 export interface GithubReviewHost {
   log(): Logger
@@ -122,7 +127,7 @@ export interface GithubReviewHost {
     anchorText: string,
     label: string,
     safetyReviewLane?: string
-  ): Promise<NormalizedMessage | null>
+  ): Promise<AnchorTriggerResult>
   dispatch(
     agentId: string,
     msg: NormalizedMessage,
@@ -319,7 +324,7 @@ export class GithubReviewOrchestrator {
         : undefined)
     if (githubReply) hookContext.githubReply = githubReply
     const reviewLane = reviewSubjectLane(hookContext, hookCoordinates(msg.agentId, nmsg, msg.target?.integrationId))
-    const anchored = await this.host.anchorTrigger(
+    const anchor = await this.host.anchorTrigger(
       msg.agentId,
       nmsg,
       msg.target,
@@ -327,7 +332,8 @@ export class GithubReviewOrchestrator {
       `hook "${msg.hookId}"`,
       reviewLane
     )
-    if (!anchored) return { accepted: false, reason: 'dropped' }
+    const anchored = anchor.message
+    if (!anchored) return { accepted: false, reason: anchor.postAttempted ? 'anchor_side_effect' : 'dropped' }
     const batch = openReviewBatch(
       hookContext,
       hookCoordinates(msg.agentId, anchored, msg.target?.integrationId),
@@ -361,8 +367,7 @@ export class GithubReviewOrchestrator {
     const admission = await admitted
     if (!admission.accepted) {
       const reason = admission.reason ?? 'durability'
-      const anchorPosted = msg.target?.channel !== undefined && anchored.transcriptTs !== nmsg.transcriptTs
-      return { accepted: false, reason: reason === 'draining' && anchorPosted ? 'anchor_side_effect' : reason }
+      return { accepted: false, reason: reason === 'draining' && anchor.postAttempted ? 'anchor_side_effect' : reason }
     }
     return { accepted: true }
   }

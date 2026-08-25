@@ -630,9 +630,11 @@ set contains `daemon_offline`, `rejected:draining`, and
 `rejected:not_holder`; each is emitted before durable daemon admission.
 The daemon probes its durable hook receipt before duty and drain refusals, so
 an earlier admission whose relay report was lost replays `accepted` instead of
-entering this set. If a configured platform anchor is posted before a later
-drain gate wins, the daemon reports nonretryable `anchor_side_effect` because
-that invocation is no longer side-effect-free.
+entering this set. Retryable refusals are not cached as terminal daemon ACKs,
+letting the same GUID re-enter admission after recovery. Once a configured
+platform anchor send is attempted, a later drain gate reports nonretryable
+`anchor_side_effect` even if the provider response was lost, because the
+external effect is then ambiguous rather than proven absent.
 
 Reconciliation does not retry an ambiguous dispatch, an agent/business
 rejection, or any row that may already have produced an effect. Partial
