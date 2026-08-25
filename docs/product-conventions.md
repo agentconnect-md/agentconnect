@@ -125,24 +125,6 @@ agent finishes the text block (a tool call, a plan, a thinking step), or until t
 ends. Splits the reader already expects — a completed text block before the agent starts
 working, or a body longer than the platform's per-message limit — are unaffected.
 
-## A cold sandbox pod is announced, not waited out in silence
-
-A turn whose agent runs in the cluster and has no pod up yet must first claim (or resume) a
-Sandbox, wait for it to become Ready, and bind its shim before the runtime sees the prompt.
-That is up to a minute and a half in which nothing is streaming, and a reader with no signal
-reads it as the agent having ignored them.
-
-So the turn says what it is waiting for, once, before the wait starts. A platform with a pushed
-per-turn status bar carries it there, in place of the generic startup label; every other surface —
-the console playground, the on-demand-status chat platforms — gets a short message of its own.
-Exactly one of the two, never both.
-
-It is live chrome and is never recorded: reloading a conversation rebuilds it from the
-transcript, where a wait that is over has nothing to say. A turn whose pod is already up says
-nothing at all, so the notice always means a real wait — and neither does the wait's label
-outlive it: once the pod is up the status returns to the ordinary working state, so a streamed
-answer is never delivered under a line still claiming a sandbox is being allocated.
-
 ## Slack message attribution footer
 
 The attribution footer for an agent response must be attached to the final Slack

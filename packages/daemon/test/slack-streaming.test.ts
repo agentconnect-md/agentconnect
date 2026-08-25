@@ -3,8 +3,6 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
-import { SANDBOX_BOOTSTRAP_NOTICE } from '../src/daemon/constants.js'
-import { LocalMemoryFs } from '../src/memory/fs.js'
 import { SlackConnection, type SlackStreamAppendOutcome, type SlackTurnStream } from '../src/slack/connection.js'
 import { OutputConverger, type SlackAction, type SlackStreamChunk } from '../src/slack/render.js'
 import {
@@ -1298,79 +1296,6 @@ describe('Daemon Slack streaming turn', () => {
     expect(conn.startTurnStream).not.toHaveBeenCalled()
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'streamed answer', 'T1', expect.anything())
     expect(conn.finalizeResponse).toHaveBeenCalledOnce()
-    await daemon.stop()
-  }, 15_000)
-
-  /** A cluster daemon whose agent has no bound pod: the one plane fact the turn's
-   *  sandbox-bootstrap notice is decided on. */
-  function coldSandbox(daemon: Daemon): void {
-    ;(daemon as unknown as { k8sPlane: unknown }).k8sPlane = {
-      runsInSandbox: () => false,
-      withSandbox: (_id: string, work: () => Promise<unknown>) => work(),
-      ensureChannel: async () => {},
-      workspaceRootFor: () => undefined,
-      gitRunnerFor: () => undefined,
-      workspaceFsFor: () => undefined,
-      memoryFsFor: () => new LocalMemoryFs(mkdtempSync(join(tmpdir(), 'ac-slack-stream-mem-'))),
-      autoMergeFor: () => undefined,
-      releaseAgent: () => {},
-      launchedAgents: () => [],
-      stop: async () => {}
-    }
-  }
-
-  // The pod wait happens inside `openSession`, before the stream can have anything to show —
-  // exactly the window §5's loading text covers. So the wait is narrated there, on a streaming
-  // turn as much as a legacy one, and never as a second Slack message saying the same thing.
-  for (const [label, over] of [
-    ['streaming', {}],
-    ['legacy', { streamingLikely: vi.fn(() => false) }]
-  ] as const) {
-    it(`narrates a cold sandbox on the ${label} turn's loading status, posting no message for it`, async () => {
-      const { daemon } = booted(scaffold())
-      await daemon.start()
-      coldSandbox(daemon)
-      const conn = connect(daemon, over)
-
-      await (
-        daemon as never as { dispatch: (a: string, m: NormalizedMessage, i: string) => Promise<unknown> }
-      ).dispatch('bot-a', inbound(), 'int-a')
-
-      const wrote = label === 'streaming' ? conn.setLoadingStatus : conn.setStatus
-      const texts = wrote.mock.calls.map((call) => call[2])
-      expect(texts).toContain('is allocating a sandbox pod…')
-      expect(conn.postMessage).not.toHaveBeenCalledWith('C1', SANDBOX_BOOTSTRAP_NOTICE, expect.anything())
-      // …and the label does not outlive the wait it names. `openTurnChrome` runs after
-      // `openSession`, where the pod came up; the streaming snapshot is re-issued for the rest
-      // of the turn, so a frozen bootstrap label would sit under the whole streamed answer.
-      expect(texts.filter((text) => text !== '').at(-1)).toBe('is thinking…')
-      await daemon.stop()
-    }, 15_000)
-  }
-
-  // The transition must not depend on the host being cold: a suspended pod drops its channel
-  // while `hostStarts` still holds the agent, which is a bootstrap turn with a warm host.
-  it('transitions off the bootstrap label on a second turn, whose host is already running', async () => {
-    const { daemon } = booted(scaffold())
-    await daemon.start()
-    coldSandbox(daemon)
-    const conn = connect(daemon, { streamingLikely: vi.fn(() => false) })
-    // Distinct coordinates per turn: an identical msgId is deduped as an already-delivered event.
-    const send = (n: number): Promise<unknown> =>
-      (daemon as never as { dispatch: (a: string, m: NormalizedMessage, i: string) => Promise<unknown> }).dispatch(
-        'bot-a',
-        { ...inbound(), msgId: `slack:C1:10${n}.1`, traceId: `10${n}.1` },
-        'int-a'
-      )
-
-    await send(0)
-    conn.setStatus.mockClear()
-    await send(1)
-
-    // The fake's `setStatus` is declared parameterless, so read its arguments positionally.
-    const texts = (conn.setStatus.mock.calls as unknown as unknown[][]).map((call) => call[2])
-    expect(texts).toContain('is allocating a sandbox pod…')
-    expect(texts.filter((text) => text !== '').at(-1)).toBe('is thinking…')
     await daemon.stop()
   }, 15_000)
 

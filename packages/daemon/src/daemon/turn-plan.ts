@@ -38,9 +38,6 @@ export interface TurnPlanInput {
   stickyOutputMode: OutputMode | undefined
   /** `hostStarts.has(agentId) || modelSessions.hasStartedHost(key)`, read cold. */
   hostAlreadyRunning: boolean
-  /** `!k8sPlane.runsInSandbox(agentId)` on a cluster daemon: this turn must first bring a
-   *  Sandbox pod up and bind its shim, which is up to a minute and a half of silence. */
-  clusterPodBootstrap: boolean
   /** `daemon.compoundMentionAddresses(agentId, msg)`. */
   protectedAddresses: readonly string[]
   /** Pre-computed `isCodexRuntime(agentId)` — it reads the runtime command config, not just the name. */
@@ -74,10 +71,8 @@ export interface TurnPlan {
 
   /** True when this turn takes the null-connection seam: headless, non-continuation webchat, or `none`. */
   readonly suppressReplyConn: boolean
-  readonly startupActivityLabel: 'is thinking…' | 'is starting up…' | 'is allocating a sandbox pod…'
+  readonly startupActivityLabel: 'is thinking…' | 'is starting up…'
   readonly hostAlreadyRunning: boolean
-  /** This turn waits on a cluster sandbox pod — see {@link TurnPlanInput.clusterPodBootstrap}. */
-  readonly clusterPodBootstrap: boolean
 
   readonly turnSurface: DaemonTurnOutputSurface
   readonly turnCtx: TurnOutputContext<NormalizedMessage>
@@ -158,14 +153,8 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     }),
     suppressReplyConn,
     // Cold/warm is captured BEFORE sessions.handle(), which boots the host via hostFor().
-    // A pod that is not up yet outranks both: it is the wait the user is actually about to sit through.
-    startupActivityLabel: input.clusterPodBootstrap
-      ? 'is allocating a sandbox pod…'
-      : input.hostAlreadyRunning
-        ? 'is thinking…'
-        : 'is starting up…',
+    startupActivityLabel: input.hostAlreadyRunning ? 'is thinking…' : 'is starting up…',
     hostAlreadyRunning: input.hostAlreadyRunning,
-    clusterPodBootstrap: input.clusterPodBootstrap,
     turnSurface,
     turnCtx,
     statusOptions: slackStatusOptions(msg.platform, agentName, iconUrl),
