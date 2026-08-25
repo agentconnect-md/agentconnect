@@ -11,14 +11,24 @@
  * 2. A transient poll failure must not abandon confirmation. The return params
  *    are cleaned from the URL on claim, so the purchase id lives only in state;
  *    a single network blip or 5xx must retry, not become a dead end.
+ *
+ * 3. Settlement reaches the UNFILTERED ledger read, not only the table's current side. That
+ *    read is what "last deduction", the banner's history and the Activity card's visibility
+ *    use, and its key sits outside the side table the pills iterate.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { SWRConfig } from 'swr'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BillingError } from '@/lib/billing-api'
 
 const mocks = vi.hoisted(() => ({
-  fetchPurchase: vi.fn<() => Promise<unknown>>()
+  fetchPurchase: vi.fn<() => Promise<unknown>>(),
+  // Typed with the real parameters so a test can read the FILTER off a recorded call.
+  fetchTransactions: vi.fn(async (_orgId: string, _cursor?: string, _filter?: { type?: string }) => ({
+    items: [] as unknown[],
+    nextCursor: null as string | null
+  }))
 }))
 
 vi.mock('@/lib/org-context', () => ({
@@ -36,7 +46,7 @@ vi.mock('@/lib/billing-api', async () => {
     createBillingPurchase: vi.fn(),
     fetchBillingPurchase: mocks.fetchPurchase,
     fetchBillingAccount: async () => ({ orgId: 'org-1', balanceMicro: 0 }),
-    fetchBillingTransactions: async () => ({ items: [], nextCursor: null })
+    fetchBillingTransactions: mocks.fetchTransactions
   }
 })
 
@@ -49,8 +59,14 @@ async function render() {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
+  // A FRESH SWR cache per render. On the global one a later test inherits an earlier test's
+  // page one and its fetcher is never called, so a test that counts fetches reads zero.
   await act(async () => {
-    root.render(<BillingView />)
+    root.render(
+      <SWRConfig value={{ provider: () => new Map() }}>
+        <BillingView />
+      </SWRConfig>
+    )
   })
 }
 
@@ -65,6 +81,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: 'billing' }
   mocks.fetchPurchase.mockReset()
+  mocks.fetchTransactions.mockClear()
 })
 afterEach(async () => {
   await act(async () => root.unmount())
@@ -98,6 +115,24 @@ describe('checkout return: expired is not terminal', () => {
     for (let i = 0; i < 120; i++) await tick(2_500) // exhaust the poll budget
     expect(host.innerHTML).toContain('Checkout session expired')
     expect(host.innerHTML).not.toContain('Nothing was charged')
+  })
+})
+
+describe('checkout return: what settlement invalidates', () => {
+  it('refetches the unfiltered ledger, not only the table’s current side', async () => {
+    // The pills are the two ledger SIDES, so the unfiltered key is not among them and no loop
+    // over that table reaches it. A first top-up settling into a stale unfiltered read left the
+    // page still saying the org had never been funded.
+    const unfiltered = () => mocks.fetchTransactions.mock.calls.filter((c) => c[2] === undefined).length
+
+    mocks.fetchPurchase.mockResolvedValue(purchase('completed'))
+    await render()
+    const before = unfiltered()
+    expect(before).toBeGreaterThan(0)
+
+    await tick(0)
+    expect(host.innerHTML).toContain('$50.00 added')
+    expect(unfiltered()).toBeGreaterThan(before)
   })
 })
 

@@ -654,16 +654,21 @@ export default function BillingView() {
   const { mutate: mutateKey } = useSWRConfig()
   const refreshMoney = useCallback(() => {
     void account.mutate()
-    // Every side's page one, not only the visible one: a settled top-up belongs to the All
-    // and Top-ups feeds alike, and leaving the others cached had a filter switch show a
-    // ledger that predated the purchase.
+    // The unfiltered read, by ITS OWN handle. Its key is deliberately outside `TX_SIDES` — the
+    // pills are the two ledger sides — so no loop over that table can reach it, and it is what
+    // "last deduction", the banner's history and the Activity card's visibility all read.
+    // Leaving it cached had a first top-up settle into a page still saying never funded.
+    void ledger.mutate()
+    // Then every side's page one, not only the visible one: a settled top-up belongs to the
+    // Top-ups feed whichever pill is pressed, and leaving the others cached had a filter switch
+    // show a ledger that predated the purchase.
     if (orgId) for (const s of TX_SIDES) void mutateKey(consoleKeys.billingTransactions(orgId, s.key))
     // The Activity chart reads the same ledger through its OWN key, one per range, and its
     // fetch usually landed while the purchase was still pending. Settlement has to reach
     // every range it can show — leaving the cached ones alone had the Top-ups chart disagree
     // with the table right beside it until a refocus or a reload.
     if (orgId) for (const r of ACTIVITY_RANGES) void mutateKey(consoleKeys.billingActivity(orgId, r.key))
-  }, [account.mutate, mutateKey, orgId])
+  }, [account.mutate, ledger.mutate, mutateKey, orgId])
   useEffect(() => {
     if (!orgId || checkout?.phase !== 'confirming') return
     const { purchaseId, attempt } = checkout
