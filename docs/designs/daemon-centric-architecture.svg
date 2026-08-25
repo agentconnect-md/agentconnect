@@ -97,7 +97,7 @@
   </defs>
 
   <rect width="1600" height="1040" rx="32" fill="#f8fafc" />
-  <text x="64" y="68" class="title">AgentConnect: daemon-centric message paths</text>
+  <text x="64" y="68" class="title">AgentConnect: message paths</text>
   <text x="64" y="108" class="subtitle">
     Live content stays on the daemon and optional relay data plane.
   </text>
