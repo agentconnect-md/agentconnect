@@ -14982,7 +14982,12 @@ export class Daemon {
       daemonRoot: () => this.root,
       log: () => this.log,
       cpClient: () => this.cpClient,
-      requestExit: (code) => this.requestExit(code),
+      // Draining first, exactly as the data-plane failure exit does: the flag is what stops new work
+      // arriving, and it must not depend on `requestExit` happening to be synchronous.
+      exitFatal: (code) => {
+        this.draining = true
+        this.requestExit(code)
+      },
       setDaemonId: (daemonId) => {
         this.cfg.daemonId = daemonId
       },
