@@ -389,7 +389,7 @@ export function LogoMark({ size = 27 }: { size?: number }) {
 }
 
 // Loading spinner: the four logo facets chase in opacity around the diamond.
-// `begin` staggers each facet an eighth of a cycle behind the one before it.
+// `begin` is indexed by FACETS — one entry per facet, in that order, each an eighth of a cycle behind the last.
 const SPIN = {
   dur: '1.4s',
   keyTimes: '0;0.18;0.7;1',
