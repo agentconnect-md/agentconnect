@@ -1,4 +1,9 @@
-import { CODE_HOST_PROVIDERS, GENERIC_HOOK_KIND, isCodeHostProvider, type HookKind } from '@agentconnect.md/protocol'
+import {
+  CODE_HOST_PROVIDERS,
+  GENERIC_HOOK_KIND,
+  isCodeHostProvider,
+  type HookKind
+} from '@agentconnect.md/protocol/code-host'
 import { isSelfSender } from './data'
 
 /**
