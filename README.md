@@ -164,7 +164,7 @@ If AgentConnect looks useful, here's how you can support the project:
 
 ## Architecture
 
-![AgentConnect daemon-centric message paths](docs/designs/daemon-centric-architecture.svg)
+![AgentConnect message paths between the platforms, daemons, relay, and Control Plane](docs/designs/daemon-centric-architecture.svg)
 
 | Component                  | Responsibility                                                                                                                                                                                                     |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -180,8 +180,8 @@ temporarily unavailable, established sessions and daemon-local schedules
 continue; new assignments and configuration changes resume after reconnection.
 
 See the
-[daemon-centric architecture](docs/designs/daemon-centric-architecture.md) for
-the complete message paths, trust boundaries, and failure model.
+[architecture design](docs/designs/daemon-centric-architecture.md) for the
+complete message paths, trust boundaries, and failure model.
 
 ## Development
 
