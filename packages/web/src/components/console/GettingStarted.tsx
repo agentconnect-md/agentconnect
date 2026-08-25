@@ -52,8 +52,9 @@ function Ring({ ring, size, track }: { ring: string; size: number; track: number
 // not CP state — nothing server-side changes by hiding a derived checklist.
 const GS_SKIP_KEY = 'ac.gs-skipped'
 // The session-access step is a look-don't-touch review with no CP signal — the CTA
-// click is the completion, recorded on this device only.
-const GS_SA_REVIEWED_KEY = 'ac.gs-session-access-reviewed'
+// click is the completion, recorded on this device only. Keyed PER ORG: reviewing one
+// org's policy must not tick the step (or self-dismiss the tutorial) in another org.
+const saReviewedKey = (orgId: string) => `ac.gs-session-access-reviewed:${orgId}`
 const GS_OPEN_EVENT = 'ac:gs-open'
 
 /** Re-open the checklist from anywhere in the chrome (rail account menu), un-skipping it. */
@@ -88,7 +89,6 @@ export default function GettingStarted() {
   useEffect(() => {
     try {
       setSkipped(localStorage.getItem(GS_SKIP_KEY) === '1')
-      setSessionAccessReviewed(localStorage.getItem(GS_SA_REVIEWED_KEY) === '1')
     } catch {
       setSkipped(false)
     }
@@ -141,8 +141,16 @@ export default function GettingStarted() {
   // ── tutorial position ──────────────────────────────────────────────────────
   const orgId = activeOrg?.id ?? null
   const storedStep = activeOrg?.gettingStartedStep ?? 0
-  // Org switch: drop the local floor so the new org starts from ITS stored position.
-  useEffect(() => setLocalStep(0), [orgId])
+  // Org switch: drop the local floor so the new org starts from ITS stored position,
+  // and re-read THIS org's reviewed flag (per-org key — see saReviewedKey).
+  useEffect(() => {
+    setLocalStep(0)
+    try {
+      setSessionAccessReviewed(!!orgId && localStorage.getItem(saReviewedKey(orgId)) === '1')
+    } catch {
+      setSessionAccessReviewed(false)
+    }
+  }, [orgId])
   const step = Math.max(storedStep, localStep)
   const total = gs.items.length
   const finished = total > 0 && step >= total
@@ -208,10 +216,10 @@ export default function GettingStarted() {
   // away (GitHub workspace, Home chat, invite teammates, session access → router.push) —
   // the drawer is fixed in the app shell and would otherwise cover the destination.
   const runFromDrawer = (action: GsAction) => {
-    // Clicking through to the policy IS the review — tick the step on this device.
+    // Clicking through to the policy IS the review — tick the step for THIS org.
     if (action.kind === 'session-access') {
       try {
-        localStorage.setItem(GS_SA_REVIEWED_KEY, '1')
+        if (orgId) localStorage.setItem(saReviewedKey(orgId), '1')
       } catch {
         /* storage unavailable — the tick holds for this page view */
       }
