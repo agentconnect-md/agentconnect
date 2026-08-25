@@ -90,6 +90,18 @@ export const GithubHookMetadata = z
   })
 export type GithubHookMetadata = z.infer<typeof GithubHookMetadata>
 
+/** GitHub folds target-branch changes into `pull_request:edited`; only the signed `changes.base` fact makes that edit a revision. */
+export function isGithubPullRequestRevisionEvent(
+  event: string | undefined,
+  github?: Pick<GithubHookMetadata, 'baseChanged'>
+): boolean {
+  return (
+    event === 'pull_request:opened' ||
+    event === 'pull_request:synchronize' ||
+    (event === 'pull_request:edited' && github?.baseChanged === true)
+  )
+}
+
 /** One GitLab hook subject: issue/MR by IID, or a standalone push ref (gitlab-com-integration.md §17.2). */
 export const GitlabHookTarget = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('issue'), iid: z.number().int().positive() }),

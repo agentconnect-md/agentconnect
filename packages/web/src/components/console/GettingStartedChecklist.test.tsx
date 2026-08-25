@@ -35,7 +35,13 @@ const render = async () => {
   await act(async () => root.render(<Probe />))
 }
 
+/** Whether this deployment offers the cloud pool (lib/feature-flags.ts). */
+const setFlags = (value: string) => {
+  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: value }
+}
+
 beforeEach(() => {
+  setFlags('')
   mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
   mocks.daemons = []
   mocks.openModal.mockReset()
@@ -56,6 +62,24 @@ describe('useGsActions — the agent step', () => {
 
   it('edits the built-in agent directly once a daemon exists', async () => {
     mocks.daemons = [{ daemonId: 'dmn_1', status: 'online' }]
+    await render()
+    act(() => run({ kind: 'agent' }))
+    expect(mocks.openModal).toHaveBeenCalledWith('editAgent', mocks.agents[0], { focusSection: 'basics' })
+  })
+
+  // A fleet of pool Pods with the pool hidden is nothing to place onto: EditAgentModal filters
+  // them out and would offer only "No daemon", so the step still needs the Add-daemon chain.
+  it('still mints a daemon when the only fleet rows are hidden pool Pods', async () => {
+    mocks.daemons = [{ daemonId: 'pool-pod-1', pool: true, status: 'online' }]
+    await render()
+    act(() => run({ kind: 'agent' }))
+    expect(mocks.openModal).toHaveBeenCalledWith('daemon', mocks.agents[0], { focusSection: 'basics' })
+  })
+
+  // With the pool offered, Cloud IS a placement target — the editor owns that choice.
+  it('edits directly when the deployment offers the pool those Pods belong to', async () => {
+    setFlags('daemon-pool')
+    mocks.daemons = [{ daemonId: 'pool-pod-1', pool: true, status: 'online' }]
     await render()
     act(() => run({ kind: 'agent' }))
     expect(mocks.openModal).toHaveBeenCalledWith('editAgent', mocks.agents[0], { focusSection: 'basics' })

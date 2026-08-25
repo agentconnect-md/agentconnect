@@ -17,6 +17,7 @@ import { usePathname } from 'next/navigation'
 import { useConsoleData } from '@/lib/data-context'
 import { isAuthConfigured } from '@/lib/auth'
 import { computeGettingStarted, type GsAction } from '@/lib/getting-started'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
   AddToSlackRow,
   GsRows,
@@ -65,7 +66,7 @@ export function openGettingStarted() {
 }
 
 export default function GettingStarted() {
-  const { agents, integrations, allSessions, orgHasSessions, members, loading } = useConsoleData()
+  const { agents, daemons, integrations, allSessions, orgHasSessions, members, loading } = useConsoleData()
   const { runAction, firstAgent } = useGsActions()
   const pathname = usePathname()
   const authOn = isAuthConfigured()
@@ -100,6 +101,7 @@ export default function GettingStarted() {
     () =>
       computeGettingStarted({
         agents,
+        daemons,
         integrations,
         sessions: allSessions,
         members,
@@ -107,10 +109,13 @@ export default function GettingStarted() {
         orgHasSessions,
         githubLinked,
         githubEnabled,
-        sessionAccessAvailable
+        sessionAccessAvailable,
+        // Cloud pool on ⇒ the "Connect a daemon" step is dropped (lib/getting-started.ts).
+        poolEnabled: featureFlagEnabled('daemon-pool')
       }),
     [
       agents,
+      daemons,
       integrations,
       allSessions,
       members,
@@ -123,7 +128,8 @@ export default function GettingStarted() {
   )
 
   // Show on every console page while the checklist is incomplete — including a
-  // brand-new org, where setting up the built-in agent is the first open step. The full-screen
+  // brand-new org, where the first open step is "Connect a daemon" (or, on the cloud
+  // pool, setting up the built-in agent). The full-screen
   // /onboarding wizard is a separate route (AgentsView redirects an empty org there);
   // the pill only steps aside for that route, not for the empty-org state itself.
   const onOnboardingRoute = pathname?.includes('/onboarding')

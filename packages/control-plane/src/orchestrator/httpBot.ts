@@ -442,9 +442,16 @@ export class HttpBotOrchestrator {
       const channel = m.sessionKey.slice(0, slash)
       const thread = m.sessionKey.slice(slash + 1)
       const owner = await this.sessions.findThreadOwner(BotId(m.botId), channel, thread)
+      const ambiguous = owner ? await this.sessionOwnerHasSiblingBot(m.botId, owner.agentId) : false
+      if (ambiguous && owner) {
+        this.log.debug?.(
+          { botId: m.botId, agentId: owner.agentId, channel },
+          'http-bot: SessionMeta thread owner is ambiguous across bots — leaving the thread unowned'
+        )
+      }
       // The session names the agent; the member serving it is resolved live, so this fallback
       // covers a pool agent — whose row names no machine — as well as a machine-placed one.
-      const target = owner ? await this.threadOwnerTarget(m.botId, channel, owner.agentId) : null
+      const target = owner && !ambiguous ? await this.threadOwnerTarget(m.botId, channel, owner.agentId) : null
       if (target) {
         return {
           botId: m.botId,
@@ -457,6 +464,28 @@ export class HttpBotOrchestrator {
       }
     }
     return { botId: m.botId, sessionKey: m.sessionKey, target: null, participants }
+  }
+
+  /** Refuse a bot-agnostic SessionMeta fallback when another live bot can route the same agent in this tenant. */
+  private async sessionOwnerHasSiblingBot(botId: string, agentId: string): Promise<boolean> {
+    const bot = await this.bots.getUnscoped(BotId(botId))
+    if (!bot) return false
+    const provider = this.platforms.get(bot.platform)
+    const realmOf = (candidate: BotRecord): string | null =>
+      provider?.threadFallbackRealm
+        ? provider.threadFallbackRealm(candidate)
+        : (candidate.externalTenantId ?? candidate.workspaceId ?? candidate.teamId)
+    const realm = realmOf(bot)
+    if (!realm) return false
+    return (await this.bots.listForOrg(bot.orgId)).some((candidate) => {
+      return (
+        candidate.id !== bot.id &&
+        candidate.revokedAt === null &&
+        candidate.platform === bot.platform &&
+        realmOf(candidate) === realm &&
+        candidate.agentIds.some((id) => id === agentId)
+      )
+    })
   }
 
   /** The addressable target for a thread owner, or null when the gate refuses it or nothing is

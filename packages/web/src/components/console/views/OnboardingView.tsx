@@ -1,14 +1,16 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { isAuthConfigured } from '@/lib/auth'
-import { daemonCompletesOnboarding, skipOnboarding } from '@/lib/onboarding'
+import { daemonCompletesOnboarding, firstReconnectableDaemonId, skipOnboarding } from '@/lib/onboarding'
+import { daemonCommands } from '@/lib/daemon-commands'
 import { computeGettingStarted } from '@/lib/getting-started'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import {
   AddToSlackRow,
   GsRows,
@@ -24,18 +26,32 @@ import {
   FALLBACK_RUNTIME_IDS,
   agentIsPlaced,
   agentLabel,
+  localDaemons,
   modelLabel,
+  poolLabel,
   preferredModelFor,
   loginRequiredRuntimeIds
 } from '@/lib/data'
 import type { Agent, DaemonRow } from '@/lib/data'
+import type { DaemonConnectDto } from '@/lib/api'
 
-// Onboarding (design: "AgentConnect Onboarding"). Nothing here blocks: the screen
-// configures the org's built-in agent (runtime + model) and then reveals the SAME
-// getting-started checklist the console shows (lib/getting-started.ts). Connecting a
-// daemon is no longer an onboarding step — it lives in the checklist and follows the
-// user into the console (the corner pill in GettingStarted.tsx). Rendered full-screen
-// (no rail) by the shell on the /onboarding route.
+// Onboarding (design: "AgentConnect Onboarding"). Where the deployment offers the cloud
+// pool (`daemon-pool`) there is nothing to connect, so the daemon phase is skipped
+// entirely and onboarding opens on the built-in agent's configuration. Self-hosted
+// (flag off) keeps the flow below unchanged: connecting a daemon is the ONLY
+// blocking step; when one comes online the screen transitions in place and reveals the
+// SAME getting-started checklist the console shows (lib/getting-started.ts). No more
+// 3-step wizard — the remaining steps live in the checklist and follow the user into
+// the console (the corner pill in GettingStarted.tsx). Rendered full-screen (no rail)
+// by the shell on the /onboarding route.
+//
+// The daemon step is inline and functional: it mints a real join command and polls for
+// the daemon to come online (like AddDaemonModal). Not shipped yet, so not shown as
+// "done for you": preset agents + the one-click built-in Bot connect (preset-agents.md
+// §3/§5) — the revealed checklist derives from real state, so "Create your first agent"
+// etc. appear as ordinary open steps until those land.
+
+type DaemonCommand = Pick<DaemonConnectDto, 'daemonId' | 'command'>
 
 export default function OnboardingView() {
   const router = useRouter()
@@ -49,9 +65,13 @@ export default function OnboardingView() {
     members,
     agentsLoading,
     daemonsLoading,
+    provisionDaemon,
+    reconnectDaemon,
+    deleteDaemon,
     updateAgent,
     moveAgent,
-    refresh
+    refresh,
+    refreshDaemons
   } = useConsoleData()
   const { orgPath } = useOrgs()
   const { runAction } = useGsActions()
@@ -64,32 +84,57 @@ export default function OnboardingView() {
   const orgKey = typeof params.slug === 'string' ? params.slug : '-'
   const authOn = isAuthConfigured()
 
+  // A live daemon or a planned relaunch reveals the checklist. Only an unexpected offline
+  // row is eligible for a replacement connect token — it may be a provisioned daemon whose
+  // one-time command was lost on reload; the mint below reconnects it.
+  // Cloud pool on ⇒ agents run there, so onboarding never asks for a daemon: treat the
+  // blocking step as already satisfied, which also latches off the mint/poll effects below.
+  const cloudDaemon = featureFlagEnabled('daemon-pool')
+  // Pool Pods are never a machine the user connected, so the connect step ignores them —
+  // off the pool the console hides them entirely, and a reconnect token for one is nonsense.
+  const machines = localDaemons(daemons)
+  const daemonReady = cloudDaemon || machines.some(daemonCompletesOnboarding)
+  const offlineDaemonId = firstReconnectableDaemonId(machines)
   const loading = (agentsLoading || daemonsLoading) && daemons.length === 0 && agents.length === 0
 
-  // First screen: configure the org's built-in `agentconnect` preset — the user picks a
-  // runtime + model (design: the built-in agent replaces "create your first agent"). The
-  // preset ships unplaced with a deferred runtime. If the org already runs a daemon we
-  // place the agent onto it behind the scenes; otherwise placement waits for the
-  // checklist's daemon step. Older orgs without the preset skip straight to the reveal.
+  // Once a daemon is serving, configure the org's built-in `agentconnect` preset before
+  // the checklist reveal: auto-assign it to that daemon and let the user pick a runtime +
+  // model (design: the built-in agent replaces "create your first agent"). The preset
+  // ships unplaced (daemon '—', deferred runtime); it's ready once both are set. Older
+  // orgs without the preset just skip straight to the reveal.
   const builtinAgent = agents.find((a) => a.builtin)
-  const placementDaemon = daemons.find((d) => d.status === 'online') ?? daemons.find(daemonCompletesOnboarding)
-  const [setupDone, setSetupDone] = useState(false)
-  const needsAgentSetup = !!builtinAgent && !agentIsPlaced(builtinAgent) && !setupDone
+  const servingDaemon = machines.find((d) => d.status === 'online') ?? machines.find(daemonCompletesOnboarding)
+  // The fleet list includes the install-wide pool's member Pods, which are replaceable
+  // identities — pinning the preset to one is never right. So pool mode has NO concrete
+  // placement target here (the agent editor owns the Cloud choice); one live member still
+  // stands in for the pool's REPORTED runtimes/models, the same seam the edit form's
+  // capability source uses. Off the pool both are the daemon we just brought online.
+  const placementDaemon = cloudDaemon ? undefined : servingDaemon
+  const capabilityDaemon = cloudDaemon
+    ? (daemons.find((d) => d.pool && d.status === 'online') ?? daemons.find((d) => d.pool))
+    : servingDaemon
+  // Placing on the pool needs a pool that exists; without one the agent editor owns the choice.
+  const poolTarget = cloudDaemon && capabilityDaemon !== undefined
+  const needsAgentSetup = !!builtinAgent && (cloudDaemon || !!placementDaemon) && !agentIsPlaced(builtinAgent)
+  const [skipSetup, setSkipSetup] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState<string | null>(null)
 
   // Runtime becomes mandatory at placement, so set it FIRST, then move onto the daemon
-  // (the CP rejects a move on a runtime-less agent).
+  // (the CP rejects a move on a runtime-less agent). A placed agent flips needsAgentSetup
+  // off by itself; latching `skipSetup` also advances the pool case, where nothing moved.
   const saveAgentSetup = async (runtime: string, model: string) => {
     if (!builtinAgent) return
     setSaving(true)
     setSaveErr(null)
     try {
       await updateAgent(builtinAgent.id, { runtime, ...(model ? { model } : {}) })
-      // Onboarding places onto a concrete machine; the pool is chosen from the agent editor.
+      // Onto the machine just connected, or — on the pool — onto the POOL itself. A pool
+      // placement names the pool, never the member Pod whose capabilities seeded the form.
       if (placementDaemon) await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: placementDaemon.daemonId })
+      else if (poolTarget) await moveAgent(builtinAgent.id, { kind: 'pool' })
       await refresh()
-      setSetupDone(true)
+      setSkipSetup(true)
     } catch (e) {
       setSaveErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -97,10 +142,103 @@ export default function OnboardingView() {
     }
   }
 
+  // --- Daemon provisioning (mirrors AddDaemonModal / the old wizard step 0) ----------
+  const [connect, setConnect] = useState<DaemonCommand | null>(null)
+  const [mintErr, setMintErr] = useState<string | null>(null)
+  const [elapsed, setElapsed] = useState(0)
+  const [copied, setCopied] = useState(false)
+  // Bumped by the error state's Retry — re-arms the mint effect after a failure.
+  const [mintAttempt, setMintAttempt] = useState(0)
+  const provisioned = useRef(false)
+  const commandPending = useRef<Promise<DaemonCommand> | null>(null)
+  const createdByWizard = useRef(false)
+  const connectedOnce = useRef(false)
+
+  // Mint only once BOTH lists have settled: agents can resolve first (every org ships
+  // the builtin preset, so `loading` clears on partial data) while the pending fleet
+  // response still contains a connected daemon — minting against the empty snapshot
+  // would provision a duplicate. Duplicate-safe on retry too: a provision that
+  // succeeded server-side surfaces as an offline row on the next refresh, which routes
+  // the retry through reconnect instead of a second provision.
+  useEffect(() => {
+    if (agentsLoading || daemonsLoading || daemonReady || provisioned.current) return
+    provisioned.current = true
+    setMintErr(null)
+    createdByWizard.current = !offlineDaemonId
+    const command: Promise<DaemonCommand> = offlineDaemonId
+      ? reconnectDaemon(offlineDaemonId).then((minted) => ({ daemonId: offlineDaemonId, command: minted.command }))
+      : provisionDaemon()
+    commandPending.current = command
+    command.then(setConnect).catch((e) => setMintErr(e instanceof Error ? e.message : String(e)))
+  }, [agentsLoading, daemonsLoading, daemonReady, offlineDaemonId, provisionDaemon, reconnectDaemon, mintAttempt])
+
+  // A transient mint failure must not strand the single blocking step. AWAIT the fleet
+  // refresh before re-arming: if the failed provision actually succeeded server-side
+  // (response lost), the refreshed list contains that daemon as an offline row, so the
+  // re-run reconnects it via `offlineDaemonId` instead of minting a duplicate. A FAILED
+  // refresh must NOT re-arm — the stale snapshot is exactly what could duplicate an
+  // ambiguously-successful provision; stay latched and keep the Retry on screen.
+  const retryMint = async () => {
+    setMintErr(null)
+    try {
+      await refreshDaemons()
+    } catch {
+      setMintErr('Could not refresh the daemon list — check your connection and retry.')
+      return
+    }
+    provisioned.current = false
+    commandPending.current = null
+    setMintAttempt((n) => n + 1)
+  }
+
+  // Poll until the daemon connects; tick the elapsed timer while waiting.
+  useEffect(() => {
+    if (daemonReady) {
+      connectedOnce.current = true
+      return
+    }
+    if (!connect) return
+    const poll = setInterval(refresh, 3000)
+    const tick = setInterval(() => setElapsed((s) => s + 1), 1000)
+    return () => {
+      clearInterval(poll)
+      clearInterval(tick)
+    }
+  }, [connect, daemonReady, refresh])
+
+  // Drop only a wizard-created row that was never claimed. Once it has connected or
+  // hosts an agent, leaving onboarding must never turn into a deletion.
+  const cleanupPending = async () => {
+    const pending = connect ?? (await commandPending.current?.catch(() => null))
+    const row = pending ? daemons.find((d) => d.daemonId === pending.daemonId) : undefined
+    const hostsAgent = pending ? agents.some((a) => a.daemon === pending.daemonId) : false
+    const shouldDelete =
+      pending && createdByWizard.current && !connectedOnce.current && !hostsAgent && row?.status !== 'online'
+    try {
+      if (shouldDelete) await deleteDaemon(pending.daemonId)
+    } catch {
+      /* best-effort — an unclaimed provisioned row is harmless */
+    }
+  }
   const goConsole = () => {
+    void cleanupPending()
     skipOnboarding(orgKey)
     router.push(orgPath('/home'))
   }
+
+  const cmd = connect ? daemonCommands(connect.command).run : null
+  const copy = async () => {
+    if (!cmd) return
+    try {
+      await navigator.clipboard.writeText(cmd)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1700)
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+  const listeningId = connect?.daemonId ?? offlineDaemonId ?? ''
+  const elapsedLabel = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
 
   // The shell renders the full-screen frame + slim top bar (logo · theme · user menu)
   // for the /onboarding route; this is just the centered content.
@@ -108,19 +246,33 @@ export default function OnboardingView() {
     <div className="flex min-h-full items-center justify-center px-5 py-10">
       {loading ? (
         <LoadingState fill />
-      ) : needsAgentSetup ? (
+      ) : !daemonReady ? (
+        <ConnectDaemon
+          cmd={cmd}
+          mintErr={mintErr}
+          copied={copied}
+          onCopy={copy}
+          onRetry={() => void retryMint()}
+          listeningId={listeningId}
+          elapsedLabel={elapsedLabel}
+          onExplore={goConsole}
+        />
+      ) : needsAgentSetup && !skipSetup ? (
         <ConfigureAgent
           agent={builtinAgent!}
-          daemon={placementDaemon}
+          daemon={capabilityDaemon}
+          runsOn={placementDaemon}
+          poolTarget={poolTarget}
           saving={saving}
           err={saveErr}
           onSave={saveAgentSetup}
-          onSkip={() => setSetupDone(true)}
+          onSkip={() => setSkipSetup(true)}
         />
       ) : (
         <RevealChecklist
           gs={computeGettingStarted({
             agents,
+            daemons,
             integrations,
             sessions: allSessions,
             members,
@@ -128,10 +280,12 @@ export default function OnboardingView() {
             orgHasSessions,
             githubLinked,
             githubEnabled,
-            sessionAccessAvailable
+            sessionAccessAvailable,
+            poolEnabled: cloudDaemon
           })}
           slackOneClick={slackOneClick}
           runAction={runAction}
+          cloudDaemon={cloudDaemon}
           onFinish={goConsole}
         />
       )}
@@ -139,20 +293,141 @@ export default function OnboardingView() {
   )
 }
 
-// --- Phase 1: configure the built-in agent -------------------------------------------
-// The user only picks runtime + model. Mirrors AddAgentModal's Runtime/Model row:
-// runtime ids come from the org's daemon when there is one (else the static fallback),
-// models from the chosen runtime's profile.
+// --- Phase 1: connect your daemon (the one blocking step) ----------------------------
+function ConnectDaemon({
+  cmd,
+  mintErr,
+  copied,
+  onCopy,
+  onRetry,
+  listeningId,
+  elapsedLabel,
+  onExplore
+}: {
+  cmd: string | null
+  mintErr: string | null
+  copied: boolean
+  onCopy: () => void
+  onRetry: () => void
+  listeningId: string
+  elapsedLabel: string
+  onExplore: () => void
+}) {
+  return (
+    <div className="flex w-full max-w-[560px] flex-col gap-[22px]">
+      <div className="flex flex-col items-center gap-[11px] text-center">
+        <span className="flex h-11 w-11 items-center justify-center rounded-[11px] border border-(--border-default) bg-(--surface-card) text-(--brand) shadow-(--shadow-xs)">
+          <Icon name="server" size={21} />
+        </span>
+        <div className="font-mono text-[11px] font-semibold uppercase leading-none tracking-[.12em] text-(--brand)">
+          Setup
+        </div>
+        <h1 className="font-sans text-[28px] font-semibold leading-[1.2] tracking-[-.02em] text-(--text-primary)">
+          Connect your daemon
+        </h1>
+        <p className="max-w-[450px] font-sans text-[14.5px] font-normal leading-[1.55] text-(--text-secondary)">
+          A daemon runs your agents on your own hardware. Run this one command wherever you want them to run — it
+          connects to AgentConnect and keeps running.
+        </p>
+      </div>
+
+      {/* Dark terminal block — the real minted join command */}
+      <div className="overflow-hidden rounded-[10px] border border-(--gray-800) bg-(--gray-1000) shadow-(--shadow-xs)">
+        <div className="flex items-center gap-2 border-b border-(--gray-800) py-[9px] pr-[10px] pl-[13px]">
+          <Icon name="terminal" size={13} color="var(--text-inverse-dim)" />
+          <span className="font-mono text-[11px] font-medium leading-normal tracking-[.02em] text-(--text-inverse-dim)">
+            one command · macOS, Linux, WSL
+          </span>
+          <button
+            type="button"
+            onClick={onCopy}
+            disabled={!cmd}
+            className="ml-auto inline-flex h-[26px] cursor-pointer items-center gap-[6px] rounded-md border border-white/15 bg-white/5 px-[9px] font-mono text-[11px] font-medium text-[#e6ebf1] hover:border-white/25 hover:bg-white/10 disabled:cursor-default disabled:opacity-50"
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={12} />
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+        <div className="flex gap-[9px] break-all p-[15px] font-mono text-[13px] leading-[1.6] text-[#cdd6e0]">
+          {cmd ? (
+            <>
+              <span className="text-(--magenta-300)">$</span>
+              <span>{cmd}</span>
+            </>
+          ) : mintErr ? (
+            <span className="flex flex-wrap items-center gap-2">
+              <span className="text-(--status-error)">Could not provision a key — {mintErr}</span>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="inline-flex h-[24px] cursor-pointer items-center gap-[5px] rounded-md border border-white/15 bg-white/5 px-2 font-mono text-[11px] font-medium text-[#e6ebf1] hover:border-white/25 hover:bg-white/10"
+              >
+                <Icon name="refresh-cw" size={11} />
+                Retry
+              </button>
+            </span>
+          ) : (
+            <span className="text-(--text-inverse-dim)">Minting key…</span>
+          )}
+        </div>
+      </div>
+
+      {/* Waiting card — auto-continues when the daemon comes online */}
+      <div className="flex items-center gap-[13px] rounded-[10px] border border-(--border-default) bg-(--surface-card) px-4 py-[14px] shadow-(--shadow-xs)">
+        <span className="h-[18px] w-[18px] flex-none animate-spin rounded-full border-2 border-(--gray-200) border-t-(--brand)" />
+        <div className="min-w-0 flex-1">
+          <div className="font-sans text-[13.5px] font-medium leading-normal text-(--text-primary)">
+            Waiting for your daemon to come online…
+          </div>
+          <div className="mt-[2px] font-mono text-[11.5px] leading-normal text-(--text-tertiary)">
+            {listeningId ? `Listening for ${listeningId} · ` : ''}this page continues on its own
+          </div>
+        </div>
+        <span className="flex-none font-mono text-[12px] tabular-nums text-(--text-tertiary)">{elapsedLabel}</span>
+      </div>
+
+      <div className="flex flex-col items-center gap-3">
+        <a
+          href="https://docs.agentconnect.md/docs/install-the-daemon"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-[6px] font-sans text-[12.5px] text-(--text-tertiary) no-underline hover:text-(--brand)"
+        >
+          Daemon not showing up? Read the setup guide
+          <Icon name="arrow-up-right" size={13} />
+        </a>
+        <Button variant="secondary" size="sm" onClick={onExplore}>
+          Explore the console first
+          <Icon name="arrow-right" size={14} />
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+// --- Phase 1.5: place + configure the built-in agent on the just-connected daemon ----
+// Daemon is fixed (the one we just brought online); the user only picks runtime + model.
+// Mirrors AddAgentModal's Daemon/Runtime/Model row: runtime ids come from the daemon's
+// reported profiles (else the static fallback), models from the chosen runtime's profile.
 function ConfigureAgent({
   agent,
   daemon,
+  runsOn,
+  poolTarget,
   saving,
   err,
   onSave,
   onSkip
 }: {
   agent: Agent
+  /** Whose reported runtimes/models seed the pickers — a pool member on the pool, else the
+   *  just-connected daemon. Absent ⇒ the static fallback list. Never a placement. */
   daemon?: DaemonRow
+  /** The machine this agent is being placed onto — absent on the pool, which has no member
+   *  identity to pin to. */
+  runsOn?: DaemonRow
+  /** Pool mode with a live pool: the agent lands on the pool itself. */
+  poolTarget: boolean
   saving: boolean
   err: string | null
   onSave: (runtime: string, model: string) => void
@@ -183,11 +458,33 @@ function ConfigureAgent({
           Configure {agentLabel(agent)}
         </h1>
         <p className="max-w-[430px] font-sans text-[14.5px] font-normal leading-[1.55] text-(--text-secondary)">
-          Every org ships with a built-in agent. Pick the runtime and model it should use, and it&rsquo;s ready to work.
+          {runsOn
+            ? 'Your org’s built-in agent runs on the daemon you just connected. Pick a runtime and model, and it’s ready to work.'
+            : `Your org’s built-in agent runs on ${poolTarget ? poolLabel() : 'your infrastructure'}. Pick a runtime and model, and it’s ready to work.`}
         </p>
       </div>
 
       <div className="flex flex-col gap-[14px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-xs)">
+        {(runsOn || poolTarget) && (
+          <div className="fld">
+            <span className="fldlbl">Runs on</span>
+            <div
+              className="inp cursor-not-allowed"
+              title={
+                runsOn
+                  ? 'Set to the daemon you just connected'
+                  : 'Move it to a machine any time from the agent’s settings'
+              }
+            >
+              <span className="truncate text-(--text-primary)">{runsOn ? runsOn.name : poolLabel()}</span>
+              {runsOn && (
+                <span className="ml-auto flex-none font-sans text-[11.5px] leading-none text-(--text-tertiary)">
+                  just connected
+                </span>
+              )}
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
           <div className="fld">
             <span className="fldlbl">Runtime</span>
@@ -265,19 +562,22 @@ function ConfigureAgent({
   )
 }
 
-// --- Phase 2: the same checklist the console shows -----------------------------------
+// --- Phase 2: daemon online → the same checklist the console shows -------------------
 function RevealChecklist({
   gs,
   slackOneClick,
   runAction,
+  cloudDaemon,
   onFinish
 }: {
   gs: ReturnType<typeof computeGettingStarted>
   slackOneClick: boolean
   runAction: (action: import('@/lib/getting-started').GsAction) => void
+  /** Cloud pool: no daemon was connected, so the reveal cannot claim one came online. */
+  cloudDaemon: boolean
   onFinish: () => void
 }) {
-  const [expanded, setExpanded] = useState<string | null>('agent')
+  const [expanded, setExpanded] = useState<string | null>(cloudDaemon ? 'agent' : 'daemon')
   return (
     <div className="ac-rise flex w-full max-w-[580px] flex-col gap-4">
       <div className="flex flex-col items-center gap-[10px] text-center">
@@ -285,10 +585,12 @@ function RevealChecklist({
           <Icon name="check" size={23} />
         </span>
         <h1 className="font-sans text-[24px] font-semibold leading-[1.2] tracking-[-.02em] text-(--text-primary)">
-          Welcome to AgentConnect
+          {cloudDaemon ? 'Welcome to AgentConnect' : 'Your daemon is online'}
         </h1>
         <p className="max-w-[440px] font-sans text-[14px] font-normal leading-[1.55] text-(--text-secondary)">
-          Here&rsquo;s your getting-started checklist. Work through the rest any time; it follows you into the console.
+          {cloudDaemon
+            ? 'Here’s your getting-started checklist. Work through the rest any time; it follows you into the console.'
+            : 'Connected and ready — here’s your getting-started checklist. Work through the rest any time; it follows you into the console.'}
         </p>
       </div>
 

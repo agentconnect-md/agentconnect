@@ -502,13 +502,48 @@ describe('spec-admission origin refusal (§24.4)', () => {
       }
     }) as unknown as AgentSpec
 
-  it('refuses the workspace and reports the required origin on the upsert ack', async () => {
+  // The instance is the deployment's own configuration, and this daemon already trusts it to decide
+  // where an agent's git credential may go — so admission adopts it rather than asking an operator
+  // to restate an address the control plane just sent.
+  it('admits the deployment instance with nothing configured for it', async () => {
     const { daemon, root } = await daemonWithOrigins(['https://github.com', 'https://gitlab.com'])
     try {
       const ack = await (daemon as any).cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec: gitlabSpec() })
+      expect(ack).toEqual({ ok: true })
+      expect((daemon as any).agents.get(AGENT).gitlabHost).toBe(INSTANCE)
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // The bot's case: the instance rides `gitlabHost`, not the primary workspace mode.
+  it('adopts from a non-gitlab workspace that still names the instance', async () => {
+    const { daemon, root } = await daemonWithOrigins(['https://github.com', 'https://gitlab.com'])
+    try {
+      const spec = {
+        name: 'gh-with-gitlab-grant',
+        gitlabHost: INSTANCE,
+        workspace: { mode: 'scratch', isolation: 'shared', additionalRepos: [] }
+      } as unknown as AgentSpec
+      const ack = await (daemon as any).cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec })
+      expect(ack).toEqual({ ok: true })
+      expect(unauthorizedWorkspaceGitOrigin(`${INSTANCE}/example-group/example-project.git`, INSTANCE)).toBeUndefined()
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // What admission still refuses: a repository somewhere the deployment never named.
+  it('refuses a repository off the deployment instance, and names that origin on the ack', async () => {
+    const { daemon, root } = await daemonWithOrigins(['https://github.com', 'https://gitlab.com'])
+    try {
+      const spec = gitlabSpec() as unknown as { workspace: { gitRepo: string } }
+      spec.workspace.gitRepo = 'https://elsewhere.example.test/group/proj.git'
+      const ack = await (daemon as any).cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec })
       expect(ack.ok).toBe(false)
-      expect(ack.reason).toContain('https://gitlab.example.test:8443')
-      expect(ack.reason).toContain('workspaceGitAllowedOrigins')
+      expect(ack.reason).toContain('https://elsewhere.example.test')
       expect((daemon as any).agents.has(AGENT)).toBe(false)
     } finally {
       await daemon.stop()

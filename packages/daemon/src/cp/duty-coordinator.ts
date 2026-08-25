@@ -588,17 +588,21 @@ export class DutyCoordinator {
           .catch((err) => this.log.warn(`duty: handing back ${grant.groupId} failed (it will lapse): ${err}`))
         return { granted: false }
       }
-      // Load-bearing await: the rendezvous claim exists BECAUSE a trigger arrived
-      // for an agent this member does not serve, and the turn is dispatched right
-      // after. Install, then hold, then answer — answering `granted` before the
-      // agent is there reproduces the "no agent on this daemon" drop the claim is
-      // meant to prevent.
+      // Dispatch follows immediately, so install, hold, and connect the agent before answering `granted`.
       const failed = await this.admitDutyGrants([grant])
-      // Never applied, so the answer and the local state agree — a member that
-      // says "not me" while still holding the lease is the split brain this whole
-      // mechanism exists to avoid.
+      // Never applied, so the answer and local duty state agree.
       if (failed.has(grant.groupId)) {
         this.log.warn(`duty: claimed ${grant.groupId} but could not install ${agentId} — handing the trigger back`)
+        return { granted: false }
+      }
+      try {
+        await this.host.flushReconcile()
+      } catch (err) {
+        this.log.warn(
+          `duty: claimed ${grant.groupId} but its connections did not converge — withdrawing locally and ` +
+            `letting the lease lapse: ${formatErr(err)}`
+        )
+        await this.applyDutyRevoke([{ groupId: grant.groupId, reason: 'superseded' }])
         return { granted: false }
       }
       return { granted: true }

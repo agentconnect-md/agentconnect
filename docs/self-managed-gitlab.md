@@ -14,6 +14,7 @@ Replace it with your own instance URL.
 | GitLab **18.11 or later** | Group service accounts reached every tier, Community Edition included, at 18.11. Below that the Free-tier answer sits behind instance feature flags the API does not report, so AgentConnect refuses to provision rather than guess. |
 | **HTTPS**, one address    | Clone URLs, OAuth redirects, and GitLab's own `web_url` values only agree if there is a single address. Split internal and external addressing belongs in DNS.                                                                       |
 | A trusted certificate     | There is no skip-verify option at any layer. A private authority is supported by installing its bundle — see below.                                                                                                                  |
+| Projects in a **group**   | Each agent acts as a group service account, so a project in a personal namespace cannot be set up — AgentConnect reports `personal_namespace_unsupported`. Move the project into a group first.                                      |
 
 An instance that drops below the floor after projects are already set up keeps
 serving them: existing sessions and credentials work until they expire, and
@@ -112,6 +113,20 @@ Three components need to reach the instance, and one does not:
 Traffic runs to the one base URL you configured. SSH remotes and mutual TLS are
 outside the contract, and there is no HTTP option. An outbound HTTP proxy is not
 supported yet.
+
+## Allow the daemon to clone your instance
+
+Nothing to do for the instance you configured: a daemon authorizes a clone against
+the code host the agent's own specification names — the same address it already
+uses to decide where that agent's git credential may go — so a workspace on your
+instance, or an additional repository on it, clones with no local configuration
+anywhere.
+
+The operator policy behind that is `security.workspaceGitAllowedOrigins` in a
+daemon's config file (`daemonPool.workspaceGitAllowedOrigins` in the Helm chart,
+where members have no config file). Reach for it only to allow something _else_ —
+a second host, an SSH remote — or to restrict: an explicit empty list turns remote
+Git workspaces off entirely, and nothing is adopted past that.
 
 ## Let GitLab reach the webhook endpoint
 

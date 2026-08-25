@@ -48,7 +48,12 @@ export const consoleKeys = {
   /** Billing rows come from the separate billing service (lib/billing-api), but they
    *  are org-scoped like everything else here, so they key the same way. */
   billingAccount: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-account'),
-  billingTransactions: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-transactions'),
+  /** `side` is a REQUEST parameter — the service narrows the keyset feed to one ledger side —
+   *  so each side is its own page one with its own cursor, not a filter over a shared cache. */
+  billingTransactions: <const Side extends string = 'all'>(
+    orgId: string | null | undefined,
+    side: Side = 'all' as Side
+  ) => consoleKey(orgId, 'billing-transactions', side),
   /** The credit rows of the last 30 days — paged out of the same feed, so it keys apart
    *  from the first page `billingTransactions` serves the Billing table. */
   billingTopUps: (orgId: string | null | undefined) => consoleKey(orgId, 'billing-top-ups'),

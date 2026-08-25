@@ -11,6 +11,7 @@ import {
   HookReport,
   buildEnvelope,
   decodeEnvelope,
+  isGithubPullRequestRevisionEvent,
   isFrame
 } from '../index.js'
 
@@ -77,6 +78,13 @@ describe('R1/R2a hook control schemas', () => {
     expect(GithubHookMetadata.safeParse({ ...github, pullRequestReviewId: '0' }).success).toBe(false)
     expect(GithubHookMetadata.safeParse({ ...github, reviewCommentId: '-1' }).success).toBe(false)
     expect(GithubHookMetadata.safeParse({ ...github, reviewThreadRootCommentId: '01' }).success).toBe(false)
+  })
+
+  it('distinguishes target-branch changes from content-only PR edits', () => {
+    expect(isGithubPullRequestRevisionEvent('pull_request:opened')).toBe(true)
+    expect(isGithubPullRequestRevisionEvent('pull_request:synchronize')).toBe(true)
+    expect(isGithubPullRequestRevisionEvent('pull_request:edited', { baseChanged: true })).toBe(true)
+    expect(isGithubPullRequestRevisionEvent('pull_request:edited', { baseChanged: false })).toBe(false)
   })
 
   it('keeps legacy hook/report decodable while carrying submitted metadata for recovery', () => {

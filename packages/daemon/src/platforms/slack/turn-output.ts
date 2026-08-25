@@ -39,16 +39,47 @@
  * option builders are what make that safe: a non-Slack origin gets `undefined`
  * options and posts without Slack identity decoration.
  */
-import type { SlackConnection, SlackPostOptions, SlackStatusOptions } from '../../slack/connection.js'
+import type { SlackConnection, SlackPostOptions, SlackStatusOptions, SlackTurnStream } from '../../slack/connection.js'
 import { splitIntoSections } from '../../slack/formatter.js'
-import type { SlackAction } from '../../slack/render.js'
+import type { SlackAction, SlackStreamChunk } from '../../slack/render.js'
 
-/** Slack's opaque per-turn state (§7.3) — the footer edits still owed. */
+/** Slack's opaque per-turn state (§7.3) — the footer edits still owed, plus the turn's
+ *  native stream (slack-streaming-turn-output.md §3). */
 export interface SlackTurnState {
   /** Older reply sections whose footer-removal update failed. Retried on the next
    *  body section and once more at finalization, so a transient Slack error cannot
    *  leave two footers standing. */
   staleReplyFooters?: { ts: string; text: string }[]
+  /** The turn's streaming message, until Slack confirms it is settled. Retired only on a
+   *  definite answer — success, or already-stopped — so a transient stop failure still has a
+   *  handle for the settlement retry. A rollover opens a NEW one; a stopped stream is
+   *  unrecoverable and is never revived. */
+  stream?: SlackTurnStream
+  /** Coalescing timer for stream appends (§3.5), the Slack analogue of Feishu's. */
+  streamTimer?: NodeJS.Timeout
+  /** Display body a dead stream never delivered, awaiting the ordinary post boundary (§7).
+   *  Defined (even empty) IS the "this turn has degraded" flag: from that point every stream
+   *  action feeds this buffer instead of a message, so nothing the converger already
+   *  converged — or already queued — is silently dropped. */
+  streamFallback?: string
+  /** Whether the RESPONSE has moved off the stream to the fallback. Deliberately NOT derived
+   *  from the buffer's length: each flush empties the buffer, so a stop retried after one
+   *  would read "no fallback body" and re-anoint the retained old stream as the final,
+   *  attributed message. One-way for the turn — once the fallback owns the response, nothing
+   *  hands it back. */
+  streamResponseMoved?: boolean
+  /** A stop Slack has not accepted yet, kept verbatim so settlement reissues THAT stop: a
+   *  bare abort retry would settle the message but drop its attribution footer. */
+  streamStopOwed?: Extract<SlackAction, { kind: 'stream-stop' }>
+  /** The PERSON ended this turn's stream. Terminal and absolute: nothing more is appended,
+   *  buffered, posted, or opened, and the cancellation already in flight settles the turn.
+   *  Distinct from `streamFallback` precisely because that one re-delivers and this one must
+   *  not — a fallback post here would be the replacement message §6 forbids. */
+  streamStopped?: boolean
+  /** The human a streamed message is addressed to (`recipient_user_id`, required outside
+   *  DMs). Absent on a cron / hook / dream / agent-to-agent turn, which is exactly why
+   *  those cannot stream in a channel (§7). */
+  recipient?: string
 }
 
 /** The core turn, as Slack's applier sees it. `Pending` satisfies it structurally.
@@ -193,6 +224,21 @@ export function slackAgentPostOptions(
         }
       : {})
   }
+}
+
+/**
+ * The human a streamed message is addressed to (`recipient_user_id`, which Slack requires
+ * outside a DM). A cron fire, a webhook, a dream, or an agent→agent delivery has no honest
+ * value to supply — which is precisely why those turns cannot stream in a channel (§7).
+ *
+ * Structural in its parameter so this module stays free of core message types.
+ */
+export function slackStreamRecipient(msg: {
+  source: string
+  headless?: boolean
+  sender: { id: string; isBot?: boolean }
+}): string | undefined {
+  return msg.source === 'user' && !msg.headless && !msg.sender.isBot ? msg.sender.id : undefined
 }
 
 /** Keep Slack's transient loading state visually owned by the same agent as its reply. */
@@ -361,6 +407,64 @@ async function postSlackReply<TTurn extends SlackTurn>(
   return ts
 }
 
+/** The DISPLAY text a set of stream chunks carries. Task cards are chrome with no legacy
+ *  equivalent — a fallback post would render them as prose — so only body text survives. */
+function streamChunkText(chunks: SlackStreamChunk[]): string {
+  return chunks.map((chunk) => (chunk.type === 'markdown_text' ? chunk.text : '')).join('')
+}
+
+/** Route display text to the fallback buffer, opening it if needed, and record ownership the
+ *  moment real body text lands there. Ownership is tracked separately from the buffer BECAUSE
+ *  the buffer empties on every flush — see `streamResponseMoved`. */
+function bufferStreamFallback(state: SlackTurnState, body: string): void {
+  state.streamFallback = (state.streamFallback ?? '') + body
+  if (body) state.streamResponseMoved = true
+}
+
+/**
+ * Issue one stop and decide whether the handle may be retired. Slack answering "not settled"
+ * (a rate limit, a dropped connection, a send-queue timeout) is the one case that must NOT
+ * clear it: the message is still streaming and the session still `processing`, so the exact
+ * stop is remembered for the settlement backstop to reissue — reissuing a bare abort instead
+ * would settle the message but silently drop its attribution footer.
+ */
+async function settleTurnStream(
+  conn: SlackConnection,
+  p: SlackTurn,
+  state: SlackTurnState,
+  action: Extract<SlackAction, { kind: 'stream-stop' }>,
+  options: Parameters<SlackConnection['stopTurnStream']>[1] = {}
+): Promise<boolean> {
+  const stream = state.stream
+  if (!stream) return true
+  const settled = await conn.stopTurnStream(stream, options)
+  if (!settled) {
+    state.streamStopOwed = action
+    return false
+  }
+  state.stream = undefined
+  state.streamStopOwed = undefined
+  return true
+}
+
+/** Post the display body a dead stream never delivered, through the ordinary reply boundary
+ *  so it arrives with the attribution footer, the response metadata, and the §5.5 anchor —
+ *  the answer must land exactly once, and this is the copy that has not landed (§7). The
+ *  transcript is untouched: its `recordOnly` copies were written on their own cadence. */
+async function flushStreamFallback<TTurn extends SlackTurn>(
+  host: SlackTurnHost<TTurn>,
+  conn: SlackConnection,
+  p: TTurn,
+  state: SlackTurnState
+): Promise<void> {
+  const pending = state.streamFallback
+  state.streamFallback = ''
+  if (!pending) return
+  for (const section of splitIntoSections(pending, undefined, p.plan.protectedAddresses)) {
+    await postSlackReply(host, conn, p, state, section)
+  }
+}
+
 /** Update minimal mode's live body without dropping its born-in footer. Only record a
  *  footer-key transition after Slack accepts the edit so finalization can retry a failed
  *  metadata refresh. */
@@ -433,6 +537,9 @@ export async function applySlackAction<TTurn extends SlackTurn>(
   const chromeOptions: SlackPostOptions = { ...(postOptions ?? {}), chrome: true }
   switch (action.kind) {
     case 'set-status':
+      // A streaming turn owns the whole status slot through its stream: the two status APIs
+      // share that slot, so writing either would replace the native UI with free text (§5).
+      if (state.stream) return
       if (p.plan.statusThread)
         await conn.setStatus(
           p.plan.channel,
@@ -574,6 +681,107 @@ export async function applySlackAction<TTurn extends SlackTurn>(
           p.chrome.liveReplyText = section
         }
       }
+      return
+    }
+    case 'stream-start': {
+      // Streamed messages must be thread replies (§7), and a rollover only ever opens the
+      // NEXT message — never a second stream beside a live one. Once the turn has degraded,
+      // a fresh message would be a second answer bubble rather than a continuation; once the
+      // person has stopped, opening one at all is what §6 forbids.
+      if (state.streamStopped || state.streamFallback !== undefined || state.stream || !p.plan.thread) return
+      state.stream = await conn.startTurnStream(p.plan.channel, p.plan.thread, {
+        ...(state.recipient ? { recipientUserId: state.recipient } : {}),
+        // Per-agent authorship moves here from the status text: same username/icon a reply
+        // carries today, under the same chat:write.customize cooldown (§5).
+        ...(statusBarPostOptions ? { identity: statusBarPostOptions } : {})
+      })
+      return
+    }
+    case 'stream-append': {
+      // The person ended this conversation's stream: the remaining output is not re-routed,
+      // it is dropped, and the cancellation already in flight settles the turn (§6).
+      if (state.streamStopped || action.chunks.length === 0) return
+      const body = streamChunkText(action.chunks)
+      // Already degraded. Application is asynchronous, so appends the converger produced
+      // BEFORE the refusal — and the terminal ones after it — are still arriving; they carry
+      // display text Slack never took, so they feed the buffer instead of no-opping (§7).
+      if (state.streamFallback !== undefined) {
+        bufferStreamFallback(state, body)
+        return
+      }
+      if (!state.stream) return
+      const outcome = await conn.appendTurnStream(state.stream, action.chunks)
+      if (outcome === 'ok') return
+      if (outcome === 'stopped') {
+        // Not a failure to make good on — a decision by the person. Anything still queued for
+        // this turn stops here, and no fallback post may follow it (§6).
+        state.streamStopped = true
+        state.stream = undefined
+        return
+      }
+      // A mid-turn append failure must not lose the answer. Open the buffer with exactly the
+      // text this append carried — the converger has already advanced its cursor past it, so
+      // this is the only remaining copy.
+      bufferStreamFallback(state, body)
+      // Settle the message only when the answer has actually MOVED off it. A refusal that
+      // dropped nothing but task chrome leaves the stream holding the whole visible answer,
+      // so it stays open for its terminal attributed stop — aborting it here is what left a
+      // "body → tool card → end" turn footerless and with nothing for §5.5 to finalize.
+      if (body) await settleTurnStream(conn, p, state, { kind: 'stream-stop', settle: 'abort' })
+      return
+    }
+    case 'stream-stop': {
+      if (state.streamStopped) return
+      // Degradation moves the RESPONSE off the stream only once real body text has landed in
+      // the fallback. A refusal that dropped nothing but task chrome leaves the accepted
+      // stream holding the whole visible answer, so it must still be closed as the attributed
+      // final message — otherwise a "body → tool card → end" turn ends footerless and with
+      // nothing for §5.5 to finalize. Read from the one-way ownership flag, never from the
+      // buffer: a stop retried after the flush emptied it would re-anoint the old message.
+      const degraded = state.streamFallback !== undefined
+      const final = action.settle === 'final' && !state.streamResponseMoved
+      if (state.stream) {
+        const agentOptions = final
+          ? slackAgentPostOptions({ ...p.plan, ...(p.reply.responseId ? { responseId: p.reply.responseId } : {}) })
+          : undefined
+        // The footer is attached exactly once, on the LAST stop — a rollover carries none, and
+        // teardown after suppression carries none either (§3.3).
+        const footer = final && p.attribution ? p.attribution.blocks : undefined
+        const stream = state.stream
+        const settled = await settleTurnStream(conn, p, state, action, {
+          ...(footer ? { blocks: footer } : {}),
+          // A rollover must not release the session mid-turn: `active` is the default (§3.4).
+          ...(action.settle === 'rollover' && !degraded ? { sessionStatus: 'processing' as const } : {}),
+          ...(agentOptions?.agentAuthorId ? { agentAuthorId: agentOptions.agentAuthorId } : {}),
+          ...(agentOptions?.response ? { response: agentOptions.response } : {})
+        })
+        if (settled && final) {
+          if (action.discard) {
+            // Nothing ever reached this message — a suppressed reply must not leave an empty
+            // bubble where the agent deliberately stayed silent.
+            await conn.deleteMessage(p.plan.channel, stream.ts)
+          } else if (action.text !== undefined) {
+            // §5.5 closes the response by editing THIS message, so record what it displays.
+            p.reply.lastResponse = { ts: stream.ts, text: action.text }
+            p.reply.lastReply = {
+              ts: stream.ts,
+              text: action.text,
+              ...(footer && p.attribution ? { footerKey: p.attribution.key } : {})
+            }
+          }
+        }
+        // A ROLLOVER whose stop Slack would not accept owes a replacement message, and the
+        // retained handle is emphatically not it: appending the tail there would put
+        // post-boundary output back above the boundary, defeat the size cap, and — because
+        // the converger has already reset its per-message text — let the closing edit replace
+        // the combined message with just the tail. Degrade the tail instead, so it lands
+        // BELOW as an ordinary reply (which is what the rollover wanted) while the old
+        // message keeps its prefix and settlement keeps retrying its stop.
+        if (!settled && action.settle === 'rollover') state.streamFallback ??= ''
+      }
+      // Suppression drops the buffer with the rest of the turn's output; every other stop is
+      // where the tail Slack never showed reaches the channel.
+      if (degraded && action.settle !== 'abort') await flushStreamFallback(host, conn, p, state)
       return
     }
     case 'clear-status-bar': {

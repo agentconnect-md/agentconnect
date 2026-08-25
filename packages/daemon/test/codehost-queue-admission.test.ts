@@ -6,8 +6,10 @@ import type { QueueEntry } from '../src/daemon/turn-types.js'
 const KEY = 'acme/infra#42'
 const HEAD_A = 'a'.repeat(40)
 const HEAD_B = 'b'.repeat(40)
+const BASE_A = '0'.repeat(40)
+const BASE_B = '1'.repeat(40)
 
-const entry = (deliveryKey: string, event: string, headSha: string, firedAt: string): QueueEntry =>
+const entry = (deliveryKey: string, event: string, headSha: string, firedAt: string, baseSha = BASE_A): QueueEntry =>
   ({
     agentId: 'agent-1',
     msg: { platform: 'github', channel: KEY },
@@ -24,8 +26,9 @@ const entry = (deliveryKey: string, event: string, headSha: string, firedAt: str
         subjectKind: 'pull_request',
         pullNumber: 42,
         headSha,
-        baseSha: '0'.repeat(40),
-        reportSha: headSha
+        baseSha,
+        reportSha: headSha,
+        ...(event === 'pull_request:edited' ? { baseChanged: true } : {})
       }
     }
   }) as unknown as QueueEntry
@@ -54,6 +57,17 @@ describe('planGithubRevisionAdmission', () => {
     const effects = planRevisionAdmissionEffects(plan!, redelivered)
     expect(effects.activeLosers.map((candidate) => candidate.entry)).toEqual([opened])
     expect(effects.preemptableActiveLosers).toEqual([])
+  })
+
+  it('preempts a running review when the target branch changes under the same head', () => {
+    const current = entry('current', 'pull_request:synchronize', HEAD_A, '2026-08-19T01:24:44.000Z', BASE_A)
+    const retargeted = entry('retargeted', 'pull_request:edited', HEAD_A, '2026-08-19T01:25:00.000Z', BASE_B)
+
+    const plan = planRevisionAdmission(KEY, retargeted, active(current))
+    const effects = planRevisionAdmissionEffects(plan!, retargeted)
+
+    expect(effects.incomingWins).toBe(true)
+    expect(effects.preemptableActiveLosers.map((candidate) => candidate.entry)).toEqual([current])
   })
 
   it('re-runs the head a re-request names, preempting the review already generating it', () => {

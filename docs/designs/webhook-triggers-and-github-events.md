@@ -229,14 +229,16 @@ filters require at least one current subject label to match.
 comments because GitHub sends both through `issue_comment`.
 
 The matcher rejects bot-authored comments and review comments, plus unrelated bot
-events, to prevent self-reply loops and agent-to-agent mention loops. PR `opened` and
-`synchronize` revisions authored by the configured App are admitted as the lifecycle
+events, to prevent self-reply loops and agent-to-agent mention loops. Revision-bearing
+PR events authored by the configured App are admitted as the lifecycle
 exception: same-repository PRs are treated as an internal CI lane and may start review
 without a human-author permission lookup, while fork PRs remain on the maintainer
 workflow-approval path.
 
-Closed, deleted, reopened, and edited issue or pull-request lifecycle events do
-not start turns. Signed issue-close, issue-delete, and merged-pull-request
+Closed, deleted, and reopened issue or pull-request lifecycle events do not start
+turns. Ordinary issue/PR title and body edits are also silent. A PR edit carrying
+signed `changes.base` metadata is a target-branch revision and starts a new review.
+Signed issue-close, issue-delete, and merged-pull-request
 deliveries instead fan out as maintenance-only requests that apply the daemon's
 safe session-worktree cleanup without deleting session metadata or transcripts.
 Deleted issue comments and review comments are silent no-ops. A diff-line review
@@ -285,7 +287,7 @@ explicitly mentioning the Agent or App in a comment. An ordinary unmentioned
 comment cannot silently activate an external thread; both its commenter and
 the original subject author must pass the same live role check.
 
-For external PR revision-bearing events such as open and synchronize, the system records a body-free
+For external PR revision-bearing events such as open, synchronize, and target-branch change, the system records a body-free
 `review_request_required` outcome and may project an informational Check with a
 maintainer action. A maintainer can then request execution through:
 
@@ -324,6 +326,53 @@ Agent uses worktrees, the daemon maps the session key to a stable opaque path
 under that Agent's `worktrees` directory; concurrent pull requests therefore
 use different working directories while later events for one pull request
 reuse its directory.
+
+### Pull Request Feedback Continuation
+
+A pull request opened from an ordinary or issue-originated session must keep
+that session as its owner after the creating turn ends. The CP therefore stores
+one `SessionPullRequest` row keyed by organization, numeric repository id, and
+pull-request number; its optional `sessionId` is the durable owner. Terminal
+session milestones force the same session-branch lookup used by the console PR
+panel and persist the result. If a PR was opened manually after the terminal
+milestone, the first feedback signal creates an unowned row. Due unowned rows
+each drive a bounded scan of recent terminal sessions until that branch-to-PR
+identity converges;
+an unsuccessful scan moves only that PR's next-attempt time forward, so it
+cannot hide later manual PRs.
+
+The signature-verified relay ingress has a separate metadata lane before hook
+subscription matching. It reports submitted reviews with actionable text or a
+changes-requested state, created or edited review comments, created or edited
+PR issue comments, and failed completed check suites. This lane intentionally
+does not reject comments authored by the deployment's own GitHub App: GitHub
+can reject the App's formal review submission and the review worker then leaves
+its actionable verdict as an App-authored PR comment. The ordinary hook matcher
+keeps its bot-loop filter unchanged.
+
+The relay sends no review body or check log to the CP. The CP stores one
+level-triggered `deliveryKey` on the ownership row, not one row per GitHub
+event. Every new delivery resets a short quiet window; the daemon later reads
+the current review and check state from GitHub, so payload detail is
+unnecessary. Successful admission clears the wake only if its delivery key is
+still current, so a concurrent delivery remains pending. Deferred delivery
+moves only that PR's next-attempt time forward, allowing the worker to continue
+with other due PRs in the same pass. Unowned rows expire from the latest
+distinct signal time; claim and discovery retries do not extend that lifetime.
+
+The relay acknowledges GitHub only after the marker is durable. A transient
+persistence failure returns 503 instead of falsely acknowledging the delivery;
+GitHub records it as a failed webhook delivery for explicit redelivery rather
+than retrying it automatically.
+
+The CP dispatches that continuation only to a ready daemon that can serve the
+original session content and advertises `pull-request-feedback-v1`. The daemon
+reopens the exact agent-scoped session, constructs a local system turn that
+asks the agent to inspect current GitHub review and check state, and durably
+admits it under the webhook delivery key. Chat and webchat sessions retain
+their normal reply surface; hook and dream sessions continue headlessly while
+recording the result in their transcript. This is a continuation, not a new
+`HookRun`, and all reviewer text and CI output remain provider- or daemon-local.
 
 ### Revision Admission
 

@@ -20,7 +20,13 @@
  *    defense is the agent's own blast-radius caps (read-only gitAccess,
  *    repo-scoped tokens, permission mode), never content filtering.
  */
-import type { GithubHookMetadata, GitlabHookMetadata, HookContext, RdMsgHook } from '@agentconnect.md/protocol'
+import {
+  isGithubPullRequestRevisionEvent,
+  type GithubHookMetadata,
+  type GitlabHookMetadata,
+  type HookContext,
+  type RdMsgHook
+} from '@agentconnect.md/protocol'
 import { githubSourceThreadUrl } from './github-source-link.js'
 import type { NormalizedMessage } from './normalized.js'
 
@@ -149,8 +155,6 @@ function githubSubjectLine(c: HookContext): string {
 }
 
 const GITHUB_REVISION_REVIEW_EVENTS = new Set([
-  'pull_request:opened',
-  'pull_request:synchronize',
   'pull_request:review_requested',
   'check_run:rerequested',
   'check_suite:rerequested',
@@ -169,7 +173,9 @@ export function githubOpensReviewGeneration(
     github?.subjectKind === 'pull_request' &&
     reviewPolicy !== undefined &&
     reviewPolicy !== 'off' &&
-    (github.explicitReviewRequest || GITHUB_REVISION_REVIEW_EVENTS.has(event ?? ''))
+    (github.explicitReviewRequest ||
+      isGithubPullRequestRevisionEvent(event, github) ||
+      GITHUB_REVISION_REVIEW_EVENTS.has(event ?? ''))
   )
 }
 

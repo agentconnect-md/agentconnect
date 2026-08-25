@@ -122,16 +122,15 @@ export function planRevisionAdmissionEffects(
 ): RevisionAdmissionEffects {
   const winnerHook = plan.winner.entry.hookContext
   const admission = hookAdmissionFor(winnerHook)
-  const winnerHead = admission?.headSha(winnerHook)
-  const rerun = admission?.rerunsCurrentHead(winnerHook) === true
+  const winnerRevision = candidateRevisionStream(plan.winner.entry)?.revision
+  const rerun = admission?.rerunsCurrentRevision(winnerHook) === true
   const activeLosers = plan.superseded.filter((candidate) => candidate.state === 'active')
   return {
     terminalLosers: plan.superseded.filter((candidate) => candidate.state !== 'active'),
     activeLosers,
-    preemptableActiveLosers: activeLosers.filter((candidate) => {
-      const hook = candidate.entry.hookContext
-      return rerun || hookAdmissionFor(hook)?.headSha(hook) !== winnerHead
-    }),
+    preemptableActiveLosers: activeLosers.filter(
+      (candidate) => rerun || candidateRevisionStream(candidate.entry)?.revision !== winnerRevision
+    ),
     winnerLane: admission?.reviewSubjectLane(
       winnerHook,
       hookCoordinates(plan.winner.entry.agentId, plan.winner.entry.msg, plan.winner.entry.integrationId)

@@ -111,6 +111,9 @@ export const RUNTIME_COMMANDS_FEATURE = 'runtime-commands-v1'
  * nothing to wake, and the CP answers `unsupported` without sending a frame it would ignore. */
 export const AGENT_WAKE_FEATURE = 'agent-wake-v1'
 
+/** Relay reports body-free GitHub feedback and daemon durably continues the linked session. */
+export const PULL_REQUEST_FEEDBACK_FEATURE = 'pull-request-feedback-v1'
+
 /** How long the CP must let ONE `workspace/gitmessage` REQ run before giving up, and it must send it
  * single-shot (`{ ackTimeoutMs: WORKSPACE_GIT_MESSAGE_BUDGET_MS, maxTries: 1 }`). The default 5s ack
  * timeout would retransmit an in-flight model pass four times: identical frame ids, so the daemon
@@ -294,6 +297,12 @@ export const CP_URL_ENV = 'AC_CP_URL'
  *  env and not a config key alone: an in-cluster daemon has no config file to carry one. Read
  *  as a boolean — `false`/`0` disable, anything else leaves reporting on. */
 export const USAGE_REPORTING_ENV = 'AC_USAGE_REPORTING'
+/** Env var carrying the operator's workspace clone-origin allowlist into an in-cluster daemon,
+ *  comma-separated. The policy is the OPERATOR's — a tenant can never widen it — and in a cluster
+ *  the deployment is who that is, with no config file to say it in. Absent leaves the daemon's own
+ *  default; a malformed entry is fatal rather than dropped, because a silently missing origin is a
+ *  clone refused later with no trace of why. */
+export const WORKSPACE_GIT_ORIGINS_ENV = 'AC_WORKSPACE_GIT_ALLOWED_ORIGINS'
 /** A pool member's rollout generation (its pod-template hash), reported on register (frames/register.ts). */
 export const POD_TEMPLATE_HASH_ENV = 'AC_POD_TEMPLATE_HASH'
 

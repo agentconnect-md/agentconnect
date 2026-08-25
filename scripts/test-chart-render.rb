@@ -18,6 +18,8 @@ command = [
   '--set', 'daemonPool.dataPlane.existingSecret=example-data-plane',
   # Install-wide model credentials arrive by reference, so the render must never carry a value.
   '--set', 'daemonPool.modelCredentials.existingSecret=example-model-credentials',
+  # The operator's clone policy: a self-managed code host is served only if the deployment says so.
+  '--set-json', 'daemonPool.workspaceGitAllowedOrigins=["https://github.com","https://gitlab.example.test"]',
   # Placement is per-install, so the contract only holds if a consumer's values can set it.
   '--set-json', 'daemonPool.runtime.nodeSelector={"example.com/agents":"true"}',
   '--set-json', 'daemonPool.runtime.tolerations=' \
@@ -87,6 +89,14 @@ model_credential_env = container.fetch('env').select { |item| item.fetch('name')
   abort("#{name} must read its own name from the named Secret") unless
     entry.dig('valueFrom', 'secretKeyRef') == { 'name' => 'example-model-credentials', 'key' => name, 'optional' => true }
 end
+
+# The clone-origin allowlist reaches the member as ONE comma-separated value: the daemon replaces
+# its default list with what it is given, so a list split across entries would serve a shorter
+# policy than the operator wrote, and an install serving a self-managed host would refuse it.
+git_origins = env['AC_WORKSPACE_GIT_ALLOWED_ORIGINS'] ||
+              abort('daemon pool must carry the operator clone-origin policy when values state one')
+abort("clone origins must be one comma-separated value, got #{git_origins.inspect}") unless
+  git_origins == 'https://github.com,https://gitlab.example.test'
 
 # One source per install. An entry the Secret omits is a supported shape, so a second source
 # filling that same variable assembles a pair out of two halves — a provider key aimed at a

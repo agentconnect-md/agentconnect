@@ -173,6 +173,13 @@ export function groupFleetStatus(
   return daemons.some((d) => members.has(d.daemonId) && d.status === 'online') ? 'online' : 'offline'
 }
 
+/** The daemons that are MACHINES this org connected. Pool members are install-wide, replaceable
+ *  Pods carried in every org's fleet and hidden wherever the deployment does not offer the pool —
+ *  so every "does this org have a daemon to run on?" decision projects them out first. */
+export function localDaemons<T extends { pool?: boolean }>(daemons: readonly T[]): T[] {
+  return daemons.filter((daemon) => !daemon.pool)
+}
+
 /** One status for the whole pool: online while any member is serving. */
 export function poolFleetStatus(members: Pick<DaemonRow, 'status'>[]): ConnectionStatusKey {
   return members.some((m) => m.status === 'online') ? 'online' : 'offline'

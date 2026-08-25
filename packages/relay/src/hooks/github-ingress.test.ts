@@ -11,6 +11,7 @@ import {
   type RcGithubRerequest,
   type RcGithubRerequestResult,
   type RcHookAssign,
+  type RcPullRequestFeedback,
   type RcRunReport,
   type RdAck,
   type RdMsg
@@ -178,6 +179,8 @@ interface Harness {
   doorbells: RcGithubInstallation[]
   authzRequests: RcGithubCommentAuthz[]
   rerequestRequests: RcGithubRerequest[]
+  feedback: RcPullRequestFeedback[]
+  feedbackError: boolean
   rerequestResult: RcGithubRerequestResult | (() => Promise<RcGithubRerequestResult>)
   authzResult: boolean | ((request: RcGithubCommentAuthz) => boolean | Promise<boolean>)
   ack: RdAck | (() => Promise<RdAck>)
@@ -191,7 +194,14 @@ function makeHarness(authzCapacity = 20): Harness {
   const h: Partial<Harness> &
     Pick<
       Harness,
-      'sent' | 'dispatches' | 'reports' | 'doorbells' | 'authzRequests' | 'rerequestRequests' | 'onlineDaemons'
+      | 'sent'
+      | 'dispatches'
+      | 'reports'
+      | 'doorbells'
+      | 'authzRequests'
+      | 'rerequestRequests'
+      | 'feedback'
+      | 'onlineDaemons'
     > = {
     sent: [],
     dispatches: [],
@@ -199,6 +209,8 @@ function makeHarness(authzCapacity = 20): Harness {
     doorbells: [],
     authzRequests: [],
     rerequestRequests: [],
+    feedback: [],
+    feedbackError: false,
     authzResult: true,
     rerequestResult: { allowed: false },
     ack: { msgId: 'x', accepted: true },
@@ -228,6 +240,11 @@ function makeHarness(authzCapacity = 20): Harness {
     }),
     report: (r) => h.reports.push(r),
     doorbell: (p) => h.doorbells.push(p),
+    reportPullRequestFeedback: async (signal) => {
+      if (h.feedbackError) throw new Error('CP unavailable')
+      h.feedback.push(signal)
+      return true
+    },
     authorizeComment: async (request) => {
       h.authzRequests.push(request)
       return typeof h.authzResult === 'function' ? h.authzResult(request) : h.authzResult!
@@ -347,6 +364,58 @@ describe('github ingress', () => {
     it('a verified ping answers 204 (and an unverified one 401)', async () => {
       expect((await post('ping', { zen: 'Design for failure.' })).statusCode).toBe(204)
       expect((await post('ping', { zen: 'x' }, { secret: 'ghw_other' })).statusCode).toBe(401)
+    })
+  })
+
+  describe('PR session feedback', () => {
+    it('persists a PR issue comment even when the shared GitHub App bot authored it', async () => {
+      const res = await post(
+        'issue_comment',
+        issuesPayload({
+          action: 'created',
+          sender: { login: 'agentconnect-example[bot]', type: 'Bot' },
+          issue: { number: 77, pull_request: { url: 'https://api.example.test/repos/acme/infra/pulls/77' } },
+          comment: { body: 'Verdict: changes requested', author_association: 'MEMBER' }
+        })
+      )
+
+      expect(res.statusCode).toBe(202)
+      expect(h.feedback).toEqual([
+        expect.objectContaining({
+          installationId: String(INSTALLATION),
+          repoId: String(REPO_ID),
+          repoFullName: 'acme/infra',
+          pullNumber: 77
+        })
+      ])
+    })
+
+    it('persists one signal per PR from a failed check suite and ignores successful suites', async () => {
+      const failed = await post('check_suite', {
+        action: 'completed',
+        installation: { id: INSTALLATION },
+        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        check_suite: { conclusion: 'failure', pull_requests: [{ number: 77 }, { number: 78 }] }
+      })
+      expect(failed.statusCode).toBe(202)
+      expect(h.feedback.map((signal) => signal.pullNumber)).toEqual([77, 78])
+
+      await post('check_suite', {
+        action: 'completed',
+        installation: { id: INSTALLATION },
+        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        check_suite: { conclusion: 'success', pull_requests: [{ number: 77 }] }
+      })
+      expect(h.feedback).toHaveLength(2)
+    })
+
+    it('returns 503 instead of acknowledging feedback that the CP did not persist', async () => {
+      h.feedbackError = true
+      const res = await post(
+        'pull_request_review_comment',
+        pullPayload({ action: 'created', comment: { body: 'please change this' } })
+      )
+      expect(res.statusCode).toBe(503)
     })
   })
 
@@ -965,6 +1034,24 @@ describe('github ingress', () => {
       }
     )
 
+    it('keeps an external PR target change behind a maintainer review request', async () => {
+      h.table.upsert(rule({}, { events: ['pull_request:*'], appSlug: 'example-review-app' }))
+      h.authzResult = false
+
+      await post('pull_request', pullPayload({ action: 'edited', changes: { base: { ref: { from: 'main' } } } }))
+      await flush()
+
+      expect(h.sent).toHaveLength(0)
+      expect(h.reports).toEqual([
+        expect.objectContaining({
+          event: 'pull_request:edited',
+          status: 'failed',
+          reason: HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+          github: expect.objectContaining({ baseChanged: true })
+        })
+      ])
+    })
+
     it.each(['opened', 'synchronize'] as const)(
       'dispatches a same-repository PR %s authored by this App without human-author authorization',
       async (action) => {
@@ -1266,7 +1353,7 @@ describe('github ingress', () => {
       expect(h.sent).toHaveLength(0)
     })
 
-    it('silences all PR edits, including base-branch retargets', async () => {
+    it('keeps PR content edits silent but dispatches a target-branch change as a revision', async () => {
       h.table.upsert(rule({}, { events: ['pull_request:edited'] }))
       const basePayload = {
         action: 'edited',
@@ -1275,6 +1362,7 @@ describe('github ingress', () => {
         sender: { login: 'alice', type: 'User' },
         pull_request: {
           number: 77,
+          user: { login: 'alice', type: 'User' },
           head: { sha: 'a'.repeat(40), repo: { full_name: 'alice/infra' } },
           base: { sha: 'b'.repeat(40), repo: { full_name: 'acme/infra' } },
           labels: []
@@ -1295,8 +1383,19 @@ describe('github ingress', () => {
         }
       )
       await flush()
-      expect(h.sent).toHaveLength(0)
-      expect(h.reports).toHaveLength(0)
+      expect(h.authzRequests).toHaveLength(1)
+      expect(h.sent).toHaveLength(1)
+      expect(h.sent[0]).toMatchObject({
+        event: 'pull_request:edited',
+        github: {
+          subjectKind: 'pull_request',
+          pullNumber: 77,
+          headSha: 'a'.repeat(40),
+          baseSha: 'b'.repeat(40),
+          baseChanged: true
+        }
+      })
+      expect(h.reports).toEqual([expect.objectContaining({ status: 'accepted', event: 'pull_request:edited' })])
     })
 
     it('identifies a PR issue_comment but leaves revision unresolved for hook/start', async () => {
@@ -2443,7 +2542,6 @@ describe('githubRuleVerdict (pure predicate)', () => {
     ['issues', 'issues:reopened'],
     ['pull_request', 'pull_request:closed'],
     ['pull_request', 'pull_request:deleted'],
-    ['pull_request', 'pull_request:edited'],
     ['pull_request', 'pull_request:reopened'],
     ['pull_request', 'pull_request:ready_for_review'],
     ['pull_request', 'pull_request:converted_to_draft'],
@@ -2453,11 +2551,12 @@ describe('githubRuleVerdict (pure predicate)', () => {
     expect(matches(rule({}, { events: [eventAction] }), { ...ctx, event, eventAction })).toBe(false)
   })
 
-  it('keeps PR synchronize while vetoing every edited action', () => {
+  it('keeps PR head and target changes while vetoing content-only edits', () => {
     const r = rule({}, { events: ['pull_request:*'] })
     const pr = { ...ctx, event: 'pull_request' }
     expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:synchronize' })).toBe('needs-authz')
     expect(matches(r, { ...pr, eventAction: 'pull_request:edited' })).toBe(false)
+    expect(githubRuleVerdict(r, { ...pr, eventAction: 'pull_request:edited', baseChanged: true })).toBe('needs-authz')
   })
 
   it('trusts only same-repository revisions authored by this App', () => {

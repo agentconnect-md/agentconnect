@@ -6,10 +6,10 @@ describe('githubProjectionIntent', () => {
     expect(githubProjectionIntent('pull_request:synchronize', { subjectKind: 'pull_request' })).toBe('revision_event')
   })
 
-  it('keeps every PR edit out of revision projection, including legacy base-change metadata', () => {
+  it('projects only target-branch PR edits as revisions', () => {
     const changedBase = { subjectKind: 'pull_request', baseChanged: true }
     const unchangedBase = { subjectKind: 'pull_request', baseChanged: false }
-    expect(githubProjectionIntent('pull_request:edited', changedBase)).toBe('review_action_only')
+    expect(githubProjectionIntent('pull_request:edited', changedBase)).toBe('revision_event')
     expect(githubProjectionIntent('pull_request:edited', unchangedBase)).toBe('review_action_only')
   })
 

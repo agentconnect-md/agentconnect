@@ -3817,6 +3817,26 @@ describe('buildHookMessage', () => {
       expect(revisionReview).toContain(
         'An approval or rejection from an earlier revision does not complete this revision'
       )
+      const retargetReview = buildHookText(
+        ghFire(
+          { event: 'pull_request', action: 'edited' },
+          {
+            reviewPolicy: 'full',
+            github: {
+              repoId: '123',
+              repoFullName: 'acme/infra',
+              sourceInstallationId: '456',
+              subjectKind: 'pull_request',
+              pullNumber: 42,
+              headSha: 'a'.repeat(40),
+              baseSha: 'c'.repeat(40),
+              reportSha: 'a'.repeat(40),
+              baseChanged: true
+            }
+          }
+        )
+      )
+      expect(retargetReview).toContain('opens a review generation for the current PR revision')
       const suiteRerequest = buildHookText(
         ghFire(
           { event: 'check_suite', action: 'rerequested' },

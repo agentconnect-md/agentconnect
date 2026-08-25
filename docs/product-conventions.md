@@ -132,10 +132,13 @@ Sandbox, wait for it to become Ready, and bind its shim before the runtime sees 
 That is up to a minute and a half in which nothing is streaming, and a reader with no signal
 reads it as the agent having ignored them.
 
-So the turn says what it is waiting for, once, before the wait starts: platforms with a pushed
-per-turn status bar carry it there instead of the generic startup label, and every other
-surface — the console playground, the on-demand-status chat platforms — gets a short message of
-its own. It is live chrome and is never recorded: reloading a conversation rebuilds it from the
+So the turn says what it is waiting for, once, before the wait starts. A turn that is writing a
+pushed per-turn status bar carries it there, in place of the generic startup label; every other
+surface — the console playground, the on-demand-status chat platforms, and a Slack turn that
+streams natively and therefore leaves that slot untouched until its stream opens — gets a short
+message of its own. Exactly one of the two, never both.
+
+It is live chrome and is never recorded: reloading a conversation rebuilds it from the
 transcript, where a wait that is over has nothing to say. A turn whose pod is already up says
 nothing at all, so the notice always means a real wait.
 
@@ -893,9 +896,12 @@ historical. A request that supersedes an incomplete generation keeps that active
 instead of leaving it permanently unfinished.
 
 Automatic PR revision reviews are latest-wins while active or queued. When a newer
-`pull_request:synchronize` delivery for the same Agent, integration, repository, and pull
-request is durably admitted, the daemon cancels the older active review, suppresses all of
-its remaining output, and removes intermediate queued heads. Relay ingest time determines
+revision-bearing delivery for the same Agent, integration, repository, and pull request is
+durably admitted, the daemon cancels the older active review, suppresses all of its remaining
+output, and removes intermediate queued revisions. A head change arrives as
+`pull_request:synchronize`; a target-branch change arrives as `pull_request:edited` with
+signed `changes.base` metadata. Revision identity includes both base and head, so retargeting
+an unchanged head still preempts work for the old diff. Relay ingest time determines
 recency even if asynchronous authorization reorders delivery; the delivery key breaks
 same-timestamp ties deterministically. Draft state does not change review eligibility: an
 open draft PR follows the same formal review path as a ready PR, including approval when
@@ -952,9 +958,9 @@ the configured review cadence.
 
 Mention routing does not bypass the integration's event family, label filter,
 installation attribution, or live maintainer authorization. Bot-sender veto still
-applies to comments and review comments. An `opened`/`synchronize` PR authored by
-the installed App is admitted as a lifecycle event: same-repository PRs follow the
-internal CI review lane, while fork PRs wait for workflow approval. A targeted agent
+applies to comments and review comments. A revision-bearing PR event authored by the
+installed App is admitted as a lifecycle event: same-repository PRs follow the internal
+CI review lane, while fork PRs wait for workflow approval. A targeted agent
 mention narrows an otherwise broader `updated` fan-out, while an event with no
 AgentConnect mention continues to follow its configured cadence.
 In a pull request conversation, an authorized explicit AgentConnect mention
