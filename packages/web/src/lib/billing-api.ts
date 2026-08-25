@@ -56,18 +56,17 @@ export interface BillingAccount {
 // `note` is optional for the same reason `type` is: a service that predates it omits it, and
 // the console routinely runs ahead of that image. Absent or null ⇒ the row renders without it.
 //
-// The debit arm's `agents` — the billing service's per-agent split of a charge — is
-// DELIBERATELY not mirrored. The service authorizes on org membership alone; it holds no Agent
-// or Session visibility, so its `agentId`s are the org's, not the viewer's, and its per-agent
-// AMOUNTS are the org's too. Naming one to every member is the discovery that
-// `docs/designs/authorization-policy.md` §4 forbids and a second attribution surface beside the
-// viewer-scoped one in `session-visibility.md` §5, whose whole rule is that withheld usage comes
-// back id-less. An opaque id is still an existence disclosure.
+// The debit arm's `agents` is the billing service's per-agent split of a charge — the real
+// per-ROW amounts, which is why it is mirrored: nothing else knows how one charge divides.
 //
-// The usage row DOES show attribution, and it gets every part of it — ids and amounts alike —
-// from the CP's viewer-scoped `/usage` projection instead (`fetchGatewayAttribution`, rendered
-// by `rowAttribution` in BillingView). Nothing this file declares is involved, which is the
-// point: a field nothing declares is a field nothing can render.
+// It is NOT self-authorizing. The service holds no Agent or Session visibility, so its ids and
+// its amounts are both the ORG's, and rendering one as-is is the discovery
+// `docs/designs/authorization-policy.md` §4 forbids. The row may put an agent's name beside one
+// of these amounts only when the CP's viewer-scoped `/usage` projection says this viewer may
+// attribute EVERY dollar in that billing period (`fetchGatewayAttribution`, and `complete`
+// specifically). Otherwise the period's charges render one id-less rollup apiece, which is
+// `session-visibility.md` §5's rule that withheld usage comes back without an id. The gate lives
+// in `rowAttribution` in BillingView; nothing else may read this field.
 export interface BillingCredit {
   type: 'credit'
   id: string
@@ -93,6 +92,16 @@ export interface BillingDebit {
   amount: string
   /** ISO 8601 instant. */
   at: string
+  /** This charge's per-agent split. Decimal strings, same unit as `amount`. Absent or null ⇒
+   *  an older service, or a charge it could not split. Ids AND amounts are the ORG's — see the
+   *  note above: gate on the CP's projection before either reaches a chip. */
+  agents?: BillingDebitAgent[] | null
+}
+
+export interface BillingDebitAgent {
+  agentId: string
+  /** Decimal string, NOT a number. Parse it only to display it. */
+  amount: string
 }
 
 export type BillingTransaction = BillingCredit | BillingDebit
@@ -161,6 +170,20 @@ export class BillingShapeError extends BillingError {
 
 function isFiniteNumber(v: unknown): boolean {
   return typeof v === 'number' && Number.isFinite(v)
+}
+
+// Absent/null is the older contract; anything else must be a well-formed split or it is dropped.
+function isAgentSplit(v: unknown): v is BillingDebitAgent[] | null | undefined {
+  if (v === undefined || v === null) return true
+  return (
+    Array.isArray(v) &&
+    v.every(
+      (e) =>
+        !!e &&
+        typeof (e as BillingDebitAgent).agentId === 'string' &&
+        typeof (e as BillingDebitAgent).amount === 'string'
+    )
+  )
 }
 
 // Hand-rolled rather than zod: this is the whole surface, and pulling a schema
@@ -243,9 +266,9 @@ export function assertTransactionsPage(
       // A string, and never coerced to a number here — the exact value is what the
       // service sent, and only the display rounds it.
       if (typeof t.amount !== 'string' || typeof t.period !== 'string') throw new BillingShapeError('transaction')
-      // `agents` is checked by its ABSENCE from this list, not by a rule: an unmirrored field
-      // passes through unread, which is what keeps a service that sends one from failing the
-      // page. Nothing downstream can render what nothing here declares.
+      // ABSENT is the older contract. A malformed split drops to `undefined` rather than
+      // failing the page: the money on the row is the fact, the attribution is a garnish.
+      if (!isAgentSplit(t.agents)) delete t.agents
     } else {
       throw new BillingShapeError('transaction')
     }
