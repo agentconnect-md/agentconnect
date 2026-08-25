@@ -309,18 +309,6 @@ skips its own `chat.stopStream` and the applier stops appending. The existing `o
 gate on `enqueueApply` already prevents queued actions from publishing after an interrupt; the
 stream flag is the same idea one level down.
 
-**A stop is not a delivery failure, and the two must not share a return value.** An append can
-come back unsuccessful for two unrelated reasons: Slack refused it (a rate limit, a dropped
-connection), or the person ended the stream. The first owes the content to the channel by
-another route; the second forbids exactly that. Collapsing them into one boolean is how a
-buffered tail gets posted as a fresh reply into a conversation somebody just stopped — the
-append response can beat `agent_session_stopped`, so the daemon cannot rely on the event
-having arrived. `appendTurnStream` therefore answers `ok` / `refused` / `stopped`, and
-`stopped` means the turn's output ends there: no buffer, no post, no replacement message, no
-closing edit. The connection also remembers WHICH conversations the person stopped, so a
-queued append arriving after the event is answered `stopped` rather than `refused`; the marker
-clears when a later turn opens its own stream there.
-
 Both halves of that are prohibitions, not best-effort cleanups. After a stop the daemon may
 **neither append to the dead stream nor open a replacement message** — not for the remaining
 body, not for the error notice, not for the attribution footer. A person who pressed Stop asked
@@ -396,29 +384,6 @@ reply boundary, so it arrives with the attribution footer, the response metadata
 anchor. Task chunks are dropped — chrome with no legacy form, and a task card rendered as
 prose is worse than an omitted one. Net effect: the answer lands exactly once, and no queued
 action silently discards the content it carried.
-
-Two consequences follow from "the answer lands exactly once", and both are easy to get wrong:
-
-- **Degradation moves the response only once the buffer holds body text.** A refusal that
-  dropped nothing but task chrome leaves the accepted stream holding the whole visible answer,
-  so that message must still be closed as the attributed final response — and must therefore
-  stay OPEN until the terminal stop rather than being settled at the refusal. Settling it
-  early, or treating "degraded" as "the fallback owns the response", ends a
-  `body → tool card → end` turn footerless and with nothing for §5.5 to finalize.
-  **That ownership is explicit state, not a length check on the buffer.** The buffer empties
-  on every flush, so a stop retried afterwards — the double-failure case, where the rollover
-  stop and then the terminal stop are both left unresolved — would read "no fallback body" and
-  re-anoint the retained old message as final, moving the footer and the §5.5 anchor onto it
-  and restamping it with the tail's text. Ownership is therefore one-way for the turn: once
-  the fallback has taken the response, no later retry hands it back.
-- **A failed ROLLOVER stop degrades its tail instead of reusing the old handle.** The retained
-  handle (§3.4/§5 keep it for the settlement retry) is the message the rollover was trying to
-  leave. Appending the tail there would undo the whole point — post-boundary output back above
-  the boundary, or the size cap defeated — and, because the converger has already reset its
-  per-message text, the closing edit would then replace the combined message with just the
-  tail, deleting the prefix. So the tail goes to the fallback buffer and lands BELOW as an
-  ordinary reply, which is what the rollover wanted; the old message keeps its prefix and
-  settlement keeps retrying its stop.
 
 **A stop is retryable until Slack accepts it.** `chat.stopStream` failing transiently — a rate
 limit, a dropped connection, the send queue's own timeout — is precisely the case the §5

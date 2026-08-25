@@ -419,8 +419,8 @@ export class VirtualSlackConnection implements PlatformConnection {
     return undefined
   }
 
-  async appendTurnStream(): Promise<'ok' | 'refused' | 'stopped'> {
-    return 'refused'
+  async appendTurnStream(): Promise<boolean> {
+    return false
   }
 
   async stopTurnStream(): Promise<boolean> {

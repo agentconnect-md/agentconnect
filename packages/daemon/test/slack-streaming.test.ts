@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
-import { SlackConnection, type SlackStreamAppendOutcome, type SlackTurnStream } from '../src/slack/connection.js'
+import { SlackConnection, type SlackTurnStream } from '../src/slack/connection.js'
 import { OutputConverger, type SlackAction, type SlackStreamChunk } from '../src/slack/render.js'
 import {
   applySlackAction,
@@ -313,9 +313,7 @@ describe('applySlackAction — streaming actions', () => {
         threadTs,
         ts: '900.1'
       })),
-      appendTurnStream: vi.fn(
-        async (_stream: SlackTurnStream, _chunks: SlackStreamChunk[]) => 'ok' as SlackStreamAppendOutcome
-      ),
+      appendTurnStream: vi.fn(async (_stream: SlackTurnStream, _chunks: SlackStreamChunk[]) => true),
       stopTurnStream: vi.fn(async (_stream: SlackTurnStream, _options?: Record<string, unknown>) => true),
       deleteMessage: vi.fn(async (_channel: string, _ts: string) => true),
       setStatus: vi.fn(async () => {}),
@@ -385,9 +383,7 @@ describe('applySlackAction — streaming actions', () => {
 
   it('settles the stream and degrades the turn when an append is refused', async () => {
     const { apply, conn, state } = fixture({
-      appendTurnStream: vi.fn(
-        async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => 'refused' as SlackStreamAppendOutcome
-      )
+      appendTurnStream: vi.fn(async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => false)
     })
     await apply({ kind: 'stream-start' })
     await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'hi' }] })
@@ -404,9 +400,7 @@ describe('applySlackAction — streaming actions', () => {
     // and none may be shown twice.
     let accept = true
     const { apply, conn, turn } = fixture({
-      appendTurnStream: vi.fn(
-        async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => (accept ? 'ok' : 'refused') as SlackStreamAppendOutcome
-      )
+      appendTurnStream: vi.fn(async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => accept)
     })
     await apply({ kind: 'stream-start' })
     await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'accepted. ' }] })
@@ -433,9 +427,7 @@ describe('applySlackAction — streaming actions', () => {
 
   it('a degraded turn opens no replacement stream, and its cleanup stop carries no footer', async () => {
     const { apply, conn } = fixture({
-      appendTurnStream: vi.fn(
-        async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => 'refused' as SlackStreamAppendOutcome
-      )
+      appendTurnStream: vi.fn(async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => false)
     })
     await apply({ kind: 'stream-start' })
     await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'tail' }] })
@@ -448,129 +440,13 @@ describe('applySlackAction — streaming actions', () => {
 
   it('drops the buffered tail when suppression tears the turn down', async () => {
     const { apply, conn, state } = fixture({
-      appendTurnStream: vi.fn(
-        async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => 'refused' as SlackStreamAppendOutcome
-      )
+      appendTurnStream: vi.fn(async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => false)
     })
     await apply({ kind: 'stream-start' })
     await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'never shown' }] })
     await apply({ kind: 'stream-stop', settle: 'abort' })
     expect(conn.postMessage).not.toHaveBeenCalled()
     expect(state.streamFallback).toBe('never shown')
-  })
-
-  it('a task-only refusal still lets the accepted stream close as the attributed answer', async () => {
-    // "body → tool card → end": the body is already visible on the stream, and the refusal
-    // dropped nothing but chrome. The stream must still get the footer and the §5.5 anchor,
-    // or the answer ends footerless and unroutable.
-    let accept = true
-    const { apply, conn, turn, state } = fixture({
-      appendTurnStream: vi.fn(
-        async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => (accept ? 'ok' : 'refused') as SlackStreamAppendOutcome
-      )
-    })
-    await apply({ kind: 'stream-start' })
-    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'the whole answer' }] })
-    accept = false
-    await apply({
-      kind: 'stream-append',
-      chunks: [{ type: 'task_update', id: 't1', title: 'Read file', status: 'complete' }]
-    })
-    // Degraded for appends, but the buffer holds no body — so the response has not moved.
-    expect(state.streamFallback).toBe('')
-    await apply({ kind: 'stream-stop', settle: 'final', text: 'the whole answer' })
-
-    // Exactly one attributed close, on the message that actually shows the answer.
-    expect(conn.postMessage).not.toHaveBeenCalled()
-    const closing = conn.stopTurnStream.mock.calls.at(-1)![1] as Record<string, unknown>
-    expect(closing).toMatchObject({ blocks: [{ type: 'context' }], agentAuthorId: 'bot-a' })
-    expect(turn.reply.lastResponse).toEqual({ ts: '900.1', text: 'the whole answer' })
-    expect(turn.reply.lastReply).toMatchObject({ ts: '900.1', footerKey: 'footer-1' })
-  })
-
-  it('defers the replacement message when a ROLLOVER stop is left unsettled', async () => {
-    // The retained handle is the OLD message. Appending the post-rollover tail there would put
-    // it back above the boundary, defeat the size cap, and let finalization replace the
-    // combined message with just the tail.
-    const { apply, conn, turn, state } = fixture({
-      stopTurnStream: vi.fn(async (_s: SlackTurnStream, o?: Record<string, unknown>) => o?.sessionStatus === undefined)
-    })
-    await apply({ kind: 'stream-start' })
-    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'the prefix' }] })
-    // Rollover, refused — the converger has already reset its per-message text.
-    await apply({ kind: 'stream-stop', settle: 'rollover', text: 'the prefix' })
-    await apply({ kind: 'stream-start' })
-    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'the tail' }] })
-    await apply({ kind: 'stream-stop', settle: 'final', text: 'the tail' })
-
-    // The old handle was never reused: exactly one append, the accepted prefix.
-    expect(conn.appendTurnStream).toHaveBeenCalledOnce()
-    expect(conn.startTurnStream).toHaveBeenCalledOnce()
-    // The tail landed BELOW as an ordinary reply, which is what the rollover wanted…
-    expect(conn.postMessage).toHaveBeenCalledOnce()
-    expect(conn.postMessage.mock.calls[0]![1]).toBe('the tail')
-    // …and finalization names THAT message, so the prefix is never overwritten.
-    expect(turn.reply.lastResponse).toEqual({ ts: 'p1', text: 'the tail' })
-    // The old message keeps its prefix and was settled bare — no footer, no §5.5 claim.
-    expect(state.stream).toBeUndefined()
-    expect(state.streamStopOwed).toBeUndefined()
-    expect(conn.stopTurnStream.mock.calls.at(-1)![1]).toEqual({})
-  })
-
-  it('never re-anoints the old message when BOTH the rollover and the terminal stop fail', async () => {
-    // The flush empties the buffer, so ownership read from its length would flip back to "the
-    // stream owns the response" on the settlement retry — putting the footer and the §5.5
-    // anchor on the old message, with the tail's text under the old ts.
-    let acceptStops = false
-    const { apply, conn, turn, state } = fixture({
-      stopTurnStream: vi.fn(async (_s: SlackTurnStream, _o?: Record<string, unknown>) => acceptStops)
-    })
-    await apply({ kind: 'stream-start' })
-    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'the prefix' }] })
-    await apply({ kind: 'stream-stop', settle: 'rollover', text: 'the prefix' })
-    await apply({ kind: 'stream-start' })
-    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'the tail' }] })
-    // Terminal stop ALSO refused — the tail still posts, and the stop stays owed.
-    await apply({ kind: 'stream-stop', settle: 'final', text: 'the tail' })
-    expect(conn.postMessage).toHaveBeenCalledOnce()
-    expect(turn.reply.lastResponse).toEqual({ ts: 'p1', text: 'the tail' })
-    expect(state.streamFallback).toBe('')
-    expect(state.streamStopOwed).toMatchObject({ settle: 'final' })
-
-    // Settlement replays that owed stop against the still-open OLD message.
-    acceptStops = true
-    await apply(state.streamStopOwed!)
-
-    // It settles BARE: no footer, no response metadata…
-    expect(conn.stopTurnStream.mock.calls.at(-1)![1]).toEqual({})
-    // …and the response anchor still names the message that actually holds the answer.
-    expect(turn.reply.lastResponse).toEqual({ ts: 'p1', text: 'the tail' })
-    expect(turn.reply.lastReply).toMatchObject({ ts: 'p1' })
-    expect(conn.postMessage).toHaveBeenCalledOnce()
-    expect(state.stream).toBeUndefined()
-  })
-
-  it('stops everything when the append reports the person pressed Stop', async () => {
-    const { apply, conn, turn, state } = fixture({
-      appendTurnStream: vi.fn(
-        async (_s: SlackTurnStream, _c: SlackStreamChunk[]) => 'stopped' as SlackStreamAppendOutcome
-      )
-    })
-    await apply({ kind: 'stream-start' })
-    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'never shown' }] })
-    expect(state.streamStopped).toBe(true)
-    // No buffer opened, so nothing can be re-delivered by another route.
-    expect(state.streamFallback).toBeUndefined()
-
-    // Everything still queued for this turn is inert — no post, no replacement message,
-    // no closing edit on a message the person ended (§6).
-    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'nor this' }] })
-    await apply({ kind: 'stream-start' })
-    await apply({ kind: 'stream-stop', settle: 'final', text: 'nor this' })
-    expect(conn.postMessage).not.toHaveBeenCalled()
-    expect(conn.startTurnStream).toHaveBeenCalledOnce()
-    expect(conn.stopTurnStream).not.toHaveBeenCalled()
-    expect(turn.reply).not.toHaveProperty('lastResponse')
   })
 
   it('keeps the handle and the exact stop when Slack leaves the message streaming', async () => {
@@ -839,39 +715,6 @@ describe('SlackConnection streaming', () => {
     }
   })
 
-  it('answers `stopped`, not `refused`, once the person has ended the stream', async () => {
-    const { conn, app } = await connect(
-      {},
-      { onMessageShortcut: async () => 'slack:C1:T1:bot-a', onStatusAction: () => {} }
-    )
-    const stream = (await conn.startTurnStream('C1', 'T1'))!
-    await conn.agentSessionStopped('C1', 'T1', 'U1')
-    // Collapsing this into the same `false` a rate limit returns is what lets a buffered tail
-    // be posted as a new reply after a Stop.
-    expect(await conn.appendTurnStream(stream, [{ type: 'markdown_text', text: 'more' }])).toBe('stopped')
-    expect(app.client.chat.appendStream).not.toHaveBeenCalled()
-  })
-
-  it('reads a stopped_by_user refusal as `stopped` even before the event arrives', async () => {
-    const { conn } = await connect({
-      chat: {
-        appendStream: vi.fn(async () => {
-          throw slackError('stopped_by_user')
-        })
-      }
-    })
-    const stream = (await conn.startTurnStream('C1', 'T1'))!
-    expect(await conn.appendTurnStream(stream, [{ type: 'markdown_text', text: 'x' }])).toBe('stopped')
-  })
-
-  it('forgets a previous Stop when a later turn opens its own stream', async () => {
-    const { conn } = await connect({}, { onMessageShortcut: async () => 'slack:C1:T1:bot-a', onStatusAction: () => {} })
-    await conn.startTurnStream('C1', 'T1')
-    await conn.agentSessionStopped('C1', 'T1', 'U1')
-    const next = (await conn.startTurnStream('C1', 'T1'))!
-    expect(await conn.appendTurnStream(next, [{ type: 'markdown_text', text: 'a new turn' }])).toBe('ok')
-  })
-
   it('keeps the handle after a TRANSIENT append failure, so the stop can still land', async () => {
     const { conn, app } = await connect({
       chat: {
@@ -881,7 +724,7 @@ describe('SlackConnection streaming', () => {
       }
     })
     const stream = (await conn.startTurnStream('C1', 'T1'))!
-    expect(await conn.appendTurnStream(stream, [{ type: 'markdown_text', text: 'x' }])).toBe('refused')
+    expect(await conn.appendTurnStream(stream, [{ type: 'markdown_text', text: 'x' }])).toBe(false)
     expect(await conn.stopTurnStream(stream)).toBe(true)
     expect(app.client.chat.stopStream).toHaveBeenCalledOnce()
   })
@@ -898,7 +741,7 @@ describe('SlackConnection streaming', () => {
     const stream = (await conn.startTurnStream('C1', 'T1'))!
     await conn.agentSessionStopped('C1', 'T1', 'U1')
 
-    expect(await conn.appendTurnStream(stream, [{ type: 'markdown_text', text: 'more' }])).toBe('stopped')
+    expect(await conn.appendTurnStream(stream, [{ type: 'markdown_text', text: 'more' }])).toBe(false)
     // Settled, and settled by the person — so nothing is retried against it either.
     expect(await conn.stopTurnStream(stream)).toBe(true)
     expect(app.client.chat.appendStream).not.toHaveBeenCalled()
@@ -919,9 +762,7 @@ describe('SlackConnection streaming', () => {
       }
     })
     const stream = (await conn.startTurnStream('C1', 'T1'))!
-    // Settled by something other than us — in practice the person's Stop racing its event —
-    // so the content is dropped rather than re-delivered by another route (§6).
-    expect(await conn.appendTurnStream(stream, [{ type: 'markdown_text', text: 'x' }])).toBe('stopped')
+    expect(await conn.appendTurnStream(stream, [{ type: 'markdown_text', text: 'x' }])).toBe(false)
     expect(conn.streamingLikely()).toBe(true)
     // A DEFINITE already-stopped answer proves the message is settled, so no stop is owed.
     expect(await conn.stopTurnStream(stream)).toBe(true)
@@ -997,9 +838,7 @@ describe('Daemon Slack streaming turn', () => {
         threadTs,
         ts: '900.1'
       })),
-      appendTurnStream: vi.fn(
-        async (_stream: SlackTurnStream, _chunks: SlackStreamChunk[]) => 'ok' as SlackStreamAppendOutcome
-      ),
+      appendTurnStream: vi.fn(async (_stream: SlackTurnStream, _chunks: SlackStreamChunk[]) => true),
       stopTurnStream: vi.fn(async (_stream: SlackTurnStream, _options?: Record<string, unknown>) => true),
       deleteMessage: vi.fn(async (_channel: string, _ts: string) => true),
       ...over
