@@ -1,8 +1,9 @@
-<p align="center">
-  <a href="https://agentconnect.md"><img src="packages/web/src/app/icon.svg" width="88" alt="AgentConnect logo" /></a>
-</p>
-
-<h1 align="center"><a href="https://agentconnect.md">AgentConnect</a></h1>
+<h1 align="center">
+  <a href="https://agentconnect.md"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-wordmark-dark.svg" />
+    <img src="docs/assets/logo-wordmark.svg" width="300" alt="AgentConnect" />
+  </picture></a>
+</h1>
 
 <p align="center">
   <strong>The open-source, multi-agent alternative to Claude Tag.</strong><br />
