@@ -137,7 +137,8 @@ command, and create your first agent. The default stack listens only on
 
 For Kubernetes, install the official Helm chart in
 [`charts/agentconnect`](charts/agentconnect), published to
-`oci://ghcr.io/agentconnect-md/charts/agentconnect` on every release. For
+`oci://ghcr.io/agentconnect-md/charts/agentconnect` on every release with the
+same version number as the release itself. For
 authentication, public URLs, Linux sandbox requirements, provider apps, image
 pinning, secrets, and optional Mem0 configuration, follow the
 [AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
