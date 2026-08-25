@@ -23,7 +23,7 @@ function BrandPanel() {
       <div className="brand-foot mt-[30px]">
         <span className="dot h-2 w-2 rounded-full bg-(--status-online) shadow-[0_0_0_3px_rgba(21,166,97,.25)]" />
         <span className="font-sans text-[12.5px] font-medium leading-normal text-(--text-inverse-dim)">
-          Daemon-centric — your keys never leave your machines.
+          Agents run on your machines — keys never leave them.
         </span>
       </div>
       <span className="facet">

@@ -572,7 +572,7 @@ const FEATURES: { icon: string; title: string; body: string }[] = [
     title: 'One operator console',
     body: 'Volume, latency, escalations and live transcripts in one view.'
   },
-  { icon: 'key', title: 'Your keys stay put', body: 'Daemon-centric — credentials never leave your machines.' }
+  { icon: 'key', title: 'Your keys stay put', body: 'Agents run on your machines — credentials never leave them.' }
 ]
 
 function IntakeAside() {

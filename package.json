@@ -2,7 +2,7 @@
   "private": true,
   "name": "agentconnect",
   "version": "1.0.0-dev",
-  "description": "Daemon-centric multi-agent platform bridging IM platforms to AI coding agents",
+  "description": "Multi-agent platform bridging IM platforms to AI coding agents",
   "license": "Apache-2.0",
   "scripts": {
     "build": "pnpm -r build",
