@@ -18,7 +18,6 @@ import {
   GITLAB_COM_V1_FEATURE,
   GITLAB_INSTANCE_V1_FEATURE,
   GITLAB_RERUN_V1_FEATURE,
-  PULL_REQUEST_FEEDBACK_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   RELAY_CP_SCHEMAS,
   type RelayCpFrame,
@@ -44,7 +43,6 @@ import {
   type RcHookRerunResult,
   type RcRunReport,
   type RcGithubInstallation,
-  type RcPullRequestFeedback,
   type RcSetChannelAgent,
   type RcBotChannels,
   type RcBotConversation,
@@ -168,7 +166,6 @@ export class RelayCpClient {
   private readonly readyWaiters = new Set<ReadyWaiter>()
   /** FIFO of `rc/run-report` EVTs the link wasn't up for, replayed on READY. */
   private readonly pendingRunReports: RcRunReport[] = []
-  private serverFeatures = new Set<string>()
 
   constructor(private readonly deps: RelayCpClientDeps) {
     this.correlator = new ReqRep<RelayCpFrame>(deps.clock, ACK_TIMEOUT_MS)
@@ -370,22 +367,6 @@ export class RelayCpClient {
     this.transport.send(JSON.stringify(buildRelayCpFrame('rc/github-installation', poke)))
   }
 
-  /** Persist body-free PR feedback before the webhook response lets GitHub retire the delivery. */
-  async reportPullRequestFeedback(signal: RcPullRequestFeedback): Promise<boolean> {
-    if (this.state !== 'READY' || !this.transport) {
-      throw new WireError('INTERNAL', `relay↔CP link not ready (${this.state})`, true)
-    }
-    if (!this.serverFeatures.has(PULL_REQUEST_FEEDBACK_FEATURE)) return false
-    const rep = await this.sendRequest(buildRelayCpFrame('rc/pull-request-feedback', signal), {
-      maxTries: 1,
-      ackTimeoutMs: ACK_TIMEOUT_MS
-    })
-    if (rep.type !== 'rc/pull-request-feedback/ok') {
-      throw new WireError('INTERNAL', `expected rc/pull-request-feedback/ok, got ${rep.type}`, false)
-    }
-    return rep.payload.accepted
-  }
-
   /** Emit `rc/set-channel-agent` (fire-and-forget) — the config modal picked a
    *  channel's default agent. Dropped if the CP link is down (the operator can retry). */
   emitSetChannelAgent(m: RcSetChannelAgent): void {
@@ -561,14 +542,11 @@ export class RelayCpClient {
           WEBCHAT_SESSION_CONTINUATION_FEATURE,
           GITLAB_COM_V1_FEATURE,
           GITLAB_RERUN_V1_FEATURE,
-          GITLAB_INSTANCE_V1_FEATURE,
-          PULL_REQUEST_FEEDBACK_FEATURE
+          GITLAB_INSTANCE_V1_FEATURE
         ]
       })
     )
-    const registeredPayload = registered.payload as RcRegistered
-    this.relayId = registeredPayload.relayId
-    this.serverFeatures = new Set(registeredPayload.serverFeatures)
+    this.relayId = (registered.payload as RcRegistered).relayId
     this.deps.onRegistered?.(this.relayId)
 
     this.state = 'READY'
@@ -704,7 +682,6 @@ export class RelayCpClient {
     // Drop the dead transport: `ws.send` on a CLOSED socket is silently swallowed,
     // so anything still holding it would hang for a full retransmit budget.
     this.transport = undefined
-    this.serverFeatures.clear()
     this.correlator.rejectAll(new WireError('INTERNAL', 'connection closed', true))
     if (code === AUTH_FAILED_CLOSE) {
       this.fatal = true

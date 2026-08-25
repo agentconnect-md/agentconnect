@@ -3,7 +3,6 @@ import { systemClock } from '../domain/clock.js'
 import { describe, it, expect, vi } from 'vitest'
 import {
   buildRelayCpFrame,
-  PULL_REQUEST_FEEDBACK_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   RELAY_CP_SUBPROTOCOL,
@@ -96,7 +95,6 @@ function build(
     verifyWebchatToken?: (token: string) => Promise<RcVerifyResult>
     authorizeGithubComment?: (req: RcGithubCommentAuthz) => Promise<boolean>
     authorizeGithubRerequest?: (req: RcGithubRerequest) => Promise<RcGithubRerequestResult>
-    onPullRequestFeedback?: ConstructorParameters<typeof RelayConnection>[1]['onPullRequestFeedback']
     deploymentConfig?: ConstructorParameters<typeof RelayConnection>[1]['deploymentConfig']
     onThreadAssign?: ConstructorParameters<typeof RelayConnection>[1]['onThreadAssign']
     onThreadParticipant?: ConstructorParameters<typeof RelayConnection>[1]['onThreadParticipant']
@@ -133,7 +131,6 @@ function build(
     over.verifyWebchatToken ?? vi.fn(async () => ({ ok: false, reason: 'not tested' }) as RcVerifyResult)
   const authorizeGithubComment = over.authorizeGithubComment ?? vi.fn(async () => false)
   const authorizeGithubRerequest = over.authorizeGithubRerequest ?? vi.fn(async () => ({ allowed: false as const }))
-  const onPullRequestFeedback = over.onPullRequestFeedback ?? vi.fn(async () => false)
   const conn = new RelayConnection(transport, {
     auth,
     relays,
@@ -150,7 +147,6 @@ function build(
     onThreadParticipant,
     threadLookup: vi.fn(async (m) => ({ ...m, target: null, participants: [] })),
     onGithubInstallation: vi.fn(async () => {}),
-    onPullRequestFeedback,
     relayReg,
     verifyWebchatToken,
     authorizeGithubComment,
@@ -171,16 +167,15 @@ function build(
     onThreadParticipant,
     authorizeGithubComment,
     authorizeGithubRerequest,
-    onPullRequestFeedback,
     relayReg
   }
 }
 
 /** Drive a conn to READY (auth + register), settling microtasks between frames. */
-async function toReady(transport: FakeServerTransport, features: string[] = []): Promise<void> {
+async function toReady(transport: FakeServerTransport): Promise<void> {
   transport.feed('rc/auth', { method: 'token', credential: RELAY_TOKEN })
   await Promise.resolve()
-  transport.feed('rc/register', { name: 'pod-0', daemonUrl: 'wss://pod-0.example.test', features })
+  transport.feed('rc/register', { name: 'pod-0', daemonUrl: 'wss://pod-0.example.test' })
   await Promise.resolve()
 }
 
@@ -385,10 +380,7 @@ describe('RelayConnection FSM', () => {
     transport.feed('rc/register', { name: 'pod-0', daemonUrl: 'wss://pod-0.example.test' })
     await Promise.resolve()
     expect(upsertByName).toHaveBeenCalledWith('pod-0', 'wss://pod-0.example.test', new Date(NOW), [])
-    expect(transport.lastRep('rc/registered')!.payload).toEqual({
-      relayId: RELAY_ID,
-      serverFeatures: [PULL_REQUEST_FEEDBACK_FEATURE]
-    })
+    expect(transport.lastRep('rc/registered')!.payload).toEqual({ relayId: RELAY_ID })
     expect(conn.state).toBe('READY')
     expect(conn.relayId).toBe(RELAY_ID)
     expect(onRegistered).toHaveBeenCalledOnce()
@@ -805,28 +797,6 @@ describe('RelayConnection FSM', () => {
     expect(transport.lastRep('error')).toMatchObject({ corr: req.id, payload: { code: 'INTERNAL', retryable: true } })
     expect(transport.lastRep('rc/github-rerequest/ok')).toBeUndefined()
     expect(conn.state).toBe('READY')
-  })
-
-  it('persists PR feedback and acknowledges the correlated relay request', async () => {
-    const onPullRequestFeedback = vi.fn(async () => true)
-    const { transport } = build({ onPullRequestFeedback })
-    await toReady(transport, [PULL_REQUEST_FEEDBACK_FEATURE])
-    const signal = {
-      deliveryKey: 'delivery-feedback-1:issue_comment:created:77',
-      installationId: '123',
-      repoId: '456',
-      repoFullName: 'acme/infra',
-      pullNumber: 77
-    } as const
-    const request = buildRelayCpFrame('rc/pull-request-feedback', signal)
-
-    transport.feedFrame(request)
-    await vi.waitFor(() => expect(onPullRequestFeedback).toHaveBeenCalledOnce())
-
-    expect(transport.lastRep('rc/pull-request-feedback/ok')).toMatchObject({
-      corr: request.id,
-      payload: { deliveryKey: signal.deliveryKey, accepted: true }
-    })
   })
 })
 

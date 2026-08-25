@@ -97,8 +97,6 @@ export interface SessionPullRequestLinkDeps {
   fetchImpl?: FetchLike
   baseUrl?: string
   log?: { warn?: (obj: unknown, msg: string) => void }
-  /** Persist/reconcile a resolved identity without coupling this read service to a repository. */
-  onResolved?: (agent: AgentRecord, session: SessionMetaRecord, link: SessionPullRequestLink) => Promise<void>
 }
 
 interface CacheEntry {
@@ -134,18 +132,8 @@ export class SessionPullRequestLinkService {
     const running = this.inFlight.get(key)
     if (running) return running
     const read = this.read(agent, session)
-      .then(async (link) => {
+      .then((link) => {
         this.store(key, link)
-        if (link && this.deps.onResolved) {
-          try {
-            await this.deps.onResolved(agent, session, link)
-          } catch (err) {
-            this.deps.log?.warn?.(
-              { err, sessionId: session.id },
-              'session-pr-link: resolved identity persistence failed'
-            )
-          }
-        }
         return link
       })
       .finally(() => {

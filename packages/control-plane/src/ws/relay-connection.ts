@@ -22,7 +22,6 @@ import type {
   RcGithubRerequest,
   RcGithubRerequestResult,
   RcGithubInstallation,
-  RcPullRequestFeedback,
   RcRegister,
   RcRunReport,
   RcBotChannels,
@@ -40,12 +39,7 @@ import type {
   RelayCpFrameType,
   ErrorCode
 } from '@agentconnect.md/protocol'
-import {
-  buildRelayCpFrame,
-  decodeRelayCpFrame,
-  PULL_REQUEST_FEEDBACK_FEATURE,
-  RELAY_CP_SCHEMAS
-} from '@agentconnect.md/protocol'
+import { buildRelayCpFrame, decodeRelayCpFrame, RELAY_CP_SCHEMAS } from '@agentconnect.md/protocol'
 import type { z } from 'zod'
 import type { Transport } from './transport.js'
 import type { RelayAuthService } from '../registry/relayAuthService.js'
@@ -106,8 +100,6 @@ export interface RelayConnDeps {
   /** Apply a relay `rc/github-installation` doorbell poke (webhook-triggers
    *  decision 11). Fire-and-forget; store/GitHub errors must not close the link. */
   onGithubInstallation: (m: RcGithubInstallation) => Promise<void>
-  /** Persist a signature-verified, body-free PR feedback signal before GitHub is acknowledged. */
-  onPullRequestFeedback?: (m: RcPullRequestFeedback) => Promise<boolean>
   /** The in-memory relay index — this connection registers itself for `rc/daemon-revoke` push. */
   relayReg: RelayRegistry
   /** Resolve a browser webchat token → identity + the agent's CURRENT placement
@@ -216,9 +208,6 @@ export class RelayConnection implements RelayChannel {
         case 'rc/github-installation':
           await this.handleGithubInstallation(frame.payload)
           return
-        case 'rc/pull-request-feedback':
-          await this.handlePullRequestFeedback(frame, frame.payload)
-          return
         default:
           this.sendError(frame.id, 'PROTOCOL_STATE', `unsupported: ${frame.type}`)
       }
@@ -249,8 +238,7 @@ export class RelayConnection implements RelayChannel {
           type === 'rc/thread-assign' ||
           type === 'rc/thread-participant' ||
           type === 'rc/thread-lookup' ||
-          type === 'rc/github-installation' ||
-          (type === 'rc/pull-request-feedback' && this.features.includes(PULL_REQUEST_FEEDBACK_FEATURE))
+          type === 'rc/github-installation'
         )
       default:
         return false
@@ -292,10 +280,7 @@ export class RelayConnection implements RelayChannel {
     if (prev && prev !== this) prev.close(1012, 'superseded by a newer relay connection')
     this.deps.relayReg.add(this)
     this.state = 'READY'
-    this.reply(frame, 'rc/registered', {
-      relayId: row.id,
-      serverFeatures: [PULL_REQUEST_FEEDBACK_FEATURE]
-    })
+    this.reply(frame, 'rc/registered', { relayId: row.id })
     // A relay just appeared (or reclaimed its id) — refresh the daemons' roster
     // and replay this relay's pool config (hook rules).
     this.deps.onRegistered(this)
@@ -317,15 +302,6 @@ export class RelayConnection implements RelayChannel {
       await this.deps.onGithubInstallation(poke)
     } catch {
       // swallowed — cache-invalidation only, never worth the socket
-    }
-  }
-
-  private async handlePullRequestFeedback(frame: RelayCpFrame, signal: RcPullRequestFeedback): Promise<void> {
-    try {
-      const accepted = (await this.deps.onPullRequestFeedback?.(signal)) ?? false
-      this.reply(frame, 'rc/pull-request-feedback/ok', { deliveryKey: signal.deliveryKey, accepted })
-    } catch {
-      this.sendError(frame.id, 'INTERNAL', 'pull request feedback persistence failed', true)
     }
   }
 

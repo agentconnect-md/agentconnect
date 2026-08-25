@@ -32,7 +32,6 @@ import {
   type RcGithubCommentAuthz,
   type RcGithubRerequest,
   type RcGithubRerequestResult,
-  type RcPullRequestFeedback,
   type GithubHookMetadata,
   type HookContext,
   type RcGithubInstallation,
@@ -66,8 +65,6 @@ export interface GithubIngressDeps {
   report: (report: RcRunReport) => void
   /** Emit one `rc/github-installation` doorbell EVT to the CP (fire-and-forget). */
   doorbell: (poke: RcGithubInstallation) => void
-  /** Persist body-free PR feedback before the signed webhook is acknowledged. */
-  reportPullRequestFeedback?: (signal: RcPullRequestFeedback) => Promise<boolean>
   /** Resolve the current write authority of every issue/PR actor. This is
    *  metadata-only; the implementation delegates to the CP's GitHub App. */
   authorizeComment: (request: RcGithubCommentAuthz) => Promise<boolean>
@@ -104,7 +101,6 @@ interface GithubPayload {
     user?: { login?: string }
     author_association?: string
   }
-  review?: { body?: string | null; state?: string; user?: { login?: string } }
   // push ("commits") deliveries — no subject, no action.
   ref?: string // 'refs/heads/main'
   compare?: string // diff URL for the pushed range
@@ -123,8 +119,6 @@ interface GithubPayload {
     id?: number
     head_sha?: string
     app?: { id?: number }
-    conclusion?: string | null
-    pull_requests?: Array<{ number?: number }>
   }
   workflow_run?: {
     event?: string
@@ -502,63 +496,6 @@ function positiveSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
-const FAILED_CHECK_CONCLUSIONS = new Set([
-  'failure',
-  'cancelled',
-  'timed_out',
-  'action_required',
-  'stale',
-  'startup_failure'
-])
-
-function pullRequestFeedbackSignals(
-  event: string,
-  payload: GithubPayload,
-  deliveryKey: string
-): RcPullRequestFeedback[] {
-  const installationId = payload.installation?.id
-  const repoId = payload.repository?.id
-  const repoFullName = payload.repository?.full_name?.trim()
-  if (!positiveSafeInteger(installationId) || !positiveSafeInteger(repoId) || !repoFullName) return []
-  const build = (pullNumber: number): RcPullRequestFeedback => ({
-    deliveryKey: `${deliveryKey.slice(0, 150)}:${event}:${pullNumber}`,
-    installationId: String(installationId),
-    repoId: String(repoId),
-    repoFullName,
-    pullNumber
-  })
-
-  if (event === 'pull_request_review' && payload.action === 'submitted') {
-    const pullNumber = payload.pull_request?.number
-    const state = payload.review?.state?.toLowerCase()
-    const hasBody = Boolean(payload.review?.body?.trim())
-    return positiveSafeInteger(pullNumber) && (state === 'changes_requested' || hasBody) ? [build(pullNumber)] : []
-  }
-  if (event === 'pull_request_review_comment' && (payload.action === 'created' || payload.action === 'edited')) {
-    const pullNumber = payload.pull_request?.number
-    return positiveSafeInteger(pullNumber) ? [build(pullNumber)] : []
-  }
-  if (
-    event === 'issue_comment' &&
-    (payload.action === 'created' || payload.action === 'edited') &&
-    payload.issue?.pull_request !== undefined
-  ) {
-    const pullNumber = payload.issue.number
-    return positiveSafeInteger(pullNumber) ? [build(pullNumber)] : []
-  }
-  if (event === 'check_suite' && payload.action === 'completed') {
-    const conclusion = payload.check_suite?.conclusion?.toLowerCase()
-    if (!conclusion || !FAILED_CHECK_CONCLUSIONS.has(conclusion)) return []
-    const pulls = new Set(
-      (payload.check_suite?.pull_requests ?? [])
-        .map((pull) => pull.number)
-        .filter((pull): pull is number => positiveSafeInteger(pull))
-    )
-    return [...pulls].map((pullNumber) => build(pullNumber))
-  }
-  return []
-}
-
 type GithubRerequestTarget = {
   hookId: string
   pullNumber: number
@@ -887,16 +824,6 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       } catch {
         // Cannot happen from GitHub (it signed valid JSON) — defensive only.
         return reply.code(400).send({ error: 'Bad Request', statusCode: 400 })
-      }
-
-      const feedbackSignals = pullRequestFeedbackSignals(event, payload, deliveryKey)
-      try {
-        if (deps.reportPullRequestFeedback) {
-          await Promise.all(feedbackSignals.map((signal) => deps.reportPullRequestFeedback!(signal)))
-        }
-      } catch {
-        deps.log.warn(`github ingress: PR feedback persistence unavailable ${deliveryKey}`)
-        return reply.code(503).send({ error: 'Service Unavailable', statusCode: 503 })
       }
 
       if (event === 'check_run' && payload.action === 'rerequested') {

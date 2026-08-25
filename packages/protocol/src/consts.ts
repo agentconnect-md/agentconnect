@@ -111,9 +111,6 @@ export const RUNTIME_COMMANDS_FEATURE = 'runtime-commands-v1'
  * nothing to wake, and the CP answers `unsupported` without sending a frame it would ignore. */
 export const AGENT_WAKE_FEATURE = 'agent-wake-v1'
 
-/** Relay reports body-free GitHub feedback and daemon durably continues the linked session. */
-export const PULL_REQUEST_FEEDBACK_FEATURE = 'pull-request-feedback-v1'
-
 /** How long the CP must let ONE `workspace/gitmessage` REQ run before giving up, and it must send it
  * single-shot (`{ ackTimeoutMs: WORKSPACE_GIT_MESSAGE_BUDGET_MS, maxTries: 1 }`). The default 5s ack
  * timeout would retransmit an in-flight model pass four times: identical frame ids, so the daemon
