@@ -19,7 +19,7 @@ channels. Live message ingress, attachments, replies, and ACP output streams do
 not traverse it. Separately, an authorized Web UI request may cause the CP to
 proxy a bounded daemon-local transcript, tool-body, memory, or workspace read
 without persisting the response. This preserves the hot-path boundary in
-[daemon-centric-architecture.md](daemon-centric-architecture.md): established
+[architecture.md](architecture.md): established
 message and agent-execution paths can continue while CP is unavailable.
 
 ## 1. Protocol Model

@@ -4,7 +4,7 @@
 
 **Author:** AgentConnect team
 
-**Related:** [collaboration-arena-baseline.md](collaboration-arena-baseline.md) · [agent-capability-benchmark-harness.md](agent-capability-benchmark-harness.md) · [agents-collaboration-design.md](agents-collaboration-design.md) · [agent-collaboration-implementation.md](agent-collaboration-implementation.md) · [daemon-centric-architecture.md](daemon-centric-architecture.md) · [session-concept.md](session-concept.md)
+**Related:** [collaboration-arena-baseline.md](collaboration-arena-baseline.md) · [agent-capability-benchmark-harness.md](agent-capability-benchmark-harness.md) · [agents-collaboration-design.md](agents-collaboration-design.md) · [agent-collaboration-implementation.md](agent-collaboration-implementation.md) · [architecture.md](architecture.md) · [session-concept.md](session-concept.md)
 
 > This document is the **design**. What the arena actually measures against the
 > landed implementation — the games' status, the real-model numbers, and the

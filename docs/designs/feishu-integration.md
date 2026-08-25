@@ -10,7 +10,7 @@
 > both modes.
 >
 > Related documents:
-> [daemon-centric-architecture.md](daemon-centric-architecture.md),
+> [architecture.md](architecture.md),
 > [daemon-detailed-design.md](daemon-detailed-design.md),
 > [slack-integration-install.md](slack-integration-install.md).
 
@@ -41,7 +41,7 @@ one tenant, and text messages, matching Discord v1.
 
 ## 2. Key decision: support both Long Connection and HTTP callback ingress
 
-The daemon-centric architecture has a hard constraint: **the daemon exposes no
+The architecture has a hard constraint: **the daemon exposes no
 public ingress endpoint**, because it may run behind NAT or on an internal
 network. A direct platform transport therefore establishes its connection
 outbound from the daemon; a platform that requires callbacks terminates them on

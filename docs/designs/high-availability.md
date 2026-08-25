@@ -3,7 +3,7 @@
 > Status: Living application design contract
 >
 > Related:
-> [daemon-centric-architecture.md](daemon-centric-architecture.md),
+> [architecture.md](architecture.md),
 > [daemon-cp-ws-protocol.md](daemon-cp-ws-protocol.md),
 > [shared-bot-relay.md](shared-bot-relay.md), and
 > [control-plane-implementation.md](control-plane-implementation.md)

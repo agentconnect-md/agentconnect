@@ -4,7 +4,7 @@ Status: draft for review
 Owner: console/web + control plane
 Related: [webchat-multi-agents.md](webchat-multi-agents.md) (§8/§9, milestone M3),
 [session-visibility.md](session-visibility.md),
-[daemon-centric-architecture.md](daemon-centric-architecture.md),
+[architecture.md](architecture.md),
 issue #415 (participants in agent standing context — the same
 explicit-roster/emergent-roster duality, surfaced to agents instead of humans)
 
@@ -109,7 +109,7 @@ query — no schema change.
 ## 4. Reading the conversation (no new content plane)
 
 The defining constraint from
-[daemon-centric-architecture.md](daemon-centric-architecture.md) holds: the CP
+[architecture.md](architecture.md) holds: the CP
 stores only metadata; transcript bodies are daemon-local and reach the console
 as bounded, authorized, non-persisted reads (`GET /sessions/:id/messages`).
 

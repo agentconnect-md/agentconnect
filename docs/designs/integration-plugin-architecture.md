@@ -1,7 +1,7 @@
 # Integration Plugin Architecture
 
 > Related documents:
-> [daemon-centric-architecture.md](daemon-centric-architecture.md),
+> [architecture.md](architecture.md),
 > [daemon-detailed-design.md](daemon-detailed-design.md),
 > [feishu-integration.md](feishu-integration.md),
 > [linear-integration.md](linear-integration.md),

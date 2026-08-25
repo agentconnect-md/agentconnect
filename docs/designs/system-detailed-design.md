@@ -1,10 +1,10 @@
-# Detailed Design: Daemon-Centric Architecture (Components, Technology Choices, and Interfaces)
+# Detailed Design: Components, Technology Choices, and Interfaces
 
 > **Status:** Architecture design reference.
 >
 > This document defines the C1-C7 and D1-D12 component model, technology
 > choices, and interfaces for
-> [`daemon-centric-architecture.md`](daemon-centric-architecture.md). For exact
+> [`architecture.md`](architecture.md). For exact
 > current behavior, use [`daemon-cp-ws-protocol.md`](daemon-cp-ws-protocol.md)
 > and `packages/protocol/src/frame.ts` for the control wire,
 > [`daemon-detailed-design.md`](daemon-detailed-design.md) for the daemon, and
@@ -18,16 +18,16 @@
 
 Every choice in this document is bounded by the following **settled product constraints**. Their rationale is not repeated here; only their design impact is noted.
 
-| Constraint                                                                                           | Design impact                                                                                                                                                                                    |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Platform integrations live at the daemon edge; the Control Plane is outside the message hot path** | Live messaging remains on the daemon/relay data plane; the Control Plane carries orchestration and bounded, on-demand BFF reads without persisting their content.                                |
-| **ACP is a local protocol internal to the daemon** (in-process / local IPC, with no network hop)     | The ACP host and ACP adapter run on the same machine and use stdio JSON-RPC.                                                                                                                     |
-| **`agent : channel(integration) : machine = 1 : N : 1`**                                             | An agent runs on only one machine; one machine runs many agents; one agent has many IM integrations. **Machine isolation is a hard security requirement.**                                       |
-| **Reuse the ACP ecosystem; product code must not be written for each agent type**                    | ACP adapters such as `claude-agent-acp` and `codex` are started as **subprocesses** (stdio JSON-RPC), independent of the daemon's implementation language. Product code only needs to speak ACP. |
-| **Agent-to-agent and proactive messaging need a custom layer: inject tools into agents**             | Use **MCP** to register product tools with the agent. Platform and service credentials remain outside the model's context.                                                                       |
-| **Workspace paths are daemon-owned**                                                                 | Repository and scratch workspaces use daemon-generated paths; multiple agents may use different subdirectories of one repository.                                                                |
-| **cron/loop is required and must be reliable**                                                       | Schedules fire locally on the daemon, including during a Control Plane outage.                                                                                                                   |
-| **Credential custody is centralized and delivery is least-privilege**                                | The Control Plane persists integration secrets through the configured cipher and sends only assigned credentials to the owning daemon over the authenticated control connection.                 |
+| Constraint                                                                                                                                     | Design impact                                                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Platform integrations live at the daemon edge; the Control Plane is outside the message hot path**                                           | Live messaging remains on the daemon/relay data plane; the Control Plane carries orchestration and bounded, on-demand BFF reads without persisting their content.                                |
+| **ACP is daemon-owned and never crosses the Control Plane** (local IPC self-hosted; one in-cluster dial to the sandbox pod in the daemon pool) | The ACP host and ACP adapter exchange stdio JSON-RPC; the pool carries that same stream over the shim connection.                                                                                |
+| **`agent : channel(integration) : machine = 1 : N : 1`**                                                                                       | An agent runs on only one machine; one machine runs many agents; one agent has many IM integrations. **Machine isolation is a hard security requirement.**                                       |
+| **Reuse the ACP ecosystem; product code must not be written for each agent type**                                                              | ACP adapters such as `claude-agent-acp` and `codex` are started as **subprocesses** (stdio JSON-RPC), independent of the daemon's implementation language. Product code only needs to speak ACP. |
+| **Agent-to-agent and proactive messaging need a custom layer: inject tools into agents**                                                       | Use **MCP** to register product tools with the agent. Platform and service credentials remain outside the model's context.                                                                       |
+| **Workspace paths are daemon-owned**                                                                                                           | Repository and scratch workspaces use daemon-generated paths; multiple agents may use different subdirectories of one repository.                                                                |
+| **cron/loop is required and must be reliable**                                                                                                 | Schedules fire locally on the daemon, including during a Control Plane outage.                                                                                                                   |
+| **Credential custody is centralized and delivery is least-privilege**                                                                          | The Control Plane persists integration secrets through the configured cipher and sends only assigned credentials to the owning daemon over the authenticated control connection.                 |
 
 ---
 

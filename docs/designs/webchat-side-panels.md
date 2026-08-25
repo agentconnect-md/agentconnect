@@ -46,7 +46,7 @@ put in both modes. No work is planned there.
 - **Body-locality.** The CP stores no workspace bytes, no diffs, no transcript
   bodies. Files / Git / Tasks data is pulled live from the owning daemon over the
   CP↔daemon WS request/reply frames and proxied, never persisted
-  ([`daemon-centric-architecture.md`](daemon-centric-architecture.md)).
+  ([`architecture.md`](architecture.md)).
 - **The CP never calls a model provider.** Provider API egress is daemon-owned.
   Both AI features in revision 2 — commit-message generation and review-thread
   auto-fix — must run on the daemon against the agent's own runtime. A CP route

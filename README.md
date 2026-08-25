@@ -176,7 +176,7 @@ Thanks to everyone who has already contributed:
 
 ## Architecture
 
-![AgentConnect message paths between the platforms, daemons, relay, and Control Plane](docs/designs/daemon-centric-architecture.svg)
+![AgentConnect message paths between the platforms, daemons, relay, and Control Plane](docs/designs/architecture.svg)
 
 | Component                  | Responsibility                                                                                                                                                                                                     |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -192,7 +192,7 @@ temporarily unavailable, established sessions and daemon-local schedules
 continue; new assignments and configuration changes resume after reconnection.
 
 See the
-[architecture design](docs/designs/daemon-centric-architecture.md) for the
+[architecture design](docs/designs/architecture.md) for the
 complete message paths, trust boundaries, and failure model.
 
 ## License
