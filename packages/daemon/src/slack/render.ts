@@ -99,16 +99,9 @@ export type SlackAction =
   // an empty bubble behind.
   | { kind: 'stream-stop'; settle: 'final' | 'rollover' | 'abort'; text?: string; discard?: boolean }
 
-/**
- * The chunk vocabulary `chat.appendStream` accepts, as `@slack/types` declares it (§10 Q3).
- * `blocks` is unused — the attribution footer rides `chat.stopStream`'s own `blocks` argument.
- *
- * The FIELD SEMANTICS are not uniform, and this is the whole reason the cards render the way
- * they do: `title` and `status` REPLACE per id, but `details` APPENDS server-side. Re-sending
- * a detail line per update therefore concatenates on Slack's side rather than refreshing —
- * which is how repeated `**bold**` fragments ran together into literal `****`. Write-once
- * fields only: `output` at completion, `details` never more than once per card.
- */
+/** The chunk vocabulary `chat.appendStream` accepts, as `@slack/types` declares it (§10 Q3).
+ *  `plan_update` and `blocks` are unused: an ACP plan keeps its own in-place message, and the
+ *  attribution footer rides `chat.stopStream`'s own `blocks` argument. */
 export type SlackStreamChunk =
   | { type: 'markdown_text'; text: string }
   | {
@@ -117,11 +110,7 @@ export type SlackStreamChunk =
       title: string
       status: 'in_progress' | 'complete' | 'error'
       details?: string
-      output?: string
     }
-  // The collapsed container's own label. `plan` display mode renders every task card inside
-  // one collapsed-by-default block, and this is the line the reader sees on it (§4).
-  | { type: 'plan_update'; title: string }
 
 /** Dynamic identity shown under the last reply section. All Slack integration modes use
  *  the same compact `context` footer so shared-bot attribution never looks like body text
@@ -142,30 +131,17 @@ const MAX_STATUS = 50
 // newest tail and mark a drop with a leading ellipsis. The raw buffer is soft-capped at
 // 2× so it can't grow unbounded across a long turn.
 const MAX_REASONING = 2800
-// Every streaming card field caps at 256 characters ON THE WIRE, per chunk. Because the
-// write-once rule above removes the only appending field's repetition, a clamped field is
-// also the card's final size — no card can grow past this across a turn.
+// A streaming task card caps title/details at 256 characters.
 const MAX_STREAM_TASK = 256
-/** The collapsed container's label while the turn is still working (§4). */
-const STREAM_PLAN_WORKING = 'Working…'
 // Slack's own SDK buffers this much before calling chat.appendStream; matching it keeps a
 // Tier-4 append from being queued per model token while still feeling live (§3.5).
 export const STREAM_APPEND_CHARS = 256
+/** Newest thinking line shown on the streamed Thinking card — a tail, not a transcript. */
+const STREAM_THINKING_TAIL = 400
 
 function clampTo(s: string, max: number): string {
   const t = s.trim()
   return t.length > max ? `${t.slice(0, max - 1)}…` : t
-}
-
-/** Flatten markdown emphasis for a card field. Task titles and plan labels render as PLAIN
- *  text, so `**bold**` and friends would arrive as literal punctuation rather than styling. */
-function plainCardText(s: string): string {
-  return s
-    .replace(/```[\s\S]*?```|`([^`]*)`/g, '$1')
-    .replace(/[*_~]{1,3}(?=\S)([\s\S]*?\S)[*_~]{1,3}/g, '$1')
-    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim()
 }
 
 function clampLabel(s: string): string {
@@ -913,19 +889,9 @@ export class OutputConverger {
   private emittedTasks = new Map<string, string>()
   private taskTitles = new Map<string, string>()
   private openTasks = new Set<string>()
-  /** Cards whose write-once `output` has been sent, so a later update cannot append a second. */
-  private outputWritten = new Set<string>()
-  /** Every card id this turn opened, and how many ended in error — the closing plan label is
-   *  counted from these, so it is deterministic and needs no model call. */
-  private taskCount = 0
-  private taskFailures = 0
-  // The current thinking run: whether one is open, and a counter so each gets its own card.
-  private thinkingActive = false
+  // The current thinking run: its newest tail, and a counter so each run gets its own card.
+  private thinkingTail = ''
   private thinkingRun = 0
-  /** The collapsed container's label, so an unchanged one is never re-sent, plus the one
-   *  awaiting the next append. */
-  private planTitle = ''
-  private pendingPlanTitle = ''
 
   /**
    * `protectedAddresses` are the COMPOUND mention addresses in this conversation — a
@@ -979,12 +945,9 @@ export class OutputConverger {
     return this.streaming
   }
 
-  /** Open this turn's stream, the way Feishu's converger opens its card. The container starts
-   *  with a working label; `settleTasks` replaces it with what actually happened (§4). */
+  /** Open this turn's stream, the way Feishu's converger opens its card. */
   onStart(): SlackAction[] {
-    if (!this.streaming) return []
-    if (this.rung === 'medium' || this.rung === 'high') this.queuePlanTitle(STREAM_PLAN_WORKING)
-    return [{ kind: 'stream-start' }]
+    return this.streaming ? [{ kind: 'stream-start' }] : []
   }
 
   /** True while body text OR reasoning is pending — the daemon uses this to (re)arm
@@ -1066,42 +1029,24 @@ export class OutputConverger {
     }
     for (const task of this.pendingTasks.values()) chunks.push(task)
     this.pendingTasks.clear()
-    // A card or body text means the reader has something to look at; the container's own label
-    // does not, so it must never be what keeps an otherwise empty message from being discarded.
-    if (chunks.length > 0 || out.length > 0) this.streamEmitted = true
-    // The container label rides the same append, after the cards it describes.
-    if (this.pendingPlanTitle) {
-      chunks.push({ type: 'plan_update', title: this.pendingPlanTitle })
-      this.pendingPlanTitle = ''
-    }
     flush()
+    if (out.length > 0) this.streamEmitted = true
     return out
   }
 
-  /**
-   * Queue one task card. Keyed by id so streamed updates edit the same card, and an unchanged
-   * repeat emits nothing.
-   *
-   * `title` and `status` may be re-sent freely — Slack REPLACES them per id. `output` may not:
-   * it is written exactly once, at completion, because the appending fields concatenate on
-   * Slack's side rather than refreshing.
-   */
-  private queueTask(id: string, title: string, status: 'in_progress' | 'complete' | 'error', output?: string): void {
-    const clamped = clampTo(plainCardText(title), MAX_STREAM_TASK) || 'tool'
-    const writeOutput = output && !this.outputWritten.has(id) ? clampTo(plainCardText(output), MAX_STREAM_TASK) : ''
+  /** Queue one task card. Keyed by id so streamed updates edit the same card, and an
+   *  unchanged repeat emits nothing. */
+  private queueTask(id: string, title: string, status: 'in_progress' | 'complete' | 'error', details?: string): void {
+    const clamped = clampTo(title, MAX_STREAM_TASK) || 'tool'
     const chunk: Extract<SlackStreamChunk, { type: 'task_update' }> = {
       type: 'task_update',
       id,
       title: clamped,
       status,
-      ...(writeOutput ? { output: writeOutput } : {})
+      ...(details ? { details: clampTo(details, MAX_STREAM_TASK) } : {})
     }
-    const signature = `${chunk.title} ${chunk.status}`
-    // An unchanged card is skipped — unless this update is the one carrying its output.
-    if (!writeOutput && this.emittedTasks.get(id) === signature) return
-    if (!this.emittedTasks.has(id)) this.taskCount += 1
-    if (status === 'error') this.taskFailures += 1
-    if (writeOutput) this.outputWritten.add(id)
+    const signature = `${chunk.title} ${chunk.status} ${chunk.details ?? ''}`
+    if (this.emittedTasks.get(id) === signature) return
     this.emittedTasks.set(id, signature)
     this.taskTitles.set(id, clamped)
     if (status === 'in_progress') this.openTasks.add(id)
@@ -1109,41 +1054,28 @@ export class OutputConverger {
     this.pendingTasks.set(id, chunk)
   }
 
-  /** Retitle the collapsed container, skipping an unchanged label (§4). */
-  private queuePlanTitle(title: string): void {
-    const clamped = clampTo(plainCardText(title), MAX_STREAM_TASK)
-    if (!clamped || clamped === this.planTitle) return
-    this.planTitle = clamped
-    this.pendingPlanTitle = clamped
-  }
-
-  /** What the container says once the turn is over. Counted, not narrated: no model call, and
-   *  a failed step is named rather than folded into a success. */
-  private planSummary(): string {
-    if (this.taskCount === 0) return 'Done'
-    const steps = `${this.taskCount} step${this.taskCount === 1 ? '' : 's'}`
-    if (this.taskFailures === 0) return `Completed ${steps}`
-    return `Completed ${steps} · ${this.taskFailures} failed`
-  }
-
   /** A thinking run ends at the next tool call or at turn end — settle its card rather
-   *  than leaving a spinner behind (§4). Title and status only: the thought text would have
-   *  to ride `details`, which appends, so streaming it per line is what produced `****`. */
+   *  than leaving a spinner behind (§4). */
   private closeThinkingRun(): void {
-    if (!this.thinkingActive) return
-    this.queueTask(`thinking-${this.thinkingRun}`, 'Thinking', 'complete')
-    this.thinkingActive = false
+    if (!this.thinkingTail) return
+    this.queueTask(`thinking-${this.thinkingRun}`, 'Thinking', 'complete', this.newestThinkingLine())
+    this.thinkingTail = ''
     this.thinkingRun += 1
   }
 
-  /** Turn end: no card may stay in progress once the turn is over, and the container settles
-   *  from its working label to what actually happened. */
+  private newestThinkingLine(): string {
+    return (
+      this.thinkingTail
+        .split('\n')
+        .filter((line) => line.trim())
+        .pop() ?? ''
+    )
+  }
+
+  /** Turn end: no card may stay in progress once the turn is over. */
   private settleTasks(): void {
     this.closeThinkingRun()
     for (const id of [...this.openTasks]) this.queueTask(id, this.taskTitles.get(id) ?? 'tool', 'complete')
-    // Only where a container was actually opened — `minimal`/`low` stream body text alone and
-    // have no cards to collect, so they get no label either.
-    if (this.planTitle) this.queuePlanTitle(this.planSummary())
   }
 
   /** The one closing stop: it carries the footer (via the applier's `p.attribution`) and the
@@ -1384,14 +1316,13 @@ export class OutputConverger {
             this.reasoningDirty = true
           }
         }
-        // streaming medium/high: ONE card per thinking run, opened once and settled once —
-        // title and status only. The thought text would have to ride `details`, which appends
-        // server-side, so refreshing it per line concatenated instead of replacing. `high`
-        // still carries the full thinking in its own in-place message, which is where the
-        // 2,800 characters belong anyway (§4).
-        if (this.streaming && (this.rung === 'medium' || this.rung === 'high') && thought && !this.thinkingActive) {
-          this.thinkingActive = true
-          this.queueTask(`thinking-${this.thinkingRun}`, 'Thinking', 'in_progress')
+        // streaming medium/high: one card per thinking RUN, refreshed with the newest line
+        // on the append timer. `high` still keeps its full in-place Thinking message —
+        // 2,800 characters do not fit a 256-character chunk (§4).
+        if (this.streaming && (this.rung === 'medium' || this.rung === 'high') && thought) {
+          this.thinkingTail = (this.thinkingTail + thought).slice(-STREAM_THINKING_TAIL)
+          const line = this.newestThinkingLine()
+          if (line) this.queueTask(`thinking-${this.thinkingRun}`, 'Thinking', 'in_progress', line)
         }
         // minimal: keep the streamed reply intact (thinking mid-reply doesn't close a
         // segment) — only surface the transient status.
@@ -1418,19 +1349,12 @@ export class OutputConverger {
         if (this.streaming) {
           this.closeThinkingRun()
           const id = u.toolCallId
-          if (id && (this.rung === 'medium' || this.rung === 'high')) {
-            const terminal = u.status === 'completed' || u.status === 'failed'
-            // The tool's own result is HIGH only — medium keeps the card's title + status, high
-            // adds the output (§4). Written once at completion — `output` is a write-once field,
-            // so a per-update summary would accumulate on Slack's side.
-            const result = terminal && this.rung === 'high' ? extractToolOutput(u) : ''
+          if (id && (this.rung === 'medium' || this.rung === 'high'))
             this.queueTask(
               id,
               this.toolLabel(u),
-              u.status === 'completed' ? 'complete' : u.status === 'failed' ? 'error' : 'in_progress',
-              result
+              u.status === 'completed' ? 'complete' : u.status === 'failed' ? 'error' : 'in_progress'
             )
-          }
           const streamed: SlackAction[] = [...this.flush()]
           if (this.rung === 'high') streamed.push(...this.drainToolOutput(u))
           return streamed

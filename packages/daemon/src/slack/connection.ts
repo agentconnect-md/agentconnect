@@ -1300,14 +1300,12 @@ export class SlackConnection implements PlatformConnection {
     }
     return this.queue
       .enqueue(async () => {
-        // `plan` collects every task card into ONE collapsed-by-default container labelled by
-        // the `plan_update` title, which is the compact shape the reader wants: the answer,
-        // with the tool activity folded behind a single chevron. `timeline` — the default —
-        // renders each card flat and separate, which buries the answer under them (§4).
+        // `timeline` interleaves task cards with streamed text, which is exactly how ACP
+        // tool calls arrive; the ACP plan keeps its own message instead (§4).
         const payload: Record<string, unknown> = {
           channel,
           thread_ts: threadTs,
-          task_display_mode: 'plan',
+          task_display_mode: 'timeline',
           ...(options.recipientUserId ? { recipient_user_id: options.recipientUserId } : {}),
           ...(options.recipientUserId && this.teamId ? { recipient_team_id: this.teamId } : {})
         }
@@ -2010,61 +2008,27 @@ export class SlackConnection implements PlatformConnection {
     options?: SlackStatusOptions
   ): Promise<void> {
     await this.queue.enqueue(async () => {
-      await this.writeLoadingStatus(channel, threadTs, status, loadingMessages, options)
+      try {
+        // A clear only needs the status coordinates. Keeping authorship off that request
+        // also makes the identity override specific to the visible loading state.
+        const username = status ? options?.username?.trim() : undefined
+        const iconUrl = status ? options?.icon_url?.trim() : undefined
+        await this.app.client.assistant.threads.setStatus({
+          channel_id: channel,
+          thread_ts: threadTs,
+          status,
+          ...(loadingMessages ? { loading_messages: loadingMessages } : {}),
+          ...(username ? { username } : {}),
+          ...(iconUrl ? { icon_url: iconUrl } : {})
+        })
+      } catch (err) {
+        this.rememberMissingScopes(err)
+        this.deps.log?.debug(`slack: setStatus failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`)
+      }
       // Already inside the send queue — setSessionLifecycle must not enqueue again.
       await this.setSessionLifecycle(channel, threadTs, status ? 'processing' : 'active')
       await this.postPermissionUpdateCard(channel, threadTs)
     })
-  }
-
-  /**
-   * The loading state ALONE — free text plus `loading_messages`, no session enum.
-   *
-   * This is what a streaming turn writes. `chat.startStream` already put the session in
-   * `processing`, and the enum cannot carry text anyway, so driving it here would only
-   * overwrite the native rendering with the legacy one (§1). Pass `''` to clear, which a
-   * streaming turn must do explicitly: nothing auto-clears it once the answer stops arriving
-   * through `chat.postMessage`.
-   */
-  async setLoadingStatus(
-    channel: string,
-    threadTs: string,
-    status: string,
-    loadingMessages?: string[],
-    options?: SlackStatusOptions
-  ): Promise<void> {
-    await this.queue.enqueue(async () => {
-      await this.writeLoadingStatus(channel, threadTs, status, loadingMessages, options)
-      await this.postPermissionUpdateCard(channel, threadTs)
-    })
-  }
-
-  /** The legacy free-text status write itself. Callers own the send-queue enqueue, so this
-   *  never adds one — the §3.5 no-nested-enqueue rule. */
-  private async writeLoadingStatus(
-    channel: string,
-    threadTs: string,
-    status: string,
-    loadingMessages?: string[],
-    options?: SlackStatusOptions
-  ): Promise<void> {
-    try {
-      // A clear only needs the status coordinates. Keeping authorship off that request
-      // also makes the identity override specific to the visible loading state.
-      const username = status ? options?.username?.trim() : undefined
-      const iconUrl = status ? options?.icon_url?.trim() : undefined
-      await this.app.client.assistant.threads.setStatus({
-        channel_id: channel,
-        thread_ts: threadTs,
-        status,
-        ...(loadingMessages ? { loading_messages: loadingMessages } : {}),
-        ...(username ? { username } : {}),
-        ...(iconUrl ? { icon_url: iconUrl } : {})
-      })
-    } catch (err) {
-      this.rememberMissingScopes(err)
-      this.deps.log?.debug(`slack: setStatus failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`)
-    }
   }
 
   /** The native Stop, from either transport: resolve the session this conversation owns, interrupt
