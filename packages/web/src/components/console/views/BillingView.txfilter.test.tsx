@@ -77,12 +77,13 @@ afterEach(async () => {
   ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = {}
 })
 
-// Scoped to the Transactions card's own pillbar — the Activity chart's has a "Usage" pill
-// too, and it comes first in the document.
+// Scoped to the Transactions CARD. The Activity chart's pillbar carries the same two labels
+// and comes first in the document, so the label alone cannot tell them apart.
 async function clickPill(label: string) {
-  const bar = [...host.querySelectorAll('.pillbar')].find((b) =>
-    [...b.querySelectorAll('button')].some((x) => x.textContent === 'All')
+  const card = [...host.querySelectorAll('.card')].find((c) =>
+    [...c.querySelectorAll('.cardtitle')].some((t) => t.textContent === 'Transactions')
   )
+  const bar = card?.querySelector('.pillbar')
   const pill = [...(bar?.querySelectorAll('button') ?? [])].find((b) => b.textContent === label) as
     HTMLButtonElement | undefined
   expect(pill, `no "${label}" pill`).toBeTruthy()
@@ -92,14 +93,12 @@ async function clickPill(label: string) {
 }
 
 describe('Transactions — the ledger-side filter', () => {
-  it('asks the service for one side, and for the whole ledger by default', async () => {
+  it('asks the service for one side, and reads the unfiltered ledger alongside it', async () => {
     await mount()
-    // The default view shares its key with the balance card's own unfiltered read, so it must
-    // be the same request — one page one, not two spellings of it.
-    expect(mocks.fetchTransactions).toHaveBeenCalledWith('org-1')
-
-    await clickPill('Usage')
+    // The table opens on Usage — the pills ARE the two ledger sides, so there is no unfiltered
+    // view of the table and the account-level read is its own request, not a shared key.
     expect(mocks.fetchTransactions).toHaveBeenCalledWith('org-1', undefined, { type: 'debit' })
+    expect(mocks.fetchTransactions).toHaveBeenCalledWith('org-1')
 
     await clickPill('Top-ups')
     expect(mocks.fetchTransactions).toHaveBeenCalledWith('org-1', undefined, { type: 'credit' })
@@ -108,13 +107,9 @@ describe('Transactions — the ledger-side filter', () => {
   it('cuts a stale service’s rows to the side that was asked for', async () => {
     await mount()
     // The stub answers with both sides whatever the request said, which is exactly what a
-    // billing image predating `?type=` does.
-    expect(host.innerHTML).toContain('Promotional credit')
+    // billing image predating `?type=` does. On Usage the credit must not survive that.
     expect(host.innerHTML).toContain('Usage — 2026-08')
-
-    await clickPill('Usage')
     expect(host.innerHTML).not.toContain('Promotional credit')
-    expect(host.innerHTML).toContain('Usage — 2026-08')
 
     await clickPill('Top-ups')
     expect(host.innerHTML).toContain('Promotional credit')

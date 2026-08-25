@@ -56,7 +56,7 @@ const TX_GRID = 'grid-cols-[34px_minmax(0,1fr)_132px_24px_190px] gap-2'
 // it here rather than on a page already fetched is what keeps the cursor, the loaded count
 // and "end of ledger" describing the rows actually on screen.
 const TX_SIDES = [
-  { key: 'all', label: 'All', type: undefined },
+  // { key: 'all', label: 'All', type: undefined },
   { key: 'debit', label: 'Usage', type: 'debit' },
   { key: 'credit', label: 'Top-ups', type: 'credit' }
 ] as const
@@ -605,7 +605,7 @@ export default function BillingView() {
 
   const account = useSWR(fetching ? consoleKeys.billingAccount(orgId) : null, () => fetchBillingAccount(orgId!))
 
-  const [side, setSide] = useState<TxSide>('all')
+  const [side, setSide] = useState<TxSide>('debit')
   const sideType = TX_SIDES.find((s) => s.key === side)!.type
   // The table's own feed, one page one per side. `all` is the same key the unfiltered ledger
   // below uses, so the default view still costs ONE request — SWR dedupes them.
@@ -654,16 +654,21 @@ export default function BillingView() {
   const { mutate: mutateKey } = useSWRConfig()
   const refreshMoney = useCallback(() => {
     void account.mutate()
-    // Every side's page one, not only the visible one: a settled top-up belongs to the All
-    // and Top-ups feeds alike, and leaving the others cached had a filter switch show a
-    // ledger that predated the purchase.
+    // The unfiltered read, by ITS OWN handle. Its key is deliberately outside `TX_SIDES` — the
+    // pills are the two ledger sides — so no loop over that table can reach it, and it is what
+    // "last deduction", the banner's history and the Activity card's visibility all read.
+    // Leaving it cached had a first top-up settle into a page still saying never funded.
+    void ledger.mutate()
+    // Then every side's page one, not only the visible one: a settled top-up belongs to the
+    // Top-ups feed whichever pill is pressed, and leaving the others cached had a filter switch
+    // show a ledger that predated the purchase.
     if (orgId) for (const s of TX_SIDES) void mutateKey(consoleKeys.billingTransactions(orgId, s.key))
     // The Activity chart reads the same ledger through its OWN key, one per range, and its
     // fetch usually landed while the purchase was still pending. Settlement has to reach
     // every range it can show — leaving the cached ones alone had the Top-ups chart disagree
     // with the table right beside it until a refocus or a reload.
     if (orgId) for (const r of ACTIVITY_RANGES) void mutateKey(consoleKeys.billingActivity(orgId, r.key))
-  }, [account.mutate, mutateKey, orgId])
+  }, [account.mutate, ledger.mutate, mutateKey, orgId])
   useEffect(() => {
     if (!orgId || checkout?.phase !== 'confirming') return
     const { purchaseId, attempt } = checkout
@@ -878,11 +883,8 @@ export default function BillingView() {
 
           <div className="card">
             <div className="cardhead flex-wrap justify-between gap-2">
-              <span className="inline-flex items-baseline gap-2">
+              <span className="inline-flex items-center gap-2">
                 <span className="cardtitle">Transactions</span>
-                {transactions.data && (
-                  <span className="mono text-[11.5px] text-(--text-tertiary)">{txItems.length} loaded</span>
-                )}
                 {/* `self-center`: the group stays baseline-aligned so the title and the count
                     keep sitting on one line, while the pillbar — a control with its own box,
                     taller than both — centres in the line instead of hanging off its text. */}
@@ -893,6 +895,9 @@ export default function BillingView() {
                     </button>
                   ))}
                 </span>
+                {transactions.data && (
+                  <span className="mono text-[11.5px] text-(--text-tertiary)">{txItems.length} loaded</span>
+                )}
               </span>
               <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                 Newest first · amounts in USD
