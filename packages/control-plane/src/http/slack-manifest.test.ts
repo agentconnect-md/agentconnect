@@ -6,6 +6,7 @@ import {
   slackOAuthRedirectUri,
   SLACK_BOT_SCOPES,
   SLACK_BOT_EVENTS,
+  SLACK_SOCKET_ONLY_BOT_EVENTS,
   DEFAULT_SLACK_APP_NAME
 } from './slack-manifest.js'
 import { SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
@@ -51,10 +52,12 @@ describe('buildInstallManifest', () => {
     expect(m.settings.event_subscriptions.request_url).toBe('https://relay.example/slack/events')
     expect(m.settings.interactivity.request_url).toBe('https://relay.example/slack/interactions')
     expect(m.settings.interactivity.message_menu_options_url).toBe('https://relay.example/slack/interactions')
-    // Still carries the same scopes + events (only the transport differs) — the relay forwards
-    // the agent-session stop to the owning daemon, so the subscription is answerable here too.
-    expect(m.settings.event_subscriptions.bot_events).toEqual([...SLACK_BOT_EVENTS])
-    expect(m.settings.event_subscriptions.bot_events).toContain('agent_session_stopped')
+    // Same events MINUS the socket-only ones: the relay's ingress never forwards those, so
+    // advertising one here would render a control this transport cannot answer.
+    expect(m.settings.event_subscriptions.bot_events).toEqual(
+      [...SLACK_BOT_EVENTS].filter((event) => !SLACK_SOCKET_ONLY_BOT_EVENTS.includes(event))
+    )
+    expect(m.settings.event_subscriptions.bot_events).not.toContain('agent_session_stopped')
   })
 
   it('falls back to the default app name when blank', () => {
@@ -109,11 +112,9 @@ describe('buildInstallManifest', () => {
   it('pins the exact bot events (drift guard)', () => {
     expect([...SLACK_BOT_EVENTS]).toEqual([
       'agent_session_stopped',
-      'agent_session_title_changed',
       'app_mention',
       'app_uninstalled',
       'assistant_thread_started',
-      'assistant_thread_context_changed',
       'message.channels',
       'message.groups',
       'message.im',

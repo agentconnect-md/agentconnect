@@ -763,11 +763,21 @@ export class SlackConnection implements PlatformConnection {
       const thread = this.rememberAssistantThread(event as AssistantThreadStartedEvent)
       if (thread) log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
     })
-    // Native stop button, Socket Mode arm. The HTTP arm reaches the same method through the relay.
+    // Native stop button. Slack leaves the session in `processing`, so interrupt the turn then transition it.
     this.app.event('agent_session_stopped', async ({ event }) => {
       const ev = event as { channel?: string; thread_ts?: string; user?: string }
-      if (!ev.channel || !ev.thread_ts) return
-      await this.agentSessionStopped(ev.channel, ev.thread_ts, ev.user)
+      const channel = ev.channel
+      const thread = ev.thread_ts
+      if (!channel || !thread) return
+      log?.debug(`slack: agent session stopped ch=${channel} thread=${thread} user=${ev.user ?? '?'}`)
+      const sessionKey = await this.deps.onMessageShortcut?.({ channel, thread, userId: ev.user })
+      if (sessionKey)
+        this.deps.onStatusAction?.({
+          kind: 'cancel',
+          sessionKey,
+          ...(ev.user ? { actor: { userId: ev.user } } : {})
+        })
+      await this.queue.enqueue(() => this.setSessionLifecycle(channel, thread, 'active'))
     })
     // Membership changes: the bot was invited to (member_joined_channel, filtered
     // to our own user id) or removed from (channel_left / group_left) a channel.
@@ -1801,18 +1811,12 @@ export class SlackConnection implements PlatformConnection {
     })
   }
 
-  /** The native Stop, from either transport: resolve the session this conversation owns, interrupt
-   *  its turn, then transition the session — Slack leaves it in `processing` on its own. */
-  async agentSessionStopped(channel: string, threadTs: string, userId?: string): Promise<void> {
-    this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
-    const sessionKey = await this.deps.onMessageShortcut?.({ channel, thread: threadTs, ...(userId ? { userId } : {}) })
-    if (sessionKey) this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
-    await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))
-  }
-
   // The lifecycle half of setStatus. Posting a message does NOT end the loading UX — only `active` does.
   // Deduped per (channel, thread); no username/icon, because Slack keeps those sticky until cleared.
   private async setSessionLifecycle(channel: string, threadTs: string, status: 'processing' | 'active'): Promise<void> {
+    // Send-only (HTTP) bots take inbound from the relay, which does not forward the stop event —
+    // so `processing` here would render a Stop button nothing on this side could ever answer.
+    if (this.deps.sendOnly) return
     const key = `${channel}:${threadTs}`
     if (this.sessionLifecycle.get(key) === status) return
     try {

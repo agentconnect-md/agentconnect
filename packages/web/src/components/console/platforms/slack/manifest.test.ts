@@ -4,6 +4,7 @@ import {
   slackCreateAppUrl,
   SLACK_BOT_SCOPES,
   SLACK_BOT_EVENTS,
+  SLACK_SOCKET_ONLY_BOT_EVENTS,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
   PLATFORM_APP_DESCRIPTION
 } from './manifest'
@@ -39,11 +40,9 @@ describe('manifest parity with the Control Plane', () => {
   it('pins the exact bot events (drift guard)', () => {
     expect([...SLACK_BOT_EVENTS]).toEqual([
       'agent_session_stopped',
-      'agent_session_title_changed',
       'app_mention',
       'app_uninstalled',
       'assistant_thread_started',
-      'assistant_thread_context_changed',
       'message.channels',
       'message.groups',
       'message.im',
@@ -65,24 +64,23 @@ describe('buildSlackManifest', () => {
     expect(branded.display_information.background_color).toBe('#c62a78')
   })
 
-  // One event list for both transports: Socket Mode receives the stop directly, and the relay
-  // forwards it to the daemon that owns the conversation, so neither variant withholds it.
-  it('advertises the same bot events on socket and over http', () => {
+  // The stop button is a Socket Mode capability: the relay's HTTP ingress forwards chat and
+  // finalization events only, so an http app advertising it would show a control that goes nowhere.
+  it('advertises the socket-only events on socket, and withholds them over http', () => {
     const socket = buildSlackManifest({ name: 'acme' })
     const http = buildSlackManifest({ name: 'acme' }, { mode: 'http', relayUrl: 'https://relay.example' })
 
     expect(socket.settings.socket_mode_enabled).toBe(true)
     expect(socket.settings.event_subscriptions.bot_events).toEqual([...SLACK_BOT_EVENTS])
     expect(http.settings.socket_mode_enabled).toBe(false)
-    expect(http.settings.event_subscriptions.bot_events).toEqual([...SLACK_BOT_EVENTS])
-    for (const manifest of [socket, http])
-      expect(manifest.settings.event_subscriptions.bot_events).toEqual(
-        expect.arrayContaining([
-          'agent_session_stopped',
-          'agent_session_title_changed',
-          'assistant_thread_context_changed'
-        ])
-      )
+    expect(http.settings.event_subscriptions.bot_events).toEqual(
+      [...SLACK_BOT_EVENTS].filter((event) => !SLACK_SOCKET_ONLY_BOT_EVENTS.includes(event))
+    )
+    expect(http.settings.event_subscriptions.bot_events).not.toContain('agent_session_stopped')
+  })
+
+  it('pins the socket-only event list (drift guard)', () => {
+    expect([...SLACK_SOCKET_ONLY_BOT_EVENTS]).toEqual(['agent_session_stopped'])
   })
 
   it('uses the generic public app description', () => {

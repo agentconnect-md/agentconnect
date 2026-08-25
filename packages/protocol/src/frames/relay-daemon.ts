@@ -289,13 +289,6 @@ export const RdSlackAction = z.discriminatedUnion('kind', [
     channelId: z.string().min(1),
     threadTs: z.string().min(1)
   }),
-  // Slack's native agent-session Stop, addressed by conversation: the relay never sees a session
-  // key on the event, so the daemon resolves the owning session exactly as Socket Mode does.
-  z.object({
-    kind: z.literal('agent-session-stopped'),
-    channelId: z.string().min(1),
-    threadTs: z.string().min(1)
-  }),
   z.object({ kind: z.literal('set-model'), model: z.string().min(1) }),
   z.object({ kind: z.literal('set-effort'), effort: z.string().min(1) }),
   z.object({ kind: z.literal('set-permission-mode'), permissionMode: z.string().min(1) }),
