@@ -217,6 +217,7 @@ export class PgOrgRepo implements OrgRepo {
       )
       -- Driven from "org" so an org holding nothing still reports its zeros.
       SELECT o.id AS "orgId",
+             o.slug AS "slug",
              COALESCE(d.n, 0)::int AS "daemons",
              COALESCE(a.n, 0)::int AS "agents",
              COALESCE(s.total, 0)::int AS "sessionsTotal",

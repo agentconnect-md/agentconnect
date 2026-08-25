@@ -6,6 +6,7 @@ const NOW = new Date('2026-01-01T00:00:00Z')
 
 const row = (over: Partial<OrgTelemetryRow> = {}): OrgTelemetryRow => ({
   orgId: 'org_acme',
+  slug: 'acme',
   daemons: 2,
   agents: 7,
   sessionsTotal: 900,
@@ -33,6 +34,16 @@ describe('orgObservations', () => {
     expect(valueOf(obs, 'sessions', '24h')).toBe(5)
     // The ID, never the slug: a slug is mutable and is user-chosen text.
     expect(obs.every((o) => o.attrs.org === 'org_acme')).toBe(true)
+    expect(obs.filter((o) => o.metric !== 'info').every((o) => o.attrs.slug === undefined)).toBe(true)
+  })
+
+  // The whole point of the info series: the readable handle lives on ONE series a dashboard joins
+  // by `org`, so renaming an org churns that series alone and leaves every count's identity intact.
+  it('carries the slug on a separate always-1 info series', () => {
+    const obs = orgObservations([row()])
+    expect(obs.filter((o) => o.metric === 'info')).toEqual([
+      { metric: 'info', value: 1, attrs: { org: 'org_acme', slug: 'acme' } }
+    ])
   })
 
   // The counts are not a hierarchy: only `total` is cumulative, so an org that has stopped using
@@ -46,11 +57,11 @@ describe('orgObservations', () => {
 
   // A series that vanishes on the way to zero is invisible on a dashboard — an org that removed
   // its last daemon would look like an org that was never there.
-  it('emits all five series for an org holding nothing, as zeros', () => {
+  it('emits all five counts for an org holding nothing, as zeros', () => {
     const empty = row({ orgId: 'org_empty', daemons: 0, agents: 0, sessionsTotal: 0, sessions30d: 0, sessions24h: 0 })
-    const obs = orgObservations([empty])
-    expect(obs).toHaveLength(5)
-    expect(obs.map((o) => o.value)).toEqual([0, 0, 0, 0, 0])
+    const counts = orgObservations([empty]).filter((o) => o.metric !== 'info')
+    expect(counts).toHaveLength(5)
+    expect(counts.map((o) => o.value)).toEqual([0, 0, 0, 0, 0])
   })
 
   it('reports every org, so a busy one cannot be averaged away by an idle one', () => {

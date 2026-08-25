@@ -42,18 +42,25 @@ describe('orgTelemetry', () => {
     expect(byId(rows, other.id)).toMatchObject({ daemons: 0, agents: 1, sessionsTotal: 1 })
   })
 
-  // The label has to survive a rename, and must not carry user-chosen text — so the row is keyed
-  // by id and the slug is never read.
-  it('identifies an org by id, not by its mutable slug', async () => {
-    const org = await prisma.org.create({ data: { slug: 'before-rename' } })
+  // The counts have to survive a rename, so a row is keyed by id; the slug is read beside it and is
+  // meant to follow the rename — that is the whole job of the info series it feeds.
+  it('keys a row by id while the slug follows a rename', async () => {
+    const org = await prisma.org.create({ data: { slug: 'before-rename', name: 'Display Name' } })
 
     const before = await repo().orgTelemetry(NOW)
     await prisma.org.update({ where: { id: org.id }, data: { slug: 'after-rename' } })
     const after = await repo().orgTelemetry(NOW)
 
-    expect(byId(before, org.id)).toBeDefined()
-    expect(byId(after, org.id)).toBeDefined()
-    expect(Object.keys(byId(after, org.id))).not.toContain('orgSlug')
+    expect(byId(before, org.id)).toMatchObject({ slug: 'before-rename' })
+    expect(byId(after, org.id)).toMatchObject({ slug: 'after-rename' })
+  })
+
+  // The display name is free-form text a user typed; nothing downstream may export it, so the read
+  // must not hand it out in the first place.
+  it('does not read the org display name at all', async () => {
+    const org = await prisma.org.create({ data: { slug: 'named-org', name: 'Display Name' } })
+
+    expect(Object.keys(byId(await repo().orgTelemetry(NOW), org.id))).not.toContain('name')
   })
 
   // An org running entirely on the install-wide pool reads zero daemons — the member is shared by
