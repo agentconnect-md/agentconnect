@@ -171,11 +171,10 @@ async function recordEventSession(
   agentId: AgentId,
   daemonId: DaemonId,
   deps: DaemonWsDeps,
-  /** §4.1 poke sink (session-access-cold-visit.md) — live `event/session` only. A CP
-   *  restart drains daemon outboxes as `event/session-sync`, and replaying those as
-   *  pokes would herd the warmer against cold cooldown state (§4.2(6)), so the sync
-   *  handler passes nothing. */
-  warmer?: DaemonWsDeps['sessionAccessWarmer']
+  /** Live events poke the access warmer; durable replays do not. */
+  warmer?: DaemonWsDeps['sessionAccessWarmer'],
+  /** Lifecycle snapshots may capture only their own session's PR. */
+  pullRequestFeedback?: DaemonWsDeps['pullRequestFeedback']
 ): Promise<void> {
   const [classification, candidate] = await Promise.all([
     classifyMilestone(p, agentId, deps),
@@ -226,6 +225,7 @@ async function recordEventSession(
     (s) => s.visibilityAckedRev < s.visibilityRev
   )
   if (confirm.length > 0) void deps.visibilityPush?.notifySessions(confirm)
+  if (session) pullRequestFeedback?.trackSession(session)
   // Publish only after the metadata commit. Browser subscribers use this as an
   // invalidation signal and immediately re-read `/sessions`; publishing first
   // would race that GET against the upsert and leave the new row invisible.
@@ -245,7 +245,7 @@ export const handleEventSession: Handler = async (frame, conn, deps) => {
   const agentId = AgentId(p.agentId)
   const daemonId = DaemonId(conn.daemonId)
   await runForReportingAgent(orgId, agentId, daemonId, deps, () =>
-    recordEventSession(p, orgId, agentId, daemonId, deps, deps.sessionAccessWarmer)
+    recordEventSession(p, orgId, agentId, daemonId, deps, deps.sessionAccessWarmer, deps.pullRequestFeedback)
   )
 }
 
@@ -269,7 +269,7 @@ export const handleEventSessionSync: Handler = async (frame, conn, deps) => {
   try {
     const agent = await deps.agent.get(orgId, agentId)
     if (agent && (await (deps.placementResolver ?? PLACEMENT_ONLY).mayAct(agent, daemonId)))
-      await recordEventSession(p, orgId, agentId, daemonId, deps)
+      await recordEventSession(p, orgId, agentId, daemonId, deps, undefined, deps.pullRequestFeedback)
     // ACK only after recordEventSession's transaction has committed. An agent
     // placed elsewhere (or deleted) can never accept this daemon's stale row, so
     // retaining it forever would be worse than collecting it.

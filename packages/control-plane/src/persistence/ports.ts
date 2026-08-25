@@ -35,7 +35,8 @@ import type {
   CodeHostReviewOpState,
   CodeHostReviewState,
   CodeHostProvider,
-  HookKind
+  HookKind,
+  PullRequestFeedbackSignal
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -1464,6 +1465,41 @@ export interface SessionRepo {
    *  owner. Null when none. Placement is deliberately NOT a predicate here: which daemon serves
    *  the agent is {@link PlacementResolver}'s answer, and a pool agent names no machine. */
   findThreadOwner(botId: BotId, channel: string, thread: string): Promise<{ agentId: string } | null>
+}
+
+export interface PullRequestWakeRecord {
+  deliveryKey: string
+  orgId: OrgId
+  installationId: bigint
+  repoId: bigint
+  repoFullName: string
+  pullNumber: number
+  sessionId: SessionId
+}
+
+/** Durable PR→session identity plus one level-triggered wake marker per PR. */
+export interface SessionPullRequestFeedbackRepo {
+  /** Whether this exact session already established its one forward PR binding. */
+  hasSession(sessionId: SessionId): Promise<boolean>
+  /** First session to claim a numeric repo+PR wins. */
+  linkSession(input: {
+    sessionId: SessionId
+    agentId: AgentId
+    orgId: OrgId
+    repoId: bigint
+    repoFullName: string
+    installationId: bigint
+    pullNumber: number
+  }): Promise<boolean>
+  /** Idempotently dirty one PR wake. */
+  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, signalAt: Date, nextAttemptAt: Date): Promise<void>
+  /** Cross-process lease for the next due wake that already has a proven session owner. */
+  claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null>
+  /** Clear only the delivery key that was accepted; a concurrent newer wake remains dirty. */
+  complete(item: PullRequestWakeRecord, owner: string): Promise<void>
+  /** Move one failed wake into the future so later PRs remain eligible. */
+  defer(item: PullRequestWakeRecord, owner: string, nextAttemptAt: Date): Promise<void>
+  deleteExpired(unmatchedBefore: Date): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

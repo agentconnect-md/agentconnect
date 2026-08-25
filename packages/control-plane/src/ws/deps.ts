@@ -49,6 +49,7 @@ import type { AgentId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
 import type { SlackSessionAccessService } from '../http/slack-session-access.js'
 import type { SessionAccessWarmer } from '../http/session-access-warmer.js'
+import type { SessionPullRequestFeedbackService } from '../github/session-pull-request-feedback.service.js'
 
 /** Config slice the WS edge reads. */
 export interface WsConfig {
@@ -82,6 +83,8 @@ export interface DaemonWsDeps {
   /** Pushes the CP-confirmed capture gate to the owning daemon (§5.1); absent ⇒
    *  daemons converge on their next register snapshot instead. */
   visibilityPush?: SessionVisibilityPushService
+  /** Discovers terminal session→PR links and drains durable PR feedback after daemon readiness. */
+  pullRequestFeedback?: Pick<SessionPullRequestFeedbackService, 'trackSession' | 'kick'>
   /** Publishes persisted session milestones to the WebUI SSE feed. */
   events: SessionEventSink
   /** Ownership check for the `integration/channels` EVT (integration → daemon scope). */

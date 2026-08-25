@@ -146,6 +146,8 @@ export async function seedSessionMeta(
     lastActivityAt?: Date
     /** When the session BEGAN; defaults to now. What the per-org session-rate windows read. */
     startedAt?: Date
+    phase?: 'plan' | 'start' | 'end' | 'problem'
+    workspaceIsolation?: 'shared' | 'session'
     model?: string
     /** Owning organization; defaults to the seeded one (multi-org tests pass their own). */
     orgId?: string
@@ -158,7 +160,7 @@ export async function seedSessionMeta(
       orgId: opts.orgId ?? DEFAULT_ORG_ID,
       platform: opts.platform ?? 'slack',
       channel: opts.channel ?? '#general',
-      phase: 'start',
+      phase: opts.phase ?? 'start',
       lastActivityAt: opts.lastActivityAt ?? new Date(),
       ...(opts.startedAt ? { startedAt: opts.startedAt } : {}),
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
@@ -166,6 +168,7 @@ export async function seedSessionMeta(
       ...(opts.daemonId ? { daemonId: opts.daemonId } : {}),
       ...(opts.contentSetId ? { contentSetId: opts.contentSetId } : {}),
       ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId } : {}),
+      ...(opts.workspaceIsolation ? { workspaceIsolation: opts.workspaceIsolation } : {}),
       ...(opts.model ? { model: opts.model } : {})
     }
   })

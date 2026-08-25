@@ -11,6 +11,7 @@ import {
   type RcGithubRerequest,
   type RcGithubRerequestResult,
   type RcHookAssign,
+  type RcPullRequestFeedback,
   type RcRunReport,
   type RdAck,
   type RdMsg
@@ -178,6 +179,8 @@ interface Harness {
   doorbells: RcGithubInstallation[]
   authzRequests: RcGithubCommentAuthz[]
   rerequestRequests: RcGithubRerequest[]
+  feedback: RcPullRequestFeedback[]
+  feedbackError: boolean
   rerequestResult: RcGithubRerequestResult | (() => Promise<RcGithubRerequestResult>)
   authzResult: boolean | ((request: RcGithubCommentAuthz) => boolean | Promise<boolean>)
   ack: RdAck | (() => Promise<RdAck>)
@@ -191,7 +194,14 @@ function makeHarness(authzCapacity = 20): Harness {
   const h: Partial<Harness> &
     Pick<
       Harness,
-      'sent' | 'dispatches' | 'reports' | 'doorbells' | 'authzRequests' | 'rerequestRequests' | 'onlineDaemons'
+      | 'sent'
+      | 'dispatches'
+      | 'reports'
+      | 'doorbells'
+      | 'authzRequests'
+      | 'rerequestRequests'
+      | 'feedback'
+      | 'onlineDaemons'
     > = {
     sent: [],
     dispatches: [],
@@ -199,6 +209,8 @@ function makeHarness(authzCapacity = 20): Harness {
     doorbells: [],
     authzRequests: [],
     rerequestRequests: [],
+    feedback: [],
+    feedbackError: false,
     authzResult: true,
     rerequestResult: { allowed: false },
     ack: { msgId: 'x', accepted: true },
@@ -228,6 +240,11 @@ function makeHarness(authzCapacity = 20): Harness {
     }),
     report: (r) => h.reports.push(r),
     doorbell: (p) => h.doorbells.push(p),
+    reportPullRequestFeedback: async (signal) => {
+      if (h.feedbackError) throw new Error('CP unavailable')
+      h.feedback.push(signal)
+      return true
+    },
     authorizeComment: async (request) => {
       h.authzRequests.push(request)
       return typeof h.authzResult === 'function' ? h.authzResult(request) : h.authzResult!
@@ -347,6 +364,58 @@ describe('github ingress', () => {
     it('a verified ping answers 204 (and an unverified one 401)', async () => {
       expect((await post('ping', { zen: 'Design for failure.' })).statusCode).toBe(204)
       expect((await post('ping', { zen: 'x' }, { secret: 'ghw_other' })).statusCode).toBe(401)
+    })
+  })
+
+  describe('PR session feedback', () => {
+    it('persists a PR issue comment even when the shared GitHub App bot authored it', async () => {
+      const res = await post(
+        'issue_comment',
+        issuesPayload({
+          action: 'created',
+          sender: { login: 'agentconnect-example[bot]', type: 'Bot' },
+          issue: { number: 77, pull_request: { url: 'https://api.example.test/repos/acme/infra/pulls/77' } },
+          comment: { body: 'Verdict: changes requested', author_association: 'MEMBER' }
+        })
+      )
+
+      expect(res.statusCode).toBe(202)
+      expect(h.feedback).toEqual([
+        expect.objectContaining({
+          installationId: String(INSTALLATION),
+          repoId: String(REPO_ID),
+          repoFullName: 'acme/infra',
+          pullNumber: 77
+        })
+      ])
+    })
+
+    it('persists one signal per PR from a failed check suite and ignores successful suites', async () => {
+      const failed = await post('check_suite', {
+        action: 'completed',
+        installation: { id: INSTALLATION },
+        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        check_suite: { conclusion: 'failure', pull_requests: [{ number: 77 }, { number: 78 }] }
+      })
+      expect(failed.statusCode).toBe(202)
+      expect(h.feedback.map((signal) => signal.pullNumber)).toEqual([77, 78])
+
+      await post('check_suite', {
+        action: 'completed',
+        installation: { id: INSTALLATION },
+        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        check_suite: { conclusion: 'success', pull_requests: [{ number: 77 }] }
+      })
+      expect(h.feedback).toHaveLength(2)
+    })
+
+    it('returns 503 instead of acknowledging feedback that the CP did not persist', async () => {
+      h.feedbackError = true
+      const res = await post(
+        'pull_request_review_comment',
+        pullPayload({ action: 'created', comment: { body: 'please change this' } })
+      )
+      expect(res.statusCode).toBe(503)
     })
   })
 

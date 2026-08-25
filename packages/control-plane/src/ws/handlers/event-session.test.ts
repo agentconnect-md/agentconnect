@@ -709,6 +709,26 @@ describe('handleEventSession', () => {
     expect(poke).not.toHaveBeenCalled()
   })
 
+  it('captures PR ownership only from the exact session lifecycle snapshot', async () => {
+    const trackSession = vi.fn()
+    const deps = scopedDeps({
+      session: { recordMilestone: vi.fn().mockResolvedValue(recorded({ phase: 'end' })) },
+      events: { publish: vi.fn() },
+      pullRequestFeedback: { trackSession }
+    })
+
+    await handleEventSession(eventSessionFrame(), { daemonId: DAEMON_ID, orgId: ORG_ID } as DaemonConnection, deps)
+    expect(trackSession).toHaveBeenCalledOnce()
+
+    trackSession.mockClear()
+    await handleEventSessionSync(
+      eventSessionFrame('event/session-sync'),
+      { daemonId: DAEMON_ID, orgId: ORG_ID, replyTo: vi.fn(), sendError: vi.fn() } as unknown as DaemonConnection,
+      deps
+    )
+    expect(trackSession).toHaveBeenCalledOnce()
+  })
+
   it('does not publish when persistence fails', async () => {
     const failure = new Error('write failed')
     const publish = vi.fn()

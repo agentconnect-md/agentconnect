@@ -4,6 +4,8 @@ import type {
   ChildSessionStatusProbe,
   SessionHistoryReq,
   SessionListReq,
+  SessionPullRequestFeedback,
+  SessionPullRequestFeedbackResult,
   SessionToolBodyReq,
   SessionVisibilityPush
 } from '@agentconnect.md/protocol'
@@ -18,6 +20,8 @@ export interface SessionControlDeps extends ConfigApplyDeps {
    *  (session-concept §5.4). The daemon re-checks the lineage itself — the CP proves only that the
    *  asking daemon owns the claimed parent session, never that the child belongs to it. */
   childSessionStatusProbe?: (probe: ChildSessionStatusProbe) => ChildSessionStatus | Promise<ChildSessionStatus>
+  /** Continue the exact local session named by body-free GitHub feedback metadata. */
+  pullRequestFeedback?: (req: SessionPullRequestFeedback) => Promise<SessionPullRequestFeedbackResult>
 }
 
 export const sessionVisibility: ControlHandler<SessionControlDeps> = async (frame: AnyFrame, deps, wire) => {
@@ -78,5 +82,19 @@ export const sessionChildStatusProbe: ControlHandler<SessionControlDeps> = async
     wire.reply(frame, 'session/child-status/probe/ok', answer)
   } catch (err) {
     wire.sendError(frame.id, 'INTERNAL', `session/child-status/probe failed: ${(err as Error).message}`, false)
+  }
+}
+
+export const sessionPullRequestFeedback: ControlHandler<SessionControlDeps> = async (frame: AnyFrame, deps, wire) => {
+  const req = frame.payload as SessionPullRequestFeedback
+  try {
+    const result = (await deps.pullRequestFeedback?.(req)) ?? {
+      deliveryKey: req.deliveryKey,
+      accepted: false,
+      reason: 'not_ready' as const
+    }
+    wire.reply(frame, 'session/pull-request-feedback/result', result)
+  } catch (err) {
+    wire.sendError(frame.id, 'INTERNAL', `session/pull-request-feedback failed: ${(err as Error).message}`, true)
   }
 }
