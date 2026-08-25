@@ -5,7 +5,7 @@
  * Prisma client, listen, graceful shutdown) and delegates ALL wiring to
  * `app.ts:buildApp(deps)`, the same factory the tests call. Orchestration /
  * registry / BFF live in the assembled graph; this file never sits on the message
- * hot path (see docs/designs/daemon-centric-detailed-design.md).
+ * hot path (see docs/designs/system-detailed-design.md).
  *
  *   loadConfig() → buildApp({prisma, clock, secretsProvider})
  *     → http.listen() → mountWs() → SIGTERM/SIGINT → shutdown()

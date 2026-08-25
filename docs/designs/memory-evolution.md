@@ -2,7 +2,7 @@
 
 > Status: M-1 through M-5D are implemented. M-6 (shared scope) and M-7
 > (retrieval upgrade) are not implemented; see §8.
-> Prerequisites: [memory-system-plan.md](memory-system-plan.md), [daemon-centric-architecture.md](daemon-centric-architecture.md), [shared-bot-relay.md](shared-bot-relay.md), [high-availability.md](high-availability.md), [centralized-tool-management.md](centralized-tool-management.md), [secret-store-seams.md](secret-store-seams.md)
+> Prerequisites: [memory-system-plan.md](memory-system-plan.md), [architecture.md](architecture.md), [shared-bot-relay.md](shared-bot-relay.md), [high-availability.md](high-availability.md), [centralized-tool-management.md](centralized-tool-management.md), [secret-store-seams.md](secret-store-seams.md)
 > Keywords: MemoryProvider abstraction, native/managed/external, out-of-process plugin, MCP profile, per-turn recall/capture, scope (user/agent/session/shared), history, body locality
 
 ---

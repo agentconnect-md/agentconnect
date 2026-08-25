@@ -176,11 +176,11 @@ Thanks to everyone who has already contributed:
 
 ## Architecture
 
-![AgentConnect message paths between the platforms, daemons, relay, and Control Plane](docs/designs/daemon-centric-architecture.svg)
+![AgentConnect message paths between the platforms, daemons, relay, and Control Plane](docs/designs/architecture.svg)
 
 | Component                  | Responsibility                                                                                                                                                                                                     |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Daemon**                 | Runs placed agents over local ACP, owns workspaces and session state, maintains direct platform connections and schedules, and sends model-provider traffic directly                                               |
+| **Daemon**                 | Runs placed agents over daemon-owned ACP, owns workspaces and session state, maintains direct platform connections and schedules, and sends model-provider traffic directly                                        |
 | **Relay** (optional)       | Accepts callback-based ingress and webchat, proxies centrally managed MCP and OpenConnector access, and forwards message ingress directly to the owning daemon without durable storage                             |
 | **Control Plane + Web UI** | Manages authentication, configuration, placement, permissions, metadata, and observability; stores explicitly approved organization knowledge/skill revisions and otherwise proxies bounded daemon reads on demand |
 
@@ -192,7 +192,7 @@ temporarily unavailable, established sessions and daemon-local schedules
 continue; new assignments and configuration changes resume after reconnection.
 
 See the
-[architecture design](docs/designs/daemon-centric-architecture.md) for the
+[architecture design](docs/designs/architecture.md) for the
 complete message paths, trust boundaries, and failure model.
 
 ## License

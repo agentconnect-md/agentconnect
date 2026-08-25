@@ -4,7 +4,7 @@
 implemented.
 
 > The current technical foundation is the
-> [daemon-centric architecture](daemon-centric-architecture.md).
+> [architecture design](architecture.md).
 > [agent-collaboration-implementation.md](agent-collaboration-implementation.md)
 > defines agent-to-agent delivery, daemon-injected MCP tools such as
 > `messageAgent` and `sendPlatformMessage`, orchestration, and concurrency.

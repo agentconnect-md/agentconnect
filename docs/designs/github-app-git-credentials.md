@@ -61,7 +61,7 @@ stale until a network fetch succeeds.
 3. **Git operations initiated by the agent must also work without host
    credentials.** A coding agent in the workspace can run `git push` directly
    without requiring the user to sign in to anything on the machine.
-4. Preserve the daemon-centric invariant: the App **private key exists only in
+4. Preserve the data-plane invariant: the App **private key exists only in
    the CP** and is never delivered elsewhere. A scoped installation token is
    delivered through `gitcred/grant` over the authenticated control WebSocket,
    like other assigned credential material. Webchat content remains on relay

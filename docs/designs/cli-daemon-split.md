@@ -8,7 +8,7 @@
 >   startup and local runtime behavior.
 > - [daemon-cp-ws-protocol.md](daemon-cp-ws-protocol.md) defines the
 >   `daemon/restart` and `daemon/upgrade` control requests.
-> - [daemon-centric-architecture.md](daemon-centric-architecture.md) defines the
+> - [architecture.md](architecture.md) defines the
 >   Control Plane and daemon trust boundary.
 
 AgentConnect separates its stable user entry point from the frequently updated

@@ -1059,7 +1059,7 @@ export class RelayIngressManager {
    *  silently broken. */
   private async noticeGatedUnrouted(botId: string, msg: WireNormalizedMessage): Promise<void> {
     // Once-per-conversation cannot rest on replica-local state, and the CP must
-    // never be a per-message round-trip (daemon-centric boundary) — so both
+    // never be a per-message round-trip (control-plane/data-plane boundary) — so both
     // arbitration inputs are data-plane state stamped on the assignment:
     //  • CHANNEL mentions arrive as TWO event copies that may land on different
     //    pods → only the deterministic noticeAuthority pod posts (whichever copy

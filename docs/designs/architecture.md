@@ -1,8 +1,8 @@
-# Architecture Design: Daemon-Centric Messaging and Agent Execution
+# Architecture Design: Messaging and Agent Execution
 
 > Status: Implemented (current architecture) — the architecture described here has been implemented in `packages/{message,protocol,daemon,control-plane,relay}` and serves as the upstream anchor for the detailed design documents
 > Scope: A new system that bridges messaging platforms (such as Slack and Telegram) to AI coding agents
-> Keywords: daemon-owned platform integrations, local ACP, control-plane/data-plane separation, operator trust, optional sandboxing, daemon visibility
+> Keywords: control-plane/data-plane separation, daemon-owned platform integrations, daemon-owned ACP, deployment modes, operator trust, optional sandboxing, daemon visibility
 
 ---
 
@@ -19,8 +19,13 @@ owning daemon. The Control Plane remains responsible only for orchestration.
 The direct consequences are:
 
 - The center is not on the hot path of any user message.
-- Interaction between an agent and its driver protocol (ACP) happens over a **local connection** inside the daemon, with no network hop.
+- The agent's driver protocol (ACP) is **owned by the daemon and never crosses the Control Plane**: self-hosted, over a local connection with no network hop; in the pool, over one in-cluster dial to the sandbox pod (§3.1).
 - Each daemon is a self-contained "message processing + agent execution" unit that can scale and tolerate failures independently.
+
+**The daemon is a role in the data plane, not a deployment location.** Where it
+runs is a separate choice, and the two modes in §3.1 differ in who operates the
+host, where durable state lives, and how the agent runtime is launched. Claims
+below that hold in only one mode are marked; everything unmarked holds in both.
 
 ---
 
@@ -32,12 +37,12 @@ The direct consequences are:
   carries orchestration and telemetry plus bounded, authorized, on-demand reads
   of daemon-local data for the Web UI; those reads are not persisted by the
   Control Plane.
-- Keep direct platform integrations and agent execution local to the daemon, using
-  the relay only for ingress that requires a stable public callback or browser
-  endpoint.
+- Keep direct platform integrations and agent execution owned by the daemon,
+  using the relay only for ingress that requires a stable public callback or
+  browser endpoint.
 - Allow daemons to scale horizontally and independently, so one daemon failure does not affect other daemons.
 - Run multiple agents on one daemon, with a separate ACP adapter for each agent type.
-- Allow established sessions to continue sending, receiving, and executing locally on the daemon while the Control Plane is temporarily unavailable (degraded availability).
+- Allow established sessions to continue sending, receiving, and executing on their daemons while the Control Plane is temporarily unavailable (degraded availability).
 
 ### Non-Goals
 
@@ -49,7 +54,7 @@ The direct consequences are:
 
 ## 3. Architecture Overview
 
-![AgentConnect message paths with optional relay ingress](daemon-centric-architecture.svg)
+![AgentConnect message paths with optional relay ingress](architecture.svg)
 
 The equivalent ASCII representation below makes the same design easier to diff
 and search.
@@ -67,7 +72,7 @@ and search.
  Direct platforms ┌──────────────────────────────────────────┐
  Slack Socket  ◀─▶│ daemon instances                         │◀── CP WebSocket
  Telegram          │ platform + hook routing                  │    control,
- Discord           │              │ local ACP                 │    telemetry,
+ Discord           │              │ daemon ACP                │    telemetry,
  Lark / Feishu     │              ▼                           │    bounded reads
  Long Connection   │       Claude / Codex / ACP agents        │
                    └──────────────────────────────────────────┘
@@ -82,8 +87,35 @@ and search.
 | **daemon**            | Direct platform integration, relay-delivered routing, and agent runtime; a self-contained message-processing and execution unit                                                                                                                                   |
 | **relay**             | Optional public ingress plane: Slack and Lark / Feishu HTTP callbacks, GitHub and generic webhooks, and webchat pass through the relay pool to daemons; daemons still send ordinary provider API traffic directly. See [shared-bot-relay.md](shared-bot-relay.md) |
 | **Platform adapters** | `slack-adapter`, `telegram-adapter`, Discord, Lark / Feishu, and others; handle platform I/O and message normalization                                                                                                                                            |
-| **ACP adapters**      | `claude-agent-acp` and `codex-acp`; implement ACP and drive models locally                                                                                                                                                                                        |
+| **ACP adapters**      | `claude-agent-acp` and `codex-acp`; implement ACP and drive the model runtime the daemon owns                                                                                                                                                                     |
 | **Agent instances**   | Claude and Codex model processes                                                                                                                                                                                                                                  |
+
+### 3.1 Deployment modes
+
+The separation above is the invariant. How a daemon is hosted is not, and the
+two supported modes differ enough that a claim about one is often false about
+the other:
+
+|                       | **Self-hosted daemon**                                         | **Managed daemon pool**                                                                |
+| --------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Who operates the host | The organization                                               | The install                                                                            |
+| Process lifecycle     | Started by its operator (`agentconnect up`, or a service unit) | Pool members of one Kubernetes Deployment, governed by the Control Plane's duty ledger |
+| Ownership             | The daemon belongs to one organization                         | An install-wide member takes duty for many organizations                               |
+| Durable store         | Daemon-local SQLite                                            | One install-level PostgreSQL data plane shared by every member                         |
+| Agent runtime         | A child process on the daemon host, over stdio                 | A sandbox pod the daemon dials directly, carrying the same ACP stream                  |
+| Host credentials      | The operator's own, on their machine                           | Deployment-supplied and session-scoped; no operator sits at the host                   |
+
+AgentConnect Cloud runs the second mode; the first is what an OSS or
+bring-your-own-machine deployment runs. Both dial out to the same Control Plane
+over the same control WebSocket, and in neither does live message content or an
+ACP update stream cross the Control Plane. Everything in §5 through §8 and §10
+through §11 is about that shared data plane and holds in both.
+
+The mode-specific designs are
+[k8s-daemon-pool.md](k8s-daemon-pool.md) (duty ledger, membership, placement),
+[cloud-data-plane-postgres.md](cloud-data-plane-postgres.md) (the shared durable
+store), and [cluster-spawn-and-shim.md](cluster-spawn-and-shim.md) (sandbox-pod
+spawn and the in-sandbox shim).
 
 ---
 
@@ -93,11 +125,11 @@ and search.
 
 Its responsibilities are deliberately narrow:
 
-- **Orchestration, scheduling, and scaling**: decide which daemon hosts each workspace or session, and start, stop, and assign agents on a daemon according to load. Users run daemon processes themselves; daemons establish outbound connections to the CP, and the CP does not start or stop daemon processes.
+- **Orchestration, scheduling, and scaling**: decide which daemon hosts each workspace or session, and start, stop, and assign agents on a daemon according to load. Daemons always establish the connection outbound to the CP, which never dials in. Who runs the daemon process depends on the mode (§3.1): a self-hosted operator starts it themselves, while a pool member is started by the install's Deployment and takes duty through the Control Plane's ledger.
 - **Registry/Auth**: daemon registration and health, routing policies, and authentication policies.
 - **Web UI**: configuration, editing, and runtime monitoring.
 
-**Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. Even when the Control Plane is temporarily unavailable, **established sessions continue sending, receiving, and executing locally on their daemons** (degraded availability).
+**Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. Even when the Control Plane is temporarily unavailable, **established sessions continue sending, receiving, and executing on their daemons** (degraded availability).
 
 ### 4.2 daemon
 
@@ -106,8 +138,9 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 - It owns direct platform connections such as Slack Socket Mode, Lark / Feishu
   Long Connection, and Telegram, and receives pre-addressed Slack and
   Lark / Feishu HTTP, hook, and webchat items from the relay.
-- It routes and dispatches messages locally, then drives the agent through **local
-  ACP**.
+- It routes and dispatches messages itself, then drives the agent over
+  **daemon-owned ACP** — local IPC to a child process self-hosted, one dial to
+  the sandbox pod in the pool (§3.1). Neither shape involves the Control Plane.
 - It maintains one WebSocket to the Control Plane for control/telemetry and
   correlated, bounded read-back requests made by authorized Web UI callers.
   Those reads are transient and do not put live platform traffic or ACP output
@@ -127,8 +160,8 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 ### 4.4 ACP Adapters (`claude-agent-acp`, `codex-acp`)
 
 - Implement ACP and provide the entry point to an agent.
-- Receive ACP calls **locally from the daemon**, through an in-process call, local IPC, or a local socket.
-- Start and drive the corresponding model process (Claude or Codex) locally.
+- Receive ACP calls **from the owning daemon**: an in-process call, local IPC, or a local socket self-hosted; one in-cluster dial to the sandbox pod in the pool (§3.1).
+- Start and drive the corresponding model process (Claude or Codex) — a child process on the daemon host self-hosted, the sandbox pod's runtime in the pool. Either way the daemon owns the ACP session and no ACP traffic crosses the Control Plane.
 
 ---
 
@@ -151,10 +184,15 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 - **Excluded payloads**: live ACP update streams and platform ingress or reply
   traffic. Those messaging paths stay on the daemon or relay data plane.
 
-### 5.3 Inside the daemon: Local ACP
+### 5.3 Daemon → agent: ACP
 
-- Calls from a platform adapter to an ACP adapter are **in-process or local IPC** ACP calls, with no network hop.
-- This is the defining characteristic of the architecture: **ACP is a local protocol inside the daemon, not a network protocol**.
+- **ACP is daemon-owned, never a Control Plane protocol.** A platform adapter's
+  call reaches the ACP adapter without leaving the data plane. That is the part
+  that defines the architecture.
+- Self-hosted, the call is **in-process or local IPC**, with no network hop.
+- In the pool, the runtime lives in a sandbox pod and the daemon dials it
+  directly — one in-cluster hop, still no Control Plane in between. See
+  [cluster-spawn-and-shim.md](cluster-spawn-and-shim.md).
 
 ---
 
@@ -166,12 +204,12 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 Direct:
   Slack Socket Mode / Telegram / Discord / Lark / Feishu
     ↔ daemon direct adapter
-    → daemon local routing → [local ACP] → agent
+    → daemon routing → [daemon-owned ACP] → agent
 
 Relay-assisted:
   Slack HTTP · Lark / Feishu HTTP · GitHub · generic webhook · webchat
     → optional relay → rd/* → owning daemon
-    → daemon local routing → [local ACP] → agent
+    → daemon routing → [daemon-owned ACP] → agent
     → direct Slack/GitHub/provider API egress, or webchat output via the relay
 ```
 
@@ -216,7 +254,11 @@ The Control Plane achieves "orchestration without touching messages" over the co
 ### 9.1 Execution trust model
 
 This subsection is the normative trust model for daemon execution. Feature-specific
-designs must not silently strengthen it.
+designs must not silently strengthen it. It is written for the self-hosted mode,
+where a person holds the operator role. In the managed pool no such person
+exists: the install is the operator, no agent is operator-trusted, and the
+sandbox pod is the boundary rather than an option — see
+[cluster-spawn-and-shim.md](cluster-spawn-and-shim.md).
 
 A **daemon operator** is the person who controls the host, the daemon OS account,
 the daemon process, and its connection credential. This is an operational role, not
@@ -287,18 +329,18 @@ host to run sandboxed.
   OpenTelemetry path. Session milestones, usage summaries, health, and
   capability facts use the control WebSocket; credential and message content
   are excluded from telemetry.
-- **Tracing**: inject a trace ID into normalized messages and carry it through the platform adapter, local ACP, and agent for end-to-end tracing.
+- **Tracing**: inject a trace ID into normalized messages and carry it through the platform adapter, the ACP hop, and the agent for end-to-end tracing.
 
 ---
 
 ## 11. Failures and Recovery
 
-| Failure                | Impact                                      | Behavior                                                                                                           |
-| ---------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Control Plane outage   | Orchestration pauses                        | **Existing sessions continue locally on daemons**; new assignments and scaling pause, then catch up after recovery |
-| One daemon fails       | Sessions owned by that daemon are disrupted | The failure domain is isolated; the Control Plane detects the failure and reassigns sessions to another daemon     |
-| Platform adapter fails | Traffic for that platform is affected       | The daemon reconnects or retries locally and reports an alert                                                      |
-| Agent process crashes  | One agent task fails                        | The ACP adapter restarts the agent locally and reports the failure when necessary                                  |
+| Failure                | Impact                                      | Behavior                                                                                                                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Control Plane outage   | Orchestration pauses                        | **Existing sessions continue on their daemons**; new assignments and scaling pause, then catch up after recovery                                                                                                                                                                              |
+| One daemon fails       | Sessions owned by that daemon are disrupted | The failure domain is isolated; the Control Plane detects the failure and reassigns sessions to another daemon                                                                                                                                                                                |
+| Platform adapter fails | Traffic for that platform is affected       | The daemon reconnects or retries itself and reports an alert                                                                                                                                                                                                                                  |
+| Agent runtime crashes  | One agent task fails                        | The daemon reclaims the exited host and the next message re-spawns the runtime: a new child process self-hosted, a new process inside the agent's existing sandbox in the pool. A fresh sandbox generation happens only when the pod or its channel was lost, not on an ordinary runtime exit |
 
 ---
 
@@ -307,7 +349,7 @@ host to run sandboxed.
 ### Advantages
 
 - **No central hot path**: messages do not pass through the Control Plane, so the center is neither a throughput bottleneck nor a single point of failure.
-- **Low latency**: the message loop stays local to the daemon and ACP calls are local, avoiding network round trips.
+- **Low latency**: the message loop stays inside the daemon and its ACP call is local or one in-cluster hop, never a round trip through a center.
 - **Strong failure isolation**: one daemon failure affects only its sessions, producing a small blast radius.
 - **Near-linear scaling**: adding daemons adds throughput without a central bottleneck.
 - **Degradable control plane**: established sessions keep running while the Control Plane is unavailable.

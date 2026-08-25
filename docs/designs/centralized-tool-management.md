@@ -11,7 +11,7 @@
 >
 > Why not proxy through the CP? Doing so would put the CP on the hot path of
 > every tool call; **if the CP failed, every proxied MCP would fail**, directly
-> violating the daemon-centric guarantee that work continues through a CP
+> violating the guarantee that work continues through a CP
 > outage. The relay already serves as the secret-holding edge for pool-wide
 > Slack HTTP ingress: `rc/bot-assign` broadcasts the bot token and
 > `signingSecret` to every connected relay, and whichever relay receives an

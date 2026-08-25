@@ -4,7 +4,7 @@
 
 **Author:** AgentConnect team
 
-**Related:** [memory-evolution.md](memory-evolution.md) · [memory-system-plan.md](memory-system-plan.md) · [agent-collaboration-implementation.md](agent-collaboration-implementation.md) · [agents-collaboration-design.md](agents-collaboration-design.md) · [loop-breaker-design.md](loop-breaker-design.md) · [daemon-centric-architecture.md](daemon-centric-architecture.md)
+**Related:** [memory-evolution.md](memory-evolution.md) · [memory-system-plan.md](memory-system-plan.md) · [agent-collaboration-implementation.md](agent-collaboration-implementation.md) · [agents-collaboration-design.md](agents-collaboration-design.md) · [loop-breaker-design.md](loop-breaker-design.md) · [architecture.md](architecture.md)
 
 ## 1. Product boundary and motivation
 

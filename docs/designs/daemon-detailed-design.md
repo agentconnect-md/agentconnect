@@ -4,8 +4,8 @@
 >
 > Related documents:
 >
-> - Architecture: [`daemon-centric-architecture.md`](daemon-centric-architecture.md), explaining why the architecture is daemon-centric.
-> - System-level detailed design: [`daemon-centric-detailed-design.md`](daemon-centric-detailed-design.md), covering the modules, technology choices, and interfaces of the full system (Control Plane + Daemon).
+> - Architecture: [`architecture.md`](architecture.md), explaining why the Control Plane stays off the message hot path.
+> - System-level detailed design: [`system-detailed-design.md`](system-detailed-design.md), covering the modules, technology choices, and interfaces of the full system (Control Plane + Daemon).
 > - Collaboration design: [`agents-collaboration-design.md`](agents-collaboration-design.md), covering the product model and MCP-injected agent messaging.
 >
 > This document specifies daemon modules D1-D12: CLI shape and persistent

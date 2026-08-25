@@ -8,7 +8,7 @@
 > forces every ordinary ACP host into the OS sandbox. That enforcement follows
 > an obsolete assumption and is pending a separate code correction. The
 > normative execution model is
-> [daemon-centric-architecture.md §9.1](daemon-centric-architecture.md#91-execution-trust-model).
+> [architecture.md §9.1](architecture.md#91-execution-trust-model).
 >
 > **Scope:** protocol + control-plane + daemon + web
 >

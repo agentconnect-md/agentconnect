@@ -6,7 +6,7 @@
 > this lifecycle in [organization-knowledge.md](organization-knowledge.md).
 > Prerequisites: [memory-evolution.md](memory-evolution.md),
 > [memory-system-plan.md](memory-system-plan.md),
-> [daemon-centric-architecture.md](daemon-centric-architecture.md),
+> [architecture.md](architecture.md),
 > [shared-skills.md](shared-skills.md),
 > [organization-knowledge.md](organization-knowledge.md)
 > Keywords: dreaming, memory consolidation, distillation, staged output,

@@ -8,22 +8,27 @@ how AgentConnect presents or delivers messages to users.
 
 ## What this is
 
-AgentConnect is a **daemon-centric** multi-agent platform that bridges IM platforms
-(Slack / Telegram / Discord) to AI coding agents (Claude, Codex) over ACP. The
+AgentConnect is a multi-agent platform that bridges IM platforms (Slack /
+Telegram / Discord) to AI coding agents (Claude, Codex) over ACP. The
 authoritative design lives in [`docs/designs/`](docs/designs/) — start with
-[daemon-centric-architecture.md](docs/designs/daemon-centric-architecture.md). Design
-documentation and every visual asset embedded in public documentation are maintained
-in English. Before adding or reusing a diagram or screenshot, inspect its visible text
-and verify that it still matches the current architecture. Prefer diffable SVG or
-Mermaid source over opaque raster diagrams.
+[architecture.md](docs/designs/architecture.md). Design documentation and every
+visual asset embedded in public documentation are maintained in English. Before
+adding or reusing a diagram or screenshot, inspect its visible text and verify
+that it still matches the current architecture. Prefer diffable SVG or Mermaid
+source over opaque raster diagrams.
 
 The defining architectural choice: **the Control Plane is never on the message hot
-path.** Agent execution always happens inside the daemon (edge). Platform ingress is
-either daemon-owned directly or forwarded by the optional relay when a stable public
-callback endpoint is required; the CP only orchestrates. Concretely:
+path.** Agent execution always happens inside a daemon on the data plane. Where
+that daemon runs is a deployment choice, not part of the invariant — self-hosted
+on machines the organization operates, or a member of the install's managed
+Kubernetes pool (Cloud), which shares one PostgreSQL data plane and launches
+runtimes in sandbox pods; see §3.1 of the architecture design. Platform ingress
+is either daemon-owned directly or forwarded by the optional relay when a stable
+public callback endpoint is required; the CP only orchestrates. Concretely:
 
 - A **daemon** owns direct platform connections, local routing, provider API egress,
-  and agent execution over **ACP as an in-process/local protocol** (no network hop).
+  and agent execution over **ACP the Control Plane never sees** (local IPC self-hosted;
+  one in-cluster dial to the sandbox pod in the pool).
   It also accepts pre-addressed public ingress from the relay. It is a self-contained
   "message + agent execution unit" and keeps running established sessions even if the
   CP is down (graceful degradation).

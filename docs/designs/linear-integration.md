@@ -3,7 +3,7 @@
 > **Status:** Proposed.
 >
 > Related documents:
-> [daemon-centric-architecture.md](daemon-centric-architecture.md),
+> [architecture.md](architecture.md),
 > [webhook-triggers-and-github-events.md](webhook-triggers-and-github-events.md),
 > [shared-bot-relay.md](shared-bot-relay.md),
 > [feishu-integration.md](feishu-integration.md),
