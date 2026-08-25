@@ -1,13 +1,25 @@
 /** Platform dispatch for the OS-service layer. `pickController` chooses launchd
- *  vs systemd; `resolveController` builds one from runtime/process info. */
+ *  vs systemd; `resolveController` builds one from runtime/process info;
+ *  `installService`/`uninstallService` wrap install with the `<root>/service.json`
+ *  pointer, and `listInstances` enumerates every instance installed on the host. */
 import { homedir } from 'node:os'
-import { resolveRoot } from '../paths.js'
+import { findInstanceUnit, listInstances } from './discover.js'
 import { defaultExec } from './exec.js'
+import { clearInstancePointer, commandSelector, resolveServiceTarget, writeInstancePointer } from './instance.js'
 import { LaunchdController } from './launchd.js'
 import { SystemdController } from './systemd.js'
-import type { ControllerDeps, Exec, ServiceController } from './types.js'
+import type { ControllerDeps, Exec, InstalledUnit, InstallOpts, ServiceController } from './types.js'
 
-export type { ServiceController, ServiceStatus, InstallOpts } from './types.js'
+export type { ServiceController, ServiceStatus, InstallOpts, InstalledUnit } from './types.js'
+export { findInstanceUnit, listInstances, type DiscoveryScope } from './discover.js'
+export {
+  assertInstanceName,
+  commandSelector,
+  instanceRoot,
+  readInstancePointer,
+  resolveServiceTarget,
+  shouldBakeRootEnv
+} from './instance.js'
 
 export function pickController(platform: NodeJS.Platform, deps: ControllerDeps): ServiceController {
   if (platform === 'darwin') return new LaunchdController(deps)
@@ -15,14 +27,102 @@ export function pickController(platform: NodeJS.Platform, deps: ControllerDeps):
   throw new Error(`system service install is not supported on ${platform} yet — use \`agentconnect run\``)
 }
 
-export function resolveController(
-  opts: { root?: string; exec?: Exec; platform?: NodeJS.Platform } = {}
-): ServiceController {
-  const root = resolveRoot(opts.root)
-  return pickController(opts.platform ?? process.platform, {
+/**
+ * Which instance a command addresses. An explicit `instance` wins; otherwise the
+ * instance recorded in the root is adopted, so a `--root`-only invocation — the
+ * CP-commanded `upgrade --root <root>` the daemon spawns — finds the same unit.
+ */
+export interface ControllerTarget {
+  root?: string
+  instance?: string
+  exec?: Exec
+  platform?: NodeJS.Platform
+  home?: string
+}
+
+function resolved(target: ControllerTarget): { root: string; instance?: string } {
+  return resolveServiceTarget({
+    ...(target.root !== undefined ? { root: target.root } : {}),
+    ...(target.instance !== undefined ? { instance: target.instance } : {}),
+    ...(target.home !== undefined ? { home: target.home } : {}),
+    ...(target.platform !== undefined ? { platform: target.platform } : {})
+  })
+}
+
+export function resolveController(target: ControllerTarget = {}): ServiceController {
+  const { root, instance } = resolved(target)
+  return pickController(target.platform ?? process.platform, {
     root,
-    home: homedir(),
+    home: target.home ?? homedir(),
     uid: typeof process.getuid === 'function' ? process.getuid() : 0,
-    exec: opts.exec ?? defaultExec
+    exec: target.exec ?? defaultExec,
+    ...(instance ? { instance } : {})
+  })
+}
+
+/**
+ * Install the unit AND record which unit owns the root, so later commands that
+ * only know the root address this instance rather than the default one.
+ *
+ * One root, one service: two units pointing at the same root would fight over
+ * that root's `daemon.lock`, sqlite and MCP socket, and the loser would just
+ * crash-loop. Refuse before writing rather than after.
+ */
+export async function installService(target: ControllerTarget, opts: InstallOpts): Promise<ServiceController> {
+  const { root, instance } = resolved(target)
+  const scope = {
+    ...(target.home !== undefined ? { home: target.home } : {}),
+    ...(target.platform !== undefined ? { platform: target.platform } : {})
+  }
+  const conflict = listInstances(scope).find((unit) => unit.root === root && unit.instance !== instance)
+  if (conflict) {
+    throw new Error(
+      `root ${root} already belongs to ${conflict.label} — uninstall that service first, or give this instance its own --root`
+    )
+  }
+  // Moving an instance to another root is only safe while it is stopped:
+  // rewriting the unit does not move the RUNNING process, so discovery would
+  // report the new root while the live daemon still serves the old one. Refuse,
+  // and name the command that makes the move safe.
+  const previous = findInstanceUnit(instance, scope)
+  if (previous && previous.root !== root) {
+    const running = await controllerFor(previous, {
+      ...scope,
+      ...(target.exec !== undefined ? { exec: target.exec } : {})
+    }).status()
+    if (running.running) {
+      throw new Error(
+        `${previous.label} is running against ${previous.root} — run \`agentconnect${commandSelector({ root: previous.root, ...(instance ? { instance } : {}) })} down\` before moving this instance to ${root}`
+      )
+    }
+    // The old root's pointer would otherwise keep claiming a unit that no longer
+    // drives it, so a later `--root <old>` would address the wrong service.
+    clearInstancePointer(previous.root)
+  }
+  const controller = resolveController(target)
+  await controller.install(opts)
+  writeInstancePointer(root, { ...(instance ? { instance } : {}), label: controller.label })
+  return controller
+}
+
+export async function uninstallService(target: ControllerTarget): Promise<ServiceController> {
+  const controller = resolveController(target)
+  await controller.uninstall()
+  clearInstancePointer(resolved(target).root)
+  return controller
+}
+
+/** A controller for a unit the lister found. Takes the instance from the unit
+ *  itself rather than from the root's pointer — the file on disk is the truth. */
+export function controllerFor(
+  unit: InstalledUnit,
+  opts: { exec?: Exec; platform?: NodeJS.Platform; home?: string } = {}
+): ServiceController {
+  return pickController(opts.platform ?? process.platform, {
+    root: unit.root,
+    home: opts.home ?? homedir(),
+    uid: typeof process.getuid === 'function' ? process.getuid() : 0,
+    exec: opts.exec ?? defaultExec,
+    ...(unit.instance ? { instance: unit.instance } : {})
   })
 }

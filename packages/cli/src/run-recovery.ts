@@ -9,6 +9,7 @@
  */
 import { createInterface } from 'node:readline'
 import type { ChildResult } from './delegate.js'
+import { commandSelector } from './service/instance.js'
 import { versionReinstallLatest, versionRollback } from './version-commands.js'
 import { currentVersion, isInstalled, readMeta } from './version-store.js'
 
@@ -59,13 +60,18 @@ export function recoveryOptions(o: { previous: string | null; channel: string })
   return options
 }
 
-export const MANUAL_VERSION_HELP = [
-  'Pick a daemon version manually:',
-  '  agentconnect version list               # installed versions (current / previous)',
-  '  agentconnect version install <version>  # download a specific version',
-  '  agentconnect version use <version>      # activate it',
-  '  agentconnect run                        # start again'
-].join('\n')
+/** The manual-recovery commands, carrying the selector for the root being
+ *  recovered so a paste does not act on the default instance instead. */
+export function manualVersionHelp(root: string): string {
+  const sel = commandSelector({ root })
+  return [
+    'Pick a daemon version manually:',
+    `  agentconnect${sel} version list               # installed versions (current / previous)`,
+    `  agentconnect${sel} version install <version>  # download a specific version`,
+    `  agentconnect${sel} version use <version>      # activate it`,
+    `  agentconnect${sel} run                        # start again`
+  ].join('\n')
+}
 
 export interface RecoveryDeps {
   input: NodeJS.ReadableStream
@@ -140,7 +146,7 @@ export async function runRecoveryFlow(
       const choice = options.find((o) => o.key === answer)
       if (!choice) continue // unknown key — offer the menu again
       if (choice.action === 'manual') {
-        deps.out.write(MANUAL_VERSION_HELP + '\n')
+        deps.out.write(manualVersionHelp(root) + '\n')
         return 'exit'
       }
       // Settle-capture so the race below never leaves an unhandled rejection,

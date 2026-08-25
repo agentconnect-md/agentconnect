@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { currentEntry, currentLink } from './paths.js'
+import { commandSelector } from './service/instance.js'
 
 /**
  * Delegation (cli-daemon-split.md §4.2): the CLI owns lifecycle/version/upgrade
@@ -27,7 +28,7 @@ export function resolveDaemonEntry(root: string): string {
       throw new Error(`AGENTCONNECT_DAEMON_ENTRY points at a missing file: ${entry}`)
     }
     throw new Error(
-      `no active daemon at ${currentLink(root)} — install one with \`agentconnect install\` (or \`agentconnect run\`, which auto-installs)`
+      `no active daemon at ${currentLink(root)} — install one with \`agentconnect${commandSelector({ root })} install\` (or \`agentconnect${commandSelector({ root })} run\`, which auto-installs)`
     )
   }
   return entry

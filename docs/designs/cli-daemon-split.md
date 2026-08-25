@@ -31,7 +31,7 @@ selection and supervision remain consistent.
 The CLI implements these commands:
 
 - `up`, `down`, `restart`, and `status`
-- `install-service` and `uninstall-service`
+- `install-service`, `uninstall-service`, and `instances`
 - `login`
 - `install`
 - `version`, `version list`, `version install`, `version use`, and
@@ -212,7 +212,7 @@ Other platforms must use foreground `agentconnect run`.
 The generated service executes:
 
 ```text
-<node> <cli dist entry> run
+<node> <cli dist entry> run --root <root>
 ```
 
 That is the CLI's own run shell (§4.1) — the unit supervises the CLI, and the
@@ -243,8 +243,12 @@ as a last-resort backstop (covers legacy direct-ExecStart units).
 
 It sets `AGENTCONNECT_SUPERVISOR=service` for the CLI; the daemon child runs
 with `AGENTCONNECT_SUPERVISOR=cli` because the CLI run shell is its supervisor
-and handles `RESERVED_RESTART_CODE` itself. A custom root is also passed
-through `AGENTCONNECT_ROOT`. The run shell re-resolves `current` at every
+and handles `RESERVED_RESTART_CODE` itself. A non-default root is also passed
+through `AGENTCONNECT_ROOT`, but the unit's `--root` is the authority: the run
+shell launches the daemon through the user's interactive login shell, so a
+profile that exports `AGENTCONNECT_ROOT` would otherwise pull the service onto
+another root — and, with several instances installed, onto another instance's
+lock, sqlite, and MCP socket. The run shell re-resolves `current` at every
 (re)spawn, so changing daemon versions does not require rewriting the service
 definition. Legacy units that execute `<root>/current/dist/index.js run`
 directly keep working and migrate to the CLI form on the next `install-service`.
@@ -258,6 +262,61 @@ its entry — requires reinstalling the service.
 Interactive `agentconnect login` ensures an active daemon version exists before
 installing and starting the service, so first-time onboarding does not require a
 separate `agentconnect install`.
+
+#### 4.2.1 Several services on one host
+
+The instance identity is `<root>`: config, `daemon.lock`, `state/local.sqlite`,
+`run/mcp.sock`, `logs/`, the agents dir, and the whole version store are already
+root-relative, and `daemonId` is minted per root and persisted in that root's
+`config.json`, so two daemons on one host register as two distinct daemons. The
+only host-global name was the unit itself, so `--instance <name>` is the handle
+that separates them (`packages/cli/src/service/instance.ts`):
+
+- names match `^[a-z0-9][a-z0-9_-]{0,31}$` — safe in a systemd unit name and a
+  launchd label, and short enough to keep `<root>/run/mcp.sock` inside the
+  ~104-byte UDS path limit;
+- the unit is `agentconnect@<name>.service` (a concrete unit file, not a
+  template instantiation) or `md.agentconnect.daemon.<name>`; the **default
+  instance keeps `agentconnect.service` / `md.agentconnect.daemon` unchanged**,
+  so an existing install is never orphaned;
+- without `--root`, a named instance takes the root **its installed unit
+  drives** — the file on disk is the authority — and `~/.agentconnect-<name>`
+  only when nothing is installed yet. Resolving from the name alone would let
+  `--instance dev restart` drive a unit on `/srv/ac-dev` while
+  `--instance dev chat` delegated to `~/.agentconnect-dev`: one selector, two
+  daemons. Moving an instance to a new root clears the abandoned root's pointer,
+  and is refused outright while that service is still running — rewriting the
+  unit does not move the live process, so discovery would report the new root
+  while the running daemon still served the old one;
+- `install-service` records `{ instance, label }` in `<root>/service.json`, so a
+  command that knows only the root — notably the CP-commanded
+  `upgrade --to <v> --root <root>` the daemon spawns (§6.2) — addresses that
+  instance's unit rather than the default one;
+- `--instance` is CLI vocabulary only. `run` and delegated commands are rewritten
+  to the `--root <dir>` form before argv reaches the daemon;
+- `agentconnect instances` lists what is installed (instance, state, root, unit)
+  by scanning the OS's own unit directory, so nothing can go stale;
+- **one root, one service**: `install-service` refuses a unit whose root another
+  instance's unit already claims, since both daemons would fight over that root's
+  `daemon.lock`, sqlite and MCP socket and the loser would crash-loop.
+  Re-installing the SAME instance stays idempotent (the legacy-unit migration).
+
+Every actionable message repeats the selector in the command it suggests
+(`commandSelector`), so a copy-paste after `--instance dev login` manages `dev`
+and not the default instance.
+
+`AGENTCONNECT_ROOT` is baked in whenever the RESOLVED root is non-default, not
+when a `--root` flag happened to be typed — an env-driven install would
+otherwise write a unit with no root and start on `~/.agentconnect`.
+
+Three things stay the operator's to get right, because the CLI cannot detect
+them: each instance must own **disjoint platform credentials** (two daemons
+holding one Slack app's socket-mode connection or polling one Telegram bot will
+split or fight over ingress); host-global env such as `AC_READINESS_PORT` or the
+OTLP endpoints must be set per instance rather than exported from a shell
+profile, since the login-shell launch inherits the profile; and each root
+carries its own copy of the daemon bundle, so N instances cost N version stores
+(which is also what lets one instance canary a version).
 
 ## 5. Stable helper entry
 

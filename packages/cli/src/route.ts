@@ -16,6 +16,7 @@ export const CLI_OWNED_COMMANDS = new Set([
   'install',
   'install-service',
   'uninstall-service',
+  'instances',
   'login',
   'version',
   'upgrade',
@@ -31,6 +32,7 @@ export const CLI_OWNED_COMMANDS = new Set([
 const VALUE_OPTS = new Set([
   '--config',
   '--root',
+  '--instance',
   '--api-url',
   '--api-key',
   '--daemon-id',
@@ -86,6 +88,54 @@ export function parseRootFlag(argv: string[]): string | undefined {
     if (VALUE_OPTS.has(a) || SUBCOMMAND_VALUE_OPTS.has(a)) i++
   }
   return undefined
+}
+
+/**
+ * The global `--instance`, read with the same whole-argv scan as `--root`. It is
+ * CLI-owned vocabulary (the daemon knows only roots), so `run`/delegate argv is
+ * rewritten by {@link withResolvedRoot} before it reaches the daemon.
+ */
+export function parseInstanceFlag(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === undefined) break
+    if (a === '--') break
+    if (a === '--instance') return argv[i + 1]
+    if (a.startsWith('--instance=')) return a.slice('--instance='.length)
+    if (VALUE_OPTS.has(a) || SUBCOMMAND_VALUE_OPTS.has(a)) i++
+  }
+  return undefined
+}
+
+/**
+ * Translate `--instance <name>` into the `--root <dir>` the daemon understands:
+ * drop the instance tokens and append the resolved root unless one is already
+ * spelled out. Only called when an instance was actually given, so an ordinary
+ * invocation's argv reaches the daemon byte-for-byte as before.
+ */
+export function withResolvedRoot(argv: string[], root: string): string[] {
+  const out: string[] = []
+  let sawRoot = false
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === undefined) break
+    if (a === '--') {
+      out.push(...argv.slice(i)) // everything after `--` is data
+      break
+    }
+    if (a === '--instance') {
+      i++ // its value goes with it
+      continue
+    }
+    if (a.startsWith('--instance=')) continue
+    if (a === '--root' || a.startsWith('--root=')) sawRoot = true
+    out.push(a)
+    // Any other value-taking option: copy its value across untouched, so a value
+    // that happens to read like a flag is never inspected as one.
+    if ((VALUE_OPTS.has(a) || SUBCOMMAND_VALUE_OPTS.has(a)) && i + 1 < argv.length) out.push(argv[++i]!)
+  }
+  if (!sawRoot) out.push('--root', root)
+  return out
 }
 
 export type Route = 'run' | 'delegate' | 'cli'

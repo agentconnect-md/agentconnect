@@ -1,13 +1,21 @@
 #!/usr/bin/env node
 import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
-import { resolveRoot } from './paths.js'
 import { selfHealCliEntry } from './self-heal.js'
 import { delegate } from './delegate.js'
 import { runShell } from './run-shell.js'
-import { classifyInvocation, parseRootFlag } from './route.js'
+import { classifyInvocation, parseInstanceFlag, parseRootFlag, withResolvedRoot } from './route.js'
 import { runLogin } from './login.js'
-import { resolveController } from './service/index.js'
+import {
+  commandSelector,
+  controllerFor,
+  installService,
+  listInstances,
+  resolveController,
+  resolveServiceTarget,
+  shouldBakeRootEnv,
+  uninstallService
+} from './service/index.js'
 import { runUpgrade, versionInstall, versionList, versionPrune, versionUse } from './version-commands.js'
 import { CLI_VERSION } from './version.js'
 
@@ -17,8 +25,18 @@ const fail = (cmd: string, err: unknown): never => {
 }
 
 async function main(): Promise<void> {
-  const argv = process.argv.slice(2)
-  const root = resolveRoot(parseRootFlag(argv))
+  let argv = process.argv.slice(2)
+  // `--instance <name>` is CLI vocabulary for "that daemon's root" (service/
+  // instance.ts). Resolve it here, then rewrite argv into the `--root` form the
+  // daemon understands so run/delegate never see the flag.
+  const instance = parseInstanceFlag(argv)
+  const rootFlag = parseRootFlag(argv)
+  const target = resolveServiceTarget({
+    ...(rootFlag !== undefined ? { root: rootFlag } : {}),
+    ...(instance !== undefined ? { instance } : {})
+  })
+  const root = target.root
+  if (instance !== undefined) argv = withResolvedRoot(argv, root)
   const cliEntry = fileURLToPath(import.meta.url)
   selfHealCliEntry(root, cliEntry)
 
@@ -41,6 +59,7 @@ async function main(): Promise<void> {
   program
     .option('--config <path>', 'path to config.json (default ~/.agentconnect/config.json)')
     .option('--root <dir>', 'override ~/.agentconnect root directory')
+    .option('--instance <name>', 'address a named daemon service instance (root defaults to ~/.agentconnect-<name>)')
     .option('--api-url <url>', 'override AgentConnect API WebSocket URL')
     .option('--api-key <key>', 'override daemon API key')
     .option('--no-cp', 'run fully local, do not connect to the Control Plane')
@@ -52,18 +71,26 @@ async function main(): Promise<void> {
     .option('--dry-run', 'load + validate config and print the reconcile plan, then exit')
     .option('--agent <name>', 'select a single agent by id (run/chat)')
 
-  const controller = () => resolveController({ root: program.opts().root })
+  // Every service command addresses the same target the argv scan above resolved,
+  // and every suggested follow-up command repeats that selector so a copy-paste
+  // lands on this instance rather than the default one.
+  const serviceTarget = () => ({ root, ...(instance !== undefined ? { instance } : {}) })
+  const selector = commandSelector(serviceTarget())
+  const controller = () => resolveController(serviceTarget())
   const requireInstalled = (c: ReturnType<typeof controller>): void => {
     if (!c.isInstalled()) {
       console.error(
-        'agentconnect: no service installed — run `agentconnect install-service` first, or `agentconnect run` for foreground'
+        `agentconnect: no service installed (${c.label}) — run \`agentconnect${selector} install-service\` first, or \`agentconnect${selector} run\` for foreground`
       )
       process.exit(1)
     }
   }
+  // includeRootEnv follows the RESOLVED root, not whether a flag was typed: an
+  // AGENTCONNECT_ROOT-driven install must not write a unit that omits the root
+  // and silently falls back to ~/.agentconnect at service start.
   const installOpts = () => ({
     execPath: process.execPath,
-    includeRootEnv: Boolean(program.opts().root),
+    includeRootEnv: shouldBakeRootEnv(root),
     cliEntry,
     ...(process.env.PATH ? { envPath: process.env.PATH } : {})
   })
@@ -112,7 +139,7 @@ async function main(): Promise<void> {
         console.log('agentconnect: service restarted')
       } catch (err) {
         console.error(
-          `agentconnect restart: service stopped but failed to start again — run \`agentconnect up\` to retry: ${(err as Error).message}`
+          `agentconnect restart: service stopped but failed to start again — run \`agentconnect${selector} up\` to retry: ${(err as Error).message}`
         )
         process.exit(1)
       }
@@ -126,11 +153,12 @@ async function main(): Promise<void> {
         const s = await controller().status()
         if (!s.installed) {
           console.log(
-            `service: not installed (${s.label}). Run \`agentconnect install-service\` or \`agentconnect run\`.`
+            `service: not installed (${s.label}). Run \`agentconnect${selector} install-service\` or \`agentconnect${selector} run\`.`
           )
           return
         }
         console.log(`service:  ${s.label}`)
+        console.log(`root:     ${root}`)
         console.log(`state:    ${s.running ? 'running' : 'stopped'}${s.pid ? ` (pid ${s.pid})` : ''}`)
         console.log(`logs:     ${s.logPath}`)
       } catch (err) {
@@ -143,8 +171,9 @@ async function main(): Promise<void> {
     .description('Install the launchd / systemd service (does not start it — run `agentconnect up`)')
     .action(async () => {
       try {
-        await controller().install(installOpts())
-        console.log('agentconnect: service installed. Run `agentconnect up` to start it.')
+        const c = await installService(serviceTarget(), installOpts())
+        console.log(`agentconnect: service installed (${c.label}, root ${root}).`)
+        console.log(`Run \`agentconnect${selector} up\` to start it.`)
       } catch (err) {
         fail('install-service', err)
       }
@@ -155,10 +184,32 @@ async function main(): Promise<void> {
     .description('Stop and remove the system service')
     .action(async () => {
       try {
-        await controller().uninstall()
-        console.log('agentconnect: service uninstalled')
+        const c = await uninstallService(serviceTarget())
+        console.log(`agentconnect: service uninstalled (${c.label})`)
       } catch (err) {
         fail('uninstall-service', err)
+      }
+    })
+
+  program
+    .command('instances')
+    .description('List the daemon services installed on this host (one per instance)')
+    .action(async () => {
+      try {
+        const found = listInstances()
+        if (found.length === 0) {
+          console.log(
+            'no daemon service installed — run `agentconnect install-service` (add `--instance <name>` for a second one)'
+          )
+          return
+        }
+        for (const unit of found) {
+          const s = await controllerFor(unit).status()
+          const state = s.running ? `running${s.pid ? ` (pid ${s.pid})` : ''}` : 'stopped'
+          console.log(`${unit.instance ?? '(default)'}\t${state}\t${unit.root}\t${unit.label}`)
+        }
+      } catch (err) {
+        fail('instances', err)
       }
     })
 
@@ -174,7 +225,8 @@ async function main(): Promise<void> {
           apiUrl: opts.apiUrl,
           apiKey: opts.apiKey,
           daemonId: opts.daemonId,
-          root: opts.root,
+          root,
+          ...(instance !== undefined ? { instance } : {}),
           configPath: opts.config,
           cliEntry
         })

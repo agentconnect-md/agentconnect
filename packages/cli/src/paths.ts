@@ -8,12 +8,23 @@ import { join, resolve } from 'node:path'
  * change here must be mirrored there.
  */
 export function resolveRoot(root?: string): string {
-  const r = root ?? process.env.AGENTCONNECT_ROOT ?? join(homedir(), '.agentconnect')
+  const r = root ?? process.env.AGENTCONNECT_ROOT ?? defaultRoot()
   return resolve(r.replace(/^~(?=$|\/)/, homedir()))
+}
+
+/** `~/.agentconnect` — the built-in root, deliberately ignoring
+ *  `AGENTCONNECT_ROOT` so callers can ask "is this root the default one?". */
+export function defaultRoot(): string {
+  return join(homedir(), '.agentconnect')
 }
 
 export function configPath(root: string): string {
   return join(root, 'config.json')
+}
+
+/** `<root>/service.json` — which OS-service instance owns this root (instance.ts). */
+export function servicePointerPath(root: string): string {
+  return join(root, 'service.json')
 }
 
 export function logsDir(root: string): string {
