@@ -1,3 +1,4 @@
+// ⚠️ NO RELATIVE IMPORTS — a bundler compiles this from source; web's protocol-imports.leaf.test.ts enforces it.
 import { z } from 'zod'
 
 /**

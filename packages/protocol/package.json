@@ -11,6 +11,18 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./code-host": {
+      "development": "./src/code-host.ts",
+      "types": "./dist/code-host.d.ts",
+      "import": "./dist/code-host.js",
+      "default": "./dist/code-host.js"
+    },
+    "./decimal-amount": {
+      "development": "./src/decimal-amount.ts",
+      "types": "./dist/decimal-amount.d.ts",
+      "import": "./dist/decimal-amount.js",
+      "default": "./dist/decimal-amount.js"
+    },
     "./slack-app-manifest": {
       "development": "./src/slack-app-manifest.ts",
       "types": "./dist/slack-app-manifest.d.ts",

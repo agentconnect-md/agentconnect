@@ -1,17 +1,4 @@
-// ⚠️ THIS MODULE MUST NOT IMPORT ANYTHING RELATIVE. ⚠️
-//
-// It is the one protocol source file a *bundler* compiles directly: the web
-// console imports `@agentconnect.md/protocol/slack-app-manifest`, and in dev the
-// `development` export condition points that subpath at this `.ts` file rather
-// than at `dist/`. Turbopack does not implement TypeScript's `.js` → `.ts`
-// extension substitution, and its only escape hatch (`experimental.extensionAlias`)
-// is on Next's Turbopack-unsupported list — so a NodeNext-style `./foo.js`
-// specifier here fails to resolve and 500s every console route, while
-// `pnpm typecheck` / `pnpm test` / `next build` (which reads `dist/`) all stay
-// green. `slack-app-manifest.leaf.test.ts` enforces this.
-//
-// Anything this module needs is defined here and imported *from* here by the rest
-// of protocol — not the other way around.
+// ⚠️ NO RELATIVE IMPORTS — a bundler compiles this from source; web's protocol-imports.leaf.test.ts enforces it.
 
 /** App-level Slack message shortcut for opening the controls of the session that
  * owns the selected message's conversation. Direct apps receive it over Socket

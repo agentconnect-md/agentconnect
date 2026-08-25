@@ -2,7 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
-import { isCodeHostHookKind, type HookKind } from '@agentconnect.md/protocol'
+import { isCodeHostHookKind, type HookKind } from '@agentconnect.md/protocol/code-host'
 import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
