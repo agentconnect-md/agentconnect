@@ -2318,7 +2318,8 @@ export const UpdateOrgBody = z
     // One-way: the onboarding wizard marks the org onboarded on finish or skip.
     onboardingCompleted: z.literal(true).optional(),
     // Getting-started tutorial position — the console's drawer advances it as steps
-    // complete or are skipped via Next.
+    // complete or are skipped via Next. Monotonic: the DB clamps to max(stored, sent),
+    // so a stale tab/device can never move shared progress backward.
     gettingStartedStep: z.number().int().min(0).max(100).optional()
   })
   .refine(

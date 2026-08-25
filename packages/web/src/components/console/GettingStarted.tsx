@@ -80,11 +80,16 @@ export default function GettingStarted() {
   // Starts skipped so a skipper never flashes the pill before the stored flag is read
   // (localStorage is client-only, so it can't be read during SSR/first render).
   const [skipped, setSkipped] = useState(true)
-  const [sessionAccessReviewed, setSessionAccessReviewed] = useState(false)
-  // Local floor for the tutorial position — covers the window before the PATCHed org
-  // list refreshes, and non-owners whose PATCH the CP refuses (their progress is
-  // session-local; the server row is the org-wide record).
-  const [localStep, setLocalStep] = useState(0)
+  // Per-org client state, KEYED by org id at render time: an effect-only reset would
+  // leave one commit where a cached org switch still renders — and auto-advances /
+  // persists — with the previous org's values. `saReviewed` mirrors this org's
+  // localStorage flag; `localFloor` covers the window before the PATCHed org list
+  // refreshes, and non-owners whose PATCH the CP refuses (session-local progress).
+  const orgId = activeOrg?.id ?? null
+  const [saReviewed, setSaReviewed] = useState<{ orgId: string | null; on: boolean }>({ orgId: null, on: false })
+  const [localFloor, setLocalFloor] = useState<{ orgId: string | null; step: number }>({ orgId: null, step: 0 })
+  const sessionAccessReviewed = saReviewed.orgId === orgId && saReviewed.on
+  const localStep = localFloor.orgId === orgId ? localFloor.step : 0
 
   useEffect(() => {
     try {
@@ -139,16 +144,14 @@ export default function GettingStarted() {
   )
 
   // ── tutorial position ──────────────────────────────────────────────────────
-  const orgId = activeOrg?.id ?? null
   const storedStep = activeOrg?.gettingStartedStep ?? 0
-  // Org switch: drop the local floor so the new org starts from ITS stored position,
-  // and re-read THIS org's reviewed flag (per-org key — see saReviewedKey).
+  // Load THIS org's reviewed flag (per-org key — see saReviewedKey). Until it lands,
+  // the keyed derivation above already reads false for the new org, never A's value.
   useEffect(() => {
-    setLocalStep(0)
     try {
-      setSessionAccessReviewed(!!orgId && localStorage.getItem(saReviewedKey(orgId)) === '1')
+      setSaReviewed({ orgId, on: !!orgId && localStorage.getItem(saReviewedKey(orgId)) === '1' })
     } catch {
-      setSessionAccessReviewed(false)
+      setSaReviewed({ orgId, on: false })
     }
   }, [orgId])
   const step = Math.max(storedStep, localStep)
@@ -157,10 +160,10 @@ export default function GettingStarted() {
 
   const advance = useCallback(
     (next: number) => {
-      setLocalStep(next)
+      setLocalFloor({ orgId, step: next })
       if (orgId && next > storedStep) {
-        // Best-effort: the PATCH is owner-only server-side; a refused write just
-        // leaves the org row where it was while this session moves on.
+        // Best-effort: the PATCH is owner-only server-side and clamped monotonic at
+        // the DB (GREATEST), so a refused or stale write never regresses the row.
         void updateOrg(orgId, { gettingStartedStep: next }).catch(() => {})
       }
     },
@@ -223,7 +226,7 @@ export default function GettingStarted() {
       } catch {
         /* storage unavailable — the tick holds for this page view */
       }
-      setSessionAccessReviewed(true)
+      setSaReviewed({ orgId, on: true })
     }
     const navigates =
       action.kind === 'github' ||
