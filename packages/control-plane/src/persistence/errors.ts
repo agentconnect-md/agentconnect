@@ -378,15 +378,15 @@ export class OrgOwnerRequired extends Error {
   }
 }
 
-/** A non-admin account reached the deployment's organization creation quota. */
+/** A non-admin account reached the org creation quota; the message states the ceiling, never who is exempt. */
 export class OrgCreationLimitReached extends Error {
   readonly code = 'ORG_CREATION_LIMIT_REACHED' as const
 
   constructor(readonly limit: number) {
     super(
       limit === 0
-        ? 'organization creation is disabled for non-admin accounts'
-        : `non-admin accounts may create at most ${limit} organizations`
+        ? "organization creation isn't available for this account"
+        : `this account has reached its limit of ${limit} organization${limit === 1 ? '' : 's'}`
     )
     this.name = 'OrgCreationLimitReached'
   }
