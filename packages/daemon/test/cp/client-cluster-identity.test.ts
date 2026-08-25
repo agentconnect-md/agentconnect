@@ -6,7 +6,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CP_IDENTITY_TOKEN_PATH } from '@agentconnect.md/protocol'
 import { CpClient, type CpClientDeps } from '../../src/cp/client.js'
 import { readClusterIdentityToken } from '../../src/cp/cluster-identity.js'
@@ -136,5 +136,71 @@ describe('CpClient auth credential', () => {
     await tick()
     expect(second.lastSent().payload.serviceAccountToken).toBe('token-2')
     expect(reads).toEqual(['token-1', 'token-2'])
+  })
+})
+
+describe('CpClient terminal auth rejection', () => {
+  it('asks the daemon to exit when the CP rejects the projected identity — the restart is the retry', async () => {
+    // A member that stays up after a 4401 can never become servable: nothing redials, and boot
+    // blocks on the first registration. Exiting hands the retry to the supervisor's backoff.
+    const clock = new FakeClock()
+    const t = new FakeTransport()
+    const onAuthFatal = vi.fn()
+    const connect = vi.fn(async () => t)
+    const client = new CpClient(
+      makeDeps(t, { clock, connect, clusterIdentityToken: () => 'projected-token', onAuthFatal })
+    )
+    client.start()
+    await tick()
+
+    t.simulateClose(4401, 'AUTH_FAILED')
+    expect(onAuthFatal).toHaveBeenCalledTimes(1)
+    expect(client.state).toBe('CLOSED')
+    // No in-process redial: the backoff that paces the retry is the supervisor's, not ours.
+    expect(clock.pending()).not.toContain(1000)
+    clock.advance(60_000)
+    await tick()
+    expect(connect).toHaveBeenCalledTimes(1)
+  })
+
+  it('stays up on an API-key 4401, where only an operator can mint a new credential', async () => {
+    const clock = new FakeClock()
+    const t = new FakeTransport()
+    const onAuthFatal = vi.fn()
+    const client = new CpClient(makeDeps(t, { clock, token: 'ac_daemon_key', onAuthFatal }))
+    client.start()
+    await tick()
+
+    t.simulateClose(4401, 'AUTH_FAILED')
+    expect(onAuthFatal).not.toHaveBeenCalled()
+    expect(client.state).toBe('CLOSED')
+  })
+
+  it('exits on a 4401 taken by a reconnect, not just the first dial', async () => {
+    // The rejection that stranded a member arrived on a redial into a control plane mid-restart.
+    const clock = new FakeClock()
+    const first = new FakeTransport()
+    const second = new FakeTransport()
+    const transports = [first, second]
+    const onAuthFatal = vi.fn()
+    const client = new CpClient(
+      makeDeps(first, {
+        clock,
+        clusterIdentityToken: () => 'projected-token',
+        onAuthFatal,
+        connect: async () => transports.shift() ?? new FakeTransport()
+      })
+    )
+    client.start()
+    await tick()
+
+    first.simulateClose(1006, 'gone')
+    await tick()
+    expect(onAuthFatal).not.toHaveBeenCalled()
+    clock.advance(5_000)
+    await tick()
+
+    second.simulateClose(4401, 'AUTH_FAILED')
+    expect(onAuthFatal).toHaveBeenCalledTimes(1)
   })
 })

@@ -152,7 +152,7 @@ connection to reach `READY` with `agentVersion == targetVersion`.
 
 **`sessionEpoch` is the global fencing token.** Every C→D control frame that mutates routing or sessions carries the `epoch` it was issued under (see §4 envelope-ext). A daemon **rejects** any control frame whose `epoch < its current sessionEpoch` (a late frame from a pre-reconnect CP view) with `error STALE_EPOCH`.
 
-**Auth failure (`4401`, fatal — don't auto-retry):** a malformed / unknown / bad-secret / **revoked** / **expired** key — or a `user`-principal key presented on the WS — → close `4401` `AUTH_FAILED`. The daemon goes fatal and stops reconnecting; the operator re-onboards (mints a fresh key) or rotates ([daemon-api-key-auth.md](daemon-api-key-auth.md) §7). It does **not** hammer-reconnect on `4401`.
+**Auth failure (`4401`, fatal — don't auto-retry):** a malformed / unknown / bad-secret / **revoked** / **expired** key — or a `user`-principal key presented on the WS — → close `4401` `AUTH_FAILED`. The daemon goes fatal and stops reconnecting; the operator re-onboards (mints a fresh key) or rotates ([daemon-api-key-auth.md](daemon-api-key-auth.md) §7). It does **not** hammer-reconnect on `4401`. **On the projected-identity path this becomes an exit, not a wait:** that credential is re-read from the pod's volume at every boot and the process is restart-supervised, so there is no operator step to stay up for — and a container that took a `4401` can never register at all, because boot blocks on the first registration. The daemon exits non-zero and the restart redials, which puts the retry on the supervisor's backoff instead of on nothing.
 
 **Server-internal (`1011`, retryable):** a DB/lookup/persistence error _during_ verify or the epoch bump → close `1011` `SERVER_INTERNAL`. The daemon backs off and retries — a transient DB blip must **not** be reported as `4401` (that would wedge the whole fleet on a dead-credential verdict).
 
@@ -911,7 +911,7 @@ const ErrorFrame = z.object({
 The authoritative error enum is
 `packages/protocol/src/frames/error.ts`.
 
-**Close codes:** `4400` bad subprotocol/handshake · `4401` auth failed (don't auto-retry) · `4409` epoch conflict on handshake (do full reconcile) · `4415` unsupported encoding · `4429` rate-limited (backoff) · `1009` message too big (soft 256 KiB cap exceeded — a ws-library close, §1) · `1011` server internal · `1012` server restarting (reconnect with backoff). Reconnect uses exponential backoff with jitter, capped (e.g. 1s→30s), **except** `4401` which requires a fresh credential first.
+**Close codes:** `4400` bad subprotocol/handshake · `4401` auth failed (don't auto-retry) · `4409` epoch conflict on handshake (do full reconcile) · `4415` unsupported encoding · `4429` rate-limited (backoff) · `1009` message too big (soft 256 KiB cap exceeded — a ws-library close, §1) · `1011` server internal · `1012` server restarting (reconnect with backoff). Reconnect uses exponential backoff with jitter, capped (e.g. 1s→30s), **except** `4401`, which requires a fresh credential first — an in-cluster daemon exits non-zero there instead, so its restart redials (§3.1).
 
 ---
 

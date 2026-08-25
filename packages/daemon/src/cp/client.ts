@@ -206,6 +206,10 @@ export interface CpClientDeps
    *  resolve it). The console is org-scoped, so this becomes the `<orgSlug>` segment of a
    *  session deep link (`<webAppUrl>/<orgSlug>/sessions/<id>`). */
   onOrgSlug?: (orgSlug: string | undefined) => void
+  /** Called when the CP rejects this daemon's credential for good (4401) AND that credential is the
+   *  projected identity token — the one case a restart can fix, since the token is re-read from the
+   *  pod's volume on every boot. The daemon exits here so its supervisor redials with backoff. */
+  onAuthFatal?: () => void
   /** Auth-time recovery directive handled before full registration. */
   onBootstrapUpgrade?: (lifecycle: BootstrapLifecycle) => Promise<BootstrapUpgradeOutcome>
   /** Called once the daemon reaches READY on each (re)connect, after the initial
@@ -222,7 +226,7 @@ export class CpClient {
   private transport?: Transport
   private readonly correlator: ReqRep<AnyFrame>
   private stopped = false
-  private fatal = false // 4401 — never auto-retry
+  private fatal = false // 4401 — this connection never redials (the process may still exit and retry)
   private serverFeatures = new Set<string>()
   private organizationMode: OrganizationMode = 'connection'
   /** The member set the CP announced at `auth/ok` (daemon-groups.md §3); null ⇒ in none. Never
@@ -1286,6 +1290,16 @@ export class CpClient {
     if (code === 4401) {
       this.fatal = true
       this.state = 'CLOSED'
+      // An API key is minted by a human and a rejected one stays rejected, so redialing it forever
+      // is noise — the daemon stays up and says what to fix. A projected identity is different: it
+      // is re-read from the pod's volume at every boot, the process is restart-supervised, and boot
+      // BLOCKS on the first registration — so a live container that took a 4401 can never become
+      // servable. Exit instead and let the supervisor's restart backoff redial.
+      if (this.deps.clusterIdentityToken) {
+        this.deps.log.error('cp: AUTH_FAILED (4401) — exiting; the restart re-reads the projected identity and redials')
+        this.deps.onAuthFatal?.()
+        return
+      }
       this.deps.log.error('cp: AUTH_FAILED (4401) — not reconnecting; re-mint the daemon token')
       return
     }
