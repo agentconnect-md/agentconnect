@@ -57,11 +57,12 @@ export interface BillingAccount {
 // the console routinely runs ahead of that image. Absent or null ⇒ the row renders without it.
 //
 // The debit arm's `agents` is the billing service's per-agent split of a charge. The service
-// authorizes on org membership alone, so its `agentId`s are the org's and NOT the viewer's:
-// the id is carried here, never rendered. The row names and pictures an agent only when the id
-// is already on the viewer's own `/agents` roster; every other part renders as a default avatar
-// and an amount, which is `session-visibility.md` §5's rule that withheld usage comes back
-// id-less, enforced on the read side because this service cannot enforce it on the write side.
+// authorizes on org membership alone, so its `agentId`s are the ORG's and NOT the viewer's:
+// this boundary only CARRIES them. Naming one is `session-visibility.md` §5's intersection —
+// Agent visibility AND the Session predicate — and neither is knowable here, so the row that
+// renders it resolves the ids against the viewer's `/agents` roster and the CP's viewer-scoped
+// `/usage` projection for that period, and collapses everything else into the one id-less
+// rollup §5 requires. See `agentSplit` in BillingView; nothing else may read this field.
 export interface BillingCredit {
   type: 'credit'
   id: string

@@ -3555,6 +3555,20 @@ export function usageWindow(range: UsageRange, now: Date = new Date()): { from: 
   return { from: from.toISOString(), to: to.toISOString() }
 }
 
+// Which agents this VIEWER may see spend attributed to, over one explicit window.
+//
+// `/usage` is the CP's viewer-scoped attribution projection: it intersects Agent visibility
+// with the request-time Session predicate and returns what it withholds as one id-less
+// `unattributed` rollup (`session-visibility.md` §5). So an id in `agents` here is one the
+// console ALREADY names to this viewer for this window — which is exactly the permission a
+// second attribution surface needs before it names the same agent. Callers that only need
+// that set skip the rest of the aggregate.
+export async function fetchAttributableAgentIds(from: string, to: string, orgId?: string): Promise<Set<string>> {
+  const query = new URLSearchParams({ from, to })
+  const usage = await apiGet<UsageDto>(`${orgBase(orgId)}/usage?${query.toString()}`)
+  return new Set(usage.agents.map((a) => a.agentId))
+}
+
 export async function fetchUsage(range: UsageRange, orgId?: string, source?: UsageSource): Promise<UsageDto> {
   // Send the viewer's tz offset so the CP buckets the spend series to local
   // day/hour (getTimezoneOffset ⇒ UTC − local; stable per client, not in the key).

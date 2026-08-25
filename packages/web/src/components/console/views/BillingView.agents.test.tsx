@@ -1,14 +1,15 @@
+// @vitest-environment happy-dom
 /**
  * The debit row's agent attribution, reduced to what the viewer is entitled to.
  *
  * The billing service authorizes on ORG membership alone, so the `agents` split it sends
- * carries the org's agent ids and not the viewer's. Naming one the viewer cannot otherwise
- * see would be the resource-existence disclosure `session-visibility.md` §5 forbids, whose
- * rule is that withheld usage comes back id-less. Every part still gets its own entry — the
- * roster decides whether it is NAMED, not whether it appears — so what is pinned here is a
- * security property (no unresolvable id survives the reduction), not a formatting one.
+ * carries the org's agent ids and not the viewer's. `session-visibility.md` §5 makes usage
+ * attribution the INTERSECTION of Agent visibility and the Session predicate, and returns
+ * everything it withholds as one id-less rollup carrying no count. Naming an agent here
+ * therefore needs both halves — the viewer's `/agents` roster and the CP's viewer-scoped
+ * `/usage` projection for that period — and what fails either must collapse, not merely
+ * lose its name. What is pinned below is that boundary, not a formatting choice.
  */
-// @vitest-environment happy-dom
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -27,7 +28,11 @@ const DEBIT = {
 }
 
 const mocks = vi.hoisted(() => ({
-  fetchAgents: vi.fn(async () => [{ id: 'agt_1', name: 'reviewer', runtime: 'claude' }])
+  fetchAgents: vi.fn(async () => [
+    { id: 'agt_1', name: 'reviewer', runtime: 'claude' },
+    { id: 'agt_hidden', name: 'secret-bot', runtime: 'claude' }
+  ]),
+  fetchAttributable: vi.fn(async () => new Set(['agt_1']))
 }))
 
 vi.mock('@/lib/org-context', () => ({
@@ -40,7 +45,8 @@ vi.mock('next/navigation', () => ({
 }))
 vi.mock('@/lib/api', async () => ({
   ...(await vi.importActual<typeof import('@/lib/api')>('@/lib/api')),
-  fetchAgents: mocks.fetchAgents
+  fetchAgents: mocks.fetchAgents,
+  fetchAttributableAgentIds: mocks.fetchAttributable
 }))
 vi.mock('@/lib/billing-api', async () => ({
   ...(await vi.importActual<typeof import('@/lib/billing-api')>('@/lib/billing-api')),
@@ -53,77 +59,92 @@ vi.mock('@/lib/billing-api', async () => ({
 
 const { default: BillingView, agentSplit } = await import('./BillingView')
 
-beforeEach(() => {
-  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: 'billing' }
-})
-afterEach(() => {
-  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = {}
-})
-
 const agent = (id: string, name: string) => ({ id, name, runtime: 'claude' }) as Agent
 const roster = new Map([
   ['agt_1', agent('agt_1', 'reviewer')],
   ['agt_2', agent('agt_2', 'triage')]
 ])
+const both = new Set(['agt_1', 'agt_2'])
 
 describe('agentSplit', () => {
-  it('resolves an agent on the viewer’s roster, and only that one', () => {
+  it('names an agent only when BOTH predicates clear', () => {
+    // On the roster but NOT attributable for this period: the viewer can see the agent, but
+    // its billed spend came from sessions they may not read. Agent visibility alone is not
+    // the permission this surface needs, so it must not be named.
     const rows = agentSplit(
       [
-        { agentId: 'agt_1', amount: '0.40' },
-        { agentId: 'agt_hidden', amount: '0.10' }
+        { agentId: 'agt_1', amount: '1.00' },
+        { agentId: 'agt_2', amount: '0.50' }
       ],
-      roster
+      roster,
+      new Set(['agt_1'])
     )
     expect(rows.map((r) => r.agent?.name)).toEqual(['reviewer', undefined])
-    // The whole point: no unresolvable id reaches the row, in any field — including `key`,
-    // so the id cannot leak through a prop that ends up serialized.
-    expect(JSON.stringify(rows)).not.toContain('agt_hidden')
+    expect(JSON.stringify(rows)).not.toContain('agt_2')
   })
 
-  it('gives every unresolvable part its OWN entry rather than folding them', () => {
+  it('withholds an attributable agent that is missing from the roster', () => {
+    const rows = agentSplit([{ agentId: 'agt_gone', amount: '1.00' }], roster, new Set(['agt_gone']))
+    expect(rows).toEqual([{ key: 'withheld', amount: '1' }])
+  })
+
+  it('collapses every withheld part into ONE rollup, disclosing neither count nor partition', () => {
     const rows = agentSplit(
       [
         { agentId: 'x', amount: '0.10' },
         { agentId: 'y', amount: '0.20' },
+        { agentId: 'z', amount: '0.05' },
         { agentId: 'agt_2', amount: '1.00' }
       ],
-      roster
+      roster,
+      both
     )
-    expect(rows).toHaveLength(3)
-    expect(rows.filter((r) => !r.agent)).toHaveLength(2)
-    // Distinct keys, or React collapses the two into one chip.
-    expect(new Set(rows.map((r) => r.key)).size).toBe(3)
+    expect(rows).toHaveLength(2)
+    // The sum, and only the sum — three contributors must not be legible as three chips.
+    expect(rows[1]).toEqual({ key: 'withheld', amount: '0.35' })
   })
 
-  it('orders by spend, biggest first, resolved or not', () => {
+  it('sums the rollup exactly, never as a float', () => {
+    const rows = agentSplit(
+      [
+        { agentId: 'x', amount: '0.1' },
+        { agentId: 'y', amount: '0.2' }
+      ],
+      roster,
+      both
+    )
+    expect(rows[0]!.amount).toBe('0.3')
+  })
+
+  it('orders named agents by spend, biggest first', () => {
     const rows = agentSplit(
       [
         { agentId: 'agt_1', amount: '0.40' },
-        { agentId: 'hidden', amount: '5.00' },
         { agentId: 'agt_2', amount: '2.50' }
       ],
-      roster
+      roster,
+      both
     )
-    expect(rows.map((r) => r.agent?.name ?? '—')).toEqual(['—', 'triage', 'reviewer'])
+    expect(rows.map((r) => r.agent?.name)).toEqual(['triage', 'reviewer'])
   })
 
   it('renders nothing when the service sent no split, or an empty one', () => {
-    expect(agentSplit(undefined, roster)).toEqual([])
-    expect(agentSplit(null, roster)).toEqual([])
-    expect(agentSplit([], roster)).toEqual([])
+    expect(agentSplit(undefined, roster, both)).toEqual([])
+    expect(agentSplit(null, roster, both)).toEqual([])
+    expect(agentSplit([], roster, both)).toEqual([])
     // A zero part is noise, not attribution.
-    expect(agentSplit([{ agentId: 'agt_1', amount: '0' }], roster)).toEqual([])
+    expect(agentSplit([{ agentId: 'agt_1', amount: '0' }], roster, both)).toEqual([])
   })
 
   it('drops a part whose amount is not a number rather than rendering NaN', () => {
-    expect(agentSplit([{ agentId: 'agt_1', amount: 'twelve' }], roster)).toEqual([])
+    expect(agentSplit([{ agentId: 'agt_1', amount: 'twelve' }], roster, both)).toEqual([])
   })
 
-  it('names nothing while the roster is still empty', () => {
-    // An unloaded or failed roster must fail CLOSED — a default avatar, never a name.
-    const rows = agentSplit([{ agentId: 'agt_1', amount: '0.40' }], new Map())
-    expect(rows.map((r) => r.agent)).toEqual([undefined])
+  it('fails closed when either input is empty', () => {
+    const parts = [{ agentId: 'agt_1', amount: '0.40' }]
+    // An unloaded or failed roster, and an unloaded or failed projection: both must withhold.
+    expect(agentSplit(parts, new Map(), both)).toEqual([{ key: 'withheld', amount: '0.4' }])
+    expect(agentSplit(parts, roster, new Set())).toEqual([{ key: 'withheld', amount: '0.4' }])
   })
 })
 
@@ -141,24 +162,40 @@ describe('the usage row', () => {
     return host
   }
 
+  beforeEach(() => {
+    ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: 'billing' }
+  })
   afterEach(async () => {
     if (root) await act(async () => root!.unmount())
     host?.remove()
     root = undefined
+    ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = {}
   })
 
-  it('pictures the agent it may name, and a default avatar for the one it may not', async () => {
+  it('asks the CP for the periods on screen, not for a preset range', async () => {
+    await render()
+    expect(mocks.fetchAttributable).toHaveBeenCalledWith(
+      '2026-08-01T00:00:00.000Z',
+      '2026-09-01T00:00:00.000Z',
+      'org-1'
+    )
+  })
+
+  it('pictures the agent it may name, and a default avatar for the rest', async () => {
     const host = await render()
     const chips = host.querySelectorAll('[data-tx-agent]')
     expect(chips).toHaveLength(2)
 
-    // Resolved: the agent's own avatar and label.
-    expect(chips[0]!.textContent).toBe('reviewer')
+    // Attributable and on the roster: its own avatar, its label, its amount.
+    expect(chips[0]!.textContent).toBe('reviewer$1.00')
     expect(chips[0]!.querySelector('[data-tx-agent-default]')).toBeNull()
 
-    // Unresolved: the default avatar, no name — and its id nowhere in the DOM.
-    expect(chips[1]!.textContent).toBe('')
+    // Withheld: the default avatar and the summed amount — no name, and no id anywhere in
+    // the DOM, even though this agent IS on the viewer's roster. `/agents` proves only that
+    // they may see the agent, never that they may read the sessions this spend came from.
+    expect(chips[1]!.textContent).toBe('$0.40')
     expect(chips[1]!.querySelector('[data-tx-agent-default]')).not.toBeNull()
     expect(host.innerHTML).not.toContain('agt_hidden')
+    expect(host.innerHTML).not.toContain('secret-bot')
   })
 })
