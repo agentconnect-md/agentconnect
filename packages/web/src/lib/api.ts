@@ -3555,22 +3555,38 @@ export function usageWindow(range: UsageRange, now: Date = new Date()): { from: 
   return { from: from.toISOString(), to: to.toISOString() }
 }
 
-// The viewer-scoped, gateway-metered per-agent spend for one explicit window.
+/** What the CP's viewer-scoped `/usage` projection says about one window. `complete` is the
+ *  load-bearing field: false ⇒ SOME spend in this window is withheld from this caller, and the
+ *  projection cannot say whose, so nothing in the window may be attributed to a name. */
+export interface GatewayAttribution {
+  agents: Set<string>
+  complete: boolean
+}
+
+// The viewer-scoped, gateway-metered attribution for one explicit window.
 //
-// `/usage` is the CP's attribution projection: it intersects Agent visibility with the
-// request-time Session predicate and returns what it withholds as one id-less `unattributed`
-// rollup (`session-visibility.md` §5). What comes back per agent is therefore the amount this
-// viewer may attribute — NOT an authorization for that agent's whole month. An agent with $1
-// of readable spend and $99 of private spend appears here with $1, and the $99 stays in the
-// residual; a caller that reduced this to a set of ids would reattach the $99 to the name.
+// `/usage` intersects Agent visibility with the request-time Session predicate and returns what
+// it withholds as ONE id-less `unattributed` rollup (`session-visibility.md` §5) — id-less by
+// design, so an agent's presence in `agents` never proves that agent's whole window is readable.
+// An agent with $1 of readable spend and $99 of private spend appears in `agents` with $1 while
+// the $99 sits in `unattributed`, indistinguishable from any other agent's withheld spend.
+//
+// Hence `complete`: only when the projection withholds NOTHING is membership equivalent to
+// "this caller may attribute every dollar in this window", which is the only condition under
+// which a second surface may put an amount next to a name. A window with any residual is
+// unusable for naming, however small the residual is.
 //
 // `source=gateway` because that is the ingress a billing charge settles from (see the route's
 // own note): unscoped, a readable DAEMON session could qualify an agent whose gateway spend is
 // entirely private.
-export async function fetchGatewayAttribution(from: string, to: string, orgId?: string): Promise<Map<string, string>> {
+export async function fetchGatewayAttribution(from: string, to: string, orgId?: string): Promise<GatewayAttribution> {
   const query = new URLSearchParams({ from, to, source: 'gateway' })
   const usage = await apiGet<UsageDto>(`${orgBase(orgId)}/usage?${query.toString()}`)
-  return new Map(usage.agents.map((a) => [a.agentId, a.costAmount]))
+  const residual = usage.unattributed?.costAmount
+  return {
+    agents: new Set(usage.agents.map((a) => a.agentId)),
+    complete: residual === undefined || Number(residual) === 0
+  }
 }
 
 export async function fetchUsage(range: UsageRange, orgId?: string, source?: UsageSource): Promise<UsageDto> {
