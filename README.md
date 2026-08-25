@@ -60,8 +60,6 @@
   <a href="#explore">Explore</a>
 </p>
 
-**Multiple agents, one team—in the tools your team already uses.**
-
 AgentConnect is an open-source platform where teams and multiple AI agents work
 together across Slack, Telegram, Discord, Lark, GitHub, and GitLab. Bring Claude
 Code, Codex, Grok Build, DeepSeek, Pi, or any ACP-compatible agent into the
