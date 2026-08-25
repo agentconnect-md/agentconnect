@@ -4809,9 +4809,12 @@ export interface OrgRecord {
 
 /** One org's footprint, for the per-org gauges (observability/org-metrics.ts). */
 export interface OrgTelemetryRow {
-  /** What the gauge labels the series with. The slug is deliberately NOT read here: it is mutable,
-   *  and an org's is chosen by whoever created it. */
+  /** What every count is labelled with — an id, so no rename can retire a series. */
   orgId: string
+  /** The org's handle. Reported ONLY on the `info` series, never as a label on a count: it is
+   *  mutable, and labelling a count with it would retire that count on rename. The org's optional
+   *  display name is deliberately NOT read — free-form text does not belong in a metrics backend. */
+  slug: string
   /** Daemons registered to the org, any status. An install-wide pool member belongs to NO org
    *  (`daemon.orgId IS NULL`) and is counted for none of them — a pool-backed org reads zero here
    *  however much of the pool it occupies, which `duty_group` is the ledger for. */

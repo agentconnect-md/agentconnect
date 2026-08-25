@@ -16,15 +16,18 @@
  *  - `org.sessions{window="total"}` is a lifetime count over an unpruned table, so it only ever
  *    climbs. The `30d`/`24h` windows are the ones that show whether an org is still active.
  *
- * The `org` label is the org's ID, never its slug. A slug is mutable, so labelling with it would
- * retire a series on rename — exactly the disappearance the zeros below exist to prevent — and a
- * slug is user-chosen text, which has no business being a label value in a metrics backend.
- * Resolving an id to a name is the dashboard's job.
+ * The `org` label on a count is the org's ID, never its slug. A slug is mutable, so labelling a
+ * count with it would retire that series on rename — exactly the disappearance the zeros below
+ * exist to prevent. The readable handle rides one dedicated series instead: `agentconnect.org.info`
+ * is always 1 and carries `slug`, which a dashboard joins onto the counts by `org`
+ * (`… * on (org) group_left(slug) max by (org, slug) (agentconnect.org.info)`). A rename then
+ * churns that one series and leaves every count intact. The org's optional display NAME is not
+ * exported at all: it is free-form text a user typed, which has no business in a metrics backend.
  *
  * Every CP replica observes the same install-wide numbers, so these are fleet totals repeated per
  * pod, not per-pod shards: aggregate them with `max by (...)`, never `sum`. Cardinality, not the
  * query, is the dominant cost: a signup-driven install where most users create an org of their own
- * reports closer to (users × 5) series per replica, every one of them re-reported each collection
+ * reports closer to (users × 6) series per replica, every one of them re-reported each collection
  * interval whether or not that org has ever held anything.
  */
 import { metrics, type BatchObservableResult, type ObservableGauge } from '@opentelemetry/api'
@@ -46,7 +49,7 @@ export interface OrgMetricsDeps {
   log?: OrgMetricsLog
 }
 
-export type OrgMetricName = 'daemons' | 'agents' | 'sessions'
+export type OrgMetricName = 'info' | 'daemons' | 'agents' | 'sessions'
 
 /** `total` is the lifetime count; the others are how many sessions STARTED in that window. */
 export type SessionWindow = 'total' | '30d' | '24h'
@@ -54,7 +57,8 @@ export type SessionWindow = 'total' | '30d' | '24h'
 export interface OrgObservation {
   metric: OrgMetricName
   value: number
-  attrs: { org: string; window?: SessionWindow }
+  /** `window` belongs to `sessions`, `slug` to `info`; a count carries `org` alone. */
+  attrs: { org: string; window?: SessionWindow; slug?: string }
 }
 
 /** Rows → the series each gauge reports, labelled by org ID. Pure, so a dashboard's input is
@@ -68,6 +72,9 @@ export function orgObservations(rows: readonly OrgTelemetryRow[]): OrgObservatio
       attrs: { org, window }
     })
     return [
+      // The slug, never the display name: a slug is a constrained unique handle a URL and a CLI
+      // already take, where a display name is free-form text a user typed.
+      { metric: 'info', value: 1, attrs: { org, slug: row.slug } },
       { metric: 'daemons', value: row.daemons, attrs: { org } },
       { metric: 'agents', value: row.agents, attrs: { org } },
       sessions('total', row.sessionsTotal),
@@ -102,6 +109,11 @@ const meter = metrics.getMeter('@agentconnect.md/control-plane-org', '1.0.0')
 
 function createGauges(): Record<OrgMetricName, ObservableGauge> {
   return {
+    info: meter.createObservableGauge('agentconnect.org.info', {
+      unit: '{org}',
+      description:
+        'Always 1. Carries the org slug so a dashboard can join a readable handle onto the id-labelled counts. The optional display name is deliberately not exported'
+    }),
     daemons: meter.createObservableGauge('agentconnect.org.daemons', {
       unit: '{daemon}',
       description:
