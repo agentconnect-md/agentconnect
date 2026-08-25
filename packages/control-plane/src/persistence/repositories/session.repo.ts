@@ -1316,6 +1316,20 @@ export class PgSessionRepo implements SessionRepo {
     return row ? SessionId(row.id) : null
   }
 
+  async recentTerminalForPullRequestDiscovery(orgId: OrgId, limit: number): Promise<SessionMetaRecord[]> {
+    const rows = await this.db.sessionMeta.findMany({
+      where: {
+        orgId,
+        phase: { in: ['end', 'problem'] },
+        contentPurgedAt: null,
+        pullRequest: null
+      },
+      orderBy: [{ lastActivityAt: 'desc' }, { startedAt: 'desc' }, { id: 'desc' }],
+      take: Math.max(1, Math.min(limit, 50))
+    })
+    return rows.map(toRecord)
+  }
+
   async listFacets(q: SessionFacetQuery): Promise<SessionFacetIndex> {
     if (queryAgentIds(q).length === 0) return { agents: [], integrations: [], channels: [], triggers: [] }
 

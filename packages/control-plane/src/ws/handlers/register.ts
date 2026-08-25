@@ -112,6 +112,7 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
     ]
   })
   deps.connReg.markReady(conn.daemonId, conn)
+  deps.pullRequestFeedback?.kick()
 
   // Converge the per-session memory-capture gates (session-visibility.md §5.1).
   // A visibility change committed while this daemon was offline was never
