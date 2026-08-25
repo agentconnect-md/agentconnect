@@ -1,5 +1,6 @@
 import { afterEach, describe, it, expect, vi } from 'vitest'
 import { encodeSlackStatusOverflowValue, SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID } from '@agentconnect.md/protocol'
+import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import { consolidate, SlackConnection } from '../src/slack/connection.js'
 import type { Agent } from '../src/agents/agent-schema.js'
 
@@ -928,6 +929,71 @@ describe('SlackConnection assistant DM threads', () => {
       'is checking the deployment',
       'peer bot update'
     ])
+  })
+
+  it('recognizes a stop-time finalization on the bot own message, past own-echo (streaming §3.3/§7.1)', async () => {
+    // A native streamed turn closes its response on `chat.stopStream`, which emits no
+    // `message_changed` edit — the finalized message arrives as an ordinary bot message carrying
+    // the SAME `final` metadata. It must route despite being the bot's own post, or agent-to-agent
+    // routing stops on the shareable bots that stream; a mid-stream `streaming` post still drops.
+    let messageHandler!: (a: { message: unknown }) => unknown
+    const delivered: any[] = []
+    const conn = new SlackConnection(
+      {
+        ...deps(),
+        onMessage: (msg: unknown) => delivered.push(msg)
+      } as any,
+      () =>
+        ({
+          message(h: (a: { message: unknown }) => unknown) {
+            messageHandler = h
+          },
+          event() {},
+          action() {},
+          shortcut() {},
+          client: {
+            auth: { test: async () => ({ user_id: 'UBOT', bot_id: 'BSELF' }) },
+            views: { open: async () => {}, update: async () => {} }
+          },
+          start: async () => {},
+          stop: async () => {}
+        }) as any
+    )
+    await conn.start()
+
+    const streamedFinal = (deliveryState: 'streaming' | 'final', ts: string) => ({
+      message: {
+        type: 'message',
+        channel: 'C1',
+        ts,
+        thread_ts: '1727484200.000000',
+        bot_id: 'BSELF',
+        app_id: 'AMANAGED',
+        text: '<@UPEER> please verify the rollout',
+        metadata: {
+          event_type: 'agentconnect_thread_event',
+          event_payload: {
+            author_agent_id: 'agent-author',
+            response_id: 'r-1',
+            delivery_state: deliveryState,
+            hop_count: 2,
+            mentioned_agent_ids: ['agent-peer']
+          }
+        }
+      }
+    })
+
+    // Mid-stream: dropped by own-echo exactly as before.
+    await messageHandler(streamedFinal('streaming', '1727484201.000000'))
+    expect(delivered).toEqual([])
+
+    // The stop: recognized as the finalization even though it is the bot's own message.
+    await messageHandler(streamedFinal('final', '1727484202.000000'))
+    expect(delivered).toHaveLength(1)
+    expect(delivered[0].ingressEventTag).toBe(SLACK_RESPONSE_FINAL_EVENT_TAG)
+    expect(delivered[0].agentAuthorship?.authorAgentId).toBe('agent-author')
+    expect(delivered[0].agentAuthorship?.mentionedAgentIds).toEqual(['agent-peer'])
+    expect(delivered[0].msgId).toBe('slack:C1:1727484202.000000')
   })
 })
 

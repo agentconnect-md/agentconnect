@@ -9403,14 +9403,18 @@ export class Daemon {
   }
 
   /**
-   * May this Slack turn take the native streaming pipeline? Every §7 carve-out that can be
-   * decided before the call is attempted, plus §7.1's staged one:
+   * May this Slack turn take the native streaming pipeline? Every §7 structural carve-out that
+   * can be decided before the call is attempted:
    *
    *  - a streamed message must be a thread reply, so a channel-root turn cannot stream;
-   *  - `recipient_user_id` is required outside a DM and only a human initiator supplies one;
-   *  - `none` delivers nothing to the channel at all;
-   *  - a SHAREABLE (multi-agent) bot keeps the legacy pipeline until §10 Q1 is verified live,
-   *    because agent-to-agent routing — the thing Q1 puts at risk — happens only there.
+   *  - `recipient_user_id` is required outside a DM and only a human initiator supplies one, so a
+   *    channel turn with no human initiator (agent-to-agent, cron, hook, dream) cannot stream;
+   *  - `none` delivers nothing to the channel at all.
+   *
+   * §7.1's shareable carve-out is LIFTED (slack-streaming-turn-output.md §7.1): shareable
+   * (multi-agent) bots now stream like the rest, because ingress recognises the finalization
+   * from `chat.stopStream`'s stop-time metadata (`normalizeSlackResponseFinalization`), so the
+   * agent-to-agent routing that only happens there is unchanged even without the closing edit.
    *
    * The remaining answer is Slack's own: `streamingLikely()` reads the capability latch, and
    * `chat.startStream` decides for real.
@@ -9418,7 +9422,6 @@ export class Daemon {
   private slackStreamingEligible(plan: TurnPlan, entry: QueueEntry, conn: ReplyConnection | undefined): boolean {
     if (plan.platform !== 'slack' || plan.mode === 'none' || !plan.thread) return false
     if (!plan.isDm && !slackStreamRecipient(entry.msg)) return false
-    if (this.isShareableSlackIntegration(plan.agentId, plan.integrationId)) return false
     const likely = (conn as Partial<SlackConnection> | undefined)?.streamingLikely
     return typeof likely === 'function' && likely.call(conn)
   }

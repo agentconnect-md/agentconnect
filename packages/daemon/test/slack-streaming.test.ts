@@ -930,6 +930,44 @@ describe('SlackConnection streaming', () => {
     )
   })
 
+  it('stamps the §5.5 finalization metadata onto chat.stopStream so ingress can read it back', async () => {
+    // The closing edit is gone from the streamed path (§3.3), so `chat.stopStream` carries the
+    // SAME `final` metadata the old `chat.update` did — this is exactly what
+    // `normalizeSlackResponseFinalization` recognises on the other daemon / the relay. The
+    // producer and the reader must agree on the payload shape, so pin it here.
+    const { conn, app } = await connect()
+    const stream = (await conn.startTurnStream('C1', 'T1'))!
+    await conn.stopTurnStream(stream, {
+      blocks: [{ type: 'context' }],
+      agentAuthorId: 'bot-a',
+      response: {
+        responseId: 'r-1',
+        deliveryState: 'final',
+        hopCount: 2,
+        mentionedAgentIds: ['agent-2'],
+        addressedAnyone: true
+      }
+    })
+    expect(app.client.chat.stopStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'C1',
+        ts: '900.1',
+        blocks: [{ type: 'context' }],
+        metadata: {
+          event_type: 'agentconnect_thread_event',
+          event_payload: {
+            author_agent_id: 'bot-a',
+            response_id: 'r-1',
+            delivery_state: 'final',
+            hop_count: 2,
+            mentioned_agent_ids: ['agent-2'],
+            addressed_anyone: true
+          }
+        }
+      })
+    )
+  })
+
   it('answers "cannot stream" when the SDK has no such method, and latches it', async () => {
     const { conn } = await connect({ chat: { startStream: undefined } })
     expect(await conn.startTurnStream('C1', 'T1')).toBeUndefined()
@@ -1299,7 +1337,10 @@ describe('Daemon Slack streaming turn', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('keeps a SHAREABLE bot on the legacy pipeline until §10 Q1 is verified live', async () => {
+  it('streams a SHAREABLE bot now that the §7.1 carve-out is lifted', async () => {
+    // §7.1 lift: shareable (multi-agent) bots stream like the rest — ingress recognises the
+    // finalization from `chat.stopStream`'s metadata, so agent-to-agent routing is unchanged
+    // without the closing edit. The turn takes the stream, not the legacy post boundary.
     const { daemon } = booted(scaffold())
     await daemon.start()
     const conn = connect(daemon, {}, true)
@@ -1310,9 +1351,19 @@ describe('Daemon Slack streaming turn', () => {
       'int-a'
     )
 
-    expect(conn.startTurnStream).not.toHaveBeenCalled()
-    expect(conn.setStatus).toHaveBeenCalled()
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'streamed answer', 'T1', expect.anything())
+    expect(conn.startTurnStream).toHaveBeenCalledOnce()
+    const streamed = conn.appendTurnStream.mock.calls
+      .flatMap((call) => call[1] ?? [])
+      .map((c: SlackStreamChunk) => (c.type === 'markdown_text' ? c.text : ''))
+      .join('')
+    expect(streamed).toContain('streamed answer')
+    // The finalization rides the stop, carrying the §5.5 `final` state ingress reads back.
+    expect(conn.stopTurnStream).toHaveBeenCalledOnce()
+    expect(conn.stopTurnStream.mock.calls[0]![1]).toMatchObject({
+      response: expect.objectContaining({ deliveryState: 'final' })
+    })
+    // The answer never takes the legacy post boundary on a streaming turn.
+    expect(conn.postMessage).not.toHaveBeenCalledWith('C1', 'streamed answer', 'T1', expect.anything())
     await daemon.stop()
   }, 15_000)
 

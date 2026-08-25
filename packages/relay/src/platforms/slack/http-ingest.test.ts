@@ -11,6 +11,7 @@ import {
   encodeSlackStatusOverflowValue,
   encodeSharedSlackStatusTarget
 } from '@agentconnect.md/protocol'
+import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '@agentconnect.md/message'
 import {
   normalizeSlackMessage,
   parseHttpSlackAgentSelection,
@@ -637,6 +638,90 @@ describe('normalizeSlackMessage conversation kinds', () => {
 })
 
 describe('SlackHttpIngest message events', () => {
+  const ingestFor = (onMessage: SlackHttpIngestDeps['onMessage'], botId = 'BSELF') =>
+    new SlackHttpIngest(
+      'bot',
+      { botToken: 'xoxb', signingSecret: 's' },
+      {
+        onMessage,
+        onBotUserId: vi.fn(),
+        onChannelsChanged: vi.fn(),
+        agents: () => [],
+        currentOwner: () => undefined,
+        onSetChannelAgent: vi.fn(),
+        onSelectThreadAgent: vi.fn(),
+        onSessionAction: vi.fn(),
+        onSessionShortcut: vi.fn(() => false),
+        onSessionStopped: vi.fn(),
+        webClientFactory: () => ({ auth: { test: vi.fn(async () => ({ user_id: 'UBOT', bot_id: botId })) } }) as never,
+        log: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }
+      }
+    )
+
+  // slack-streaming-turn-output.md §3.3/§7.1: a native streamed turn closes its response on
+  // `chat.stopStream`, which emits no `message_changed` edit — the finalized message arrives as
+  // an ordinary bot message carrying the SAME `final` metadata the legacy closing edit carried.
+  // A2A on shareable bots (all relay-inbound) depends on ingress recognising THAT, before the
+  // own-echo filter that would otherwise drop the bot's own post.
+  const finalMetadata = (deliveryState: 'streaming' | 'final') => ({
+    metadata: {
+      event_type: 'agentconnect_thread_event',
+      event_payload: {
+        author_agent_id: 'agent-author',
+        response_id: 'r-1',
+        delivery_state: deliveryState,
+        hop_count: 2,
+        mentioned_agent_ids: ['agent-peer']
+      }
+    }
+  })
+
+  it('forwards a stop-time finalization on the bot own message, past the own-echo filter', async () => {
+    const onMessage = vi.fn<SlackHttpIngestDeps['onMessage']>(async () => {})
+    const ingest = ingestFor(onMessage)
+    await ingest.start()
+
+    // The bot's OWN post (bot_id === the resolved self id) still forwards, because it closes a
+    // logical response — echo suppression alone would make shared-bot A2A impossible.
+    await ingest.handleEvent({
+      type: 'message',
+      channel: 'C1',
+      ts: '900.1',
+      thread_ts: '900.0',
+      bot_id: 'BSELF',
+      app_id: 'AMANAGED',
+      text: '<@UPEER> please verify the rollout',
+      ...finalMetadata('final')
+    })
+
+    expect(onMessage).toHaveBeenCalledTimes(1)
+    const [message] = onMessage.mock.calls[0]!
+    expect(message.ingressEventTag).toBe(SLACK_RESPONSE_FINAL_EVENT_TAG)
+    expect(message.agentAuthorship?.authorAgentId).toBe('agent-author')
+    expect(message.agentAuthorship?.mentionedAgentIds).toEqual(['agent-peer'])
+    expect(message.msgId).toBe('slack:C1:900.1')
+  })
+
+  it('does not forward a mid-stream append (streaming metadata) as a finalization', async () => {
+    const onMessage = vi.fn<SlackHttpIngestDeps['onMessage']>(async () => {})
+    const ingest = ingestFor(onMessage)
+    await ingest.start()
+
+    await ingest.handleEvent({
+      type: 'message',
+      channel: 'C1',
+      ts: '900.1',
+      thread_ts: '900.0',
+      bot_id: 'BSELF',
+      app_id: 'AMANAGED',
+      text: 'partial answer so far',
+      ...finalMetadata('streaming')
+    })
+
+    // A `streaming` post is dropped by the own-echo filter exactly as before — only the stop routes.
+    expect(onMessage).not.toHaveBeenCalled()
+  })
+
   it('drops self and Slack system messages while forwarding peer app text', async () => {
     const onMessage = vi.fn<SlackHttpIngestDeps['onMessage']>(async () => {})
     const botIds = [undefined, 'BSELF']

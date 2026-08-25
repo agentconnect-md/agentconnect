@@ -1,9 +1,9 @@
 # Slack Native Streaming Turn Output
 
 **Status:** Implemented and shipped (Layer 1 of the Slack-native agent experience; Layer 0 is
-merged). One carve-out is deliberately still closed: turns on a shareable (multi-agent) bot keep
-the legacy pipeline, and lifting it now requires teaching ingress to read a stop-time
-finalization first (§7.1).
+merged). The §7.1 shareable-bot carve-out has since been **lifted**: shareable (multi-agent) bots
+now stream like the rest, because ingress reads the finalization from `chat.stopStream`'s
+stop-time metadata instead of the closing edit it no longer emits (§7.1).
 
 Presentation was revised once after seeing it live: streams open in `plan` display mode rather
 than `timeline`, the §5.5 finalization rides `chat.stopStream` instead of a closing `chat.update`
@@ -157,14 +157,15 @@ are appended below everything already streamed rather than replacing it, and `me
 final delivery state is stamped at stop time and no edit is issued at all. The samples corroborate
 the shape: none of them calls `chat.update` on a streamed message.
 
-**Why that is safe to do now, and what the carve-out lift owes.** Nothing reads the finalization
-event except agent-to-agent routing, and A2A happens only on shareable bots — which §7.1 keeps
-off the streaming path entirely. So today no consumer can miss it. That makes it a **prerequisite
-of lifting the carve-out**, not an afterthought: before a shareable bot may stream, relay and
-Socket Mode ingress must first learn to recognise the finalization from stop-time metadata, since
-the `message_changed` edit they key on today will no longer be emitted. Until then the two facts
-hold each other up — the carve-out is what makes stop-carried finalization safe, and teaching
-ingress is what makes the carve-out liftable.
+**Why this was safe to do, and what the carve-out lift owed.** Nothing reads the finalization
+event except agent-to-agent routing, and A2A happens only on shareable bots — which §7.1 kept
+off the streaming path while it existed. So no consumer could miss it. That made it a
+**prerequisite of lifting the carve-out**, not an afterthought: before a shareable bot could
+stream, relay and Socket Mode ingress had to first recognise the finalization from stop-time
+metadata, since the `message_changed` edit they keyed on is no longer emitted. Both are now done
+— `normalizeSlackResponseFinalization` recognises a `final` claim whether it arrives on a
+`message_changed` edit (legacy) or at the top level of a stop-time event (streamed), so the
+carve-out is lifted (§7.1).
 
 ### 3.4 Length and continuation
 
@@ -441,7 +442,8 @@ latch is wrong for a capability a workspace can gain by upgrading a plan):
   to supply. DMs are unaffected.
 - Output mode `none`.
 
-A fifth carve-out is not structural but a staged rollout — see §7.1.
+These four are the only carve-outs left. A fifth — the shareable-bot staged rollout — has since
+been lifted; see §7.1.
 
 **Mid-turn failure.** If an append fails, stop the stream best-effort and finish the remaining
 body through the ordinary `post` path — the same shape Feishu already ships (_"A final CardKit
@@ -502,44 +504,57 @@ silently drop its attribution footer. The same rule governs an append refusal: i
 handle only when the error proves the message stopped, so a transient one still leaves
 something for the stop to land on.
 
-### 7.1 The shareable-bot carve-out, and why it is temporary
+### 7.1 The shareable-bot carve-out, lifted
 
-One more carve-out ships with the first version, and unlike the four above it is not structural
-— it is a **staged rollout expressed as a predicate**. Turns on a **shareable** (multi-agent)
-Slack bot take the legacy pipeline; dedicated bots stream.
+The first version shipped one more carve-out, and unlike the four structural ones it was a
+**staged rollout expressed as a predicate**: turns on a **shareable** (multi-agent) Slack bot
+took the legacy pipeline while dedicated bots streamed. It has since been **lifted** — shareable
+bots now stream too — once ingress learned to read the finalization from stop-time metadata. This
+section records why it existed and what the lift required.
 
-The reason is §10 Q1. Whether the §5.5 closing `chat.update` still works on a _stopped stream_,
-and whether it still emits the `message_changed` event ingress recognises, is undocumented in
-both directions. Agent-to-agent routing over Slack depends on exactly that edit being seen — and
-**agent-to-agent conversation only happens on a shareable bot**, because that is the only bot
-that hosts more than one agent to address. So the population where a wrong answer to Q1 costs
-real behavior is precisely the population this predicate excludes.
+**Why it existed.** The open question was §10 Q1: whether the §5.5 closing `chat.update` still
+worked on a stopped stream and still emitted the `message_changed` event ingress recognises was
+undocumented in both directions. Agent-to-agent routing over Slack depends on that finalization
+being seen — and **agent-to-agent conversation only happens on a shareable bot**, because that is
+the only bot that hosts more than one agent to address. So the population where a wrong answer to
+Q1 could cost real behavior was precisely the population the carve-out excluded, which converted
+Q1 from a merge gate into a bounded post-deploy verification.
 
-That converts Q1 from a merge gate into a **post-deploy verification**: streaming ships now for
-the large majority of installs (dedicated bots), and one live check on a shareable bot decides
-whether the carve-out is lifted. Until then the risk is bounded to _no change_ — a shareable bot
-behaves exactly as it does today.
-
-It gates on the codebase's **existing** shareable predicate — the same
+It gated on the codebase's **existing** shareable predicate — the same
 `platformIntegrationConfig('slack', …).shareable` fact that decides whether the status bar offers
-"Switch agent" — not on a new flag invented for this change. Nothing new becomes configurable, so
-nothing new can acquire callers and become permanent.
+"Switch agent" — not on a new flag. Nothing new became configurable, so nothing could acquire
+callers and become permanent.
 
-**The carve-out has since become load-bearing for a second reason, and that raised its lift
-price.** §3.3 moved the §5.5 finalization onto `chat.stopStream`, because the closing
-`chat.update` it replaced was erasing the task cards. That means a streamed turn no longer emits
-the `message_changed` event ingress keys on. Harmless today — the only consumer is A2A routing,
-which happens only on shareable bots, which do not stream — but it makes the lift a two-part
-change, in order:
+**Why the lift owed an ingress change first.** §3.3 moved the §5.5 finalization onto
+`chat.stopStream`, because the closing `chat.update` it replaced was erasing the task cards. That
+means a streamed turn no longer emits the `message_changed` event ingress used to key on. Harmless
+while shareable bots did not stream (the only consumer is A2A routing, which happens only there) —
+but it made the lift a two-part change, in order:
 
 1. **Teach relay and Socket Mode ingress to recognise a finalization from stop-time metadata**,
-   alongside the edit they read today.
+   alongside the edit they read for the legacy path.
 2. **Then** delete the predicate from the eligibility check.
 
 Doing (2) without (1) would silently stop agent-to-agent routing on exactly the bots that use it.
-So the lift is no longer "one line plus its test" — the line is still one line, but it is the
-second of two changes, and the first belongs to the ingress seam this design otherwise leaves
-alone.
+
+**How both landed.** The daemon already stamps the §5.5 `final` metadata onto `chat.stopStream`
+(§3.3) — the SAME `agentconnect_thread_event` payload (`author_agent_id`, `response_id`,
+`delivery_state: 'final'`, `hop_count`, `mentioned_agent_ids`, `addressed_anyone`) the legacy
+`chat.update` carried. `normalizeSlackResponseFinalization` now recognises that `final` claim
+whether it arrives nested in a `message_changed` edit (legacy) or at the **top level** of an
+ordinary stop-time event (streamed); both map to the same `response-final`-tagged finalization,
+so downstream A2A routing (`verifyAgentAuthor` → the §6 ladder) is unchanged. Both ingress seams
+call that one normaliser, before their own-echo filter, so relay and Socket Mode gain the
+recognition together. With (1) in place, (2) is the removal of the single shareable line from
+`slackStreamingEligible`.
+
+**The `include_all_metadata` requirement.** The live routing path reads the metadata off the
+message EVENT (the Events API payload on the relay, the Socket Mode frame on the daemon), which
+carries it natively for the app that published it — a shared bot posts and receives under one app,
+so the payload includes the full `event_payload`. The only place a **read-back** is used —
+`conversations.replies` thread backfill — must pass `include_all_metadata: true`, or Slack returns
+just `metadata.event_type` and drops the payload; `getThreadReplies` already does. `chat.stopStream`
+`metadata` persists on the finalized message intact (verified live), so a read-back sees it too.
 
 **SDK note.** `@slack/web-api` resolves to 8.0.0 in this workspace, and — checked against the
 resolved package, not assumed — it **does** type all three methods (`chat.startStream`,
@@ -595,8 +610,9 @@ it.
 
 1. **This PR** lands the whole pipeline — connection members, converger axis, applier, daemon
    hooks, the status-choreography guards, the eval guard, and this document.
-2. **A follow-up PR lifts the §7.1 shareable carve-out** once a live shareable-bot turn confirms
-   §10 Q1. It is a predicate deletion plus its test; it is not a prerequisite for anything here.
+2. **A follow-up PR lifted the §7.1 shareable carve-out** (done). It taught ingress to read the
+   stop-time finalization metadata, then deleted the predicate from the eligibility check, so
+   shareable bots stream and A2A routing is unchanged (§7.1).
 3. **[#1478](https://github.com/agentconnect-md/agentconnect/pull/1478) closes as superseded when
    this merges** — not merged first, not rebased. Its ordering fix applies to a path streaming
    retires wherever it works, and §10 Q5 explains why its order is the wrong one for the
@@ -643,8 +659,11 @@ population a wrong answer could hurt never streams. Seeing the edit run in a rea
 answered the question in the worst way available: it works, and it is destructive — `chat.update`
 replaces the message wholesale, erasing every task card and marking the answer "(edited)". So the
 edit is gone from the streamed path entirely (§3.3), and what replaces it is stop-time metadata.
-The open question is no longer "does the edit survive" but "can ingress read a finalization that
-never arrives as an edit" — see §7.1, where it is now the first half of the carve-out lift.
+The open question became "can ingress read a finalization that never arrives as an edit" —
+_now answered yes._ The finalized message carries the stop-time `metadata` intact (verified live;
+readable back with `include_all_metadata: true`), and it reaches ingress as an ordinary message
+event carrying that metadata at top level. `normalizeSlackResponseFinalization` reads the `final`
+claim from either the nested edit or the top-level event, so the carve-out is lifted (§7.1).
 
 **Q2. What is the accumulated-length cap of a streamed message, and does `chat.stopStream` accept
 `session_status: "processing"`?** The 12,000 figure is documented per call, not per message;

@@ -177,11 +177,10 @@ describe('normalizeSlackResponseFinalization (§5)', () => {
     expect(normalizeSlackResponseFinalization(wrapper(claim({ delivery_state: 'streaming' })))).toBeNull()
   })
 
-  it('returns null for an ordinary human edit and for non-edit events', () => {
+  it('returns null for an ordinary human edit and for an edit carrying no agent claim', () => {
     expect(normalizeSlackResponseFinalization(wrapper({ user: 'U1', metadata: undefined }))).toBeNull()
-    expect(
-      normalizeSlackResponseFinalization({ type: 'message', channel: 'C1', ts: '1', text: 'hi', ...claim() })
-    ).toBeNull()
+    // A plain post that carries no agent metadata at all is not a finalization.
+    expect(normalizeSlackResponseFinalization({ type: 'message', channel: 'C1', ts: '1', text: 'hi' })).toBeNull()
   })
 
   it('returns null for a chrome edit', () => {
@@ -189,6 +188,52 @@ describe('normalizeSlackResponseFinalization (§5)', () => {
     expect(
       normalizeSlackResponseFinalization(
         wrapper({ metadata: { event_type: 'agentconnect_chrome', event_payload: {} } })
+      )
+    ).toBeNull()
+  })
+})
+
+describe('normalizeSlackResponseFinalization — stop-time metadata (streaming §3.3/§7.1)', () => {
+  // A native streamed turn closes its response on `chat.stopStream`, which emits NO edit: the
+  // finalized message arrives as an ordinary top-level event carrying the SAME `final` metadata
+  // the legacy closing `chat.update` used to carry on a `message_changed` wrapper. Ingress must
+  // recognize it identically, or agent-to-agent routing stops on the shareable bots that stream.
+  const stopEvent = (nested: Record<string, unknown>) => ({
+    type: 'message',
+    channel: 'C1',
+    ts: '1720000000.000100',
+    thread_ts: '1720000000.000001',
+    bot_id: 'B1',
+    app_id: 'A1',
+    text: '<@U01PEER> please verify the rollout',
+    ...nested
+  })
+
+  it('recognizes a stop-time finalization delivered without a message_changed wrapper', () => {
+    const msg = normalizeSlackResponseFinalization(stopEvent(claim()))
+    expect(msg).not.toBeNull()
+    // Same downstream shape the wrapped edit produces: original identity, thread, text, author,
+    // recipient set, and the finalization tag.
+    expect(msg!.channel).toBe('C1')
+    expect(msg!.thread).toBe('1720000000.000001')
+    expect(msg!.text).toBe('<@U01PEER> please verify the rollout')
+    expect(msg!.sender.appId).toBe('A1')
+    expect(msg!.agentAuthorship?.authorAgentId).toBe(AUTHOR)
+    expect(msg!.agentAuthorship?.mentionedAgentIds).toEqual([PEER])
+    expect(msg!.ingressEventTag).toBe(SLACK_RESPONSE_FINAL_EVENT_TAG)
+    // The ts is the streamed message's own, recoverable by the ordinary split.
+    expect(msg!.msgId).toBe('slack:C1:1720000000.000100')
+  })
+
+  it('does not misread a mid-stream append (streaming metadata) as final', () => {
+    // The streamed appends carry `streaming` until the stop stamps `final`; only the stop routes.
+    expect(normalizeSlackResponseFinalization(stopEvent(claim({ delivery_state: 'streaming' })))).toBeNull()
+  })
+
+  it('ignores a stop-time event that carries chrome metadata rather than a response', () => {
+    expect(
+      normalizeSlackResponseFinalization(
+        stopEvent({ metadata: { event_type: 'agentconnect_chrome', event_payload: {} } })
       )
     ).toBeNull()
   })

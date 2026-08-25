@@ -209,39 +209,48 @@ export function normalizeSlackMessage(
 export const SLACK_RESPONSE_FINAL_EVENT_TAG = 'response-final'
 
 /**
- * Normalize the `message_changed` wrapper that CLOSES an AgentConnect logical response
- * (send-message-routing-rework.md §5), or return null for every other edit.
+ * Normalize the event that CLOSES an AgentConnect logical response
+ * (send-message-routing-rework.md §5), or return null for every other event.
+ *
+ * A response is finalized two ways, and BOTH are recognized by the same daemon-written
+ * `final` metadata rather than by the event's shape (slack-streaming-turn-output.md
+ * §3.3/§7.1):
+ *  - the legacy pipeline's closing `chat.update`, delivered as a `message_changed` edit
+ *    whose NESTED message carries the metadata (the wrapper owns the channel); and
+ *  - a native streamed turn's `chat.stopStream`, which emits NO edit — the finalized
+ *    message arrives as an ordinary event carrying the metadata at top level.
  *
  * Slack ingest drops edit wrappers wholesale, and for human edits that is still right:
  * normalizing the outer wrapper would produce an anonymous empty message, and re-routing
- * arbitrary edits would let one message activate an agent repeatedly. But a streamed
- * agent answer can only be declared complete by editing its last message — that edit IS
- * the final response event — so exactly this one shape must survive, and it is
- * recognized by daemon-written metadata rather than by being an edit at all.
+ * arbitrary edits would let one message activate an agent repeatedly. So only the shape
+ * carrying `final` metadata survives, whether it arrives as an edit or as a stop-time post.
  *
- * Selectivity is the whole point: a `streaming` edit (an in-place update mid-answer)
- * returns null, so intermediate states never route. Verification of the CLAIM still
- * happens downstream — this function proves nothing about who authored the message.
+ * Selectivity is the whole point: a `streaming` claim (an in-place update mid-answer, or a
+ * streamed append) returns null, so intermediate states never route, and an event with no
+ * agent claim at all returns null. Verification of the CLAIM still happens downstream —
+ * this function proves nothing about who authored the message.
  */
 export function normalizeSlackResponseFinalization(
   event: SlackMessageLike & { message?: unknown },
   context: { traceId?: string } = {}
 ): NormalizedPlatformMessage | null {
-  if (event.subtype !== 'message_changed') return null
-  const edited = event.message
-  if (!edited || typeof edited !== 'object') return null
-  const nested = edited as SlackMessageLike
+  // A `message_changed` nests the real message; a stop-time finalization is already the
+  // top-level event. Either way the metadata to key on lives on `source`.
+  const source = event.subtype === 'message_changed' ? event.message : event
+  if (!source || typeof source !== 'object') return null
+  const nested = source as SlackMessageLike
   const claim = readAgentAuthorshipClaim(nested)
   if (claim?.deliveryState !== 'final') return null
-  // The nested message carries no `channel` (the wrapper owns it) and its `ts` is the
-  // ORIGINAL post's — which is the identity that matters everywhere downstream.
+  // The `message_changed` nested message carries no `channel` (the wrapper owns it) and its
+  // `ts` is the ORIGINAL post's; a stop-time event is `source === event`, so `event.channel`
+  // is its own channel. Either way the identity that matters downstream is on the event.
   const normalized = normalizeSlackMessage(
     {
       ...nested,
       channel: event.channel,
       ...(event.channel_type !== undefined ? { channel_type: event.channel_type } : {}),
-      // The wrapper's own `subtype` must not travel: the unwrapped message is an
-      // ordinary post as far as every later stage is concerned.
+      // The wrapper's own `subtype` must not travel (a stop-time event has none): every later
+      // stage must see an ordinary post.
       subtype: undefined,
       message: undefined
     },
