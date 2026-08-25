@@ -3573,8 +3573,13 @@ export interface GatewayAttribution {
 //
 // Hence `complete`: only when the projection withholds NOTHING is membership equivalent to
 // "this caller may attribute every dollar in this window", which is the only condition under
-// which a second surface may put an amount next to a name. A window with any residual is
-// unusable for naming, however small the residual is.
+// which a second surface may put an amount next to a name.
+//
+// PRESENCE of the rollup is that signal, never its amount. The CP omits it rather than zeroing
+// it precisely so a reader can tell "nothing was hidden" from "something was hidden and cost 0"
+// — it is keyed on withheld SESSIONS, and an aggregate amount can net to zero through downward
+// corrections. Reading a zero residual as completeness would qualify exactly the periods whose
+// hidden usage is hardest to notice.
 //
 // `source=gateway` because that is the ingress a billing charge settles from (see the route's
 // own note): unscoped, a readable DAEMON session could qualify an agent whose gateway spend is
@@ -3582,11 +3587,7 @@ export interface GatewayAttribution {
 export async function fetchGatewayAttribution(from: string, to: string, orgId?: string): Promise<GatewayAttribution> {
   const query = new URLSearchParams({ from, to, source: 'gateway' })
   const usage = await apiGet<UsageDto>(`${orgBase(orgId)}/usage?${query.toString()}`)
-  const residual = usage.unattributed?.costAmount
-  return {
-    agents: new Set(usage.agents.map((a) => a.agentId)),
-    complete: residual === undefined || Number(residual) === 0
-  }
+  return { agents: new Set(usage.agents.map((a) => a.agentId)), complete: usage.unattributed === undefined }
 }
 
 export async function fetchUsage(range: UsageRange, orgId?: string, source?: UsageSource): Promise<UsageDto> {

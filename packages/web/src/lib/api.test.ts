@@ -8,6 +8,7 @@ import {
   deleteMemoryRecord,
   deleteOrgIcon,
   fetchAllGithubRepos,
+  fetchGatewayAttribution,
   fetchConversations,
   fetchConversationByKey,
   fetchSessionFacets,
@@ -105,6 +106,60 @@ describe('session profile identity hints', () => {
 
     await expect(fetchMySessionIdentity('lark')).resolves.toEqual({ linked: true })
     await expect(fetchMySessionIdentity('feishu')).resolves.toEqual({ linked: false })
+  })
+})
+
+describe('fetchGatewayAttribution', () => {
+  afterEach(() => {
+    setApiOrgId(null)
+    vi.unstubAllGlobals()
+  })
+
+  const usage = (extra: Record<string, unknown>) => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        calls.push(url)
+        return new Response(
+          JSON.stringify({
+            from: 'x',
+            to: 'y',
+            totals: { sessions: 0, totalTokens: 0, costAmount: '0', costCurrency: null },
+            agents: [{ agentId: 'agt_1', costAmount: '1' }],
+            models: [],
+            sources: [],
+            series: { bucket: 'day', points: [] },
+            ...extra
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      })
+    )
+    return calls
+  }
+
+  it('scopes the read to the gateway ingress a charge settles from', async () => {
+    const calls = usage({})
+    await fetchGatewayAttribution('2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', 'org-1')
+    expect(calls[0]).toContain('source=gateway')
+  })
+
+  it('is complete only when the residual is ABSENT, never when it is present and zero', async () => {
+    // The CP omits `unattributed` rather than zeroing it so a reader can tell "nothing was
+    // hidden" from "something was hidden and cost 0" — it is keyed on withheld SESSIONS, and an
+    // aggregate amount nets to zero through downward corrections. Reading a zero residual as
+    // completeness would qualify exactly the periods whose hidden usage is hardest to notice.
+    const window = ['2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', 'org-1'] as const
+
+    usage({})
+    expect((await fetchGatewayAttribution(...window)).complete).toBe(true)
+
+    usage({ unattributed: { sessions: 1, totalTokens: 0, costAmount: '0' } })
+    expect((await fetchGatewayAttribution(...window)).complete).toBe(false)
+
+    usage({ unattributed: { sessions: 2, totalTokens: 40, costAmount: '99' } })
+    expect((await fetchGatewayAttribution(...window)).complete).toBe(false)
   })
 })
 
