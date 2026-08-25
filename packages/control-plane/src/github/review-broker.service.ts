@@ -8,7 +8,7 @@
  * persistence transaction owned by HookRepo.
  */
 import {
-  HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+  isRetryableHookDeliveryReason,
   type ErrorCode,
   type GithubReviewAuthorize,
   type GithubReviewAuthorized,
@@ -107,14 +107,11 @@ function requireAcceptedRun(
   return run
 }
 
-/** A claimed, pre-dispatch failure is the one terminal state that hook/start
- * may recover when the Relay's accepted report was lost. Keep this duplicate
- * of the repository guard fail-closed: the repository remains authoritative
- * and rechecks it atomically with current placement. */
-function isClaimedOfflineRecoveryCandidate(run: HookRunRecord): boolean {
+/** Fail-closed mirror of the repository's claimed pre-dispatch recovery guard. */
+function isClaimedDeliveryRecoveryCandidate(run: HookRunRecord): boolean {
   return (
     run.status === 'failed' &&
-    run.reason === HOOK_DELIVERY_REASON_DAEMON_OFFLINE &&
+    isRetryableHookDeliveryReason(run.reason) &&
     run.redeliveryAttempts > 0 &&
     run.redeliveryLastRequestedAt !== null &&
     run.turnStartedAt === null &&
@@ -351,7 +348,7 @@ export class GithubReviewBrokerService {
       ...(github.baseChanged !== undefined ? { baseChanged: github.baseChanged } : {})
     } as const
 
-    const recovering = isClaimedOfflineRecoveryCandidate(initial)
+    const recovering = isClaimedDeliveryRecoveryCandidate(initial)
     if (recovering && !(await this.deps.hook.recordStart(hookId, reportingDaemonId, startInput))) {
       denied('hook start reservation was rejected', 'CONFLICT')
     }

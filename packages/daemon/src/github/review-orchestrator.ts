@@ -66,6 +66,11 @@ export interface GithubHookDispatchOptions {
   onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
 }
 
+export interface AnchorTriggerResult {
+  message: NormalizedMessage | null
+  postAttempted: boolean
+}
+
 /** Exactly what the GitHub review orchestration touches on the Daemon — nothing wider. */
 export interface GithubReviewHost {
   log(): Logger
@@ -122,7 +127,7 @@ export interface GithubReviewHost {
     anchorText: string,
     label: string,
     safetyReviewLane?: string
-  ): Promise<NormalizedMessage | null>
+  ): Promise<AnchorTriggerResult>
   dispatch(
     agentId: string,
     msg: NormalizedMessage,
@@ -165,6 +170,13 @@ export class GithubReviewOrchestrator {
     return this.host.agents()
   }
 
+  /** A prior durable admission owns this GUID even when current lifecycle gates would refuse new work. */
+  async replayDurableAdmission(msg: RdMsgHook): Promise<RdAck | undefined> {
+    if (!(await this.host.hasInbox(msg.msgId))) return undefined
+    this.log.debug(`hook: durable duplicate ${msg.msgId} — replaying accepted admission`)
+    return { msgId: msg.msgId, accepted: true }
+  }
+
   /**
    * Ack-verdict gate for one hook fire (`rd/msg` hook member) — the mirror of
    * {@link dispatchWebchatTurn}'s synchronous gates: the relay's rc/run-report
@@ -173,6 +185,8 @@ export class GithubReviewOrchestrator {
    * the durable-inbox admission barrier; the model turn itself remains async.
    */
   async dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
+    const durable = await this.replayDurableAdmission(msg)
+    if (durable) return durable
     const cleanup = githubThreadWorktreeCleanup(msg)
     const maintenance = cleanup !== undefined || githubDeletedHookEvent(msg)
     const agent = this.agents.get(msg.agentId)
@@ -213,6 +227,8 @@ export class GithubReviewOrchestrator {
       return { msgId: msg.msgId, accepted: false, reason: 'busy' }
     }
     if (this.host.draining(msg.agentId)) {
+      const durableAfterGate = await this.replayDurableAdmission(msg)
+      if (durableAfterGate) return durableAfterGate
       this.log.info(`hook: agent "${msg.agentId}" is draining — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'draining' }
     }
@@ -239,14 +255,6 @@ export class GithubReviewOrchestrator {
     // A lifecycle cleanup always addresses the stable GitHub thread session,
     // never an optional IM anchor configured for ordinary hook output.
     const nmsg = buildHookMessage(cleanup || deleted ? { ...msg, target: undefined } : msg, randomUUID())
-    // The in-memory ACK cache closes same-process retransmits. This durable
-    // probe closes the restart window *before* anchorTrigger posts externally:
-    // a retained live row will replay, and a terminal row is already complete.
-    // In either case the original accepted admission owns this delivery.
-    if (await this.host.hasInbox(nmsg.msgId)) {
-      this.log.debug(`hook: durable duplicate ${nmsg.msgId} — replaying accepted admission`)
-      return { accepted: true }
-    }
     const snapshot = hookSnapshot(msg)
     const hookContext: HookDispatchContext = {
       hookId: msg.hookId,
@@ -316,7 +324,7 @@ export class GithubReviewOrchestrator {
         : undefined)
     if (githubReply) hookContext.githubReply = githubReply
     const reviewLane = reviewSubjectLane(hookContext, hookCoordinates(msg.agentId, nmsg, msg.target?.integrationId))
-    const anchored = await this.host.anchorTrigger(
+    const anchor = await this.host.anchorTrigger(
       msg.agentId,
       nmsg,
       msg.target,
@@ -324,7 +332,8 @@ export class GithubReviewOrchestrator {
       `hook "${msg.hookId}"`,
       reviewLane
     )
-    if (!anchored) return { accepted: false, reason: 'dropped' }
+    const anchored = anchor.message
+    if (!anchored) return { accepted: false, reason: anchor.postAttempted ? 'anchor_side_effect' : 'dropped' }
     const batch = openReviewBatch(
       hookContext,
       hookCoordinates(msg.agentId, anchored, msg.target?.integrationId),
@@ -357,7 +366,8 @@ export class GithubReviewOrchestrator {
     })
     const admission = await admitted
     if (!admission.accepted) {
-      return { accepted: false, reason: admission.reason ?? 'durability' }
+      const reason = admission.reason ?? 'durability'
+      return { accepted: false, reason: reason === 'draining' && anchor.postAttempted ? 'anchor_side_effect' : reason }
     }
     return { accepted: true }
   }

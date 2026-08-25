@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
+  HOOK_DELIVERY_REASON_DAEMON_DRAINING,
+  HOOK_DELIVERY_REASON_DAEMON_NOT_HOLDER,
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   RETRYABLE_HOOK_DELIVERY_REASONS,
@@ -927,7 +929,11 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
   })
 
   it('keeps automatic hook redelivery closed to proven pre-dispatch failures', () => {
-    expect(RETRYABLE_HOOK_DELIVERY_REASONS).toEqual([HOOK_DELIVERY_REASON_DAEMON_OFFLINE])
+    expect(RETRYABLE_HOOK_DELIVERY_REASONS).toEqual([
+      HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+      HOOK_DELIVERY_REASON_DAEMON_DRAINING,
+      HOOK_DELIVERY_REASON_DAEMON_NOT_HOLDER
+    ])
     for (const reason of RETRYABLE_HOOK_DELIVERY_REASONS) {
       expect(isRetryableHookDeliveryReason(reason), reason).toBe(true)
     }
@@ -939,8 +945,11 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
       HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
       'busy',
       'rejected:busy',
-      'rejected:draining',
+      'draining',
+      'not_holder',
       'rejected:paused',
+      'rejected:anchor_side_effect',
+      'rejected:not-holder',
       'rejected:no_agent',
       'rejected:unknown',
       'rejected:busy:later',

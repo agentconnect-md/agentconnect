@@ -1,4 +1,6 @@
 import {
+  HOOK_DELIVERY_REASON_DAEMON_DRAINING,
+  HOOK_DELIVERY_REASON_DAEMON_NOT_HOLDER,
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
@@ -25,7 +27,13 @@ describe('hookRuntimeProjectionState', () => {
     expect(hookRuntimeProjectionState({ status: 'failed', reason: HOOK_DELIVERY_REASON_DAEMON_OFFLINE })).toBe(
       'skipped'
     )
-    expect(hookSkippedCheckLabel(HOOK_DELIVERY_REASON_DAEMON_OFFLINE)).toBe('Agent unavailable')
+    for (const reason of [
+      HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+      HOOK_DELIVERY_REASON_DAEMON_DRAINING,
+      HOOK_DELIVERY_REASON_DAEMON_NOT_HOLDER
+    ]) {
+      expect(hookSkippedCheckLabel(reason)).toBe('Agent unavailable')
+    }
     expect(hookSkippedCheckLabel(HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED)).toBe(
       'Review requires a maintainer request'
     )

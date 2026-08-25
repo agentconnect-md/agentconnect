@@ -471,6 +471,10 @@ export type RcHookRerunResult = z.infer<typeof RcHookRerunResult>
 /** Definite pre-dispatch unavailability: the relay found no live connection for
  * the assigned daemon, so no agent turn or external review effect could start. */
 export const HOOK_DELIVERY_REASON_DAEMON_OFFLINE = 'daemon_offline' as const
+/** Definite pre-admission refusal while the selected daemon is draining. */
+export const HOOK_DELIVERY_REASON_DAEMON_DRAINING = 'rejected:draining' as const
+/** Definite pre-admission refusal after no routed daemon acquired the agent duty. */
+export const HOOK_DELIVERY_REASON_DAEMON_NOT_HOLDER = 'rejected:not_holder' as const
 /** Ambiguous delivery: the daemon may have admitted the message before the ACK
  * was lost. Record it consistently, but do not automatically redeliver it
  * without cross-daemon idempotency or an end-to-end admission fence. */
@@ -485,10 +489,12 @@ export const HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED = 'review_request_requ
  * opens the first review generation for an external PR. */
 export const GITHUB_REQUEST_REVIEW_ACTION = 'request_review' as const
 
-/** Delivery-stage failures that are safe to redeliver automatically. Keep this
- * list closed: unknown failures and agent/business rejections require an
- * explicit decision before they can cause another turn or external effect. */
-export const RETRYABLE_HOOK_DELIVERY_REASONS = [HOOK_DELIVERY_REASON_DAEMON_OFFLINE] as const
+/** Closed set of delivery failures proven to occur before durable daemon admission. */
+export const RETRYABLE_HOOK_DELIVERY_REASONS = [
+  HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+  HOOK_DELIVERY_REASON_DAEMON_DRAINING,
+  HOOK_DELIVERY_REASON_DAEMON_NOT_HOLDER
+] as const
 export type RetryableHookDeliveryReason = (typeof RETRYABLE_HOOK_DELIVERY_REASONS)[number]
 
 const retryableHookDeliveryReasons = new Set<string>(RETRYABLE_HOOK_DELIVERY_REASONS)

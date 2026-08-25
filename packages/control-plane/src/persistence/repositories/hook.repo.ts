@@ -9,9 +9,9 @@
  * idempotency key absorbing GitHub redeliveries and reconcile re-posts.
  */
 import {
-  HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
+  RETRYABLE_HOOK_DELIVERY_REASONS,
   isGithubPullRequestRevisionEvent,
   isRetryableHookDeliveryReason,
   normalizeGitUrl,
@@ -880,7 +880,7 @@ export class PgHookRepo implements HookRepo {
         return { accepted: false, newlyObserved: false }
       }
       if (
-        existing?.reason === HOOK_DELIVERY_REASON_DAEMON_OFFLINE &&
+        isRetryableHookDeliveryReason(existing?.reason) &&
         (existing.agentId !== r.agentId || existing.configRevision !== r.configRevision)
       )
         return { accepted: false, newlyObserved: false }
@@ -1144,12 +1144,10 @@ export class PgHookRepo implements HookRepo {
           AND r."projectionEpoch" IS NOT NULL
           AND r."dispatchRevision" IS NOT NULL
           AND r."dispatchDaemonId" IS NOT NULL
-          -- A definite pre-dispatch failure must remain reopenable until its
-          -- durable retry budget settles. Binding an external Check first
-          -- would intentionally make the row effect-bearing and ineligible.
+          -- Keep retryable pre-dispatch failures effect-free until their retry budget settles.
           AND NOT (
             r.status::text = 'failed'
-            AND r.reason = ${HOOK_DELIVERY_REASON_DAEMON_OFFLINE}
+            AND r.reason IN (${Prisma.join(RETRYABLE_HOOK_DELIVERY_REASONS)})
             AND r."redeliveryNextAttemptAt" IS NOT NULL
           )
           AND (
@@ -1232,9 +1230,7 @@ export class PgHookRepo implements HookRepo {
       if (!run) return false
 
       // The daemon admission can win while the Relay's accepted report is
-      // lost. A claimed, still side-effect-free offline row may treat an
-      // exact-current hook/start as the missing accepted report plus start
-      // barrier. This clears the retry gate before a long turn can be replayed.
+      // A claimed side-effect-free failure may use exact-current hook/start as the missing accepted report.
       if (isClaimedFailedDeliveryStage(run)) {
         const current = await tx.hookDef.findUnique({
           where: { id: hookId },
@@ -1281,7 +1277,7 @@ export class PgHookRepo implements HookRepo {
           where: {
             id: run.id,
             status: 'failed',
-            reason: HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+            reason: { in: [...RETRYABLE_HOOK_DELIVERY_REASONS] },
             redeliveryAttempts: { gt: 0 },
             redeliveryLastRequestedAt: { not: null },
             turnStartedAt: null,
@@ -1657,11 +1653,7 @@ export class PgHookRepo implements HookRepo {
           }
         })
       } else {
-        // GitHub accepted the redelivery at the daemon, but the Relay's
-        // accepted rc/run-report may have been lost while CP was unavailable.
-        // The daemon retains its terminal report durably. Let a complete
-        // claimed or exact-current fence supply the missing accepted edge and
-        // close the still side-effect-free offline row in one transaction.
+        // A complete claimed/current fence can close a side-effect-free retryable row with its missing accepted edge.
         if (isClaimedFailedDeliveryStage(run)) {
           if (
             r.agentId === undefined ||
@@ -1737,7 +1729,7 @@ export class PgHookRepo implements HookRepo {
             where: {
               id: run.id,
               status: 'failed',
-              reason: HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+              reason: { in: [...RETRYABLE_HOOK_DELIVERY_REASONS] },
               redeliveryAttempts: { gt: 0 },
               redeliveryLastRequestedAt: { not: null },
               turnStartedAt: null,
@@ -2101,11 +2093,7 @@ export class PgHookRepo implements HookRepo {
         if (!current?.agentId || current.agent?.status !== 'active') return false
         const target = dispatchTargets.get(row.hookId)
         if (authorities.get(row.hookId)?.agentId !== current.agentId || !target) return false
-        // A definite offline failure may follow a placement-only move, but not
-        // an agent/config edit that would reinterpret the old event. Once one
-        // external POST has been requested, pin later attempts to its captured
-        // dispatch: same-daemon durable inbox dedup is available, cross-daemon
-        // dedup is not.
+        // A pre-admission failure may follow placement only; after one POST, pin its captured dispatch.
         if (row.agentId !== current.agentId || row.configRevision !== current.configRevision) return false
         if (attempt > 0 && (row.dispatchRevision !== current.dispatchRevision || row.dispatchDaemonId !== target))
           return false
@@ -2120,10 +2108,7 @@ export class PgHookRepo implements HookRepo {
       // fanout. Normalize any historical skew before advancing the shared gate.
       const dueAt = Math.max(...rows.map((row) => row.redeliveryNextAttemptAt!.getTime()))
       if (dueAt > requestedAt.getTime()) return false
-      // Only the first external POST is proven duplicate-free: the original
-      // daemon_offline means no turn existed. A later POST could cross a
-      // placement change after this transaction, so same-daemon checks here
-      // cannot make attempt two safe without global GUID admission dedup.
+      // Only one external POST is duplicate-free; another needs global GUID admission dedup.
       if (attempt >= 1) {
         await settleActive()
         return false
@@ -2162,7 +2147,7 @@ export class PgHookRepo implements HookRepo {
     const candidates = await this.db.hookRun.findMany({
       where: {
         status: 'failed',
-        reason: HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+        reason: { in: [...RETRYABLE_HOOK_DELIVERY_REASONS] },
         redeliveryNextAttemptAt: { not: null },
         OR: [
           { redeliveryAttempts: { gte: maxAttempts }, redeliveryNextAttemptAt: { lte: requestedAt } },
@@ -2257,10 +2242,7 @@ export class PgHookRepo implements HookRepo {
       // miss a concurrently-created row.
       await lockHookReviewLifecycleScope(tx, input.hookId)
       await lockHookReviewAgentRepoScope(tx, input.agentId, input.repoId)
-      // Global mutation order for run-bound projection work is HookRun before
-      // projection. Re-read and lock the current lifecycle so a repair edge
-      // captured from failed/offline cannot create a terminal Check after an
-      // implicit start/completion has recovered the run.
+      // Re-lock HookRun so a stale failed-delivery repair cannot publish after implicit recovery.
       const incomingRun = input.currentHookRunId ? await this.lockHookRunById(tx, input.currentHookRunId) : null
       if (
         input.currentHookRunId &&

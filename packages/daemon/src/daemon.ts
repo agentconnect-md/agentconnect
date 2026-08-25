@@ -188,7 +188,11 @@ import {
 } from './scheduler/scheduler.js'
 import { DreamScheduler } from './scheduler/dream-scheduler.js'
 import { finalizeGithubTurn, isGithubFinalChunk, onGithubUpdate } from './platforms/github/turn-output.js'
-import { GithubReviewOrchestrator, type GithubReviewHost } from './github/review-orchestrator.js'
+import {
+  GithubReviewOrchestrator,
+  type AnchorTriggerResult,
+  type GithubReviewHost
+} from './github/review-orchestrator.js'
 import { CodeHostReviewRouter } from './codehost/review-adapter.js'
 import { GitlabReviewAdapter, type GitlabReviewAdapterDeps, type GitlabReviewTurn } from './gitlab/review-adapter.js'
 import {
@@ -402,6 +406,7 @@ import type {
   Ack,
   RdWebchatPost,
   RdMsg,
+  RdMsgHook,
   RdMsgWebchat,
   RdMsgIm,
   RdMsgPlatformAction,
@@ -5868,6 +5873,41 @@ export class Daemon {
    * the same delivery twice. */
   private readonly pendingRelayMsgAcks = new Map<string, Promise<RdAck>>()
 
+  /** Let an existing hook receipt win before duty/drain refusal; cache every verdict except `not_holder`. */
+  private handleRelayHookMsg(msg: RdMsgHook, dedupKey: string): Promise<RdAck> {
+    const task = (async (): Promise<RdAck> => {
+      if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
+        const durable = await this.githubReviews.replayDurableAdmission(msg)
+        if (durable) return durable
+        const claimed = await this.dutyCoordinator.claimDutyForTrigger(msg.agentId)
+        if (!claimed.granted) {
+          const durableAfterClaim = await this.githubReviews.replayDurableAdmission(msg)
+          if (durableAfterClaim) return durableAfterClaim
+          return {
+            msgId: msg.msgId,
+            accepted: false,
+            reason: RD_ACK_NOT_HOLDER,
+            ...(claimed.holder ? { holderDaemonId: claimed.holder } : {})
+          }
+        }
+      }
+      return this.githubReviews.dispatchRelayHook(msg)
+    })()
+      .catch((err): RdAck => {
+        this.log.error(`hook admission failed for ${dedupKey}: ${formatErr(err)}`)
+        return { msgId: msg.msgId, accepted: false, reason: 'durability' }
+      })
+      .then((ack) => {
+        this.pendingRelayMsgAcks.delete(dedupKey)
+        if (!ack.accepted && (ack.reason === 'draining' || ack.reason === RD_ACK_NOT_HOLDER)) return ack
+        if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear()
+        this.relayMsgAcks.set(dedupKey, ack)
+        return ack
+      })
+    this.pendingRelayMsgAcks.set(dedupKey, task)
+    return task
+  }
+
   /**
    * Dispatch one inbound relay item (`rd/msg` — webchat, shared IM/action, or hook) and
    * return the `rd/ack` verdict — the relay-path entry, reusing the SAME turn
@@ -5894,6 +5934,8 @@ export class Daemon {
     const pending = this.pendingRelayMsgAcks.get(dedupKey)
     if (pending) return pending
 
+    if (msg.source === 'hook') return this.handleRelayHookMsg(msg, dedupKey)
+
     // Activation rendezvous (design §4.4): a trigger for an agent whose duty
     // this member does not hold is claimed on receipt — winning serves it here,
     // losing answers `not_holder` so the router re-routes. The verdict is NOT
@@ -5909,23 +5951,6 @@ export class Daemon {
           ...(claimed.holder ? { holderDaemonId: claimed.holder } : {})
         }
       })
-      this.pendingRelayMsgAcks.set(dedupKey, task)
-      return task
-    }
-
-    if (msg.source === 'hook') {
-      const task = this.githubReviews
-        .dispatchRelayHook(msg)
-        .catch((err): RdAck => {
-          this.log.error(`hook admission failed for ${dedupKey}: ${formatErr(err)}`)
-          return { msgId: msg.msgId, accepted: false, reason: 'durability' }
-        })
-        .then((ack) => {
-          this.pendingRelayMsgAcks.delete(dedupKey)
-          if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear()
-          this.relayMsgAcks.set(dedupKey, ack)
-          return ack
-        })
       this.pendingRelayMsgAcks.set(dedupKey, task)
       return task
     }
@@ -15389,7 +15414,7 @@ export class Daemon {
     anchorText: string,
     label: string,
     safetyReviewLane?: string
-  ): Promise<NormalizedMessage | null> {
+  ): Promise<AnchorTriggerResult> {
     const key = sessionKey(msg.platform, msg.channel, msg.thread ?? msg.msgId, agentId, msg.transportScope)
     // Gate BEFORE the anchor side effect. Cron scheduling remains registered while an
     // agent is paused, but a paused/draining/safety-stopping agent must publish nothing
@@ -15401,8 +15426,9 @@ export class Daemon {
       (this.safetyDrainingAgents.has(agentId) && !this.safetyDrainAllows(agentId, key, safetyReviewLane))
     ) {
       this.log.info(`${label}: skipped for agent "${agentId}" (paused or draining)`)
-      return null
+      return { message: null, postAttempted: false }
     }
+    let postAttempted = false
     if (target?.channel) {
       const conn = this.replyConnFor(agentId, target.integrationId)
       if (!conn) {
@@ -15438,6 +15464,7 @@ export class Daemon {
                 ...(agent.iconUrl ? { iconUrl: agent.iconUrl } : {})
               })
             : undefined
+          postAttempted = true
           const ts = options
             ? await (conn as SlackConnection).postMessage(target.channel, anchorText, undefined, options)
             : await conn.postMessage(target.channel, anchorText)
@@ -15455,13 +15482,13 @@ export class Daemon {
                 this.log.warn(
                   `${label}: posted trigger to ${target.channel}, but failed to create its required thread (${formatErr(err)}) — session not started`
                 )
-                return null
+                return { message: null, postAttempted }
               }
               if (!thread) {
                 this.log.warn(
                   `${label}: posted trigger to ${target.channel}, but its required thread was not created — session not started`
                 )
-                return null
+                return { message: null, postAttempted }
               }
             } else {
               thread = threadKeyForPost(msg.platform, target.channel, ts, isDmTarget)
@@ -15479,7 +15506,7 @@ export class Daemon {
         }
       }
     }
-    return msg
+    return { message: msg, postAttempted }
   }
 
   private async fireTrigger(
@@ -15490,7 +15517,7 @@ export class Daemon {
     label: string,
     onSessionReady?: (sessionId: string) => void
   ): Promise<string | null> {
-    const anchored = await this.anchorTrigger(agentId, msg, target, anchorText, label)
+    const { message: anchored } = await this.anchorTrigger(agentId, msg, target, anchorText, label)
     if (!anchored) return null
     // Same integration for the session's replies as for the anchor.
     return this.dispatch(

@@ -1,29 +1,4 @@
-/**
- * `HookRedeliveryReconciler` (webhook-triggers-and-github-events.md P2.5) — the
- * recovery path for the ONE loss window github events have: the whole relay
- * pool unreachable. GitHub does NOT retry failed deliveries on its own (manual
- * redelivery only, 3-day window), so a periodic sweep compares the App's recent
- * delivery GUIDs against `HookRun.deliveryKey` and asks GitHub to redeliver the
- * ones that never landed. The re-post rides the normal ingress; every
- * downstream step is idempotent on the GUID (daemon ack-replay, CP unique row),
- * so over-asking is merely wasteful, never harmful.
- *
- * Scope discipline:
- *  - only deliveries that COULD have produced a run are candidates — subscribed
- *    event families, a repo some enabled github hook watches, and either an
- *    `event:action` match or a created-cadence event that may contain a summon;
- *  - the sweep is GATED on a live relay (redelivering into a dead pool is pure
- *    waste — the next tick retries once a relay is back);
- *  - a per-GUID attempt cap breaks the no-HookRun re-list loop. Retryable
- *    delivery-stage HookRuns instead carry their bounded due schedule in
- *    Postgres, so a CP restart cannot reset their budget;
- *  - coverage is only ever claimed for what was actually listed, and the first
- *    sweep of a process runs early — the outage worth recovering is usually the
- *    one that restarted this process.
- *
- * Same Clock-driven self-rescheduling shape as {@link CronRunReaper}; armed by
- * `startBackground()` only when the GitHub App is configured.
- */
+/** Periodically redelivers eligible GitHub hooks missing a run or proven to fail before daemon admission. */
 import type { Clock, TimerHandle } from '../domain/clock.js'
 import type { HookId } from '../domain/ids.js'
 import type { GhHookDeliveryPage } from '../github/service.js'
@@ -35,14 +10,8 @@ const SUBSCRIPTION_EVENTS = new Set(['issues', 'pull_request', 'issue_comment', 
 const MAX_ATTEMPTS = 3
 /** Delay before the first sweep of a process — see {@link HookRedeliveryReconciler.start}. */
 const FIRST_SWEEP_DELAY_MS = 60_000
-/** Durable due gates for HookRuns that landed as a definite pre-dispatch
- * failure. Ambiguous dispatch timeouts are deliberately terminal until an
- * end-to-end admission fence or cross-daemon idempotency exists. The 10-minute
- * production sweep is intentionally coarser: these are minimum delays, not an
- * exact wall-clock dispatcher. */
-// Exactly one external redelivery is safe without a cross-daemon GUID dedup
-// service: the original daemon_offline proves no first execution exists, but a
-// second POST could cross a placement move after its CP claim.
+/** Durable minimum delay for failures proven to precede daemon admission. */
+// One external redelivery is safe; another could cross a placement move after an accepted report is lost.
 export const FAILED_DELIVERY_BACKOFF_MS = [30_000] as const
 /** Attempt-map bound (flush-at-cap, the daemon dedup-map precedent). */
 const MAX_TRACKED = 5_000
