@@ -35,7 +35,6 @@ export { PgCodeHostReviewLeaseRepo } from './repositories/code-host-review.repo.
 export { PgSocialIdentityMutationGate } from './repositories/social-identity-mutation.gate.js'
 export { PgAssignmentRepo } from './repositories/assignment.repo.js'
 export { PgSessionRepo } from './repositories/session.repo.js'
-export { PgSessionPullRequestFeedbackRepo } from './repositories/session-pull-request-feedback.repo.js'
 export { PgSessionUsageRepo } from './repositories/session-usage.repo.js'
 export { PgWebchatConversationRepo } from './repositories/webchat-conversation.repo.js'
 export { PgWebchatMcpDelegationRepo } from './repositories/webchat-mcp-delegation.repo.js'

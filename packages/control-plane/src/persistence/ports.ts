@@ -35,8 +35,7 @@ import type {
   CodeHostReviewOpState,
   CodeHostReviewState,
   CodeHostProvider,
-  HookKind,
-  PullRequestFeedbackSignal
+  HookKind
 } from '@agentconnect.md/protocol'
 import type {
   CodeHostReviewLockReason,
@@ -1364,8 +1363,6 @@ export interface SessionRepo {
    *  agent with one checkout has one branch, so that branch only speaks for the session using it now
    *  (webchat-side-panels.md §12.6). Rides `session_meta_agent_activity_page_idx`. */
   latestSessionIdForAgent(orgId: OrgId, agentId: AgentId): Promise<SessionId | null>
-  /** Recent terminal sessions eligible for branch→PR discovery after feedback arrived first. */
-  recentTerminalForPullRequestDiscovery(orgId: OrgId, limit: number): Promise<SessionMetaRecord[]>
   /** One latest representative per distinct facet value after applying every
    *  other active facet. The database reduces the full history before returning
    *  this compact index to the HTTP layer. */
@@ -1467,39 +1464,6 @@ export interface SessionRepo {
    *  owner. Null when none. Placement is deliberately NOT a predicate here: which daemon serves
    *  the agent is {@link PlacementResolver}'s answer, and a pool agent names no machine. */
   findThreadOwner(botId: BotId, channel: string, thread: string): Promise<{ agentId: string } | null>
-}
-
-export interface PullRequestWakeRecord {
-  deliveryKey: string
-  orgId: OrgId
-  installationId: bigint
-  repoId: bigint
-  repoFullName: string
-  pullNumber: number
-  sessionId: SessionId | null
-}
-
-/** Durable PR→session identity plus one level-triggered wake marker per PR. */
-export interface SessionPullRequestFeedbackRepo {
-  /** First session to claim a numeric repo+PR wins. */
-  linkSession(input: {
-    sessionId: SessionId
-    agentId: AgentId
-    orgId: OrgId
-    repoId: bigint
-    repoFullName: string
-    installationId: bigint
-    pullNumber: number
-  }): Promise<boolean>
-  /** Idempotently dirty one PR wake. */
-  enqueue(orgId: OrgId, signal: PullRequestFeedbackSignal, signalAt: Date, nextAttemptAt: Date): Promise<void>
-  /** Cross-process lease for the next due linked or discovery wake. */
-  claimNext(owner: string, now: Date, until: Date): Promise<PullRequestWakeRecord | null>
-  /** Clear only the delivery key that was accepted; a concurrent newer wake remains dirty. */
-  complete(item: PullRequestWakeRecord, owner: string): Promise<void>
-  /** Move one failed/discovery wake into the future so later PRs remain eligible. */
-  defer(item: PullRequestWakeRecord, owner: string, nextAttemptAt: Date): Promise<void>
-  deleteExpired(unmatchedBefore: Date): Promise<number>
 }
 
 // ───────────────────────────────────────────────────────────────────────────

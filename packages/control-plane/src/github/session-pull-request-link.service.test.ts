@@ -43,7 +43,6 @@ function harness(opts: {
   repo?: typeof REPO | null
   /** The agent's most recently active session; only the shared arm consults it. */
   latest?: string | null
-  onResolved?: () => Promise<void>
 }): {
   service: SessionPullRequestLinkService
   clock: FakeClock
@@ -69,7 +68,6 @@ function harness(opts: {
     } as unknown as InstallationTokenService,
     readSessionBranch: readBranch,
     latestSessionIdOfAgent: async () => (opts.latest === undefined ? SESSION.id : opts.latest),
-    ...(opts.onResolved ? { onResolved: opts.onResolved } : {}),
     fetchImpl: fetch as unknown as FetchLike
   })
   return { service, clock, fetch, readBranch, resolveRepo }
@@ -223,15 +221,5 @@ describe('SessionPullRequestLinkService', () => {
     expect([a?.pullNumber, b?.pullNumber, c?.pullNumber]).toEqual([7, 7, 7])
     expect(readBranch).toHaveBeenCalledTimes(1)
     expect(fetch).toHaveBeenCalledTimes(1)
-  })
-
-  it('keeps the resolved PR readable when durable identity persistence is temporarily unavailable', async () => {
-    const onResolved = vi.fn(async () => {
-      throw new Error('database unavailable')
-    })
-    const { service } = harness({ onResolved })
-
-    expect((await service.resolve(AGENT, SESSION))?.pullNumber).toBe(7)
-    expect(onResolved).toHaveBeenCalledOnce()
   })
 })

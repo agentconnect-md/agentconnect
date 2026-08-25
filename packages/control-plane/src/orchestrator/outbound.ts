@@ -5,8 +5,8 @@
  * current `launchId` fence) in one auditable spot.
  *
  * It is transport-aware only through the {@link ConnChannel} firewall held by the
- * `ConnectionRegistry` — it never imports `ws`. The CP sends control metadata,
- * never message bodies; daemons construct any resulting prompt locally.
+ * `ConnectionRegistry` — it never imports `ws`. There is no CP→daemon prompt
+ * delivery: the daemon prompts from its own ingress, never the CP.
  */
 import { createHash } from 'node:crypto'
 import { daemonSupportsAgent } from '../domain/daemon-features.js'
@@ -129,8 +129,6 @@ import type {
   AgentPermissionDecision,
   SessionVisibilityPush,
   SessionVisibilityOk,
-  SessionPullRequestFeedback,
-  SessionPullRequestFeedbackResult,
   CodeHostNoteDesired
 } from '@agentconnect.md/protocol'
 import {
@@ -595,22 +593,6 @@ export class ControlSender {
   async sessionToolBody(daemonId: string, orgId: string, req: SessionToolBodyReq): Promise<SessionToolBodyChunk> {
     const c = this.must(daemonId)
     return c.conn.request<SessionToolBodyChunk>('session/tool-body', req, { epoch: c.sessionEpoch }, undefined, orgId)
-  }
-
-  /** Continue the exact linked session from body-free, signature-verified GitHub feedback metadata. */
-  async sessionPullRequestFeedback(
-    daemonId: string,
-    orgId: string,
-    req: SessionPullRequestFeedback
-  ): Promise<SessionPullRequestFeedbackResult> {
-    const c = this.must(daemonId)
-    return c.conn.request<SessionPullRequestFeedbackResult>(
-      'session/pull-request-feedback',
-      req,
-      { epoch: c.sessionEpoch, agentId: req.agentId },
-      undefined,
-      orgId
-    )
   }
 
   /**

@@ -307,29 +307,3 @@ export const SessionVisibilitySnapshot = z.object({
   entries: z.array(SessionVisibilityPush).max(1000)
 })
 export type SessionVisibilitySnapshot = z.infer<typeof SessionVisibilitySnapshot>
-
-/** R→C level-triggered wake. Review bodies, event details, and CI logs stay off the CP. */
-export const PullRequestFeedbackSignal = z.object({
-  deliveryKey: z.string().min(1).max(200),
-  installationId: z.string().regex(/^[1-9]\d*$/),
-  repoId: z.string().regex(/^[1-9]\d*$/),
-  repoFullName: z.string().min(3).max(300),
-  pullNumber: z.number().int().positive()
-})
-export type PullRequestFeedbackSignal = z.infer<typeof PullRequestFeedbackSignal>
-
-/** C→D exact-session continuation. The daemon constructs the prompt locally and reads current GitHub state. */
-export const SessionPullRequestFeedback = PullRequestFeedbackSignal.omit({ installationId: true }).extend({
-  agentId: z.string().uuid(),
-  sessionId: z.string().min(1)
-})
-export type SessionPullRequestFeedback = z.infer<typeof SessionPullRequestFeedback>
-
-export const SessionPullRequestFeedbackResult = z.object({
-  deliveryKey: z.string().min(1).max(200),
-  accepted: z.boolean(),
-  reason: z
-    .enum(['not_found', 'not_ready', 'paused', 'busy', 'draining', 'integration_offline', 'durability'])
-    .optional()
-})
-export type SessionPullRequestFeedbackResult = z.infer<typeof SessionPullRequestFeedbackResult>
