@@ -154,6 +154,7 @@ import {
   finalizeSlackResponse,
   isSlackStatusBarText,
   slackAgentPostOptions,
+  slackAgentIdentityOptions,
   slackPostOptions,
   slackStreamRecipient,
   type SlackTurnState
@@ -9400,13 +9401,20 @@ export class Daemon {
     // Chat origins only: a hook/code-host turn publishes one artifact at the end and must not
     // grow a second message of its own.
     if (!replyConn || originKindOf(plan.platform) !== 'chat') return
+    const chrome = turnChromeFor(plan.platform)
     // A pushed status bar carries this turn's `startupActivityLabel` already — EXCEPT on a
     // streaming turn, which writes that slot no earlier than `chat.startStream`, and that is
     // after the wait this notice is about (slack-streaming-turn-output.md §5).
-    if (turnChromeFor(plan.platform).statusSurface === 'turn-bar' && !this.streamsTurnStatus(conv)) return
-    void replyConn
-      .postMessage(plan.channel, SANDBOX_BOOTSTRAP_NOTICE, entry.msg.thread)
-      .catch((err) => this.log.warn(`cluster: sandbox bootstrap notice failed (${formatErr(err)})`))
+    if (chrome.statusSurface === 'turn-bar' && !this.streamsTurnStatus(conv)) return
+    // Marked as chrome where the platform can carry the marker, or a peer daemon's thread
+    // backfill re-ingests this live-only line as conversation the agent then reads back.
+    const post = chrome.chromeMarkedNotices
+      ? (replyConn as SlackConnection).postMessage(plan.channel, SANDBOX_BOOTSTRAP_NOTICE, entry.msg.thread, {
+          ...(slackAgentIdentityOptions(plan) ?? {}),
+          chrome: true
+        })
+      : replyConn.postMessage(plan.channel, SANDBOX_BOOTSTRAP_NOTICE, entry.msg.thread)
+    void post.catch((err) => this.log.warn(`cluster: sandbox bootstrap notice failed (${formatErr(err)})`))
   }
 
   /** Does this turn own the platform's status slot through a native stream? Slack's two

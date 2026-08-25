@@ -1100,7 +1100,14 @@ describe('Daemon Slack streaming turn', () => {
     )
 
     expect(conn.setStatus).not.toHaveBeenCalled()
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', SANDBOX_BOOTSTRAP_NOTICE, 'T1')
+    // Marked as chrome, or a peer daemon's thread backfill re-ingests this live-only line as
+    // conversation and feeds a finished wait back into the agent's context.
+    expect(conn.postMessage).toHaveBeenCalledWith(
+      'C1',
+      SANDBOX_BOOTSTRAP_NOTICE,
+      'T1',
+      expect.objectContaining({ chrome: true })
+    )
     await daemon.stop()
   }, 15_000)
 
@@ -1125,7 +1132,7 @@ describe('Daemon Slack streaming turn', () => {
       undefined,
       expect.anything()
     )
-    expect(conn.postMessage).not.toHaveBeenCalledWith('C1', SANDBOX_BOOTSTRAP_NOTICE, 'T1')
+    expect(conn.postMessage).not.toHaveBeenCalledWith('C1', SANDBOX_BOOTSTRAP_NOTICE, 'T1', expect.anything())
     await daemon.stop()
   }, 15_000)
 
