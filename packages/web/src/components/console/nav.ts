@@ -20,9 +20,9 @@ export function navVisible(item: { requires?: FeatureFlagId }): boolean {
 }
 
 // The rail's destinations, in groups separated by a rule: what the organization
-// runs (agents and the surfaces they answer on) first, then the fleet the work
-// runs on. Daemons sits alone at the bottom because it is infrastructure — you
-// visit it when something is wrong, not to get work done.
+// runs (agents and the surfaces they answer on) first, then what it runs on and
+// pays for — infrastructure, the usage that came out of it, the bill. You visit
+// the second group to check on the deployment, not to get work done.
 export const NAV_GROUPS: NavItem[][] = [
   [
     { href: '/home', label: 'Home', icon: 'house' },
@@ -30,12 +30,12 @@ export const NAV_GROUPS: NavItem[][] = [
     { href: '/sessions', label: 'Sessions', icon: 'messages-square' },
     { href: '/crons', label: 'Schedules', icon: 'calendar-clock' },
     { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
-    { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
     { href: '/integrations', label: 'Integrations', icon: 'plug' },
-    { href: '/usage', label: 'Analytics', icon: 'circle-gauge' }
+    { href: '/knowledge', label: 'Knowledge', icon: 'book-open' }
   ],
   [
     { href: '/daemons', label: 'Infra', icon: 'server' },
+    { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
     { href: '/billing', label: 'Billing', icon: 'credit-card', requires: 'billing' }
   ]
 ]
@@ -55,11 +55,11 @@ export const MOBILE_NAV: NavItem[] = [
 // top-right avatar (mirroring the desktop top bar). The org switcher is
 // prepended separately, in the sheet itself.
 export const MORE_ROWS: NavItem[] = [
-  { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
   { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
-  { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
   { href: '/integrations', label: 'Integrations', icon: 'plug' },
+  { href: '/knowledge', label: 'Knowledge', icon: 'book-open' },
   { href: '/daemons', label: 'Infra', icon: 'server' },
+  { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
   { href: '/billing', label: 'Billing', icon: 'credit-card', requires: 'billing' },
   { href: '/settings', label: 'Settings', icon: 'settings' }
 ]
@@ -73,10 +73,10 @@ export const SECTIONS: { prefix: string; label: string }[] = [
   // Merged conversation pages live in the Sessions section (§5.3).
   { prefix: '/conversations', label: 'Sessions' },
   { prefix: '/crons', label: 'Schedules' },
-  { prefix: '/daemons', label: 'Infra' },
   { prefix: '/tools', label: 'Tools & Skills' },
-  { prefix: '/knowledge', label: 'Knowledge' },
   { prefix: '/integrations', label: 'Integrations' },
+  { prefix: '/knowledge', label: 'Knowledge' },
+  { prefix: '/daemons', label: 'Infra' },
   { prefix: '/usage', label: 'Analytics' },
   { prefix: '/billing', label: 'Billing' },
   { prefix: '/settings', label: 'Settings' },
