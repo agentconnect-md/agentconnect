@@ -101,6 +101,10 @@ export default function OnboardingView() {
       setFinishing(false)
       return
     }
+    // Every successful exit — Finish on any path AND Skip — drops a wizard-minted daemon
+    // that never connected (Back → pool → Finish would otherwise strand it). Only after
+    // the PATCH: a failed completion must keep the row its on-screen command points at.
+    await cleanupPending()
     // Latch this tab so the redirect hook can't bounce back while navigation lands.
     skipOnboarding(orgKey)
     router.push(orgPath('/home'))
@@ -241,7 +245,9 @@ export default function OnboardingView() {
   const listeningId = connect?.daemonId ?? offlineDaemonId ?? ''
   const elapsedLabel = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
 
-  if (!activeOrg || notOwner) {
+  // Hold the wizard until BOTH snapshots settle: an empty not-yet-loaded agents list must
+  // not read as "no preset to configure" and expose a Finish that marks the org complete.
+  if (!activeOrg || notOwner || agentsLoading || daemonsLoading) {
     return (
       <div className="flex min-h-full items-center justify-center">
         <LoadingState fill />
@@ -294,10 +300,7 @@ export default function OnboardingView() {
           saving={saving || finishing}
           err={saveErr}
           onBack={backFrom('run') ? () => setStep(backFrom('run')!) : undefined}
-          onSkip={() => {
-            void cleanupPending()
-            void finish()
-          }}
+          onSkip={() => void finish()}
           onFinish={async (runtime, model) => {
             if (!builtinAgent || (await saveAgentSetup(runtime, model, servingDaemon ?? null))) void finish()
           }}

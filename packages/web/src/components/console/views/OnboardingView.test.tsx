@@ -220,14 +220,29 @@ describe('onboarding — daemon step (no pool: the only path)', () => {
     expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)
   })
 
-  it('Skip deletes an unclaimed provisioned daemon, marks the org onboarded, and exits', async () => {
+  it('Skip marks the org onboarded, THEN deletes the unclaimed provisioned daemon, and exits', async () => {
     mocks.provisionDaemon.mockResolvedValue({ daemonId: 'dmn_new', command: 'agentconnect run' })
     await render()
     await click('Skip')
-    expect(mocks.deleteDaemon).toHaveBeenCalledWith('dmn_new')
-    expect(mocks.skipOnboarding).toHaveBeenCalledWith('acme')
     expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
+    expect(mocks.deleteDaemon).toHaveBeenCalledWith('dmn_new')
+    // Cleanup only after the completion PATCH succeeded — a failed PATCH keeps the user
+    // in the wizard with a command whose row must still exist.
+    const patchOrder = mocks.updateOrg.mock.invocationCallOrder[0] ?? Infinity
+    const deleteOrder = mocks.deleteDaemon.mock.invocationCallOrder[0] ?? 0
+    expect(patchOrder).toBeLessThan(deleteOrder)
+    expect(mocks.skipOnboarding).toHaveBeenCalledWith('acme')
     expect(mocks.push).toHaveBeenCalledWith('/acme/home')
+  })
+
+  it('keeps the minted daemon when the completion PATCH fails on Skip', async () => {
+    mocks.provisionDaemon.mockResolvedValue({ daemonId: 'dmn_new', command: 'agentconnect run' })
+    mocks.updateOrg.mockRejectedValue(new Error('cp unreachable'))
+    await render()
+    await click('Skip')
+    expect(mocks.deleteDaemon).not.toHaveBeenCalled()
+    expect(mocks.push).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('cp unreachable')
   })
 })
 
@@ -323,6 +338,27 @@ describe('onboarding — daemon online: configure + finish', () => {
 // built-in agent against a pool member's reported capabilities without any provisioning.
 describe('onboarding — pool fork', () => {
   beforeEach(() => setFlags('daemon-pool'))
+
+  it('holds a spinner while the agent snapshot is still loading — no premature Finish', async () => {
+    mocks.agentsLoading = true
+    await render()
+    expect(host.textContent).toContain('loading data')
+    expect([...host.querySelectorAll('button')].some((b) => b.textContent?.includes('Finish'))).toBe(false)
+  })
+
+  it('Back → pool → Finish still cleans up the daemon minted on the detour', async () => {
+    mocks.provisionDaemon.mockResolvedValue({ daemonId: 'dmn_detour', command: 'agentconnect run' })
+    await render()
+    await click('Daemon')
+    await click('Continue') // daemon step mints a row
+    expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)
+    await click('Back')
+    await click('Cluster')
+    await click('Finish')
+    expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
+    expect(mocks.deleteDaemon).toHaveBeenCalledWith('dmn_detour')
+    expect(mocks.push).toHaveBeenCalledWith('/acme/home')
+  })
 
   it('forks after the org step and finishes right there when nothing needs configuring', async () => {
     await render()
