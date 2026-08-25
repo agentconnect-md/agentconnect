@@ -335,12 +335,12 @@ host to run sandboxed.
 
 ## 11. Failures and Recovery
 
-| Failure                | Impact                                      | Behavior                                                                                                                                         |
-| ---------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Control Plane outage   | Orchestration pauses                        | **Existing sessions continue on their daemons**; new assignments and scaling pause, then catch up after recovery                                 |
-| One daemon fails       | Sessions owned by that daemon are disrupted | The failure domain is isolated; the Control Plane detects the failure and reassigns sessions to another daemon                                   |
-| Platform adapter fails | Traffic for that platform is affected       | The daemon reconnects or retries itself and reports an alert                                                                                     |
-| Agent runtime crashes  | One agent task fails                        | The daemon relaunches the runtime — a child process self-hosted, a fresh sandbox generation in the pool — and reports the failure when necessary |
+| Failure                | Impact                                      | Behavior                                                                                                                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Control Plane outage   | Orchestration pauses                        | **Existing sessions continue on their daemons**; new assignments and scaling pause, then catch up after recovery                                                                                                                                                                              |
+| One daemon fails       | Sessions owned by that daemon are disrupted | The failure domain is isolated; the Control Plane detects the failure and reassigns sessions to another daemon                                                                                                                                                                                |
+| Platform adapter fails | Traffic for that platform is affected       | The daemon reconnects or retries itself and reports an alert                                                                                                                                                                                                                                  |
+| Agent runtime crashes  | One agent task fails                        | The daemon reclaims the exited host and the next message re-spawns the runtime: a new child process self-hosted, a new process inside the agent's existing sandbox in the pool. A fresh sandbox generation happens only when the pod or its channel was lost, not on an ordinary runtime exit |
 
 ---
 
