@@ -512,6 +512,7 @@ import {
   MAX_TURN_CONTEXT_REGENERATION_MS,
   MAX_TURN_CONTEXT_REGENERATIONS,
   PROBE_ROOT_SWEEP_INTERVAL_MS,
+  SANDBOX_BOOTSTRAP_NOTICE,
   SESSION_RETENTION_SWEEP_INTERVAL_MS
 } from './daemon/constants.js'
 import type {
@@ -9254,6 +9255,8 @@ export class Daemon {
       // Read here, not in the planner: the sticky override is live daemon state.
       stickyOutputMode: await this.store.getOutputModeOverride(key),
       hostAlreadyRunning: this.hostStarts.has(agentId) || this.modelSessions.hasStartedHost(key),
+      // Synchronous and exact: an attached shim session IS the pod being up, so no cluster read.
+      clusterPodBootstrap: this.k8sPlane !== undefined && !this.k8sPlane.runsInSandbox(agentId),
       protectedAddresses: this.compoundMentionAddresses(agentId, msg),
       codexUsageIsPerPrompt: this.isCodexRuntime(agentId),
       features: { turnFinalContextRefresh: this.cfg.features.turnFinalContextRefresh },
@@ -9273,6 +9276,13 @@ export class Daemon {
     // provably no output yet.
     if (conv instanceof OutputConverger && this.slackStreamingEligible(plan, entry, replyConn)) conv.enableStreaming()
     const run: TurnRun = { entry, key, plan, agent, replyConn, evaluation, conv }
+    // Add the streaming fields onto the SAME webchat object held by QueueEntry. Sharing
+    // `doneSent` closes a Pending-vs-gate race where cancel could otherwise terminally
+    // signal each copy once. Seeded HERE, before `openSession`, because the sandbox-bootstrap
+    // notice below streams on this turn's `index` and must not collide with the reply's.
+    const pendingWebchat = webchat
+      ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
+      : undefined
     // The documented loading state, on every turn including a streaming one: it covers the
     // window before the stream has anything to show, which is otherwise a blank wait (§5).
     // On a streaming turn it is TEXT only — the enum belongs to `chat.startStream`.
@@ -9284,6 +9294,7 @@ export class Daemon {
       plan.statusOptions,
       this.streamsTurnStatus(conv)
     )
+    if (plan.clusterPodBootstrap) this.announceSandboxBootstrap(run, pendingWebchat)
     const releaseReplyConn = this.holdReplyConnection(replyConn)
     const opened = await this.openSession(run, releaseReplyConn)
     if (opened.kind === 'cancelled') return null
@@ -9322,12 +9333,6 @@ export class Daemon {
       this.log.info(`dispatch: initialized session ${key} from self-authored channel root without a model turn`)
       return sessionId
     }
-    // Add the streaming fields onto the SAME webchat object held by QueueEntry. Sharing
-    // `doneSent` closes a Pending-vs-gate race where cancel could otherwise terminally
-    // signal each copy once.
-    const pendingWebchat = webchat
-      ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
-      : undefined
     // Resolved once for the turn: the console addresses this session by its outward id (§1.1),
     // and most of the turn's link/status producers are synchronous.
     const outwardSessionId = await this.store.ensureOutwardSessionId(
@@ -9393,6 +9398,30 @@ export class Daemon {
       undefined,
       this.streamsTurnStatus(run.conv)
     )
+  }
+
+  /** Say that this turn is waiting on a cluster Sandbox pod, before the wait starts.
+   *  Live-only chrome: nothing is recorded, because the wait is not part of the conversation. */
+  private announceSandboxBootstrap(run: TurnRun, webchat: Pending['webchat']): void {
+    const { plan, entry, replyConn } = run
+    if (webchat) {
+      webchat.sink.output({
+        conversationId: webchat.conversationId,
+        turnId: webchat.turnId,
+        index: webchat.index++,
+        event: { kind: 'notice', text: SANDBOX_BOOTSTRAP_NOTICE }
+      })
+    }
+    // Chat origins only: a hook/code-host turn publishes one artifact at the end and must not
+    // grow a second message of its own.
+    if (!replyConn || originKindOf(plan.platform) !== 'chat') return
+    // A pushed status bar carries this turn's `startupActivityLabel` already, on a streaming
+    // turn too — that one writes the same text through the loading row (§5). So Slack never
+    // reaches this post, and no surface that does has chrome metadata to be marked with.
+    if (turnChromeFor(plan.platform).statusSurface === 'turn-bar') return
+    void replyConn
+      .postMessage(plan.channel, SANDBOX_BOOTSTRAP_NOTICE, entry.msg.thread)
+      .catch((err) => this.log.warn(`cluster: sandbox bootstrap notice failed (${formatErr(err)})`))
   }
 
   /** Does this turn own the platform's status slot through a native stream? Slack's two
@@ -9998,18 +10027,22 @@ export class Daemon {
     // created) plus any usage carried over from prior turns — so it sits at the top of
     // the thread before the reply streams in, and above the stream opened next.
     await this.emitStatusBar(p)
+    // The pod wait ENDED inside openSession, so its label must not outlive it — the snapshot
+    // below is re-issued for the rest of the turn, and the legacy row is rewritten only here.
+    // A bootstrap turn therefore transitions even when its host was already running.
+    const podWaitOver = plan.clusterPodBootstrap
     // Stash the loading snapshot the applier re-issues to keep the legacy row alive beside the
     // stream (startStream and every append displace it, §5) — before the stream opens, so the
     // stream-start re-issue can read it.
     if (this.streamsTurnStatus(p.conv))
       turnState<SlackTurnState>(p).loadingStatus = {
-        text: plan.startupActivityLabel,
+        text: podWaitOver ? 'is thinking…' : plan.startupActivityLabel,
         ...(plan.statusOptions ? { options: plan.statusOptions } : {})
       }
     const streaming = this.streamsTurnStatus(p.conv) && (await this.openSlackTurnStream(p))
     // A streaming turn already wrote its loading state at dispatch and re-issues it beside the
     // stream, so it takes no second write here.
-    if (!streaming && !plan.hostAlreadyRunning)
+    if (!streaming && (podWaitOver || !plan.hostAlreadyRunning))
       this.showActivity(replyConn, plan.channel, plan.statusThread, 'is thinking…', plan.statusOptions)
     // Config-file secrets deleted by the idle sweep come back BEFORE the turn
     // reaches the child — synchronous, so the guarantee is ordering, not timing.

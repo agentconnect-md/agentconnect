@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { LocalMemoryFs } from '../src/memory/fs.js'
 import type { WebchatOutput, WebchatDone, RdChatEvent, RdMsgWebchat } from '@agentconnect.md/protocol'
 
 // A webchat conversation/agent target. agentId is a real UUID because the protocol
@@ -149,6 +150,24 @@ const sessionTitleToolCall = (toolCallId: string, status = 'in_progress') => ({
 })
 const sessionInfo = (title: string | null) => ({ sessionUpdate: 'session_info_update', title })
 
+/** The slice of `K8sRuntimePlane` a webchat turn touches, with the one fact under test:
+ *  whether this agent already has an attached shim session (i.e. its pod is up). */
+function fakeK8sPlane(bound: boolean) {
+  return {
+    runsInSandbox: () => bound,
+    withSandbox: (_id: string, work: () => Promise<unknown>) => work(),
+    ensureChannel: async () => {},
+    workspaceRootFor: () => undefined,
+    gitRunnerFor: () => undefined,
+    workspaceFsFor: () => undefined,
+    memoryFsFor: () => new LocalMemoryFs(mkdtempSync(join(tmpdir(), 'ac-wc-mem-'))),
+    autoMergeFor: () => undefined,
+    releaseAgent: () => {},
+    launchedAgents: () => [],
+    stop: async () => {}
+  }
+}
+
 describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
   it('maps message/thinking/tool chunks to webchat events with a monotonic index, then done', async () => {
     const { factory } = streamingHost([
@@ -189,6 +208,67 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
     // The turn closes with exactly one webchat/done carrying the stop reason.
     expect(cp.dones).toEqual([{ conversationId: CONV, turnId, stopReason: 'end_turn' }])
+    await daemon.stop()
+  }, 15_000)
+
+  it('streams a sandbox-bootstrap notice ahead of the reply when the pod is not up yet', async () => {
+    const { factory } = streamingHost([text('here is the answer')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    // The one plane fact the turn reads: no attached shim session ⇒ this turn brings a pod up.
+    ;(daemon as any).k8sPlane = fakeK8sPlane(false)
+    const cp = fakeCpClient()
+    ;(daemon as any).cpClient = cp
+
+    const turnId = '55555555-5555-4555-8555-555555555555'
+    const msg = {
+      msgId: `webchat:${CONV}:${turnId}`,
+      traceId: turnId,
+      source: 'user' as const,
+      platform: 'webchat' as const,
+      channel: CONV,
+      sender: { id: 'alice', isBot: false },
+      text: 'go',
+      mentionedBots: [] as string[],
+      isDm: true,
+      trigger: 'dm' as const
+    }
+    await (daemon as any).dispatch(AGENT_ID, msg, undefined, { conversationId: CONV, turnId, sink: cp.sink })
+
+    // The notice leads the stream, and the reply's indices continue from it rather than
+    // restarting at 0 — a duplicate index is silently dropped by the browser's cursor.
+    expect(cp.outputs.filter((o) => o.event).map((o) => o.event)).toEqual([
+      { kind: 'notice', text: '\u23f3 Allocating a sandbox pod\u2026' },
+      { kind: 'message', text: 'here is the answer' }
+    ])
+    expect(cp.outputs.map((o) => o.index)).toEqual([...cp.outputs.keys()])
+    await daemon.stop()
+  }, 15_000)
+
+  it('leaves the webchat stream alone when the agent already has a bound sandbox', async () => {
+    const { factory } = streamingHost([text('here is the answer')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).k8sPlane = fakeK8sPlane(true)
+    const cp = fakeCpClient()
+    ;(daemon as any).cpClient = cp
+
+    const turnId = '44444444-4444-4444-8444-444444444444'
+    const msg = {
+      msgId: `webchat:${CONV}:${turnId}`,
+      traceId: turnId,
+      source: 'user' as const,
+      platform: 'webchat' as const,
+      channel: CONV,
+      sender: { id: 'alice', isBot: false },
+      text: 'go',
+      mentionedBots: [] as string[],
+      isDm: true,
+      trigger: 'dm' as const
+    }
+    await (daemon as any).dispatch(AGENT_ID, msg, undefined, { conversationId: CONV, turnId, sink: cp.sink })
+
+    expect(cp.outputs.some((o) => o.event?.kind === 'notice')).toBe(false)
     await daemon.stop()
   }, 15_000)
 

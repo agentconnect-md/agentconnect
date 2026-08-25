@@ -129,7 +129,10 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   // is the replacement's ordinal (1 = first retry). An event rather than a
   // terminal frame: the turn still ends with exactly one `done`, so replay,
   // busy-state, and older browsers (which ignore unknown kinds) stay coherent.
-  z.object({ kind: z.literal('superseded'), generation: z.number().int() })
+  z.object({ kind: z.literal('superseded'), generation: z.number().int() }),
+  // Live-only chrome for a wait the user cannot otherwise see (a cluster sandbox pod coming up).
+  // Never persisted — a refresh rebuilds from the transcript, which does not record it.
+  z.object({ kind: z.literal('notice'), text: z.string() })
 ])
 export type WebchatEvent = z.infer<typeof WebchatEvent>
 

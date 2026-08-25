@@ -231,6 +231,7 @@ type WebchatEvent =
   | { kind: 'tool_update'; toolCallId: string; status: string; title?: string }
   | { kind: 'session_info'; title: string }
   | { kind: 'superseded'; generation: number }
+  | { kind: 'notice'; text: string }
 
 /** The session status snapshot carried in a relay `rd/chat` WebchatOutput payload
  *  (mirrors protocol WebchatStatus). Partial: context/cost stream live, token
@@ -527,6 +528,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             ...collapsed,
             lane({ kind: 'plan', text: 'The conversation moved on — updating this answer…', boundary: true })
           ]
+        }
+        if (ev.kind === 'notice') {
+          // Daemon chrome for a wait with nothing else to show (a sandbox pod coming up).
+          // Live-only, so it goes in the collapsible work lane; `boundary` keeps the reply
+          // chunks that follow from accumulating into it.
+          return [...steps, lane({ kind: 'plan', text: ev.text, boundary: true })]
         }
         if (ev.kind === 'message') {
           if (last && last.kind === 'done' && last.who === who) {
