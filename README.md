@@ -75,12 +75,12 @@ work can begin from a message, issue, pull request, webhook, or schedule.
 AI agents are getting better at doing work. The harder problem is making
 multiple agents work well with a team—and with each other.
 
-An agent is not "an API call to a model." The model may run at a provider—the
-agent itself is a real process that checks out your repos, runs commands, and
-holds your credentials. Your agents can touch real things. Something has to
-manage that.
+Most agents still live like personal tools, in one person's terminal. Teammates
+can't see what an agent is doing, can't take over a session, can't review its
+output, and the context it builds stays on one laptop. So every team writes the
+same glue: message channels, cron jobs, credential handling, context stitching.
 
-AgentConnect is that layer. Teams use it to:
+AgentConnect turns that glue into a platform. Teams use it to:
 
 - **Triage issues together.** People and agents investigate in one shared
   thread, bring in the right specialists, and keep the fix and verification
