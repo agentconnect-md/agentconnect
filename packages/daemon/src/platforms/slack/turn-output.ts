@@ -68,6 +68,17 @@ export interface SlackTurnState {
    *  attributed message. One-way for the turn — once the fallback owns the response, nothing
    *  hands it back. */
   streamResponseMoved?: boolean
+  /** The closing `chat.stopStream` carried the footer and the §5.5 `final` delivery state, so
+   *  the response is already closed and no follow-up edit is owed — see the stop's own note. */
+  streamFinalized?: boolean
+  /** Whether this turn's loading state has been cleared. A streaming turn owes exactly one
+   *  clear: nothing expires it now that the answer no longer arrives through chat.postMessage. */
+  streamLoadingCleared?: boolean
+  /** The legacy free-text loading row re-issued to keep it visible beside the stream.
+   *  `chat.startStream` and every append DISPLACE the row (confirmed live), so a streaming turn
+   *  re-writes this snapshot after the stream opens and on each visible append, clearing it only
+   *  at turn end (§5). Text only — the enum belongs to the stream. */
+  loadingStatus?: { text: string; loadingMessages?: string[]; options?: SlackStatusOptions }
   /** A stop Slack has not accepted yet, kept verbatim so settlement reissues THAT stop: a
    *  bare abort retry would settle the message but drop its attribution footer. */
   streamStopOwed?: Extract<SlackAction, { kind: 'stream-stop' }>
@@ -171,6 +182,11 @@ export interface SlackTurnHost<TTurn> {
   /** Monotonic transcript timestamp — core owns ordering across surfaces. */
   monotonicTs(): string
   debug(message: string): void
+  /** Who the COMPLETE response addressed (send-message-routing-rework.md §5.5). A streamed
+   *  turn carries this on its closing `chat.stopStream` instead of a follow-up edit, so the
+   *  applier needs it at stop time rather than after the apply chain drains. Plain core data
+   *  — agent ids and a flag — so this stays a port and not a Slack shape. */
+  resolveFinalization?(turn: TTurn): { mentionedAgentIds: string[]; addressedAnyone: boolean }
 }
 
 /** Conversational authorship for Slack rows: the agent's name and icon, applied
@@ -411,6 +427,38 @@ async function postSlackReply<TTurn extends SlackTurn>(
  *  equivalent — a fallback post would render them as prose — so only body text survives. */
 function streamChunkText(chunks: SlackStreamChunk[]): string {
   return chunks.map((chunk) => (chunk.type === 'markdown_text' ? chunk.text : '')).join('')
+}
+
+/**
+ * Clear the turn's loading state, once. Text only — the session enum belongs to the stream
+ * (§5) — and idempotent, because the seams that end the streaming turn (terminal stop, teardown)
+ * all reach this and only the first one owes Slack a call.
+ */
+async function clearStreamLoading(conn: SlackConnection, p: SlackTurn, state: SlackTurnState): Promise<void> {
+  if (state.streamLoadingCleared || !p.plan.statusThread) return
+  state.streamLoadingCleared = true
+  if (typeof conn.setLoadingStatus !== 'function') return
+  await conn.setLoadingStatus(p.plan.channel, p.plan.statusThread, '')
+}
+
+/**
+ * Re-issue the legacy loading row so it survives beside the stream. `chat.startStream` and every
+ * append DISPLACE the row (confirmed live), so a streaming turn re-writes the stashed snapshot
+ * right after the stream opens and on each visible append; it coexists with the streamed message
+ * and its plan cards. Best-effort, text only (never the enum, §5), and a no-op once the terminal
+ * clear has run so a late append cannot resurrect the row.
+ */
+async function reissueStreamLoading(conn: SlackConnection, p: SlackTurn, state: SlackTurnState): Promise<void> {
+  const loading = state.loadingStatus
+  if (!loading || state.streamLoadingCleared || !p.plan.statusThread) return
+  if (typeof conn.setLoadingStatus !== 'function') return
+  await conn.setLoadingStatus(
+    p.plan.channel,
+    p.plan.statusThread,
+    loading.text,
+    loading.loadingMessages,
+    loading.options
+  )
 }
 
 /** Route display text to the fallback buffer, opening it if needed, and record ownership the
@@ -695,6 +743,8 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         // carries today, under the same chat:write.customize cooldown (§5).
         ...(statusBarPostOptions ? { identity: statusBarPostOptions } : {})
       })
+      // startStream displaces the legacy loading row — re-issue it so it stays visible (§5).
+      if (state.stream) await reissueStreamLoading(conn, p, state)
       return
     }
     case 'stream-append': {
@@ -711,7 +761,13 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       }
       if (!state.stream) return
       const outcome = await conn.appendTurnStream(state.stream, action.chunks)
-      if (outcome === 'ok') return
+      if (outcome === 'ok') {
+        // The append displaces the legacy loading row, so re-issue it on this activity seam to
+        // keep it beside the stream (§5) — the plan container's own label is not content, so a
+        // plan-only append never re-issues. Cleared only at turn end / stop, not on first content.
+        if (action.chunks.some((c) => c.type !== 'plan_update')) await reissueStreamLoading(conn, p, state)
+        return
+      }
       if (outcome === 'stopped') {
         // Not a failure to make good on — a decision by the person. Anything still queued for
         // this turn stops here, and no fallback post may follow it (§6).
@@ -732,6 +788,9 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     }
     case 'stream-stop': {
       if (state.streamStopped) return
+      // Backstop for a turn whose stream never showed anything — a suppressed reply, or one
+      // that failed before its first append. Its loading state would otherwise sit there.
+      if (action.settle === 'final' || action.settle === 'abort') await clearStreamLoading(conn, p, state)
       // Degradation moves the RESPONSE off the stream only once real body text has landed in
       // the fallback. A refusal that dropped nothing but task chrome leaves the accepted
       // stream holding the whole visible answer, so it must still be closed as the attributed
@@ -745,31 +804,46 @@ export async function applySlackAction<TTurn extends SlackTurn>(
           ? slackAgentPostOptions({ ...p.plan, ...(p.reply.responseId ? { responseId: p.reply.responseId } : {}) })
           : undefined
         // The footer is attached exactly once, on the LAST stop — a rollover carries none, and
-        // teardown after suppression carries none either (§3.3).
+        // teardown after suppression carries none either (§3.3). `chat.stopStream` renders
+        // these blocks BELOW everything the stream already showed, so the cards survive.
         const footer = final && p.attribution ? p.attribution.blocks : undefined
+        // §5.5's `final` delivery state rides the stop too. It used to ride a follow-up
+        // `chat.update`, but that call REPLACES the whole message — which erased every task
+        // card and stamped the answer "(edited)". Safe today only because agent-to-agent
+        // routing consumers read that event on shareable bots, and shareable bots do not
+        // stream (§7.1); the carve-out lift must first teach ingress to read stop-time
+        // metadata.
+        const finalization = final ? host.resolveFinalization?.(p) : undefined
         const stream = state.stream
         const settled = await settleTurnStream(conn, p, state, action, {
           ...(footer ? { blocks: footer } : {}),
           // A rollover must not release the session mid-turn: `active` is the default (§3.4).
           ...(action.settle === 'rollover' && !degraded ? { sessionStatus: 'processing' as const } : {}),
           ...(agentOptions?.agentAuthorId ? { agentAuthorId: agentOptions.agentAuthorId } : {}),
-          ...(agentOptions?.response ? { response: agentOptions.response } : {})
+          ...(agentOptions?.response
+            ? {
+                response: {
+                  ...agentOptions.response,
+                  ...(finalization
+                    ? {
+                        deliveryState: 'final' as const,
+                        mentionedAgentIds: finalization.mentionedAgentIds,
+                        ...(finalization.addressedAnyone ? { addressedAnyone: true } : {})
+                      }
+                    : {})
+                }
+              }
+            : {})
         })
-        if (settled && final) {
-          if (action.discard) {
-            // Nothing ever reached this message — a suppressed reply must not leave an empty
-            // bubble where the agent deliberately stayed silent.
-            await conn.deleteMessage(p.plan.channel, stream.ts)
-          } else if (action.text !== undefined) {
-            // §5.5 closes the response by editing THIS message, so record what it displays.
-            p.reply.lastResponse = { ts: stream.ts, text: action.text }
-            p.reply.lastReply = {
-              ts: stream.ts,
-              text: action.text,
-              ...(footer && p.attribution ? { footerKey: p.attribution.key } : {})
-            }
-          }
+        if (settled && final && action.discard) {
+          // Nothing ever reached this message — a suppressed reply must not leave an empty
+          // bubble where the agent deliberately stayed silent.
+          await conn.deleteMessage(p.plan.channel, stream.ts)
         }
+        // `lastResponse` is deliberately NOT set for a streamed answer: it is the handle the
+        // closing edit works on, and this message has already been finalized in place. Leaving
+        // it unset is what keeps §5.5 from re-editing — and re-flattening — the finished card.
+        if (settled && final && !action.discard) state.streamFinalized = true
         // A ROLLOVER whose stop Slack would not accept owes a replacement message, and the
         // retained handle is emphatically not it: appending the tail there would put
         // post-boundary output back above the boundary, defeat the size cap, and — because
