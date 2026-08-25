@@ -10027,18 +10027,22 @@ export class Daemon {
     // created) plus any usage carried over from prior turns — so it sits at the top of
     // the thread before the reply streams in, and above the stream opened next.
     await this.emitStatusBar(p)
+    // The pod wait ENDED inside openSession, so its label must not outlive it — the snapshot
+    // below is re-issued for the rest of the turn, and the legacy row is rewritten only here.
+    // A bootstrap turn therefore transitions even when its host was already running.
+    const podWaitOver = plan.clusterPodBootstrap
     // Stash the loading snapshot the applier re-issues to keep the legacy row alive beside the
     // stream (startStream and every append displace it, §5) — before the stream opens, so the
     // stream-start re-issue can read it.
     if (this.streamsTurnStatus(p.conv))
       turnState<SlackTurnState>(p).loadingStatus = {
-        text: plan.startupActivityLabel,
+        text: podWaitOver ? 'is thinking…' : plan.startupActivityLabel,
         ...(plan.statusOptions ? { options: plan.statusOptions } : {})
       }
     const streaming = this.streamsTurnStatus(p.conv) && (await this.openSlackTurnStream(p))
     // A streaming turn already wrote its loading state at dispatch and re-issues it beside the
     // stream, so it takes no second write here.
-    if (!streaming && !plan.hostAlreadyRunning)
+    if (!streaming && (podWaitOver || !plan.hostAlreadyRunning))
       this.showActivity(replyConn, plan.channel, plan.statusThread, 'is thinking…', plan.statusOptions)
     // Config-file secrets deleted by the idle sweep come back BEFORE the turn
     // reaches the child — synchronous, so the guarantee is ordering, not timing.

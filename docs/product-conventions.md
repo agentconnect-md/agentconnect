@@ -139,7 +139,9 @@ Exactly one of the two, never both.
 
 It is live chrome and is never recorded: reloading a conversation rebuilds it from the
 transcript, where a wait that is over has nothing to say. A turn whose pod is already up says
-nothing at all, so the notice always means a real wait.
+nothing at all, so the notice always means a real wait — and neither does the wait's label
+outlive it: once the pod is up the status returns to the ordinary working state, so a streamed
+answer is never delivered under a line still claiming a sandbox is being allocated.
 
 ## Slack message attribution footer
 
