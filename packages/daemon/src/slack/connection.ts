@@ -263,8 +263,9 @@ export interface SlackDeps {
   onStatusInfo?: (
     sessionKey: string
   ) => Promise<{ info: StatusBarInfo; identity?: StatusModalIdentity; link?: string; cancellable: boolean } | undefined>
-  /** Resolve the local session a Slack conversation owns — for the shortcut modal, and for the stop button. */
-  onMessageShortcut?: (a: { channel: string; thread: string; userId?: string }) => Promise<string | undefined>
+  /** Resolve the exact local session owned by the selected Slack conversation, awaited
+   *  before the one-shot shortcut trigger opens its modal. */
+  onMessageShortcut?: (a: { channel: string; thread: string; userId: string }) => Promise<string | undefined>
   /** Fired when a user taps a button on an interactive permission card
    *  (render.buildPermissionCard). The decoded `requestId` ties the click back to the
    *  pending ACP `session/request_permission`; `optionId` is the chosen option. */
@@ -429,10 +430,9 @@ export type AppLike = {
     assistant: {
       threads: {
         setStatus: (a: unknown) => Promise<unknown>
+        setTitle: (a: unknown) => Promise<unknown>
       }
     }
-    // The generic Web-API escape hatch: @slack/web-api 8 has no typed `agents.sessions.*`.
-    apiCall: (method: string, a?: Record<string, unknown>) => Promise<unknown>
   }
   init?: () => Promise<void>
   start: () => Promise<void>
@@ -654,8 +654,6 @@ export class SlackConnection implements PlatformConnection {
   // assistant_thread_started, while later message.im payloads may arrive without
   // thread_ts. Keep the active DM thread root so replies stay inside that thread.
   private assistantDmThreads = new Map<string, string>()
-  /** Last agent-session lifecycle state per `channel:thread`, so an unchanged one refires nothing. */
-  private sessionLifecycle = new Map<string, 'processing' | 'active'>()
   botUserId = ''
   /** The appToken this socket is keyed by (one socket per unique appToken). */
   readonly appToken: string
@@ -762,22 +760,6 @@ export class SlackConnection implements PlatformConnection {
     this.app.event('assistant_thread_started', async ({ event }) => {
       const thread = this.rememberAssistantThread(event as AssistantThreadStartedEvent)
       if (thread) log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
-    })
-    // Native stop button. Slack leaves the session in `processing`, so interrupt the turn then transition it.
-    this.app.event('agent_session_stopped', async ({ event }) => {
-      const ev = event as { channel?: string; thread_ts?: string; user?: string }
-      const channel = ev.channel
-      const thread = ev.thread_ts
-      if (!channel || !thread) return
-      log?.debug(`slack: agent session stopped ch=${channel} thread=${thread} user=${ev.user ?? '?'}`)
-      const sessionKey = await this.deps.onMessageShortcut?.({ channel, thread, userId: ev.user })
-      if (sessionKey)
-        this.deps.onStatusAction?.({
-          kind: 'cancel',
-          sessionKey,
-          ...(ev.user ? { actor: { userId: ev.user } } : {})
-        })
-      await this.queue.enqueue(() => this.setSessionLifecycle(channel, thread, 'active'))
     })
     // Membership changes: the bot was invited to (member_joined_channel, filtered
     // to our own user id) or removed from (channel_left / group_left) a channel.
@@ -1779,7 +1761,11 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /** Best-effort loading status: the legacy free text plus the lifecycle enum. Pass '' to clear; never throws. */
+  /**
+   * Best-effort assistant loading status (assistant.threads.setStatus).
+   * Works in channels/DMs/assistant panel under chat:write (post Mar 2026).
+   * Pass status='' to clear. Never throws into dispatch.
+   */
   async setStatus(
     channel: string,
     threadTs: string,
@@ -1805,40 +1791,20 @@ export class SlackConnection implements PlatformConnection {
         this.rememberMissingScopes(err)
         this.deps.log?.debug(`slack: setStatus failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`)
       }
-      // Already inside the send queue — setSessionLifecycle must not enqueue again.
-      await this.setSessionLifecycle(channel, threadTs, status ? 'processing' : 'active')
       await this.postPermissionUpdateCard(channel, threadTs)
     })
   }
 
-  // The lifecycle half of setStatus. Posting a message does NOT end the loading UX — only `active` does.
-  // Deduped per (channel, thread); no username/icon, because Slack keeps those sticky until cleared.
-  private async setSessionLifecycle(channel: string, threadTs: string, status: 'processing' | 'active'): Promise<void> {
-    // Send-only (HTTP) bots take inbound from the relay, which does not forward the stop event —
-    // so `processing` here would render a Stop button nothing on this side could ever answer.
-    if (this.deps.sendOnly) return
-    const key = `${channel}:${threadTs}`
-    if (this.sessionLifecycle.get(key) === status) return
-    try {
-      await this.app.client.apiCall('agents.sessions.setStatus', {
-        channel_id: channel,
-        thread_ts: threadTs,
-        status
-      })
-      this.sessionLifecycle.set(key, status)
-    } catch (err) {
-      // Left unrecorded so the next status update retries instead of deduping a failure.
-      this.deps.log?.debug(
-        `slack: session lifecycle ${status} failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`
-      )
-    }
-  }
-
-  /** Best-effort agent-session title; only valid for Agents-feature threads, so the daemon gates it to DMs. */
+  /**
+   * Best-effort assistant thread title (assistant.threads.setTitle). This API is
+   * only valid for Slack app threads created by the Agents feature; the daemon
+   * gates calls to DM sessions before reaching this boundary. Never throws into
+   * dispatch, including when the shared send queue itself times out.
+   */
   async setTitle(channel: string, threadTs: string, title: string): Promise<void> {
     try {
       await this.queue.enqueue(() =>
-        this.app.client.apiCall('agents.sessions.rename', {
+        this.app.client.assistant.threads.setTitle({
           channel_id: channel,
           thread_ts: threadTs,
           title
