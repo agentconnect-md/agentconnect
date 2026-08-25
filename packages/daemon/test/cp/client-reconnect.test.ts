@@ -144,10 +144,11 @@ describe('CpClient reconnect', () => {
     expect(reconnectAuth.orgId).toBeUndefined()
   })
 
-  it('does NOT reconnect after a 4401 close', async () => {
+  it('does NOT reconnect after a 4401 close, and an API-key daemon stays up for the operator', async () => {
     const clock = new FakeClock()
     const connect = vi.fn(async () => new FakeTransport())
-    const client = new CpClient(deps(connect, clock))
+    const onAuthFatal = vi.fn()
+    const client = new CpClient({ ...deps(connect, clock), onAuthFatal })
     client.start()
     await tick()
     const t1 = (await connect.mock.results[0]!.value) as FakeTransport
@@ -156,6 +157,8 @@ describe('CpClient reconnect', () => {
     clock.advance(60000)
     await tick()
     expect(connect).toHaveBeenCalledTimes(1)
+    // Only a projected identity is re-minted by restarting; a rejected key needs a human.
+    expect(onAuthFatal).not.toHaveBeenCalled()
   })
 
   it('backoff grows exponentially up to the 30s cap', async () => {

@@ -74,6 +74,8 @@ export interface CpClientConnectionHost {
   log(): Logger
   /** Read lazily — the client is assigned only after these deps are built. */
   cpClient(): CpClient | undefined
+  /** End the process with this exit code — the daemon's own injectable exit seam. */
+  requestExit(code: number): void
   setDaemonId(daemonId: string): void
   setWebAppUrl(webAppUrl: string | undefined): void
   setOrgSlug(orgSlug: string | undefined): void
@@ -208,6 +210,9 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       host.setOrgSlug(slug)
       if (slug) host.log().debug(`cp: org slug "${slug}" (session deep links)`)
     },
+    // Only ever called on the identity path (client.ts states why); the diagnosis is logged there.
+    // Non-zero: a failure, not a planned lifecycle exit, so no supervisor treats it as a clean stop.
+    onAuthFatal: () => host.requestExit(1),
     ...(host.bootstrapUpgradeCapable()
       ? {
           onBootstrapUpgrade: (lifecycle: { targetVersion: string }) =>

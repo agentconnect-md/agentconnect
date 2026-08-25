@@ -14982,6 +14982,7 @@ export class Daemon {
       daemonRoot: () => this.root,
       log: () => this.log,
       cpClient: () => this.cpClient,
+      requestExit: (code) => this.requestExit(code),
       setDaemonId: (daemonId) => {
         this.cfg.daemonId = daemonId
       },
