@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="packages/web/src/app/icon.svg" width="88" alt="AgentConnect logo" />
+  <a href="https://agentconnect.md"><img src="packages/web/src/app/icon.svg" width="88" alt="AgentConnect logo" /></a>
 </p>
 
-<h1 align="center">AgentConnect</h1>
+<h1 align="center"><a href="https://agentconnect.md">AgentConnect</a></h1>
 
 <p align="center">
   <strong>The open-source, multi-agent alternative to Claude Tag.</strong><br />
@@ -74,7 +74,7 @@ use an agent from who may see its sessions, while one console keeps the team's
 agents, integrations, and permitted work in view.
 
 <p align="center">
-  <img src="docs/assets/agents-across-channels.png" alt="People and agents working together in Slack, Telegram, and Discord conversations and in a GitHub pull request review" width="880" />
+  <a href="https://agentconnect.md"><img src="docs/assets/agents-across-channels.png" alt="People and agents working together in Slack, Telegram, and Discord conversations and in a GitHub pull request review" width="880" /></a>
 </p>
 
 ## What teams do with AgentConnect
@@ -161,7 +161,7 @@ One place to operate your whole fleet—agents, sessions, schedules, tools,
 knowledge, and daemons:
 
 <p align="center">
-  <img src="docs/assets/console-agents.gif" alt="AgentConnect console: touring the Agents, Sessions, Schedules, Tools & Skills, Knowledge, and Daemons views" width="880" />
+  <a href="https://app.agentconnect.md"><img src="docs/assets/console-agents.gif" alt="AgentConnect console: touring the Agents, Sessions, Schedules, Tools & Skills, Knowledge, and Daemons views" width="880" /></a>
 </p>
 
 ## Architecture
