@@ -18,12 +18,12 @@
  *
  * The `org` label is the org's ID, never its slug. A slug is mutable, so labelling with it would
  * retire a series on rename — exactly the disappearance the zeros below exist to prevent — and a
- * personal org's slug is built from its owner's display name or email, which has no business being
- * a label value in a metrics backend. Resolving an id to a name is the dashboard's job.
+ * slug is user-chosen text, which has no business being a label value in a metrics backend.
+ * Resolving an id to a name is the dashboard's job.
  *
  * Every CP replica observes the same install-wide numbers, so these are fleet totals repeated per
  * pod, not per-pod shards: aggregate them with `max by (...)`, never `sum`. Cardinality, not the
- * query, is the dominant cost: an activated user gets a personal org, so a signup-driven install
+ * query, is the dominant cost: a signup-driven install where most users create an org of their own
  * reports closer to (users × 5) series per replica, every one of them re-reported each collection
  * interval whether or not that org has ever held anything.
  */

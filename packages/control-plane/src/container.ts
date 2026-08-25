@@ -425,17 +425,15 @@ export function buildContainer(
     hookSecret: new PgHookSecretStore(prisma, secretCipher),
     runtimeProfile: new PgRuntimeProfileRepo(prisma),
     audit: new PgAuditRepo(prisma),
-    // Under WAITLIST_MODE, JIT signup does NOT mint a personal org — that happens
-    // only on join-link redemption (waitlist-and-login.md §6/§8), so "login ⇒ has
-    // an org" can't bypass the admission gate. Every org-creating repo carries the
-    // preset-agent seam flag (preset-agents.md §3.2).
-    user: new PgUserRepo(prisma, !config.WAITLIST_MODE, config.PRESET_AGENTS_ENABLED, presetPool),
+    // Signup mints no org, so no repo here carries the preset-agent seam flag except
+    // the one org-creating repo below (preset-agents.md §3.2).
+    user: new PgUserRepo(prisma),
     org: new PgOrgRepo(prisma, config.PRESET_AGENTS_ENABLED, presetPool, (orgId) => ({
       mount: config.VAULT_TRANSIT_MOUNT,
       keyName: `${effectiveOrgKeyPrefix(config.VAULT_TRANSIT_KEY, config.VAULT_TRANSIT_ORG_KEY_PREFIX)}${orgId}`
     })),
     orgInviteLink: new PgOrgInviteLinkRepo(prisma),
-    waitlist: new PgWaitlistRepo(prisma, config.PRESET_AGENTS_ENABLED, presetPool),
+    waitlist: new PgWaitlistRepo(prisma),
     githubInstallation: new PgGithubInstallationRepo(prisma),
     githubInstallState: new PgGithubInstallStateStore(prisma),
     agentRepoAuth: new PgAgentRepoAuthorizationRepo(prisma),

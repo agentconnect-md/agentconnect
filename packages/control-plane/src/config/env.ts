@@ -131,7 +131,7 @@ const CoreConfigShape = {
   // ── Waitlist / closed-beta admission gate ──
   // When on, a signed-in user must be a formal (activated) user OR an existing org
   // member to enter the app; otherwise they land on /waitlist. Default OFF keeps the
-  // OSS self-hosted zero-config behavior (login ⇒ personal org ⇒ app). Parsed as an
+  // OSS self-hosted behavior (login ⇒ org onboarding ⇒ app). Parsed as an
   // EXPLICIT 'true'/'false' enum, NOT z.coerce.boolean() — the latter treats any
   // non-empty string (including "false") as true, which would silently gate everyone
   // out. Approval / join-link minting / admin auth live in a separate external admin

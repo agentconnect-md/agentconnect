@@ -50,8 +50,8 @@ export function withTx<T>(prisma: PrismaClient, fn: (tx: Prisma.TransactionClien
  *
  * Use this for multi-statement invariants that must be all-or-nothing even when
  * reached from a plain client (org creation writes the org, its membership, and
- * its preset agent + marker; a partial commit there is unrecoverable — see
- * `ensurePersonalOrg`). Composing means the OUTER transaction's boundary wins:
+ * its preset agent + marker; a partial commit there is unrecoverable). Composing
+ * means the OUTER transaction's boundary wins:
  * a rollback out there also undoes what `fn` wrote, which is the intent.
  */
 export function withAmbientTx<T>(

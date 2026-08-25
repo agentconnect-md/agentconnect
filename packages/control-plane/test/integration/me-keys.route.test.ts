@@ -71,7 +71,7 @@ describe('POST /me/keys — mint a personal key', () => {
   })
 
   it('rejects an org the caller does not belong to (404)', async () => {
-    // A stranger's personal org — the seeded owner is not a member.
+    // A stranger's own org — the seeded owner is not a member.
     const stranger = await new PgUserRepo(prisma).provisionOidcUser({
       oidcSubject: 'sub-stranger',
       email: 'stranger@example.test',

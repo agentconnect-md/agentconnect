@@ -4761,7 +4761,7 @@ export interface OrgRecord {
 /** One org's footprint, for the per-org gauges (observability/org-metrics.ts). */
 export interface OrgTelemetryRow {
   /** What the gauge labels the series with. The slug is deliberately NOT read here: it is mutable,
-   *  and a personal org's is built from its owner's display name or email. */
+   *  and an org's is chosen by whoever created it. */
   orgId: string
   /** Daemons registered to the org, any status. An install-wide pool member belongs to NO org
    *  (`daemon.orgId IS NULL`) and is counted for none of them — a pool-backed org reads zero here
@@ -4791,9 +4791,10 @@ export interface UserRepo {
   /**
    * Just-in-time provision (or fetch) the local user behind a verified OIDC `sub`.
    * First sight of a subject = signup: the user row is created (or an invited,
-   * email-only row is claimed by setting its `oidcSubject`) AND a personal org is
-   * created with the user as its `owner` — so everyone lands in a workspace they
-   * own. Later calls are a cheap idempotent fetch (plus the synthetic-email
+   * email-only row is claimed by setting its `oidcSubject`). NO organization is
+   * created here — org membership is only ever explicit (accepting an invite, or
+   * creating one from org onboarding), so a fresh account legitimately belongs to
+   * none. Later calls are a cheap idempotent fetch (plus the synthetic-email
    * upgrade). Authorization remains per-request (`resolveOrgContext`); the last
    * console choice is only a preference on the user's membership.
    */
@@ -4824,13 +4825,6 @@ export interface UserRepo {
    * hot path.
    */
   deletedIdentityCutoff(oidcSubject: string, now: Date): Promise<Date | null>
-
-  /**
-   * Restore a membership-less user's personal org (an interrupted signup must
-   * not brick the account). No-op when the user already owns an org or the
-   * user row is gone. `GET /orgs` calls this when the list comes back empty.
-   */
-  healPersonalOrg(userId: string): Promise<void>
 
   /** The org's members (oldest first) for the console Settings page. */
   listMembers(orgId: string): Promise<OrgMemberRecord[]>
@@ -5017,7 +5011,7 @@ export interface WaitlistRepo {
   /**
    * Redeem an admin-minted join link for a signed-in user (single transaction,
    * row-level `FOR UPDATE`, waitlist-and-login.md §6). On success sets
-   * `User.activatedAt`, creates the personal org, and stamps `redeemed*` (including
+   * `User.activatedAt` and stamps `redeemed*` (including
    * `redeemedEmail`). Conditional email binding: a BOUND entry (email set) must match
    * `verifiedEmail` (already normalized) or the redeem fails `email_mismatch`; a
    * BEARER entry (email null) skips the match and any verified identity may redeem it

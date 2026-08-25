@@ -140,7 +140,7 @@ describe('waitlist admission — GET /me/access', () => {
         email: 'wl-stranger@acme.dev'
       })
 
-      // GET /orgs must NOT self-heal an org into existence under waitlist mode.
+      // Nothing conjures an org for them — the list is simply empty.
       const orgs = await app.inject({ method: 'GET', url: '/api/v1/orgs', headers: h })
       expect(orgs.json()).toEqual([])
       const user = await prisma.user.findUnique({ where: { oidcSubject: 'wl-stranger' } })
@@ -241,7 +241,7 @@ describe('waitlist admission — GET /me/access', () => {
 })
 
 describe('waitlist admission — POST /waitlist/redeem', () => {
-  it('activates the matching user, creates their personal org, and enforces the org quota', async () => {
+  it('activates the matching user, grants no org, and still enforces the org quota', async () => {
     const token = await approveAndMint('wl-redeem@acme.dev')
     const { app, close } = buildApp()
     try {
@@ -258,8 +258,10 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
       expect(redeem.statusCode).toBe(200)
       expect(redeem.json()).toEqual({ activated: true })
 
+      // Activation grants ADMISSION, not an organization — they create their own
+      // from org onboarding, like any other new account.
       const access = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
-      expect(access.json()).toMatchObject({ status: 'active', activated: true, orgCount: 1 })
+      expect(access.json()).toMatchObject({ status: 'active', activated: true, orgCount: 0 })
 
       const user = await prisma.user.findUnique({ where: { oidcSubject: 'wl-redeem' } })
       expect(user!.activatedAt).not.toBeNull()
@@ -267,7 +269,14 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
       expect(entry!.redeemedByUserId).toBe(user!.id)
       expect(entry!.redeemedAt).not.toBeNull()
 
-      // The automatically created personal org consumes the default quota of one.
+      // The org they create themselves consumes the default quota of one.
+      const first = await app.inject({
+        method: 'POST',
+        url: '/api/v1/orgs',
+        headers: h,
+        payload: { slug: 'wl-redeem-first' }
+      })
+      expect(first.statusCode).toBe(201)
       const create = await app.inject({
         method: 'POST',
         url: '/api/v1/orgs',
@@ -414,76 +423,6 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
     }
   })
 
-  it('activates even when every preferred personal-org slug is taken', async () => {
-    // Regression: the redeem transaction allocated the slug by INSERTing and catching
-    // the unique violation. In Postgres a failed statement aborts the WHOLE
-    // transaction, so the retry died with 25P02 and the redeem answered 500.
-    for (const slug of ['taken', 'taken-2', 'taken-3']) await prisma.org.create({ data: { slug } })
-    const { token } = await mintOpenLink()
-    const { app, close } = buildApp()
-    try {
-      const h = await headers('wl-slug-clash', 'taken@acme.dev') // base label → 'taken'
-      await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
-      const redeem = await app.inject({
-        method: 'POST',
-        url: '/api/v1/waitlist/redeem',
-        headers: h,
-        payload: { token }
-      })
-      expect(redeem.statusCode).toBe(200)
-      const access = await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
-      expect(access.json()).toMatchObject({ status: 'active', activated: true, orgCount: 1 })
-    } finally {
-      await close()
-    }
-  })
-
-  it('activates concurrent redeemers competing for the SAME personal-org slug', async () => {
-    // Regression: allocating the slug by INSERT-and-catch (or by read-then-insert)
-    // loses this race — the loser's failed statement aborts its redeem transaction and
-    // the route answers 500. All three share the email local-part, so they derive the
-    // same base slug and must be handed distinct ones.
-    const links = await Promise.all([mintOpenLink(), mintOpenLink(), mintOpenLink()])
-    const identities = [
-      ['wl-race-a', 'dup@a.example'],
-      ['wl-race-b', 'dup@b.example'],
-      ['wl-race-c', 'dup@c.example']
-    ] as const
-    const { app, close } = buildApp()
-    try {
-      const hdrs = await Promise.all(identities.map(([sub, email]) => headers(sub, email)))
-      for (const h of hdrs) await app.inject({ method: 'GET', url: '/api/v1/me/access', headers: h })
-
-      const results = await Promise.all(
-        hdrs.map((h, i) =>
-          app.inject({
-            method: 'POST',
-            url: '/api/v1/waitlist/redeem',
-            headers: h,
-            payload: { token: links[i]!.token }
-          })
-        )
-      )
-      expect(results.map((r) => r.statusCode)).toEqual([200, 200, 200])
-
-      // Each ends up owning exactly one org, and the slugs are distinct.
-      const slugs: string[] = []
-      for (const [sub] of identities) {
-        const user = await prisma.user.findUnique({ where: { oidcSubject: sub } })
-        const owned = await prisma.membership.findMany({
-          where: { userId: user!.id, role: 'owner' },
-          select: { org: { select: { slug: true } } }
-        })
-        expect(owned).toHaveLength(1)
-        slugs.push(owned[0]!.org.slug)
-      }
-      expect(new Set(slugs).size).toBe(3)
-      expect([...slugs].sort()).toEqual(['dup', 'dup-2', 'dup-3'])
-    } finally {
-      await close()
-    }
-  })
-
   it('same-user retry stays 200 even after the link later expires or is revoked (bound + bearer)', async () => {
     const boundToken = await approveAndMint('wl-retry@acme.dev')
     const { app, close } = buildApp()
@@ -584,12 +523,12 @@ describe('waitlist admission — POST /waitlist/redeem', () => {
 describe('waitlist admission — auth boundaries', () => {
   it('an invited member passes the gate but still cannot create an org until activated', async () => {
     // Provision + add to the seeded org, without activating.
-    const invited = await new PgUserRepo(prisma, false).provisionOidcUser({
+    const invited = await new PgUserRepo(prisma).provisionOidcUser({
       oidcSubject: 'wl-invited',
       email: 'wl-invited@acme.dev',
       emailVerified: true
     })
-    await new PgUserRepo(prisma, false).addMember(DEFAULT_ORG_ID, invited.userId, 'collaborator')
+    await new PgUserRepo(prisma).addMember(DEFAULT_ORG_ID, invited.userId, 'collaborator')
     const { app, close } = buildApp()
     try {
       const h = await headers('wl-invited', 'wl-invited@acme.dev')
@@ -719,7 +658,7 @@ describe('waitlist admission — auth boundaries', () => {
     // verified email arrives for a user holding a placeholder. That deletion must not
     // write a cutoff — there is no identity behind it, and fencing the wrong subject
     // would lock out the very person claiming the invite.
-    const repo = new PgUserRepo(prisma, false)
+    const repo = new PgUserRepo(prisma)
     const invited = await prisma.user.create({ data: { email: 'wl-merge@acme.dev' } }) // no oidcSubject
     await repo.provisionOidcUser({ oidcSubject: 'wl-merge', emailVerified: false }) // synthetic placeholder
     await repo.provisionOidcUser({ oidcSubject: 'wl-merge', email: 'wl-merge@acme.dev', emailVerified: true })

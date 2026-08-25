@@ -42,8 +42,8 @@ describe('orgTelemetry', () => {
     expect(byId(rows, other.id)).toMatchObject({ daemons: 0, agents: 1, sessionsTotal: 1 })
   })
 
-  // The label has to survive a rename, and must not carry the owner's name a personal org's slug is
-  // built from — so the row is keyed by id and the slug is never read.
+  // The label has to survive a rename, and must not carry user-chosen text — so the row is keyed
+  // by id and the slug is never read.
   it('identifies an org by id, not by its mutable slug', async () => {
     const org = await prisma.org.create({ data: { slug: 'before-rename' } })
 

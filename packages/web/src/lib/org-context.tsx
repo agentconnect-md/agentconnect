@@ -145,10 +145,10 @@ interface OrgContextValue {
     patch: { name?: string; slug?: string; defaultAgentVisibility?: AgentCallPolicy }
   ) => Promise<void>
   /** Delete an org (owner-only; 409 while it has daemons). The console then
-   *  moves to a remaining org — or the self-healed personal one. */
+   *  moves to a remaining org — or to org onboarding when that was the last one. */
   deleteOrg: (orgId: string) => Promise<void>
   /** Leave the active org, immediately dropping its stale local scope before
-   *  re-listing and moving to a remaining or self-healed personal org. */
+   *  re-listing and moving to a remaining org (or to org onboarding). */
   leaveOrg: (userId: string) => Promise<void>
 }
 
@@ -282,9 +282,9 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   const deleteOrg = useCallback(
     async (orgId: string) => {
       await apiDeleteOrg(orgId)
-      // Re-list (self-heals a fresh personal org when this was the last one).
-      // If the ACTIVE org was deleted, its slug no longer resolves and the
-      // unknown-slug reconciliation moves the console to a remaining org.
+      // Re-list. If the ACTIVE org was deleted, its slug no longer resolves and the
+      // unknown-slug reconciliation moves the console to a remaining org; an empty
+      // list sends the shell to org onboarding.
       await refreshOrgs()
     },
     [refreshOrgs]

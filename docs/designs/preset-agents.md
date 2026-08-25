@@ -93,7 +93,7 @@ a dedicated assistant agent — and where its successor lives instead.
 ### 3.2 Creation, placement, and state
 
 **Creation — at org creation, unplaced.** One transaction, run by the org-creation
-service seam (every path — JIT personal orgs, the no-auth default tenant — funnels
+service seam (every path — `POST /orgs`, the no-auth default tenant — funnels
 through it), writes the agent row and its `preset_agent` record. No daemon, no
 capacity, no runtime is needed:
 
