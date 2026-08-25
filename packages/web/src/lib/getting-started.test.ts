@@ -19,26 +19,22 @@ const empty = { agents: [], daemons: [], integrations: [], sessions: [], members
 describe('computeGettingStarted', () => {
   it('starts all-incomplete for a fresh org and reports progress', () => {
     const gs = computeGettingStarted(empty)
-    // session-access always counts as done (it's a review step, not a setup task —
-    // see its `optional` comment in getting-started.ts), so it contributes to both
-    // done and total and never moves the fraction.
-    expect(gs.done).toBe(1)
-    expect(gs.total).toBe(7) // 5 core + session-access + invite (auth mode)
-    expect(gs.fraction).toBe(1 / 7)
+    expect(gs.done).toBe(0)
+    expect(gs.total).toBe(6) // 4 core + invite + session-access (auth mode)
+    expect(gs.fraction).toBe(0)
     expect(gs.allDone).toBe(false)
   })
 
-  it('orders the steps per the design: daemon, agent, slack, github, conversation, session-access, invite', () => {
+  it('orders the steps per the design: daemon, slack, github, conversation, invite, session-access', () => {
     // The "Runtime signed in" step is deferred until the explicit probe-status
     // signal ships (neither authRequired nor advertised models encode readiness).
     expect(computeGettingStarted(empty).items.map((i) => i.key)).toEqual([
       'daemon',
-      'agent',
       'slack',
       'github',
       'conversation',
-      'session-access',
-      'invite'
+      'invite',
+      'session-access'
     ])
   })
 
@@ -55,22 +51,23 @@ describe('computeGettingStarted', () => {
   it('drops the daemon step where the deployment offers the cloud pool', () => {
     const pooled = computeGettingStarted({ ...empty, poolEnabled: true })
     expect(pooled.items.map((i) => i.key)).not.toContain('daemon')
-    expect(pooled.total).toBe(6)
+    expect(pooled.total).toBe(5)
     // off (a self-hosted install) it is still the first step
     expect(computeGettingStarted(empty).items[0]!.key).toBe('daemon')
   })
 
   it('drops the invite AND session-access items in no-auth mode (no /settings there)', () => {
-    expect(computeGettingStarted({ ...empty, authOn: false }).total).toBe(5)
+    expect(computeGettingStarted({ ...empty, authOn: false }).total).toBe(4)
     expect(computeGettingStarted({ ...empty, authOn: false }).items.some((i) => i.key === 'invite')).toBe(false)
     expect(computeGettingStarted({ ...empty, authOn: false }).items.some((i) => i.key === 'session-access')).toBe(false)
   })
 
-  it('always marks session-access done (optional, look-not-fix) but keeps its CTA action', () => {
-    const step = computeGettingStarted(empty).items.find((i) => i.key === 'session-access')!
-    expect(step.done).toBe(true)
-    expect(step.optional).toBe(true)
-    expect(step.action).toEqual({ kind: 'session-access' })
+  it('ticks session-access only from the client-side reviewed flag — no CP signal exists', () => {
+    const step = (sessionAccessReviewed?: boolean) =>
+      computeGettingStarted({ ...empty, sessionAccessReviewed }).items.find((i) => i.key === 'session-access')!
+    expect(step().done).toBe(false)
+    expect(step(true).done).toBe(true)
+    expect(step().action).toEqual({ kind: 'session-access' })
   })
 
   it('hides session-access when its card would render nothing — the CTA must not point at a missing anchor', () => {
@@ -88,21 +85,6 @@ describe('computeGettingStarted', () => {
     expect(done([])).toBe(false)
     expect(done([daemon('offline')])).toBe(true)
     expect(done([daemon('online')])).toBe(true)
-  })
-
-  it('marks agent done only once some agent is placed (daemon + runtime)', () => {
-    const done = (agents: Agent[]) =>
-      computeGettingStarted({ ...empty, agents }).items.find((i) => i.key === 'agent')!.done
-    expect(done([agent({ daemon: '—', runtime: '' })])).toBe(false) // the unplaced built-in preset
-    expect(done([agent()])).toBe(true)
-  })
-
-  it('tracks the BUILT-IN preset when present — a placed custom agent alone must not tick the row', () => {
-    const done = (agents: Agent[]) =>
-      computeGettingStarted({ ...empty, agents }).items.find((i) => i.key === 'agent')!.done
-    // placed custom agent + unplaced preset: the card still shows Set up, so the row stays open
-    expect(done([agent({ id: 'custom' }), agent({ id: 'ac', builtin: true, daemon: '—', runtime: '' })])).toBe(false)
-    expect(done([agent({ id: 'custom', daemon: '—', runtime: '' }), agent({ id: 'ac', builtin: true })])).toBe(true)
   })
 
   it('merges GitHub + repository into one step, done when a repo is attached', () => {
@@ -190,7 +172,8 @@ describe('computeGettingStarted', () => {
       integrations: [{ platform: 'slack', name: 's' } as IntegrationRow],
       sessions: [{ id: 's1', statusLabel: 'completed' } as Session],
       members: [{ userId: 'u1' } as MemberDto, { userId: 'u2' } as MemberDto],
-      authOn: true
+      authOn: true,
+      sessionAccessReviewed: true
     })
     expect(gs.allDone).toBe(true)
     expect(gs.fraction).toBe(1)

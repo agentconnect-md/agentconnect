@@ -11,24 +11,17 @@ import { daemonCompletesOnboarding, firstReconnectableDaemonId, skipOnboarding }
 import { daemonCommands } from '@/lib/daemon-commands'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
-import {
-  FALLBACK_RUNTIME_IDS,
-  agentIsPlaced,
-  localDaemons,
-  modelLabel,
-  poolLabel,
-  preferredModelFor,
-  loginRequiredRuntimeIds
-} from '@/lib/data'
+import { FALLBACK_RUNTIME_IDS, localDaemons, modelLabel, preferredModelFor, loginRequiredRuntimeIds } from '@/lib/data'
 import type { DaemonRow } from '@/lib/data'
 import type { DaemonConnectDto } from '@/lib/api'
 
 // Onboarding wizard (design: "AgentConnect Onboarding v2 (forked)") — owner-only, runs
 // once per org. Creating/naming the org was step 1 (/welcome or the create-org entry),
 // so this picks up at the ONE fork on where the first agent runs. The pool path (Cloud
-// on the managed install, the operator's cluster elsewhere) configures the built-in
-// agent's runtime and finishes; the Daemon path adds the copy-paste connect step (mint
-// a real join command, poll until it comes online) with the runtime pickers inline.
+// on the managed install, the operator's cluster elsewhere) finishes right at the fork —
+// no agent configuration, just the completion flag; the Daemon path adds the copy-paste
+// connect step (mint a real join command, poll until it comes online) with the runtime
+// pickers inline.
 // Finish AND skip both persist the org's `onboardingCompleted` flag — re-entering the
 // org never bounces back here once either happened. Rendered full-screen (no rail) by
 // the shell on the /onboarding route.
@@ -67,20 +60,17 @@ export default function OnboardingView() {
   const [step, setStep] = useState<Step>(poolOffered ? 'where' : 'run')
   const [choice, setChoice] = useState<'pool' | 'daemon'>(poolOffered ? 'pool' : 'daemon')
 
-  // The org's built-in preset agent: the pool path (and the daemon path once one is
-  // online) configures its runtime/model here; already-placed presets skip that.
+  // The org's built-in preset agent: the daemon path configures its runtime/model once
+  // a machine is online; the pool path leaves it untouched.
   const builtinAgent = agents.find((a) => a.builtin)
   const machines = localDaemons(daemons)
   const daemonReady = machines.some(daemonCompletesOnboarding)
   const servingDaemon = machines.find((d) => d.status === 'online') ?? machines.find(daemonCompletesOnboarding)
-  const poolCapabilityDaemon = daemons.find((d) => d.pool && d.status === 'online') ?? daemons.find((d) => d.pool)
-  const needsAgentSetup = !!builtinAgent && !agentIsPlaced(builtinAgent)
-  // Pool path with a placed (or absent) preset finishes right at the fork (design 02).
-  const poolRuntimeStep = poolOffered && needsAgentSetup
 
   // Auth mode counts org creation (/welcome, already behind us) as step 1.
   const orgStepsBefore = authOn ? 1 : 0
-  const lastStepExists = choice === 'daemon' || (choice === 'pool' && poolRuntimeStep)
+  // The pool path always finishes at the fork; only the Daemon path adds a step.
+  const lastStepExists = choice === 'daemon'
   const total = Math.max(orgStepsBefore + 1, orgStepsBefore + (poolOffered ? 1 : 0) + (lastStepExists ? 1 : 0))
   const stepNumbers: Record<Step, number> = { where: orgStepsBefore + 1, run: total }
 
@@ -111,18 +101,13 @@ export default function OnboardingView() {
   }
 
   // ── built-in agent setup: runtime/model + placement, ordered by what the CP accepts ──
-  const saveAgentSetup = async (runtime: string, model: string, target: DaemonRow | 'pool' | null) => {
+  const saveAgentSetup = async (runtime: string, model: string, target: DaemonRow | null) => {
     if (!builtinAgent || !runtime) return true
     setSaving(true)
     setSaveErr(null)
     try {
       const place = async () => {
-        if (target === 'pool') {
-          // Placing on the pool needs a pool that exists; without one the agent editor owns the choice.
-          if (poolCapabilityDaemon) await moveAgent(builtinAgent.id, { kind: 'pool' })
-        } else if (target) {
-          await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: target.daemonId })
-        }
+        if (target) await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: target.daemonId })
       }
       const patch = () => updateAgent(builtinAgent.id, { runtime, ...(model ? { model } : {}) })
       // A deferred-runtime preset must set the runtime FIRST (the CP rejects a move on a
@@ -268,18 +253,6 @@ export default function OnboardingView() {
           finishing={finishing}
           err={saveErr}
           onNext={() => (lastStepExists ? setStep('run') : void finish())}
-        />
-      ) : choice === 'pool' ? (
-        <PoolRuntimeStep
-          stepLabel={`Step ${total} of ${total}`}
-          capabilityDaemon={poolCapabilityDaemon}
-          initial={builtinAgent ? { runtime: builtinAgent.runtime, model: builtinAgent.model } : undefined}
-          saving={saving || finishing}
-          err={saveErr}
-          onBack={backFrom('run') ? () => setStep(backFrom('run')!) : undefined}
-          onFinish={async (runtime, model) => {
-            if (await saveAgentSetup(runtime, model, 'pool')) void finish()
-          }}
         />
       ) : (
         <DaemonStep
@@ -529,63 +502,6 @@ function SaveError({ err }: { err: string | null }) {
       <Icon name="alert-triangle" size={15} className="mt-[1px] flex-none" />
       <span>{err}</span>
     </div>
-  )
-}
-
-// ── last step, pool path: choose what the pool should run ─────────────────────────────
-function PoolRuntimeStep({
-  stepLabel,
-  capabilityDaemon,
-  initial,
-  saving,
-  err,
-  onBack,
-  onFinish
-}: {
-  stepLabel: string
-  /** A pool member whose REPORTED runtimes/models seed the pickers; never a placement. */
-  capabilityDaemon?: DaemonRow
-  initial?: { runtime?: string; model?: string }
-  saving: boolean
-  err: string | null
-  onBack?: () => void
-  onFinish: (runtime: string, model: string) => void
-}) {
-  const rm = useRuntimeModel(capabilityDaemon, initial)
-  return (
-    <StepFrame
-      stepLabel={stepLabel}
-      title="Choose runtime"
-      sub={`What the agent runs on ${poolLabel()}.`}
-      footer={
-        <>
-          {onBack && (
-            <Button variant="ghost" disabled={saving} onClick={onBack}>
-              Back
-            </Button>
-          )}
-          <div className="flex-1" />
-          <Button
-            disabled={saving || !rm.effectiveRuntime}
-            onClick={() => onFinish(rm.effectiveRuntime, rm.selectedModel)}
-          >
-            <Icon name="check" size={15} />
-            {saving ? 'Finishing…' : 'Finish'}
-          </Button>
-        </>
-      }
-    >
-      <div className="mt-[26px]">
-        <RuntimeModelFields rm={rm} />
-      </div>
-      <div className="mt-4 flex items-center gap-[10px] rounded-md bg-(--surface-sunken) px-[14px] py-3">
-        <Icon name="boxes" size={15} color="var(--text-tertiary)" />
-        <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-          Runs on <span className="text-(--text-primary)">{poolLabel()}</span> — nothing to install.
-        </span>
-      </div>
-      <SaveError err={err} />
-    </StepFrame>
   )
 }
 

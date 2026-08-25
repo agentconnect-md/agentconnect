@@ -317,6 +317,23 @@ describe('PATCH /orgs/:id', () => {
     }
   })
 
+  it('ratchets gettingStartedStep forward only — a stale lower PATCH never regresses it', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const fresh = (await (await app.inject({ method: 'GET', url: ORG })).json()) as { gettingStartedStep: number }
+      expect(fresh.gettingStartedStep).toBe(0)
+      const forward = await app.inject({ method: 'PATCH', url: ORG, payload: { gettingStartedStep: 4 } })
+      expect(forward.statusCode).toBe(200)
+      expect((forward.json() as { gettingStartedStep: number }).gettingStartedStep).toBe(4)
+      // A stale tab/device still on an older position must not move shared progress back.
+      const stale = await app.inject({ method: 'PATCH', url: ORG, payload: { gettingStartedStep: 2 } })
+      expect(stale.statusCode).toBe(200)
+      expect((stale.json() as { gettingStartedStep: number }).gettingStartedStep).toBe(4)
+    } finally {
+      await close()
+    }
+  })
+
   it('403s for a non-owner and 404s for a non-member', async () => {
     // Make the devAuth principal a mere collaborator of a second org…
     const other = await prisma.org.create({ data: { name: 'Other', slug: 'other' } })

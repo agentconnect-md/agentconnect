@@ -2280,6 +2280,8 @@ export const OrgDto = z.object({
   defaultAgentVisibility: AgentCallPolicyEnum,
   /** Console onboarding wizard done (finish OR skip) — an owner of a false org lands in the wizard. */
   onboardingCompleted: z.boolean(),
+  /** Getting-started tutorial position: checklist steps passed (completed or skipped via Next). */
+  gettingStartedStep: z.number().int(),
   /** Resolved URL for an uploaded `image` org icon (object-store public URL); null for
    *  glyph/default (the console renders those locally) or when no store is configured. */
   iconUrl: z.string().nullable(),
@@ -2314,7 +2316,11 @@ export const UpdateOrgBody = z
     // Seeds both inbound and outbound policies for future agents only.
     defaultAgentVisibility: AgentCallPolicyEnum.optional(),
     // One-way: the onboarding wizard marks the org onboarded on finish or skip.
-    onboardingCompleted: z.literal(true).optional()
+    onboardingCompleted: z.literal(true).optional(),
+    // Getting-started tutorial position — the console's drawer advances it as steps
+    // complete or are skipped via Next. Monotonic: the DB clamps to max(stored, sent),
+    // so a stale tab/device can never move shared progress backward.
+    gettingStartedStep: z.number().int().min(0).max(100).optional()
   })
   .refine(
     (b) =>
@@ -2322,7 +2328,8 @@ export const UpdateOrgBody = z
       b.slug !== undefined ||
       b.icon !== undefined ||
       b.defaultAgentVisibility !== undefined ||
-      b.onboardingCompleted !== undefined,
+      b.onboardingCompleted !== undefined ||
+      b.gettingStartedStep !== undefined,
     {
       message: 'nothing to update'
     }

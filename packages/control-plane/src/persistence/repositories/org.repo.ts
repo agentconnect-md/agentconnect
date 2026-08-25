@@ -64,6 +64,7 @@ export class PgOrgRepo implements OrgRepo {
       icon: parseAgentIcon(m.org.icon),
       defaultAgentVisibility: m.org.defaultAgentVisibility as AgentCallPolicy,
       onboardingCompleted: m.org.onboardingCompleted,
+      gettingStartedStep: m.org.gettingStartedStep,
       role: m.role as OrgMemberRole,
       memberCount: m.org._count.members,
       daemonCount: m.org._count.daemons,
@@ -122,6 +123,7 @@ export class PgOrgRepo implements OrgRepo {
       icon: parseAgentIcon(org.icon),
       defaultAgentVisibility: org.defaultAgentVisibility as AgentCallPolicy,
       onboardingCompleted: org.onboardingCompleted,
+      gettingStartedStep: org.gettingStartedStep,
       role: 'owner',
       memberCount: 1,
       daemonCount: 0,
@@ -138,20 +140,31 @@ export class PgOrgRepo implements OrgRepo {
       icon?: AgentIcon | null
       defaultAgentVisibility?: AgentCallPolicy
       onboardingCompleted?: boolean
+      gettingStartedStep?: number
     }
   ): Promise<{ id: string; name: string | null; slug: string }> {
-    const org = await this.db.org.update({
-      where: { id: orgId },
-      data: {
-        ...(patch.name !== undefined ? { name: patch.name } : {}),
-        ...(patch.slug !== undefined ? { slug: patch.slug } : {}),
-        ...(patch.icon !== undefined
-          ? { icon: patch.icon === null ? Prisma.JsonNull : (patch.icon as Prisma.InputJsonValue) }
-          : {}),
-        ...(patch.defaultAgentVisibility !== undefined ? { defaultAgentVisibility: patch.defaultAgentVisibility } : {}),
-        ...(patch.onboardingCompleted !== undefined ? { onboardingCompleted: patch.onboardingCompleted } : {})
-      }
-    })
+    // Monotonic at the DB boundary: the step records cross-device tutorial progress, and
+    // a stale tab that still sees an older position must never move the shared row
+    // backward — one guarded statement, so concurrent writes can only ratchet forward.
+    if (patch.gettingStartedStep !== undefined) {
+      await this.db.org.updateMany({
+        where: { id: orgId, gettingStartedStep: { lt: patch.gettingStartedStep } },
+        data: { gettingStartedStep: patch.gettingStartedStep }
+      })
+    }
+    const data = {
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.slug !== undefined ? { slug: patch.slug } : {}),
+      ...(patch.icon !== undefined
+        ? { icon: patch.icon === null ? Prisma.JsonNull : (patch.icon as Prisma.InputJsonValue) }
+        : {}),
+      ...(patch.defaultAgentVisibility !== undefined ? { defaultAgentVisibility: patch.defaultAgentVisibility } : {}),
+      ...(patch.onboardingCompleted !== undefined ? { onboardingCompleted: patch.onboardingCompleted } : {})
+    }
+    const org =
+      Object.keys(data).length > 0
+        ? await this.db.org.update({ where: { id: orgId }, data })
+        : await this.db.org.findUniqueOrThrow({ where: { id: orgId }, select: { id: true, name: true, slug: true } })
     return { id: org.id, name: org.name, slug: org.slug }
   }
 

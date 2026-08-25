@@ -142,7 +142,13 @@ interface OrgContextValue {
   /** Update org settings (owner-only server-side), then re-sync the URL if needed. */
   updateOrg: (
     orgId: string,
-    patch: { name?: string; slug?: string; defaultAgentVisibility?: AgentCallPolicy; onboardingCompleted?: true }
+    patch: {
+      name?: string
+      slug?: string
+      defaultAgentVisibility?: AgentCallPolicy
+      onboardingCompleted?: true
+      gettingStartedStep?: number
+    }
   ) => Promise<void>
   /** Delete an org (owner-only; 409 while it has daemons). The console then
    *  moves to a remaining org — or to org onboarding when that was the last one. */
@@ -266,7 +272,13 @@ export function OrgProvider({ children }: { children: ReactNode }) {
   const updateOrg = useCallback(
     async (
       orgId: string,
-      patch: { name?: string; slug?: string; defaultAgentVisibility?: AgentCallPolicy; onboardingCompleted?: true }
+      patch: {
+        name?: string
+        slug?: string
+        defaultAgentVisibility?: AgentCallPolicy
+        onboardingCompleted?: true
+        gettingStartedStep?: number
+      }
     ) => {
       const updated = await apiUpdateOrg(orgId, patch)
       // Record the new slug BEFORE the list refreshes — the URL reconciliation
