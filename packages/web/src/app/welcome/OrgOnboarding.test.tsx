@@ -45,7 +45,7 @@ const render = async () => {
 }
 
 const slugInput = () => host.querySelector<HTMLInputElement>('input.mono')!
-const createButton = () => [...host.querySelectorAll('button')].find((b) => /Create organization/.test(b.textContent!))!
+const createButton = () => [...host.querySelectorAll('button')].find((b) => /Continue/.test(b.textContent!))!
 
 const type = async (el: HTMLInputElement, value: string) => {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
@@ -92,16 +92,34 @@ describe('org onboarding — who belongs here', () => {
     expect(mocks.replace).toHaveBeenCalledWith('/')
   })
 
-  it('renders the form for an admitted user with no org, and enters the org it creates', async () => {
+  it('renders step 1 for an admitted user with no org, and continues into the org wizard', async () => {
     mocks.createOrg.mockResolvedValue({ id: 'org_1', slug: 'acme' })
     await render()
     expect(mocks.replace).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('Step 1 of 2')
+    expect(host.textContent).toContain('Create your organization')
 
     await type(slugInput(), 'acme')
     await act(async () => createButton().click())
 
     expect(mocks.createOrg).toHaveBeenCalledWith({ slug: 'acme', name: undefined })
-    expect(mocks.replace).toHaveBeenCalledWith('/acme/home')
+    expect(mocks.replace).toHaveBeenCalledWith('/acme/onboarding')
+  })
+
+  it('?new=1 lets someone who already has orgs create another instead of bouncing', async () => {
+    window.history.replaceState(null, '', '/welcome?new=1')
+    mocks.access = { waitlistMode: false, status: 'active', activated: true, orgCount: 2, email: null }
+    mocks.createOrg.mockResolvedValue({ id: 'org_2', slug: 'second' })
+    await render()
+    expect(mocks.replace).not.toHaveBeenCalled()
+    // A deliberate extra-org visit gets a way back to the console.
+    const back = [...host.querySelectorAll('button')].find((b) => /Back/.test(b.textContent!))!
+    expect(back).toBeTruthy()
+
+    await type(slugInput(), 'second')
+    await act(async () => createButton().click())
+    expect(mocks.replace).toHaveBeenCalledWith('/second/onboarding')
+    window.history.replaceState(null, '', '/welcome')
   })
 
   it('refuses an empty or malformed URL name without calling the CP', async () => {

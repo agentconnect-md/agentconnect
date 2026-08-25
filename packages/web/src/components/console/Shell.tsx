@@ -190,7 +190,7 @@ function RailAccount({
   activeOrg,
   setActiveOrg,
   orgPath,
-  openModal,
+  onCreateOrg,
   canCreateOrg,
   theme,
   onToggleTheme,
@@ -202,7 +202,8 @@ function RailAccount({
   activeOrg: OrgDto | null
   setActiveOrg: (id: string) => void
   orgPath: (path: string) => string
-  openModal: (kind: 'createOrg') => void
+  /** Routes to /welcome?new=1 — org creation is step 1 of the onboarding flow. */
+  onCreateOrg: () => void
   canCreateOrg: boolean
   theme: Theme
   onToggleTheme: () => void
@@ -285,7 +286,7 @@ function RailAccount({
                 className="dmi"
                 onClick={() => {
                   setOpen(false)
-                  openModal('createOrg')
+                  onCreateOrg()
                 }}
               >
                 <Icon name="plus" size={15} color="var(--text-tertiary)" />
@@ -359,6 +360,9 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
   // (`/acme/agents` → `/agents`); hrefs go the other way via orgPath().
   const barePath = subPath(pathname, typeof params.slug === 'string' ? decodeURIComponent(params.slug) : '-')
   const router = useRouter()
+  // Creating an org is step 1 of the onboarding flow — the menu entries route there
+  // (?new=1 marks a deliberate extra-org visit so /welcome doesn't bounce back).
+  const goCreateOrg = () => router.push('/welcome?new=1')
   // Rail-footer help popover + the shortcuts modal it can open.
   const [helpMenu, setHelpMenu] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -716,7 +720,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                     activeOrg={activeOrg}
                     setActiveOrg={setActiveOrg}
                     orgPath={orgPath}
-                    openModal={openModal}
+                    onCreateOrg={goCreateOrg}
                     canCreateOrg={canCreateOrg}
                     theme={theme}
                     onToggleTheme={toggleTheme}
@@ -990,7 +994,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                 orgs={orgs}
                 activeOrg={activeOrg}
                 setActiveOrg={setActiveOrg}
-                openModal={openModal}
+                onCreateOrg={goCreateOrg}
                 canCreateOrg={canCreateOrg}
                 onOpenOrg={() => setMobileSheet('org')}
                 onClose={closeSheets}
@@ -1138,7 +1142,7 @@ function MobileSheets({
   orgs,
   activeOrg,
   setActiveOrg,
-  openModal,
+  onCreateOrg,
   canCreateOrg,
   onOpenOrg,
   onClose
@@ -1149,7 +1153,7 @@ function MobileSheets({
   orgs: OrgDto[]
   activeOrg: OrgDto | null
   setActiveOrg: (id: string) => void
-  openModal: (kind: 'createOrg') => void
+  onCreateOrg: () => void
   canCreateOrg: boolean
   onOpenOrg: () => void
   onClose: () => void
@@ -1241,7 +1245,7 @@ function MobileSheets({
                   className="msheet-row"
                   onClick={() => {
                     onClose()
-                    openModal('createOrg')
+                    onCreateOrg()
                   }}
                 >
                   <span className="msheet-orgsq dashed">

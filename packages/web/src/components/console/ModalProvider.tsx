@@ -27,7 +27,6 @@ import DeleteAgentModal from './modals/DeleteAgentModal'
 import EditAgentModal, { type EditAgentSection } from './modals/EditAgentModal'
 import EditDescriptionModal from './modals/EditDescriptionModal'
 import EditProfileModal from './modals/EditProfileModal'
-import CreateOrgModal from './modals/CreateOrgModal'
 import EditOrgModal from './modals/EditOrgModal'
 import GroupModal from './modals/GroupModal'
 import DeleteGroupModal from './modals/DeleteGroupModal'
@@ -48,7 +47,6 @@ export type ModalKind =
   | 'editAgent'
   | 'editAgentDesc'
   | 'editProfile'
-  | 'createOrg'
   | 'editOrg'
   | 'group'
   | 'deleteGroup'
@@ -192,7 +190,6 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               <EditDescriptionModal agent={open.target as Agent} onClose={close} />
             )}
             {open.kind === 'editProfile' && <EditProfileModal onClose={close} />}
-            {open.kind === 'createOrg' && <CreateOrgModal onClose={close} />}
             {open.kind === 'editOrg' && <EditOrgModal onClose={close} />}
           </div>
         </div>

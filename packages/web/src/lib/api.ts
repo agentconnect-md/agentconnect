@@ -1244,6 +1244,8 @@ export interface OrgDto {
   memberCount: number
   /** Registered daemons in this org (any status); undefined on older CPs. */
   daemonCount?: number
+  /** Onboarding wizard done (finish OR skip); undefined on older CPs ⇒ treat as done. */
+  onboardingCompleted?: boolean
   createdAt: string // ISO-8601
 }
 
@@ -4407,6 +4409,8 @@ export async function updateOrg(
     slug?: string
     icon?: AgentIcon | null
     defaultAgentVisibility?: AgentCallPolicy
+    /** One-way — the onboarding wizard sets it on finish or skip. */
+    onboardingCompleted?: true
   }
 ): Promise<OrgDto> {
   return apiPatch<OrgDto>(`/orgs/${encodeURIComponent(orgId)}`, patch)

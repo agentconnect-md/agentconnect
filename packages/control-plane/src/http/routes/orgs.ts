@@ -42,6 +42,7 @@ function toDto(o: OrgRecord, deps: HttpDeps): OrgDtoT {
     slug: o.slug,
     icon: o.icon,
     defaultAgentVisibility: o.defaultAgentVisibility,
+    onboardingCompleted: o.onboardingCompleted,
     // Only `image` org icons resolve to a URL (object-store public URL); glyph/default
     // render locally in the console. Cache-busted by the org's updatedAt.
     iconUrl: o.icon?.kind === 'image' ? resolveOrgIconUrl(o.id, o.icon, bases, o.updatedAt.getTime()) : null,

@@ -4793,10 +4793,12 @@ export interface OrgRecord {
   icon: AgentIcon | null
   /** Default applied to both directional policies of newly created agents. */
   defaultAgentVisibility: AgentCallPolicy
+  /** Console onboarding wizard done (finish OR skip) — owners of a false org get the wizard. */
+  onboardingCompleted: boolean
   /** The asking user's role in it. */
   role: OrgMemberRole
   memberCount: number
-  /** Registered daemons (any status) — the console's cross-org onboarding signal. */
+  /** Daemons that ever connected (provisioned-only rows excluded) — the console's onboarding signal. */
   daemonCount: number
   createdAt: Date
   /** Last update — the icon endpoint's `?v=` cache-buster for an uploaded org icon. */
@@ -4954,6 +4956,7 @@ export interface OrgRepo {
       slug?: string
       icon?: AgentIcon | null
       defaultAgentVisibility?: AgentCallPolicy
+      onboardingCompleted?: boolean
     }
   ): Promise<{ id: string; name: string | null; slug: string }>
   /** Set the org's console icon descriptor (the upload/delete path). Bumps `updatedAt`

@@ -1357,6 +1357,10 @@
     align-items: center;
     justify-content: space-between;
   }
+  .inp:focus-within {
+    border-color: var(--border-focus);
+    box-shadow: 0 0 0 3px var(--brand-ring);
+  }
   .inp.ph {
     color: var(--text-disabled);
   }
@@ -1631,6 +1635,11 @@
   .dsbtn:focus-visible {
     outline: none;
     box-shadow: 0 0 0 3px var(--brand-ring);
+  }
+  .dsbtn:disabled {
+    opacity: 0.45;
+    cursor: default;
+    pointer-events: none;
   }
   .dsbtn.sm {
     height: 30px;

@@ -301,6 +301,22 @@ describe('PATCH /orgs/:id', () => {
     }
   })
 
+  it('marks onboarding completed (finish/skip) and reads it back false-by-default', async () => {
+    const { app, close } = buildHttpApp(prisma)
+    try {
+      const fresh = (await (await app.inject({ method: 'GET', url: ORG })).json()) as { onboardingCompleted: boolean }
+      expect(fresh.onboardingCompleted).toBe(false)
+      const res = await app.inject({ method: 'PATCH', url: ORG, payload: { onboardingCompleted: true } })
+      expect(res.statusCode).toBe(200)
+      expect((res.json() as { onboardingCompleted: boolean }).onboardingCompleted).toBe(true)
+      // One-way flag: the wizard only ever sets it — unsetting is not part of the body schema.
+      const unset = await app.inject({ method: 'PATCH', url: ORG, payload: { onboardingCompleted: false } })
+      expect(unset.statusCode).toBe(400)
+    } finally {
+      await close()
+    }
+  })
+
   it('403s for a non-owner and 404s for a non-member', async () => {
     // Make the devAuth principal a mere collaborator of a second org…
     const other = await prisma.org.create({ data: { name: 'Other', slug: 'other' } })
