@@ -180,8 +180,15 @@ describe('the usage row', () => {
     // what blanked all three of these before, so each one is asserted.
     const host = await render()
     const chips = [...host.querySelectorAll('[data-tx-agent]')]
-    // Sub-cent charges keep their significant digits rather than all rounding to `$0.00`.
-    expect(chips.map((c) => c.textContent)).toEqual(['reviewer$0.006823', 'reviewer$0.01522', 'reviewer$0.001036'])
+    // The chip shows only the name; the per-agent amount is on hover (`title`) and mirrored to
+    // `aria-label`. Sub-cent amounts keep significant digits rather than rounding to `$0.00`.
+    expect(chips.map((c) => c.textContent)).toEqual(['reviewer', 'reviewer', 'reviewer'])
+    expect(chips.map((c) => c.getAttribute('title'))).toEqual([
+      'reviewer — $0.006823',
+      'reviewer — $0.01522',
+      'reviewer — $0.001036'
+    ])
+    expect(chips[0]!.getAttribute('aria-label')).toBe('reviewer — $0.006823')
     expect(host.querySelector('[data-tx-agent-default]')).toBeNull()
   })
 })

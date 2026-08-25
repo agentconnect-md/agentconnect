@@ -1115,42 +1115,51 @@ export default function BillingView() {
                             const rest = named.length - shown.length
                             return (
                               <>
-                                {[...shown, ...(rollup ? [rollup] : [])].map((chip) => (
-                                  <span
-                                    key={chip.key}
-                                    data-tx-agent="true"
-                                    className="inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] pr-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
-                                  >
-                                    <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
-                                      {chip.agent ? (
-                                        <AgentIconView icon={chip.agent.icon} runtime={chip.agent.runtime} size={17} />
-                                      ) : (
-                                        // The default avatar. This viewer may not learn which
-                                        // agents these are, how many, or how the amount splits
-                                        // between them — only that the rest of the charge is
-                                        // theirs. Labelled for assistive tech, since the glyph
-                                        // alone says nothing.
-                                        <span
-                                          data-tx-agent-default="true"
-                                          role="img"
-                                          aria-label="Agents you don’t have access to"
-                                          className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
-                                        >
-                                          <Icon name="bot" size={10} strokeWidth={2} />
-                                        </span>
+                                {/* The per-agent amount lives on HOVER (`title`), not in the
+                                    chip — eight visible dollar figures per row drowned the row's
+                                    own amount. `aria-label` carries the same text, so a reader
+                                    that cannot hover still gets it. A product trade: touch gets
+                                    the row total only. */}
+                                {[...shown, ...(rollup ? [rollup] : [])].map((chip) => {
+                                  const share = chip.agent
+                                    ? `${agentLabel(chip.agent)} — ${fmtDecimalUsd(chip.amount)}`
+                                    : `Agents you don’t have access to — ${fmtDecimalUsd(chip.amount)}`
+                                  return (
+                                    <span
+                                      key={chip.key}
+                                      data-tx-agent="true"
+                                      title={share}
+                                      aria-label={share}
+                                      className={`inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) ${
+                                        chip.agent ? 'pr-[7px]' : ''
+                                      }`}
+                                    >
+                                      <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
+                                        {chip.agent ? (
+                                          <AgentIconView
+                                            icon={chip.agent.icon}
+                                            runtime={chip.agent.runtime}
+                                            size={17}
+                                          />
+                                        ) : (
+                                          // The default avatar. This viewer may not learn which
+                                          // agents these are, how many, or how the amount splits
+                                          // between them — only that the rest of the charge is
+                                          // theirs.
+                                          <span
+                                            data-tx-agent-default="true"
+                                            className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
+                                          >
+                                            <Icon name="bot" size={10} strokeWidth={2} />
+                                          </span>
+                                        )}
+                                      </span>
+                                      {chip.agent && (
+                                        <span className="max-w-[110px] truncate">{agentLabel(chip.agent)}</span>
                                       )}
                                     </span>
-                                    {chip.agent && (
-                                      <span className="max-w-[110px] truncate">{agentLabel(chip.agent)}</span>
-                                    )}
-                                    {/* Visible, not a tooltip: the console's tooltip ignores
-                                        touch and this chip is not focusable, so a `title` would
-                                        put the amount out of reach on mobile and by keyboard. */}
-                                    <span className="mono flex-none text-(--text-tertiary)">
-                                      {fmtDecimalUsd(chip.amount)}
-                                    </span>
-                                  </span>
-                                ))}
+                                  )
+                                })}
                                 {rest > 0 && (
                                   <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{rest}</span>
                                 )}
