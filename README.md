@@ -54,7 +54,6 @@
   <a href="#get-started">Get started</a> ·
   <a href="#community">Community</a> ·
   <a href="#why-agentconnect">Why AgentConnect?</a> ·
-  <a href="#build-your-stack">Build your stack</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#development">Development</a> ·
   <a href="#explore">Explore</a>
@@ -157,19 +156,6 @@ brings them into the team's shared workflows:
   and other ACP-compatible agents side by side.
 - **Stay in control.** Self-host the Apache-2.0 stack, run agents in your
   environment, and keep execution and workspaces under your control.
-
-## Build your stack
-
-| Layer                    | Options                                                                                                          |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| **Agent runtimes**       | Claude Code, Codex, Grok Build, DeepSeek, Pi, and other ACP-compatible runtimes                                  |
-| **Channels**             | Slack, Telegram, Discord, Lark / Feishu, and webchat                                                             |
-| **Triggers**             | GitHub and GitLab events, generic webhooks, and schedules                                                        |
-| **Memory**               | AgentConnect-managed memory, supported runtime-native memory, external providers, or Off                         |
-| **Tools and apps**       | Custom MCP providers and OpenConnector-backed services                                                           |
-| **Knowledge and skills** | Reviewed organization knowledge, immutable managed skills, and Git-based skill sources with per-agent enablement |
-| **Team controls**        | Agent access, session visibility, linked social identities, repository and tool access, and agent visibility     |
-| **Agent configuration**  | Independent runtime, model, workspace, credentials, sandbox policy, and placement per agent                      |
 
 One place to operate your whole fleet—agents, sessions, schedules, tools,
 knowledge, and daemons:
