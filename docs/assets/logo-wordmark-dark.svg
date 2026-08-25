@@ -1,15 +1,15 @@
 <svg width="398" height="76" viewBox="5 5 199 38" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AgentConnect">
   <!-- Generated lockup: the header's own chase, on a curve the console spinner does not share, plus the wordmark outlined so it needs no webfont. -->
   <style>
-    .ac-spinner polygon{opacity:.22;animation-duration:1.93s;animation-timing-function:linear;animation-iteration-count:infinite}
+    .ac-spinner polygon{opacity:.26;animation-duration:2.66s;animation-timing-function:linear;animation-iteration-count:infinite}
     .ac-spinner polygon:nth-of-type(1){animation-name:ac-sprint1}
     .ac-spinner polygon:nth-of-type(2){animation-name:ac-sprint2}
     .ac-spinner polygon:nth-of-type(3){animation-name:ac-sprint3}
     .ac-spinner polygon:nth-of-type(4){animation-name:ac-sprint4}
-    @keyframes ac-sprint1{0%{opacity:.22}13.1%{opacity:1}62.2%{opacity:1}100%{opacity:.22}}
-    @keyframes ac-sprint2{0%,9.1%{opacity:.22}22.2%{opacity:1}62.2%{opacity:1}100%{opacity:.22}}
-    @keyframes ac-sprint3{0%,18.1%{opacity:.22}31.2%{opacity:1}62.2%{opacity:1}100%{opacity:.22}}
-    @keyframes ac-sprint4{0%,27.2%{opacity:.22}40.3%{opacity:1}62.2%{opacity:1}100%{opacity:.22}}
+    @keyframes ac-sprint1{0%{opacity:.26}9.5%{opacity:1}45.1%{opacity:1}72.6%{opacity:.26}100%{opacity:.26}}
+    @keyframes ac-sprint2{0%,6.6%{opacity:.26}16.1%{opacity:1}51.7%{opacity:1}79.1%{opacity:.26}100%{opacity:.26}}
+    @keyframes ac-sprint3{0%,13.2%{opacity:.26}22.6%{opacity:1}58.3%{opacity:1}85.7%{opacity:.26}100%{opacity:.26}}
+    @keyframes ac-sprint4{0%,19.7%{opacity:.26}29.2%{opacity:1}64.9%{opacity:1}92.3%{opacity:.26}100%{opacity:.26}}
     @media (prefers-reduced-motion:reduce){.ac-spinner polygon{animation:none;opacity:.7}}
   </style>
   <g class="ac-spinner">
