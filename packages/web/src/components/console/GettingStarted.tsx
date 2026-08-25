@@ -361,9 +361,10 @@ export default function GettingStarted() {
             </div>
 
             <div className="flex flex-none items-center border-t border-(--border-subtle) bg-(--surface-app) px-4 py-3">
-              {/* Closes the whole Get Started (reopen from the account menu). */}
+              {/* Dismisses the WHOLE Get Started (reopen from the account menu) — unlike
+                  the header's ×, which only closes the drawer and keeps the pill. */}
               <Button variant="ghost" size="sm" onClick={skip}>
-                Close
+                Skip for now
               </Button>
               <div className="flex-1" />
               <Button size="sm" onClick={() => advance(step + 1)}>
