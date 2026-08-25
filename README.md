@@ -53,6 +53,7 @@
   <a href="#why-agentconnect">Why AgentConnect?</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="#community">Community</a> ·
+  <a href="#contributing">Contributing</a> ·
   <a href="#architecture">Architecture</a>
 </p>
 
@@ -159,8 +160,13 @@ If AgentConnect looks useful, here's how you can support the project:
   report bugs or suggest features.
 - 📺 Follow updates on [X](https://x.com/getAgentConnect) and
   [YouTube](https://www.youtube.com/@agentconnect-md).
-- 🧑‍💻 [Contribute](CONTRIBUTING.md) — we'd love your help. The guide covers
-  development setup, pull request conventions, and the monorepo layout.
+
+## Contributing
+
+Contributions are welcome. Development needs Node >= 24.12.0 and pnpm 11;
+`pnpm install && pnpm dev` runs every package in watch mode. The
+[contributing guide](CONTRIBUTING.md) covers the full setup, the pull request
+conventions, the monorepo layout, and the deeper design documentation.
 
 ## Architecture
 
