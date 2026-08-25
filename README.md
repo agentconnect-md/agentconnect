@@ -53,9 +53,8 @@
   <a href="#why-agentconnect">Why AgentConnect?</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="#community">Community</a> ·
-  <a href="#architecture">Architecture</a> ·
-  <a href="#development">Development</a> ·
-  <a href="#explore">Explore</a>
+  <a href="#contributing">Contributing</a> ·
+  <a href="#architecture">Architecture</a>
 </p>
 
 AgentConnect is an open-source platform where teams and multiple AI agents work
@@ -162,6 +161,19 @@ If AgentConnect looks useful, here's how you can support the project:
 - 📺 Follow updates on [X](https://x.com/getAgentConnect) and
   [YouTube](https://www.youtube.com/@agentconnect-md).
 
+## Contributing
+
+Contributions are welcome. Development needs Node >= 24.12.0 and pnpm 11;
+`pnpm install && pnpm dev` runs every package in watch mode. The
+[contributing guide](CONTRIBUTING.md) covers the full setup, the pull request
+conventions, the monorepo layout, and the deeper design documentation.
+
+Thanks to everyone who has already contributed:
+
+<a href="https://github.com/agentconnect-md/agentconnect/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=agentconnect-md/agentconnect" height="40" alt="AgentConnect contributors" />
+</a>
+
 ## Architecture
 
 ![AgentConnect message paths between the platforms, daemons, relay, and Control Plane](docs/designs/daemon-centric-architecture.svg)
@@ -182,58 +194,6 @@ continue; new assignments and configuration changes resume after reconnection.
 See the
 [architecture design](docs/designs/daemon-centric-architecture.md) for the
 complete message paths, trust boundaries, and failure model.
-
-## Development
-
-Development requires Node >= 24.12.0 and pnpm 11. Docker is required for the Control
-Plane integration tests.
-
-```bash
-pnpm install
-pnpm dev          # run all packages in parallel
-pnpm build        # build all packages
-pnpm typecheck    # type-check all packages
-pnpm lint         # lint the workspace
-pnpm format:check # check formatting
-pnpm test         # test all packages
-
-# single package
-pnpm --filter @agentconnect.md/daemon dev
-pnpm --filter @agentconnect.md/control-plane dev
-pnpm --filter @agentconnect.md/web dev
-```
-
-For a complete local Control Plane and PostgreSQL development setup, follow the
-[Control Plane quickstart](packages/control-plane/README.md#local-dev-quickstart).
-
-## Monorepo layout
-
-This repository is a pnpm workspace. Product packages live under `packages/`:
-
-| Package                               | Path                                                         | Role                                                              |
-| ------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------- |
-| `@agentconnect.md/cli`                | [`packages/cli`](packages/cli)                               | Stable `agentconnect` entry point, daemon lifecycle, and upgrades |
-| `@agentconnect.md/connection`         | [`packages/connection`](packages/connection)                 | Shared WebSocket transport, correlation, backoff, and keepalive   |
-| `@agentconnect.md/control-plane`      | [`packages/control-plane`](packages/control-plane)           | Orchestration, registry, authentication, and Web UI BFF           |
-| `@agentconnect.md/daemon`             | [`packages/daemon`](packages/daemon)                         | Edge message processing and agent execution unit                  |
-| `@agentconnect.md/memory-plugin-mem0` | [`packages/memory-plugin-mem0`](packages/memory-plugin-mem0) | Mem0 Cloud and OSS memory-plugin profiles                         |
-| `@agentconnect.md/message`            | [`packages/message`](packages/message)                       | Pure platform message normalization                               |
-| `@agentconnect.md/protocol`           | [`packages/protocol`](packages/protocol)                     | Shared daemon, relay, and Control Plane wire contracts            |
-| `@agentconnect.md/relay`              | [`packages/relay`](packages/relay)                           | Callback ingress, webchat, and centralized MCP proxy              |
-| `@agentconnect.md/setup`              | [`packages/setup`](packages/setup)                           | Browser-based self-hosting and provider App administration        |
-| `@agentconnect.md/web`                | [`packages/web`](packages/web)                               | Next.js configuration and monitoring console                      |
-
-## Explore
-
-- [Public documentation](https://docs.agentconnect.md)
-- [Self-host AgentConnect OSS](https://docs.agentconnect.md/docs/oss-get-started)
-- [Architecture and detailed designs](docs/designs/)
-- [CLI and daemon lifecycle](docs/designs/cli-daemon-split.md)
-- [Setup Server](packages/setup/README.md)
-- [Daemon configuration](docs/designs/daemon-detailed-design.md)
-- [Config-file secrets](docs/config-file-secrets.md)
-- [Product conventions](docs/product-conventions.md)
-- [Add-on evaluation harness](evals/README.md)
 
 ## License
 
