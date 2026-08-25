@@ -320,6 +320,30 @@ export function SocialLoginMark({ target, size }: { target: SocialLoginTarget; s
   return <FcGoogle size={size} aria-hidden />
 }
 
+// The diamond's four facets — geometry + brand fills shared by the static logo, the
+// wordmark lockup, and the spinner, so the artwork exists in exactly one place.
+const FACETS = [
+  { points: '24,5 43,24 24,24', fill: '#f2c64a' },
+  { points: '43,24 24,43 24,24', fill: '#f4793a' },
+  { points: '24,43 5,24 24,24', fill: '#7c3ca2' },
+  { points: '5,24 24,5 24,24', fill: '#d83f96' }
+] as const
+
+// The opacity a facet rests at in the spinner — reused as the depth of the hover fade below.
+const FACET_DIM = 0.22
+
+// Point at one facet of the static diamond and only that facet fades, to FACET_DIM
+// (the literal is duplicated because Tailwind scans class strings, not values).
+function DiamondFacets() {
+  return (
+    <>
+      {FACETS.map((f) => (
+        <polygon key={f.points} points={f.points} fill={f.fill} className="transition-opacity hover:opacity-[0.22]" />
+      ))}
+    </>
+  )
+}
+
 export function Wordmark({ height = 36, inverse = false }: { height?: number; inverse?: boolean }) {
   const textFill = inverse ? '#ffffff' : '#3a2a4d'
   const accentFill = inverse ? '#ef7eb4' : '#c62a78'
@@ -332,10 +356,7 @@ export function Wordmark({ height = 36, inverse = false }: { height?: number; in
       role="img"
       aria-label="AgentConnect"
     >
-      <polygon points="24,5 43,24 24,24" fill="#f2c64a" />
-      <polygon points="43,24 24,43 24,24" fill="#f4793a" />
-      <polygon points="24,43 5,24 24,24" fill="#7c3ca2" />
-      <polygon points="5,24 24,5 24,24" fill="#d83f96" />
+      <DiamondFacets />
       <text
         x="58"
         y="31"
@@ -362,22 +383,19 @@ export function LogoMark({ size = 27 }: { size?: number }) {
       role="img"
       aria-label="AgentConnect"
     >
-      <polygon points="24,5 43,24 24,24" fill="#f2c64a" />
-      <polygon points="43,24 24,43 24,24" fill="#f4793a" />
-      <polygon points="24,43 5,24 24,24" fill="#7c3ca2" />
-      <polygon points="5,24 24,5 24,24" fill="#d83f96" />
+      <DiamondFacets />
     </svg>
   )
 }
 
 // Loading spinner: the four logo facets chase in opacity around the diamond.
-const SPIN = { dur: '1.4s', keyTimes: '0;0.18;0.7;1', values: '0.22;1;0.22;0.22' } as const
-const FACETS = [
-  { points: '24,5 43,24 24,24', fill: '#f2c64a', begin: '0s' },
-  { points: '43,24 24,43 24,24', fill: '#f4793a', begin: '0.175s' },
-  { points: '24,43 5,24 24,24', fill: '#7c3ca2', begin: '0.35s' },
-  { points: '5,24 24,5 24,24', fill: '#d83f96', begin: '0.525s' }
-] as const
+// `begin` is indexed by FACETS — one entry per facet, in that order, each an eighth of a cycle behind the last.
+const SPIN = {
+  dur: '1.4s',
+  keyTimes: '0;0.18;0.7;1',
+  values: `${FACET_DIM};1;${FACET_DIM};${FACET_DIM}`,
+  begin: ['0s', '0.175s', '0.35s', '0.525s']
+} as const
 
 export function Spinner({ size = 48 }: { size?: number }) {
   return (
@@ -389,13 +407,13 @@ export function Spinner({ size = 48 }: { size?: number }) {
       aria-label="Loading"
       xmlns="http://www.w3.org/2000/svg"
     >
-      {FACETS.map((f) => (
-        <polygon key={f.points} points={f.points} fill={f.fill} opacity="0.22">
+      {FACETS.map((f, i) => (
+        <polygon key={f.points} points={f.points} fill={f.fill} opacity={FACET_DIM}>
           <animate
             attributeName="opacity"
             dur={SPIN.dur}
             repeatCount="indefinite"
-            begin={f.begin}
+            begin={SPIN.begin[i]}
             keyTimes={SPIN.keyTimes}
             values={SPIN.values}
           />
