@@ -31,9 +31,8 @@
 </p>
 
 <p align="center">
-  <strong><a href="https://github.com/agentconnect-md/agentconnect">⭐ Star on GitHub</a></strong> ·
-  <strong><a href="https://docs.agentconnect.md">Documentation</a></strong> ·
   <strong><a href="https://agentconnect.md">Website</a></strong> ·
+  <strong><a href="https://docs.agentconnect.md">Documentation</a></strong> ·
   <strong><a href="https://agentconnect.md/blog">Blog</a></strong>
 </p>
 
