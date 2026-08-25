@@ -85,6 +85,15 @@ describe('useGsActions — the agent step', () => {
     expect(mocks.openModal).toHaveBeenCalledWith('editAgent', mocks.agents[0], { focusSection: 'basics' })
   })
 
+  // The offered pool is a placement target even before any member Pod registers — the
+  // editor shows Cloud (available or not); never send a pool-mode user to Add Daemon.
+  it('edits directly on the offered pool even with an empty fleet snapshot', async () => {
+    setFlags('daemon-pool')
+    await render()
+    act(() => run({ kind: 'agent' }))
+    expect(mocks.openModal).toHaveBeenCalledWith('editAgent', mocks.agents[0], { focusSection: 'basics' })
+  })
+
   it('falls back to the create dialog for an org with no agent row at all', async () => {
     mocks.agents = []
     await render()

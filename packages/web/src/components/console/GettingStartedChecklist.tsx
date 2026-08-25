@@ -44,7 +44,10 @@ export function useGsActions() {
   // (placement + runtime/model) rather than creating a new one — only a truly empty org
   // (no preset row) falls back to the create modal.
   const builtinAgent = agents.find((a) => a.builtin) ?? firstAgent
-  const placeableDaemons = featureFlagEnabled('daemon-pool') ? daemons : localDaemons(daemons)
+  // The offered pool is ITSELF a placement target, member Pods registered or not — the
+  // editor shows Cloud (available or unavailable); only self-hosted with zero machines
+  // needs the Add-daemon chain first.
+  const hasPlacementTarget = featureFlagEnabled('daemon-pool') || localDaemons(daemons).length > 0
 
   const runAction = useCallback(
     (action: GsAction) => {
@@ -56,11 +59,10 @@ export function useGsActions() {
           // Same chain the Agents / Agent detail "Add daemon" chips use (preset-agents.md
           // §3.4): with nothing to place onto the edit modal's picker would offer only "No
           // daemon", so mint one first and chain back into the edit dialog, where the
-          // fresh (and only) daemon is auto-preselected. Cloud counts only where the
-          // deployment offers it — the picker hides pool Pods otherwise.
-          return placeableDaemons.length === 0
-            ? openModal('daemon', builtinAgent, { focusSection: 'basics' })
-            : openModal('editAgent', builtinAgent, { focusSection: 'basics' })
+          // fresh (and only) daemon is auto-preselected.
+          return hasPlacementTarget
+            ? openModal('editAgent', builtinAgent, { focusSection: 'basics' })
+            : openModal('daemon', builtinAgent, { focusSection: 'basics' })
         case 'slack': {
           // The action targets the built-in preset; honor it — agents[0] is commonly an
           // older custom agent in backfilled orgs, and the manual fallback must not
@@ -91,7 +93,7 @@ export function useGsActions() {
           return router.push(orgPath('/settings#session-access'))
       }
     },
-    [openModal, router, orgPath, firstAgent, builtinAgent, agents, placeableDaemons]
+    [openModal, router, orgPath, firstAgent, builtinAgent, agents, hasPlacementTarget]
   )
 
   return { runAction, firstAgent }
