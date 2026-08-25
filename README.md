@@ -50,10 +50,9 @@
 </p>
 
 <p align="center">
-  <a href="#what-teams-do-with-agentconnect">Use cases</a> ·
+  <a href="#why-agentconnect">Why AgentConnect?</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="#community">Community</a> ·
-  <a href="#why-agentconnect">Why AgentConnect?</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#development">Development</a> ·
   <a href="#explore">Explore</a>
@@ -68,16 +67,18 @@ Give each agent a role, then let people and agents collaborate in shared
 conversations. Agents can call one another and remember what they learn, and
 work can begin from a message, issue, pull request, webhook, or schedule.
 
-Each agent can have its own model, workspace, memory, MCP servers, skills,
-repository access, and sandbox policy. Fine-grained controls separate who may
-use an agent from who may see its sessions, while one console keeps the team's
-agents, integrations, and permitted work in view.
-
 <p align="center">
   <a href="https://agentconnect.md"><img src="docs/assets/agents-across-channels.png" alt="People and agents working together in Slack, Telegram, and Discord conversations and in a GitHub pull request review" width="880" /></a>
 </p>
 
-## What teams do with AgentConnect
+## Why AgentConnect?
+
+An agent is more than a model API call. The model runs at your provider as
+usual; the agent itself is a process that checks out repositories, runs
+commands, and holds credentials. Your agents can touch real things. Something
+has to manage that.
+
+AgentConnect is that layer. Teams use it to:
 
 - **Triage issues together.** People and agents investigate in one shared
   thread, bring in the right specialists, and keep the fix and verification
@@ -91,10 +92,24 @@ agents, integrations, and permitted work in view.
   a GitHub subscription in Slack, webhooks, or schedules. Let agents assess the
   impact, prepare and test relevant updates, and bring them to the team for
   review.
-- **Customized code review.** Run a general reviewer on every pull request, then
-  bring in architecture or security reviewers only when a change needs them.
-  Each reviewer can use its own model, instructions, repository access, tools,
-  and sandbox policy.
+- **Run customized code review.** Run a general reviewer on every pull request,
+  then bring in architecture or security reviewers only when a change needs
+  them. Each reviewer can use its own model, instructions, repository access,
+  tools, and sandbox policy.
+
+Behind these workflows, every agent gets the model, workspace, memory, MCP
+servers, skills, repository access, and sandbox policy its role requires, and
+permissions separate who may use an agent, who may see its sessions, and which
+repositories, tools, and other agents it may reach. Agents remember what they
+learn as they go. And the Apache-2.0 stack is yours to self-host, with agent
+execution and workspaces staying in the environment you operate.
+
+One place to operate your whole fleet—agents, sessions, schedules, tools,
+knowledge, and daemons:
+
+<p align="center">
+  <a href="https://app.agentconnect.md"><img src="docs/assets/console-agents.gif" alt="AgentConnect console: touring the Agents, Sessions, Schedules, Tools & Skills, Knowledge, and Daemons views" width="880" /></a>
+</p>
 
 ## Get started
 
@@ -126,36 +141,6 @@ Questions or ideas? [Join the Slack community](https://slack.agentconnect.md),
 [open a GitHub issue](https://github.com/agentconnect-md/agentconnect/issues), or
 follow project updates on [X](https://x.com/getAgentConnect) and
 [YouTube](https://www.youtube.com/@agentconnect-md).
-
-## Why AgentConnect?
-
-An agent is more than a model API call. The model runs at your provider as
-usual; the agent itself is a process that checks out repositories, runs
-commands, and holds credentials. Your agents can touch real things. Something
-has to manage that.
-
-AgentConnect is that layer, built so a team can run many agents together:
-
-- **Learn as they go.** Give agents memory that carries across sessions and
-  channels—AgentConnect-managed, runtime-native, or an external provider—so
-  context accumulates for the team instead of vanishing with a terminal window.
-- **Configure each role independently.** Give every agent the model, workspace,
-  memory, MCP servers, skills, repository access, and sandbox policy its work
-  requires.
-- **Control access for people and agents.** Manage agent access separately from
-  session visibility, link supported social identities, and decide which
-  repositories, tools, and other agents each agent may reach.
-- **Stay provider-neutral.** Run Claude Code, Codex, Grok Build, DeepSeek, Pi,
-  and other ACP-compatible agents side by side.
-- **Stay in control.** Self-host the Apache-2.0 stack, run agents in your
-  environment, and keep execution and workspaces under your control.
-
-One place to operate your whole fleet—agents, sessions, schedules, tools,
-knowledge, and daemons:
-
-<p align="center">
-  <a href="https://app.agentconnect.md"><img src="docs/assets/console-agents.gif" alt="AgentConnect console: touring the Agents, Sessions, Schedules, Tools & Skills, Knowledge, and Daemons views" width="880" /></a>
-</p>
 
 ## Architecture
 
