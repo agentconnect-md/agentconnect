@@ -55,17 +55,18 @@ reported on the agent's bot in the console with the remedy.
 
 Any one of these is enough:
 
-- **Premium or Ultimate:** turn on **Allow top-level group Owners to create
-  service accounts** under **Admin → Settings → General → Account and limit**.
-  The installing user then provisions exactly as on GitLab.com. The setting
-  itself is Premium/Ultimate-only.
 - **Any tier, including Community Edition:** connect a GitLab account that is an
   **instance administrator**. No special handling — it is the same code path.
 
   One caveat: when **Admin Mode** is enabled, administrator API actions require
   the `admin_mode` token scope, which AgentConnect's OAuth application does not
-  and will not request. On an Admin-Mode instance the delegation setting above
+  and will not request. On an Admin-Mode instance the delegation setting below
   is the only path.
+
+- **Premium or Ultimate:** turn on **Allow top-level group Owners to create
+  service accounts** under **Admin → Settings → General → Account and limit**.
+  The installing user then provisions exactly as on GitLab.com. The setting
+  itself is Premium/Ultimate-only.
 
 **Free and Community Edition allow 100 service accounts per instance** (on
 GitLab.com Free the same limit is per top-level group). The population is
