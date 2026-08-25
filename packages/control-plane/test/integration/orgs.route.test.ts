@@ -214,6 +214,10 @@ describe('POST /orgs', () => {
       expect(malformed.statusCode).toBe(400)
       const reserved = await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { name: 'X', slug: 'agents' } })
       expect(reserved.statusCode).toBe(400)
+      // Including the pages that live OUTSIDE the org segment — org onboarding is
+      // where an org-less account is sent, so it cannot also be an org.
+      const welcome = await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { name: 'X', slug: 'welcome' } })
+      expect(welcome.statusCode).toBe(400)
       const dash = await app.inject({ method: 'POST', url: '/api/v1/orgs', payload: { name: 'X', slug: '-' } })
       expect(dash.statusCode).toBe(400) // the default org's reserved segment
     } finally {

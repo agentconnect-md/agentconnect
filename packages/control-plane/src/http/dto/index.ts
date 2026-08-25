@@ -2243,6 +2243,7 @@ const RESERVED_SLUGS = new Set([
   'profile',
   'login',
   'join',
+  'welcome', // the org-onboarding page a member-less account lands on
   'auth',
   'api',
   'orgs',
