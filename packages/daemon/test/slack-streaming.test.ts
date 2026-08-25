@@ -20,9 +20,9 @@ import { fakeSlackAppFactory } from './fakes/slack-app.js'
 /**
  * slack-streaming-turn-output.md (Layer 1). The invariants worth pinning are the ones the
  * design argues from rather than the plumbing: the answer rides ONE streaming message while
- * the transcript keeps its own copy, a streaming turn writes NEITHER status API (they share
- * one slot with the stream), a stopped stream is never revived, and every path that cannot
- * stream degrades to today's pipeline unchanged.
+ * the transcript keeps its own copy, a streaming turn writes the loading TEXT but never the
+ * session enum (the stream owns that), a stopped stream is never revived, and every path that
+ * cannot stream degrades to today's pipeline unchanged.
  */
 
 const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }) as never
@@ -102,6 +102,109 @@ describe('OutputConverger streaming axis', () => {
     expect(cards).toEqual([{ type: 'task_update', id: 't1', title: 'Read file', status: 'in_progress' }])
   })
 
+  it('labels the collapsed container while working and settles it to what happened', () => {
+    const converger = streaming('medium')
+    // The container opens with an honest working label…
+    expect(converger.onStart()).toEqual([{ kind: 'stream-start' }])
+    expect(appends(converger.streamUpdate())).toEqual([{ type: 'plan_update', title: 'Working…' }])
+    converger.onUpdate(tool('t1', 'Read file', 'completed'))
+    converger.onUpdate(tool('t2', 'Run tests', 'completed'))
+    converger.streamUpdate()
+    // …and settles to a counted summary — deterministic, no model call.
+    const plans = appends(converger.onFinal(attribution())).filter((c) => c.type === 'plan_update')
+    expect(plans).toEqual([{ type: 'plan_update', title: 'Completed 2 steps' }])
+  })
+
+  it('names a failed step in the closing label rather than folding it into a success', () => {
+    const converger = streaming('medium')
+    converger.onStart()
+    converger.onUpdate(tool('t1', 'Read file', 'completed'))
+    converger.onUpdate(tool('t2', 'Run tests', 'failed'))
+    converger.streamUpdate()
+    const plans = appends(converger.onFinal(attribution())).filter((c) => c.type === 'plan_update')
+    expect(plans).toEqual([{ type: 'plan_update', title: 'Completed 2 steps · 1 failed' }])
+  })
+
+  it('says Done when the turn ran no steps at all', () => {
+    const converger = streaming('medium')
+    converger.onStart()
+    converger.onUpdate(chunk('just an answer'))
+    const plans = appends(converger.onFinal(attribution())).filter((c) => c.type === 'plan_update')
+    expect(plans).toEqual([{ type: 'plan_update', title: 'Done' }])
+  })
+
+  it('gives minimal and low no container label — they stream body text alone', () => {
+    for (const mode of ['minimal', 'low'] as const) {
+      const converger = streaming(mode)
+      converger.onStart()
+      converger.onUpdate(chunk('an answer'))
+      const chunksOut = appends(converger.onFinal(attribution()))
+      expect(chunksOut.filter((c) => c.type === 'plan_update')).toEqual([])
+    }
+  })
+
+  it('never lets the container label alone keep an empty message alive', () => {
+    // A medium turn that produced nothing still opened a container; the label is not content,
+    // so the message is still removed rather than left as an empty bubble.
+    const converger = streaming('medium')
+    converger.onStart()
+    expect(converger.onFinal(attribution()).at(-1)).toMatchObject({ settle: 'final', discard: true })
+  })
+
+  it('writes a completed tool card its output exactly once', () => {
+    const converger = streaming('high')
+    converger.onUpdate(tool('t1', 'Read file'))
+    expect(appends(converger.streamUpdate()).filter((c) => c.type === 'task_update')).toEqual([
+      { type: 'task_update', id: 't1', title: 'Read file', status: 'in_progress' }
+    ])
+    const done = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't1',
+      title: 'Read file',
+      status: 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: 'read 42 lines' } }]
+    } as never
+    converger.onUpdate(done)
+    expect(appends(converger.streamUpdate()).filter((c) => c.type === 'task_update')).toEqual([
+      { type: 'task_update', id: 't1', title: 'Read file', status: 'complete', output: 'read 42 lines' }
+    ])
+    // A repeat of the terminal update must not append a second copy — `output` accumulates.
+    converger.onUpdate(done)
+    expect(appends(converger.streamUpdate())).toEqual([])
+  })
+
+  it('medium cards carry title + status but no output — the result is a high-only rung', () => {
+    const converger = streaming('medium')
+    converger.onUpdate(tool('t1', 'Read file'))
+    converger.streamUpdate()
+    converger.onUpdate({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't1',
+      title: 'Read file',
+      status: 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: 'read 42 lines' } }]
+    } as never)
+    const cards = appends(converger.streamUpdate()).filter((c) => c.type === 'task_update')
+    // The completed card has no `output` key — medium shows only that the step finished.
+    expect(cards).toEqual([{ type: 'task_update', id: 't1', title: 'Read file', status: 'complete' }])
+    expect(cards[0] && 'output' in cards[0]).toBe(false)
+  })
+
+  it('flattens markdown emphasis out of card labels, which render as plain text', () => {
+    const converger = streaming('medium')
+    converger.onUpdate(tool('t1', '**Read** `src/a.ts`'))
+    expect(appends(converger.streamUpdate()).filter((c) => c.type === 'task_update')).toEqual([
+      { type: 'task_update', id: 't1', title: 'Read src/a.ts', status: 'in_progress' }
+    ])
+  })
+
+  it('clamps a card label to the wire limit', () => {
+    const converger = streaming('medium')
+    converger.onUpdate(tool('t1', 'x'.repeat(400)))
+    const card = appends(converger.streamUpdate()).find((c) => c.type === 'task_update')
+    expect(card?.type === 'task_update' && card.title.length).toBe(256)
+  })
+
   it('minimal and low stream body text only — no task cards on either rung', () => {
     for (const mode of ['minimal', 'low'] as const) {
       const converger = streaming(mode)
@@ -113,23 +216,22 @@ describe('OutputConverger streaming axis', () => {
   it('gives a thinking run one card and settles it at the next tool call', () => {
     const converger = streaming('medium')
     converger.onUpdate(think('weighing the options'))
+    // Title and status only. `details` appends server-side, so a per-line refresh concatenates
+    // instead of replacing — which is how repeated emphasis ran together into literal `****`.
     expect(appends(converger.streamUpdate())).toEqual([
-      {
-        type: 'task_update',
-        id: 'thinking-0',
-        title: 'Thinking',
-        status: 'in_progress',
-        details: 'weighing the options'
-      }
+      { type: 'task_update', id: 'thinking-0', title: 'Thinking', status: 'in_progress' }
     ])
+    // More thinking must not re-send the card at all.
+    converger.onUpdate(think('\nand another line'))
+    converger.onUpdate(think('\nand a third'))
+    expect(appends(converger.streamUpdate())).toEqual([])
     converger.onUpdate(tool('t1', 'Read file'))
     const next = appends(converger.streamUpdate())
     expect(next).toContainEqual({
       type: 'task_update',
       id: 'thinking-0',
       title: 'Thinking',
-      status: 'complete',
-      details: 'weighing the options'
+      status: 'complete'
     })
   })
 
@@ -321,6 +423,7 @@ describe('applySlackAction — streaming actions', () => {
       stopTurnStream: vi.fn(async (_stream: SlackTurnStream, _options?: Record<string, unknown>) => true),
       deleteMessage: vi.fn(async (_channel: string, _ts: string) => true),
       setStatus: vi.fn(async () => {}),
+      setLoadingStatus: vi.fn(async (_c: string, _t: string, _s: string) => {}),
       postMessage: vi.fn(async (_channel: string, _text: string, _thread?: string, _options?: unknown) => 'p1'),
       ...over
     }
@@ -350,7 +453,8 @@ describe('applySlackAction — streaming actions', () => {
       setStatusBarTs: vi.fn(),
       clearStatusBarTs: vi.fn(),
       monotonicTs: () => '1',
-      debug: vi.fn()
+      debug: vi.fn(),
+      resolveFinalization: vi.fn(() => ({ mentionedAgentIds: ['agent-2'], addressedAnyone: true }))
     }
     return {
       conn,
@@ -485,9 +589,13 @@ describe('applySlackAction — streaming actions', () => {
     // Exactly one attributed close, on the message that actually shows the answer.
     expect(conn.postMessage).not.toHaveBeenCalled()
     const closing = conn.stopTurnStream.mock.calls.at(-1)![1] as Record<string, unknown>
-    expect(closing).toMatchObject({ blocks: [{ type: 'context' }], agentAuthorId: 'bot-a' })
-    expect(turn.reply.lastResponse).toEqual({ ts: '900.1', text: 'the whole answer' })
-    expect(turn.reply.lastReply).toMatchObject({ ts: '900.1', footerKey: 'footer-1' })
+    expect(closing).toMatchObject({
+      blocks: [{ type: 'context' }],
+      agentAuthorId: 'bot-a',
+      response: expect.objectContaining({ deliveryState: 'final' })
+    })
+    expect(state.streamFinalized).toBe(true)
+    expect(turn.reply).not.toHaveProperty('lastResponse')
   })
 
   it('defers the replacement message when a ROLLOVER stop is left unsettled', async () => {
@@ -623,19 +731,59 @@ describe('applySlackAction — streaming actions', () => {
     expect(conn.appendTurnStream.mock.calls[1]![0]).toMatchObject({ ts: '900.2' })
   })
 
-  it('attaches the attribution footer to the final stop only, and hands §5.5 the message it closes', async () => {
-    const { apply, conn, turn } = fixture()
+  it('closes the response ON the final stop — footer and §5.5 metadata, no follow-up edit', async () => {
+    const { apply, conn, turn, state } = fixture()
     await apply({ kind: 'stream-start' })
     await apply({ kind: 'stream-stop', settle: 'final', text: 'the answer' })
     expect(conn.stopTurnStream).toHaveBeenCalledWith(
       { channel: 'C1', threadTs: 'T1', ts: '900.1' },
-      expect.objectContaining({ blocks: [{ type: 'context' }], agentAuthorId: 'bot-a' })
+      expect.objectContaining({
+        blocks: [{ type: 'context' }],
+        agentAuthorId: 'bot-a',
+        response: expect.objectContaining({
+          responseId: 'resp-1',
+          deliveryState: 'final',
+          mentionedAgentIds: ['agent-2'],
+          addressedAnyone: true
+        })
+      })
     )
     expect(conn.stopTurnStream.mock.calls[0]![1]).not.toHaveProperty('sessionStatus')
-    expect(turn.reply).toMatchObject({
-      lastResponse: { ts: '900.1', text: 'the answer' },
-      lastReply: { ts: '900.1', text: 'the answer', footerKey: 'footer-1' }
+    // No handle is left for a closing edit: chat.update replaces the whole message, which
+    // would erase every task card and stamp the answer "(edited)".
+    expect(state.streamFinalized).toBe(true)
+    expect(turn.reply).not.toHaveProperty('lastResponse')
+    expect(turn.reply).not.toHaveProperty('lastReply')
+  })
+
+  it('a retried closing stop still carries the footer and the §5.5 metadata', async () => {
+    let settled = false
+    const { apply, conn, state } = fixture({
+      stopTurnStream: vi.fn(async (_s: SlackTurnStream, _o?: Record<string, unknown>) => settled)
     })
+    await apply({ kind: 'stream-start' })
+    await apply({ kind: 'stream-stop', settle: 'final', text: 'the answer' })
+    expect(state.streamFinalized).toBeUndefined()
+
+    // Settlement replays the owed stop; the finals are rebuilt, not lost with the first try.
+    settled = true
+    await apply(state.streamStopOwed!)
+    expect(conn.stopTurnStream.mock.calls.at(-1)![1]).toMatchObject({
+      blocks: [{ type: 'context' }],
+      agentAuthorId: 'bot-a',
+      response: expect.objectContaining({ deliveryState: 'final', mentionedAgentIds: ['agent-2'] })
+    })
+    expect(state.streamFinalized).toBe(true)
+  })
+
+  it('leaves a rollover stop with no footer and no finalization metadata', async () => {
+    const { apply, conn, host } = fixture()
+    await apply({ kind: 'stream-start' })
+    await apply({ kind: 'stream-stop', settle: 'rollover', text: 'first half' })
+    const options = conn.stopTurnStream.mock.calls[0]![1] as Record<string, unknown>
+    expect(options.blocks).toBeUndefined()
+    expect(options.response).toBeUndefined()
+    expect(host.resolveFinalization).not.toHaveBeenCalled()
   })
 
   it('keeps a rollover stop footerless and the session processing', async () => {
@@ -661,6 +809,40 @@ describe('applySlackAction — streaming actions', () => {
     await apply({ kind: 'stream-start' })
     await apply({ kind: 'stream-stop', settle: 'final', discard: true })
     expect(conn.deleteMessage).toHaveBeenCalledWith('C1', '900.1')
+  })
+
+  it('re-issues the loading row beside the stream and clears it only at the stop', async () => {
+    const { apply, conn, state } = fixture()
+    // The daemon stashes the snapshot the applier re-issues (§5).
+    state.loadingStatus = { text: 'is thinking…', options: { username: 'Bot A' } }
+    await apply({ kind: 'stream-start' })
+    // startStream displaces the row, so it is re-issued right after the stream opens.
+    expect(conn.setLoadingStatus).toHaveBeenLastCalledWith('C1', 'T1', 'is thinking…', undefined, { username: 'Bot A' })
+    const afterStart = conn.setLoadingStatus.mock.calls.length
+    // The container label alone is not content, so a plan-only append does not re-issue.
+    await apply({ kind: 'stream-append', chunks: [{ type: 'plan_update', title: 'Working…' }] })
+    expect(conn.setLoadingStatus.mock.calls.length).toBe(afterStart)
+    // A card or body text re-issues the row so it survives the append that would displace it.
+    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'the answer' }] })
+    expect(conn.setLoadingStatus.mock.calls.length).toBe(afterStart + 1)
+    // Never a clear until the turn ends.
+    expect(conn.setLoadingStatus.mock.calls.every((call) => call[2] !== '')).toBe(true)
+    await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: ' and more' }] })
+    // …then exactly one clear at the terminal stop, and no more re-issues after it.
+    await apply({ kind: 'stream-stop', settle: 'final', text: 'the answer and more' })
+    expect(conn.setLoadingStatus).toHaveBeenLastCalledWith('C1', 'T1', '')
+    expect(conn.setLoadingStatus.mock.calls.filter((call) => call[2] === '')).toHaveLength(1)
+    expect(state.streamLoadingCleared).toBe(true)
+    // The enum is never driven from here — chat.startStream owns it.
+    expect(conn.setStatus).not.toHaveBeenCalled()
+  })
+
+  it('still clears the loading state when the stream never showed anything', async () => {
+    const { apply, conn } = fixture()
+    await apply({ kind: 'stream-start' })
+    await apply({ kind: 'stream-stop', settle: 'final', discard: true })
+    expect(conn.setLoadingStatus).toHaveBeenCalledWith('C1', 'T1', '')
+    expect(conn.setStatus).not.toHaveBeenCalled()
   })
 
   it('skips the status write while a stream is open — the two share one slot', async () => {
@@ -732,7 +914,8 @@ describe('SlackConnection streaming', () => {
     expect(app.client.chat.startStream).toHaveBeenCalledWith({
       channel: 'C1',
       thread_ts: 'T1',
-      task_display_mode: 'timeline',
+      // The collapsed container: every task card folded behind one chevron (§4).
+      task_display_mode: 'plan',
       recipient_user_id: 'U9',
       recipient_team_id: 'T123',
       username: 'Bot A'
@@ -993,6 +1176,7 @@ describe('Daemon Slack streaming turn', () => {
       postMessage: vi.fn(async () => 'reply-1'),
       postBlocks: vi.fn(async () => 'status-bar'),
       updateBlocks: vi.fn(async () => true),
+      setLoadingStatus: vi.fn(async (_c: string, _t: string, _s: string) => {}),
       streamingLikely: vi.fn(() => true),
       startTurnStream: vi.fn(async (channel: string, threadTs: string, _o?: unknown) => ({
         channel,
@@ -1004,6 +1188,9 @@ describe('Daemon Slack streaming turn', () => {
       ),
       stopTurnStream: vi.fn(async (_stream: SlackTurnStream, _options?: Record<string, unknown>) => true),
       deleteMessage: vi.fn(async (_channel: string, _ts: string) => true),
+      // The §5.5 closing edit. On a streamed turn it must never fire: it replaces the whole
+      // message, taking the task cards with it and marking the answer "(edited)".
+      finalizeResponse: vi.fn(async () => true),
       ...over
     }
     ;(daemon as unknown as { connByIntegration: Map<string, unknown> }).connByIntegration.set('int-a', conn)
@@ -1037,7 +1224,7 @@ describe('Daemon Slack streaming turn', () => {
     return { daemon, host }
   }
 
-  it('writes NEITHER status API, and delivers the answer on the stream', async () => {
+  it('keeps the loading row alive beside the stream, clears it once at the end, never the enum', async () => {
     const { daemon } = booted(scaffold())
     await daemon.start()
     const conn = connect(daemon)
@@ -1048,7 +1235,19 @@ describe('Daemon Slack streaming turn', () => {
       'int-a'
     )
 
+    // (a) `setStatus` is the call that ALSO drives agents.sessions.setStatus. A streaming turn
+    // never makes it: chat.startStream owns the session, and the enum renders nothing in a
+    // channel thread anyway (confirmed live).
     expect(conn.setStatus).not.toHaveBeenCalled()
+    const loading = conn.setLoadingStatus.mock.calls.map((call) => call[2])
+    // (b) the row is set at the start and RE-ISSUED (startStream and each append displace it),
+    // so there is more than one non-empty write and it is never cleared on first content.
+    expect(loading.filter((text) => text !== '').length).toBeGreaterThan(1)
+    expect(loading.at(0)).not.toBe('')
+    expect(loading.slice(0, -1)).not.toContain('')
+    // (c) cleared exactly once, at turn end.
+    expect(loading.filter((text) => text === '')).toHaveLength(1)
+    expect(loading.at(-1)).toBe('')
     expect(conn.startTurnStream).toHaveBeenCalledOnce()
     expect(conn.stopTurnStream).toHaveBeenCalledOnce()
     const streamed = conn.appendTurnStream.mock.calls
@@ -1063,6 +1262,42 @@ describe('Daemon Slack streaming turn', () => {
       expect.anything(),
       expect.anything()
     )
+    await daemon.stop()
+  }, 15_000)
+
+  it('issues NO closing edit on a streamed turn — the stop already finalized it', async () => {
+    const { daemon } = booted(scaffold())
+    await daemon.start()
+    const conn = connect(daemon)
+
+    await (daemon as never as { dispatch: (a: string, m: NormalizedMessage, i: string) => Promise<unknown> }).dispatch(
+      'bot-a',
+      inbound(),
+      'int-a'
+    )
+
+    expect(conn.stopTurnStream).toHaveBeenCalledOnce()
+    expect(conn.stopTurnStream.mock.calls[0]![1]).toMatchObject({
+      response: expect.objectContaining({ deliveryState: 'final' })
+    })
+    expect(conn.finalizeResponse).not.toHaveBeenCalled()
+    await daemon.stop()
+  }, 15_000)
+
+  it('still issues the closing edit when the turn took the legacy pipeline', async () => {
+    const { daemon } = booted(scaffold())
+    await daemon.start()
+    const conn = connect(daemon, { streamingLikely: vi.fn(() => false) })
+
+    await (daemon as never as { dispatch: (a: string, m: NormalizedMessage, i: string) => Promise<unknown> }).dispatch(
+      'bot-a',
+      inbound(),
+      'int-a'
+    )
+
+    expect(conn.startTurnStream).not.toHaveBeenCalled()
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'streamed answer', 'T1', expect.anything())
+    expect(conn.finalizeResponse).toHaveBeenCalledOnce()
     await daemon.stop()
   }, 15_000)
 
@@ -1084,57 +1319,29 @@ describe('Daemon Slack streaming turn', () => {
     }
   }
 
-  // A streaming turn writes no status API at all, and `chat.startStream` is not reached until
-  // AFTER the session opens — so the pod wait, which happens inside it, would otherwise be
-  // completely silent. The notice is the only thing the person sees while it runs.
-  it('posts the sandbox-bootstrap notice on a streaming turn, whose status slot stays empty', async () => {
-    const { daemon } = booted(scaffold())
-    await daemon.start()
-    coldSandbox(daemon)
-    const conn = connect(daemon)
+  // The pod wait happens inside `openSession`, before the stream can have anything to show —
+  // exactly the window §5's loading text covers. So the wait is narrated there, on a streaming
+  // turn as much as a legacy one, and never as a second Slack message saying the same thing.
+  for (const [label, over] of [
+    ['streaming', {}],
+    ['legacy', { streamingLikely: vi.fn(() => false) }]
+  ] as const) {
+    it(`narrates a cold sandbox on the ${label} turn's loading status, posting no message for it`, async () => {
+      const { daemon } = booted(scaffold())
+      await daemon.start()
+      coldSandbox(daemon)
+      const conn = connect(daemon, over)
 
-    await (daemon as never as { dispatch: (a: string, m: NormalizedMessage, i: string) => Promise<unknown> }).dispatch(
-      'bot-a',
-      inbound(),
-      'int-a'
-    )
+      await (
+        daemon as never as { dispatch: (a: string, m: NormalizedMessage, i: string) => Promise<unknown> }
+      ).dispatch('bot-a', inbound(), 'int-a')
 
-    expect(conn.setStatus).not.toHaveBeenCalled()
-    // Marked as chrome, or a peer daemon's thread backfill re-ingests this live-only line as
-    // conversation and feeds a finished wait back into the agent's context.
-    expect(conn.postMessage).toHaveBeenCalledWith(
-      'C1',
-      SANDBOX_BOOTSTRAP_NOTICE,
-      'T1',
-      expect.objectContaining({ chrome: true })
-    )
-    await daemon.stop()
-  }, 15_000)
-
-  // The legacy pipeline still writes the status bar, and it carries the same fact as this
-  // turn's `startupActivityLabel` — so a second message would say it twice.
-  it('leaves the notice to the status bar on a non-streaming Slack turn', async () => {
-    const { daemon } = booted(scaffold())
-    await daemon.start()
-    coldSandbox(daemon)
-    const conn = connect(daemon, {}, true)
-
-    await (daemon as never as { dispatch: (a: string, m: NormalizedMessage, i: string) => Promise<unknown> }).dispatch(
-      'bot-a',
-      inbound(),
-      'int-a'
-    )
-
-    expect(conn.setStatus).toHaveBeenCalledWith(
-      'C1',
-      'T1',
-      'is allocating a sandbox pod…',
-      undefined,
-      expect.anything()
-    )
-    expect(conn.postMessage).not.toHaveBeenCalledWith('C1', SANDBOX_BOOTSTRAP_NOTICE, 'T1', expect.anything())
-    await daemon.stop()
-  }, 15_000)
+      const wrote = label === 'streaming' ? conn.setLoadingStatus : conn.setStatus
+      expect(wrote.mock.calls.map((call) => call[2])).toContain('is allocating a sandbox pod…')
+      expect(conn.postMessage).not.toHaveBeenCalledWith('C1', SANDBOX_BOOTSTRAP_NOTICE, expect.anything())
+      await daemon.stop()
+    }, 15_000)
+  }
 
   it('keeps a SHAREABLE bot on the legacy pipeline until §10 Q1 is verified live', async () => {
     const { daemon } = booted(scaffold())

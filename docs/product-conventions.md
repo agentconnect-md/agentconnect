@@ -132,11 +132,10 @@ Sandbox, wait for it to become Ready, and bind its shim before the runtime sees 
 That is up to a minute and a half in which nothing is streaming, and a reader with no signal
 reads it as the agent having ignored them.
 
-So the turn says what it is waiting for, once, before the wait starts. A turn that is writing a
-pushed per-turn status bar carries it there, in place of the generic startup label; every other
-surface — the console playground, the on-demand-status chat platforms, and a Slack turn that
-streams natively and therefore leaves that slot untouched until its stream opens — gets a short
-message of its own. Exactly one of the two, never both.
+So the turn says what it is waiting for, once, before the wait starts. A platform with a pushed
+per-turn status bar carries it there, in place of the generic startup label; every other surface —
+the console playground, the on-demand-status chat platforms — gets a short message of its own.
+Exactly one of the two, never both.
 
 It is live chrome and is never recorded: reloading a conversation rebuilds it from the
 transcript, where a wait that is over has nothing to say. A turn whose pod is already up says

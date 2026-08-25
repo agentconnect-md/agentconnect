@@ -154,7 +154,6 @@ import {
   finalizeSlackResponse,
   isSlackStatusBarText,
   slackAgentPostOptions,
-  slackAgentIdentityOptions,
   slackPostOptions,
   slackStreamRecipient,
   type SlackTurnState
@@ -9284,10 +9283,17 @@ export class Daemon {
     const pendingWebchat = webchat
       ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
       : undefined
-    // A streaming turn makes no status call of either kind (§5) — including this one: the
-    // stream itself creates the session and sets it processing.
-    if (!this.streamsTurnStatus(conv))
-      this.showActivity(replyConn, msg.channel, plan.statusThread, plan.startupActivityLabel, plan.statusOptions)
+    // The documented loading state, on every turn including a streaming one: it covers the
+    // window before the stream has anything to show, which is otherwise a blank wait (§5).
+    // On a streaming turn it is TEXT only — the enum belongs to `chat.startStream`.
+    this.showActivity(
+      replyConn,
+      msg.channel,
+      plan.statusThread,
+      plan.startupActivityLabel,
+      plan.statusOptions,
+      this.streamsTurnStatus(conv)
+    )
     if (plan.clusterPodBootstrap) this.announceSandboxBootstrap(run, pendingWebchat)
     const releaseReplyConn = this.holdReplyConnection(replyConn)
     const opened = await this.openSession(run, releaseReplyConn)
@@ -9382,14 +9388,22 @@ export class Daemon {
 
   /** Clear this turn's transient platform activity indicator ("is thinking…"). */
   private clearTurnActivity(run: TurnRun): void {
-    if (this.streamsTurnStatus(run.conv)) return
-    this.showActivity(run.replyConn, run.plan.channel, run.plan.statusThread, '')
+    // A streaming turn clears the TEXT — its loading state does not expire on its own now that
+    // the answer no longer arrives through chat.postMessage — but never the session enum.
+    this.showActivity(
+      run.replyConn,
+      run.plan.channel,
+      run.plan.statusThread,
+      '',
+      undefined,
+      this.streamsTurnStatus(run.conv)
+    )
   }
 
   /** Say that this turn is waiting on a cluster Sandbox pod, before the wait starts.
    *  Live-only chrome: nothing is recorded, because the wait is not part of the conversation. */
   private announceSandboxBootstrap(run: TurnRun, webchat: Pending['webchat']): void {
-    const { plan, entry, replyConn, conv } = run
+    const { plan, entry, replyConn } = run
     if (webchat) {
       webchat.sink.output({
         conversationId: webchat.conversationId,
@@ -9401,20 +9415,13 @@ export class Daemon {
     // Chat origins only: a hook/code-host turn publishes one artifact at the end and must not
     // grow a second message of its own.
     if (!replyConn || originKindOf(plan.platform) !== 'chat') return
-    const chrome = turnChromeFor(plan.platform)
-    // A pushed status bar carries this turn's `startupActivityLabel` already — EXCEPT on a
-    // streaming turn, which writes that slot no earlier than `chat.startStream`, and that is
-    // after the wait this notice is about (slack-streaming-turn-output.md §5).
-    if (chrome.statusSurface === 'turn-bar' && !this.streamsTurnStatus(conv)) return
-    // Marked as chrome where the platform can carry the marker, or a peer daemon's thread
-    // backfill re-ingests this live-only line as conversation the agent then reads back.
-    const post = chrome.chromeMarkedNotices
-      ? (replyConn as SlackConnection).postMessage(plan.channel, SANDBOX_BOOTSTRAP_NOTICE, entry.msg.thread, {
-          ...(slackAgentIdentityOptions(plan) ?? {}),
-          chrome: true
-        })
-      : replyConn.postMessage(plan.channel, SANDBOX_BOOTSTRAP_NOTICE, entry.msg.thread)
-    void post.catch((err) => this.log.warn(`cluster: sandbox bootstrap notice failed (${formatErr(err)})`))
+    // A pushed status bar carries this turn's `startupActivityLabel` already, on a streaming
+    // turn too — that one writes the same text through the loading row (§5). So Slack never
+    // reaches this post, and no surface that does has chrome metadata to be marked with.
+    if (turnChromeFor(plan.platform).statusSurface === 'turn-bar') return
+    void replyConn
+      .postMessage(plan.channel, SANDBOX_BOOTSTRAP_NOTICE, entry.msg.thread)
+      .catch((err) => this.log.warn(`cluster: sandbox bootstrap notice failed (${formatErr(err)})`))
   }
 
   /** Does this turn own the platform's status slot through a native stream? Slack's two
@@ -10020,11 +10027,18 @@ export class Daemon {
     // created) plus any usage carried over from prior turns — so it sits at the top of
     // the thread before the reply streams in, and above the stream opened next.
     await this.emitStatusBar(p)
-    const intended = this.streamsTurnStatus(p.conv)
-    const streaming = intended && (await this.openSlackTurnStream(p))
-    // A turn that meant to stream and could not shows the indicator even on a warm host:
-    // dispatch skipped its own write on the strength of that intent (§7 degrade).
-    if (!streaming && (!plan.hostAlreadyRunning || intended))
+    // Stash the loading snapshot the applier re-issues to keep the legacy row alive beside the
+    // stream (startStream and every append displace it, §5) — before the stream opens, so the
+    // stream-start re-issue can read it.
+    if (this.streamsTurnStatus(p.conv))
+      turnState<SlackTurnState>(p).loadingStatus = {
+        text: plan.startupActivityLabel,
+        ...(plan.statusOptions ? { options: plan.statusOptions } : {})
+      }
+    const streaming = this.streamsTurnStatus(p.conv) && (await this.openSlackTurnStream(p))
+    // A streaming turn already wrote its loading state at dispatch and re-issues it beside the
+    // stream, so it takes no second write here.
+    if (!streaming && !plan.hostAlreadyRunning)
       this.showActivity(replyConn, plan.channel, plan.statusThread, 'is thinking…', plan.statusOptions)
     // Config-file secrets deleted by the idle sweep come back BEFORE the turn
     // reaches the child — synchronous, so the guarantee is ordering, not timing.
@@ -11054,10 +11068,16 @@ export class Daemon {
       // Platform suppression teardown (§7.3): Feishu stops its stream timer and
       // cancels the CardKit entity. Exact lookup — no core fallback.
       this.turnSurfaces.exact(live.plan.platform)?.onSuppress?.(live)
-      // A streaming turn's stop settles the message and releases the session by itself; a
-      // status write here would be the one call §5 says a streaming turn never makes.
-      if (!this.streamsTurnStatus(live.conv))
-        this.showActivity(live.conn, live.plan.channel, live.plan.statusThread, '')
+      // Clear the loading text; on a streaming turn the stop owns the session enum, so this
+      // must not drive it (§5).
+      this.showActivity(
+        live.conn,
+        live.plan.channel,
+        live.plan.statusThread,
+        '',
+        undefined,
+        this.streamsTurnStatus(live.conv)
+      )
       if (live.webchat && !live.webchat.doneSent) {
         live.webchat.doneSent = true
         live.webchat.sink.done({
@@ -11256,21 +11276,17 @@ export class Daemon {
    * Recipients come from the COMPLETE response and are resolved against the
    * CONVERSATION's directory — the same bidirectional mapping the target will use — so
    * author and target cannot disagree about who was addressed.
+   *
+   * Runs only for a turn whose answer took the ordinary post boundary. A streamed turn closes
+   * its own response on `chat.stopStream` instead (see {@link resolveSlackFinalization}).
    */
   private async closeSlackResponse(p: Pending): Promise<void> {
     if (!p.conn) return
+    // A streamed answer was finalized in place by its own `chat.stopStream`. Editing it again
+    // would replace the whole message — losing every task card and marking it "(edited)".
+    if (turnState<SlackTurnState>(p).streamFinalized) return
     const orgId = this.cpCollab.orgForAgent(p.plan.agentId)
-    const recipients = orgId
-      ? resolveSlackMentionedAgents(
-          p.reply.text,
-          this.cpCollab.mentionDirectory(orgId, p.plan.platform, p.plan.channel)
-        ).filter((id) => id !== p.plan.agentId)
-      : []
-    // Whether the answer addressed ANYONE is read from the complete reply text, not
-    // from the final section: §2.3 makes any address binding, and the splitter may
-    // have put the only mention in section one. Without this the same answer would
-    // wake a peer or not depending on where the cut landed.
-    const addressedAnyone = slackTextAddressesAnyone(p.reply.text)
+    const { mentionedAgentIds: recipients, addressedAnyone } = this.resolveSlackFinalization(p)
     // What this response RESOLVED to, at the one place the author still knows it.
     // Everything downstream (relay arbitration, the target's ladder) sees only the
     // outcome, so without this a response that addressed a peer but resolved to no
@@ -11287,6 +11303,26 @@ export class Daemon {
     await finalizeSlackResponse(p.conn as SlackConnection, p, recipients, addressedAnyone, (m) => this.log.debug(m))
   }
 
+  /**
+   * Who this turn's COMPLETE response addressed (send-message-routing-rework.md §5.5).
+   *
+   * Shared by both ways a response can be closed: the legacy follow-up edit, and a streamed
+   * turn's own `chat.stopStream`. `addressedAnyone` is read from the whole reply text, not the
+   * final section — §2.3 makes any address binding, and the splitter may have put the only
+   * mention in section one, so reading the tail alone would make the same answer wake a peer
+   * or not depending on where the cut landed.
+   */
+  private resolveSlackFinalization(p: Pending): { mentionedAgentIds: string[]; addressedAnyone: boolean } {
+    const orgId = this.cpCollab.orgForAgent(p.plan.agentId)
+    const mentionedAgentIds = orgId
+      ? resolveSlackMentionedAgents(
+          p.reply.text,
+          this.cpCollab.mentionDirectory(orgId, p.plan.platform, p.plan.channel)
+        ).filter((id) => id !== p.plan.agentId)
+      : []
+    return { mentionedAgentIds, addressedAnyone: slackTextAddressesAnyone(p.reply.text) }
+  }
+
   /** Slack's turn output lives in its platform module (§7.3) — and doubles as the
    *  CORE surface every non-platform origin (webchat / hook / dream) renders through.
    *  Core supplies the transcript + status-bar-anchor capabilities and the opaque
@@ -11300,7 +11336,8 @@ export class Daemon {
         setStatusBarTs: async (sessionKey, ts) => await this.store.setStatusBarTs(sessionKey, ts),
         clearStatusBarTs: async (sessionKey) => await this.store.clearStatusBarTs(sessionKey),
         monotonicTs: () => monotonicTs(),
-        debug: (message) => this.log.debug(message)
+        debug: (message) => this.log.debug(message),
+        resolveFinalization: (turn) => this.resolveSlackFinalization(turn as Pending)
       },
       p,
       turnState<SlackTurnState>(p),
@@ -11701,15 +11738,23 @@ export class Daemon {
     channel: string,
     thread: string,
     text: string,
-    slackStatusOptions?: SlackStatusOptions
+    slackStatusOptions?: SlackStatusOptions,
+    streaming = false
   ): void {
     if (!conn) return
     // Duck-type by method (so test fakes work): Slack has setStatus ('' clears the bar);
     // Telegram/Discord have sendChatAction (a self-expiring "typing…", so a clear is a no-op).
     const slack = conn as Partial<SlackConnection>
     if (typeof slack.setStatus === 'function') {
-      if (text && slackStatusOptions) void slack.setStatus(channel, thread, text, undefined, slackStatusOptions)
-      else void slack.setStatus(channel, thread, text)
+      // A streaming turn writes the loading TEXT but never the session enum: `chat.startStream`
+      // already set the session processing, and the enum would replace the native rendering
+      // with the legacy one (§5). Everything else keeps both halves.
+      const write =
+        streaming && typeof slack.setLoadingStatus === 'function'
+          ? slack.setLoadingStatus.bind(slack)
+          : slack.setStatus.bind(slack)
+      if (text && slackStatusOptions) void write(channel, thread, text, undefined, slackStatusOptions)
+      else void write(channel, thread, text)
     } else if (text && typeof (conn as Partial<TelegramConnection>).sendChatAction === 'function')
       void (conn as TelegramConnection).sendChatAction(channel)
   }
