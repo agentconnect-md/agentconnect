@@ -134,13 +134,22 @@ pinning, secrets, and optional Mem0 configuration, follow the
 
 ## Community
 
-If AgentConnect looks useful, consider giving the repository a ⭐. It helps more
-teams discover the project.
+If AgentConnect looks useful, here's how you can support the project:
 
-Questions or ideas? [Join the Slack community](https://slack.agentconnect.md),
-[open a GitHub issue](https://github.com/agentconnect-md/agentconnect/issues), or
-follow project updates on [X](https://x.com/getAgentConnect) and
-[YouTube](https://www.youtube.com/@agentconnect-md).
+- ⭐ **Star this repo** to help more teams discover the project.
+- 💬 [Join the Slack community](https://slack.agentconnect.md) for questions,
+  ideas, and product discussions.
+- 📣 Share AgentConnect on
+  [X](https://x.com/intent/post?text=AgentConnect%3A%20the%20open-source%2C%20multi-agent%20alternative%20to%20Claude%20Tag.%20%40%20any%20agent%2C%20wherever%20work%20happens.&url=https%3A%2F%2Fgithub.com%2Fagentconnect-md%2Fagentconnect),
+  [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https%3A%2F%2Fgithub.com%2Fagentconnect-md%2Fagentconnect),
+  or
+  [Reddit](https://www.reddit.com/submit?url=https%3A%2F%2Fgithub.com%2Fagentconnect-md%2Fagentconnect&title=AgentConnect%3A%20the%20open-source%2C%20multi-agent%20alternative%20to%20Claude%20Tag).
+- ✍️ Write a review or tutorial on [DEV](https://dev.to),
+  [Medium](https://medium.com), or your blog.
+- 🙋 [Open an issue](https://github.com/agentconnect-md/agentconnect/issues) to
+  report bugs or suggest features.
+- 📺 Follow updates on [X](https://x.com/getAgentConnect) and
+  [YouTube](https://www.youtube.com/@agentconnect-md).
 
 ## Architecture
 
