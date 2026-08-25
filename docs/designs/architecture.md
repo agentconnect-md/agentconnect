@@ -37,9 +37,9 @@ below that hold in only one mode are marked; everything unmarked holds in both.
   carries orchestration and telemetry plus bounded, authorized, on-demand reads
   of daemon-local data for the Web UI; those reads are not persisted by the
   Control Plane.
-- Keep direct platform integrations and agent execution local to the daemon, using
-  the relay only for ingress that requires a stable public callback or browser
-  endpoint.
+- Keep direct platform integrations and agent execution owned by the daemon,
+  using the relay only for ingress that requires a stable public callback or
+  browser endpoint.
 - Allow daemons to scale horizontally and independently, so one daemon failure does not affect other daemons.
 - Run multiple agents on one daemon, with a separate ACP adapter for each agent type.
 - Allow established sessions to continue sending, receiving, and executing locally on the daemon while the Control Plane is temporarily unavailable (degraded availability).
@@ -72,7 +72,7 @@ and search.
  Direct platforms ┌──────────────────────────────────────────┐
  Slack Socket  ◀─▶│ daemon instances                         │◀── CP WebSocket
  Telegram          │ platform + hook routing                  │    control,
- Discord           │              │ local ACP                 │    telemetry,
+ Discord           │              │ daemon ACP                │    telemetry,
  Lark / Feishu     │              ▼                           │    bounded reads
  Long Connection   │       Claude / Codex / ACP agents        │
                    └──────────────────────────────────────────┘
@@ -138,8 +138,9 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 - It owns direct platform connections such as Slack Socket Mode, Lark / Feishu
   Long Connection, and Telegram, and receives pre-addressed Slack and
   Lark / Feishu HTTP, hook, and webchat items from the relay.
-- It routes and dispatches messages locally, then drives the agent through **local
-  ACP**.
+- It routes and dispatches messages itself, then drives the agent over
+  **daemon-owned ACP** — local IPC to a child process self-hosted, one dial to
+  the sandbox pod in the pool (§3.1). Neither shape involves the Control Plane.
 - It maintains one WebSocket to the Control Plane for control/telemetry and
   correlated, bounded read-back requests made by authorized Web UI callers.
   Those reads are transient and do not put live platform traffic or ACP output
@@ -203,12 +204,12 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 Direct:
   Slack Socket Mode / Telegram / Discord / Lark / Feishu
     ↔ daemon direct adapter
-    → daemon local routing → [local ACP] → agent
+    → daemon routing → [daemon-owned ACP] → agent
 
 Relay-assisted:
   Slack HTTP · Lark / Feishu HTTP · GitHub · generic webhook · webchat
     → optional relay → rd/* → owning daemon
-    → daemon local routing → [local ACP] → agent
+    → daemon routing → [daemon-owned ACP] → agent
     → direct Slack/GitHub/provider API egress, or webchat output via the relay
 ```
 
@@ -328,18 +329,18 @@ host to run sandboxed.
   OpenTelemetry path. Session milestones, usage summaries, health, and
   capability facts use the control WebSocket; credential and message content
   are excluded from telemetry.
-- **Tracing**: inject a trace ID into normalized messages and carry it through the platform adapter, local ACP, and agent for end-to-end tracing.
+- **Tracing**: inject a trace ID into normalized messages and carry it through the platform adapter, the ACP hop, and the agent for end-to-end tracing.
 
 ---
 
 ## 11. Failures and Recovery
 
-| Failure                | Impact                                      | Behavior                                                                                                           |
-| ---------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Control Plane outage   | Orchestration pauses                        | **Existing sessions continue locally on daemons**; new assignments and scaling pause, then catch up after recovery |
-| One daemon fails       | Sessions owned by that daemon are disrupted | The failure domain is isolated; the Control Plane detects the failure and reassigns sessions to another daemon     |
-| Platform adapter fails | Traffic for that platform is affected       | The daemon reconnects or retries locally and reports an alert                                                      |
-| Agent process crashes  | One agent task fails                        | The ACP adapter restarts the agent locally and reports the failure when necessary                                  |
+| Failure                | Impact                                      | Behavior                                                                                                                                         |
+| ---------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Control Plane outage   | Orchestration pauses                        | **Existing sessions continue on their daemons**; new assignments and scaling pause, then catch up after recovery                                 |
+| One daemon fails       | Sessions owned by that daemon are disrupted | The failure domain is isolated; the Control Plane detects the failure and reassigns sessions to another daemon                                   |
+| Platform adapter fails | Traffic for that platform is affected       | The daemon reconnects or retries locally and reports an alert                                                                                    |
+| Agent runtime crashes  | One agent task fails                        | The daemon relaunches the runtime — a child process self-hosted, a fresh sandbox generation in the pool — and reports the failure when necessary |
 
 ---
 

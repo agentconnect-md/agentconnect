@@ -11,6 +11,18 @@
 > [`control-plane-implementation.md`](control-plane-implementation.md) for the
 > Control Plane. Package manifests are authoritative for library and runtime
 > versions.
+>
+> **Scope: the self-hosted runtime shape.** The component model, module
+> boundaries, and interfaces below hold in both deployment modes
+> ([`architecture.md`](architecture.md) §3.1), but the concrete _forms_ do not:
+> this document describes ACP adapters as local child processes over stdio and
+> D11 as daemon-local SQLite, which is the self-hosted daemon. A managed pool
+> member substitutes a sandbox pod the daemon dials
+> ([`cluster-spawn-and-shim.md`](cluster-spawn-and-shim.md)) and one shared
+> PostgreSQL data plane
+> ([`cloud-data-plane-postgres.md`](cloud-data-plane-postgres.md)) governed by a
+> duty ledger ([`k8s-daemon-pool.md`](k8s-daemon-pool.md)). Read a "local
+> subprocess" or "SQLite" statement below as self-hosted-only.
 
 ---
 
@@ -52,7 +64,7 @@ Every choice in this document is bounded by the following **settled product cons
 │  ├─ Platform Adapters: slack-adapter / telegram-adapter        │
 │  ├─ Message Normalizer & Local Router (session↔agent routing)  │
 │  ├─ Local Scheduler (cron/loop, triggered locally)             │
-│  ├─ ACP Host (local ACP client) ──stdio JSON-RPC──┐            │
+│  ├─ ACP Host (ACP client) ──stdio JSON-RPC────────┐            │
 │  ├─ MCP Tool Server (sendMessage, injected into agent) │      │
 │  ├─ Workspace Manager (git repo / memory.md)          │      │
 │  ├─ Secrets Agent / Local Store (SQLite)              ▼      │
@@ -68,6 +80,7 @@ Every choice in this document is bounded by the following **settled product cons
 
 - **Network boundaries**: daemon ↔ Control Plane (WebSocket, control signals), and daemon ↔ IM platform (platform API, data plane).
 - **Local boundaries**: most modules inside a daemon run **in the same process**. The ACP Host ↔ ACP adapter ↔ model process chain consists of **local subprocesses** connected through stdio.
+- **Mode note**: the diagram draws the self-hosted daemon. In the pool, the ACP adapter and model process sit in a sandbox pod the ACP Host dials, and the Local Store is the shared PostgreSQL data plane rather than on-host SQLite; every other box and boundary is unchanged.
 
 ---
 
@@ -87,7 +100,7 @@ Every choice in this document is bounded by the following **settled product cons
 | D3  | **Platform Adapters**                 | Daemon        | In-process modules            | Platform I/O, normalization, and outbound rendering                               |
 | D4  | **Message Normalizer & Local Router** | Daemon        | In-process                    | Route normalized messages to agents using the session routing table               |
 | D5  | **Local Scheduler**                   | Daemon        | In-process                    | Trigger cron/loop locally, including during a control-plane outage                |
-| D6  | **ACP Host**                          | Daemon        | In-process (local ACP client) | Drive ACP adapters over ACP and manage sessions                                   |
+| D6  | **ACP Host**                          | Daemon        | In-process (ACP client)       | Drive ACP adapters over ACP and manage sessions                                   |
 | D7  | **ACP Adapters**                      | Daemon        | **Third-party subprocesses**  | Implement ACP and start models: `claude-agent-acp` / `codex`                      |
 | D8  | **MCP Tool Server**                   | Daemon        | In-process (local MCP server) | Inject tools such as `sendMessage` into agents                                    |
 | D9  | **Workspace Manager**                 | Daemon        | In-process                    | Manage both git-repo and `memory.md` working directories and install skills       |
@@ -198,7 +211,7 @@ over stdio; they do not create source-level coupling to TypeScript.
 - **Language/dependencies**: TypeScript; **`croner`** (pure JavaScript, dependency-free, supports time zones, and preferable to the aging `node-cron`); persist `last-run` in D11 for deduplication and catch-up.
 - **Key interfaces**: input: C3 sends `cron/upsert` and `cron/remove` (§6.1), which update the memory-only CP cron registry; output: construct a `NormalizedMessage{ source: "cron" }` and dispatch it directly to the agent; reporting: execution results through D12.
 
-### D6. ACP Host (Local ACP Client)
+### D6. ACP Host (ACP Client)
 
 - **Responsibilities**: act as the ACP **client** (the role normally played by an IDE/editor); start the corresponding ACP adapter subprocess locally under the 1 agent : 1 machine rule; manage the ACP session lifecycle (new/prompt/load/cancel); handle reverse agent→client calls (file reads/writes, permission requests, and incremental `session/update` streams); **condense** agent output before returning it to D3, addressing the requirement that a channel show only start/plan/problem/end plus a link.
 - **Preset webchat admin MCP**: an entitled private webchat conversation on the
@@ -208,7 +221,7 @@ over stdio; they do not create source-level coupling to TypeScript.
   advertised through `webchat_remote_mcp_v1`; see
   [`webchat-preset-agentconnect-mcp.md`](webchat-preset-agentconnect-mcp.md).
 - **Language/dependencies**: TypeScript; **`@agentclientprotocol/sdk`** for ACP; `node:child_process` for subprocesses; `zod`.
-- **Key interfaces**: local ACP JSON-RPC in §6.3; expose the "current session context" to D8 so injected tools carry the channel/thread handle.
+- **Key interfaces**: the ACP JSON-RPC in §6.3; expose the "current session context" to D8 so injected tools carry the channel/thread handle.
 
 ### D7. ACP Adapters (Third Party)
 
@@ -217,7 +230,7 @@ over stdio; they do not create source-level coupling to TypeScript.
   - `claude-agent-acp` (official Zed adapter that drives the Claude Code CLI/harness).
   - The official Zed ACP adapter for `codex`.
   - Any other ACP-compatible agent is plug-and-play, which is ACP's core value.
-- **Runtime form**: D6 starts the adapter as a subprocess over stdio, typically through `npx` or a binary. ACP registry configuration gives the ACP Host the startup command for each runtime.
+- **Runtime form** (self-hosted): D6 starts the adapter as a subprocess over stdio, typically through `npx` or a binary. ACP registry configuration gives the ACP Host the startup command for each runtime. In the pool, D6 instead launches a sandbox pod and dials its shim, carrying the same stdio JSON-RPC stream over that connection.
 - **Key interface**: ACP (§6.3) upward. The harness-specific interface below it is outside the daemon.
 
 ### D8. MCP Tool Server
@@ -252,7 +265,7 @@ over stdio; they do not create source-level coupling to TypeScript.
 ### D11. Local Store
 
 - **Responsibilities**: session state; local cache of routing and cron definitions for degraded operation; message bodies, transcripts, display-name caches, durable ingress rows, and other daemon-local continuity data. The centralized side stores only session metadata and summaries.
-- **Choice**: **SQLite** through Node's built-in `node:sqlite` synchronous API, with daemon-owned schema initialization and migrations.
+- **Choice** (self-hosted): **SQLite** through Node's built-in `node:sqlite` synchronous API, with daemon-owned schema initialization and migrations. A pool member instead runs this whole surface on the install's shared PostgreSQL data plane and opens no SQLite file at all.
 - **Key interface**: accessed only by modules inside the daemon.
 
 ### D12. Telemetry Reporter
@@ -265,27 +278,27 @@ over stdio; they do not create source-level coupling to TypeScript.
 
 ## 5. Technology Choice Summary
 
-| Dimension                | Choice                                         | Rationale in one sentence                                                                                                                          |
-| ------------------------ | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Primary language**     | TypeScript / Node.js 24.12+                    | Keep daemon-owned adapters in-process and share the `protocol` package across daemon/CP. ACP/MCP remain language-neutral stdio boundaries; see §4. |
-| **Monorepo**             | pnpm workspaces                                | Keep `protocol`, `daemon`, `control-plane`, and `web` in one repository and prevent type drift.                                                    |
-| **Protocol/validation**  | zod (shared schema)                            | One schema provides runtime validation and exported TypeScript types across processes.                                                             |
-| **ACP library**          | `@agentclientprotocol/sdk`                     | Drive ACP adapters over stdio JSON-RPC.                                                                                                            |
-| **ACP adapters**         | ACP registry executables                       | Keep harness-specific runtime implementations outside AgentConnect product code.                                                                   |
-| **MCP injection**        | `@modelcontextprotocol/sdk`                    | Expose daemon-owned messaging, collaboration, memory, and orchestration tools.                                                                     |
-| **Slack**                | `@slack/bolt` + `@slack/web-api`               | Support direct Socket Mode and daemon-owned outbound clients, with relay-delivered shared ingress.                                                 |
-| **Telegram**             | `grammY`                                       | TypeScript-first Telegram bot framework.                                                                                                           |
-| **WebSocket**            | `ws`                                           | Lightweight bidirectional control connection.                                                                                                      |
-| **CP backend**           | Fastify + Prisma                               | Fast server plus a type-safe ORM.                                                                                                                  |
-| **CP database**          | PostgreSQL                                     | Configuration, metadata, authorization, and audit data.                                                                                            |
-| **Daemon local storage** | SQLite (`node:sqlite`)                         | Embedded storage for session continuity and degraded autonomy.                                                                                     |
-| **Web UI**               | React + Next.js + Tailwind                     | Shared TypeScript types and a responsive console.                                                                                                  |
-| **Secrets**              | `SecretCipher` with pluggable providers        | Apply the configured storage transform and keep secret values out of read APIs; encrypt at rest when an encrypting provider is enabled.            |
-| **Observability**        | OpenTelemetry                                  | Produce telemetry at the daemon edge and export through the configured collector path.                                                             |
-| **Process management**   | `node:child_process`                           | Start ACP adapter and model subprocesses.                                                                                                          |
-| **cron**                 | `croner`                                       | Pure JavaScript scheduling with time-zone support.                                                                                                 |
-| **git**                  | `simple-git`                                   | Manage repository workspaces.                                                                                                                      |
-| **GitHub integration**   | GitHub App credentials and webhook event flows | Keep repository authorization and GitHub-triggered work explicit; see the dedicated GitHub design documents.                                       |
+| Dimension                | Choice                                                                           | Rationale in one sentence                                                                                                                          |
+| ------------------------ | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Primary language**     | TypeScript / Node.js 24.12+                                                      | Keep daemon-owned adapters in-process and share the `protocol` package across daemon/CP. ACP/MCP remain language-neutral stdio boundaries; see §4. |
+| **Monorepo**             | pnpm workspaces                                                                  | Keep `protocol`, `daemon`, `control-plane`, and `web` in one repository and prevent type drift.                                                    |
+| **Protocol/validation**  | zod (shared schema)                                                              | One schema provides runtime validation and exported TypeScript types across processes.                                                             |
+| **ACP library**          | `@agentclientprotocol/sdk`                                                       | Drive ACP adapters over stdio JSON-RPC.                                                                                                            |
+| **ACP adapters**         | ACP registry executables                                                         | Keep harness-specific runtime implementations outside AgentConnect product code.                                                                   |
+| **MCP injection**        | `@modelcontextprotocol/sdk`                                                      | Expose daemon-owned messaging, collaboration, memory, and orchestration tools.                                                                     |
+| **Slack**                | `@slack/bolt` + `@slack/web-api`                                                 | Support direct Socket Mode and daemon-owned outbound clients, with relay-delivered shared ingress.                                                 |
+| **Telegram**             | `grammY`                                                                         | TypeScript-first Telegram bot framework.                                                                                                           |
+| **WebSocket**            | `ws`                                                                             | Lightweight bidirectional control connection.                                                                                                      |
+| **CP backend**           | Fastify + Prisma                                                                 | Fast server plus a type-safe ORM.                                                                                                                  |
+| **CP database**          | PostgreSQL                                                                       | Configuration, metadata, authorization, and audit data.                                                                                            |
+| **Daemon durable store** | SQLite (`node:sqlite`) self-hosted; the shared PostgreSQL data plane in the pool | Session continuity and degraded autonomy, from an embedded file on a host you operate or one install-level database.                               |
+| **Web UI**               | React + Next.js + Tailwind                                                       | Shared TypeScript types and a responsive console.                                                                                                  |
+| **Secrets**              | `SecretCipher` with pluggable providers                                          | Apply the configured storage transform and keep secret values out of read APIs; encrypt at rest when an encrypting provider is enabled.            |
+| **Observability**        | OpenTelemetry                                                                    | Produce telemetry at the daemon edge and export through the configured collector path.                                                             |
+| **Process management**   | `node:child_process`                                                             | Start ACP adapter and model subprocesses.                                                                                                          |
+| **cron**                 | `croner`                                                                         | Pure JavaScript scheduling with time-zone support.                                                                                                 |
+| **git**                  | `simple-git`                                                                     | Manage repository workspaces.                                                                                                                      |
+| **GitHub integration**   | GitHub App credentials and webhook event flows                                   | Keep repository authorization and GitHub-triggered work explicit; see the dedicated GitHub design documents.                                       |
 
 ---
 
@@ -344,9 +357,9 @@ daemon with the current Control Plane snapshot.
 - **Telegram**: `grammY` long polling (or webhook); send through `sendMessage`.
 - The adapter normalizes inbound events into `NormalizedMessage` (§6.6) and submits them to D4. **The Control Plane is never involved.**
 
-### 6.3 Local ACP: ACP Host ↔ ACP Adapter (JSON-RPC 2.0 over stdio)
+### 6.3 Daemon-owned ACP: ACP Host ↔ ACP Adapter (JSON-RPC 2.0 over stdio)
 
-The ACP Host acts as the **client** and the ACP adapter as the **agent**. They are local subprocesses connected through stdio, with no network hop. Core ACP-standard methods:
+The ACP Host acts as the **client** and the ACP adapter as the **agent**. Self-hosted they are local subprocesses connected through stdio, with no network hop; in the pool the same stdio JSON-RPC rides the shim connection to the sandbox pod. The Control Plane is on neither path. Core ACP-standard methods:
 
 **client → agent**
 
@@ -433,7 +446,7 @@ A user posts in a Slack thread
  → Local Router (D4) matches an agent from the local routing table
    (@mention / keyword / auto)
  → ACP Host (D6) calls session/prompt for that session
-   (local stdio, no network)
+   (local stdio self-hosted; the shim connection in the pool)
  → claude-agent-acp (D7) drives the model; session/update streams back to D6
  → D6 condenses output: the channel receives only start/plan/problem/end + link
  → To message another channel or invoke another agent, the model calls

@@ -11,7 +11,8 @@
     Direct platform connections terminate on daemons. Slack and Lark / Feishu HTTP
     callbacks, GitHub and generic webhooks, and webchat enter through an optional
     relay. The Control Plane manages orchestration and never carries live message
-    traffic. Agents run locally behind ACP inside each daemon.
+    traffic. Each daemon owns its agents behind ACP, which never crosses the
+    Control Plane.
   </desc>
 
   <defs>
@@ -236,7 +237,7 @@
   </g>
   <text x="622" y="650" class="box-title">Daemon instances</text>
   <text x="622" y="687" class="small">
-    Workspaces, sessions, and agent execution stay local
+    Workspaces, sessions, and agent execution stay on the daemon
   </text>
 
   <rect
@@ -263,9 +264,9 @@
     stroke="#fb923c"
     stroke-width="2"
   />
-  <text x="1045" y="778" text-anchor="middle" class="pill">Local ACP</text>
+  <text x="1045" y="778" text-anchor="middle" class="pill">Daemon-owned ACP</text>
   <text x="1045" y="813" text-anchor="middle" class="small">
-    in-process / local IPC
+    local IPC, or one hop to a sandbox
   </text>
 
   <rect
@@ -281,7 +282,7 @@
   <text x="1359" y="772" text-anchor="middle" class="pill">Claude · Codex</text>
   <text x="1359" y="805" text-anchor="middle" class="pill">other ACP agents</text>
   <text x="1359" y="838" text-anchor="middle" class="small">
-    local model processes
+    child process or sandbox pod
   </text>
 
   <line
