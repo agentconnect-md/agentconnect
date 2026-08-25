@@ -12,7 +12,8 @@ import {
   fetchBillingTransactions,
   fmtDecimalUsd,
   BillingShapeError,
-  fmtMicroUsd
+  fmtMicroUsd,
+  type BillingDebit
 } from './billing-api'
 
 const tx = { type: 'credit', id: 't1', kind: 'purchase', amountMicro: 25_000_000, at: '2026-08-17T09:25:33.751Z' }
@@ -116,16 +117,21 @@ describe('assertTransactionsPage', () => {
     expect(() => assertTransactionsPage({ items: [{ ...tx, note: 7 }], nextCursor: null })).toThrow(BillingShapeError)
   })
 
-  it('passes a debit’s agent split through UNREAD rather than refusing the page', () => {
-    // Deliberately unmirrored: this feed is authorized on org membership alone, so its agent
-    // ids are the org's and not the viewer's. Nothing declares the field, so nothing can
-    // render it — and a service that sends one must still not take the page down.
-    expect(() =>
-      assertTransactionsPage({
-        items: [{ ...debit, agents: [{ agentId: 'agt_1', amount: '0.4' }] }],
-        nextCursor: null
-      })
-    ).not.toThrow()
+  it('mirrors a debit’s agent split, and drops a malformed one instead of failing the page', () => {
+    // The ids are the ORG's, not the viewer's — this boundary only carries them; the row
+    // resolves them against the viewer's roster before naming one (BillingView `agentSplit`).
+    const page = { items: [{ ...debit, agents: [{ agentId: 'agt_1', amount: '0.4' }] }], nextCursor: null }
+    expect(() => assertTransactionsPage(page)).not.toThrow()
+    expect((page.items[0] as unknown as BillingDebit).agents).toEqual([{ agentId: 'agt_1', amount: '0.4' }])
+
+    // The money on the row is the fact; the attribution is a garnish, so a bad split is
+    // dropped rather than taking a statement line down with it. ABSENT stays valid.
+    for (const agents of [[{ agentId: 'agt_1', amount: 0.4 }], [{ amount: '0.4' }], 'nope', 7]) {
+      const bad = { items: [{ ...debit, agents }], nextCursor: null }
+      expect(() => assertTransactionsPage(bad)).not.toThrow()
+      expect((bad.items[0] as unknown as BillingDebit).agents).toBeUndefined()
+    }
+    expect(() => assertTransactionsPage({ items: [debit], nextCursor: null })).not.toThrow()
   })
 
   it('refuses a row whose type this build cannot read', () => {

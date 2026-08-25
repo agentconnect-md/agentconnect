@@ -56,13 +56,12 @@ export interface BillingAccount {
 // `note` is optional for the same reason `type` is: a service that predates it omits it, and
 // the console routinely runs ahead of that image. Absent or null ⇒ the row renders without it.
 //
-// The debit arm's `agents` — the control plane's per-agent split of a charge — is DELIBERATELY
-// not mirrored. The billing service authorizes on org membership alone; it holds no Agent or
-// Session visibility, so its `agentId`s are the org's, not the viewer's. Naming one to every
-// member is the discovery that `docs/designs/authorization-policy.md` §4 forbids and a second
-// attribution surface beside the viewer-scoped one in `session-visibility.md` §5, whose whole
-// rule is that withheld usage comes back id-less. An opaque id is still an existence
-// disclosure. Mirroring it needs a viewer-scoped response first — see #1480.
+// The debit arm's `agents` is the billing service's per-agent split of a charge. The service
+// authorizes on org membership alone, so its `agentId`s are the org's and NOT the viewer's:
+// the id is carried here, never rendered. The row names and pictures an agent only when the id
+// is already on the viewer's own `/agents` roster; every other part renders as a default avatar
+// and an amount, which is `session-visibility.md` §5's rule that withheld usage comes back
+// id-less, enforced on the read side because this service cannot enforce it on the write side.
 export interface BillingCredit {
   type: 'credit'
   id: string
@@ -88,6 +87,16 @@ export interface BillingDebit {
   amount: string
   /** ISO 8601 instant. */
   at: string
+  /** The charge's per-agent split. Decimal strings, same unit as `amount`. Absent or null ⇒
+   *  an older service, or a charge the service could not attribute. Ids are the ORG's — see
+   *  the note above; resolve them against the viewer's roster before naming one. */
+  agents?: BillingDebitAgent[] | null
+}
+
+export interface BillingDebitAgent {
+  agentId: string
+  /** Decimal string, NOT a number. Parse it only to display it. */
+  amount: string
 }
 
 export type BillingTransaction = BillingCredit | BillingDebit
@@ -156,6 +165,20 @@ export class BillingShapeError extends BillingError {
 
 function isFiniteNumber(v: unknown): boolean {
   return typeof v === 'number' && Number.isFinite(v)
+}
+
+// Absent/null is the older contract; anything else must be a well-formed split or it is dropped.
+function isAgentSplit(v: unknown): v is BillingDebitAgent[] | null | undefined {
+  if (v === undefined || v === null) return true
+  return (
+    Array.isArray(v) &&
+    v.every(
+      (e) =>
+        !!e &&
+        typeof (e as BillingDebitAgent).agentId === 'string' &&
+        typeof (e as BillingDebitAgent).amount === 'string'
+    )
+  )
 }
 
 // Hand-rolled rather than zod: this is the whole surface, and pulling a schema
@@ -238,9 +261,9 @@ export function assertTransactionsPage(
       // A string, and never coerced to a number here — the exact value is what the
       // service sent, and only the display rounds it.
       if (typeof t.amount !== 'string' || typeof t.period !== 'string') throw new BillingShapeError('transaction')
-      // `agents` is checked by its ABSENCE from this list, not by a rule: an unmirrored field
-      // passes through unread, which is what keeps a service that sends one from failing the
-      // page. Nothing downstream can render what nothing here declares.
+      // ABSENT is the older contract. A malformed split drops to `undefined` rather than
+      // failing the page: the money on the row is the fact, the attribution is a garnish.
+      if (!isAgentSplit(t.agents)) delete t.agents
     } else {
       throw new BillingShapeError('transaction')
     }

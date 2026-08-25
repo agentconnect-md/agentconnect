@@ -7,7 +7,7 @@
 // the purchase until the service says the payment settled. The return redirect
 // itself is never treated as proof of payment.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR, { useSWRConfig } from 'swr'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
@@ -25,6 +25,7 @@ import {
   fmtMicroUsd,
   type BillingAccount,
   type BillingPurchase,
+  type BillingDebitAgent,
   type BillingTransaction
 } from '@/lib/billing-api'
 import {
@@ -37,10 +38,12 @@ import {
 } from '@/lib/billing-activity'
 import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
+import { fetchAgents } from '@/lib/api'
+import { agentLabel, type Agent } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import { SEG_FILL, tickInterval } from '@/lib/spend-chart'
 import { consoleKeys } from '@/lib/swr-keys'
-import { LoadingState } from '@/components/marks'
+import { AgentIconView, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 
 // `.row` is a bare grid — the column template is the caller's, as a full literal.
@@ -49,6 +52,31 @@ import { Button, Icon } from '@/components/ui'
 // `auto` track sizes per-row and pulls the header out of line with the body below it.
 // Mobile scrolls the card sideways (globals' `.card:has(.row)`), so one template serves both.
 const TX_GRID = 'grid-cols-[34px_minmax(0,1fr)_132px_24px_190px] gap-2'
+
+// Agent chips a usage row shows before the tail becomes a `+N` count.
+const TX_AGENT_CHIPS = 4
+
+// A debit's per-agent split, ordered biggest spend first. Every part gets its own entry —
+// what a viewer's roster decides is whether it is NAMED, not whether it appears. An id the
+// roster cannot resolve is carried as `agent: undefined` and its id is dropped here, so the
+// row renders a default avatar and an amount: `session-visibility.md` §5's rule that withheld
+// usage comes back id-less. Zero and unparseable parts are noise and are dropped.
+export function agentSplit(
+  parts: BillingDebitAgent[] | null | undefined,
+  agentById: Map<string, Agent>
+): { key: string; agent?: Agent; amount: string }[] {
+  if (!parts?.length) return []
+  return parts
+    .map((part, i) => ({ part, i, value: Number(part.amount) }))
+    .filter(({ value }) => Number.isFinite(value) && value !== 0)
+    .sort((a, b) => b.value - a.value)
+    .map(({ part, i }) => {
+      const agent = agentById.get(part.agentId)
+      // The key is positional for an unresolved part — a React key is not rendered, but
+      // keeping the id out of the component entirely is what makes that easy to review.
+      return { key: agent ? part.agentId : `hidden-${i}`, agent, amount: part.amount }
+    })
+}
 
 // The Transactions filter, the same Usage / Top-ups split the Activity chart offers — plus
 // `all`, which is the table's own default and the whole ledger it always showed. `type` goes
@@ -592,6 +620,13 @@ function MembersDontPayCard() {
 
 export default function BillingView() {
   const { activeOrg, myRole, loading: orgLoading } = useOrgs()
+  // The viewer's OWN roster — `/agents` is visibility-scoped, so an id missing from it is an
+  // id this viewer may not learn. Read on the console data provider's own SWR key so this
+  // shares its cache instead of fetching twice, and reads as empty (⇒ nothing named) if it fails.
+  const { data: agents } = useSWR<Agent[]>(consoleKeys.agents(activeOrg?.id ?? null), ([, orgId]) =>
+    fetchAgents(orgId as string)
+  )
+  const agentById = useMemo(() => new Map((agents ?? []).map((a) => [a.id, a])), [agents])
   const orgId = activeOrg?.id ?? null
   const router = useRouter()
   const pathname = usePathname()
@@ -998,9 +1033,54 @@ export default function BillingView() {
                         >
                           {credit ? t.kind : 'usage'}
                         </span>
-                        {/* No agent attribution here, deliberately: this feed is authorized on
-                            org membership alone, so naming the agent behind a charge would
-                            hand every member a resource-existence oracle. See billing-api.ts. */}
+                        {/* Who the charge is attributed to. An agent this viewer's roster
+                            cannot resolve still gets a chip — a default avatar and an amount,
+                            never a name and never its id. See billing-api.ts. */}
+                        {!credit &&
+                          (() => {
+                            const split = agentSplit(t.agents, agentById)
+                            // The description column is shared with the amount; cap the chips
+                            // so a period spanning the whole fleet cannot push it off the row.
+                            const shown = split.slice(0, TX_AGENT_CHIPS)
+                            const rest = split.length - shown.length
+                            return (
+                              <>
+                                {shown.map((part) => (
+                                  <span
+                                    key={part.key}
+                                    data-tx-agent="true"
+                                    className={`inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) ${
+                                      part.agent ? 'pr-[7px]' : ''
+                                    }`}
+                                    title={
+                                      part.agent ? `${agentLabel(part.agent)} — $${part.amount}` : `$${part.amount}`
+                                    }
+                                  >
+                                    <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
+                                      {part.agent ? (
+                                        <AgentIconView icon={part.agent.icon} runtime={part.agent.runtime} size={17} />
+                                      ) : (
+                                        // The default avatar: this viewer may not learn which
+                                        // agent this is, only that the charge has another part.
+                                        <span
+                                          data-tx-agent-default="true"
+                                          className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
+                                        >
+                                          <Icon name="bot" size={10} strokeWidth={2} />
+                                        </span>
+                                      )}
+                                    </span>
+                                    {part.agent && (
+                                      <span className="max-w-[120px] truncate">{agentLabel(part.agent)}</span>
+                                    )}
+                                  </span>
+                                ))}
+                                {rest > 0 && (
+                                  <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{rest}</span>
+                                )}
+                              </>
+                            )
+                          })()}
                         {/* Free operator text, rendered as TEXT — truncated, with the whole
                             note on hover, so a long one cannot push the amount column out. */}
                         {credit && t.note && (
