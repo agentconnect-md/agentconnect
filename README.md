@@ -40,7 +40,6 @@
 <p align="center">
   <a href="https://slack.agentconnect.md"><img src="https://custom-icon-badges.demolab.com/badge/Slack-4A154B?logo=slack&logoColor=fff" alt="Join AgentConnect on Slack" /></a>
   <a href="https://x.com/getAgentConnect"><img src="https://img.shields.io/twitter/follow/getAgentConnect?style=social" height="28" alt="Follow @getAgentConnect on X" /></a>
-  <a href="https://www.youtube.com/@agentconnect-md"><img src="https://img.shields.io/badge/YouTube-FF0000?logo=youtube&logoColor=fff" alt="Watch AgentConnect on YouTube" /></a>
 </p>
 
 <p align="center">
@@ -68,6 +67,10 @@ work can begin from a message, issue, pull request, webhook, or schedule.
 
 <p align="center">
   <a href="https://agentconnect.md"><img src="docs/assets/agents-across-channels.png" alt="People and agents working together in Slack, Telegram, and Discord conversations and in a GitHub pull request review" width="880" /></a>
+</p>
+
+<p align="center">
+  <sub>▶&nbsp;<a href="https://www.youtube.com/watch?v=KA7xHF5JbJc"><strong>Watch the two-minute introduction</strong></a></sub>
 </p>
 
 ## Why AgentConnect?
