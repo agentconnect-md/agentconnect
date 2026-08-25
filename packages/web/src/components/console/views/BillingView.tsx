@@ -25,7 +25,6 @@ import {
   fmtMicroUsd,
   type BillingAccount,
   type BillingPurchase,
-  type BillingDebitAgent,
   type BillingTransaction
 } from '@/lib/billing-api'
 import {
@@ -38,7 +37,7 @@ import {
 } from '@/lib/billing-activity'
 import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
-import { fetchAgents, fetchAttributableAgentIds } from '@/lib/api'
+import { fetchAgents, fetchGatewayAttribution } from '@/lib/api'
 import { agentLabel, type Agent } from '@/lib/data'
 import { sumAmounts } from '@/lib/amount'
 import { useOrgs } from '@/lib/org-context'
@@ -66,42 +65,40 @@ export interface TxAgentChip {
   amount: string
 }
 
-// A debit's per-agent split, reduced to what this viewer is already entitled to know.
+// What a usage row may say about who spent the money.
 //
-// Naming an agent here needs BOTH predicates that `session-visibility.md` §5 makes usage
-// attribution intersect, and neither comes from the billing service — it authorizes on org
-// membership alone, so its ids are the ORG's:
+// Every figure here comes from `projection` — the CP's viewer-scoped `/usage` read for this
+// row's period, gateway-scoped like the charge itself. That is the whole point: the billing
+// service's own split is org-scoped in BOTH its ids and its amounts, so an agent with $1 of
+// readable spend and $99 of private spend would be named for $100. The projection hands over
+// the $1 and keeps the $99 in the residual, which is `session-visibility.md` §5's rule that
+// withheld usage comes back id-less — and what is withheld is withheld by EITHER predicate.
 //
-//   `agentById`     — Agent visibility, from the viewer's own `/agents` roster (name + icon);
-//   `attributable`  — the Session predicate, from the CP's viewer-scoped `/usage` projection
-//                     for this row's period. An id in it is one the console ALREADY attributes
-//                     to this viewer for that window, so naming it discloses nothing new.
+// `agentById` supplies only the name and icon: an id the roster cannot resolve is not named,
+// and its amount falls into the residual like any other withheld spend.
 //
-// Everything else — a restricted agent, or spend from a session this viewer may not read —
-// collapses into ONE id-less rollup carrying only its summed amount. Not one entry each:
-// the row's own total already discloses the sum, but the partition and the number of
-// withheld contributors are not the viewer's to learn, and `unattributed` carries no count
-// for the same reason. Zero and unparseable parts are noise and are dropped.
-export function agentSplit(
-  parts: BillingDebitAgent[] | null | undefined,
-  agentById: Map<string, Agent>,
-  attributable: ReadonlySet<string>
+// The residual is the ROW's total minus what was named, so the chips always add up to the line
+// they sit on. If naming exceeds the row — a partial period, or a settlement this projection's
+// window does not describe — the row is not reconcilable and gets NO attribution rather than an
+// overstated chip.
+export function rowAttribution(
+  rowAmount: string,
+  projection: ReadonlyMap<string, string> | undefined,
+  agentById: Map<string, Agent>
 ): TxAgentChip[] {
-  if (!parts?.length) return []
+  if (!projection?.size) return []
   const named: { chip: TxAgentChip; value: number }[] = []
-  const withheld: string[] = []
-  for (const part of parts) {
-    const value = Number(part.amount)
-    if (!Number.isFinite(value) || value === 0) continue
-    const agent = attributable.has(part.agentId) ? agentById.get(part.agentId) : undefined
-    // The id never enters a chip it cannot name — `key` included, so it cannot leak through
-    // a prop that ends up serialized.
-    if (agent) named.push({ chip: { key: part.agentId, agent, amount: part.amount }, value })
-    else withheld.push(part.amount)
+  for (const [agentId, amount] of projection) {
+    const agent = agentById.get(agentId)
+    const value = Number(amount)
+    if (!agent || !Number.isFinite(value) || value === 0) continue
+    named.push({ chip: { key: agentId, agent, amount }, value })
   }
+  const residual = sumAmounts([rowAmount, ...named.map(({ chip }) => `-${chip.amount}`)])
+  if (residual.startsWith('-')) return []
   named.sort((a, b) => b.value - a.value)
   const chips = named.map(({ chip }) => chip)
-  if (withheld.length) chips.push({ key: 'withheld', amount: sumAmounts(withheld) })
+  if (Number(residual) > 0) chips.push({ key: 'withheld', amount: residual })
   return chips
 }
 
@@ -111,9 +108,6 @@ const nextPeriod = (period: string) => {
   const [y, m] = period.split('-').map(Number) as [number, number]
   return m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`
 }
-
-// Shared so a row with no projection yet reuses one empty set rather than allocating per render.
-const EMPTY_ATTRIBUTION: ReadonlySet<string> = new Set()
 
 // The Transactions filter, the same Usage / Top-ups split the Activity chart offers — plus
 // `all`, which is the table's own default and the whole ledger it always showed. `type` goes
@@ -801,24 +795,22 @@ export default function BillingView() {
   const txItems = sideType ? loaded.filter((t) => t.type === sideType) : loaded
   const nextCursor = mine ? mine.nextCursor : (transactions.data?.nextCursor ?? null)
 
-  // The Session half of the attribution predicate, one read for every period on screen. The
-  // CP's `/usage` is the viewer-scoped projection: an id it returns for a window is one the
-  // console already attributes to this viewer there, so naming the same agent on a charge for
-  // that window discloses nothing new. Per PERIOD and never unioned across them — an agent
-  // attributable in one month is not thereby attributable in another. Fail closed on error.
+  // Where a usage row's attribution comes from: the CP's viewer-scoped `/usage` projection,
+  // one read per period on screen. Per PERIOD and never unioned across them — spend a viewer
+  // may attribute in one month says nothing about another. Fail closed on error.
   const periods = [...new Set(txItems.filter((t) => t.type === 'debit').map((t) => t.period))].sort()
-  const attribution = useSWR<Map<string, Set<string>>>(
+  const attribution = useSWR<Map<string, Map<string, string>>>(
     orgId && periods.length ? consoleKeys.billingAttribution(orgId, periods.join(',')) : null,
     async ([, , , joined]) => {
       const wanted = (joined as string).split(',')
-      const sets = await Promise.all(
-        wanted.map((p) => fetchAttributableAgentIds(periodStart(p), periodStart(nextPeriod(p)), orgId!))
+      const reads = await Promise.all(
+        wanted.map((p) => fetchGatewayAttribution(periodStart(p), periodStart(nextPeriod(p)), orgId!))
       )
-      return new Map(wanted.map((p, i) => [p, sets[i]!]))
+      return new Map(wanted.map((p, i) => [p, reads[i]!]))
     }
   )
-  const attributableIn = (period: string): ReadonlySet<string> =>
-    (attribution.error ? undefined : attribution.data?.get(period)) ?? EMPTY_ATTRIBUTION
+  const attributionIn = (period: string): ReadonlyMap<string, string> | undefined =>
+    attribution.error ? undefined : attribution.data?.get(period)
 
   // Deep-link landing for a console that does not offer billing: the rail hides
   // the entry, so anyone here typed the URL or followed an old bookmark. Gated on
@@ -1100,7 +1092,7 @@ export default function BillingView() {
                             with a default avatar. See `agentSplit` and billing-api.ts. */}
                         {!credit &&
                           (() => {
-                            const split = agentSplit(t.agents, agentById, attributableIn(t.period))
+                            const split = rowAttribution(t.amount, attributionIn(t.period), agentById)
                             // The description column shares the row with the amount, so the
                             // NAMED chips are capped. The rollup is appended after the cap: it
                             // is the one chip that must never be hidden behind a `+N`.

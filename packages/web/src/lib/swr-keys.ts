@@ -54,8 +54,8 @@ export const consoleKeys = {
     orgId: string | null | undefined,
     side: Side = 'all' as Side
   ) => consoleKey(orgId, 'billing-transactions', side),
-  /** The agents a viewer may see spend attributed to, per UTC billing period (`YYYY-MM`).
-   *  Keyed on the periods actually on screen, joined — one read serves the whole feed. */
+  /** The viewer-scoped gateway spend per agent, per UTC billing period (`YYYY-MM`). Keyed on
+   *  the periods actually on screen, joined — one read serves the whole feed. */
   billingAttribution: (orgId: string | null | undefined, periods: string) =>
     consoleKey(orgId, 'billing-attribution', periods),
   /** The credit rows of the last 30 days — paged out of the same feed, so it keys apart
