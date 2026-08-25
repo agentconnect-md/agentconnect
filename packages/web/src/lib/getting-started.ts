@@ -4,8 +4,8 @@
 // item is incomplete and vanishes for good once the list is complete — there is no
 // manual dismiss, so the only state this module owns is the pure derivation.
 //
-// Steps in the design's order: daemon → meet your agent → Slack → GitHub+repo (one
-// merged step) → first conversation → invite. The daemon step is dropped where the
+// Steps in the design's order: daemon → Slack → GitHub+repo (one merged step) →
+// first conversation → invite → session-access review. The daemon step is dropped where the
 // deployment offers the cloud pool (`poolEnabled`) — there is nothing to connect. Still not derivable client-side (left
 // out rather than faked, preset-agents.md §6.2): the "Runtime signed in"
 // needs-attention item — neither `authRequired` (absence also means probe
@@ -14,7 +14,7 @@
 // pending|ready|auth_required|failed probe status ships. Same for the per-item
 // "Ask agentconnect" automation (§6.3/§6.4 delegated writes).
 
-import { agentIsPlaced, localDaemons } from './data'
+import { localDaemons } from './data'
 import type { Agent, DaemonRow, IntegrationRow, Session } from './data'
 import type { MemberDto } from './api'
 
@@ -22,7 +22,6 @@ import type { MemberDto } from './api'
 // (open a modal, route to a page) so this stays pure and testable.
 export type GsAction =
   | { kind: 'daemon' }
-  | { kind: 'agent' }
   | { kind: 'slack'; agentId: string | null }
   | { kind: 'github'; agentId: string | null }
   | { kind: 'github-profile' }
@@ -38,13 +37,6 @@ export interface GsItem {
   done: boolean
   ctaLabel: string
   action: GsAction
-  /** Short chip after the label (e.g. "optional") — see `optional` below. */
-  tag?: string
-  /** Unlike every other item, has no live signal for "done" (it's a look-don't-touch
-   *  review, not a setup task) — `done` is hardcoded true so it never drags the ring
-   *  or blocks "Finish onboarding". `optional` keeps its CTA visible despite `done`,
-   *  since GsRows normally hides the button once an item is done. */
-  optional?: boolean
 }
 
 export interface GettingStarted {
@@ -60,6 +52,11 @@ export interface GettingStarted {
 
 // r=10.5 matches every ring svg in the design (pill, drawer header, rail).
 const RING_CIRCUMFERENCE = 2 * Math.PI * 10.5
+
+/** `stroke-dasharray` for the r=10.5 progress ring at `fraction` (0..1) complete. */
+export function ringDash(fraction: number): string {
+  return `${(fraction * RING_CIRCUMFERENCE).toFixed(2)} ${RING_CIRCUMFERENCE.toFixed(2)}`
+}
 
 export function computeGettingStarted(input: {
   agents: Agent[]
@@ -88,6 +85,10 @@ export function computeGettingStarted(input: {
    *  its CTA would land on a page with no card to scroll to. Undefined (probe in
    *  flight) keeps the step. */
   sessionAccessAvailable?: boolean
+  /** Whether the user has clicked through to review the session access policy. The CP
+   *  has no signal for a look-don't-touch review, so the caller records the click
+   *  client-side (localStorage) and feeds it back here. */
+  sessionAccessReviewed?: boolean
   /** Is the `daemon-pool` flag on for this deployment? On, agents run on the cloud pool, so
    *  "Connect a daemon" is dropped — the console offers no daemon to connect. Off (a self-hosted
    *  install) keeps it as the first step. */
@@ -104,17 +105,13 @@ export function computeGettingStarted(input: {
     githubLinked,
     githubEnabled,
     sessionAccessAvailable,
+    sessionAccessReviewed,
     poolEnabled
   } = input
   // Pick a chat-capable / bindable agent for the agent-scoped CTAs. Prefer the built-in
   // `agentconnect` preset — the canonical agent every org gets — else the first agent.
   const builtin = agents.find((a) => a.builtin)
   const firstAgent = (builtin ?? agents[0])?.id ?? null
-  // The agent step tracks the BUILT-IN preset when the org has one — the step's card
-  // (MeetYourAgents) renders that preset, so a placed custom agent alone must not tick
-  // the row while the card still shows "Set up". Orgs without the preset (older
-  // backfills) fall back to "some agent is placed".
-  const placedAgent = builtin ? agentIsPlaced(builtin) : agents.some(agentIsPlaced)
 
   const items: GsItem[] = [
     // Cloud pool on ⇒ no daemon to connect; the pool hosts the agents.
@@ -133,14 +130,6 @@ export function computeGettingStarted(input: {
             action: { kind: 'daemon' } as const
           }
         ]),
-    {
-      key: 'agent',
-      label: 'Set up your agent',
-      expl: 'Your org comes with a built-in AgentConnect agent. Place it on a daemon and pick a runtime and model so it can run — or create your own.',
-      done: placedAgent,
-      ctaLabel: 'Set up your agent',
-      action: { kind: 'agent' }
-    },
     {
       key: 'slack',
       label: 'Connect Slack',
@@ -199,22 +188,6 @@ export function computeGettingStarted(input: {
     }
   ]
 
-  // Session access lives on /settings, which no-auth deployments don't have (they
-  // bounce to /home) — gate it with the other auth-only step below. It also vanishes
-  // when SessionAccessCard itself would render nothing (`sessionAccessAvailable === false`)
-  // — same reasoning as the GitHub steps: a CTA must not point at a missing anchor.
-  if (authOn && sessionAccessAvailable !== false) {
-    items.push({
-      key: 'session-access',
-      label: 'Review session access policy',
-      expl: "Decide who can see session content synced from Slack, GitHub, and Feishu — on by default, following each platform's own access.",
-      done: true,
-      optional: true,
-      tag: 'optional',
-      ctaLabel: 'Review session access',
-      action: { kind: 'session-access' }
-    })
-  }
   if (authOn) {
     items.push({
       key: 'invite',
@@ -223,6 +196,22 @@ export function computeGettingStarted(input: {
       done: members.length > 1,
       ctaLabel: 'Invite teammates',
       action: { kind: 'members' }
+    })
+  }
+  // Session access lives on /settings, which no-auth deployments don't have (they
+  // bounce to /home) — gated like invite above. It also vanishes when SessionAccessCard
+  // itself would render nothing (`sessionAccessAvailable === false`) — same reasoning as
+  // the GitHub steps: a CTA must not point at a missing anchor. Last, as a review step.
+  if (authOn && sessionAccessAvailable !== false) {
+    items.push({
+      key: 'session-access',
+      label: 'Review session access policy',
+      expl: "Decide who can see session content synced from Slack, GitHub, and Feishu — on by default, following each platform's own access.",
+      // A look-don't-touch review has no CP signal — the caller records the CTA click
+      // client-side (`sessionAccessReviewed`) and that's what ticks the row.
+      done: !!sessionAccessReviewed,
+      ctaLabel: 'Review session access',
+      action: { kind: 'session-access' }
     })
   }
 
@@ -234,7 +223,7 @@ export function computeGettingStarted(input: {
     done,
     total,
     fraction,
-    ring: `${(fraction * RING_CIRCUMFERENCE).toFixed(2)} ${RING_CIRCUMFERENCE.toFixed(2)}`,
+    ring: ringDash(fraction),
     allDone: done === total
   }
 }

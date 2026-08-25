@@ -72,7 +72,6 @@ vi.mock('@/components/ui', () => ({
 }))
 
 import OnboardingView from './OnboardingView'
-import { FALLBACK_RUNTIME_IDS } from '@/lib/data'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -334,8 +333,8 @@ describe('onboarding — daemon online: configure + finish', () => {
   })
 })
 
-// The pool (Cloud / cluster) path: the fork appears, and picking the pool configures the
-// built-in agent against a pool member's reported capabilities without any provisioning.
+// The pool (Cloud / cluster) path: the fork appears, and picking the pool finishes right
+// there — no agent configuration, no provisioning, just the completion flag.
 describe('onboarding — pool fork', () => {
   beforeEach(() => setFlags('daemon-pool'))
 
@@ -360,45 +359,24 @@ describe('onboarding — pool fork', () => {
     expect(mocks.push).toHaveBeenCalledWith('/acme/home')
   })
 
-  it('forks after the org step and finishes right there when nothing needs configuring', async () => {
+  it('forks after the org step and finishes right there — the fork is the last step', async () => {
     await render()
     expect(host.textContent).toContain('Where to run')
     expect(host.textContent).toContain('Cluster') // self-hosted pool label (no `managed` flag)
-    await click('Finish') // pool preselected, no unplaced builtin ⇒ the fork is the last step
+    await click('Finish') // pool preselected ⇒ Finish, never a Continue
     expect(mocks.provisionDaemon).not.toHaveBeenCalled()
     expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
     expect(mocks.push).toHaveBeenCalledWith('/acme/home')
   })
 
-  it('reads runtimes from a pool member but places on the pool, not the Pod', async () => {
-    mocks.daemons = [
-      {
-        daemonId: 'pool-pod-1',
-        pool: true,
-        status: 'online',
-        name: 'ac-cloud-7f9',
-        runtimeModels: [{ runtime: 'claude', models: ['claude-sonnet-4-5'] }]
-      }
-    ]
+  it('finishes without touching the built-in agent, even an unplaced one', async () => {
     mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
     await render()
-    await click('Continue') // pool selected, builtin unplaced ⇒ runtime step
-    expect(host.textContent).toContain('Choose runtime')
-    expect(host.textContent).toContain('runtime-claude') // seeded from the pool member
-    expect(host.textContent).not.toContain('ac-cloud-7f9') // Pod identity never shown
     await click('Finish')
-    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'claude', model: 'claude-sonnet-4-5' })
-    expect(mocks.moveAgent).toHaveBeenCalledWith('ag_ac', { kind: 'pool' })
-    expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
-  })
-
-  it('with no pool member the fallback seeds the picker and nothing is placed', async () => {
-    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
-    await render()
-    await click('Continue')
-    await click('Finish')
-    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: FALLBACK_RUNTIME_IDS[0] })
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
     expect(mocks.moveAgent).not.toHaveBeenCalled()
+    expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
+    expect(mocks.push).toHaveBeenCalledWith('/acme/home')
   })
 
   it('picking Daemon at the fork routes to the connect step', async () => {

@@ -4795,6 +4795,8 @@ export interface OrgRecord {
   defaultAgentVisibility: AgentCallPolicy
   /** Console onboarding wizard done (finish OR skip) — owners of a false org get the wizard. */
   onboardingCompleted: boolean
+  /** Getting-started tutorial position: checklist steps passed (completed or skipped). */
+  gettingStartedStep: number
   /** The asking user's role in it. */
   role: OrgMemberRole
   memberCount: number
@@ -4957,6 +4959,7 @@ export interface OrgRepo {
       icon?: AgentIcon | null
       defaultAgentVisibility?: AgentCallPolicy
       onboardingCompleted?: boolean
+      gettingStartedStep?: number
     }
   ): Promise<{ id: string; name: string | null; slug: string }>
   /** Set the org's console icon descriptor (the upload/delete path). Bumps `updatedAt`

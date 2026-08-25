@@ -82,6 +82,9 @@ model Org {
   // Console onboarding wizard done — set once by an owner (finish OR skip); entering
   // an org with this false (as owner) opens the wizard instead of the console.
   onboardingCompleted    Boolean         @default(false)
+  // Getting-started tutorial position: how many checklist steps this org has passed
+  // (completed or skipped via Next). Monotonic, advanced by the console drawer.
+  gettingStartedStep     Int             @default(0)
   createdAt              DateTime        @default(now()) @db.Timestamptz(6)
   updatedAt              DateTime        @updatedAt @db.Timestamptz(6)
 

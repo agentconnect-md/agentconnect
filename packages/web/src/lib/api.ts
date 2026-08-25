@@ -1246,6 +1246,8 @@ export interface OrgDto {
   daemonCount?: number
   /** Onboarding wizard done (finish OR skip); undefined on older CPs ⇒ treat as done. */
   onboardingCompleted?: boolean
+  /** Getting-started tutorial position: checklist steps passed (completed or skipped). */
+  gettingStartedStep?: number
   createdAt: string // ISO-8601
 }
 
@@ -4411,6 +4413,8 @@ export async function updateOrg(
     defaultAgentVisibility?: AgentCallPolicy
     /** One-way — the onboarding wizard sets it on finish or skip. */
     onboardingCompleted?: true
+    /** Getting-started tutorial position — advanced by the console drawer. */
+    gettingStartedStep?: number
   }
 ): Promise<OrgDto> {
   return apiPatch<OrgDto>(`/orgs/${encodeURIComponent(orgId)}`, patch)

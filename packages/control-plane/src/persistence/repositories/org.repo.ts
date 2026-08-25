@@ -64,6 +64,7 @@ export class PgOrgRepo implements OrgRepo {
       icon: parseAgentIcon(m.org.icon),
       defaultAgentVisibility: m.org.defaultAgentVisibility as AgentCallPolicy,
       onboardingCompleted: m.org.onboardingCompleted,
+      gettingStartedStep: m.org.gettingStartedStep,
       role: m.role as OrgMemberRole,
       memberCount: m.org._count.members,
       daemonCount: m.org._count.daemons,
@@ -122,6 +123,7 @@ export class PgOrgRepo implements OrgRepo {
       icon: parseAgentIcon(org.icon),
       defaultAgentVisibility: org.defaultAgentVisibility as AgentCallPolicy,
       onboardingCompleted: org.onboardingCompleted,
+      gettingStartedStep: org.gettingStartedStep,
       role: 'owner',
       memberCount: 1,
       daemonCount: 0,
@@ -138,6 +140,7 @@ export class PgOrgRepo implements OrgRepo {
       icon?: AgentIcon | null
       defaultAgentVisibility?: AgentCallPolicy
       onboardingCompleted?: boolean
+      gettingStartedStep?: number
     }
   ): Promise<{ id: string; name: string | null; slug: string }> {
     const org = await this.db.org.update({
@@ -149,7 +152,8 @@ export class PgOrgRepo implements OrgRepo {
           ? { icon: patch.icon === null ? Prisma.JsonNull : (patch.icon as Prisma.InputJsonValue) }
           : {}),
         ...(patch.defaultAgentVisibility !== undefined ? { defaultAgentVisibility: patch.defaultAgentVisibility } : {}),
-        ...(patch.onboardingCompleted !== undefined ? { onboardingCompleted: patch.onboardingCompleted } : {})
+        ...(patch.onboardingCompleted !== undefined ? { onboardingCompleted: patch.onboardingCompleted } : {}),
+        ...(patch.gettingStartedStep !== undefined ? { gettingStartedStep: patch.gettingStartedStep } : {})
       }
     })
     return { id: org.id, name: org.name, slug: org.slug }
