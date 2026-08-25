@@ -83,7 +83,6 @@ vi.mock('@/components/ui', () => ({
 }))
 
 import OnboardingView from './OnboardingView'
-import { FALLBACK_RUNTIME_IDS } from '@/lib/data'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -292,8 +291,9 @@ describe('onboarding — configure the built-in agent', () => {
   })
 })
 
-// The cloud pool hosts the agents, so there is nothing to connect: no mint, no waiting
-// card, and the built-in agent is configured without a placement move.
+// The cloud pool hosts the agents, so there is nothing to connect and nothing to pin the
+// built-in preset to: no mint, no waiting card, no configure phase — straight to the
+// checklist, whose agent row owns the setup.
 describe('onboarding — cloud pool', () => {
   beforeEach(() => setFlags('daemon-pool'))
 
@@ -305,39 +305,12 @@ describe('onboarding — cloud pool', () => {
     expect(host.textContent).toContain('Welcome to AgentConnect')
   })
 
-  it('configures the built-in agent with no daemon row and no placement move', async () => {
+  it('skips the configure phase even with an unplaced built-in agent', async () => {
     mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
     await render()
-    expect(host.textContent).toContain('Configure')
-    expect(host.textContent).not.toContain('just connected') // no "Runs on" row
-    await click('Save and continue')
-    // No daemon reports runtimes on the pool, so the static fallback seeds the picker. With no
-    // pool member either there is nothing to place onto — the agent editor owns that choice.
-    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: FALLBACK_RUNTIME_IDS[0] })
-    expect(mocks.moveAgent).not.toHaveBeenCalled()
+    expect(host.textContent).not.toContain('Configure')
     expect(host.textContent).toContain('Welcome to AgentConnect')
-  })
-
-  // GET /daemons carries the install-wide pool's member Pods in every org's fleet. They are
-  // replaceable identities: one may seed the runtime/model pickers, but the placement names
-  // the POOL, never a Pod, and nothing here "just connected".
-  it('reads runtimes from a pool member but places on the pool, not the Pod', async () => {
-    mocks.daemons = [
-      {
-        daemonId: 'pool-pod-1',
-        pool: true,
-        status: 'online',
-        name: 'ac-cloud-7f9',
-        runtimeModels: [{ runtime: 'claude', models: ['claude-sonnet-4-5'] }]
-      }
-    ]
-    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
-    await render()
-    expect(host.textContent).toContain('runtime-claude') // seeded from the pool member
-    expect(host.textContent).not.toContain('just connected')
-    expect(host.textContent).not.toContain('ac-cloud-7f9')
-    await click('Save and continue')
-    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'claude', model: 'claude-sonnet-4-5' })
-    expect(mocks.moveAgent).toHaveBeenCalledWith('ag_ac', { kind: 'pool' })
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
   })
 })

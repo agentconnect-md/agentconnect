@@ -28,7 +28,6 @@ import {
   agentLabel,
   localDaemons,
   modelLabel,
-  poolLabel,
   preferredModelFor,
   loginRequiredRuntimeIds
 } from '@/lib/data'
@@ -36,8 +35,8 @@ import type { Agent, DaemonRow } from '@/lib/data'
 import type { DaemonConnectDto } from '@/lib/api'
 
 // Onboarding (design: "AgentConnect Onboarding"). Where the deployment offers the cloud
-// pool (`daemon-pool`) there is nothing to connect, so the daemon phase is skipped
-// entirely and onboarding opens on the built-in agent's configuration. Self-hosted
+// pool (`daemon-pool`) there is nothing to connect NOR to pin the built-in agent to, so
+// both the daemon and configure phases are skipped straight to the checklist. Self-hosted
 // (flag off) keeps the flow below unchanged: connecting a daemon is the ONLY
 // blocking step; when one comes online the screen transitions in place and reveals the
 // SAME getting-started checklist the console shows (lib/getting-started.ts). No more
@@ -101,38 +100,26 @@ export default function OnboardingView() {
   // the checklist reveal: auto-assign it to that daemon and let the user pick a runtime +
   // model (design: the built-in agent replaces "create your first agent"). The preset
   // ships unplaced (daemon '—', deferred runtime); it's ready once both are set. Older
-  // orgs without the preset just skip straight to the reveal.
+  // orgs without the preset just skip straight to the reveal. Pool mode skips this phase
+  // too — nothing "just connected" to pin to, and the checklist's agent row (expanded by
+  // default on the pool) owns the setup instead.
   const builtinAgent = agents.find((a) => a.builtin)
   const servingDaemon = machines.find((d) => d.status === 'online') ?? machines.find(daemonCompletesOnboarding)
-  // The fleet list includes the install-wide pool's member Pods, which are replaceable
-  // identities — pinning the preset to one is never right. So pool mode has NO concrete
-  // placement target here (the agent editor owns the Cloud choice); one live member still
-  // stands in for the pool's REPORTED runtimes/models, the same seam the edit form's
-  // capability source uses. Off the pool both are the daemon we just brought online.
-  const placementDaemon = cloudDaemon ? undefined : servingDaemon
-  const capabilityDaemon = cloudDaemon
-    ? (daemons.find((d) => d.pool && d.status === 'online') ?? daemons.find((d) => d.pool))
-    : servingDaemon
-  // Placing on the pool needs a pool that exists; without one the agent editor owns the choice.
-  const poolTarget = cloudDaemon && capabilityDaemon !== undefined
-  const needsAgentSetup = !!builtinAgent && (cloudDaemon || !!placementDaemon) && !agentIsPlaced(builtinAgent)
+  const needsAgentSetup = !cloudDaemon && !!builtinAgent && !!servingDaemon && !agentIsPlaced(builtinAgent)
   const [skipSetup, setSkipSetup] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveErr, setSaveErr] = useState<string | null>(null)
 
   // Runtime becomes mandatory at placement, so set it FIRST, then move onto the daemon
   // (the CP rejects a move on a runtime-less agent). A placed agent flips needsAgentSetup
-  // off by itself; latching `skipSetup` also advances the pool case, where nothing moved.
+  // off by itself; `skipSetup` covers the save-raced edge until the refresh lands.
   const saveAgentSetup = async (runtime: string, model: string) => {
-    if (!builtinAgent) return
+    if (!builtinAgent || !servingDaemon) return
     setSaving(true)
     setSaveErr(null)
     try {
       await updateAgent(builtinAgent.id, { runtime, ...(model ? { model } : {}) })
-      // Onto the machine just connected, or — on the pool — onto the POOL itself. A pool
-      // placement names the pool, never the member Pod whose capabilities seeded the form.
-      if (placementDaemon) await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: placementDaemon.daemonId })
-      else if (poolTarget) await moveAgent(builtinAgent.id, { kind: 'pool' })
+      await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: servingDaemon.daemonId })
       await refresh()
       setSkipSetup(true)
     } catch (e) {
@@ -260,9 +247,7 @@ export default function OnboardingView() {
       ) : needsAgentSetup && !skipSetup ? (
         <ConfigureAgent
           agent={builtinAgent!}
-          daemon={capabilityDaemon}
-          runsOn={placementDaemon}
-          poolTarget={poolTarget}
+          daemon={servingDaemon!}
           saving={saving}
           err={saveErr}
           onSave={saveAgentSetup}
@@ -412,38 +397,30 @@ function ConnectDaemon({
 function ConfigureAgent({
   agent,
   daemon,
-  runsOn,
-  poolTarget,
   saving,
   err,
   onSave,
   onSkip
 }: {
   agent: Agent
-  /** Whose reported runtimes/models seed the pickers — a pool member on the pool, else the
-   *  just-connected daemon. Absent ⇒ the static fallback list. Never a placement. */
-  daemon?: DaemonRow
-  /** The machine this agent is being placed onto — absent on the pool, which has no member
-   *  identity to pin to. */
-  runsOn?: DaemonRow
-  /** Pool mode with a live pool: the agent lands on the pool itself. */
-  poolTarget: boolean
+  /** The just-connected daemon: both the placement target and the picker seed. */
+  daemon: DaemonRow
   saving: boolean
   err: string | null
   onSave: (runtime: string, model: string) => void
   onSkip: () => void
 }) {
-  const runtimeIds = daemon?.runtimeModels.length ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
+  const runtimeIds = daemon.runtimeModels.length ? daemon.runtimeModels.map((r) => r.runtime) : FALLBACK_RUNTIME_IDS
   // Logged-out runtimes are marked, not blocked; the default just prefers a signed-in
   // one so a first agent starts answerable where the daemon allows it.
-  const runtimesNeedingLogin = daemon ? loginRequiredRuntimeIds(daemon) : []
+  const runtimesNeedingLogin = loginRequiredRuntimeIds(daemon)
   const defaultRuntime = runtimeIds.find((id) => !runtimesNeedingLogin.includes(id)) ?? runtimeIds[0] ?? ''
   const [runtime, setRuntime] = useState('') // '' = untouched
   const effectiveRuntime = runtime && runtimeIds.includes(runtime) ? runtime : defaultRuntime
-  const models = daemon?.runtimeModels.find((r) => r.runtime === effectiveRuntime)?.models ?? []
+  const models = daemon.runtimeModels.find((r) => r.runtime === effectiveRuntime)?.models ?? []
   const [model, setModel] = useState('')
   // Keep the selection valid as the runtime (and so the model set) changes.
-  const selectedModel = models.includes(model) ? model : daemon ? preferredModelFor(daemon, effectiveRuntime) : ''
+  const selectedModel = models.includes(model) ? model : preferredModelFor(daemon, effectiveRuntime)
 
   return (
     <div className="flex w-full max-w-[520px] flex-col gap-[22px]">
@@ -458,33 +435,21 @@ function ConfigureAgent({
           Configure {agentLabel(agent)}
         </h1>
         <p className="max-w-[430px] font-sans text-[14.5px] font-normal leading-[1.55] text-(--text-secondary)">
-          {runsOn
-            ? 'Your org’s built-in agent runs on the daemon you just connected. Pick a runtime and model, and it’s ready to work.'
-            : `Your org’s built-in agent runs on ${poolTarget ? poolLabel() : 'your infrastructure'}. Pick a runtime and model, and it’s ready to work.`}
+          Your org’s built-in agent runs on the daemon you just connected. Pick a runtime and model, and it’s ready to
+          work.
         </p>
       </div>
 
       <div className="flex flex-col gap-[14px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-4 shadow-(--shadow-xs)">
-        {(runsOn || poolTarget) && (
-          <div className="fld">
-            <span className="fldlbl">Runs on</span>
-            <div
-              className="inp cursor-not-allowed"
-              title={
-                runsOn
-                  ? 'Set to the daemon you just connected'
-                  : 'Move it to a machine any time from the agent’s settings'
-              }
-            >
-              <span className="truncate text-(--text-primary)">{runsOn ? runsOn.name : poolLabel()}</span>
-              {runsOn && (
-                <span className="ml-auto flex-none font-sans text-[11.5px] leading-none text-(--text-tertiary)">
-                  just connected
-                </span>
-              )}
-            </div>
+        <div className="fld">
+          <span className="fldlbl">Runs on</span>
+          <div className="inp cursor-not-allowed" title="Set to the daemon you just connected">
+            <span className="truncate text-(--text-primary)">{daemon.name}</span>
+            <span className="ml-auto flex-none font-sans text-[11.5px] leading-none text-(--text-tertiary)">
+              just connected
+            </span>
           </div>
-        )}
+        </div>
         <div className="grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
           <div className="fld">
             <span className="fldlbl">Runtime</span>
