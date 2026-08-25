@@ -1,9 +1,9 @@
 import {
-  HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   HOOK_REPORT_REASON_AGENT_HANDOVER,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
-  HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
+  HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
+  isRetryableHookDeliveryReason
 } from '@agentconnect.md/protocol'
 import type { HookRunRecord } from '../persistence/ports.js'
 
@@ -57,7 +57,7 @@ export function authoritativeHookProjectionState(run: HookRunRecord): Projection
  * carries the rest (`hookSkippedCheckGuidance`). Without a configured App slug there is no handle
  * to name, so those titles fall back to the condition alone. */
 export function hookSkippedCheckLabel(reason?: string | null, appSlug?: string): string | null {
-  if (reason === HOOK_DELIVERY_REASON_DAEMON_OFFLINE) return 'Agent unavailable'
+  if (isRetryableHookDeliveryReason(reason)) return 'Agent unavailable'
   if (reason === HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED)
     return appSlug ? `Comment @${appSlug} to start the review` : 'Review requires a maintainer request'
   if (reason === HOOK_REPORT_REASON_AGENT_HANDOVER)

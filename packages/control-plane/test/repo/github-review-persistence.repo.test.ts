@@ -1,10 +1,12 @@
 import { onDaemon, UNPLACED } from '../../src/domain/placement.js'
 import { randomUUID } from 'node:crypto'
 import {
+  HOOK_DELIVERY_REASON_DAEMON_DRAINING,
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   HOOK_DELIVERY_REASON_REVIEW_REQUEST_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
-  HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED
+  HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
+  isRetryableHookDeliveryReason
 } from '@agentconnect.md/protocol'
 import { describe, expect, it } from 'vitest'
 import { prisma } from '../setup.db.js'
@@ -2371,7 +2373,8 @@ describe('R1/R2a persistence foundation', () => {
     ['agent session start failure', 'session_start_failed'],
     ['provider quota exhaustion', HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED],
     ['provider authentication required', HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED],
-    ['definite agent unavailability', HOOK_DELIVERY_REASON_DAEMON_OFFLINE]
+    ['definite agent unavailability', HOOK_DELIVERY_REASON_DAEMON_OFFLINE],
+    ['daemon drain before admission', HOOK_DELIVERY_REASON_DAEMON_DRAINING]
   ])('repairs %s to a skipped projection', async (_label, reason) => {
     await seedDaemon(prisma, D1)
     const agentId = AgentId(randomUUID())
@@ -2418,17 +2421,16 @@ describe('R1/R2a persistence foundation', () => {
       baseSha: 'd'.repeat(40),
       reportSha: 'c'.repeat(40)
     }
-    if (reason === HOOK_DELIVERY_REASON_DAEMON_OFFLINE) {
+    const retryable = isRetryableHookDeliveryReason(reason)
+    if (retryable) {
       expect(await repo.recordDelivery(hookId, { ...accepted, status: 'failed', reason })).toBe(true)
-      // A retryable delivery failure stays free of external Check effects until
-      // its durable budget is exhausted, preserving the safe reopen path.
+      // Keep a retryable failure free of Check effects until its durable budget is exhausted.
       expect(await repo.listRunsNeedingReviewProjection()).toEqual([])
       expect(await repo.claimRetryableDeliveryRedelivery(accepted.deliveryKey, [hookId], accepted.firedAt, [1])).toBe(
         true
       )
       expect(await repo.listRunsNeedingReviewProjection()).toEqual([])
-      // The next due sweep observes the cap, retires the gate, and only then
-      // lets the final failed state converge to a skipped Check.
+      // The next due sweep retires the gate before the final skipped Check can converge.
       expect(
         await repo.claimRetryableDeliveryRedelivery(
           accepted.deliveryKey,
@@ -2467,7 +2469,7 @@ describe('R1/R2a persistence foundation', () => {
       projectionEpoch: run.projectionEpoch!,
       mode: 'check',
       gateMode: 'informational',
-      desiredState: reason === HOOK_DELIVERY_REASON_DAEMON_OFFLINE ? 'skipped' : 'failure',
+      desiredState: retryable ? 'skipped' : 'failure',
       currentHookRunId: run.id,
       nextAttemptAt: accepted.firedAt
     })
@@ -2481,7 +2483,7 @@ describe('R1/R2a persistence foundation', () => {
     })
 
     expect((await repo.listRunsNeedingReviewProjection()).map((candidate) => candidate.id)).toEqual(
-      reason === HOOK_DELIVERY_REASON_DAEMON_OFFLINE ? [] : [run.id]
+      retryable ? [] : [run.id]
     )
     expect(
       await repo.setProjectionDesired(

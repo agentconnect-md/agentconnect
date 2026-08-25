@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentId, DaemonId, HookId, OrgId } from '../domain/ids.js'
 import type { AgentRecord, HookRecord, HookRepo, HookRunRecord } from '../persistence/ports.js'
 import { githubHookRun } from '../../test/fixtures/github-hook-run.js'
-import { HOOK_DELIVERY_REASON_DAEMON_OFFLINE } from '@agentconnect.md/protocol'
+import { HOOK_DELIVERY_REASON_DAEMON_DRAINING } from '@agentconnect.md/protocol'
 import { GitCredDeniedError } from './service.js'
 import {
   GithubReviewBrokerError,
@@ -202,12 +202,12 @@ describe('GithubReviewBrokerService', () => {
     )
   })
 
-  it('uses exact-current hook/start to recover a claimed offline row when accepted reporting was lost', async () => {
+  it('uses exact-current hook/start to recover a claimed pre-admission row when accepted reporting was lost', async () => {
     const state = setup()
     state.setRun(
       run({
         status: 'failed',
-        reason: HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+        reason: HOOK_DELIVERY_REASON_DAEMON_DRAINING,
         dispatchRevision: 8n,
         dispatchDaemonId: OLD_DAEMON,
         turnStartedAt: null,

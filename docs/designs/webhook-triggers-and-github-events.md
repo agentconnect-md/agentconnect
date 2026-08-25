@@ -612,20 +612,22 @@ The HTTP response only confirms that ingress accepted the delivery for
 asynchronous dispatch. It does not promise that the daemon admitted or
 completed the turn.
 
-| Failure                            | General webhook                                                                              | GitHub hook                                                              |
-| ---------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| CP unavailable                     | Existing relay rules can still dispatch; accounting and configuration changes may be delayed | Same; installation doorbells and projections may be delayed              |
-| One relay unavailable              | Another relay with the replayed rule can accept the request                                  | Same                                                                     |
-| All relays unavailable             | Caller receives an HTTP failure and must retry                                               | GitHub delivery reconciliation requests redelivery after recovery        |
-| Assigned daemon offline            | Delivery records `daemon_offline`                                                            | One durable automatic retry is scheduled after a short backoff           |
-| Dispatch acknowledgement ambiguous | Records terminal `dispatch_timeout`; no automatic replay                                     | Same, because the daemon may already have admitted the turn              |
-| Agent stops being served mid-turn  | Turn reports terminal `agent_handover`; no automatic replay                                  | Same; a GitHub hook additionally offers the maintainer Check retry       |
-| GitHub unavailable                 | No effect                                                                                    | Source reads, permission checks, posting, and projection may fail closed |
+| Failure                                 | General webhook                                                                              | GitHub hook                                                              |
+| --------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| CP unavailable                          | Existing relay rules can still dispatch; accounting and configuration changes may be delayed | Same; installation doorbells and projections may be delayed              |
+| One relay unavailable                   | Another relay with the replayed rule can accept the request                                  | Same                                                                     |
+| All relays unavailable                  | Caller receives an HTTP failure and must retry                                               | GitHub delivery reconciliation requests redelivery after recovery        |
+| Assigned daemon offline                 | Delivery records `daemon_offline`                                                            | One durable automatic retry is scheduled after a short backoff           |
+| Daemon drains or no duty holder accepts | Delivery records a definite pre-admission refusal                                            | Same safe retry; the delivery has not entered any daemon inbox           |
+| Dispatch acknowledgement ambiguous      | Records terminal `dispatch_timeout`; no automatic replay                                     | Same, because the daemon may already have admitted the turn              |
+| Agent stops being served mid-turn       | Turn reports terminal `agent_handover`; no automatic replay                                  | Same; a GitHub hook additionally offers the maintainer Check retry       |
+| GitHub unavailable                      | No effect                                                                                    | Source reads, permission checks, posting, and projection may fail closed |
 
 `HookRedeliveryReconciler` compares recent GitHub App deliveries with stored
 run metadata. It requests redelivery for missing eligible deliveries and for
 the closed set of explicitly retryable delivery-stage failures. The current
-retryable set contains only `daemon_offline`.
+set contains `daemon_offline`, `rejected:draining`, and
+`rejected:not_holder`; each is emitted before durable daemon admission.
 
 Reconciliation does not retry an ambiguous dispatch, an agent/business
 rejection, or any row that may already have produced an effect. Partial

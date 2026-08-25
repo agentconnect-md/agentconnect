@@ -26,10 +26,13 @@ import { systemClock } from '../../src/domain/clock.js'
 import type { DaemonConnection } from '../../src/ws/connection.js'
 import type { DaemonWsDeps } from '../../src/ws/deps.js'
 import {
+  HOOK_DELIVERY_REASON_DAEMON_DRAINING,
+  HOOK_DELIVERY_REASON_DAEMON_NOT_HOLDER,
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   type AnyFrame,
-  type HookReport
+  type HookReport,
+  type RetryableHookDeliveryReason
 } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
@@ -117,7 +120,7 @@ async function recordGithubDeliveryFailure(
   agentId: string,
   deliveryKey: string,
   firedAt: Date,
-  reason: typeof HOOK_DELIVERY_REASON_DAEMON_OFFLINE | typeof HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
+  reason: RetryableHookDeliveryReason | typeof HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   daemonId = DAEMON
 ) {
   const hook = (await repo().getUnscoped(HookId(hookId)))!
@@ -740,7 +743,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
       )
     ).toBe(true)
 
-    await recordGithubDeliveryFailure(hookId, agentId, 'expired-guid', firedAt, HOOK_DELIVERY_REASON_DAEMON_OFFLINE)
+    await recordGithubDeliveryFailure(hookId, agentId, 'expired-guid', firedAt, HOOK_DELIVERY_REASON_DAEMON_NOT_HOLDER)
     expect(
       await repo().settleRetryableDeliveryRedeliveries(
         new Date(firedAt.getTime() + 1),
@@ -774,7 +777,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
   it('reopens only a retryable delivery-stage failure with refreshed authority and retained audit', async () => {
     const { agentId, hookId } = await placedGithubHook()
     const firedAt = new Date('2026-07-03T11:00:00.000Z')
-    await recordGithubDeliveryFailure(hookId, agentId, 'd-reopen', firedAt, HOOK_DELIVERY_REASON_DAEMON_OFFLINE)
+    await recordGithubDeliveryFailure(hookId, agentId, 'd-reopen', firedAt, HOOK_DELIVERY_REASON_DAEMON_DRAINING)
     expect(await repo().claimRetryableDeliveryRedelivery('d-reopen', [HookId(hookId)], firedAt, [30_000])).toBe(true)
 
     await seedDaemon(prisma, OTHER_DAEMON)
