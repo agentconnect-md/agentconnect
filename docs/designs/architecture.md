@@ -42,7 +42,7 @@ below that hold in only one mode are marked; everything unmarked holds in both.
   browser endpoint.
 - Allow daemons to scale horizontally and independently, so one daemon failure does not affect other daemons.
 - Run multiple agents on one daemon, with a separate ACP adapter for each agent type.
-- Allow established sessions to continue sending, receiving, and executing locally on the daemon while the Control Plane is temporarily unavailable (degraded availability).
+- Allow established sessions to continue sending, receiving, and executing on their daemons while the Control Plane is temporarily unavailable (degraded availability).
 
 ### Non-Goals
 
@@ -87,7 +87,7 @@ and search.
 | **daemon**            | Direct platform integration, relay-delivered routing, and agent runtime; a self-contained message-processing and execution unit                                                                                                                                   |
 | **relay**             | Optional public ingress plane: Slack and Lark / Feishu HTTP callbacks, GitHub and generic webhooks, and webchat pass through the relay pool to daemons; daemons still send ordinary provider API traffic directly. See [shared-bot-relay.md](shared-bot-relay.md) |
 | **Platform adapters** | `slack-adapter`, `telegram-adapter`, Discord, Lark / Feishu, and others; handle platform I/O and message normalization                                                                                                                                            |
-| **ACP adapters**      | `claude-agent-acp` and `codex-acp`; implement ACP and drive models locally                                                                                                                                                                                        |
+| **ACP adapters**      | `claude-agent-acp` and `codex-acp`; implement ACP and drive the model runtime the daemon owns                                                                                                                                                                     |
 | **Agent instances**   | Claude and Codex model processes                                                                                                                                                                                                                                  |
 
 ### 3.1 Deployment modes
@@ -129,7 +129,7 @@ Its responsibilities are deliberately narrow:
 - **Registry/Auth**: daemon registration and health, routing policies, and authentication policies.
 - **Web UI**: configuration, editing, and runtime monitoring.
 
-**Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. Even when the Control Plane is temporarily unavailable, **established sessions continue sending, receiving, and executing locally on their daemons** (degraded availability).
+**Explicitly excluded**: it does not connect to Slack or Telegram, receive platform messages, or participate in the message loop. Even when the Control Plane is temporarily unavailable, **established sessions continue sending, receiving, and executing on their daemons** (degraded availability).
 
 ### 4.2 daemon
 
@@ -160,8 +160,8 @@ A daemon is a **self-contained message-processing + agent-execution unit**:
 ### 4.4 ACP Adapters (`claude-agent-acp`, `codex-acp`)
 
 - Implement ACP and provide the entry point to an agent.
-- Receive ACP calls **locally from the daemon**, through an in-process call, local IPC, or a local socket.
-- Start and drive the corresponding model process (Claude or Codex). Self-hosted, that is a child process on the daemon host; in the pool it is a sandbox pod (§3.1). Either way the daemon owns the ACP session and no ACP traffic crosses the Control Plane.
+- Receive ACP calls **from the owning daemon**: an in-process call, local IPC, or a local socket self-hosted; one in-cluster dial to the sandbox pod in the pool (§3.1).
+- Start and drive the corresponding model process (Claude or Codex) — a child process on the daemon host self-hosted, the sandbox pod's runtime in the pool. Either way the daemon owns the ACP session and no ACP traffic crosses the Control Plane.
 
 ---
 
@@ -339,7 +339,7 @@ host to run sandboxed.
 | ---------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Control Plane outage   | Orchestration pauses                        | **Existing sessions continue on their daemons**; new assignments and scaling pause, then catch up after recovery                                 |
 | One daemon fails       | Sessions owned by that daemon are disrupted | The failure domain is isolated; the Control Plane detects the failure and reassigns sessions to another daemon                                   |
-| Platform adapter fails | Traffic for that platform is affected       | The daemon reconnects or retries locally and reports an alert                                                                                    |
+| Platform adapter fails | Traffic for that platform is affected       | The daemon reconnects or retries itself and reports an alert                                                                                     |
 | Agent runtime crashes  | One agent task fails                        | The daemon relaunches the runtime — a child process self-hosted, a fresh sandbox generation in the pool — and reports the failure when necessary |
 
 ---

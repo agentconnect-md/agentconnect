@@ -213,7 +213,7 @@ over stdio; they do not create source-level coupling to TypeScript.
 
 ### D6. ACP Host (ACP Client)
 
-- **Responsibilities**: act as the ACP **client** (the role normally played by an IDE/editor); start the corresponding ACP adapter subprocess locally under the 1 agent : 1 machine rule; manage the ACP session lifecycle (new/prompt/load/cancel); handle reverse agent→client calls (file reads/writes, permission requests, and incremental `session/update` streams); **condense** agent output before returning it to D3, addressing the requirement that a channel show only start/plan/problem/end plus a link.
+- **Responsibilities**: act as the ACP **client** (the role normally played by an IDE/editor); start the corresponding ACP adapter under the 1 agent : 1 machine rule — a local subprocess self-hosted, a sandbox pod it dials in the pool; manage the ACP session lifecycle (new/prompt/load/cancel); handle reverse agent→client calls (file reads/writes, permission requests, and incremental `session/update` streams); **condense** agent output before returning it to D3, addressing the requirement that a channel show only start/plan/problem/end plus a link.
 - **Preset webchat admin MCP**: an entitled private webchat conversation on the
   built-in preset receives a session-scoped remote HTTPS MCP descriptor. The runtime
   calls the CP-hosted catalog directly with a short-lived opaque conversation grant;
@@ -225,7 +225,7 @@ over stdio; they do not create source-level coupling to TypeScript.
 
 ### D7. ACP Adapters (Third Party)
 
-- **Responsibilities**: implement the ACP **agent side** and start/drive a model harness locally. **Product code does not implement these**; use executables from the registry directly.
+- **Responsibilities**: implement the ACP **agent side** and start/drive a model harness where the adapter itself runs (see the runtime form below). **Product code does not implement these**; use executables from the registry directly.
 - **Choices (executables not maintained by us)**:
   - `claude-agent-acp` (official Zed adapter that drives the Claude Code CLI/harness).
   - The official Zed ACP adapter for `codex`.
