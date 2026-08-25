@@ -10,7 +10,7 @@
 // shared-workspace agent, which has no per-session worktree — the agent's primary tree, but only for
 // the session currently using it. That second arm is what keeps the tab from being permanently empty
 // on a shared workspace without handing an old session the newest one's pull request.
-import { githubRequest, type FetchLike } from './api.js'
+import { GithubApiError, githubRequest, type FetchLike } from './api.js'
 import type { GithubService } from './service.js'
 import type { InstallationTokenService } from './installation-token.service.js'
 import type { AgentRecord, SessionMetaRecord } from '../persistence/ports.js'
@@ -48,6 +48,9 @@ export interface SessionPullRequestLink {
   ambiguous: boolean
 }
 
+export type SessionPullRequestCaptureResult =
+  { status: 'resolved'; link: SessionPullRequestLink } | { status: 'absent' } | { status: 'retry' }
+
 /** One `GET /repos/{owner}/{repo}/pulls` row, narrowed to what the choice below needs. */
 export interface HeadPull {
   number: number
@@ -84,8 +87,7 @@ export interface SessionPullRequestLinkDeps {
   github: GithubService
   tokens: InstallationTokenService
   /** The serving daemon's read of the checkout named by `scope`, reduced to its branch. `null` for
-   *  everything the caller cannot read a branch from: no daemon serving the agent, a daemon too old to
-   *  serve session worktrees, a non-repo workspace, a detached HEAD, or a failed read. */
+   *  a definitive non-repo or detached HEAD; transient availability failures reject. */
   readSessionBranch: (
     agent: AgentRecord,
     session: SessionMetaRecord,
@@ -109,7 +111,7 @@ export class SessionPullRequestLinkService {
   // Concurrent probes for ONE session share the read, like `PullRequestViewService`'s: a resolution is
   // a daemon round trip plus a GitHub list, and two panels (or a read racing the auto-merge write) must
   // not each spend both.
-  private readonly inFlight = new Map<string, Promise<SessionPullRequestLink | null>>()
+  private readonly inFlight = new Map<string, Promise<SessionPullRequestCaptureResult>>()
 
   constructor(private readonly deps: SessionPullRequestLinkDeps) {}
 
@@ -129,16 +131,31 @@ export class SessionPullRequestLinkService {
     }
     // A forced read JOINS an in-flight one rather than starting a second: the reader pressing refresh
     // twice, or two panels mounting at once, is one resolution either way.
+    const result = await this.probe(key, agent, session)
+    const link = result.status === 'resolved' ? result.link : null
+    this.store(key, link)
+    return link
+  }
+
+  /** Durable capture ignores cached misses and tells the queue whether an exact-session retry is required. */
+  async capture(agent: AgentRecord, session: SessionMetaRecord): Promise<SessionPullRequestCaptureResult> {
+    const key = `${session.orgId}#${session.id}`
+    const hit = this.cache.get(key)
+    if (hit?.link && this.deps.clock.now() - hit.at < SESSION_PR_LINK_TTL_MS) {
+      return { status: 'resolved', link: hit.link }
+    }
+    const result = await this.probe(key, agent, session)
+    if (result.status === 'resolved') this.store(key, result.link)
+    else if (result.status === 'absent') this.store(key, null)
+    return result
+  }
+
+  private probe(key: string, agent: AgentRecord, session: SessionMetaRecord): Promise<SessionPullRequestCaptureResult> {
     const running = this.inFlight.get(key)
     if (running) return running
-    const read = this.read(agent, session)
-      .then((link) => {
-        this.store(key, link)
-        return link
-      })
-      .finally(() => {
-        if (this.inFlight.get(key) === read) this.inFlight.delete(key)
-      })
+    const read = this.read(agent, session).finally(() => {
+      if (this.inFlight.get(key) === read) this.inFlight.delete(key)
+    })
     this.inFlight.set(key, read)
     return read
   }
@@ -157,29 +174,27 @@ export class SessionPullRequestLinkService {
     }
   }
 
-  private async read(agent: AgentRecord, session: SessionMetaRecord): Promise<SessionPullRequestLink | null> {
+  private async read(agent: AgentRecord, session: SessionMetaRecord): Promise<SessionPullRequestCaptureResult> {
     // A purged session's worktree is gone with its content, so there is nothing to read.
-    if (session.contentPurgedAt) return null
+    if (session.contentPurgedAt) return { status: 'absent' }
     // Which checkout to ask about. A session worktree has a branch of its OWN; a shared-workspace
     // session works in the agent's primary tree — which is exactly the checkout the Files and Git tabs
     // beside this one already show it, so refusing to read it here left the tab permanently empty for
     // every shared-workspace agent rather than protecting anything. It is read, and the link says
     // which checkout answered so the panel can say the PR is not exclusively this session's.
     const scope: SessionPullRequestLinkScope = session.workspaceIsolation === 'session' ? 'session' : 'shared'
-    // A shared tree has ONE branch, which moves with whatever the agent is doing now — so it speaks
-    // for the session using it and for no other. An older session would otherwise be handed the
-    // NEWEST session's pull request, checks and threads, which is worse than an empty tab: the branch
-    // that carried its own work is long gone from that checkout and nothing here can find it.
-    if (scope === 'shared' && (await this.deps.latestSessionIdOfAgent(agent)) !== session.id) return null
-    // The branch first, deliberately: no branch ⇒ no GitHub call at all, which keeps the sessions
-    // that can never resolve a PR (scratch workspaces, offline daemons) off the installation's quota.
-    const branch = await this.deps.readSessionBranch(agent, session, scope)
-    if (!branch) return null
-    const repo = await this.deps.github.resolveWorkspaceRepo(agent)
-    if (!repo) return null
-    const [owner, name] = repo.repoFullName.split('/')
-    if (!owner || !name) return null
     try {
+      // A shared tree's current branch speaks only for the latest session using that checkout.
+      if (scope === 'shared' && (await this.deps.latestSessionIdOfAgent(agent)) !== session.id) {
+        return { status: 'absent' }
+      }
+      // A branchless worktree makes no GitHub request.
+      const branch = await this.deps.readSessionBranch(agent, session, scope)
+      if (!branch) return { status: 'absent' }
+      const repo = await this.deps.github.resolveWorkspaceRepo(agent)
+      if (!repo) return { status: 'absent' }
+      const [owner, name] = repo.repoFullName.split('/')
+      if (!owner || !name) return { status: 'absent' }
       const cred = await this.deps.tokens.mintPullRequestRead(repo.installationId, repo.repoFullName, repo.repoId)
       // `state=all` because a merged PR is the answer for a finished session, and the panel draws that
       // state. `head=<owner>:<branch>` only matches a head in the BASE repository's own namespace —
@@ -193,19 +208,26 @@ export class SessionPullRequestLinkService {
         }
       )
       const chosen = chooseHeadPull(Array.isArray(pulls) ? pulls : [], branch)
-      if (!chosen) return null
+      if (!chosen) return { status: 'absent' }
       return {
-        repoId: repo.repoId,
-        repoFullName: repo.repoFullName,
-        installationId: repo.installationId,
-        pullNumber: chosen.pullNumber,
-        branch,
-        scope,
-        ambiguous: chosen.ambiguous
+        status: 'resolved',
+        link: {
+          repoId: repo.repoId,
+          repoFullName: repo.repoFullName,
+          installationId: repo.installationId,
+          pullNumber: chosen.pullNumber,
+          branch,
+          scope,
+          ambiguous: chosen.ambiguous
+        }
       }
     } catch (err) {
-      this.deps.log?.warn?.({ err, sessionId: session.id }, 'session-pr-link: head-branch lookup failed')
-      return null
+      return this.failed(err, session.id)
     }
+  }
+
+  private failed(err: unknown, sessionId: string): SessionPullRequestCaptureResult {
+    this.deps.log?.warn?.({ err, sessionId }, 'session-pr-link: head-branch lookup failed')
+    return err instanceof GithubApiError && !err.retryable ? { status: 'absent' } : { status: 'retry' }
   }
 }

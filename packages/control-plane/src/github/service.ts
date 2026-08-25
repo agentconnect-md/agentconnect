@@ -889,16 +889,12 @@ export class GithubService {
     if (agent.workspaceRepoId !== undefined) {
       return { repoId: agent.workspaceRepoId, repoFullName: label, installationId: installation.installationId }
     }
-    try {
-      const ref = await this.repoRefFor(installation, owner, repo)
-      if (!ref) return null
-      // Best-effort repair, exactly as resolveAgentRepoAuthorization does it: a losing race just
-      // means the next read resolves the id again, which is cheaper than failing this one.
-      await this.deps.agents?.setWorkspaceRepoId(agent.id, ref.repoId).catch(() => {})
-      return { repoId: ref.repoId, repoFullName: ref.fullName, installationId: installation.installationId }
-    } catch {
-      return null
-    }
+    const ref = await this.repoRefFor(installation, owner, repo)
+    if (!ref) return null
+    // Best-effort repair, exactly as resolveAgentRepoAuthorization does it: a losing race just
+    // means the next read resolves the id again, which is cheaper than failing this one.
+    await this.deps.agents?.setWorkspaceRepoId(agent.id, ref.repoId).catch(() => {})
+    return { repoId: ref.repoId, repoFullName: ref.fullName, installationId: installation.installationId }
   }
 
   /** Whether the console may arm auto-merge for this agent's PR — the GET projection's per-caller

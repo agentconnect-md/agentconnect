@@ -288,6 +288,7 @@ export class CpClient {
       configApply: deps.configApply,
       sessionRead: deps.sessionRead,
       childSessionStatusProbe: deps.childSessionStatusProbe && ((probe) => deps.childSessionStatusProbe!(probe)),
+      pullRequestFeedback: deps.pullRequestFeedback && ((req) => deps.pullRequestFeedback!(req)),
       workspaceRead: deps.workspaceRead,
       workspaceGit: deps.workspaceGit,
       taskReader: deps.taskReader,

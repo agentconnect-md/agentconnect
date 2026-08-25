@@ -41,7 +41,7 @@ export interface NormalizedMessage extends Omit<
    *  merged-conversation-view.md §6) — persisted on the transcript row so
    *  cross-daemon copies share an explicit identity. */
   transcriptPostId?: string
-  source: 'user' | 'cron' | 'agent' | 'hook'
+  source: 'user' | 'cron' | 'agent' | 'hook' | 'system'
   // S1a open reader (integration-plugin-architecture.md §6.2): the wire reads
   // platform as an open string, so the runtime model matches. Writers still
   // produce only the legacy ids; unknown ids are handled fail-closed where the

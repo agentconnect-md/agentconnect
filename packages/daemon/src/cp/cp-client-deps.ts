@@ -11,6 +11,8 @@ import type {
   RegisterReq,
   ChildSessionStatus,
   ChildSessionStatusProbe,
+  SessionPullRequestFeedback,
+  SessionPullRequestFeedbackResult,
   TaskList,
   TaskListReq
 } from '@agentconnect.md/protocol'
@@ -144,6 +146,7 @@ export interface CpClientSeamHost {
   gitCommitIdentity(): GitCommitIdentity | undefined
   sessionThreadUrl(session: SessionRecord): string | undefined
   childSessionStatusProbe(probe: ChildSessionStatusProbe): Promise<ChildSessionStatus>
+  dispatchPullRequestFeedback(req: SessionPullRequestFeedback): Promise<SessionPullRequestFeedbackResult>
   listBackgroundTasks(req: TaskListReq): Promise<TaskList>
   /** The edge's in-memory merge-when-ready registry, or undefined before agents are loaded. */
   autoMerge(): AutoMergeWatcher | undefined
@@ -314,6 +317,13 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     // §5.4: serve a CP-forwarded status probe for a child session we own. Authorization is
     // re-done here (the lineage rule lives where the session lives), not trusted from the CP.
     childSessionStatusProbe: (probe) => host.childSessionStatusProbe(probe),
+    pullRequestFeedback: async (req) => {
+      if (host.dutyCoordinator().dutyEnforced() && !host.duties().holdsAgent(req.agentId)) {
+        const claimed = await host.dutyCoordinator().claimDutyForTrigger(req.agentId)
+        if (!claimed.granted) return { deliveryKey: req.deliveryKey, accepted: false, reason: 'not_ready' }
+      }
+      return host.dispatchPullRequestFeedback(req)
+    },
     // The third argument is what makes a cluster agent's files reachable at all: the operations
     // run inside its pod, on the volume the root above names.
     workspaceRead: createWorkspaceReader(

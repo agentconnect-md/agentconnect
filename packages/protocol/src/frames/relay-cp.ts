@@ -8,6 +8,7 @@ import { Platform } from './route.js'
 import { CollabRoutesSnapshot } from './collab.js'
 import { GithubHookMetadata, GitlabHookMetadata, HookBigIntString, OptionalHookConfigSnapshot } from './hook.js'
 import { WebchatRemoteMcpEntitlement } from './remote-mcp.js'
+import { PullRequestFeedbackSignal } from './session.js'
 import { buildEnvelopeRaw, decodeEnvelopeWith, type BuildOpts, type DecodeResultOf } from '../wire.js'
 
 /**
@@ -80,9 +81,20 @@ export type RcRegister = z.infer<typeof RcRegister>
 
 // C→R REP (corr = rc/register id).
 export const RcRegistered = z.object({
-  relayId: z.string().uuid()
+  relayId: z.string().uuid(),
+  // Optional compatibility discovery for a new relay connected to an older CP.
+  serverFeatures: z.array(z.string()).default([])
 })
 export type RcRegistered = z.infer<typeof RcRegistered>
+
+export const RcPullRequestFeedback = PullRequestFeedbackSignal
+export type RcPullRequestFeedback = z.infer<typeof RcPullRequestFeedback>
+
+export const RcPullRequestFeedbackResult = z.object({
+  deliveryKey: z.string().min(1).max(200),
+  accepted: z.boolean()
+})
+export type RcPullRequestFeedbackResult = z.infer<typeof RcPullRequestFeedbackResult>
 
 // R→C EVT — liveness; drives `relay.lastSeenAt` and the failover sweeper.
 export const RcHeartbeat = z.object({})
@@ -1068,6 +1080,8 @@ export const RELAY_CP_SCHEMAS = {
   'rc/codehost-membership-authz/ok': RcCodeHostMembershipAuthzResult,
   'rc/github-rerequest': RcGithubRerequest,
   'rc/github-rerequest/ok': RcGithubRerequestResult,
+  'rc/pull-request-feedback': RcPullRequestFeedback,
+  'rc/pull-request-feedback/ok': RcPullRequestFeedbackResult,
   'rc/hook-assign': RcHookAssign,
   'rc/hook-remove': RcHookRemove,
   'rc/hook-rerun': RcHookRerun,
@@ -1119,6 +1133,8 @@ export const RelayCpFrame = z.discriminatedUnion('type', [
   frameSchema('rc/codehost-membership-authz/ok', RELAY_CP_SCHEMAS['rc/codehost-membership-authz/ok']),
   frameSchema('rc/github-rerequest', RELAY_CP_SCHEMAS['rc/github-rerequest']),
   frameSchema('rc/github-rerequest/ok', RELAY_CP_SCHEMAS['rc/github-rerequest/ok']),
+  frameSchema('rc/pull-request-feedback', RELAY_CP_SCHEMAS['rc/pull-request-feedback']),
+  frameSchema('rc/pull-request-feedback/ok', RELAY_CP_SCHEMAS['rc/pull-request-feedback/ok']),
   frameSchema('rc/hook-assign', RELAY_CP_SCHEMAS['rc/hook-assign']),
   frameSchema('rc/hook-remove', RELAY_CP_SCHEMAS['rc/hook-remove']),
   frameSchema('rc/hook-rerun', RELAY_CP_SCHEMAS['rc/hook-rerun']),

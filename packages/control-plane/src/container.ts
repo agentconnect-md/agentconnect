@@ -46,6 +46,7 @@ import { GithubRerequestService } from './github/rerequest.service.js'
 import { GithubReviewBrokerService } from './github/review-broker.service.js'
 import { PullRequestViewService } from './github/pull-request-view.service.js'
 import { SessionPullRequestLinkService } from './github/session-pull-request-link.service.js'
+import { SessionPullRequestFeedbackService } from './github/session-pull-request-feedback.service.js'
 import { GithubRunCoordinator, GithubRunReporter } from './github/run-reporter.js'
 import { CodeHostNoteProjectionService } from './codehost/note-projection.service.js'
 import { githubProjectionIntent } from './github/projection-intent.js'
@@ -68,6 +69,7 @@ import {
   PgMemoryConnectionWriter,
   PgAssignmentRepo,
   PgSessionRepo,
+  PgSessionPullRequestFeedbackRepo,
   PgSessionUsageRepo,
   PgWebchatConversationRepo,
   PgWebchatMcpDelegationRepo,
@@ -369,6 +371,7 @@ export function buildContainer(
     agent: new PgAgentRepo(prisma),
     assignment: new PgAssignmentRepo(prisma),
     session: new PgSessionRepo(prisma),
+    sessionPullRequestFeedback: new PgSessionPullRequestFeedbackRepo(prisma),
     sessionUsage: new PgSessionUsageRepo(prisma),
     webchatConversation: new PgWebchatConversationRepo(prisma),
     webchatMcpDelegation: new PgWebchatMcpDelegationRepo(prisma, defaultWebchatMcpMetrics),
@@ -1184,33 +1187,45 @@ export function buildContainer(
             // cluster-placed agent has no `agent.daemonId` at all, so reading that column instead
             // resolved no branch for exactly the deployments where every agent is placed that way.
             const daemonId = (await placementResolver.servingDaemon(agent)) ?? agent.daemonId
-            if (!daemonId) return null
+            if (!daemonId) throw new Error('no daemon currently serves the session workspace')
             const daemon = await registry.getAvailable(agent.orgId, daemonId)
-            if (!daemon) return null
+            if (!daemon) throw new Error('session workspace daemon is unavailable')
             // An older daemon drops an unknown frame silently, so the REQ would burn its retransmit
             // budget and then read as an offline daemon — refuse first, exactly as the workspace
             // routes do. Only the session-worktree read needs it; the primary checkout is the read
             // every daemon has always answered.
             if (scope === 'session' && !daemon.capabilities.features.includes(WORKSPACE_SESSION_READ_FEATURE)) {
-              return null
+              throw new Error('session workspace daemon cannot read isolated worktrees yet')
             }
-            try {
-              const status = await sender.workspaceGitStatus(daemonId, {
-                agentId: agent.id,
-                ...(scope === 'session' ? { sessionId: session.id } : {})
-              })
-              return status.isRepo ? (status.branch ?? null) : null
-            } catch {
-              // An offline daemon, a REQ timeout and a non-repo workspace are one answer here: no
-              // branch to resolve a PR through. The panel keeps its own no-PR state for all of them.
-              return null
-            }
+            const status = await sender.workspaceGitStatus(daemonId, {
+              agentId: agent.id,
+              ...(scope === 'session' ? { sessionId: session.id } : {})
+            })
+            return status.isRepo ? (status.branch ?? null) : null
           },
           latestSessionIdOfAgent: (agent) => repos.session.latestSessionIdForAgent(agent.orgId, agent.id),
           log: { warn: (obj, message) => http.log.warn(obj, message) },
           ...(opts.githubFetch ? { fetchImpl: opts.githubFetch } : {})
         })
       : undefined
+  const sessionPullRequestFeedback = sessionPullRequestLink
+    ? new SessionPullRequestFeedbackService({
+        clock,
+        feedback: repos.sessionPullRequestFeedback,
+        sessions: repos.session,
+        agents: repos.agent,
+        installations: repos.githubInstallation,
+        memberSets: repos.memberSet,
+        placement: placementResolver,
+        links: sessionPullRequestLink,
+        daemon: (daemonId) => connReg.get(daemonId),
+        send: (daemonId, request, orgId) => sender.sessionPullRequestFeedback(daemonId, orgId, request),
+        log: {
+          debug: (obj, message) => http.log.debug(obj, message),
+          warn: (obj, message) => http.log.warn(obj, message)
+        }
+      })
+    : undefined
   const githubReviewBroker = github
     ? new GithubReviewBrokerService({
         hook: repos.hook,
@@ -1779,6 +1794,7 @@ export function buildContainer(
     webchatRemoteMcp,
     launch: repos.launch,
     visibilityPush,
+    ...(sessionPullRequestFeedback ? { pullRequestFeedback: sessionPullRequestFeedback } : {}),
     events,
     usageWriter,
     integration: repos.integration,
@@ -1882,6 +1898,7 @@ export function buildContainer(
     authorizeGithubComment: async (req) => (githubCommentAuthz ? githubCommentAuthz.allowed(req) : false),
     authorizeGithubRerequest: async (req) => (githubRerequest ? githubRerequest.resolve(req) : { allowed: false }),
     authorizeCodeHostMembership: async (req) => (gitlabMembershipAuthz ? gitlabMembershipAuthz.allowed(req) : false),
+    onPullRequestFeedback: async (signal) => (await sessionPullRequestFeedback?.enqueue(signal)) ?? false,
     // A relay just (re)registered — refresh every daemon's roster, (re)assign every
     // HTTP bots' ingress + routes (§5, idempotent), AND replay the compiled hook
     // rules to the fresh connection (its table is a memory copy). All fire-and-forget,
@@ -2168,6 +2185,7 @@ export function buildContainer(
       relaySweeper.start()
       dutyRecompute.start()
       sessionAccessWarmer.start()
+      sessionPullRequestFeedback?.start()
       for (const loop of backgroundLoops) loop.start()
       // One-shot (not a re-arming loop): the worklist empties itself; a partially
       // failed boot resumes on the next one. Never blocks listen.
@@ -2190,6 +2208,7 @@ export function buildContainer(
       poolMetrics.stop()
       orgMetrics.stop()
       sessionAccessWarmer.stop()
+      sessionPullRequestFeedback?.stop()
       for (const loop of backgroundLoops) loop.stop()
       visibilityPush.stop()
       await Promise.allSettled([
@@ -2198,6 +2217,7 @@ export function buildContainer(
         visibilityPush.settle(),
         sessionAccessWarmer.settle(),
         dutyRecompute.settle(),
+        ...(sessionPullRequestFeedback ? [sessionPullRequestFeedback.settle()] : []),
         ...(installationDoorbell ? [installationDoorbell.settle()] : [])
       ])
       await rootPrisma.$disconnect()
