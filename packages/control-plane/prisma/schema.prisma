@@ -79,6 +79,9 @@ model Org {
   // Applied to both call directions when a new agent does not explicitly choose
   // a policy. Existing agents keep their persisted directional policies.
   defaultAgentVisibility AgentCallPolicy @default(all)
+  // Console onboarding wizard done — set once by an owner (finish OR skip); entering
+  // an org with this false (as owner) opens the wizard instead of the console.
+  onboardingCompleted    Boolean         @default(false)
   createdAt              DateTime        @default(now()) @db.Timestamptz(6)
   updatedAt              DateTime        @updatedAt @db.Timestamptz(6)
 

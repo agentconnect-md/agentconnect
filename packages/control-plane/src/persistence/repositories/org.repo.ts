@@ -45,7 +45,13 @@ export class PgOrgRepo implements OrgRepo {
   async listForUser(userId: string): Promise<OrgRecord[]> {
     const rows = await this.db.membership.findMany({
       where: { userId },
-      include: { org: { include: { _count: { select: { members: true, daemons: true } } } } },
+      // Provisioned-but-never-connected daemons (an abandoned wizard mint) don't count —
+      // daemonCount feeds the console's "this org is set up" onboarding signal.
+      include: {
+        org: {
+          include: { _count: { select: { members: true, daemons: { where: { status: { not: 'provisioned' } } } } } }
+        }
+      },
       orderBy: [
         { lastSelectedAt: { sort: 'desc', nulls: 'last' } },
         { id: 'asc' } // cuids are time-sortable ⇒ insertion order when no choice exists
@@ -57,6 +63,7 @@ export class PgOrgRepo implements OrgRepo {
       slug: m.org.slug,
       icon: parseAgentIcon(m.org.icon),
       defaultAgentVisibility: m.org.defaultAgentVisibility as AgentCallPolicy,
+      onboardingCompleted: m.org.onboardingCompleted,
       role: m.role as OrgMemberRole,
       memberCount: m.org._count.members,
       daemonCount: m.org._count.daemons,
@@ -114,6 +121,7 @@ export class PgOrgRepo implements OrgRepo {
       slug: org.slug,
       icon: parseAgentIcon(org.icon),
       defaultAgentVisibility: org.defaultAgentVisibility as AgentCallPolicy,
+      onboardingCompleted: org.onboardingCompleted,
       role: 'owner',
       memberCount: 1,
       daemonCount: 0,
@@ -129,6 +137,7 @@ export class PgOrgRepo implements OrgRepo {
       slug?: string
       icon?: AgentIcon | null
       defaultAgentVisibility?: AgentCallPolicy
+      onboardingCompleted?: boolean
     }
   ): Promise<{ id: string; name: string | null; slug: string }> {
     const org = await this.db.org.update({
@@ -139,7 +148,8 @@ export class PgOrgRepo implements OrgRepo {
         ...(patch.icon !== undefined
           ? { icon: patch.icon === null ? Prisma.JsonNull : (patch.icon as Prisma.InputJsonValue) }
           : {}),
-        ...(patch.defaultAgentVisibility !== undefined ? { defaultAgentVisibility: patch.defaultAgentVisibility } : {})
+        ...(patch.defaultAgentVisibility !== undefined ? { defaultAgentVisibility: patch.defaultAgentVisibility } : {}),
+        ...(patch.onboardingCompleted !== undefined ? { onboardingCompleted: patch.onboardingCompleted } : {})
       }
     })
     return { id: org.id, name: org.name, slug: org.slug }

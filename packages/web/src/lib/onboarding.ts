@@ -1,10 +1,9 @@
 import type { DaemonRow } from './data'
+import type { OrgDto } from './api'
 
-// Per-tab "skip onboarding" flag. The agents view redirects an uninitialized org to
-// the onboarding route; "Explore the console first" sets this so the very next agents
-// render doesn't bounce straight back (which would be an infinite redirect). Scoped to
-// sessionStorage by org slug, so a fresh tab/session shows onboarding again while the
-// org stays empty.
+// Per-tab "already marked / mid-exit" flag. Finishing or skipping onboarding PATCHes the
+// org's persisted `onboardingCompleted`, but the org list refresh races the navigation —
+// this sessionStorage latch suppresses the redirect bounce until the fresh org row lands.
 const key = (org: string) => `ac:onboarding-skip:${org}`
 
 type OnboardingDaemon = Pick<DaemonRow, 'daemonId' | 'status' | 'lifecycleStatus'>
@@ -19,19 +18,13 @@ export function firstReconnectableDaemonId(daemons: readonly OnboardingDaemon[])
   return daemons.find((daemon) => !daemonCompletesOnboarding(daemon))?.daemonId
 }
 
-// Every org now ships the built-in `agentconnect` preset UNPLACED, so "no agents" no
-// longer marks a fresh org. Initialized = a serving daemon OR a placed/configured agent
-// (agentIsPlaced) exists; otherwise the org is fresh and gets the full-screen wizard.
-// A daemon in ANY of the caller's orgs also counts — someone who already runs a daemon
-// elsewhere doesn't need the wizard again in a new empty org.
-export function needsOnboarding(
-  agentsLoading: boolean,
-  daemonsLoading: boolean,
-  hasPlacedAgent: boolean,
-  hasOnlineDaemon: boolean,
-  hasDaemonInAnyOrg: boolean
-): boolean {
-  return !agentsLoading && !daemonsLoading && !hasPlacedAgent && !hasOnlineDaemon && !hasDaemonInAnyOrg
+// The wizard is owner-only and runs once per org: the persisted `onboardingCompleted`
+// flag (set on finish OR skip) decides re-entry. Older CPs don't send the field —
+// treat those orgs as already onboarded rather than bouncing everyone into the wizard.
+// An org that already runs a daemon is set up regardless of the flag (e.g. connected
+// outside the wizard) — never pull its owner back in.
+export function needsOnboarding(org: Pick<OrgDto, 'role' | 'onboardingCompleted' | 'daemonCount'> | null): boolean {
+  return org != null && org.role === 'owner' && org.onboardingCompleted === false && (org.daemonCount ?? 0) === 0
 }
 
 export function isOnboardingSkipped(org: string): boolean {

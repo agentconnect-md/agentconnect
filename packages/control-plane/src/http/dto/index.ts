@@ -2278,6 +2278,8 @@ export const OrgDto = z.object({
   icon: AgentIconDto.nullable(),
   /** Applied to both directional policies when a new agent does not explicitly choose one. */
   defaultAgentVisibility: AgentCallPolicyEnum,
+  /** Console onboarding wizard done (finish OR skip) — an owner of a false org lands in the wizard. */
+  onboardingCompleted: z.boolean(),
   /** Resolved URL for an uploaded `image` org icon (object-store public URL); null for
    *  glyph/default (the console renders those locally) or when no store is configured. */
   iconUrl: z.string().nullable(),
@@ -2310,11 +2312,17 @@ export const UpdateOrgBody = z
     // icon goes through PUT /orgs/:id/icon, so it is not accepted here. null ⇒ default.
     icon: AgentIconBody.nullable().optional(),
     // Seeds both inbound and outbound policies for future agents only.
-    defaultAgentVisibility: AgentCallPolicyEnum.optional()
+    defaultAgentVisibility: AgentCallPolicyEnum.optional(),
+    // One-way: the onboarding wizard marks the org onboarded on finish or skip.
+    onboardingCompleted: z.literal(true).optional()
   })
   .refine(
     (b) =>
-      b.name !== undefined || b.slug !== undefined || b.icon !== undefined || b.defaultAgentVisibility !== undefined,
+      b.name !== undefined ||
+      b.slug !== undefined ||
+      b.icon !== undefined ||
+      b.defaultAgentVisibility !== undefined ||
+      b.onboardingCompleted !== undefined,
     {
       message: 'nothing to update'
     }
