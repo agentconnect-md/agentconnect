@@ -39,11 +39,7 @@
 
 <p align="center">
   <a href="https://slack.agentconnect.md"><img src="https://custom-icon-badges.demolab.com/badge/Slack-4A154B?logo=slack&logoColor=fff" alt="Join AgentConnect on Slack" /></a>
-  <a href="https://x.com/getAgentConnect"><img src="https://img.shields.io/twitter/follow/getAgentConnect?style=social" height="28" alt="Follow @getAgentConnect on X" /></a>
-  <a href="https://www.youtube.com/@agentconnect-md"><img src="https://img.shields.io/badge/YouTube-FF0000?logo=youtube&logoColor=fff" alt="Watch AgentConnect on YouTube" /></a>
-</p>
-
-<p align="center">
+  <a href="https://x.com/getAgentConnect"><img src="https://img.shields.io/badge/Follow-000000?logo=x&logoColor=fff" alt="Follow @getAgentConnect on X" /></a>
   <a href="https://github.com/agentconnect-md/agentconnect/actions/workflows/test.yaml"><img src="https://github.com/agentconnect-md/agentconnect/actions/workflows/test.yaml/badge.svg" alt="Test status" /></a>
   <a href="https://www.npmjs.com/package/@agentconnect.md/daemon/v/latest"><img src="https://img.shields.io/npm/v/%40agentconnect.md%2Fdaemon/latest?label=daemon%20latest" alt="Latest daemon version" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 license" /></a>
@@ -68,6 +64,10 @@ work can begin from a message, issue, pull request, webhook, or schedule.
 
 <p align="center">
   <a href="https://agentconnect.md"><img src="docs/assets/agents-across-channels.png" alt="People and agents working together in Slack, Telegram, and Discord conversations and in a GitHub pull request review" width="880" /></a>
+</p>
+
+<p align="center">
+  <sub>▶&nbsp;<a href="https://www.youtube.com/watch?v=KA7xHF5JbJc"><strong>Watch the two-minute introduction</strong></a></sub>
 </p>
 
 ## Why AgentConnect?
@@ -152,8 +152,8 @@ If AgentConnect looks useful, here's how you can support the project:
 - 📣 Share AgentConnect on
   [X](https://x.com/intent/post?text=AgentConnect%3A%20the%20open-source%2C%20multi-agent%20alternative%20to%20Claude%20Tag.%20%40%20any%20agent%2C%20wherever%20work%20happens.&url=https%3A%2F%2Fgithub.com%2Fagentconnect-md%2Fagentconnect),
   [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https%3A%2F%2Fgithub.com%2Fagentconnect-md%2Fagentconnect),
-  or
-  [Reddit](https://www.reddit.com/submit?url=https%3A%2F%2Fgithub.com%2Fagentconnect-md%2Fagentconnect&title=AgentConnect%3A%20the%20open-source%2C%20multi-agent%20alternative%20to%20Claude%20Tag).
+  [Reddit](https://www.reddit.com/submit?url=https%3A%2F%2Fgithub.com%2Fagentconnect-md%2Fagentconnect&title=AgentConnect%3A%20the%20open-source%2C%20multi-agent%20alternative%20to%20Claude%20Tag),
+  or [LINUX DO](https://linux.do).
 - ✍️ Write a review or tutorial on [DEV](https://dev.to/agentconnect),
   [Medium](https://medium.com/@agentconnect), or your blog.
 - 🙋 [Open an issue](https://github.com/agentconnect-md/agentconnect/issues) to
