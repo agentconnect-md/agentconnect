@@ -3555,39 +3555,23 @@ export function usageWindow(range: UsageRange, now: Date = new Date()): { from: 
   return { from: from.toISOString(), to: to.toISOString() }
 }
 
-/** What the CP's viewer-scoped `/usage` projection says about one window. `complete` is the
- *  load-bearing field: false ⇒ SOME spend in this window is withheld from this caller, and the
- *  projection cannot say whose, so nothing in the window may be attributed to a name. */
-export interface GatewayAttribution {
-  agents: Set<string>
-  complete: boolean
-}
-
-// The viewer-scoped, gateway-metered attribution for one explicit window.
+// The agents this viewer may see gateway spend attributed to, for one explicit window.
 //
-// `/usage` intersects Agent visibility with the request-time Session predicate and returns what
-// it withholds as ONE id-less `unattributed` rollup (`session-visibility.md` §5) — id-less by
-// design, so an agent's presence in `agents` never proves that agent's whole window is readable.
-// An agent with $1 of readable spend and $99 of private spend appears in `agents` with $1 while
-// the $99 sits in `unattributed`, indistinguishable from any other agent's withheld spend.
-//
-// Hence `complete`: only when the projection withholds NOTHING is membership equivalent to
-// "this caller may attribute every dollar in this window", which is the only condition under
-// which a second surface may put an amount next to a name.
-//
-// PRESENCE of the rollup is that signal, never its amount. The CP omits it rather than zeroing
-// it precisely so a reader can tell "nothing was hidden" from "something was hidden and cost 0"
-// — it is keyed on withheld SESSIONS, and an aggregate amount can net to zero through downward
-// corrections. Reading a zero residual as completeness would qualify exactly the periods whose
-// hidden usage is hardest to notice.
+// `/usage` intersects Agent visibility with the request-time Session predicate, so an id in its
+// `agents` list is one the Analytics page ALREADY names to this viewer for this window — that
+// membership is the billing ledger's naming gate. Per the billing exception in
+// `session-visibility.md` §5, a named agent's per-charge amount may include spend the projection
+// itself withholds; accepted there deliberately, so do not "fix" it back to a period-completeness
+// gate — that shape blanked every org with any private session (#1498 follow-up). An id absent
+// from the list stays id-less on every billing row.
 //
 // `source=gateway` because that is the ingress a billing charge settles from (see the route's
 // own note): unscoped, a readable DAEMON session could qualify an agent whose gateway spend is
 // entirely private.
-export async function fetchGatewayAttribution(from: string, to: string, orgId?: string): Promise<GatewayAttribution> {
+export async function fetchGatewayAttribution(from: string, to: string, orgId?: string): Promise<Set<string>> {
   const query = new URLSearchParams({ from, to, source: 'gateway' })
   const usage = await apiGet<UsageDto>(`${orgBase(orgId)}/usage?${query.toString()}`)
-  return { agents: new Set(usage.agents.map((a) => a.agentId)), complete: usage.unattributed === undefined }
+  return new Set(usage.agents.map((a) => a.agentId))
 }
 
 export async function fetchUsage(range: UsageRange, orgId?: string, source?: UsageSource): Promise<UsageDto> {

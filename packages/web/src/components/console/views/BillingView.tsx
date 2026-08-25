@@ -38,7 +38,7 @@ import {
 } from '@/lib/billing-activity'
 import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
-import { fetchAgents, fetchGatewayAttribution, type GatewayAttribution } from '@/lib/api'
+import { fetchAgents, fetchGatewayAttribution } from '@/lib/api'
 import { agentLabel, type Agent } from '@/lib/data'
 import { sumAmounts } from '@/lib/amount'
 import { useOrgs } from '@/lib/org-context'
@@ -73,19 +73,19 @@ export interface TxAgentChip {
 // `/usage` projection for that charge's period. They are different questions and neither source
 // can answer the other's.
 //
-// The gate is `projection.complete`, not membership. `/usage.agents` lists an agent when ANY of
-// its spend is readable, and hides the rest in one id-less residual — so membership alone would
-// let an agent with $1 readable and $99 private be named for charges that include the $99. Only
-// a period whose projection withholds NOTHING makes attribution safe, because then this viewer
-// may already attribute every dollar in it and a chip discloses nothing new. Any residual, and
-// the whole period falls back to id-less rollups.
+// The gate is per-agent MEMBERSHIP in the projection, the same intersection (Agent visibility ∩
+// Session predicate) under which the Analytics page already names that agent to this viewer for
+// this window. A named agent's per-charge amount may therefore include spend the projection
+// withholds — an agent with $1 readable and $99 private is named for a charge covering the $99.
+// That is the deliberate billing exception recorded in `session-visibility.md` §5: a stricter
+// period-completeness gate was tried and blanked every org with any private session. What §5
+// still forbids holds: an agent in NO readable session stays id-less, and everything withheld
+// folds into ONE rollup — no count, no partition.
 //
-// `agentById` supplies the name and icon; an id it cannot resolve is not named either. Whatever
-// is not named is summed into ONE rollup — no count, no partition — which is §5's rule that
-// withheld usage comes back id-less.
+// `agentById` supplies the name and icon; an id it cannot resolve is not named either.
 export function rowAttribution(
   parts: BillingDebitAgent[] | null | undefined,
-  projection: GatewayAttribution | undefined,
+  projection: ReadonlySet<string> | undefined,
   agentById: Map<string, Agent>
 ): TxAgentChip[] {
   if (!parts?.length) return []
@@ -94,9 +94,9 @@ export function rowAttribution(
   for (const part of parts) {
     const value = Number(part.amount)
     if (!Number.isFinite(value) || value === 0) continue
-    // Every clause fails CLOSED: no projection (unloaded or errored), a period with any
-    // withheld spend, an agent outside it, or an id the roster cannot resolve.
-    const agent = projection?.complete && projection.agents.has(part.agentId) ? agentById.get(part.agentId) : undefined
+    // Every clause fails CLOSED: no projection (unloaded or errored), an agent outside it, or
+    // an id the roster cannot resolve.
+    const agent = projection?.has(part.agentId) ? agentById.get(part.agentId) : undefined
     // The id never enters a chip it cannot name — `key` included, so it cannot leak through a
     // prop that ends up serialized.
     if (agent) named.push({ chip: { key: part.agentId, agent, amount: part.amount }, value })
@@ -805,7 +805,7 @@ export default function BillingView() {
   // one read per period on screen. Per PERIOD and never unioned across them — spend a viewer
   // may attribute in one month says nothing about another. Fail closed on error.
   const periods = [...new Set(txItems.filter((t) => t.type === 'debit').map((t) => t.period))].sort()
-  const attribution = useSWR<Map<string, GatewayAttribution>>(
+  const attribution = useSWR<Map<string, Set<string>>>(
     orgId && periods.length ? consoleKeys.billingAttribution(orgId, periods.join(',')) : null,
     async ([, , , joined]) => {
       const wanted = (joined as string).split(',')
@@ -815,7 +815,7 @@ export default function BillingView() {
       return new Map(wanted.map((p, i) => [p, reads[i]!]))
     }
   )
-  const attributionIn = (period: string): GatewayAttribution | undefined =>
+  const attributionIn = (period: string): ReadonlySet<string> | undefined =>
     attribution.error ? undefined : attribution.data?.get(period)
 
   // Deep-link landing for a console that does not offer billing: the rail hides
@@ -1115,42 +1115,58 @@ export default function BillingView() {
                             const rest = named.length - shown.length
                             return (
                               <>
-                                {[...shown, ...(rollup ? [rollup] : [])].map((chip) => (
-                                  <span
-                                    key={chip.key}
-                                    data-tx-agent="true"
-                                    className="inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] pr-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary)"
-                                  >
-                                    <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
-                                      {chip.agent ? (
-                                        <AgentIconView icon={chip.agent.icon} runtime={chip.agent.runtime} size={17} />
-                                      ) : (
-                                        // The default avatar. This viewer may not learn which
-                                        // agents these are, how many, or how the amount splits
-                                        // between them — only that the rest of the charge is
-                                        // theirs. Labelled for assistive tech, since the glyph
-                                        // alone says nothing.
-                                        <span
-                                          data-tx-agent-default="true"
-                                          role="img"
-                                          aria-label="Agents you don’t have access to"
-                                          className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
-                                        >
-                                          <Icon name="bot" size={10} strokeWidth={2} />
-                                        </span>
+                                {/* On desktop the per-agent amount is disclosure, not decoration:
+                                    eight visible dollar figures per row drowned the row's own
+                                    amount, so it lives in `title` — the console TooltipLayer shows
+                                    it on hover AND on keyboard focus (the chip is tabbable for
+                                    exactly that). Touch has neither, so ≤768px keeps the amount
+                                    visible in the chip; that card already scrolls sideways. */}
+                                {[...shown, ...(rollup ? [rollup] : [])].map((chip) => {
+                                  const share = chip.agent
+                                    ? `${agentLabel(chip.agent)} — ${fmtDecimalUsd(chip.amount)}`
+                                    : `Agents you don’t have access to — ${fmtDecimalUsd(chip.amount)}`
+                                  return (
+                                    <span
+                                      key={chip.key}
+                                      data-tx-agent="true"
+                                      tabIndex={0}
+                                      title={share}
+                                      aria-label={share}
+                                      className={`inline-flex h-[21px] min-w-0 flex-none items-center gap-[5px] rounded-[4px] bg-(--surface-active) p-[2px] pr-[7px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) ${
+                                        chip.agent ? '' : 'desktop:pr-[2px]'
+                                      }`}
+                                    >
+                                      <span className="av h-[17px] w-[17px] flex-none rounded-[5px]">
+                                        {chip.agent ? (
+                                          <AgentIconView
+                                            icon={chip.agent.icon}
+                                            runtime={chip.agent.runtime}
+                                            size={17}
+                                          />
+                                        ) : (
+                                          // The default avatar. This viewer may not learn which
+                                          // agents these are, how many, or how the amount splits
+                                          // between them — only that the rest of the charge is
+                                          // theirs.
+                                          <span
+                                            data-tx-agent-default="true"
+                                            className="flex h-full w-full items-center justify-center rounded-[inherit] bg-(--surface-sunken) text-(--text-tertiary)"
+                                          >
+                                            <Icon name="bot" size={10} strokeWidth={2} />
+                                          </span>
+                                        )}
+                                      </span>
+                                      {chip.agent && (
+                                        <span className="max-w-[110px] truncate">{agentLabel(chip.agent)}</span>
                                       )}
+                                      {/* Touch's reachable copy of the share; desktop keeps it
+                                          in the tooltip. */}
+                                      <span className="mono flex-none text-(--text-tertiary) desktop:hidden">
+                                        {fmtDecimalUsd(chip.amount)}
+                                      </span>
                                     </span>
-                                    {chip.agent && (
-                                      <span className="max-w-[110px] truncate">{agentLabel(chip.agent)}</span>
-                                    )}
-                                    {/* Visible, not a tooltip: the console's tooltip ignores
-                                        touch and this chip is not focusable, so a `title` would
-                                        put the amount out of reach on mobile and by keyboard. */}
-                                    <span className="mono flex-none text-(--text-tertiary)">
-                                      {fmtDecimalUsd(chip.amount)}
-                                    </span>
-                                  </span>
-                                ))}
+                                  )
+                                })}
                                 {rest > 0 && (
                                   <span className="mono flex-none text-[11.5px] text-(--text-tertiary)">+{rest}</span>
                                 )}

@@ -62,11 +62,10 @@ export interface BillingAccount {
 // It is NOT self-authorizing. The service holds no Agent or Session visibility, so its ids and
 // its amounts are both the ORG's, and rendering one as-is is the discovery
 // `docs/designs/authorization-policy.md` §4 forbids. The row may put an agent's name beside one
-// of these amounts only when the CP's viewer-scoped `/usage` projection says this viewer may
-// attribute EVERY dollar in that billing period (`fetchGatewayAttribution`, and `complete`
-// specifically). Otherwise the period's charges render one id-less rollup apiece, which is
-// `session-visibility.md` §5's rule that withheld usage comes back without an id. The gate lives
-// in `rowAttribution` in BillingView; nothing else may read this field.
+// of these amounts only when that agent is in the CP's viewer-scoped `/usage` projection for the
+// charge's period (`fetchGatewayAttribution`) — the billing exception in
+// `session-visibility.md` §5. Ids outside it fold into one id-less rollup per charge. The gate
+// lives in `rowAttribution` in BillingView; nothing else may read this field.
 export interface BillingCredit {
   type: 'credit'
   id: string
