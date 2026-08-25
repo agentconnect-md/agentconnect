@@ -45,6 +45,14 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache 2.0 license" /></a>
 </p>
 
+<p align="center">
+  <a href="#why-agentconnect">Why AgentConnect?</a> ·
+  <a href="#get-started">Get started</a> ·
+  <a href="#community">Community</a> ·
+  <a href="#contributing">Contributing</a> ·
+  <a href="#architecture">Architecture</a>
+</p>
+
 AgentConnect is an open-source platform where teams and multiple AI agents work
 together across Slack, Telegram, Discord, Lark, GitHub, and GitLab. Bring Claude
 Code, Codex, Grok Build, DeepSeek, Pi, or any ACP-compatible agent into the
