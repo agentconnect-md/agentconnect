@@ -24,6 +24,7 @@ import {
   fmtDecimalUsd,
   fmtMicroUsd,
   type BillingAccount,
+  type BillingDebitAgent,
   type BillingPurchase,
   type BillingTransaction
 } from '@/lib/billing-api'
@@ -37,7 +38,7 @@ import {
 } from '@/lib/billing-activity'
 import { balanceBanner, ledgerHistory } from '@/lib/billing-banner'
 import { featureFlagEnabled } from '@/lib/feature-flags'
-import { fetchAgents, fetchGatewayAttribution } from '@/lib/api'
+import { fetchAgents, fetchGatewayAttribution, type GatewayAttribution } from '@/lib/api'
 import { agentLabel, type Agent } from '@/lib/data'
 import { sumAmounts } from '@/lib/amount'
 import { useOrgs } from '@/lib/org-context'
@@ -67,38 +68,43 @@ export interface TxAgentChip {
 
 // What a usage row may say about who spent the money.
 //
-// Every figure here comes from `projection` — the CP's viewer-scoped `/usage` read for this
-// row's period, gateway-scoped like the charge itself. That is the whole point: the billing
-// service's own split is org-scoped in BOTH its ids and its amounts, so an agent with $1 of
-// readable spend and $99 of private spend would be named for $100. The projection hands over
-// the $1 and keeps the $99 in the residual, which is `session-visibility.md` §5's rule that
-// withheld usage comes back id-less — and what is withheld is withheld by EITHER predicate.
+// The AMOUNTS come from the billing service's own split — the only thing that knows how one
+// charge divides — and the PERMISSION to attach a name to one comes from the CP's viewer-scoped
+// `/usage` projection for that charge's period. They are different questions and neither source
+// can answer the other's.
 //
-// `agentById` supplies only the name and icon: an id the roster cannot resolve is not named,
-// and its amount falls into the residual like any other withheld spend.
+// The gate is `projection.complete`, not membership. `/usage.agents` lists an agent when ANY of
+// its spend is readable, and hides the rest in one id-less residual — so membership alone would
+// let an agent with $1 readable and $99 private be named for charges that include the $99. Only
+// a period whose projection withholds NOTHING makes attribution safe, because then this viewer
+// may already attribute every dollar in it and a chip discloses nothing new. Any residual, and
+// the whole period falls back to id-less rollups.
 //
-// The residual is the ROW's total minus what was named, so the chips always add up to the line
-// they sit on. If naming exceeds the row — a partial period, or a settlement this projection's
-// window does not describe — the row is not reconcilable and gets NO attribution rather than an
-// overstated chip.
+// `agentById` supplies the name and icon; an id it cannot resolve is not named either. Whatever
+// is not named is summed into ONE rollup — no count, no partition — which is §5's rule that
+// withheld usage comes back id-less.
 export function rowAttribution(
-  rowAmount: string,
-  projection: ReadonlyMap<string, string> | undefined,
+  parts: BillingDebitAgent[] | null | undefined,
+  projection: GatewayAttribution | undefined,
   agentById: Map<string, Agent>
 ): TxAgentChip[] {
-  if (!projection?.size) return []
+  if (!parts?.length) return []
   const named: { chip: TxAgentChip; value: number }[] = []
-  for (const [agentId, amount] of projection) {
-    const agent = agentById.get(agentId)
-    const value = Number(amount)
-    if (!agent || !Number.isFinite(value) || value === 0) continue
-    named.push({ chip: { key: agentId, agent, amount }, value })
+  const withheld: string[] = []
+  for (const part of parts) {
+    const value = Number(part.amount)
+    if (!Number.isFinite(value) || value === 0) continue
+    // Every clause fails CLOSED: no projection (unloaded or errored), a period with any
+    // withheld spend, an agent outside it, or an id the roster cannot resolve.
+    const agent = projection?.complete && projection.agents.has(part.agentId) ? agentById.get(part.agentId) : undefined
+    // The id never enters a chip it cannot name — `key` included, so it cannot leak through a
+    // prop that ends up serialized.
+    if (agent) named.push({ chip: { key: part.agentId, agent, amount: part.amount }, value })
+    else withheld.push(part.amount)
   }
-  const residual = sumAmounts([rowAmount, ...named.map(({ chip }) => `-${chip.amount}`)])
-  if (residual.startsWith('-')) return []
   named.sort((a, b) => b.value - a.value)
   const chips = named.map(({ chip }) => chip)
-  if (Number(residual) > 0) chips.push({ key: 'withheld', amount: residual })
+  if (withheld.length) chips.push({ key: 'withheld', amount: sumAmounts(withheld) })
   return chips
 }
 
@@ -799,7 +805,7 @@ export default function BillingView() {
   // one read per period on screen. Per PERIOD and never unioned across them — spend a viewer
   // may attribute in one month says nothing about another. Fail closed on error.
   const periods = [...new Set(txItems.filter((t) => t.type === 'debit').map((t) => t.period))].sort()
-  const attribution = useSWR<Map<string, Map<string, string>>>(
+  const attribution = useSWR<Map<string, GatewayAttribution>>(
     orgId && periods.length ? consoleKeys.billingAttribution(orgId, periods.join(',')) : null,
     async ([, , , joined]) => {
       const wanted = (joined as string).split(',')
@@ -809,7 +815,7 @@ export default function BillingView() {
       return new Map(wanted.map((p, i) => [p, reads[i]!]))
     }
   )
-  const attributionIn = (period: string): ReadonlyMap<string, string> | undefined =>
+  const attributionIn = (period: string): GatewayAttribution | undefined =>
     attribution.error ? undefined : attribution.data?.get(period)
 
   // Deep-link landing for a console that does not offer billing: the rail hides
@@ -1092,7 +1098,14 @@ export default function BillingView() {
                             with a default avatar. See `agentSplit` and billing-api.ts. */}
                         {!credit &&
                           (() => {
-                            const split = rowAttribution(t.amount, attributionIn(t.period), agentById)
+                            // Nothing at all while the projection is in flight. Rendering the
+                            // fail-closed answer first would tell the reader they have no access
+                            // to an agent, then take it back a second later — a wrong statement,
+                            // not a slow one. Fail closed applies to a MISSING answer, not a
+                            // pending one.
+                            const split = attribution.isLoading
+                              ? []
+                              : rowAttribution(t.agents, attributionIn(t.period), agentById)
                             // The description column shares the row with the amount, so the
                             // NAMED chips are capped. The rollup is appended after the cap: it
                             // is the one chip that must never be hidden behind a `+N`.

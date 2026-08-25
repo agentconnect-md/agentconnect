@@ -2,34 +2,42 @@
 /**
  * What a usage row may say about who spent the money.
  *
- * Every figure comes from the CP's viewer-scoped `/usage` projection, gateway-scoped like the
- * charge itself — never from the billing service's own split, whose ids AND amounts are the
- * ORG's (it authorizes on org membership alone). That distinction is the whole boundary:
- * `session-visibility.md` §5 makes usage attribution the intersection of Agent visibility and
- * the Session predicate, and `/usage` applies both, so what it hands over per agent is what
- * this viewer may attribute — never an authorization for that agent's whole month. An agent
- * with $1 of readable spend and $99 of private spend is worth $1 here, and the $99 stays in
- * the id-less residual. These are security properties, not formatting ones.
+ * Two sources, two different questions. The AMOUNTS come from the billing service's split —
+ * the only thing that knows how one charge divides — and the PERMISSION to put a name beside
+ * one comes from the CP's viewer-scoped `/usage` projection for that charge's period.
+ *
+ * The gate is the projection's `complete`, not membership in it. `/usage.agents` lists an agent
+ * when ANY of its spend is readable and hides the rest in one id-less residual, so membership
+ * alone would let an agent with $1 readable and $99 private be named for charges covering the
+ * $99. Only a period that withholds nothing makes a name safe. These are security properties.
+ *
+ * The fixtures are real figures from a test org: one August with three separate charges, whose
+ * amounts sum to exactly the month's projected total. A period holds MANY charges — assuming
+ * one charge per period is what blanked the whole feed before.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@/lib/data'
+import type { GatewayAttribution } from '@/lib/api'
 
-const DEBIT = {
+const AGENT_ID = '8173602b-1d84-41c5-9777-22a6eb2d2b51'
+const debit = (id: string, amount: string) => ({
   type: 'debit' as const,
-  id: 'd1',
+  id,
   period: '2026-08',
-  amount: '100.00',
-  at: '2026-08-20T10:00:00.000Z',
-  // The billing service's own org-scoped split. Nothing reads it — the assertions below pin
-  // that the row's figures come from the projection instead, not from these numbers.
-  agents: [{ agentId: 'agt_1', amount: '100.00' }]
-}
+  amount,
+  at: '2026-08-25T02:20:00.000Z',
+  agents: [{ agentId: AGENT_ID, amount }]
+})
+const DEBITS = [debit('d1', '0.006822824'), debit('d2', '0.015224848'), debit('d3', '0.001036384')]
 
 const mocks = vi.hoisted(() => ({
-  fetchAgents: vi.fn(async () => [{ id: 'agt_1', name: 'reviewer', runtime: 'claude' }]),
-  fetchAttribution: vi.fn(async () => new Map([['agt_1', '1.00']]))
+  fetchAgents: vi.fn(async () => [{ id: '8173602b-1d84-41c5-9777-22a6eb2d2b51', name: 'reviewer', runtime: 'claude' }]),
+  fetchAttribution: vi.fn(async () => ({
+    agents: new Set(['8173602b-1d84-41c5-9777-22a6eb2d2b51']),
+    complete: true
+  }))
 }))
 
 vi.mock('@/lib/org-context', () => ({
@@ -50,8 +58,8 @@ vi.mock('@/lib/billing-api', async () => ({
   createBillingPurchase: vi.fn(),
   fetchBillingPurchase: vi.fn(),
   fetchBillingAccount: async () => ({ orgId: 'org-1', balanceMicro: 10_000_000 }),
-  fetchBillingTransactions: async () => ({ items: [DEBIT], nextCursor: null }),
-  fetchBillingTransactionsSince: async () => [DEBIT]
+  fetchBillingTransactions: async () => ({ items: DEBITS, nextCursor: null }),
+  fetchBillingTransactionsSince: async () => DEBITS
 }))
 
 const { default: BillingView, rowAttribution } = await import('./BillingView')
@@ -61,89 +69,82 @@ const roster = new Map([
   ['agt_1', agent('agt_1', 'reviewer')],
   ['agt_2', agent('agt_2', 'triage')]
 ])
+const complete = (...ids: string[]): GatewayAttribution => ({ agents: new Set(ids), complete: true })
+const partial = (...ids: string[]): GatewayAttribution => ({ agents: new Set(ids), complete: false })
 
 describe('rowAttribution', () => {
-  it('names an agent for its SCOPED amount, never the row it appears on', () => {
-    // $1 readable + $99 private on one visible agent. Membership would name it for $100;
-    // the projection's own figure is the only one it may be named for.
-    const chips = rowAttribution('100', new Map([['agt_1', '1']]), roster)
-    expect(chips).toEqual([
-      { key: 'agt_1', agent: roster.get('agt_1'), amount: '1' },
-      { key: 'withheld', amount: '99' }
-    ])
+  it('names an agent for its exact per-row amount when the period withholds nothing', () => {
+    const chips = rowAttribution([{ agentId: 'agt_1', amount: '0.006822824' }], complete('agt_1'), roster)
+    expect(chips).toEqual([{ key: 'agt_1', agent: roster.get('agt_1'), amount: '0.006822824' }])
   })
 
-  it('leaves an unresolvable agent’s spend in the residual, id and all', () => {
-    const chips = rowAttribution('10', new Map([['agt_gone', '4']]), roster)
-    expect(chips).toEqual([{ key: 'withheld', amount: '10' }])
+  it('refuses to name ANY agent in a period that withholds something', () => {
+    // The $1-readable / $99-private case: the agent is in `agents`, but the residual means the
+    // projection cannot say which spend was readable, so no charge in the period may carry a
+    // name — however small the residual is.
+    const chips = rowAttribution([{ agentId: 'agt_1', amount: '100' }], partial('agt_1'), roster)
+    expect(chips).toEqual([{ key: 'withheld', amount: '100' }])
+    expect(JSON.stringify(chips)).not.toContain('agt_1')
+  })
+
+  it('withholds an agent the projection does not list at all', () => {
+    const chips = rowAttribution([{ agentId: 'agt_2', amount: '3' }], complete('agt_1'), roster)
+    expect(chips).toEqual([{ key: 'withheld', amount: '3' }])
+  })
+
+  it('withholds an agent the roster cannot resolve, id and all', () => {
+    const chips = rowAttribution([{ agentId: 'agt_gone', amount: '3' }], complete('agt_gone'), roster)
+    expect(chips).toEqual([{ key: 'withheld', amount: '3' }])
     expect(JSON.stringify(chips)).not.toContain('agt_gone')
   })
 
   it('collapses everything withheld into ONE rollup — no count, no partition', () => {
     const chips = rowAttribution(
-      '10',
-      new Map([
-        ['agt_1', '1'],
-        ['x', '2'],
-        ['y', '3']
-      ]),
+      [
+        { agentId: 'agt_1', amount: '1' },
+        { agentId: 'x', amount: '0.1' },
+        { agentId: 'y', amount: '0.2' }
+      ],
+      complete('agt_1', 'x', 'y'),
       roster
     )
     expect(chips).toHaveLength(2)
-    expect(chips[1]).toEqual({ key: 'withheld', amount: '9' })
-  })
-
-  it('subtracts exactly, never as a float', () => {
-    // 0.3 - 0.1 - 0.1 is 0.09999999999999999 in binary floating point.
-    const chips = rowAttribution(
-      '0.3',
-      new Map([
-        ['agt_1', '0.1'],
-        ['agt_2', '0.1']
-      ]),
-      roster
-    )
-    expect(chips.at(-1)).toEqual({ key: 'withheld', amount: '0.1' })
-  })
-
-  it('omits the rollup when the viewer can attribute the whole row', () => {
-    const chips = rowAttribution(
-      '3',
-      new Map([
-        ['agt_1', '1'],
-        ['agt_2', '2']
-      ]),
-      roster
-    )
-    expect(chips.map((c) => c.key)).toEqual(['agt_2', 'agt_1'])
+    // 0.1 + 0.2 is 0.30000000000000004 in binary floating point.
+    expect(chips[1]).toEqual({ key: 'withheld', amount: '0.3' })
   })
 
   it('orders named agents by spend, biggest first', () => {
     const chips = rowAttribution(
-      '9',
-      new Map([
-        ['agt_1', '0.4'],
-        ['agt_2', '2.5']
-      ]),
+      [
+        { agentId: 'agt_1', amount: '0.40' },
+        { agentId: 'agt_2', amount: '2.50' }
+      ],
+      complete('agt_1', 'agt_2'),
       roster
     )
-    expect(chips.map((c) => c.agent?.name)).toEqual(['triage', 'reviewer', undefined])
+    expect(chips.map((c) => c.agent?.name)).toEqual(['triage', 'reviewer'])
   })
 
-  it('shows NOTHING rather than an overstated chip when naming exceeds the row', () => {
-    // A partial period, or a settlement this window does not describe: not reconcilable, so
-    // there is no split that both adds up and does not overstate. Say nothing.
-    expect(rowAttribution('1', new Map([['agt_1', '5']]), roster)).toEqual([])
+  it('fails closed while the projection is unloaded or errored', () => {
+    const chips = rowAttribution([{ agentId: 'agt_1', amount: '3' }], undefined, roster)
+    expect(chips).toEqual([{ key: 'withheld', amount: '3' }])
   })
 
-  it('fails closed on a missing projection or an empty roster', () => {
-    expect(rowAttribution('10', undefined, roster)).toEqual([])
-    expect(rowAttribution('10', new Map(), roster)).toEqual([])
-    expect(rowAttribution('10', new Map([['agt_1', '1']]), new Map())).toEqual([{ key: 'withheld', amount: '10' }])
+  it('fails closed on an empty roster', () => {
+    const chips = rowAttribution([{ agentId: 'agt_1', amount: '3' }], complete('agt_1'), new Map())
+    expect(chips).toEqual([{ key: 'withheld', amount: '3' }])
+  })
+
+  it('renders nothing when the service sent no split, or an empty one', () => {
+    expect(rowAttribution(undefined, complete('agt_1'), roster)).toEqual([])
+    expect(rowAttribution(null, complete('agt_1'), roster)).toEqual([])
+    expect(rowAttribution([], complete('agt_1'), roster)).toEqual([])
+    // A zero part is noise, not attribution.
+    expect(rowAttribution([{ agentId: 'agt_1', amount: '0' }], complete('agt_1'), roster)).toEqual([])
   })
 
   it('drops a part whose amount is not a number rather than rendering NaN', () => {
-    expect(rowAttribution('10', new Map([['agt_1', 'twelve']]), roster)).toEqual([{ key: 'withheld', amount: '10' }])
+    expect(rowAttribution([{ agentId: 'agt_1', amount: 'twelve' }], complete('agt_1'), roster)).toEqual([])
   })
 })
 
@@ -171,25 +172,19 @@ describe('the usage row', () => {
     ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = {}
   })
 
-  it('asks the CP for the periods on screen, not for a preset range', async () => {
+  it('asks the CP once for the period the rows share, not once per row', async () => {
     await render()
+    expect(mocks.fetchAttribution).toHaveBeenCalledTimes(1)
     expect(mocks.fetchAttribution).toHaveBeenCalledWith('2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', 'org-1')
   })
 
-  it('renders the projection’s amount, not the billing service’s org-scoped one', async () => {
+  it('names the agent on EVERY charge in the period, not just one', async () => {
+    // A period holds many charges. Reconciling a monthly projection against a single row is
+    // what blanked all three of these before, so each one is asserted.
     const host = await render()
-    const chips = host.querySelectorAll('[data-tx-agent]')
-    expect(chips).toHaveLength(2)
-
-    // The projection attributes $1 of this $100 charge to a roster agent...
-    expect(chips[0]!.textContent).toBe('reviewer$1.00')
-    expect(chips[0]!.querySelector('[data-tx-agent-default]')).toBeNull()
-    // ...and the other $99 is the id-less residual. The billing split said $100 for this same
-    // agent; if that number ever reaches a CHIP, this assertion is what catches it. The row's
-    // own total is still $100 — that figure is the org's charge and was never in question.
-    expect(chips[1]!.textContent).toBe('$99.00')
-    expect(chips[1]!.querySelector('[data-tx-agent-default]')).not.toBeNull()
-    expect([...chips].map((c) => c.textContent).join('')).not.toContain('$100.00')
-    expect(host.textContent).toContain('-$100.00')
+    const chips = [...host.querySelectorAll('[data-tx-agent]')]
+    // Sub-cent charges keep their significant digits rather than all rounding to `$0.00`.
+    expect(chips.map((c) => c.textContent)).toEqual(['reviewer$0.006823', 'reviewer$0.01522', 'reviewer$0.001036'])
+    expect(host.querySelector('[data-tx-agent-default]')).toBeNull()
   })
 })
