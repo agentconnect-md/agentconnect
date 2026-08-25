@@ -171,6 +171,23 @@ describe('OutputConverger streaming axis', () => {
     expect(appends(converger.streamUpdate())).toEqual([])
   })
 
+  it('medium cards carry title + status but no output — the result is a high-only rung', () => {
+    const converger = streaming('medium')
+    converger.onUpdate(tool('t1', 'Read file'))
+    converger.streamUpdate()
+    converger.onUpdate({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't1',
+      title: 'Read file',
+      status: 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: 'read 42 lines' } }]
+    } as never)
+    const cards = appends(converger.streamUpdate()).filter((c) => c.type === 'task_update')
+    // The completed card has no `output` key — medium shows only that the step finished.
+    expect(cards).toEqual([{ type: 'task_update', id: 't1', title: 'Read file', status: 'complete' }])
+    expect(cards[0] && 'output' in cards[0]).toBe(false)
+  })
+
   it('flattens markdown emphasis out of card labels, which render as plain text', () => {
     const converger = streaming('medium')
     converger.onUpdate(tool('t1', '**Read** `src/a.ts`'))
@@ -792,20 +809,28 @@ describe('applySlackAction — streaming actions', () => {
     expect(conn.deleteMessage).toHaveBeenCalledWith('C1', '900.1')
   })
 
-  it('clears the loading state once the stream first has something to show', async () => {
+  it('re-issues the loading row beside the stream and clears it only at the stop', async () => {
     const { apply, conn, state } = fixture()
+    // The daemon stashes the snapshot the applier re-issues (§5).
+    state.loadingStatus = { text: 'is thinking…', options: { username: 'Bot A' } }
     await apply({ kind: 'stream-start' })
-    // The container label alone is not content — the reader is still waiting.
+    // startStream displaces the row, so it is re-issued right after the stream opens.
+    expect(conn.setLoadingStatus).toHaveBeenLastCalledWith('C1', 'T1', 'is thinking…', undefined, { username: 'Bot A' })
+    const afterStart = conn.setLoadingStatus.mock.calls.length
+    // The container label alone is not content, so a plan-only append does not re-issue.
     await apply({ kind: 'stream-append', chunks: [{ type: 'plan_update', title: 'Working…' }] })
-    expect(conn.setLoadingStatus).not.toHaveBeenCalled()
-    // A card or body text is.
+    expect(conn.setLoadingStatus.mock.calls.length).toBe(afterStart)
+    // A card or body text re-issues the row so it survives the append that would displace it.
     await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: 'the answer' }] })
-    expect(conn.setLoadingStatus).toHaveBeenCalledWith('C1', 'T1', '')
-    expect(state.streamLoadingCleared).toBe(true)
-    // Exactly one clear, however much else the turn streams.
+    expect(conn.setLoadingStatus.mock.calls.length).toBe(afterStart + 1)
+    // Never a clear until the turn ends.
+    expect(conn.setLoadingStatus.mock.calls.every((call) => call[2] !== '')).toBe(true)
     await apply({ kind: 'stream-append', chunks: [{ type: 'markdown_text', text: ' and more' }] })
+    // …then exactly one clear at the terminal stop, and no more re-issues after it.
     await apply({ kind: 'stream-stop', settle: 'final', text: 'the answer and more' })
-    expect(conn.setLoadingStatus).toHaveBeenCalledOnce()
+    expect(conn.setLoadingStatus).toHaveBeenLastCalledWith('C1', 'T1', '')
+    expect(conn.setLoadingStatus.mock.calls.filter((call) => call[2] === '')).toHaveLength(1)
+    expect(state.streamLoadingCleared).toBe(true)
     // The enum is never driven from here — chat.startStream owns it.
     expect(conn.setStatus).not.toHaveBeenCalled()
   })
@@ -1197,7 +1222,7 @@ describe('Daemon Slack streaming turn', () => {
     return { daemon, host }
   }
 
-  it('writes the loading state once before the stream, clears it once, and never the enum', async () => {
+  it('keeps the loading row alive beside the stream, clears it once at the end, never the enum', async () => {
     const { daemon } = booted(scaffold())
     await daemon.start()
     const conn = connect(daemon)
@@ -1208,15 +1233,18 @@ describe('Daemon Slack streaming turn', () => {
       'int-a'
     )
 
-    // `setStatus` is the call that ALSO drives agents.sessions.setStatus. A streaming turn
-    // never makes it: chat.startStream owns the session, and the enum cannot carry text.
+    // (a) `setStatus` is the call that ALSO drives agents.sessions.setStatus. A streaming turn
+    // never makes it: chat.startStream owns the session, and the enum renders nothing in a
+    // channel thread anyway (confirmed live).
     expect(conn.setStatus).not.toHaveBeenCalled()
-    // The loading state itself is written — the documented shape, and what covers the wait
-    // before the stream has anything to show — then cleared exactly once.
     const loading = conn.setLoadingStatus.mock.calls.map((call) => call[2])
-    expect(loading.filter((text) => text !== '')).toHaveLength(1)
-    expect(loading.filter((text) => text === '')).toHaveLength(1)
+    // (b) the row is set at the start and RE-ISSUED (startStream and each append displace it),
+    // so there is more than one non-empty write and it is never cleared on first content.
+    expect(loading.filter((text) => text !== '').length).toBeGreaterThan(1)
     expect(loading.at(0)).not.toBe('')
+    expect(loading.slice(0, -1)).not.toContain('')
+    // (c) cleared exactly once, at turn end.
+    expect(loading.filter((text) => text === '')).toHaveLength(1)
     expect(loading.at(-1)).toBe('')
     expect(conn.startTurnStream).toHaveBeenCalledOnce()
     expect(conn.stopTurnStream).toHaveBeenCalledOnce()

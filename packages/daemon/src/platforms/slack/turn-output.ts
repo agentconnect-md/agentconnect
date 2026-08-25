@@ -74,6 +74,11 @@ export interface SlackTurnState {
   /** Whether this turn's loading state has been cleared. A streaming turn owes exactly one
    *  clear: nothing expires it now that the answer no longer arrives through chat.postMessage. */
   streamLoadingCleared?: boolean
+  /** The legacy free-text loading row re-issued to keep it visible beside the stream.
+   *  `chat.startStream` and every append DISPLACE the row (confirmed live), so a streaming turn
+   *  re-writes this snapshot after the stream opens and on each visible append, clearing it only
+   *  at turn end (§5). Text only — the enum belongs to the stream. */
+  loadingStatus?: { text: string; loadingMessages?: string[]; options?: SlackStatusOptions }
   /** A stop Slack has not accepted yet, kept verbatim so settlement reissues THAT stop: a
    *  bare abort retry would settle the message but drop its attribution footer. */
   streamStopOwed?: Extract<SlackAction, { kind: 'stream-stop' }>
@@ -426,14 +431,34 @@ function streamChunkText(chunks: SlackStreamChunk[]): string {
 
 /**
  * Clear the turn's loading state, once. Text only — the session enum belongs to the stream
- * (§5) — and idempotent, because the seams that can end the pre-stream window (first visible
- * append, terminal stop, teardown) all reach this and only the first one owes Slack a call.
+ * (§5) — and idempotent, because the seams that end the streaming turn (terminal stop, teardown)
+ * all reach this and only the first one owes Slack a call.
  */
 async function clearStreamLoading(conn: SlackConnection, p: SlackTurn, state: SlackTurnState): Promise<void> {
   if (state.streamLoadingCleared || !p.plan.statusThread) return
   state.streamLoadingCleared = true
   if (typeof conn.setLoadingStatus !== 'function') return
   await conn.setLoadingStatus(p.plan.channel, p.plan.statusThread, '')
+}
+
+/**
+ * Re-issue the legacy loading row so it survives beside the stream. `chat.startStream` and every
+ * append DISPLACE the row (confirmed live), so a streaming turn re-writes the stashed snapshot
+ * right after the stream opens and on each visible append; it coexists with the streamed message
+ * and its plan cards. Best-effort, text only (never the enum, §5), and a no-op once the terminal
+ * clear has run so a late append cannot resurrect the row.
+ */
+async function reissueStreamLoading(conn: SlackConnection, p: SlackTurn, state: SlackTurnState): Promise<void> {
+  const loading = state.loadingStatus
+  if (!loading || state.streamLoadingCleared || !p.plan.statusThread) return
+  if (typeof conn.setLoadingStatus !== 'function') return
+  await conn.setLoadingStatus(
+    p.plan.channel,
+    p.plan.statusThread,
+    loading.text,
+    loading.loadingMessages,
+    loading.options
+  )
 }
 
 /** Route display text to the fallback buffer, opening it if needed, and record ownership the
@@ -718,6 +743,8 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         // carries today, under the same chat:write.customize cooldown (§5).
         ...(statusBarPostOptions ? { identity: statusBarPostOptions } : {})
       })
+      // startStream displaces the legacy loading row — re-issue it so it stays visible (§5).
+      if (state.stream) await reissueStreamLoading(conn, p, state)
       return
     }
     case 'stream-append': {
@@ -735,10 +762,10 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       if (!state.stream) return
       const outcome = await conn.appendTurnStream(state.stream, action.chunks)
       if (outcome === 'ok') {
-        // The stream now has something to look at, so the loading state has done its job (§5).
-        // Cleared here rather than at stream open: the gap between the two is the blank wait
-        // the loading state exists to cover.
-        if (action.chunks.some((c) => c.type !== 'plan_update')) await clearStreamLoading(conn, p, state)
+        // The append displaces the legacy loading row, so re-issue it on this activity seam to
+        // keep it beside the stream (§5) — the plan container's own label is not content, so a
+        // plan-only append never re-issues. Cleared only at turn end / stop, not on first content.
+        if (action.chunks.some((c) => c.type !== 'plan_update')) await reissueStreamLoading(conn, p, state)
         return
       }
       if (outcome === 'stopped') {

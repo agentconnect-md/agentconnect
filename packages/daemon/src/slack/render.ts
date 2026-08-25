@@ -1420,9 +1420,10 @@ export class OutputConverger {
           const id = u.toolCallId
           if (id && (this.rung === 'medium' || this.rung === 'high')) {
             const terminal = u.status === 'completed' || u.status === 'failed'
-            // The tool's own result goes on the card ONCE, when the call finishes — `output`
-            // is a write-once field, so a per-update summary would accumulate on Slack's side.
-            const result = terminal ? extractToolOutput(u) : ''
+            // The tool's own result is HIGH only — medium keeps the card's title + status, high
+            // adds the output (§4). Written once at completion — `output` is a write-once field,
+            // so a per-update summary would accumulate on Slack's side.
+            const result = terminal && this.rung === 'high' ? extractToolOutput(u) : ''
             this.queueTask(
               id,
               this.toolLabel(u),

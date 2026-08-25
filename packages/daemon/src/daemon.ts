@@ -9998,9 +9998,17 @@ export class Daemon {
     // created) plus any usage carried over from prior turns — so it sits at the top of
     // the thread before the reply streams in, and above the stream opened next.
     await this.emitStatusBar(p)
+    // Stash the loading snapshot the applier re-issues to keep the legacy row alive beside the
+    // stream (startStream and every append displace it, §5) — before the stream opens, so the
+    // stream-start re-issue can read it.
+    if (this.streamsTurnStatus(p.conv))
+      turnState<SlackTurnState>(p).loadingStatus = {
+        text: plan.startupActivityLabel,
+        ...(plan.statusOptions ? { options: plan.statusOptions } : {})
+      }
     const streaming = this.streamsTurnStatus(p.conv) && (await this.openSlackTurnStream(p))
-    // A streaming turn already wrote its loading state at dispatch and keeps it until the
-    // stream has something to show, so it takes no second write here.
+    // A streaming turn already wrote its loading state at dispatch and re-issues it beside the
+    // stream, so it takes no second write here.
     if (!streaming && !plan.hostAlreadyRunning)
       this.showActivity(replyConn, plan.channel, plan.statusThread, 'is thinking…', plan.statusOptions)
     // Config-file secrets deleted by the idle sweep come back BEFORE the turn

@@ -7,8 +7,8 @@ finalization first (§7.1).
 
 Presentation was revised once after seeing it live: streams open in `plan` display mode rather
 than `timeline`, the §5.5 finalization rides `chat.stopStream` instead of a closing `chat.update`
-that was erasing the task cards, and the documented loading state was restored for the window
-before the stream has anything to show. §4, §3.3 and §5 carry those decisions.
+that was erasing the task cards, and the legacy loading row was restored and re-issued so it
+coexists with the stream that would otherwise displace it. §4, §3.3 and §5 carry those decisions.
 
 Layer 0 ([#1462](https://github.com/agentconnect-md/agentconnect/pull/1462),
 [#1471](https://github.com/agentconnect-md/agentconnect/pull/1471)) adopted Slack's Agent
@@ -275,17 +275,21 @@ express — streaming changes the _transport_ of each rung, not which rung shows
 
 ## 5. Status choreography
 
-On a streaming turn the daemon never writes the **session enum**. It does write the **loading
-text**, for exactly one window. The stream is the lifecycle; the loading state is what covers the
-gap before the stream has anything in it:
+On a streaming turn the daemon never writes the **session enum**. It writes only the **legacy
+loading text**, and it keeps that row alive for the whole turn. Live testing settled two facts a
+channel thread makes plain: the enum's loading UX and the native stop button are **DM /
+assistant-container surfaces only** — neither renders in a channel thread — and `chat.startStream`
+(and every append after it) **displaces** the legacy `assistant.threads.setStatus` row. So a
+streaming turn drives only the legacy status, with no enum and no `is_stoppable`, and it re-issues
+that status to make it coexist with the stream:
 
-| Moment                               | Today                                                                                 | Streaming                                                                       |
-| ------------------------------------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `dispatch`, before the session opens | `showActivity(…, plan.startupActivityLabel)` → legacy text (+ enum, first write only) | the same legacy text and `loading_messages`, **text only** — never the enum     |
-| `openTurnChrome`                     | `showActivity(…, 'is thinking…')`                                                     | `chat.startStream` — creates the session, sets `processing`. No second write    |
-| pre-stream loading                   | (the status simply persists)                                                          | the loading text stands until the stream's first visible chunk, then one clear  |
-| each activity change                 | `set-status` → legacy text, enum deduped away                                         | `task_update` chunk on the stream; the plan card's `in_progress` is the signal  |
-| turn end (`onFinal`)                 | `set-status ''` → legacy clear + enum `active`                                        | `chat.stopStream` with the footer blocks; `session_status` defaults to `active` |
+| Moment                               | Today                                                                                 | Streaming                                                                                                                                                                 |
+| ------------------------------------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dispatch`, before the session opens | `showActivity(…, plan.startupActivityLabel)` → legacy text (+ enum, first write only) | the same legacy text and `loading_messages`, **text only** — never the enum                                                                                               |
+| `openTurnChrome`                     | `showActivity(…, 'is thinking…')`                                                     | `chat.startStream` — creates the session, sets `processing`. No second write                                                                                              |
+| loading, while streaming             | (the status simply persists)                                                          | startStream and each append displace the row, so it is re-issued after the stream opens and on each visible append — it then coexists with the message and its plan cards |
+| each activity change                 | `set-status` → legacy text, enum deduped away                                         | `task_update` chunk on the stream; the loading row is re-issued on the same append seam                                                                                   |
+| turn end (`onFinal`)                 | `set-status ''` → legacy clear + enum `active`                                        | `chat.stopStream` with the footer blocks; the loading text is cleared once                                                                                                |
 
 **Why the loading state came back.** The first version wrote no status of either kind and read
 well on paper — the stream is the lifecycle, so why narrate it? In practice a cold start opens a
@@ -298,20 +302,20 @@ official assistant templates both do the obvious thing instead: set the free-tex
 Three rules keep it from re-opening the one-slot conflict of §1:
 
 - **Text only, never the enum.** `chat.startStream` already set the session `processing`, and the
-  enum cannot carry custom text anyway — writing it would replace the native rendering with the
-  legacy one for nothing. The connection therefore exposes a `setLoadingStatus` that writes the
-  free text alone, and a streaming turn uses only that.
-- **One window, closed explicitly.** The status is written once, before the stream, and cleared
-  the moment the stream first shows a body chunk or a task card — not when the stream _opens_,
-  because the gap between opening and first content is the whole point. The clear has to be
-  explicit now: Slack's bridge cleared the legacy status when the app posted a message, and a
-  streaming turn no longer posts one. A turn that ends without ever showing anything clears it at
-  the terminal stop, so it cannot be left hanging.
-- **Nothing mid-turn.** After the clear, the plan card's `in_progress` state is the activity
-  signal. The applier's `set-status` case still skips while a stream is open.
+  enum's loading UX renders nothing in a channel thread anyway — writing it would only overwrite
+  the native rendering with the legacy one for nothing. The connection therefore exposes a
+  `setLoadingStatus` that writes the free text alone, and a streaming turn uses only that.
+- **Kept alive, cleared at the end.** The row is written once before the stream, then re-issued —
+  right after `chat.startStream`, and on each visible append — because both displace it. The
+  re-issue is what makes it coexist with the message and plan cards rather than vanishing on first
+  content. The clear is explicit and happens once at the terminal stop: Slack's bridge used to
+  clear the legacy status when the app posted a message, and a streaming turn no longer posts one.
+- **Uniform across rungs.** `minimal`/`low` (body-only stream) and `medium`/`high` (stream + plan
+  cards) all carry the same persistent loading row as the working signal. The applier's
+  `set-status` case still skips the enum-driving path while a stream is open.
 
-This covers the pre-stream window only, so it is independent of the separate, deferred question
-of whether `minimal`/`low` should keep a rotating status _during_ a streaming turn.
+The re-issue rides the existing send queue and activity seam — no extra timer — so the row simply
+tracks the stream it sits beside.
 
 The legacy free-text path is otherwise **retired where streaming works and kept verbatim as the
 fallback**. Nothing about `setStatus`, `setSessionLifecycle`, or their dedup map changes; on a
