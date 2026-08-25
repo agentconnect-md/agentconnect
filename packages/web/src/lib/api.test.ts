@@ -145,21 +145,14 @@ describe('fetchGatewayAttribution', () => {
     expect(calls[0]).toContain('source=gateway')
   })
 
-  it('is complete only when the residual is ABSENT, never when it is present and zero', async () => {
-    // The CP omits `unattributed` rather than zeroing it so a reader can tell "nothing was
-    // hidden" from "something was hidden and cost 0" — it is keyed on withheld SESSIONS, and an
-    // aggregate amount nets to zero through downward corrections. Reading a zero residual as
-    // completeness would qualify exactly the periods whose hidden usage is hardest to notice.
+  it('returns projection MEMBERSHIP, unaffected by a withheld residual', async () => {
+    // The billing exception (`session-visibility.md` §5): an id in `/usage.agents` is one
+    // Analytics already names to this viewer, and that alone gates naming on the ledger —
+    // a period-completeness gate was tried and blanked every org with one private session.
     const window = ['2026-08-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', 'org-1'] as const
 
-    usage({})
-    expect((await fetchGatewayAttribution(...window)).complete).toBe(true)
-
-    usage({ unattributed: { sessions: 1, totalTokens: 0, costAmount: '0' } })
-    expect((await fetchGatewayAttribution(...window)).complete).toBe(false)
-
     usage({ unattributed: { sessions: 2, totalTokens: 40, costAmount: '99' } })
-    expect((await fetchGatewayAttribution(...window)).complete).toBe(false)
+    expect(await fetchGatewayAttribution(...window)).toEqual(new Set(['agt_1']))
   })
 })
 

@@ -545,6 +545,23 @@ Invariants preserved:
   learn a restricted Agent's activity pattern at all — that needs the residual
   gone, not narrowed.
 
+- **Billing-ledger exception (accepted, product decision).** The billing
+  Transactions feed names an agent on a charge when that agent appears in the
+  viewer's `/usage?source=gateway` projection for the charge's period — i.e.
+  under exactly the intersection this section already uses for Analytics —
+  and renders the billing service's per-charge amount beside that name. A
+  named agent's per-charge amount may therefore include spend the projection
+  itself withholds (an agent with readable and private spend in the same
+  period is named for charges that cover both). This is a deliberate,
+  narrower cousin of the residual inference channel above and is accepted on
+  the same grounds: the ledger already publishes every charge's amount to
+  every member, and the stricter alternative — naming only in periods whose
+  projection withholds nothing — was shipped and blanked attribution for any
+  org with a single private session. What remains enforced: an agent absent
+  from the projection (no readable spend at all) is never named on any charge,
+  ids the roster cannot resolve are never rendered, and everything withheld on
+  a charge folds into one id-less rollup with no count and no partition.
+
 - 404, never 403, for invisible sessions (no existence oracle).
 - A `?triggeredBy=` / `?channel=` query filter remains a filter, not an
   authorization boundary; the predicate is applied regardless.
