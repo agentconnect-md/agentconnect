@@ -409,28 +409,6 @@ export class VirtualSlackConnection implements PlatformConnection {
 
   async setTitle(): Promise<void> {}
 
-  /**
-   * Native streaming turn output is UNSUPPORTED here, deliberately and deterministically.
-   * The arena has no Slack API to stream into, and a half-modelled stream would change what
-   * the arena counts; answering "cannot stream" sends every arena turn down the legacy
-   * pipeline, which is the path every existing baseline was recorded against.
-   */
-  async startTurnStream(): Promise<undefined> {
-    return undefined
-  }
-
-  async appendTurnStream(): Promise<boolean> {
-    return false
-  }
-
-  async stopTurnStream(): Promise<boolean> {
-    return false
-  }
-
-  streamingLikely(): boolean {
-    return false
-  }
-
   async openDirectMessage(user: string): Promise<string> {
     return `D-${user}`
   }

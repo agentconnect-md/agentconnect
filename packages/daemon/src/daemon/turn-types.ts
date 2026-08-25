@@ -326,9 +326,6 @@ export interface TurnRun {
   readonly agent: LoadedAgent
   readonly replyConn: ReplyConnection | undefined
   readonly evaluation: TurnEvaluationReporter
-  /** This turn's converger. Carried here so the pre-`Pending` phases can ask it whether the
-   *  turn owns its platform status slot — a Slack streaming turn writes no status API. */
-  readonly conv: DaemonConverger
 }
 
 /** A turn whose answer may be committed: the prompt loop settled on one accepted generation. */
