@@ -1477,10 +1477,19 @@ export interface PullRequestWakeRecord {
   sessionId: SessionId
 }
 
+export interface PullRequestCaptureRecord {
+  sessionId: SessionId
+}
+
 /** Durable PR→session identity plus one level-triggered wake marker per PR. */
 export interface SessionPullRequestFeedbackRepo {
   /** Whether this exact session already established its one forward PR binding. */
   hasSession(sessionId: SessionId): Promise<boolean>
+  /** Persist the exact terminal session's capture obligation before its lifecycle snapshot is ACKed. */
+  enqueueCapture(sessionId: SessionId, nextAttemptAt: Date): Promise<boolean>
+  claimNextCapture(owner: string, now: Date, until: Date): Promise<PullRequestCaptureRecord | null>
+  completeCapture(item: PullRequestCaptureRecord, owner: string): Promise<void>
+  deferCapture(item: PullRequestCaptureRecord, owner: string, nextAttemptAt: Date): Promise<void>
   /** First session to claim a numeric repo+PR wins. */
   linkSession(input: {
     sessionId: SessionId

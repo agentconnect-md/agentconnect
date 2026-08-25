@@ -1,7 +1,7 @@
 import { Prisma, type SessionPullRequest } from '../../generated/prisma/client.js'
 import { AgentId, OrgId, SessionId } from '../../domain/ids.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
-import type { PullRequestWakeRecord, SessionPullRequestFeedbackRepo } from '../ports.js'
+import type { PullRequestCaptureRecord, PullRequestWakeRecord, SessionPullRequestFeedbackRepo } from '../ports.js'
 
 function toRecord(row: SessionPullRequest): PullRequestWakeRecord {
   if (!row.deliveryKey) throw new Error('claimed pull request has no delivery key')
@@ -30,6 +30,62 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
 
   async hasSession(sessionId: SessionId): Promise<boolean> {
     return (await this.db.sessionPullRequest.findUnique({ where: { sessionId }, select: { sessionId: true } })) !== null
+  }
+
+  async enqueueCapture(sessionId: SessionId, nextAttemptAt: Date): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      const session = await tx.sessionMeta.findUnique({
+        where: { id: sessionId },
+        select: { phase: true, workspaceIsolation: true, contentPurgedAt: true }
+      })
+      if (
+        !session ||
+        (session.phase !== 'end' && session.phase !== 'problem') ||
+        session.workspaceIsolation !== 'session' ||
+        session.contentPurgedAt
+      )
+        return false
+      if (await tx.sessionPullRequest.findUnique({ where: { sessionId }, select: { sessionId: true } })) return false
+      await tx.sessionPullRequestCapture.upsert({
+        where: { sessionId },
+        create: { sessionId, nextAttemptAt },
+        update: {}
+      })
+      return true
+    })
+  }
+
+  async claimNextCapture(owner: string, now: Date, until: Date): Promise<PullRequestCaptureRecord | null> {
+    const candidates = await this.db.sessionPullRequestCapture.findMany({
+      where: { nextAttemptAt: { lte: now }, OR: [{ claimUntil: null }, { claimUntil: { lt: now } }] },
+      orderBy: [{ nextAttemptAt: 'asc' }, { sessionId: 'asc' }],
+      take: 20
+    })
+    for (const candidate of candidates) {
+      const claimed = await this.db.sessionPullRequestCapture.updateMany({
+        where: {
+          sessionId: candidate.sessionId,
+          nextAttemptAt: { lte: now },
+          OR: [{ claimUntil: null }, { claimUntil: { lt: now } }]
+        },
+        data: { claimOwner: owner, claimUntil: until }
+      })
+      if (claimed.count === 1) return { sessionId: SessionId(candidate.sessionId) }
+    }
+    return null
+  }
+
+  async completeCapture(item: PullRequestCaptureRecord, owner: string): Promise<void> {
+    await this.db.sessionPullRequestCapture.deleteMany({
+      where: { sessionId: item.sessionId, claimOwner: owner }
+    })
+  }
+
+  async deferCapture(item: PullRequestCaptureRecord, owner: string, nextAttemptAt: Date): Promise<void> {
+    await this.db.sessionPullRequestCapture.updateMany({
+      where: { sessionId: item.sessionId, claimOwner: owner },
+      data: { nextAttemptAt, claimOwner: null, claimUntil: null }
+    })
   }
 
   async linkSession(input: {
@@ -68,6 +124,9 @@ export class PgSessionPullRequestFeedbackRepo implements SessionPullRequestFeedb
           where: { ...key, OR: [{ sessionId: null }, { sessionId: input.sessionId }] },
           data: { sessionId: input.sessionId, claimOwner: null, claimUntil: null }
         })
+        if (linked.count === 1) {
+          await tx.sessionPullRequestCapture.deleteMany({ where: { sessionId: input.sessionId } })
+        }
         return linked.count === 1
       })
     } catch (err) {

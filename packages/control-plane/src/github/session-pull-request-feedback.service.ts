@@ -12,6 +12,7 @@ import type {
   AgentRepo,
   GithubInstallationRepo,
   MemberSetRepo,
+  PullRequestCaptureRecord,
   PullRequestWakeRecord,
   SessionMetaRecord,
   SessionPullRequestFeedbackRepo,
@@ -20,11 +21,13 @@ import type {
 import type { SessionPullRequestLinkService } from './session-pull-request-link.service.js'
 
 const RETRY_MS = 10_000
+const CAPTURE_RETRY_MS = 60_000
 const CLAIM_MS = 60_000
 const FEEDBACK_DEBOUNCE_MS = 10_000
 const UNMATCHED_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
 const MAX_PER_TICK = 20
+const MAX_CAPTURES_PER_TICK = 5
 
 export interface SessionPullRequestFeedbackServiceDeps {
   clock: Clock
@@ -53,7 +56,6 @@ export class SessionPullRequestFeedbackService {
   private timer?: TimerHandle
   private running?: Promise<void>
   private lastCleanupAt = 0
-  private readonly tracking = new Map<string, Promise<void>>()
 
   constructor(private readonly deps: SessionPullRequestFeedbackServiceDeps) {}
 
@@ -71,7 +73,6 @@ export class SessionPullRequestFeedbackService {
 
   async settle(): Promise<void> {
     await this.running
-    await Promise.allSettled(this.tracking.values())
   }
 
   kick(delayMs = 0): void {
@@ -83,35 +84,14 @@ export class SessionPullRequestFeedbackService {
     }, delayMs)
   }
 
-  trackSession(session: SessionMetaRecord): void {
+  async trackSession(session: SessionMetaRecord): Promise<void> {
     if (
       (session.phase !== 'end' && session.phase !== 'problem') ||
       session.workspaceIsolation !== 'session' ||
       session.contentPurgedAt
     )
       return
-    if (this.tracking.has(session.id)) return
-    const task = this.deps.agents
-      .getUnscoped(session.agentId)
-      .then(async (agent) => {
-        if (!agent || agent.orgId !== session.orgId) return
-        if (await this.deps.feedback.hasSession(session.id)) return
-        const link = await this.deps.links.resolve(agent, session, true)
-        if (!link || link.scope !== 'session') return
-        const linked = await this.deps.feedback.linkSession({
-          sessionId: session.id,
-          agentId: agent.id,
-          orgId: agent.orgId,
-          repoId: link.repoId,
-          repoFullName: link.repoFullName,
-          installationId: link.installationId,
-          pullNumber: link.pullNumber
-        })
-        if (linked) this.kick()
-      })
-      .catch((err) => this.deps.log.warn({ err, sessionId: session.id }, 'session PR feedback: link capture failed'))
-      .finally(() => this.tracking.delete(session.id))
-    this.tracking.set(session.id, task)
+    if (await this.deps.feedback.enqueueCapture(session.id, new Date(this.deps.clock.now()))) this.kick()
   }
 
   async enqueue(signal: PullRequestFeedbackSignal): Promise<boolean> {
@@ -140,6 +120,7 @@ export class SessionPullRequestFeedbackService {
       this.lastCleanupAt = nowMs
       await this.deps.feedback.deleteExpired(new Date(nowMs - UNMATCHED_TTL_MS))
     }
+    await this.drainCaptures()
     for (let i = 0; i < MAX_PER_TICK; i++) {
       const now = new Date(this.deps.clock.now())
       const item = await this.deps.feedback.claimNext(this.owner, now, new Date(now.getTime() + CLAIM_MS))
@@ -158,6 +139,52 @@ export class SessionPullRequestFeedbackService {
         )
       }
     }
+  }
+
+  private async drainCaptures(): Promise<void> {
+    for (let i = 0; i < MAX_CAPTURES_PER_TICK; i++) {
+      const now = new Date(this.deps.clock.now())
+      const item = await this.deps.feedback.claimNextCapture(this.owner, now, new Date(now.getTime() + CLAIM_MS))
+      if (!item) return
+      try {
+        if (await this.capture(item)) {
+          await this.deps.feedback.completeCapture(item, this.owner)
+        } else {
+          await this.deps.feedback.deferCapture(item, this.owner, new Date(this.deps.clock.now() + CAPTURE_RETRY_MS))
+        }
+      } catch (err) {
+        await this.deps.feedback.deferCapture(item, this.owner, new Date(this.deps.clock.now() + CAPTURE_RETRY_MS))
+        this.deps.log.warn({ err, sessionId: item.sessionId }, 'session PR feedback: exact-session capture failed')
+      }
+    }
+  }
+
+  private async capture(item: PullRequestCaptureRecord): Promise<boolean> {
+    if (await this.deps.feedback.hasSession(item.sessionId)) return true
+    const session = await this.deps.sessions.getUnscoped(item.sessionId)
+    if (
+      !session ||
+      (session.phase !== 'end' && session.phase !== 'problem') ||
+      session.workspaceIsolation !== 'session' ||
+      session.contentPurgedAt
+    )
+      return true
+    const agent = await this.deps.agents.getUnscoped(session.agentId)
+    if (!agent || agent.orgId !== session.orgId) return true
+    const result = await this.deps.links.capture(agent, session)
+    if (result.status === 'retry') return false
+    if (result.status === 'absent' || result.link.scope !== 'session') return true
+    const linked = await this.deps.feedback.linkSession({
+      sessionId: session.id,
+      agentId: agent.id,
+      orgId: agent.orgId,
+      repoId: result.link.repoId,
+      repoFullName: result.link.repoFullName,
+      installationId: result.link.installationId,
+      pullNumber: result.link.pullNumber
+    })
+    if (linked) this.kick()
+    return true
   }
 
   private async deliver(item: PullRequestWakeRecord): Promise<boolean> {

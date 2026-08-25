@@ -5,6 +5,7 @@ import { AgentId, OrgId, SessionId } from '../domain/ids.js'
 import type {
   AgentRecord,
   GithubInstallationRecord,
+  PullRequestCaptureRecord,
   PullRequestWakeRecord,
   SessionMetaRecord
 } from '../persistence/ports.js'
@@ -12,7 +13,7 @@ import {
   SessionPullRequestFeedbackService,
   type SessionPullRequestFeedbackServiceDeps
 } from './session-pull-request-feedback.service.js'
-import type { SessionPullRequestLink } from './session-pull-request-link.service.js'
+import type { SessionPullRequestCaptureResult } from './session-pull-request-link.service.js'
 
 const NOW = 1_780_000_000_000
 const ORG_ID = OrgId('org-a')
@@ -60,10 +61,16 @@ function wake(id: string, repoId = REPO_ID): PullRequestWakeRecord {
   }
 }
 
+const CAPTURE: PullRequestCaptureRecord = { sessionId: SESSION_ID }
+
 function harness(over: Partial<SessionPullRequestFeedbackServiceDeps> = {}) {
   const clock = new FakeClock(NOW)
   const feedbackRepo = {
     hasSession: vi.fn(async () => false),
+    enqueueCapture: vi.fn(async () => true),
+    claimNextCapture: vi.fn<SessionPullRequestFeedbackServiceDeps['feedback']['claimNextCapture']>(async () => null),
+    completeCapture: vi.fn(async () => {}),
+    deferCapture: vi.fn(async () => {}),
     linkSession: vi.fn(async () => true),
     enqueue: vi.fn(async () => {}),
     claimNext: vi.fn<SessionPullRequestFeedbackServiceDeps['feedback']['claimNext']>(async () => null),
@@ -71,7 +78,9 @@ function harness(over: Partial<SessionPullRequestFeedbackServiceDeps> = {}) {
     defer: vi.fn(async () => {}),
     deleteExpired: vi.fn(async () => 0)
   }
-  const links = { resolve: vi.fn(async (): Promise<SessionPullRequestLink | null> => null) }
+  const links = {
+    capture: vi.fn(async (): Promise<SessionPullRequestCaptureResult> => ({ status: 'absent' }))
+  }
   const send = vi.fn<SessionPullRequestFeedbackServiceDeps['send']>(async (_daemonId, request) => ({
     deliveryKey: request.deliveryKey,
     accepted: true
@@ -163,33 +172,55 @@ describe('SessionPullRequestFeedbackService', () => {
     expect(h.feedbackRepo.complete).toHaveBeenCalledWith(healthy, expect.any(String))
   })
 
-  it('captures a PR only from the exact terminal session worktree', async () => {
+  it('persists only the exact terminal session capture obligation', async () => {
     const h = harness()
-    h.links.resolve.mockResolvedValueOnce({
-      repoId: REPO_ID,
-      repoFullName: 'acme/infra',
-      installationId: INSTALLATION_ID,
-      pullNumber: Number(REPO_ID),
-      branch: 'fix/manual-pr',
-      scope: 'session',
-      ambiguous: false
+
+    await h.service.trackSession(SESSION)
+
+    expect(h.feedbackRepo.enqueueCapture).toHaveBeenCalledWith(SESSION_ID, new Date(NOW))
+    expect(h.links.capture).not.toHaveBeenCalled()
+
+    await h.service.trackSession({ ...SESSION, id: SessionId('shared-session'), workspaceIsolation: 'shared' })
+    await h.service.trackSession({ ...SESSION, id: SessionId('active-session'), phase: 'start' })
+    expect(h.feedbackRepo.enqueueCapture).toHaveBeenCalledTimes(1)
+  })
+
+  it('captures and binds the PR from only the queued exact session', async () => {
+    const h = harness()
+    h.feedbackRepo.claimNextCapture.mockResolvedValueOnce(CAPTURE).mockResolvedValueOnce(null)
+    h.links.capture.mockResolvedValueOnce({
+      status: 'resolved',
+      link: {
+        repoId: REPO_ID,
+        repoFullName: 'acme/infra',
+        installationId: INSTALLATION_ID,
+        pullNumber: Number(REPO_ID),
+        branch: 'fix/manual-pr',
+        scope: 'session',
+        ambiguous: false
+      }
     })
 
-    h.service.trackSession(SESSION)
-    await h.service.settle()
+    await runOnce(h)
 
-    expect(h.links.resolve).toHaveBeenCalledWith(AGENT, SESSION, true)
+    expect(h.deps.sessions.getUnscoped).toHaveBeenCalledWith(SESSION_ID)
+    expect(h.links.capture).toHaveBeenCalledWith(AGENT, SESSION)
     expect(h.feedbackRepo.linkSession).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: SESSION_ID, repoId: REPO_ID, pullNumber: Number(REPO_ID) })
     )
+    expect(h.feedbackRepo.completeCapture).toHaveBeenCalledWith(CAPTURE, expect.any(String))
+  })
 
-    h.feedbackRepo.hasSession.mockResolvedValue(true)
-    h.service.trackSession({ ...SESSION, id: SessionId('already-linked') })
-    await h.service.settle()
-    expect(h.links.resolve).toHaveBeenCalledTimes(1)
+  it('defers a transient exact-session capture without scanning another session', async () => {
+    const h = harness()
+    h.feedbackRepo.claimNextCapture.mockResolvedValueOnce(CAPTURE).mockResolvedValueOnce(null)
+    h.links.capture.mockResolvedValueOnce({ status: 'retry' })
 
-    h.service.trackSession({ ...SESSION, id: SessionId('shared-session'), workspaceIsolation: 'shared' })
-    await h.service.settle()
-    expect(h.links.resolve).toHaveBeenCalledTimes(1)
+    await runOnce(h)
+
+    expect(h.deps.sessions.getUnscoped).toHaveBeenCalledTimes(1)
+    expect(h.deps.sessions.getUnscoped).toHaveBeenCalledWith(SESSION_ID)
+    expect(h.feedbackRepo.deferCapture).toHaveBeenCalledWith(CAPTURE, expect.any(String), new Date(NOW + 60_000))
+    expect(h.feedbackRepo.linkSession).not.toHaveBeenCalled()
   })
 })

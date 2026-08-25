@@ -1178,6 +1178,7 @@ model SessionMeta {
   webchatAgentCurrentFor WebchatConversationAgent[] @relation("WebchatAgentCurrentSession")
   webchatTargetedBy      WebchatConversation[]      @relation("WebchatTargetSession")
   pullRequest            SessionPullRequest?
+  pullRequestCapture     SessionPullRequestCapture?
 
   @@index([agentId, startedAt])
   @@index([lastActivityAt(sort: Desc), startedAt(sort: Desc), id(sort: Desc), agentId], map: "session_meta_activity_page_idx")
@@ -1216,6 +1217,19 @@ model SessionPullRequest {
   @@id([orgId, repoId, pullNumber], map: "session_pull_request_pkey")
   @@index([nextAttemptAt, claimUntil], map: "session_pull_request_pending_idx")
   @@map("session_pull_request")
+}
+
+// One durable, exact-session obligation to discover the PR created from its isolated worktree.
+model SessionPullRequestCapture {
+  sessionId     String    @id
+  nextAttemptAt DateTime  @db.Timestamptz(6)
+  claimOwner    String?   @db.Uuid
+  claimUntil    DateTime? @db.Timestamptz(6)
+
+  session SessionMeta @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([nextAttemptAt, claimUntil], map: "session_pull_request_capture_pending_idx")
+  @@map("session_pull_request_capture")
 }
 
 // Stable provider resource referenced by SessionMeta. Provider ACLs themselves

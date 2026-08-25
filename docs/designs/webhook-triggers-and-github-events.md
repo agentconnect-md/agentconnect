@@ -335,8 +335,12 @@ one `SessionPullRequest` row keyed by organization, numeric repository id, and
 pull-request number; its optional `sessionId` is the durable owner. Only a
 terminal lifecycle snapshot emitted for that exact session may establish the
 owner: the CP resolves the session's isolated worktree and persists the
-branch-to-PR result. A durable snapshot retry remains tied to that session;
-shared workspaces and console PR-panel reads cannot establish wake eligibility.
+branch-to-PR result. Before acknowledging a durable session snapshot, the CP
+persists one `SessionPullRequestCapture` obligation keyed only by that
+`sessionId`. The worker leases that exact row: transient daemon or GitHub
+failures defer it, while a definitive missing branch, repository, or PR
+completes it. Shared workspaces and console PR-panel reads cannot establish
+wake eligibility.
 If feedback arrives before capture, it creates an unowned row that stays
 dormant until the same session establishes the forward binding. The worker
 never searches session history to infer an owner.

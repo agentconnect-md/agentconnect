@@ -181,6 +181,35 @@ describe('SessionPullRequestLinkService', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps transient capture failures retryable and ignores a panel miss cache', async () => {
+    let calls = 0
+    const fetch = vi.fn(async () => {
+      calls += 1
+      if (calls <= 2) return new Response(JSON.stringify({ message: 'try later' }), { status: 503 })
+      return new Response(JSON.stringify([pull(7, 'open')]), { status: 200 })
+    })
+    const service = new SessionPullRequestLinkService({
+      clock: new FakeClock(1_760_000_000_000),
+      github: { resolveWorkspaceRepo: async () => REPO } as unknown as GithubService,
+      tokens: { mintPullRequestRead: async () => ({ token: 'ghs_test' }) } as unknown as InstallationTokenService,
+      readSessionBranch: async () => 'dev/jane/panel',
+      latestSessionIdOfAgent: async () => SESSION.id,
+      fetchImpl: fetch as unknown as FetchLike
+    })
+
+    expect(await service.resolve(AGENT, SESSION)).toBeNull()
+    expect(await service.capture(AGENT, SESSION)).toEqual({ status: 'retry' })
+    expect(await service.capture(AGENT, SESSION)).toMatchObject({ status: 'resolved', link: { pullNumber: 7 } })
+    expect(fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('classifies an empty head lookup as a definitive capture absence', async () => {
+    const { service, fetch } = harness({ pulls: [[]] })
+
+    expect(await service.capture(AGENT, SESSION)).toEqual({ status: 'absent' })
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
   it('holds a link for its TTL, a miss for the shorter one, and re-reads on force', async () => {
     const { service, clock, fetch } = harness({ pulls: [[pull(7, 'open')], [pull(9, 'open')], [pull(11, 'open')]] })
 

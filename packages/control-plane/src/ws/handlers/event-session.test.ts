@@ -53,9 +53,10 @@ function recorded(session: Partial<SessionMetaRecord> = {}): SessionMilestoneRes
 }
 
 describe('handleEventSession', () => {
-  it('ACKs a durable snapshot only after its metadata transaction commits', async () => {
+  it('ACKs a durable snapshot only after metadata and exact-session capture are durable', async () => {
     const order: string[] = []
     let finishPersist!: () => void
+    let finishCapture!: () => void
     const recordMilestone = vi.fn(() => {
       order.push('persist:start')
       return new Promise<SessionMilestoneResult>((resolve) => {
@@ -65,9 +66,19 @@ describe('handleEventSession', () => {
         }
       })
     })
+    const trackSession = vi.fn(() => {
+      order.push('capture:start')
+      return new Promise<void>((resolve) => {
+        finishCapture = () => {
+          order.push('capture:finish')
+          resolve()
+        }
+      })
+    })
     const replyTo = vi.fn(() => order.push('ack'))
     const deps = scopedDeps({
       session: { recordMilestone },
+      pullRequestFeedback: { trackSession },
       events: { publish: vi.fn(() => order.push('publish')) }
     })
     const frame = eventSessionFrame('event/session-sync')
@@ -83,9 +94,13 @@ describe('handleEventSession', () => {
     expect(replyTo).not.toHaveBeenCalled()
 
     finishPersist()
+    await vi.waitFor(() => expect(order).toEqual(['persist:start', 'persist:finish', 'capture:start']))
+    expect(replyTo).not.toHaveBeenCalled()
+
+    finishCapture()
     await handling
 
-    expect(order).toEqual(['persist:start', 'persist:finish', 'publish', 'ack'])
+    expect(order).toEqual(['persist:start', 'persist:finish', 'capture:start', 'capture:finish', 'publish', 'ack'])
     expect(replyTo).toHaveBeenCalledWith(frame, 'ack', { ok: true })
   })
 
@@ -111,8 +126,34 @@ describe('handleEventSession', () => {
     expect(sendError).toHaveBeenCalledWith(frame.id, 'INTERNAL', expect.any(String), true)
     expect(error).toHaveBeenCalledWith(
       { err: failure, daemonId: DAEMON_ID, agentId: AGENT_ID, sessionId: SESSION_ID },
-      'event/session-sync: metadata snapshot persistence failed'
+      'event/session-sync: session snapshot durability failed'
     )
+  })
+
+  it('keeps a durable snapshot retryable when exact-session capture persistence fails', async () => {
+    const frame = eventSessionFrame('event/session-sync')
+    const replyTo = vi.fn()
+    const sendError = vi.fn()
+    const failure = new Error('capture queue unavailable')
+    const deps = scopedDeps({
+      session: {
+        recordMilestone: vi
+          .fn()
+          .mockResolvedValue(recorded({ phase: 'end', workspaceIsolation: 'session', contentPurgedAt: null }))
+      },
+      pullRequestFeedback: { trackSession: vi.fn().mockRejectedValue(failure) },
+      events: { publish: vi.fn() }
+    })
+
+    await handleEventSessionSync(
+      frame,
+      { daemonId: DAEMON_ID, orgId: ORG_ID, replyTo, sendError } as unknown as DaemonConnection,
+      deps
+    )
+
+    expect(replyTo).not.toHaveBeenCalled()
+    expect(sendError).toHaveBeenCalledWith(frame.id, 'INTERNAL', expect.any(String), true)
+    expect(deps.events.publish).not.toHaveBeenCalled()
   })
 
   it('publishes the milestone only after it has been persisted', async () => {

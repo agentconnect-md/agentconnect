@@ -1189,27 +1189,21 @@ export function buildContainer(
             // cluster-placed agent has no `agent.daemonId` at all, so reading that column instead
             // resolved no branch for exactly the deployments where every agent is placed that way.
             const daemonId = (await placementResolver.servingDaemon(agent)) ?? agent.daemonId
-            if (!daemonId) return null
+            if (!daemonId) throw new Error('no daemon currently serves the session workspace')
             const daemon = await registry.getAvailable(agent.orgId, daemonId)
-            if (!daemon) return null
+            if (!daemon) throw new Error('session workspace daemon is unavailable')
             // An older daemon drops an unknown frame silently, so the REQ would burn its retransmit
             // budget and then read as an offline daemon — refuse first, exactly as the workspace
             // routes do. Only the session-worktree read needs it; the primary checkout is the read
             // every daemon has always answered.
             if (scope === 'session' && !daemon.capabilities.features.includes(WORKSPACE_SESSION_READ_FEATURE)) {
-              return null
+              throw new Error('session workspace daemon cannot read isolated worktrees yet')
             }
-            try {
-              const status = await sender.workspaceGitStatus(daemonId, {
-                agentId: agent.id,
-                ...(scope === 'session' ? { sessionId: session.id } : {})
-              })
-              return status.isRepo ? (status.branch ?? null) : null
-            } catch {
-              // An offline daemon, a REQ timeout and a non-repo workspace are one answer here: no
-              // branch to resolve a PR through. The panel keeps its own no-PR state for all of them.
-              return null
-            }
+            const status = await sender.workspaceGitStatus(daemonId, {
+              agentId: agent.id,
+              ...(scope === 'session' ? { sessionId: session.id } : {})
+            })
+            return status.isRepo ? (status.branch ?? null) : null
           },
           latestSessionIdOfAgent: (agent) => repos.session.latestSessionIdForAgent(agent.orgId, agent.id),
           log: { warn: (obj, message) => http.log.warn(obj, message) },

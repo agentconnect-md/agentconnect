@@ -80,6 +80,28 @@ describe('PgSessionPullRequestFeedbackRepo', () => {
     ).toMatchObject({ sessionId: linkedSessionId })
   })
 
+  it('leases one exact-session capture and removes it atomically with the PR binding', async () => {
+    const repo = new PgSessionPullRequestFeedbackRepo(prisma)
+    const sessionId = randomUUID()
+    await seedEligibleSession(sessionId)
+
+    await expect(repo.enqueueCapture(SessionId(sessionId), NOW)).resolves.toBe(true)
+    const owner = randomUUID()
+    const claimed = await repo.claimNextCapture(owner, NOW, new Date(NOW.getTime() + 60_000))
+    expect(claimed).toEqual({ sessionId })
+    await repo.deferCapture(claimed!, owner, new Date(NOW.getTime() + 10_000))
+    await expect(repo.claimNextCapture(owner, NOW, new Date(NOW.getTime() + 60_000))).resolves.toBeNull()
+
+    const retried = await repo.claimNextCapture(
+      owner,
+      new Date(NOW.getTime() + 10_000),
+      new Date(NOW.getTime() + 70_000)
+    )
+    expect(retried).toEqual({ sessionId })
+    await expect(link(repo, sessionId, 80)).resolves.toBe(true)
+    await expect(prisma.sessionPullRequestCapture.findUnique({ where: { sessionId } })).resolves.toBeNull()
+  })
+
   it('coalesces each PR and preserves a concurrent newer wake', async () => {
     const repo = new PgSessionPullRequestFeedbackRepo(prisma)
     const sessionId = randomUUID()

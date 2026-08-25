@@ -225,7 +225,7 @@ async function recordEventSession(
     (s) => s.visibilityAckedRev < s.visibilityRev
   )
   if (confirm.length > 0) void deps.visibilityPush?.notifySessions(confirm)
-  if (session) pullRequestFeedback?.trackSession(session)
+  if (session) await pullRequestFeedback?.trackSession(session)
   // Publish only after the metadata commit. Browser subscribers use this as an
   // invalidation signal and immediately re-read `/sessions`; publishing first
   // would race that GET against the upsert and leave the new row invisible.
@@ -277,9 +277,9 @@ export const handleEventSessionSync: Handler = async (frame, conn, deps) => {
   } catch (err) {
     deps.log.error(
       { err, daemonId, agentId, sessionId: p.sessionId },
-      'event/session-sync: metadata snapshot persistence failed'
+      'event/session-sync: session snapshot durability failed'
     )
-    conn.sendError(frame.id, 'INTERNAL', 'session metadata snapshot failed to persist', true)
+    conn.sendError(frame.id, 'INTERNAL', 'session snapshot failed to persist', true)
   } finally {
     release()
   }
