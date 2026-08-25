@@ -144,8 +144,8 @@ If AgentConnect looks useful, here's how you can support the project:
   [LinkedIn](https://www.linkedin.com/sharing/share-offsite/?url=https%3A%2F%2Fgithub.com%2Fagentconnect-md%2Fagentconnect),
   or
   [Reddit](https://www.reddit.com/submit?url=https%3A%2F%2Fgithub.com%2Fagentconnect-md%2Fagentconnect&title=AgentConnect%3A%20the%20open-source%2C%20multi-agent%20alternative%20to%20Claude%20Tag).
-- ✍️ Write a review or tutorial on [DEV](https://dev.to),
-  [Medium](https://medium.com), or your blog.
+- ✍️ Write a review or tutorial on [DEV](https://dev.to/agentconnect),
+  [Medium](https://medium.com/@agentconnect), or your blog.
 - 🙋 [Open an issue](https://github.com/agentconnect-md/agentconnect/issues) to
   report bugs or suggest features.
 - 📺 Follow updates on [X](https://x.com/getAgentConnect) and
