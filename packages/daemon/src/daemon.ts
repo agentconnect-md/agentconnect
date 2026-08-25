@@ -402,6 +402,7 @@ import type {
   Ack,
   RdWebchatPost,
   RdMsg,
+  RdMsgHook,
   RdMsgWebchat,
   RdMsgIm,
   RdMsgPlatformAction,
@@ -5868,6 +5869,41 @@ export class Daemon {
    * the same delivery twice. */
   private readonly pendingRelayMsgAcks = new Map<string, Promise<RdAck>>()
 
+  /** Let an existing hook receipt win before duty/drain refusal; cache every verdict except `not_holder`. */
+  private handleRelayHookMsg(msg: RdMsgHook, dedupKey: string): Promise<RdAck> {
+    const task = (async (): Promise<RdAck> => {
+      if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
+        const durable = await this.githubReviews.replayDurableAdmission(msg)
+        if (durable) return durable
+        const claimed = await this.dutyCoordinator.claimDutyForTrigger(msg.agentId)
+        if (!claimed.granted) {
+          const durableAfterClaim = await this.githubReviews.replayDurableAdmission(msg)
+          if (durableAfterClaim) return durableAfterClaim
+          return {
+            msgId: msg.msgId,
+            accepted: false,
+            reason: RD_ACK_NOT_HOLDER,
+            ...(claimed.holder ? { holderDaemonId: claimed.holder } : {})
+          }
+        }
+      }
+      return this.githubReviews.dispatchRelayHook(msg)
+    })()
+      .catch((err): RdAck => {
+        this.log.error(`hook admission failed for ${dedupKey}: ${formatErr(err)}`)
+        return { msgId: msg.msgId, accepted: false, reason: 'durability' }
+      })
+      .then((ack) => {
+        this.pendingRelayMsgAcks.delete(dedupKey)
+        if (!ack.accepted && ack.reason === RD_ACK_NOT_HOLDER) return ack
+        if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear()
+        this.relayMsgAcks.set(dedupKey, ack)
+        return ack
+      })
+    this.pendingRelayMsgAcks.set(dedupKey, task)
+    return task
+  }
+
   /**
    * Dispatch one inbound relay item (`rd/msg` — webchat, shared IM/action, or hook) and
    * return the `rd/ack` verdict — the relay-path entry, reusing the SAME turn
@@ -5894,6 +5930,8 @@ export class Daemon {
     const pending = this.pendingRelayMsgAcks.get(dedupKey)
     if (pending) return pending
 
+    if (msg.source === 'hook') return this.handleRelayHookMsg(msg, dedupKey)
+
     // Activation rendezvous (design §4.4): a trigger for an agent whose duty
     // this member does not hold is claimed on receipt — winning serves it here,
     // losing answers `not_holder` so the router re-routes. The verdict is NOT
@@ -5909,23 +5947,6 @@ export class Daemon {
           ...(claimed.holder ? { holderDaemonId: claimed.holder } : {})
         }
       })
-      this.pendingRelayMsgAcks.set(dedupKey, task)
-      return task
-    }
-
-    if (msg.source === 'hook') {
-      const task = this.githubReviews
-        .dispatchRelayHook(msg)
-        .catch((err): RdAck => {
-          this.log.error(`hook admission failed for ${dedupKey}: ${formatErr(err)}`)
-          return { msgId: msg.msgId, accepted: false, reason: 'durability' }
-        })
-        .then((ack) => {
-          this.pendingRelayMsgAcks.delete(dedupKey)
-          if (this.relayMsgAcks.size >= 2000) this.relayMsgAcks.clear()
-          this.relayMsgAcks.set(dedupKey, ack)
-          return ack
-        })
       this.pendingRelayMsgAcks.set(dedupKey, task)
       return task
     }

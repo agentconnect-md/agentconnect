@@ -618,7 +618,7 @@ completed the turn.
 | One relay unavailable                   | Another relay with the replayed rule can accept the request                                  | Same                                                                     |
 | All relays unavailable                  | Caller receives an HTTP failure and must retry                                               | GitHub delivery reconciliation requests redelivery after recovery        |
 | Assigned daemon offline                 | Delivery records `daemon_offline`                                                            | One durable automatic retry is scheduled after a short backoff           |
-| Daemon drains or no duty holder accepts | Delivery records a definite pre-admission refusal                                            | Same safe retry; the delivery has not entered any daemon inbox           |
+| Daemon drains or no duty holder accepts | Durable receipt replays first; only a receipt-free refusal is recorded                       | One safe retry; prior admission always wins over the lifecycle gate      |
 | Dispatch acknowledgement ambiguous      | Records terminal `dispatch_timeout`; no automatic replay                                     | Same, because the daemon may already have admitted the turn              |
 | Agent stops being served mid-turn       | Turn reports terminal `agent_handover`; no automatic replay                                  | Same; a GitHub hook additionally offers the maintainer Check retry       |
 | GitHub unavailable                      | No effect                                                                                    | Source reads, permission checks, posting, and projection may fail closed |
@@ -628,6 +628,11 @@ run metadata. It requests redelivery for missing eligible deliveries and for
 the closed set of explicitly retryable delivery-stage failures. The current
 set contains `daemon_offline`, `rejected:draining`, and
 `rejected:not_holder`; each is emitted before durable daemon admission.
+The daemon probes its durable hook receipt before duty and drain refusals, so
+an earlier admission whose relay report was lost replays `accepted` instead of
+entering this set. If a configured platform anchor is posted before a later
+drain gate wins, the daemon reports nonretryable `anchor_side_effect` because
+that invocation is no longer side-effect-free.
 
 Reconciliation does not retry an ambiguous dispatch, an agent/business
 rejection, or any row that may already have produced an effect. Partial

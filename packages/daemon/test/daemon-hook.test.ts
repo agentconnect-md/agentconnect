@@ -2432,6 +2432,58 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   }, 15_000)
 
+  it('does not classify a post-anchor drain race as safe to redeliver', async () => {
+    const { factory, host } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const conn = {
+      postMessage: vi.fn(async () => {
+        ;(daemon as any).drainingAgents.add(AGENT_ID)
+        return 'ts-1'
+      }),
+      postContext: vi.fn(async () => {})
+    }
+    ;(daemon as any).connByIntegration.set('int-a', conn)
+
+    const ack = await (daemon as any).handleRelayMsg(
+      fire({ target: { platform: 'slack', channel: 'C-alerts', integrationId: 'int-a' } }),
+      () => {}
+    )
+
+    expect(ack).toMatchObject({ accepted: false, reason: 'anchor_side_effect' })
+    expect(conn.postMessage).toHaveBeenCalledOnce()
+    expect(host.prompt).not.toHaveBeenCalled()
+    expect(await (daemon as any).store.hasInbox(`${HOOK_ID}:d-1`)).toBe(false)
+    ;(daemon as any).drainingAgents.delete(AGENT_ID)
+    await daemon.stop()
+  })
+
+  it('keeps a post-free drain race safe to redeliver', async () => {
+    const { factory, host } = streamingHost()
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const conn = {
+      postMessage: vi.fn(async () => {
+        ;(daemon as any).drainingAgents.add(AGENT_ID)
+        throw new Error('post failed')
+      }),
+      postContext: vi.fn(async () => {})
+    }
+    ;(daemon as any).connByIntegration.set('int-a', conn)
+
+    const ack = await (daemon as any).handleRelayMsg(
+      fire({ target: { platform: 'slack', channel: 'C-alerts', integrationId: 'int-a' } }),
+      () => {}
+    )
+
+    expect(ack).toMatchObject({ accepted: false, reason: 'draining' })
+    expect(conn.postMessage).toHaveBeenCalledOnce()
+    expect(host.prompt).not.toHaveBeenCalled()
+    expect(await (daemon as any).store.hasInbox(`${HOOK_ID}:d-1`)).toBe(false)
+    ;(daemon as any).drainingAgents.delete(AGENT_ID)
+    await daemon.stop()
+  })
+
   it('uses only a bounded preparation pull credential when spawning a github-app workspace', async () => {
     const { factory, host } = streamingHost()
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(), hostFactory: factory })
@@ -3414,7 +3466,7 @@ describe('Daemon rd/msg hook fires', () => {
     await daemon.stop()
   }, 15_000)
 
-  it('retains a terminal receipt so redelivery after restart does not rerun the model', async () => {
+  it('lets a terminal receipt beat duty and drain refusals after restart', async () => {
     const root = scaffold()
     const firstHost = streamingHost()
     const first = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: firstHost.factory })
@@ -3446,10 +3498,18 @@ describe('Daemon rd/msg hook fires', () => {
       setStatus: vi.fn(async () => {})
     }
     ;(second as any).connByIntegration.set('int-a', secondAnchor)
+    const dutyCoordinator = (second as any).dutyCoordinator
+    vi.spyOn(dutyCoordinator, 'dutyEnforced').mockReturnValue(true)
+    const claimDuty = vi
+      .spyOn(dutyCoordinator, 'claimDutyForTrigger')
+      .mockResolvedValue({ granted: false, holder: '22222222-2222-4222-8222-222222222222' })
+    ;(second as any).drainingAgents.add(AGENT_ID)
     await expect((second as any).handleRelayMsg(targeted, () => {})).resolves.toMatchObject({ accepted: true })
     await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(claimDuty).not.toHaveBeenCalled()
     expect(secondHost.host.prompt).not.toHaveBeenCalled()
     expect(secondAnchor.postMessage).not.toHaveBeenCalled()
+    ;(second as any).drainingAgents.delete(AGENT_ID)
     await second.stop()
   }, 15_000)
 

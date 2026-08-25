@@ -165,6 +165,13 @@ export class GithubReviewOrchestrator {
     return this.host.agents()
   }
 
+  /** A prior durable admission owns this GUID even when current lifecycle gates would refuse new work. */
+  async replayDurableAdmission(msg: RdMsgHook): Promise<RdAck | undefined> {
+    if (!(await this.host.hasInbox(msg.msgId))) return undefined
+    this.log.debug(`hook: durable duplicate ${msg.msgId} — replaying accepted admission`)
+    return { msgId: msg.msgId, accepted: true }
+  }
+
   /**
    * Ack-verdict gate for one hook fire (`rd/msg` hook member) — the mirror of
    * {@link dispatchWebchatTurn}'s synchronous gates: the relay's rc/run-report
@@ -173,6 +180,8 @@ export class GithubReviewOrchestrator {
    * the durable-inbox admission barrier; the model turn itself remains async.
    */
   async dispatchRelayHook(msg: RdMsgHook): Promise<RdAck> {
+    const durable = await this.replayDurableAdmission(msg)
+    if (durable) return durable
     const cleanup = githubThreadWorktreeCleanup(msg)
     const maintenance = cleanup !== undefined || githubDeletedHookEvent(msg)
     const agent = this.agents.get(msg.agentId)
@@ -213,6 +222,8 @@ export class GithubReviewOrchestrator {
       return { msgId: msg.msgId, accepted: false, reason: 'busy' }
     }
     if (this.host.draining(msg.agentId)) {
+      const durableAfterGate = await this.replayDurableAdmission(msg)
+      if (durableAfterGate) return durableAfterGate
       this.log.info(`hook: agent "${msg.agentId}" is draining — rejecting fire ${msg.msgId}`)
       return { msgId: msg.msgId, accepted: false, reason: 'draining' }
     }
@@ -239,14 +250,6 @@ export class GithubReviewOrchestrator {
     // A lifecycle cleanup always addresses the stable GitHub thread session,
     // never an optional IM anchor configured for ordinary hook output.
     const nmsg = buildHookMessage(cleanup || deleted ? { ...msg, target: undefined } : msg, randomUUID())
-    // The in-memory ACK cache closes same-process retransmits. This durable
-    // probe closes the restart window *before* anchorTrigger posts externally:
-    // a retained live row will replay, and a terminal row is already complete.
-    // In either case the original accepted admission owns this delivery.
-    if (await this.host.hasInbox(nmsg.msgId)) {
-      this.log.debug(`hook: durable duplicate ${nmsg.msgId} — replaying accepted admission`)
-      return { accepted: true }
-    }
     const snapshot = hookSnapshot(msg)
     const hookContext: HookDispatchContext = {
       hookId: msg.hookId,
@@ -357,7 +360,9 @@ export class GithubReviewOrchestrator {
     })
     const admission = await admitted
     if (!admission.accepted) {
-      return { accepted: false, reason: admission.reason ?? 'durability' }
+      const reason = admission.reason ?? 'durability'
+      const anchorPosted = msg.target?.channel !== undefined && anchored.transcriptTs !== nmsg.transcriptTs
+      return { accepted: false, reason: reason === 'draining' && anchorPosted ? 'anchor_side_effect' : reason }
     }
     return { accepted: true }
   }
