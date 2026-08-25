@@ -1,5 +1,5 @@
 <svg width="398" height="76" viewBox="5 5 199 38" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AgentConnect">
-  <!-- Generated lockup: the rolling-wave spinner plus the wordmark outlined, so the header needs no webfont. -->
+  <!-- Generated lockup: a slower rolling wave of its own, not the console spinner's curve, plus the wordmark outlined so the header needs no webfont. -->
   <style>
     .ac-spinner polygon{opacity:.22;animation:ac-spinner-wave 2.4s linear infinite}
     .ac-spinner polygon:nth-of-type(1){animation-delay:0s}
