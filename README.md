@@ -168,6 +168,12 @@ Contributions are welcome. Development needs Node >= 24.12.0 and pnpm 11;
 [contributing guide](CONTRIBUTING.md) covers the full setup, the pull request
 conventions, the monorepo layout, and the deeper design documentation.
 
+Thanks to everyone who has already contributed:
+
+<a href="https://github.com/agentconnect-md/agentconnect/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=agentconnect-md/agentconnect" alt="AgentConnect contributors" />
+</a>
+
 ## Architecture
 
 ![AgentConnect message paths between the platforms, daemons, relay, and Control Plane](docs/designs/daemon-centric-architecture.svg)
