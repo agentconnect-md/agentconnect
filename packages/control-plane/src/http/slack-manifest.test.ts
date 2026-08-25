@@ -51,10 +51,8 @@ describe('buildInstallManifest', () => {
     expect(m.settings.event_subscriptions.request_url).toBe('https://relay.example/slack/events')
     expect(m.settings.interactivity.request_url).toBe('https://relay.example/slack/interactions')
     expect(m.settings.interactivity.message_menu_options_url).toBe('https://relay.example/slack/interactions')
-    // Still carries the same scopes + events (only the transport differs) — the relay forwards
-    // the agent-session stop to the owning daemon, so the subscription is answerable here too.
+    // still carries the same scopes + events (only the transport differs).
     expect(m.settings.event_subscriptions.bot_events).toEqual([...SLACK_BOT_EVENTS])
-    expect(m.settings.event_subscriptions.bot_events).toContain('agent_session_stopped')
   })
 
   it('falls back to the default app name when blank', () => {
@@ -108,12 +106,9 @@ describe('buildInstallManifest', () => {
 
   it('pins the exact bot events (drift guard)', () => {
     expect([...SLACK_BOT_EVENTS]).toEqual([
-      'agent_session_stopped',
-      'agent_session_title_changed',
       'app_mention',
       'app_uninstalled',
       'assistant_thread_started',
-      'assistant_thread_context_changed',
       'message.channels',
       'message.groups',
       'message.im',

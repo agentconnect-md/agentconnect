@@ -407,32 +407,7 @@ export class VirtualSlackConnection implements PlatformConnection {
   /** Ephemeral presence (assistant status) — not a message; not recorded. */
   async setStatus(): Promise<void> {}
 
-  /** The loading-state half of the same presence, for streaming turns. Equally ephemeral. */
-  async setLoadingStatus(): Promise<void> {}
-
   async setTitle(): Promise<void> {}
-
-  /**
-   * Native streaming turn output is UNSUPPORTED here, deliberately and deterministically.
-   * The arena has no Slack API to stream into, and a half-modelled stream would change what
-   * the arena counts; answering "cannot stream" sends every arena turn down the legacy
-   * pipeline, which is the path every existing baseline was recorded against.
-   */
-  async startTurnStream(): Promise<undefined> {
-    return undefined
-  }
-
-  async appendTurnStream(): Promise<'ok' | 'refused' | 'stopped'> {
-    return 'refused'
-  }
-
-  async stopTurnStream(): Promise<boolean> {
-    return false
-  }
-
-  streamingLikely(): boolean {
-    return false
-  }
 
   async openDirectMessage(user: string): Promise<string> {
     return `D-${user}`

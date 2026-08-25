@@ -24,7 +24,6 @@ import {
   buildStatusModal,
   buildStatusUnavailableModal,
   decodePermValue,
-  type SlackStreamChunk,
   type StatusBarInfo,
   type StatusModalIdentity
 } from './render.js'
@@ -105,25 +104,6 @@ export interface SlackResponseMetadata {
    *  this post with the internal wake that carries the authoritative call envelope. */
   agentCallDeliveryId?: string
 }
-
-/** A handle to ONE open Slack streaming message (`chat.startStream` → `chat.appendStream` →
- *  `chat.stopStream`). Carries the conversation as well as the message, because the native
- *  Stop arrives addressed by conversation and must be able to close this stream. */
-export interface SlackTurnStream {
-  readonly channel: string
-  readonly threadTs: string
-  readonly ts: string
-}
-
-/**
- * What Slack did with an append — three outcomes, because two of them are not the same
- * failure. `refused` means the content did not land and the caller still owes it to the
- * channel some other way (§7). `stopped` means the PERSON ended the stream: the content must
- * NOT be re-delivered by any route, because a fallback post would be exactly the replacement
- * message §6 forbids after a Stop. Collapsing the two into one boolean is how a stopped
- * conversation gets a new reply posted into it.
- */
-export type SlackStreamAppendOutcome = 'ok' | 'refused' | 'stopped'
 
 /** Optional per-status identity overrides supported by assistant.threads.setStatus.
  * Unlike chat.postMessage customization, Slack accepts these with chat:write. */
@@ -283,8 +263,9 @@ export interface SlackDeps {
   onStatusInfo?: (
     sessionKey: string
   ) => Promise<{ info: StatusBarInfo; identity?: StatusModalIdentity; link?: string; cancellable: boolean } | undefined>
-  /** Resolve the local session a Slack conversation owns — for the shortcut modal, and for the stop button. */
-  onMessageShortcut?: (a: { channel: string; thread: string; userId?: string }) => Promise<string | undefined>
+  /** Resolve the exact local session owned by the selected Slack conversation, awaited
+   *  before the one-shot shortcut trigger opens its modal. */
+  onMessageShortcut?: (a: { channel: string; thread: string; userId: string }) => Promise<string | undefined>
   /** Fired when a user taps a button on an interactive permission card
    *  (render.buildPermissionCard). The decoded `requestId` ties the click back to the
    *  pending ACP `session/request_permission`; `optionId` is the chosen option. */
@@ -375,12 +356,6 @@ export type AppLike = {
       getPermalink: (a: unknown) => Promise<{ permalink?: string }>
       update: (a: unknown) => Promise<{ ts?: string }>
       delete: (a: unknown) => Promise<unknown>
-      // Native streaming turn output (slack-streaming-turn-output.md §3). Optional because
-      // absence IS one of the capability refusals §7 latches on — which is also what keeps
-      // every inert test app on the legacy path without edits.
-      startStream?: (a: unknown) => Promise<{ ts?: string }>
-      appendStream?: (a: unknown) => Promise<unknown>
-      stopStream?: (a: unknown) => Promise<unknown>
     }
     // The external upload flow (`files:write`). chat.postMessage cannot carry bytes at all,
     // so this is the ONLY way to put a file in a conversation.
@@ -455,10 +430,9 @@ export type AppLike = {
     assistant: {
       threads: {
         setStatus: (a: unknown) => Promise<unknown>
+        setTitle: (a: unknown) => Promise<unknown>
       }
     }
-    // The generic Web-API escape hatch: @slack/web-api 8 has no typed `agents.sessions.*`.
-    apiCall: (method: string, a?: Record<string, unknown>) => Promise<unknown>
   }
   init?: () => Promise<void>
   start: () => Promise<void>
@@ -550,29 +524,6 @@ function slackApiErrorCode(err: unknown): string | undefined {
 // takes effect without requiring a daemon restart, while avoiding one rejected API
 // call per message for installations that have not been upgraded yet.
 const CUSTOM_USERNAME_REPROBE_MS = 5 * 60_000
-
-/** Streaming re-probes on the same cadence: a workspace can GAIN the capability (plan
- *  change, app upgrade), so a permanent latch would be wrong. */
-const STREAM_REPROBE_MS = CUSTOM_USERNAME_REPROBE_MS
-
-/** Refusals that say this INSTALLATION cannot stream at all — latch and re-probe (§7). */
-const STREAM_CAPABILITY_REFUSALS = new Set([
-  'unknown_method',
-  'missing_scope',
-  'channel_type_not_supported',
-  'messages_tab_disabled'
-])
-
-/** Not failures: the message is already settled, by our own stop or by the person's Stop.
- *  A stopped stream is unrecoverable (§3.4), so there is nothing to retry or report. */
-const STREAM_ALREADY_STOPPED = new Set(['message_not_in_streaming_state', 'stopped_by_user'])
-
-/** Does this error PROVE the message is no longer streaming? Only a definite answer retires a
- *  handle — a rate limit or a dropped connection leaves the message live and must stay retryable. */
-function isStreamAlreadyStopped(err: unknown): boolean {
-  const code = slackApiErrorCode(err)
-  return code !== undefined && STREAM_ALREADY_STOPPED.has(code)
-}
 
 /** Per-request bound on every Slack egress call. Shared with the byte upload, which rides the
  *  same serial queue and would otherwise block all delivery on undici's 300 s defaults. */
@@ -703,17 +654,6 @@ export class SlackConnection implements PlatformConnection {
   // assistant_thread_started, while later message.im payloads may arrive without
   // thread_ts. Keep the active DM thread root so replies stay inside that thread.
   private assistantDmThreads = new Map<string, string>()
-  /** Last agent-session lifecycle state per `channel:thread`, so an unchanged one refires nothing. */
-  private sessionLifecycle = new Map<string, 'processing' | 'active'>()
-  /** Cooldown after Slack proves this installation cannot stream (§7 capability refusal). */
-  private streamingUnavailableUntil = 0
-  /** Streaming messages still open, `channel:thread` → message ts. An entry disappears the
-   *  moment the stream settles — by our stop, by a refused append, or by the person's Stop. */
-  private openStreams = new Map<string, string>()
-  /** Conversations whose stream the PERSON ended. A queued append arriving after the event is
-   *  answered `stopped` rather than `refused`, so it is never re-delivered by another route
-   *  (§6). Cleared when a later turn opens a stream in the same conversation. */
-  private userStoppedStreams = new Set<string>()
   botUserId = ''
   /** The appToken this socket is keyed by (one socket per unique appToken). */
   readonly appToken: string
@@ -820,12 +760,6 @@ export class SlackConnection implements PlatformConnection {
     this.app.event('assistant_thread_started', async ({ event }) => {
       const thread = this.rememberAssistantThread(event as AssistantThreadStartedEvent)
       if (thread) log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
-    })
-    // Native stop button, Socket Mode arm. The HTTP arm reaches the same method through the relay.
-    this.app.event('agent_session_stopped', async ({ event }) => {
-      const ev = event as { channel?: string; thread_ts?: string; user?: string }
-      if (!ev.channel || !ev.thread_ts) return
-      await this.agentSessionStopped(ev.channel, ev.thread_ts, ev.user)
     })
     // Membership changes: the bot was invited to (member_joined_channel, filtered
     // to our own user id) or removed from (channel_left / group_left) a channel.
@@ -1272,180 +1206,6 @@ export class SlackConnection implements PlatformConnection {
       this.deps.log?.debug(`slack: chat.delete failed (ch=${channel} ts=${ts}): ${(err as Error).message}`)
       return false
     }
-  }
-
-  // ── Native streaming turn output (slack-streaming-turn-output.md §3) ────────
-  // One message per stream, opened at turn start and settled at turn end. All three
-  // calls ride the same send queue as every other write, one enqueue each, and none
-  // of them calls another from inside a queued task.
-
-  /** Cheap synchronous capability read the daemon builds a turn's converger from (§3.1).
-   *  Optimistic by design — `chat.startStream` itself is the authoritative answer. */
-  streamingLikely(): boolean {
-    return typeof this.app.client.chat.startStream === 'function' && Date.now() >= this.streamingUnavailableUntil
-  }
-
-  /** Open this turn's streaming message. `undefined` means "run the legacy pipeline":
-   *  the SDK, the workspace, or this channel cannot stream, and §7 has already decided
-   *  whether that latches the capability off or degrades only this turn. */
-  async startTurnStream(
-    channel: string,
-    threadTs: string,
-    options: { recipientUserId?: string; identity?: SlackPostOptions } = {}
-  ): Promise<SlackTurnStream | undefined> {
-    const start = this.app.client.chat.startStream
-    if (typeof start !== 'function') {
-      this.streamingUnavailableUntil = Date.now() + STREAM_REPROBE_MS
-      return undefined
-    }
-    return this.queue
-      .enqueue(async () => {
-        // `plan` collects every task card into ONE collapsed-by-default container labelled by
-        // the `plan_update` title, which is the compact shape the reader wants: the answer,
-        // with the tool activity folded behind a single chevron. `timeline` — the default —
-        // renders each card flat and separate, which buries the answer under them (§4).
-        const payload: Record<string, unknown> = {
-          channel,
-          thread_ts: threadTs,
-          task_display_mode: 'plan',
-          ...(options.recipientUserId ? { recipient_user_id: options.recipientUserId } : {}),
-          ...(options.recipientUserId && this.teamId ? { recipient_team_id: this.teamId } : {})
-        }
-        const username = Date.now() < this.customUsernameRetryAt ? undefined : options.identity?.username?.trim()
-        const iconUrl = Date.now() < this.customUsernameRetryAt ? undefined : options.identity?.icon_url?.trim()
-        const customize = { ...(username ? { username } : {}), ...(iconUrl ? { icon_url: iconUrl } : {}) }
-        try {
-          let res: { ts?: string } | undefined
-          try {
-            res = await start({ ...payload, ...customize })
-            if (Object.keys(customize).length > 0) this.customUsernameRetryAt = 0
-          } catch (err) {
-            // Same cooldown the post boundary uses: retry undecorated, re-probe in 5 minutes.
-            if (Object.keys(customize).length === 0 || !isMissingCustomizeScope(err)) throw err
-            this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
-            this.deps.log?.debug('slack: chat:write.customize missing — streaming with the app default identity')
-            res = await start(payload)
-          }
-          const ts = res?.ts
-          if (!ts) {
-            this.deps.log?.debug(`slack: chat.startStream returned no ts (ch=${channel} thread=${threadTs})`)
-            return undefined
-          }
-          this.streamingUnavailableUntil = 0
-          this.openStreams.set(`${channel}:${threadTs}`, ts)
-          // A new turn's stream: whatever the person stopped before was a different message.
-          this.userStoppedStreams.delete(`${channel}:${threadTs}`)
-          return { channel, threadTs, ts }
-        } catch (err) {
-          this.rememberMissingScopes(err)
-          this.noteStreamFailure(err, 'chat.startStream', channel)
-          return undefined
-        }
-        // The send queue's own timeout rejects outside the task; a turn that cannot open a
-        // stream degrades, it does not throw into dispatch.
-      })
-      .catch(() => undefined)
-  }
-
-  /** Append chunks to an open stream. See {@link SlackStreamAppendOutcome}: a refusal the
-   *  caller must make good on is NOT the same answer as the person having pressed Stop. */
-  async appendTurnStream(stream: SlackTurnStream, chunks: SlackStreamChunk[]): Promise<SlackStreamAppendOutcome> {
-    const append = this.app.client.chat.appendStream
-    if (chunks.length === 0) return 'ok'
-    const key = `${stream.channel}:${stream.threadTs}`
-    // The stop event already landed. Whatever this append carried is not shown here and must
-    // not be shown anywhere else either — the cancellation is on its way (§6).
-    if (this.userStoppedStreams.has(key)) return 'stopped'
-    if (typeof append !== 'function') return 'refused'
-    // The handle is retired but the person did not do it, so we settled it ourselves and the
-    // caller is holding a stale one; the content is still owed to the channel.
-    if (this.openStreams.get(key) !== stream.ts) return 'refused'
-    try {
-      return await this.queue.enqueue(async () => {
-        await append({ channel: stream.channel, ts: stream.ts, chunks })
-        return 'ok' as const
-      })
-    } catch (err) {
-      this.rememberMissingScopes(err)
-      this.noteStreamFailure(err, 'chat.appendStream', stream.channel)
-      // Only a DEFINITE already-stopped answer proves the message is settled — and since our
-      // own stop would have been caught by the guard above, something else settled it, which
-      // in practice is the person's Stop racing its own event. A transient failure instead
-      // leaves the message streaming, so the handle stays and the stop still has a target.
-      if (!isStreamAlreadyStopped(err)) return 'refused'
-      this.closeStream(stream.channel, stream.threadTs)
-      return 'stopped'
-    }
-  }
-
-  /**
-   * Settle a stream. Answers whether the message is now DEFINITELY not streaming: true on
-   * success, and true when it was already settled — by our own earlier stop, or by the person
-   * pressing Stop. `false` means Slack left it unresolved, which is the caller's cue to keep
-   * the handle and let the settlement backstop retry; dropping it there would strand the
-   * message streaming and the session in `processing`, the one state that backstop exists to
-   * prevent. `blocks` are the attribution footer (last stop only); `sessionStatus` keeps a
-   * rollover in `processing`.
-   */
-  async stopTurnStream(
-    stream: SlackTurnStream,
-    options: {
-      blocks?: unknown[]
-      sessionStatus?: 'processing' | 'active'
-      agentAuthorId?: string
-      response?: SlackResponseMetadata
-    } = {}
-  ): Promise<boolean> {
-    const stop = this.app.client.chat.stopStream
-    // Nothing left to settle: no such method (so no stream was ever opened here) or the handle
-    // is already retired. Idempotent by construction — a stopped stream is unrecoverable.
-    if (typeof stop !== 'function' || this.openStreams.get(`${stream.channel}:${stream.threadTs}`) !== stream.ts)
-      return true
-    try {
-      return await this.queue.enqueue(async () => {
-        await stop({
-          channel: stream.channel,
-          ts: stream.ts,
-          ...(options.blocks?.length ? { blocks: options.blocks } : {}),
-          ...(options.sessionStatus ? { session_status: options.sessionStatus } : {}),
-          // chat.startStream carries no metadata, so authorship is stamped here — otherwise a
-          // peer's thread backfill would read a streamed answer as an anonymous bot message.
-          ...slackMessageMetadata({
-            ...(options.agentAuthorId ? { agentAuthorId: options.agentAuthorId } : {}),
-            ...(options.response ? { response: options.response } : {})
-          })
-        })
-        // Retired only now that Slack has accepted it.
-        this.closeStream(stream.channel, stream.threadTs)
-        return true
-      })
-    } catch (err) {
-      this.rememberMissingScopes(err)
-      this.noteStreamFailure(err, 'chat.stopStream', stream.channel)
-      if (!isStreamAlreadyStopped(err)) return false
-      this.closeStream(stream.channel, stream.threadTs)
-      return true
-    }
-  }
-
-  /** A stopped stream is unrecoverable (§3.4): drop the handle so nothing appends to it and
-   *  no second stop is attempted, whoever ended it. */
-  private closeStream(channel: string, threadTs: string): void {
-    this.openStreams.delete(`${channel}:${threadTs}`)
-  }
-
-  /** §7's two error classes. A capability refusal latches streaming off for a re-probe
-   *  window; everything else — a bad channel, a rate limit, a queue timeout — degrades only
-   *  the turn that hit it, because a per-channel error must never kill streaming workspace-wide. */
-  private noteStreamFailure(err: unknown, method: string, channel: string): void {
-    if (isStreamAlreadyStopped(err)) return
-    const code = slackApiErrorCode(err)
-    if (code && STREAM_CAPABILITY_REFUSALS.has(code)) {
-      this.streamingUnavailableUntil = Date.now() + STREAM_REPROBE_MS
-      this.deps.log?.info(`slack: streaming unavailable (${code}) — using the legacy pipeline, re-probing in 5m`)
-      return
-    }
-    this.deps.log?.debug(`slack: ${method} failed (ch=${channel}): ${(err as Error).message}`)
   }
 
   /**
@@ -2001,7 +1761,11 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /** Best-effort loading status: the legacy free text plus the lifecycle enum. Pass '' to clear; never throws. */
+  /**
+   * Best-effort assistant loading status (assistant.threads.setStatus).
+   * Works in channels/DMs/assistant panel under chat:write (post Mar 2026).
+   * Pass status='' to clear. Never throws into dispatch.
+   */
   async setStatus(
     channel: string,
     threadTs: string,
@@ -2010,104 +1774,37 @@ export class SlackConnection implements PlatformConnection {
     options?: SlackStatusOptions
   ): Promise<void> {
     await this.queue.enqueue(async () => {
-      await this.writeLoadingStatus(channel, threadTs, status, loadingMessages, options)
-      // Already inside the send queue — setSessionLifecycle must not enqueue again.
-      await this.setSessionLifecycle(channel, threadTs, status ? 'processing' : 'active')
+      try {
+        // A clear only needs the status coordinates. Keeping authorship off that request
+        // also makes the identity override specific to the visible loading state.
+        const username = status ? options?.username?.trim() : undefined
+        const iconUrl = status ? options?.icon_url?.trim() : undefined
+        await this.app.client.assistant.threads.setStatus({
+          channel_id: channel,
+          thread_ts: threadTs,
+          status,
+          ...(loadingMessages ? { loading_messages: loadingMessages } : {}),
+          ...(username ? { username } : {}),
+          ...(iconUrl ? { icon_url: iconUrl } : {})
+        })
+      } catch (err) {
+        this.rememberMissingScopes(err)
+        this.deps.log?.debug(`slack: setStatus failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`)
+      }
       await this.postPermissionUpdateCard(channel, threadTs)
     })
   }
 
   /**
-   * The loading state ALONE — free text plus `loading_messages`, no session enum.
-   *
-   * This is what a streaming turn writes. `chat.startStream` already put the session in
-   * `processing`, and the enum cannot carry text anyway, so driving it here would only
-   * overwrite the native rendering with the legacy one (§1). Pass `''` to clear, which a
-   * streaming turn must do explicitly: nothing auto-clears it once the answer stops arriving
-   * through `chat.postMessage`.
+   * Best-effort assistant thread title (assistant.threads.setTitle). This API is
+   * only valid for Slack app threads created by the Agents feature; the daemon
+   * gates calls to DM sessions before reaching this boundary. Never throws into
+   * dispatch, including when the shared send queue itself times out.
    */
-  async setLoadingStatus(
-    channel: string,
-    threadTs: string,
-    status: string,
-    loadingMessages?: string[],
-    options?: SlackStatusOptions
-  ): Promise<void> {
-    await this.queue.enqueue(async () => {
-      await this.writeLoadingStatus(channel, threadTs, status, loadingMessages, options)
-      await this.postPermissionUpdateCard(channel, threadTs)
-    })
-  }
-
-  /** The legacy free-text status write itself. Callers own the send-queue enqueue, so this
-   *  never adds one — the §3.5 no-nested-enqueue rule. */
-  private async writeLoadingStatus(
-    channel: string,
-    threadTs: string,
-    status: string,
-    loadingMessages?: string[],
-    options?: SlackStatusOptions
-  ): Promise<void> {
-    try {
-      // A clear only needs the status coordinates. Keeping authorship off that request
-      // also makes the identity override specific to the visible loading state.
-      const username = status ? options?.username?.trim() : undefined
-      const iconUrl = status ? options?.icon_url?.trim() : undefined
-      await this.app.client.assistant.threads.setStatus({
-        channel_id: channel,
-        thread_ts: threadTs,
-        status,
-        ...(loadingMessages ? { loading_messages: loadingMessages } : {}),
-        ...(username ? { username } : {}),
-        ...(iconUrl ? { icon_url: iconUrl } : {})
-      })
-    } catch (err) {
-      this.rememberMissingScopes(err)
-      this.deps.log?.debug(`slack: setStatus failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`)
-    }
-  }
-
-  /** The native Stop, from either transport: resolve the session this conversation owns, interrupt
-   *  its turn, then transition the session — Slack leaves it in `processing` on its own. */
-  async agentSessionStopped(channel: string, threadTs: string, userId?: string): Promise<void> {
-    this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
-    // Slack already ended any stream this conversation had open before firing the event, and
-    // a stopped stream is unrecoverable (§3.4/§6). Drop the handle FIRST so the cancel below
-    // can neither append to the dead message nor issue a second stop against it — the message
-    // is settled before the session is told it is idle. Remembering WHO ended it is what keeps
-    // a late append from being re-delivered as an ordinary post afterwards.
-    this.closeStream(channel, threadTs)
-    this.userStoppedStreams.add(`${channel}:${threadTs}`)
-    const sessionKey = await this.deps.onMessageShortcut?.({ channel, thread: threadTs, ...(userId ? { userId } : {}) })
-    if (sessionKey) this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
-    await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))
-  }
-
-  // The lifecycle half of setStatus. Posting a message does NOT end the loading UX — only `active` does.
-  // Deduped per (channel, thread); no username/icon, because Slack keeps those sticky until cleared.
-  private async setSessionLifecycle(channel: string, threadTs: string, status: 'processing' | 'active'): Promise<void> {
-    const key = `${channel}:${threadTs}`
-    if (this.sessionLifecycle.get(key) === status) return
-    try {
-      await this.app.client.apiCall('agents.sessions.setStatus', {
-        channel_id: channel,
-        thread_ts: threadTs,
-        status
-      })
-      this.sessionLifecycle.set(key, status)
-    } catch (err) {
-      // Left unrecorded so the next status update retries instead of deduping a failure.
-      this.deps.log?.debug(
-        `slack: session lifecycle ${status} failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`
-      )
-    }
-  }
-
-  /** Best-effort agent-session title; only valid for Agents-feature threads, so the daemon gates it to DMs. */
   async setTitle(channel: string, threadTs: string, title: string): Promise<void> {
     try {
       await this.queue.enqueue(() =>
-        this.app.client.apiCall('agents.sessions.rename', {
+        this.app.client.assistant.threads.setTitle({
           channel_id: channel,
           thread_ts: threadTs,
           title

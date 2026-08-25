@@ -62,7 +62,6 @@ const planFor = (over: Partial<TurnPlanInput> = {}) =>
     evaluationTurnId: 'turn-1',
     stickyOutputMode: undefined,
     hostAlreadyRunning: true,
-    clusterPodBootstrap: false,
     protectedAddresses: [],
     codexUsageIsPerPrompt: false,
     features: { turnFinalContextRefresh: true },
@@ -113,15 +112,6 @@ describe('buildTurnPlan', () => {
   it('labels startup activity by whether the host is already running', () => {
     expect(planFor({ hostAlreadyRunning: true }).startupActivityLabel).toBe('is thinking…')
     expect(planFor({ hostAlreadyRunning: false }).startupActivityLabel).toBe('is starting up…')
-  })
-
-  it('lets a sandbox pod that is not up yet outrank both startup labels', () => {
-    for (const hostAlreadyRunning of [true, false]) {
-      const plan = planFor({ hostAlreadyRunning, clusterPodBootstrap: true })
-      expect(plan.startupActivityLabel).toBe('is allocating a sandbox pod…')
-      expect(plan.clusterPodBootstrap).toBe(true)
-    }
-    expect(planFor({ clusterPodBootstrap: false }).clusterPodBootstrap).toBe(false)
   })
 
   it('routes the final context refresh to exactly one of stageAnswer / webchatRefresh', () => {

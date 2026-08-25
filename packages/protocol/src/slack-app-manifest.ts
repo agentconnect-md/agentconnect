@@ -45,18 +45,10 @@ export const SLACK_BOT_SCOPES = [
   'users:read'
 ] as const
 
-// Both transports advertise the same events: Socket Mode receives them directly, and the relay's
-// HTTP ingress forwards the ones this app acts on to the daemon that owns the conversation.
 export const SLACK_BOT_EVENTS = [
-  // The native stop button on an agent session; without the subscription Slack never shows it.
-  'agent_session_stopped',
-  // Subscribed but not handled yet, so title sync can land without a second manifest refresh.
-  'agent_session_title_changed',
   'app_mention',
   'app_uninstalled',
   'assistant_thread_started',
-  // Same: the shipping context signal for an assistant thread, pre-provisioned and inert today.
-  'assistant_thread_context_changed',
   'message.channels',
   'message.groups',
   'message.im',

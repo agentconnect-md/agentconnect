@@ -1757,8 +1757,7 @@ describe('Slack interactive status bar', () => {
       async () => {}
     )
     const updateBlocks = vi.fn(async () => true)
-    const agentSessionStopped = vi.fn(async () => {})
-    ;(daemon as any).connByIntegration.set('int-a', { openStatusModal, updateBlocks, agentSessionStopped })
+    ;(daemon as any).connByIntegration.set('int-a', { openStatusModal, updateBlocks })
     await (daemon as any).store.upsertSession({
       key: KEY,
       agentId: 'bot-a',
@@ -1823,21 +1822,6 @@ describe('Slack interactive status bar', () => {
       integrationId: 'int-a',
       sessionKey: KEY
     })
-
-    // The relay-forwarded native Stop is conversation-addressed like the shortcut above: the
-    // connection resolves the session itself, so the frame's sessionKey is not the target.
-    expect(
-      await (daemon as any).handleRelayMsg(
-        action({
-          sessionKey: 'C1/T1',
-          msgId: 'action-stop',
-          userId: 'U1',
-          payload: { kind: 'agent-session-stopped', channelId: 'C1', threadTs: 'T1' }
-        }),
-        () => {}
-      )
-    ).toEqual({ msgId: 'action-stop', accepted: true })
-    expect(agentSessionStopped).toHaveBeenCalledWith('C1', 'T1', 'U1')
 
     const permissionResolved = vi.fn()
     const permissionRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
