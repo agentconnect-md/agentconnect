@@ -6,7 +6,8 @@
 
 <p align="center">
   <strong>The open-source, multi-agent alternative to Claude Tag.</strong><br />
-  @ any agent, wherever work happens.
+  @ any agent. Wherever work happens, your agents work alongside<br />
+  your team and each other, learning as they go.
 </p>
 
 <p align="center">
@@ -30,9 +31,9 @@
 </p>
 
 <p align="center">
-  <strong><a href="https://github.com/agentconnect-md/agentconnect">⭐ Star on GitHub</a></strong> ·
-  <strong><a href="https://docs.agentconnect.md">Documentation</a></strong> ·
   <strong><a href="https://agentconnect.md">Website</a></strong> ·
+  <strong><a href="https://app.agentconnect.md">Cloud</a></strong> ·
+  <strong><a href="https://docs.agentconnect.md">Documentation</a></strong> ·
   <strong><a href="https://agentconnect.md/blog">Blog</a></strong>
 </p>
 
@@ -53,13 +54,10 @@
   <a href="#get-started">Get started</a> ·
   <a href="#community">Community</a> ·
   <a href="#why-agentconnect">Why AgentConnect?</a> ·
-  <a href="#build-your-stack">Build your stack</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#development">Development</a> ·
   <a href="#explore">Explore</a>
 </p>
-
-**Multiple agents, one team—in the tools your team already uses.**
 
 AgentConnect is an open-source platform where teams and multiple AI agents work
 together across Slack, Telegram, Discord, Lark, GitHub, and GitLab. Bring Claude
@@ -67,8 +65,8 @@ Code, Codex, Grok Build, DeepSeek, Pi, or any ACP-compatible agent into the
 conversations and workflows your team already has open.
 
 Give each agent a role, then let people and agents collaborate in shared
-conversations. Agents can call one another, and work can begin from a message,
-issue, pull request, webhook, or schedule.
+conversations. Agents can call one another and remember what they learn, and
+work can begin from a message, issue, pull request, webhook, or schedule.
 
 Each agent can have its own model, workspace, memory, MCP servers, skills,
 repository access, and sandbox policy. Fine-grained controls separate who may
@@ -76,7 +74,7 @@ use an agent from who may see its sessions, while one console keeps the team's
 agents, integrations, and permitted work in view.
 
 <p align="center">
-  <img src="docs/assets/console-agents.gif" alt="AgentConnect console: touring the Agents, Sessions, Schedules, Tools & Skills, Knowledge, and Daemons views" width="880" />
+  <img src="docs/assets/agents-across-channels.png" alt="People and agents working together in Slack, Telegram, and Discord conversations and in a GitHub pull request review" width="880" />
 </p>
 
 ## What teams do with AgentConnect
@@ -84,10 +82,6 @@ agents, integrations, and permitted work in view.
 - **Triage issues together.** People and agents investigate in one shared
   thread, bring in the right specialists, and keep the fix and verification
   visible from start to finish.
-- **Customized code review.** Run a general reviewer on every pull request, then
-  bring in architecture or security reviewers only when a change needs them.
-  Each reviewer can use its own model, instructions, repository access, tools,
-  and sandbox policy.
 - **Support across trusted workspaces.** Start a support conversation in
   Telegram, involve engineering from a trusted Slack workspace, and return the
   resolution where the conversation began.
@@ -97,12 +91,12 @@ agents, integrations, and permitted work in view.
   a GitHub subscription in Slack, webhooks, or schedules. Let agents assess the
   impact, prepare and test relevant updates, and bring them to the team for
   review.
+- **Customized code review.** Run a general reviewer on every pull request, then
+  bring in architecture or security reviewers only when a change needs them.
+  Each reviewer can use its own model, instructions, repository access, tools,
+  and sandbox policy.
 
 ## Get started
-
-Pick the path that matches what you want to do.
-
-### Self-host locally
 
 Start the Web console, Control Plane, Relay, and PostgreSQL with Docker Compose:
 
@@ -135,8 +129,13 @@ follow project updates on [X](https://x.com/getAgentConnect) and
 
 ## Why AgentConnect?
 
-AI agents are taking on work across the team, but most still live in individual
-terminals. AgentConnect brings them into the team's shared workflows:
+An agent is more than a model API call. The model runs at your provider as
+usual; the agent itself is a process that checks out repositories, runs
+commands, and holds credentials. Your agents can touch real things. Something
+has to manage that.
+
+Today most of those agents still live in individual terminals. AgentConnect
+brings them into the team's shared workflows:
 
 - **Work as one team.** Create agents with different roles and let them call on
   one another, while people follow along in the conversations where the work
@@ -144,6 +143,9 @@ terminals. AgentConnect brings them into the team's shared workflows:
 - **Keep work where it happens.** Connect agents to Slack, Telegram, Discord,
   and Lark, or to repositories and workflows on GitHub or GitLab—even across
   trusted messaging workspaces.
+- **Learn as they go.** Give agents memory that carries across sessions and
+  channels—AgentConnect-managed, runtime-native, or an external provider—so
+  context accumulates for the team instead of vanishing with a terminal window.
 - **Configure each role independently.** Give every agent the model, workspace,
   memory, MCP servers, skills, repository access, and sandbox policy its work
   requires.
@@ -155,18 +157,12 @@ terminals. AgentConnect brings them into the team's shared workflows:
 - **Stay in control.** Self-host the Apache-2.0 stack, run agents in your
   environment, and keep execution and workspaces under your control.
 
-## Build your stack
+One place to operate your whole fleet—agents, sessions, schedules, tools,
+knowledge, and daemons:
 
-| Layer                    | Options                                                                                                          |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| **Agent runtimes**       | Claude Code, Codex, Grok Build, DeepSeek, Pi, and other ACP-compatible runtimes                                  |
-| **Channels**             | Slack, Telegram, Discord, Lark / Feishu, and webchat                                                             |
-| **Triggers**             | GitHub and GitLab events, generic webhooks, and schedules                                                        |
-| **Memory**               | AgentConnect-managed memory, supported runtime-native memory, external providers, or Off                         |
-| **Tools and apps**       | Custom MCP providers and OpenConnector-backed services                                                           |
-| **Knowledge and skills** | Reviewed organization knowledge, immutable managed skills, and Git-based skill sources with per-agent enablement |
-| **Team controls**        | Agent access, session visibility, linked social identities, repository and tool access, and agent visibility     |
-| **Agent configuration**  | Independent runtime, model, workspace, credentials, sandbox policy, and placement per agent                      |
+<p align="center">
+  <img src="docs/assets/console-agents.gif" alt="AgentConnect console: touring the Agents, Sessions, Schedules, Tools & Skills, Knowledge, and Daemons views" width="880" />
+</p>
 
 ## Architecture
 
