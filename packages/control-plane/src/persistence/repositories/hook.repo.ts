@@ -90,6 +90,7 @@ function toRecord(h: HookWithUsers): HookRecord {
     repoId: h.repoId,
     repoFullName: h.repoFullName,
     githubSessionKey: h.githubSessionKey,
+    family: h.family,
     events: h.events,
     commentFamilies: h.commentFamilies as GithubCommentFamily[],
     labelFilter: h.labelFilter,
@@ -503,6 +504,8 @@ export class PgHookRepo implements HookRepo {
       // re-target allowed); webhook kind never sends it, and these stay null/[].
       repoId: input.repoId ?? null,
       repoFullName: input.repoFullName ?? null,
+      // Immutable: an update never carries it, so omission must preserve the row's own.
+      ...(input.family !== undefined ? { family: input.family } : {}),
       events: input.events ?? [],
       commentFamilies: input.commentFamilies ?? [],
       labelFilter: input.labelFilter ?? [],
@@ -567,11 +570,22 @@ export class PgHookRepo implements HookRepo {
         }
         const nextReportingMode = input.reportingMode ?? existing?.reportingMode ?? 'off'
         const nextGateMode = input.gateMode ?? existing?.gateMode ?? 'informational'
+        // Sibling family rows of one (agent, repo) answer the same threads, so
+        // they must share one session namespace — including a grandfathered
+        // owner/repo prefix, which a freshly minted numeric key would diverge from.
+        const siblingKeyRow =
+          input.kind === 'github' && input.repoId !== undefined && existing?.repoId !== input.repoId
+            ? await tx.hookDef.findFirst({
+                where: { id: { not: input.hookId }, agentId: input.agentId, kind: 'github', repoId: input.repoId },
+                select: { githubSessionKey: true, repoFullName: true },
+                orderBy: { createdAt: 'asc' }
+              })
+            : null
         const githubSessionKey =
           input.kind === 'github' && input.repoId !== undefined
             ? existing?.kind === 'github' && existing.repoId === input.repoId
               ? (existing.githubSessionKey ?? existing.repoFullName ?? `github:${input.repoId}`)
-              : `github:${input.repoId}`
+              : (siblingKeyRow?.githubSessionKey ?? siblingKeyRow?.repoFullName ?? `github:${input.repoId}`)
             : null
         const lifecycleChanged =
           existing !== null &&

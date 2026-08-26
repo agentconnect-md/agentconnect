@@ -7,6 +7,10 @@ import {
   GH_TRIGGER_LABEL,
   GH_TRIGGER_MODES,
   GH_TRIGGER_PILL,
+  githubFamilyCarriesReviews,
+  githubFamilySubscription,
+  githubFamilyTile,
+  githubHookFamily,
   githubHookNeedsNormalization,
   githubMentionUsage,
   githubTriggerTooltip,
@@ -63,6 +67,73 @@ describe('GH_FAMILIES', () => {
 
   it('omits the commit (push) family — the subscription flow is held back for now', () => {
     expect(GH_FAMILIES.map(({ fam }) => fam)).toEqual(['pull_request', 'issues'])
+  })
+
+  it('still labels a stored push row the console never offers', () => {
+    expect(githubFamilyTile('push')?.pill).toBe('Commits')
+  })
+})
+
+describe('githubHookFamily', () => {
+  it('reads the row’s own family, whatever its stored events look like', () => {
+    expect(githubHookFamily({ family: 'issues', events: ['pull_request:*'] })).toBe('issues')
+    expect(githubHookFamily({ family: 'push', events: [] })).toBe('push')
+  })
+
+  it('falls back to the events for a legacy row the split could not place', () => {
+    expect(githubHookFamily({ family: null, events: ['issues:*', THREAD_COMMENT_EVENT] })).toBe('issues')
+    // Display order decides which family a legacy both-subject row shows as.
+    expect(githubHookFamily({ family: null, events: ['issues:*', 'pull_request:*'] })).toBe('pull_request')
+  })
+
+  it('names no family for a comment-only rule', () => {
+    expect(githubHookFamily({ family: null, events: [THREAD_COMMENT_EVENT] })).toBeNull()
+  })
+})
+
+describe('githubFamilySubscription', () => {
+  it('scopes the shared issue_comment subscription to the row’s own family', () => {
+    // The CP 400s an `issue_comment` pattern whose commentFamilies is empty.
+    expect(githubFamilySubscription('pull_request', 'every')).toEqual({
+      events: ['pull_request:*', THREAD_COMMENT_EVENT],
+      commentFamilies: ['pull_request'],
+      mentionOnly: false
+    })
+    expect(githubFamilySubscription('issues', 'mention')).toEqual({
+      events: ['issues:*', THREAD_COMMENT_EVENT],
+      commentFamilies: ['issues'],
+      mentionOnly: true
+    })
+  })
+
+  it('drops replies in created mode and comments altogether on a push row', () => {
+    expect(githubFamilySubscription('issues', 'first')).toEqual({
+      events: ['issues:opened'],
+      commentFamilies: ['issues'],
+      mentionOnly: false
+    })
+    expect(githubFamilySubscription('push', 'every')).toEqual({
+      events: ['push:*'],
+      commentFamilies: [],
+      mentionOnly: false
+    })
+  })
+
+  it('never emits a pattern from another family', () => {
+    for (const fam of ['pull_request', 'issues', 'push'] as const) {
+      for (const mode of GH_TRIGGER_MODES) {
+        const { events } = githubFamilySubscription(fam, mode)
+        expect(events.every((event) => event.startsWith(`${fam}:`) || event === THREAD_COMMENT_EVENT)).toBe(true)
+      }
+    }
+  })
+})
+
+describe('githubFamilyCarriesReviews', () => {
+  it('confines reviews and Checks to the change-proposal subject', () => {
+    expect(githubFamilyCarriesReviews('pull_request')).toBe(true)
+    expect(githubFamilyCarriesReviews('issues')).toBe(false)
+    expect(githubFamilyCarriesReviews('push')).toBe(false)
   })
 })
 

@@ -2490,8 +2490,15 @@ export const CreateWebhookHookBody = HookBodyBase.extend({
   hmac: z.boolean().default(false)
 })
 
+/** The subject family one row covers. A row is `(agent, repo, family)`: each
+ *  family carries its own cadence and its own mention gate, so a repository the
+ *  agent watches for both PRs and issues is TWO rows. Immutable after create. */
+export const GithubHookFamily = z.enum(['pull_request', 'issues', 'push'])
+export const GitlabHookFamily = z.enum(['merge_request', 'issues', 'push'])
+
 export const CreateGithubHookBody = HookBodyBase.extend({
   kind: z.literal('github'),
+  family: GithubHookFamily,
   // No sessionMode: github is perThread by definition (same issue/PR continues
   // one session). No hmac: the App webhook secret signs deliveries pool-wide.
   // The repo must sit inside one of the org's App installations; the CP resolves
@@ -2500,9 +2507,11 @@ export const CreateGithubHookBody = HookBodyBase.extend({
     .string()
     .trim()
     .regex(/^[^/\s]+\/[^/\s]+$/, 'expected "owner/repo"'),
+  // Every pattern must belong to `family`; `issue_comment` and
+  // `pull_request_review_comment` ride the thread families that own them.
   events: z.array(z.string().regex(HookEventPattern)).min(1).max(20),
-  // GitHub emits one issue_comment family for both issue and PR conversations.
-  // Empty preserves the published API's legacy repo-wide comment semantics.
+  // GitHub emits one issue_comment family for both issue and PR conversations,
+  // so a row carrying such a subscription must scope it to its own family.
   commentFamilies: GithubCommentFamilies.default([]),
   labelFilter: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
   // P3 summon mode: every event's authored text must @-mention the assigned
@@ -2523,8 +2532,9 @@ export const CreateGitlabHookBody = HookBodyBase.extend({
   // The project must already be a managed binding in this organization; the
   // numeric id is validated against it server-side (never trusted for facts).
   projectId: z.string().regex(/^[1-9]\d*$/),
+  family: GitlabHookFamily,
   events: z.array(z.string().regex(GitlabHookEventPattern)).min(1).max(20),
-  // Note events for the selected subject families (§12); empty = no comments.
+  // Note events for this row's own subject family (§12); empty = no comments.
   commentFamilies: z.array(GitlabCommentFamily).max(2).default([]),
   mentionOnly: z.boolean().default(false),
   // The two effect axes github carries; `check` is the §16 run note. No gateMode — GitLab has no required gate.
@@ -2547,8 +2557,10 @@ export const CreateHookBody = z.discriminatedUnion('kind', [
 // URL (urlToken) and signing secret — the capability URL must survive edits,
 // secret rotation is a delete/re-create. The github repo IS re-targetable
 // (repoId re-resolved).
+// `family` is absent from every update member: it is immutable, so a retarget
+// keeps the row's own family and a client echoing it back changes nothing.
 export const UpdateHookBody = z.union([
-  CreateGitlabHookBody.extend({
+  CreateGitlabHookBody.omit({ family: true }).extend({
     enabled: z.boolean().optional(),
     commentFamilies: z.array(GitlabCommentFamily).max(2).optional(),
     mentionOnly: z.boolean().optional(),
@@ -2559,7 +2571,7 @@ export const UpdateHookBody = z.union([
   // mentionOnly OPTIONAL on update (unlike create's default-false): a pre-P3
   // client echoing a hook back must not silently downgrade mention mode — the
   // route falls back to the stored value when the key is absent.
-  CreateGithubHookBody.extend({
+  CreateGithubHookBody.omit({ family: true }).extend({
     // Unlike create's default-true, omission on whole-definition UPDATE means
     // preserve the stored enablement state. Old web clients did not echo it.
     enabled: z.boolean().optional(),
@@ -2595,6 +2607,9 @@ export const HookDto = z.object({
   // ── github kind (P2; read-side seats) ──
   repoId: z.string().nullable(), // rename-proof GitHub numeric id; null for webhook kind
   repoFullName: z.string().nullable(),
+  // The one subject family this row covers; null for webhook kind and for a
+  // legacy row the split could not place.
+  family: z.string().nullable(),
   events: z.array(z.string()),
   // The stored union across code hosts; each row carries its own host's subset.
   commentFamilies: z.array(z.enum(['issues', 'pull_request', 'merge_request'])),

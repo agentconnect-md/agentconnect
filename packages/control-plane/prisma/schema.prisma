@@ -1755,6 +1755,7 @@ model HookDef {
   repoId                             BigInt? // GitHub numeric repo id — the match key (rename-proof)
   repoFullName                       String? // "owner/repo" — display + create-time validation; never matched on
   githubSessionKey                   String? // immutable per-thread namespace; existing rows keep their pre-rename owner/repo
+  family                             String? // subject family of this row; a github/gitlab hook row covers exactly one family (webhook kind: null)
   events                             String[]          @default([]) // "issues:opened" / "pull_request:*" / "issue_comment:created"
   commentFamilies                    String[]          @default([]) // empty = legacy repo-wide comments; otherwise issues/pull_request scope
   labelFilter                        String[]          @default([]) // non-empty ⇒ issue/PR must carry one of these labels
@@ -1796,6 +1797,10 @@ model HookDef {
   lastModifiedBy    User?        @relation("HookModifiedBy", fields: [lastModifiedByUserId], references: [id], onDelete: SetNull)
   secret            HookSecret?
 
+  // One subscription row per (agent, repo, subject family) — the database owns
+  // the rule, so the routes need no duplicate probe. Postgres skips rows with a
+  // NULL member, so webhook-kind and legacy inert rows never conflict.
+  @@unique([agentId, kind, repoId, family], map: "hook_def_agent_repo_family_key")
   @@index([orgId])
   @@index([agentId])
   @@index([kind, repoId]) // github rule-compile main query (P2)

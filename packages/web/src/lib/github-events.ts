@@ -1,18 +1,20 @@
-import type { GithubCommentFamily, HookCommentFamily } from './api'
+import type { GithubCommentFamily, GithubHookFamily, HookCommentFamily } from './api'
 
 /**
  * GitHub subscription event model shared by the Add-integration form and the
- * agent-detail pills. The console works in FAMILIES (pull requests / issues /
- * commits) plus a per-repo TRIGGER MODE ("when"); the stored `HookDef.events`
- * patterns plus the `mentionOnly` flag encode both:
+ * agent-detail pills. A stored row covers exactly ONE family (pull requests /
+ * issues / commits) and carries its own TRIGGER MODE ("when"), so a repository
+ * watched for both PRs and issues is two rows; the family is immutable, and the
+ * row's stored `events` patterns plus its `mentionOnly` flag encode the mode:
  *
  *   created  → `family:opened` for the regular cadence; the relay additionally accepts a later explicit
- *              @mention in the selected thread family (commits have no "first"
+ *              @mention in the row's thread family (commits have no "first"
  *              — a push subscription is inherently per-push, so `push:*` rides
  *              along unchanged)
- *   updated  → `family:*` + `issue_comment:created` when a thread family is
- *              selected. The relay ignores close/reopen and content edits;
- *              PR target-branch changes, other supported updates, and replies run.
+ *   updated  → `family:*` + `issue_comment:created` on a thread family, scoped
+ *              to that family by `commentFamilies`. The relay ignores
+ *              close/reopen and content edits; PR target-branch changes, other
+ *              supported updates, and replies run.
  *   mention only → the same subscriptions as updated, with `mentionOnly: true` —
  *              an event fires ONLY when its text (issue/PR body, comment body,
  *              commit message) @-mentions the assigned agent or the App. The
@@ -23,17 +25,22 @@ import type { GithubCommentFamily, HookCommentFamily } from './api'
  * emit them.
  */
 
-export type GhFamily = 'pull_request' | 'issues' | 'push'
+export type GhFamily = GithubHookFamily
 export type GhTriggerMode = 'first' | 'every' | 'mention'
+
+export interface GhFamilyTile {
+  fam: GhFamily
+  pill: string
+  icon: string
+  label: string
+  desc: string
+}
 
 // `desc` is the Add-integration tile subtitle — the design's compact grid, so
 // keep it to a short fragment that fits one or two 11.5px lines.
-//
-// The `push` (Commits) family is intentionally omitted for now — the
-// commit-subscription flow is held back. `GhFamily` still includes 'push' so
-// the event helpers keep reading any already-stored push subscription; re-add
-// the tile here (and restore the 3-up grid) to bring the feature back.
-export const GH_FAMILIES: { fam: GhFamily; pill: string; icon: string; label: string; desc: string }[] = [
+// Every subject the wire knows, in display order — a stored push row still
+// reads its own label from here even though the console never offers one.
+const GH_ALL_FAMILIES: GhFamilyTile[] = [
   {
     fam: 'pull_request',
     pill: 'PRs',
@@ -47,8 +54,30 @@ export const GH_FAMILIES: { fam: GhFamily; pill: string; icon: string; label: st
     icon: 'circle-dot',
     label: 'Issues',
     desc: 'opened, labels, replies'
+  },
+  {
+    fam: 'push',
+    pill: 'Commits',
+    icon: 'git-commit-horizontal',
+    label: 'Commits',
+    desc: 'commits pushed to a branch'
   }
 ]
+
+// The subjects the console OFFERS. The `push` (Commits) tile is intentionally
+// held back for now — the commit-subscription flow is not exposed; re-add it
+// here (and restore the 3-up grid) to bring the feature back.
+export const GH_FAMILIES: GhFamilyTile[] = GH_ALL_FAMILIES.filter((entry) => entry.fam !== 'push')
+
+/** The display metadata for one family, including the held-back push subject. */
+export function githubFamilyTile(fam: GhFamily): GhFamilyTile | undefined {
+  return GH_ALL_FAMILIES.find((entry) => entry.fam === fam)
+}
+
+/** Reviews and Checks exist only on the change-proposal subject (the CP 400s otherwise). */
+export function githubFamilyCarriesReviews(fam: GhFamily): boolean {
+  return fam === 'pull_request'
+}
 
 /** The trigger modes in display order — mention deliberately last. */
 export const GH_TRIGGER_MODES: readonly GhTriggerMode[] = ['first', 'every', 'mention']
@@ -123,6 +152,31 @@ export function eventsForFamilies(fams: Iterable<GhFamily>, mode: GhTriggerMode)
 /** Whether a hook's stored events cover a family (any action pattern counts). */
 export function famCovered(events: string[], fam: GhFamily): boolean {
   return events.some((e) => e.startsWith(`${fam}:`))
+}
+
+/** The one subject family a stored row covers: its own `family`, or — for a
+ *  legacy row the split could not place — the first family its events cover. */
+export function githubHookFamily(hook: { family: string | null; events: string[] }): GhFamily | null {
+  const declared = GH_ALL_FAMILIES.find((entry) => entry.fam === hook.family)
+  if (declared) return declared.fam
+  return GH_ALL_FAMILIES.find((entry) => famCovered(hook.events, entry.fam))?.fam ?? null
+}
+
+/** The subscription block ONE (family, mode) row writes — `family` itself is
+ *  create-only, so it is not part of this body. */
+export interface GithubFamilySubscription {
+  events: string[]
+  commentFamilies: GithubCommentFamily[]
+  mentionOnly: boolean
+}
+
+/** Compile one row's family+mode into the fields its create/update body carries. */
+export function githubFamilySubscription(fam: GhFamily, mode: GhTriggerMode): GithubFamilySubscription {
+  return {
+    events: eventsForFamilies([fam], mode),
+    commentFamilies: commentFamiliesForFamilies([fam]),
+    mentionOnly: mode === 'mention'
+  }
 }
 
 /** Recover the trigger mode: the mentionOnly flag wins, `:opened`-only ⇒ created. */

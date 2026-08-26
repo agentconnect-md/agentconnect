@@ -3924,6 +3924,10 @@ export type { HookKind }
 export type GithubCommentFamily = 'issues' | 'pull_request'
 /** GitLab's own note families — the merge-request counterpart of a pull request. */
 export type GitlabCommentFamily = 'issues' | 'merge_request'
+/** The subject family ONE code-host row covers: a row is `(agent, repo, family)`,
+ *  each with its own cadence and mention gate, and the family is immutable. */
+export type GithubHookFamily = 'pull_request' | 'issues' | 'push'
+export type GitlabHookFamily = 'merge_request' | 'issues' | 'push'
 /** The stored union across code hosts; each row carries only its own host's subset. */
 export type HookCommentFamily = GithubCommentFamily | GitlabCommentFamily
 export type HookReviewPolicy = 'off' | 'comment' | 'request_changes' | 'full'
@@ -3944,6 +3948,7 @@ export interface HookDto {
   // ── code-host kinds ── repo/project + subscription (empty/null on webhook kind)
   repoId?: string | null // GitHub numeric repo id, or the GitLab numeric project id
   repoFullName: string | null // owner/repo as GitHub cases it, or the GitLab project path
+  family: string | null // the one subject family this row covers; null on webhook kind and legacy-inert rows
   events: string[] // 'issues:*' / 'issue_comment:created' / 'merge_request:*' / …
   commentFamilies: HookCommentFamily[] // thread kinds whose replies may fire this hook
   labelFilter: string[]
@@ -3990,6 +3995,7 @@ export interface CreateGithubHookInput {
   name: string
   enabled?: boolean
   repoFullName: string
+  family: GithubHookFamily // one row per family; every event pattern must belong to it
   events: string[] // 'issues:*' etc — at least one
   commentFamilies?: GithubCommentFamily[]
   labelFilter?: string[]
@@ -4007,6 +4013,7 @@ export interface CreateGitlabHookInput {
   name: string
   enabled?: boolean
   projectId: string // numeric GitLab project id
+  family: GitlabHookFamily // one row per family; every event pattern must belong to it
   events: string[] // 'issues:*' / 'merge_request:*' / 'push:*' — at least one
   commentFamilies?: GitlabCommentFamily[]
   mentionOnly?: boolean
@@ -4014,6 +4021,11 @@ export interface CreateGitlabHookInput {
   // 'check' publishes the merge-request run note; no gateMode — GitLab has no required gate.
   reportingMode?: HookReportingMode
 }
+
+// The family is immutable, so no update body carries it — changing a row's
+// family is a delete plus a create.
+export type UpdateGithubHookInput = Omit<CreateGithubHookInput, 'family'>
+export type UpdateGitlabHookInput = Omit<CreateGitlabHookInput, 'family'>
 
 // A hook is subordinate to its agent (like an Integration), so there is no
 // org-wide hook list — you fetch ONE agent's hooks, gated server-side by that
@@ -4041,7 +4053,7 @@ export async function createGithubHook(input: CreateGithubHookInput): Promise<Cr
 
 // Update a github hook's subscription (event pills / labels / repo re-target).
 // The body re-sends the full github block — PUT is whole-definition.
-export async function updateGithubHook(id: string, input: CreateGithubHookInput): Promise<HookDto> {
+export async function updateGithubHook(id: string, input: UpdateGithubHookInput): Promise<HookDto> {
   return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(id)}`, { kind: 'github', ...input })
 }
 
@@ -4054,7 +4066,7 @@ export async function createGitlabHook(input: CreateGitlabHookInput): Promise<Cr
 }
 
 // Update a gitlab hook's subscription. Whole-definition PUT, like the github one.
-export async function updateGitlabHook(id: string, input: CreateGitlabHookInput): Promise<HookDto> {
+export async function updateGitlabHook(id: string, input: UpdateGitlabHookInput): Promise<HookDto> {
   return apiPut<HookDto>(`${orgBase()}/hooks/${encodeURIComponent(id)}`, { kind: 'gitlab', ...input })
 }
 

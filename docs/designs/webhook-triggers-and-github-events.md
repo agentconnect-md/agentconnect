@@ -592,15 +592,44 @@ and redeliveries converge on one record. A reaper marks stale running rows as
 
 The Prisma schema is authoritative. The main records are:
 
-- `HookDef`: definition, repository identity, event filters, session policy,
-  immutable revision fences, review/reporting policy, optional anchor, and
-  owning agent.
+- `HookDef`: definition, repository identity, subject family, event filters,
+  session policy, immutable revision fences, review/reporting policy, optional
+  anchor, and owning agent.
 - `HookSecret`: the generic hook's HMAC secret, separated from normal hook
   reads and DTOs.
 - `HookRun`: body-free delivery, dispatch, revision, review, projection,
   session, and redelivery metadata.
 - `HookReviewProjection`: durable external Check or reporting state that can be
   cleaned up even if its owning hook is deleted.
+
+### One Row per Subject Family
+
+A code-host `HookDef` row covers exactly ONE subject family — `pull_request`,
+`issues` or `push` for GitHub, `merge_request`, `issues` or `push` for GitLab —
+recorded in `family` and unique per `(agentId, kind, repoId, family)`. Watching a
+repository for both pull requests and issues is therefore two rows, each with its
+own cadence, label filter and `mentionOnly` gate: pull requests can fire on every
+update while issues fire only on an explicit mention. `family` is immutable, so
+the update body carries none; changing it is a delete plus a create.
+
+Nothing on the wire changes. The relay already fans one delivery out to every
+rule matching the repository, and `commentFamilies` already isolates comment
+traffic per family — so each row compiles into an ordinary independent rule.
+Three constraints keep those rules from overlapping:
+
+- every stored pattern must belong to the row's family, with `issue_comment` and
+  `pull_request_review_comment` riding the thread family that owns them;
+- `commentFamilies` may only name the row's own family, and a GitHub row carrying
+  an `issue_comment` subscription must set it — left empty it would keep the
+  legacy repository-wide meaning and double-fire against its sibling; and
+- `reviewPolicy`, `reportingMode` and `gateMode` may leave their defaults only on
+  a pull-request or merge-request row.
+
+Sibling rows of one repository answer the same threads, so they must agree on the
+anchoring target and share one session-key prefix; a divergent anchor is refused.
+Legacy rows are split by migration, the review-capable family keeping the
+original row id so review projections, publication leases and run history stay
+attached to it.
 
 A hook belongs to one agent and has no independent visibility setting. Access
 inherits the owning agent's visibility. Agent deletion cascades to hook

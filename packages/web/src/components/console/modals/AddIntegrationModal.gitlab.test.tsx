@@ -9,6 +9,9 @@
  * exactly the two subjects GitHub does, so no reachable selection compiles a
  * push event.
  *
+ * A row is `(agent, project, family)`, so a multi-subject pick is one create PER
+ * FAMILY and a family the project is already watched for is not on offer.
+ *
  * The picker also offers projects the organization has not added yet, because
  * this wizard is now where a project joins the organization.
  */
@@ -21,12 +24,19 @@ import type { Agent } from '@/lib/data'
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const mocks = vi.hoisted(() => ({
-  createGitlabHook: vi.fn(async () => ({ id: 'hook-1', agentId: 'agent-a', kind: 'gitlab' })),
+  // The parameter is declared so `mock.calls` stays typed — the wizard now makes
+  // one call per subject family and the tests read those bodies back.
+  createGitlabHook: vi.fn(async (_input: { family: string; events: string[] }) => ({
+    id: 'hook-1',
+    agentId: 'agent-a',
+    kind: 'gitlab'
+  })),
   fetchGitlabProjects: vi.fn(),
   fetchGitlabConnections: vi.fn(),
   searchGitlabProjects: vi.fn(),
   createGitlabProject: vi.fn(),
   fetchAgentRepos: vi.fn(),
+  fetchAgentHooks: vi.fn(async () => [] as unknown[]),
   startGitlabOauth: vi.fn(),
   daemons: [] as unknown[]
 }))
@@ -57,7 +67,7 @@ vi.mock('@/lib/data-context', () => ({
 }))
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
-  fetchAgentHooks: vi.fn(async () => []),
+  fetchAgentHooks: mocks.fetchAgentHooks,
   fetchAgentRepos: mocks.fetchAgentRepos,
   fetchGithubInstallations: vi.fn(async () => ({ enabled: false, installations: [] })),
   fetchGithubInstallUrl: vi.fn(async () => null),
@@ -147,6 +157,7 @@ beforeEach(() => {
   mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [connection] })
   mocks.searchGitlabProjects.mockResolvedValue({ projects: [], nextPage: null })
   mocks.fetchAgentRepos.mockResolvedValue([authorization])
+  mocks.fetchAgentHooks.mockResolvedValue([])
 })
 
 /** Candidates are searched on GitLab behind a debounce; let it elapse for real. */
@@ -167,6 +178,7 @@ afterEach(async () => {
   mocks.searchGitlabProjects.mockReset()
   mocks.createGitlabProject.mockReset()
   mocks.fetchAgentRepos.mockReset()
+  mocks.fetchAgentHooks.mockReset()
   mocks.startGitlabOauth.mockReset()
   opened.length = 0
   mocks.daemons = []
@@ -204,6 +216,7 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       agentId: 'agent-a',
       name: 'acme/platform',
       projectId: '4210',
+      family: 'merge_request',
       events: ['merge_request:*'],
       commentFamilies: ['merge_request'],
       mentionOnly: false,
@@ -222,9 +235,16 @@ describe('AddIntegrationModal, GitLab trigger', () => {
 
     await act(async () => clickText('Connect')?.click())
 
-    expect(mocks.createGitlabHook).toHaveBeenCalledWith(
+    // One row per subject family — each carries its own single-family events.
+    expect(mocks.createGitlabHook).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ family: 'issues', events: ['issues:opened'], commentFamilies: [], mentionOnly: false })
+    )
+    expect(mocks.createGitlabHook).toHaveBeenNthCalledWith(
+      2,
       expect.objectContaining({
-        events: ['issues:opened', 'merge_request:opened'],
+        family: 'merge_request',
+        events: ['merge_request:opened'],
         commentFamilies: [],
         mentionOnly: false
       })
@@ -240,12 +260,25 @@ describe('AddIntegrationModal, GitLab trigger', () => {
 
     await act(async () => clickText('Connect')?.click())
 
-    expect(mocks.createGitlabHook).toHaveBeenCalledWith({
+    // Reviews and the run note ride the merge-request row; the issues row is off.
+    expect(mocks.createGitlabHook).toHaveBeenNthCalledWith(1, {
       agentId: 'agent-a',
       name: 'acme/platform',
       projectId: '4210',
-      events: ['issues:*', 'merge_request:*'],
-      commentFamilies: ['issues', 'merge_request'],
+      family: 'issues',
+      events: ['issues:*'],
+      commentFamilies: ['issues'],
+      mentionOnly: true,
+      reviewPolicy: 'off',
+      reportingMode: 'off'
+    })
+    expect(mocks.createGitlabHook).toHaveBeenNthCalledWith(2, {
+      agentId: 'agent-a',
+      name: 'acme/platform',
+      projectId: '4210',
+      family: 'merge_request',
+      events: ['merge_request:*'],
+      commentFamilies: ['merge_request'],
       mentionOnly: true,
       reviewPolicy: 'full',
       reportingMode: 'check'
@@ -301,9 +334,8 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     await act(async () => family('issues')?.click())
     await act(async () => clickText('Connect')?.click())
 
-    expect(mocks.createGitlabHook).toHaveBeenCalledWith(
-      expect.objectContaining({ events: ['issues:*', 'merge_request:*'] })
-    )
+    expect(mocks.createGitlabHook.mock.calls.map(([body]) => body.family)).toEqual(['issues', 'merge_request'])
+    expect(mocks.createGitlabHook.mock.calls.flatMap(([body]) => body.events)).toEqual(['issues:*', 'merge_request:*'])
   })
 
   it('drops the separate comments row and mention checkbox the form used to expose', async () => {
@@ -423,6 +455,26 @@ describe('AddIntegrationModal, GitLab trigger', () => {
 
     await act(async () => clickText('Connect')?.click())
     expect(mocks.createGitlabHook).not.toHaveBeenCalled()
+  })
+
+  it('takes an already-watched family out of the offer instead of blocking the project', async () => {
+    // A row is (agent, project, family), so watching merge requests leaves
+    // issues free — the old repo-level block refused the whole project.
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    mocks.fetchAgentHooks.mockResolvedValue([
+      { id: 'hook-mr', kind: 'gitlab', repoId: '4210', family: 'merge_request', events: ['merge_request:*'] }
+    ])
+    await renderAgent({ id: 'agent-half-watched' })
+    await pickProject()
+
+    expect(family('merge_request')?.getAttribute('aria-disabled')).toBe('true')
+    expect(family('issues')?.getAttribute('aria-disabled')).toBe('false')
+
+    await act(async () => family('issues')?.click())
+    await act(async () => clickText('Connect')?.click())
+
+    expect(mocks.createGitlabHook).toHaveBeenCalledTimes(1)
+    expect(mocks.createGitlabHook).toHaveBeenCalledWith(expect.objectContaining({ family: 'issues' }))
   })
 
   it('accepts the agent’s own workspace project without a separate grant', async () => {
