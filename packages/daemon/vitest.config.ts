@@ -64,9 +64,10 @@ export default defineConfig({
     // resources. Halved on the 4-vCPU Windows runner: at four, files carrying an inline 15 s budget
     // land right at it, and which ones tip over varies run to run.
     maxWorkers: process.platform === 'win32' ? 2 : 4,
-    // The async store pays a microtask hop per statement; on a loaded CI box the
-    // IO-heavy store files drift past vitest's 5 s default without being hung. Windows I/O is slower
-    // again by enough that the same files need double the budget to measure code and not the host.
+    // The async store pays a microtask hop per statement; on a loaded CI box the IO-heavy store files
+    // drift past vitest's 5 s default without being hung. Windows I/O is slower again by enough that
+    // the same files need double the budget. This governs every test — a per-test override below it
+    // only shortens the budget, so the 15 s ones that predate this default were dropped.
     testTimeout: process.platform === 'win32' ? 60_000 : 30_000,
     reporters: githubActionsReporters('daemon.md'),
     projects: [

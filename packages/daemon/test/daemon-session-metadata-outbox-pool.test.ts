@@ -179,7 +179,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     expect(a.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-a-1' }])
     expect(await shared.hasPendingSessionMetadata()).toBe(false)
     await stop()
-  }, 15_000)
+  })
 
   it('parks a row for an agent no member here serves instead of counting a failure', async () => {
     const { a, b, shared, stop } = await bootPool()
@@ -201,7 +201,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     expect(b.syncEventSession).not.toHaveBeenCalled()
     expect(await shared.pendingSessionMetadataSnapshot(AGENT_A, 'acp-moved')).toBeDefined()
     await stop()
-  }, 15_000)
+  })
 
   it('gaining the duty replays the parked row exactly once, scoped to the agent org', async () => {
     const { a, b, shared, stop } = await bootPool()
@@ -217,7 +217,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     await b.inner.sessionMetadataOutbox.drainSessionMetadataSnapshots()
     expect(b.syncEventSession).toHaveBeenCalledOnce()
     await stop()
-  }, 15_000)
+  })
 
   it('parks a served row whose organization is not resolvable yet, and drains it once it is', async () => {
     const { a, shared, stop } = await bootPool()
@@ -240,7 +240,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     expect(a.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-cold' }])
     expect(await shared.hasPendingSessionMetadata()).toBe(false)
     await stop()
-  }, 15_000)
+  })
 
   it('takes over a claim the departed holder never released when the duty is gained', async () => {
     const { a, b, shared, stop } = await bootPool()
@@ -254,7 +254,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-handoff' }])
     expect(await shared.hasPendingSessionMetadata()).toBe(false)
     await stop()
-  }, 15_000)
+  })
 
   it("arms a wake at the lease expiry of a peer's claim on a served agent", async () => {
     const { a, b, stop } = await bootPool()
@@ -272,7 +272,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     await vi.waitFor(() => expect(b.syncEventSession).toHaveBeenCalledOnce())
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-lease' }])
     await stop()
-  }, 15_000)
+  })
 
   it('releases the claims it still holds when it stops, so a successor drains at once', async () => {
     const { a, b, stop } = await bootPool()
@@ -290,7 +290,7 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     expect(b.synced).toEqual([{ orgId: ORG, agentId: AGENT_A, sessionId: 'acp-exit' }])
     expect(await survivor.hasPendingSessionMetadata()).toBe(false)
     await stop()
-  }, 15_000)
+  })
 
   it('a single daemon on its own store drains every row unfenced', async () => {
     const root = scaffold()
@@ -303,5 +303,5 @@ describe('session-metadata outbox ownership on a daemon pool (#1023)', () => {
     expect(solo.synced.map((entry) => entry.sessionId)).toEqual(['acp-1', 'acp-2'])
     expect(await store.hasPendingSessionMetadata()).toBe(false)
     await solo.daemon.stop()
-  }, 15_000)
+  })
 })

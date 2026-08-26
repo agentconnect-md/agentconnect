@@ -234,7 +234,7 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     } finally {
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   // task #36 A2 — the dream runs on a DEDICATED one-off host, torn down after.
   // Sandboxed when the AGENT runs sandboxed (best-effort isolation of the
@@ -284,7 +284,7 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     } finally {
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   it('sandboxes the dedicated dream host when the agent runs sandboxed, then tears it down', async () => {
     const root = scaffold()
@@ -317,5 +317,5 @@ describe('scheduled dream lifecycle gates (daemon)', () => {
     } finally {
       await daemon.stop()
     }
-  }, 15_000)
+  })
 })

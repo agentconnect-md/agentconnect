@@ -146,7 +146,7 @@ describe('P4 serial gate', () => {
     expect((daemon as any).serialQueue.has(key)).toBe(false)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('keeps the active turn and queued follow-up alive across an App-backed repository rename', async () => {
     const root = scaffold()
@@ -210,7 +210,7 @@ describe('P4 serial gate', () => {
     g.releaseOne()
     await expect(queued).resolves.toBe('acp-1')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('evicts a cached host when App-backed rename convergence fails closed', async () => {
     const root = scaffold()
@@ -263,7 +263,7 @@ describe('P4 serial gate', () => {
     expect(g.host.stop).toHaveBeenCalledTimes(1)
     expect((daemon as any).hosts.has('bot-a')).toBe(false)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('uses a stale Slack event only as a wake-up and suppresses later delivery of messages already covered by the snapshot watermark', async () => {
     const g = gatedHost()
@@ -299,7 +299,7 @@ describe('P4 serial gate', () => {
     expect(g.started).toHaveLength(2)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('FIFO under concurrent arrival: a message arriving between a turn finishing and inflight release still lands after the already-queued head', async () => {
     const g = gatedHost()
@@ -332,7 +332,7 @@ describe('P4 serial gate', () => {
     expect((daemon as any).inflight.has(key)).toBe(false)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a follower stalled before placement reclaims a gate the owner released meanwhile', async () => {
     const g = gatedHost()
@@ -373,7 +373,7 @@ describe('P4 serial gate', () => {
     expect((daemon as any).serialQueue.has(key)).toBe(false)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('two followers keep arrival order when the earlier one stalls in its durable write', async () => {
     const g = gatedHost()
@@ -417,7 +417,7 @@ describe('P4 serial gate', () => {
     expect((daemon as any).inflight.has(key)).toBe(false)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a fresh arrival cannot claim an idle gate ahead of an admission still in flight', async () => {
     const g = gatedHost()
@@ -462,7 +462,7 @@ describe('P4 serial gate', () => {
     expect((daemon as any).dispatchAdmissionChains.has(key)).toBe(false)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it("a queued message's own dispatch() promise resolves with its sessionId / rejects with its own error (contract preserved)", async () => {
     const g = gatedHost()
@@ -486,7 +486,7 @@ describe('P4 serial gate', () => {
     await expect(p2).resolves.toBe('acp-1')
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('fail-stop: a failing turn does NOT auto-run the queued rest — each is rejected with its own error', async () => {
     const g = gatedHost()
@@ -512,7 +512,7 @@ describe('P4 serial gate', () => {
     expect((daemon as any).serialQueue.has(key)).toBe(false)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('queue_full fast-fail at the depth cap (backpressure §4.4)', async () => {
     const g = gatedHost()
@@ -549,7 +549,7 @@ describe('P4 serial gate', () => {
     await Promise.all(queued)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a queued entry is settled (not dropped) at shutdown', async () => {
     const g = gatedHost()
@@ -577,7 +577,7 @@ describe('P4 serial gate', () => {
     // within them, and the assertion is positive, so a slow runner failed it outright.
     await vi.waitFor(() => expect(settled).toBe(true), WAIT)
     expect((daemon as any).serialQueue.has(key)).toBe(false)
-  }, 15_000)
+  })
 
   // A webchat turn signals its client via the WebchatSink terminal `done` frame, NOT the
   // dispatch() promise. So when a QUEUED webchat entry is gate-dropped/rejected without ever
@@ -620,7 +620,7 @@ describe('P4 serial gate', () => {
     expect(cp.dones).toEqual([{ conversationId: 'conv-a', turnId }])
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('shutdown terminates a QUEUED webchat entry’s sink with an error done frame', async () => {
     const g = gatedHost()
@@ -652,5 +652,5 @@ describe('P4 serial gate', () => {
     g.releaseAll()
     await p1.catch(() => {})
     await daemon.stop()
-  }, 15_000)
+  })
 })

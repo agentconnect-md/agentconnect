@@ -46,5 +46,5 @@ describe('evaluation permission-policy evidence', () => {
     } finally {
       await handle.stop()
     }
-  }, 15_000)
+  })
 })

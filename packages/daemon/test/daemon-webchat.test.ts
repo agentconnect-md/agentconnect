@@ -209,7 +209,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     // The turn closes with exactly one webchat/done carrying the stop reason.
     expect(cp.dones).toEqual([{ conversationId: CONV, turnId, stopReason: 'end_turn' }])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('streams a sandbox-bootstrap notice ahead of the reply when the pod is not up yet', async () => {
     const { factory } = streamingHost([text('here is the answer')])
@@ -243,7 +243,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     ])
     expect(cp.outputs.map((o) => o.index)).toEqual([...cp.outputs.keys()])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('leaves the webchat stream alone when the agent already has a bound sandbox', async () => {
     const { factory } = streamingHost([text('here is the answer')])
@@ -270,7 +270,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
     expect(cp.outputs.some((o) => o.event?.kind === 'notice')).toBe(false)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('output mode is IM-only: `none` never suppresses the webchat reply stream', async () => {
     // `none` silences IM integrations (Slack/Telegram/…), NOT webchat: the playground
@@ -323,7 +323,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       'here is the answer'
     )
     await daemon.stop()
-  }, 15_000)
+  })
 
   it("streams the runtime's session title as a session_info event and persists it", async () => {
     // Regression: the live playground session kept its static "Playground · <agent>"
@@ -366,7 +366,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const list = (await (daemon as any).store.listSessions(AGENT_ID)) as { title: string | null }[]
     expect(list[0]?.title).toBe('Roll back the deploy')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('streams a session title emitted during session initialization', async () => {
     const { factory } = streamingHost([text('done')], {
@@ -400,7 +400,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       { kind: 'message', text: 'done' }
     ])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('hides the internal session-title tool burst from live and persisted message streams', async () => {
     const { factory } = streamingHost([
@@ -438,7 +438,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       .map((row: { text: string }) => row.text)
     expect(toolRows).toEqual(['Read file.ts'])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('streams a status frame at turn start, on usage_update, and at turn end', async () => {
     const { factory } = streamingHost([usageUpdate(120_000, 200_000, { amount: 0.18, currency: 'USD' }), text('ok')], {
@@ -489,7 +489,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(idx).toEqual([...idx].sort((a, b) => a - b))
     expect(new Set(idx).size).toBe(idx.length)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('accumulates Codex per-turn tokens and public-price fallback cost across turns', async () => {
     const { factory } = streamingHost([text('ok')], {
@@ -537,7 +537,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(usage.costAmount).toBeCloseTo(0.261)
     expect((cp.usageReports.at(-1) as any).usage.costAmount).toBeCloseTo(0.261)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('treats zero ACP cost as reported, then falls back independently on the next turn', async () => {
     const updates = [usageUpdate(20_000, 400_000, { amount: 0, currency: 'USD' }), text('ok')]
@@ -598,7 +598,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     )
     expect((await (daemon as any).store.getUsage(key)).costAmount).toBeCloseTo(0.1305)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('accepts late ACP cost corrections while output drains and after pending cleanup', async () => {
     const { factory } = streamingHost([text('ok')], {
@@ -663,7 +663,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect((await (daemon as any).store.getUsage(key)).costAmount).toBeCloseTo(0.22)
     expect((cp.usageReports.at(-1) as any).usage.costAmount).toBeCloseTo(0.22)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('set_model persists a sticky override and applies it live (webchat by-key core)', async () => {
     const { factory, host } = streamingHost([text('hi')], { model: 'a', models: ['a', 'b'] })
@@ -688,7 +688,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(await (daemon as any).store.getModelOverride(key)).toBe('b') // sticky
     expect(host.setSessionModel).toHaveBeenCalledWith('acp-wc-1', 'b') // applied live
     await daemon.stop()
-  }, 15_000)
+  })
 
   it.each([
     { allowed: true, expected: { model: 'b', effort: 'high', permissionMode: 'plan', fastMode: true } },
@@ -834,7 +834,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(host.setSessionPermissionMode.mock.invocationCallOrder.at(-1)).toBeLessThan(promptOrder)
     expect(host.setSessionFastMode.mock.invocationCallOrder.at(-1)).toBeLessThan(promptOrder)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('revokes chat-selected runtime settings from an idle warm session', async () => {
     const configured = {
@@ -905,7 +905,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(host.newSession).toHaveBeenCalledTimes(1)
     expect((daemon as any).agents.get(AGENT_ID).allowRuntimeChangesInChat).toBe(false)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('restores the runtime default model and effort when the Agent leaves them unpinned', async () => {
     const configured = {
@@ -977,7 +977,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await vi.waitFor(() => expect(cp.dones).toHaveLength(2), WAIT)
     expect(host.newSession).toHaveBeenCalledTimes(1)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('handleWebchatCancel interrupts the in-flight turn without muting', async () => {
     let release!: () => void
@@ -1026,7 +1026,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(cp.dones).toHaveLength(1) // cancel-resolved prompt must not emit a second terminal frame
     expect(cp.outputs).toHaveLength(outputsBeforeCancel)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('terminates a cold accepted webchat turn exactly once before Pending exists', async () => {
     let releaseSession!: () => void
@@ -1067,7 +1067,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(host.prompt).not.toHaveBeenCalled()
     expect(cp.dones).toHaveLength(1)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('surfaces a failed agent start as a webchat/done carrying the error', async () => {
     // Host that can't start (spawn failure / ACP handshake reject). Without the
@@ -1110,7 +1110,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     // Exactly one terminal frame, carrying the failure reason and no stopReason.
     expect(cp.dones).toEqual([{ conversationId: CONV, turnId, error: 'spawn claude ENOENT' }])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('retries a transient start failure and recovers without surfacing an error', async () => {
     // A fresh host is built per attempt (hostFactory is called each try). The first
@@ -1166,7 +1166,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     ])
     expect(cp.dones).toEqual([{ conversationId: CONV, turnId, stopReason: 'end_turn' }])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('skips dispatch for a paused agent — no turn runs, resolves null (#288)', async () => {
     const { factory, host } = streamingHost([text('should not run')])
@@ -1199,7 +1199,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(cp.outputs).toEqual([]) // nothing streamed
     expect(cp.dones).toEqual([]) // no terminal frame
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('rejects a webchat turn for a paused agent with reason "paused" (#288)', async () => {
     const { factory, host } = streamingHost([text('should not run')])
@@ -1219,7 +1219,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(ack).toMatchObject({ accepted: false, reason: 'paused' })
     expect(host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('rejects the 12th exact-key turn synchronously when the head plus ten queued turns fill the gate', async () => {
     let release!: () => void
@@ -1286,7 +1286,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(cp.dones.some((done) => done.turnId === rejected.turnId)).toBe(false)
     expect(host.prompt).toHaveBeenCalledTimes(11)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('records the webchat turn as a real session (transcript has the reply)', async () => {
     const { factory } = streamingHost([text('the reply')])
@@ -1324,7 +1324,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const botText = rows.filter((r) => r.sender === AGENT_ID && r.kind === 'text').map((r) => r.text)
     expect(botText).toContain('the reply')
     await daemon.stop()
-  }, 15_000)
+  })
 
   // #912 regression: the token's `user` claim became the profile's display NAME, and the
   // daemon stamped it as the transcript sender — so a re-read row identified the author by
@@ -1358,7 +1358,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     // `senderName`, and that `initiatorLabel` reads for a session worktree's branch.
     expect((await (daemon as any).store.getDisplayNames(['user-1'])).get('user-1')).toBe('Ada Lovelace')
     await daemon.stop()
-  }, 15_000)
+  })
 
   // An older relay sends no principal. The turn must still work, and must not write a
   // pointless self-referential name-cache row for the handle it fell back to.
@@ -1386,7 +1386,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(rows.some((r) => r.kind === 'text' && r.sender === 'Ada Lovelace')).toBe(true)
     expect((await (daemon as any).store.getDisplayNames(['Ada Lovelace'])).size).toBe(0)
     await daemon.stop()
-  }, 15_000)
+  })
 
   // #807 follow-up: the fix posted only the woken agent's REPLY live — the SENDER's own
   // message reached the browser only via refresh (history), never in the live view.
@@ -1444,7 +1444,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     const inbound = rows.find((r) => r.sender === SENDER)
     expect(inbound?.postId).toBe(posts[0].post.postId)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('records EVERY user turn — a stable per-conversation msgId must not dedup follow-ups', async () => {
     // Regression: webchat's msgId is stable per conversation, so a naive transcript ts
@@ -1491,7 +1491,7 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     expect(userText).toContain('first question')
     expect(userText).toContain('second question') // was dropped before the per-turn-ts fix
     await daemon.stop()
-  }, 15_000)
+  })
 })
 
 describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', () => {
@@ -1532,7 +1532,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     )
     expect(replies).toEqual([]) // no transcript reply row
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('releases held text the instant the body diverges from the sentinel prefix', async () => {
     const { factory } = streamingHost([text('AC_NO'), text(' — actually, here is the answer')])
@@ -1554,7 +1554,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     )
     expect(messages.join('')).toBe('AC_NO — actually, here is the answer')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a turn op preserves the browser turnId and streams rd/chat output→done', async () => {
     const { factory } = streamingHost([text('hi from agent')])
@@ -1577,7 +1577,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     const done = events.find((e) => e.kind === 'done')
     expect(done?.kind === 'done' && done.done).toMatchObject({ conversationId: CONV, turnId: ack.turnId })
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('keeps a newer resume bound when a delayed older generation arrives afterward', async () => {
     const { factory } = streamingHost([])
@@ -1773,7 +1773,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       { name: 'screen.webp', mimeType: 'image/webp', data: bytes.toString('base64') }
     ])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('retains the inline image when the turn carries a canonical post (admission write wins the slot)', async () => {
     // Real relay traffic ALWAYS mints `post`, which makes the turn-final-refresh
@@ -1815,7 +1815,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       { name: 'screen.webp', mimeType: 'image/webp', data: bytes.toString('base64') }
     ])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('rejects a turn for an agent not on this daemon (accepted:false, reason no_agent)', async () => {
     const { factory } = streamingHost([])
@@ -1985,7 +1985,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(spy).toHaveBeenCalledTimes(1) // dispatched exactly once
     expect(a2).toEqual(a1) // same ack (same turnId) replayed so the relay settles
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('rejects a turn while draining (accepted:false, reason draining) — no turn dispatched', async () => {
     const { factory } = streamingHost([])

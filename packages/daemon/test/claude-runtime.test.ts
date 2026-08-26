@@ -71,5 +71,5 @@ describe('AcpHost.sessionConfigOptions (raw reconciled options)', () => {
     ])
     expect(host.sessionConfigOptions('s-unknown')).toBeUndefined()
     await host.stop()
-  }, 15_000)
+  })
 })

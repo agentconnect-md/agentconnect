@@ -230,7 +230,7 @@ describe('the daemon records only its own host’s advertisement', () => {
     expect(recorded).not.toBe(acpSessionId)
     expect(recorded).toBe((await inner.store.getSessionByAcpId(acpSessionId))!.sessionId)
     await daemon.stop()
-  }, 15_000)
+  })
 
   // claude-agent-acp advertises AFTER the session/load response, so `live` already holds the session
   // by then — but that is one adapter's ordering, and the guard must not depend on it. A session the

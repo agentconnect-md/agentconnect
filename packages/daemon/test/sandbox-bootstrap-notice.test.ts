@@ -113,7 +113,7 @@ describe('sandbox-bootstrap notice on the legacy pipeline', () => {
     // The label does not outlive the wait it names — the row retires to "is thinking…".
     expect(statuses.filter((text) => text !== '').at(-1)).toBe('is thinking…')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('retires the bootstrap label to "is thinking…" on a warm-host turn that still has no pod', async () => {
     // The transition must not depend on the host being cold: a suspended pod drops its channel
@@ -135,7 +135,7 @@ describe('sandbox-bootstrap notice on the legacy pipeline', () => {
     expect(statuses).toContain('is allocating a sandbox pod…')
     expect(statuses.filter((text) => text !== '').at(-1)).toBe('is thinking…')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('posts the notice as its own message on an on-demand chat platform', async () => {
     const daemon = bootDaemon(scaffold())
@@ -152,5 +152,5 @@ describe('sandbox-bootstrap notice on the legacy pipeline', () => {
 
     expect(conn.postMessage).toHaveBeenCalledWith('C1', SANDBOX_BOOTSTRAP_NOTICE, 'T1')
     await daemon.stop()
-  }, 15_000)
+  })
 })

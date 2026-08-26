@@ -211,7 +211,7 @@ describe('TurnOutputWorkflow', () => {
     expect(String(queueMemoryPostTurn.mock.calls[0]?.[3])).toContain('important clarification')
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('coalesces a clarification represented in the first prompt before initiating it', async () => {
     let onUpdate!: (sessionId: string, update: unknown) => void
@@ -294,7 +294,7 @@ describe('TurnOutputWorkflow', () => {
     expect(await (daemon as any).store.listInboxBySessionKeyFifo()).toEqual([])
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('starts the retry budget with replacement work and excludes explicit approval waits', async () => {
     const clock = new FakeClock()
@@ -367,7 +367,7 @@ describe('TurnOutputWorkflow', () => {
     expect(prompts[1]!.indexOf('peer-only quoted source')).toBeLessThan(prompts[1]!.indexOf('[U1] late clarification'))
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'fresh replacement', 'T1', expect.anything())
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('restores an unrouted quoted observation as model context after daemon restart', async () => {
     const root = scaffold()
@@ -462,7 +462,7 @@ describe('TurnOutputWorkflow', () => {
     expect(durableQuote).toBeGreaterThanOrEqual(0)
     expect(durableQuote).toBeLessThan(unroutedReply)
     await restarted.stop()
-  }, 15_000)
+  })
 
   it('delivers context-churn exhaustion as non-recording chrome', async () => {
     const context = {} as { daemon: Daemon; firstMessage: NormalizedMessage }
@@ -511,7 +511,7 @@ describe('TurnOutputWorkflow', () => {
     ).filter((row: any) => row.sender === 'bot-a')
     expect(replies).toEqual([])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('does not commit a staged candidate when cancellation arrives during the final snapshot', async () => {
     let onUpdate!: (sessionId: string, update: unknown) => void
@@ -561,5 +561,5 @@ describe('TurnOutputWorkflow', () => {
     expect(conn.postMessage).not.toHaveBeenCalledWith(expect.anything(), expect.stringContaining('must remain private'))
 
     await daemon.stop()
-  }, 15_000)
+  })
 })
