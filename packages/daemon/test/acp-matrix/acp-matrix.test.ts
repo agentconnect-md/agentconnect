@@ -473,7 +473,10 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
             failures.push(error)
           }
         }
-        if (failures.length > 0) throw failures[0]
+        if (failures.length > 0) {
+          const cleanupError = `session cleanup: ${failures.map(turnFailureReason).join('; ')}`
+          result.error = result.error ? `${result.error}; ${cleanupError}` : cleanupError
+        }
       }
     } finally {
       endpoint?.server.close()
