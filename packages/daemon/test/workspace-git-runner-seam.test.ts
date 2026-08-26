@@ -269,7 +269,8 @@ describe('workspace-manager git runner seam', () => {
 // A resolver that routes into the sandbox is worthless if it is handed a path from this daemon's
 // filesystem — the shim's cwd fence refuses it, `isRepo` swallows the refusal, and the Git panel
 // reports "not a git checkout" over a checkout that is there.
-describe('consoleWorkspaceRoot', () => {
+// Pod coordinates are POSIX by construction — the sandbox pod is always Linux.
+describe.skipIf(process.platform === 'win32')('consoleWorkspaceRoot', () => {
   const agentAt = (path: string, workspace: Partial<Agent['workspace']> = {}): Agent =>
     ({
       ...clusterAgent('bot-root', path),

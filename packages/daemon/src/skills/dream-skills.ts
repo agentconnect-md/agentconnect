@@ -156,6 +156,7 @@ async function writeIndex(root: string, records: AcceptedSkillRecord[]): Promise
 }
 
 async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === 'win32') return // no POSIX directory-fsync primitive; the handle open fails with EPERM
   const handle = await fsp.open(path, constants.O_RDONLY)
   try {
     await handle.sync()

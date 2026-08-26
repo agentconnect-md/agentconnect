@@ -633,18 +633,23 @@ describe('AcpHost.stop', () => {
     expect(Date.now() - t0).toBeLessThan(1000)
   }, 15_000)
 
-  it('escalates to SIGKILL when the child ignores SIGTERM', async () => {
-    const warns: string[] = []
-    const host = new AcpHost(
-      { command: process.execPath, args: [fakeAgent], env: [] },
-      {
-        onUpdate: () => {},
-        env: { AC_IGNORE_SIGTERM: '1' },
-        log: { trace: () => {}, debug: () => {}, info: () => {}, warn: (m: string) => warns.push(m), error: () => {} }
-      }
-    )
-    await host.start()
-    await host.stop(200)
-    expect(warns.join('\n')).toContain('ignored SIGTERM')
-  }, 15_000)
+  // Windows has no POSIX signals, so there is no SIGTERM to ignore and no SIGKILL to escalate to.
+  it.skipIf(process.platform === 'win32')(
+    'escalates to SIGKILL when the child ignores SIGTERM',
+    async () => {
+      const warns: string[] = []
+      const host = new AcpHost(
+        { command: process.execPath, args: [fakeAgent], env: [] },
+        {
+          onUpdate: () => {},
+          env: { AC_IGNORE_SIGTERM: '1' },
+          log: { trace: () => {}, debug: () => {}, info: () => {}, warn: (m: string) => warns.push(m), error: () => {} }
+        }
+      )
+      await host.start()
+      await host.stop(200)
+      expect(warns.join('\n')).toContain('ignored SIGTERM')
+    },
+    15_000
+  )
 })

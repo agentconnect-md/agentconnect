@@ -268,41 +268,45 @@ describe('Git skill source policy boundary', () => {
     }
   })
 
-  it('resolves an exact commit and extracts a bounded GitHub archive without Git object fetches', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-archive-'))
-    const archive = tarGzip([
-      { path: `skills-${SHA}/`, type: '5' },
-      { path: `skills-${SHA}/packs/core/SKILL.md`, body: '# bounded\n' }
-    ])
-    const offline = offlineGitHubFetch({ archive })
-    try {
-      const result = await acquireGitSkillSource(
-        { ...entry('git@github.com:acme/skills.git'), ref: 'main', subDir: 'packs/core' },
-        {
-          destination: join(root, 'acquired'),
-          agentId: 'agent-1',
-          useGitCredential: false,
-          fetch: offline.fetch
-        }
-      )
-
-      expect(result.resolvedCommit).toBe(SHA)
-      expect(result.source.cloneUrl).toBe('https://github.com/acme/skills.git')
-      expect(await readFile(join(result.sourceDir, 'SKILL.md'), 'utf8')).toBe('# bounded\n')
-      expect((await stat(result.sourceDir)).mode & 0o777).toBe(0o700)
-      expect((await stat(join(result.sourceDir, 'SKILL.md'))).mode & 0o777).toBe(0o600)
-      expect(offline.calls.map((call) => call.url)).toEqual([
-        'https://api.github.com/repositories/42',
-        'https://api.github.com/repos/acme/skills/commits/main',
-        'https://api.github.com/repositories/42',
-        `https://api.github.com/repos/acme/skills/tarball/${SHA}`,
-        `https://codeload.github.com/acme/skills/legacy.tar.gz/${SHA}`
+  // Asserts extracted-tree mode bits, which Windows does not carry.
+  it.skipIf(process.platform === 'win32')(
+    'resolves an exact commit and extracts a bounded GitHub archive without Git object fetches',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-archive-'))
+      const archive = tarGzip([
+        { path: `skills-${SHA}/`, type: '5' },
+        { path: `skills-${SHA}/packs/core/SKILL.md`, body: '# bounded\n' }
       ])
-      expect(offline.calls.map((call) => call.redirect)).toEqual(['error', 'error', 'error', 'manual', 'error'])
-    } finally {
-      await rm(root, { recursive: true, force: true })
+      const offline = offlineGitHubFetch({ archive })
+      try {
+        const result = await acquireGitSkillSource(
+          { ...entry('git@github.com:acme/skills.git'), ref: 'main', subDir: 'packs/core' },
+          {
+            destination: join(root, 'acquired'),
+            agentId: 'agent-1',
+            useGitCredential: false,
+            fetch: offline.fetch
+          }
+        )
+
+        expect(result.resolvedCommit).toBe(SHA)
+        expect(result.source.cloneUrl).toBe('https://github.com/acme/skills.git')
+        expect(await readFile(join(result.sourceDir, 'SKILL.md'), 'utf8')).toBe('# bounded\n')
+        expect((await stat(result.sourceDir)).mode & 0o777).toBe(0o700)
+        expect((await stat(join(result.sourceDir, 'SKILL.md'))).mode & 0o777).toBe(0o600)
+        expect(offline.calls.map((call) => call.url)).toEqual([
+          'https://api.github.com/repositories/42',
+          'https://api.github.com/repos/acme/skills/commits/main',
+          'https://api.github.com/repositories/42',
+          `https://api.github.com/repos/acme/skills/tarball/${SHA}`,
+          `https://codeload.github.com/acme/skills/legacy.tar.gz/${SHA}`
+        ])
+        expect(offline.calls.map((call) => call.redirect)).toEqual(['error', 'error', 'error', 'manual', 'error'])
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
     }
-  })
+  )
 
   it('compares repository ids exactly beyond Number.MAX_SAFE_INTEGER', async () => {
     const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-large-id-'))

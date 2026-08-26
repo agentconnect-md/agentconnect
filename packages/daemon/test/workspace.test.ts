@@ -1046,7 +1046,8 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
   })
 })
 
-describe('workspaces.clusterWorkspaceCwd(--k8s pod coordinates)', () => {
+// Pod coordinates are POSIX by construction — the sandbox pod is always Linux.
+describe.skipIf(process.platform === 'win32')('workspaces.clusterWorkspaceCwd(--k8s pod coordinates)', () => {
   it('hands a from-scratch agent the pod root, never the daemon-disk workspace path', () => {
     const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
     expect(workspaces.clusterWorkspaceCwd(agent, '/agent')).toBe('/agent')

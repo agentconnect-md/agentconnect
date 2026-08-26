@@ -66,33 +66,37 @@ describe('sandboxWrap', () => {
     ).toThrow(SandboxError)
   })
 
-  it('writes the Linux compatibility policy atomically outside writable roots', () => {
-    const root = mkdtempSync(join(tmpdir(), 'ac-srt-settings-'))
-    const agentDir = join(root, 'agent')
-    const workspace = join(agentDir, 'workspace')
-    const home = join(agentDir, 'home')
-    const memory = join(agentDir, 'memory')
-    mkdirSync(workspace, { recursive: true })
-    mkdirSync(home)
-    mkdirSync(memory)
-    const settingsPath = writeSandboxSettings(agentDir, {
-      writable: [workspace, home, memory],
-      denyRead: [agentDir],
-      allowRead: [workspace, home, memory],
-      gitSafeDirectories: [workspace]
-    })
-    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
-    expect(settings.network).toEqual({ allowedDomains: [], deniedDomains: [], allowAllUnixSockets: true })
-    expect(settings.filesystem).toMatchObject({
-      denyRead: expect.arrayContaining([realpathSync(agentDir)]),
-      allowWrite: [realpathSync(workspace), realpathSync(home), realpathSync(memory)],
-      allowGitConfig: false
-    })
-    expect(settings.filesystem.denyWrite.some((path: string) => basename(path) === 'claude')).toBe(true)
-    expect(settings.git.safeDirectories).toEqual([realpathSync(workspace)])
-    expect(settingsPath.startsWith(`${workspace}/`)).toBe(false)
-    expect(statSync(settingsPath).mode & 0o777).toBe(0o600)
-  })
+  // Asserts the policy file lands 0600, and Windows carries no POSIX mode bits.
+  it.skipIf(process.platform === 'win32')(
+    'writes the Linux compatibility policy atomically outside writable roots',
+    () => {
+      const root = mkdtempSync(join(tmpdir(), 'ac-srt-settings-'))
+      const agentDir = join(root, 'agent')
+      const workspace = join(agentDir, 'workspace')
+      const home = join(agentDir, 'home')
+      const memory = join(agentDir, 'memory')
+      mkdirSync(workspace, { recursive: true })
+      mkdirSync(home)
+      mkdirSync(memory)
+      const settingsPath = writeSandboxSettings(agentDir, {
+        writable: [workspace, home, memory],
+        denyRead: [agentDir],
+        allowRead: [workspace, home, memory],
+        gitSafeDirectories: [workspace]
+      })
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+      expect(settings.network).toEqual({ allowedDomains: [], deniedDomains: [], allowAllUnixSockets: true })
+      expect(settings.filesystem).toMatchObject({
+        denyRead: expect.arrayContaining([realpathSync(agentDir)]),
+        allowWrite: [realpathSync(workspace), realpathSync(home), realpathSync(memory)],
+        allowGitConfig: false
+      })
+      expect(settings.filesystem.denyWrite.some((path: string) => basename(path) === 'claude')).toBe(true)
+      expect(settings.git.safeDirectories).toEqual([realpathSync(workspace)])
+      expect(settingsPath.startsWith(`${workspace}/`)).toBe(false)
+      expect(statSync(settingsPath).mode & 0o777).toBe(0o600)
+    }
+  )
 })
 
 // #956: a host missing SRT's own dependencies confines nothing and installs no

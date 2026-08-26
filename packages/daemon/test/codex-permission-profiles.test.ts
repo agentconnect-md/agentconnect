@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { codexPermissionProfileConfig } from '../src/acp/codex-permission-profiles.js'
 
-describe('Codex permission profile launch config', () => {
+// Pod coordinates are POSIX by construction — the sandbox pod is always Linux.
+describe.skipIf(process.platform === 'win32')('Codex permission profile launch config', () => {
   it('keeps daemon-owned denies in every ACP mode', () => {
     const config = codexPermissionProfileConfig({
       protectedRoots: ['/agent/home/.codex', '/host/.codex/auth.json']

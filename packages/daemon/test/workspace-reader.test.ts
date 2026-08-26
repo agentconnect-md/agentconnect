@@ -273,15 +273,19 @@ describe('workspace read', () => {
     expect((await reader.read(readReq('src/a.txt'))).type).toBe('file')
   })
 
-  it('a non-regular, non-directory target keeps the violation — with a machine-readable reason', async () => {
-    // A FIFO is neither a file nor a directory: reading it would block on a writer,
-    // so it stays a violation the CP can answer with a code (not a 503).
-    execFileSync('mkfifo', [join(ws, 'pipe')])
-    await expect(reader.read(readReq('pipe'))).rejects.toMatchObject({
-      name: 'WorkspaceViolationError',
-      reason: 'not-a-file'
-    })
-  })
+  // Needs a FIFO and O_NOFOLLOW semantics, neither of which Windows offers — tracked separately.
+  it.skipIf(process.platform === 'win32')(
+    'a non-regular, non-directory target keeps the violation — with a machine-readable reason',
+    async () => {
+      // A FIFO is neither a file nor a directory: reading it would block on a writer,
+      // so it stays a violation the CP can answer with a code (not a 503).
+      execFileSync('mkfifo', [join(ws, 'pipe')])
+      await expect(reader.read(readReq('pipe'))).rejects.toMatchObject({
+        name: 'WorkspaceViolationError',
+        reason: 'not-a-file'
+      })
+    }
+  )
 
   it('write and delete still refuse a directory (a mutation cannot be data)', async () => {
     mkdirSync(join(ws, 'docs'))
