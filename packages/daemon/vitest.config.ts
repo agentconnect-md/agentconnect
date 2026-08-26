@@ -18,6 +18,27 @@ export const MOCKING_TESTS = [
   'test/workspace.test.ts'
 ]
 
+// Whole files the suite cannot run on Windows, excluded when the platform IS Windows so
+// `vitest run` is green for a Windows contributor too. A single non-portable CASE belongs on
+// `it.skipIf(process.platform === 'win32')` (the suite's existing idiom) — this list is only for
+// files whose every case is POSIX-only. `test/windows-exclusions.test.ts` fails if an entry goes stale.
+export const WINDOWS_EXCLUDED = [
+  // A filesystem path handed to `net.Server.listen`; on Windows that argument is a named pipe name.
+  'test/mcp-bridge-e2e.test.ts',
+  'test/shim-gh-token.test.ts',
+  'test/shim-tunnel.test.ts',
+  'test/sandbox-credential-helper.test.ts',
+  'test/gitlab-self-managed-host.test.ts',
+  // `mode & 0o777` assertions throughout: Windows carries no POSIX mode bits to assert on.
+  'test/config-file-env.test.ts',
+  'test/evaluation-events.test.ts',
+  'test/shim-channels.test.ts',
+  'test/skills-cli-cell.test.ts',
+  'test/runtime-launch.test.ts'
+]
+
+const platformExcluded = process.platform === 'win32' ? WINDOWS_EXCLUDED : []
+
 export default defineConfig({
   test: {
     environment: 'node',
@@ -34,7 +55,7 @@ export default defineConfig({
         test: {
           name: 'daemon',
           include: ['test/**/*.test.ts'],
-          exclude: [...configDefaults.exclude, ...MOCKING_TESTS],
+          exclude: [...configDefaults.exclude, ...MOCKING_TESTS, ...platformExcluded],
           // Execute each module once per worker instead of once per FILE. Module-level state is
           // shared as a result, which is why the workspace execution plane had to become per-daemon
           // instance state first — see `WorkspaceManager`.
@@ -46,6 +67,8 @@ export default defineConfig({
         test: {
           name: 'daemon-mocked',
           include: MOCKING_TESTS,
+          // Applied here too so one list governs both projects if a mocking file ever lands on it.
+          exclude: [...configDefaults.exclude, ...platformExcluded],
           isolate: true
         }
       }

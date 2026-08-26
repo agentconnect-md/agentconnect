@@ -176,6 +176,14 @@ Vitest pool, and truncates each pool-local database before a test (`test/setup.d
 It requires Docker and runs files with four workers by default; set
 `INTEGRATION_TEST_WORKERS` to tune that count for the runner.
 
+### Windows
+
+The daemon and the CLI are supported on Windows, and CI's `Unit Test (Windows)` job runs both
+packages' unit suites on `windows-latest`. A test case that cannot work there goes on
+`it.skipIf(process.platform === 'win32')`; only when _every_ case in a file is POSIX-only does the
+file join `WINDOWS_EXCLUDED` in that package's `vitest.config.ts`, which is applied on Windows
+alone so `vitest run` is green for a Windows contributor too.
+
 ### Prisma
 
 ```bash
