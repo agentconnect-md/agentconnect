@@ -2089,10 +2089,16 @@ export class PgHookRepo implements HookRepo {
       const landedSet = new Set<string>(landed)
       const unlanded = expected.filter((hookId) => !landedSet.has(hookId))
       if (unlanded.length > 0) {
-        // A hook created after the relay ingested this GUID would read the
-        // redelivery as a first run of a stale event, so it still blocks.
+        // The payload is immutable but the relay rule is not: a candidate whose
+        // definition changed since the GUID was ingested (created, re-enabled,
+        // mention/label filter relaxed) may no longer reproduce the original
+        // filtering and would read the redelivery as a first run of a stale
+        // event. Every user-facing edit bumps lastModifiedAt, so it fences all
+        // of those at once (creation included — it starts equal to createdAt).
         const deliveredAt = new Date(Math.min(...rows.map((row) => row.startedAt.getTime())))
-        const postdating = await tx.hookDef.count({ where: { id: { in: unlanded }, createdAt: { gt: deliveredAt } } })
+        const postdating = await tx.hookDef.count({
+          where: { id: { in: unlanded }, lastModifiedAt: { gt: deliveredAt } }
+        })
         if (postdating > 0) {
           await settleActive()
           return false

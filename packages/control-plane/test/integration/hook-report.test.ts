@@ -134,8 +134,12 @@ async function placedCommentFamilyPair(
     reviewPolicy: 'off',
     reportingMode: 'off'
   })
-  // Both rows predate the delivery: a hook created afterwards blocks by design.
-  await prisma.hookDef.updateMany({ where: { id: { in: [pullHookId, issuesHookId] } }, data: { createdAt } })
+  // Both rows predate the delivery AND are unmodified since: any later
+  // definition change (lastModifiedAt) blocks the claim by design.
+  await prisma.hookDef.updateMany({
+    where: { id: { in: [pullHookId, issuesHookId] } },
+    data: { createdAt, lastModifiedAt: createdAt }
+  })
   return { agentId, pullHookId, issuesHookId }
 }
 
@@ -385,12 +389,46 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     // redelivery as a first run of a stale event.
     await prisma.hookDef.update({
       where: { id: issuesHookId },
-      data: { createdAt: new Date(firedAt.getTime() + 1_000) }
+      data: { createdAt: new Date(firedAt.getTime() + 1_000), lastModifiedAt: new Date(firedAt.getTime() + 1_000) }
     })
 
     const expected = [HookId(pullHookId), HookId(issuesHookId)].sort()
     expect(await repo().claimRetryableDeliveryRedelivery('late-sibling-guid', expected, firedAt, [30_000])).toBe(false)
     expect(await repo().getRun(HookId(pullHookId), 'late-sibling-guid')).toMatchObject({
+      redeliveryAttempts: 0,
+      redeliveryNextAttemptAt: null
+    })
+  })
+
+  it('blocks the claim when an unlanded candidate was modified after the delivery', async () => {
+    const firedAt = new Date('2026-07-03T11:06:00.000Z')
+    const { agentId, pullHookId, issuesHookId } = await placedCommentFamilyPair(new Date(firedAt.getTime() - 60_000))
+    // The sibling filtered the original event via mentionOnly, so it never landed a row.
+    await prisma.hookDef.update({
+      where: { id: issuesHookId },
+      data: { mentionOnly: true, lastModifiedAt: new Date(firedAt.getTime() - 60_000) }
+    })
+    await recordGithubDeliveryFailure(
+      pullHookId,
+      agentId,
+      'relaxed-sibling-guid',
+      firedAt,
+      HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+      DAEMON,
+      { event: 'issue_comment:created', subjectKind: 'pull_request' }
+    )
+    // Relaxing the filter afterwards means the redelivery would no longer be
+    // filtered — the payload is immutable, the rule is not.
+    await prisma.hookDef.update({
+      where: { id: issuesHookId },
+      data: { mentionOnly: false, lastModifiedAt: new Date(firedAt.getTime() + 1_000) }
+    })
+
+    const expected = [HookId(pullHookId), HookId(issuesHookId)].sort()
+    expect(await repo().claimRetryableDeliveryRedelivery('relaxed-sibling-guid', expected, firedAt, [30_000])).toBe(
+      false
+    )
+    expect(await repo().getRun(HookId(pullHookId), 'relaxed-sibling-guid')).toMatchObject({
       redeliveryAttempts: 0,
       redeliveryNextAttemptAt: null
     })

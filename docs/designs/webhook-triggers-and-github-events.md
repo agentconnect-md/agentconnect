@@ -720,9 +720,12 @@ candidate set, each of them an active side-effect-free retry row; a landed run
 from outside the set still blocks the whole request. A candidate that landed
 nothing is the relay's own precise filtering — subject family, mention text,
 labels, none of which the summary carries — which the redelivered payload
-reproduces exactly, so it is tolerated. The single exception is a candidate hook
-created after the delivery was ingested: it would read the redelivery as a first
-run of a stale event, and it blocks.
+reproduces exactly, so it is tolerated. That proof holds only while the rule
+itself is unchanged: a candidate whose definition moved after the delivery was
+ingested — created then, re-enabled, or its filters relaxed — might treat the
+redelivery as a first run of a stale event, so any unlanded candidate modified
+since the delivery blocks the claim. Every user-facing edit moves
+`lastModifiedAt`, which is the fence.
 
 An admitted turn ended by a handover (`agent_handover`) is deliberately outside
 that set, and the reason is a stage question rather than a wording one. Retry
