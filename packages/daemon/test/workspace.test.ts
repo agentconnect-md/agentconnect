@@ -14,6 +14,10 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { Agent } from '../src/agents/agent-schema.js'
 
+const { rename: realRename } = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+const renameMock = vi.fn(realRename)
+vi.mock('node:fs/promises', () => ({ rename: renameMock }))
+
 // Mock simple-git so clone/pull don't touch the network. The clone mock is
 // reassignable per test (success / failure / slow) via `cloneImpl`.
 let cloneImpl: (...args: any[]) => Promise<unknown>
@@ -104,6 +108,7 @@ function githubAppAgent(path: string): Agent {
 
 beforeEach(() => {
   cloneImpl = vi.fn().mockResolvedValue(undefined)
+  renameMock.mockReset().mockImplementation(realRename)
   lastGitEnv = undefined
   pullMock.mockClear()
   rawMock.mockReset().mockResolvedValue('')
@@ -702,6 +707,28 @@ describe('prepareWorkspaceForActivation', () => {
     await rollback()
     expect(existsSync(path)).toBe(true)
     expect(readdirSync(path)).toEqual([])
+  })
+
+  it.runIf(process.platform === 'win32')('retries transient Windows directory rename failures', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'ac-ws-convert-'))
+    const path = join(parent, 'workspace')
+    let failed = false
+    renameMock.mockImplementation(async (from, to) => {
+      if (!failed && from === path) {
+        failed = true
+        throw Object.assign(new Error('directory is busy'), { code: 'EPERM' })
+      }
+      await realRename(from, to)
+    })
+    cloneImpl = vi.fn().mockImplementation(async (_repo: string, target: string) => {
+      mkdirSync(join(target, '.git'), { recursive: true })
+    })
+
+    await workspaces.prepareWorkspaceForActivation(gitRepoAgent(path))
+
+    expect(failed).toBe(true)
+    expect(existsSync(join(path, '.git'))).toBe(true)
+    expect(readdirSync(parent).filter((entry) => entry.startsWith('workspace.old-'))).toEqual([])
   })
 
   it('refuses a non-empty scratch directory without starting a clone', async () => {
