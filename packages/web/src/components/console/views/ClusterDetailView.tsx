@@ -45,6 +45,7 @@ import {
   FleetStat,
   FleetUsageCard,
   ResourceDial,
+  ResourceDials,
   unionRuntimes
 } from '@/components/console/FleetDetail'
 import { KubernetesMark, LoadingState } from '@/components/marks'
@@ -208,7 +209,7 @@ export default function ClusterDetailView() {
           {billingOffered && <CloudCreditsCard />}
         </div>
       ) : (
-        <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_200px_1fr]">
+        <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_120px_1fr]">
           <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
             {/* The heartbeat count against the ceiling, never the placed-agent list: a set
                 placement names the set rather than the member serving it, so the two are not
@@ -564,14 +565,13 @@ function ClusterResourcesCard({ online, cpu, mem }: { online: boolean; cpu: numb
     <div className="card flex flex-col">
       <div className="cardhead">
         <span className="cardtitle">Resources</span>
-        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">across serving nodes</span>
       </div>
-      <div className="flex flex-1 flex-col justify-center gap-[14px] px-4 py-[15px]">
-        {/* An idle cluster has nothing to average: the dials read '—' rather than 0%, which
-            would be a measurement it cannot make. */}
+      {/* An idle cluster has nothing to average: the dials read '—' rather than 0%, which would
+          be a measurement it cannot make. */}
+      <ResourceDials>
         <ResourceDial label="CPU" pct={cpu} muted={!online} />
         <ResourceDial label="Memory" pct={mem} muted={!online} />
-      </div>
+      </ResourceDials>
     </div>
   )
 }
