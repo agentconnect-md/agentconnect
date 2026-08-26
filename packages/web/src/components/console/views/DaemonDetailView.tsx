@@ -16,8 +16,7 @@ import {
   platName,
   presentedDaemonStatus,
   runtimeLabel,
-  status,
-  type DaemonRow
+  status
 } from '@/lib/data'
 import { creatorLabel } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
@@ -28,16 +27,21 @@ import { VisibilityValue } from '@/components/console/VisibilityField'
 import { DaemonLifecycleBadge, daemonLifecycleLabel } from '@/components/console/DaemonLifecycleBadge'
 import { DaemonUpgradeBadge } from '@/components/console/DaemonUpgradeBadge'
 import { NotFound } from '@/components/console/NotFound'
+import {
+  FleetAgentsCard,
+  FleetRuntimesCard,
+  FleetStat,
+  FleetUsageCard,
+  ResourceDial,
+  barColor,
+  unionRuntimes,
+  type FleetRuntime
+} from '@/components/console/FleetDetail'
 import { AgentIconView, AgentMark, LoadingState } from '@/components/marks'
-import { Button, Icon } from '@/components/ui'
+import { Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 import { useIsMobile } from '@/lib/use-is-mobile'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-
-// Bar colour tracks the hotter reading (matches the daemons list).
-function barColor(pct: number): string {
-  return pct >= 80 ? 'var(--status-paused)' : pct >= 60 ? 'var(--amber-500)' : 'var(--brand)'
-}
 
 export default function DaemonDetailView() {
   const acpRegistry = useAcpRegistry()
@@ -45,10 +49,14 @@ export default function DaemonDetailView() {
   const { me } = useProfile()
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
-  const { daemons, agents, daemonsLoading } = useConsoleData()
+  const { daemons, agents, daemonsLoading, memberSets, enrollInGroup, withdrawFromGroup } = useConsoleData()
   const { openModal } = useModal()
   const isMobile = useIsMobile()
   const [menuOpen, setMenuOpen] = useState(false)
+  // Group membership is admitted HERE, on the machine whose runtime authority moves
+  // (daemon-groups.md §2, §3) — the group's own page only reads it.
+  const [groupBusy, setGroupBusy] = useState(false)
+  const [groupErr, setGroupErr] = useState<string | null>(null)
   // Hover-open model popover over the runtime tiles (design: `rtOpen`).
   const [openRuntime, setOpenRuntime] = useState<string | null>(null)
   // Mobile: tap a runtime row to expand its model list (design: `rtOpen` map —
@@ -108,32 +116,37 @@ export default function DaemonDetailView() {
   const canUpgrade = canRestart && daemon.availableVersions.some((v) => v !== daemon.version)
 
   const hosted = agents.filter((a) => a.daemon === daemon.daemonId)
-  const runtimes = daemon.runtimeModels.length
-    ? daemon.runtimeModels
-    : daemon.caps.runtimes.map((runtime) => ({
-        runtime,
-        version: '',
-        models: [] as string[],
-        acpProtocolVersion: null,
-        mcpCapabilities: null,
-        authRequired: false
-      }))
+  const runtimes: FleetRuntime[] = daemon.runtimeModels.length
+    ? unionRuntimes([daemon])
+    : daemon.caps.runtimes.map((runtime) => ({ runtime, version: '', models: [], authRequired: false }))
   const seen = daemon.uptime === '—' ? 'never connected' : `last seen ${daemon.uptime} ago`
+  // `conns` is the daemon's agent ceiling; <= 0 is its UNBOUNDED sentinel, not a ceiling of zero.
+  // Its numerator is the daemon's OWN heartbeat count, never `hosted`: a group duty this member
+  // is serving names the set, not the machine, so a full 8-slot member would read `0 / 8` — and
+  // `loadAgents` against `conns` is the pair the CP's own placement check compares.
+  const maxAgents = Number(daemon.conns)
+  const ceiling = !Number.isFinite(maxAgents) || maxAgents <= 0 ? '∞' : String(maxAgents)
+  const load = `${daemon.loadAgents} / ${ceiling}`
+  // The group this machine belongs to. The pool is managed infrastructure — its membership is
+  // the CP's, never an operator's — so it offers neither the chip nor the actions.
+  const groupsOffered = !daemon.pool && featureFlagEnabled('daemon-groups')
+  const group = groupsOffered ? memberSets.find((g) => g.setId === daemon.memberSetId) : undefined
+  const runGroupOp = async (fn: () => Promise<void>) => {
+    setGroupBusy(true)
+    setGroupErr(null)
+    try {
+      await fn()
+    } catch (e) {
+      setGroupErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setGroupBusy(false)
+    }
+  }
 
   const labeled = (label: string, value: ReactNode) => (
     <div className="row grid-cols-[1fr_auto]">
       <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">{label}</span>
       <span className="mono text-[12.5px]">{value}</span>
-    </div>
-  )
-
-  const stat = (icon: string, label: string, value: string) => (
-    <div className="card stat">
-      <div className="statlbl">
-        <Icon name={icon} size={14} />
-        {label}
-      </div>
-      <div className="statval">{value}</div>
     </div>
   )
 
@@ -143,8 +156,7 @@ export default function DaemonDetailView() {
     // the body (Reconnect + edit). Data-honest: no fabricated host/os/ip/heartbeat —
     // the design's "System" card maps onto the real Details + Capabilities fields.
     const metricCells: [string, string][] = [
-      ['Agents', String(hosted.length)],
-      ['Connections', daemon.conns],
+      ['Agents', load],
       ['Sessions', daemon.activeSessions],
       // `daemon.uptime` is time-since-last-seen (fmtSeen), not a real uptime — label it honestly.
       ['Last seen', daemon.uptime]
@@ -174,6 +186,15 @@ export default function DaemonDetailView() {
             <Icon name="tag" size={14} color="var(--text-tertiary)" />
             {daemon.version}
           </span>
+          {group && (
+            <button
+              onClick={() => router.push(orgPath(`/daemons/groups/${group.setId}`))}
+              className="inline-flex cursor-pointer items-center gap-[6px] whitespace-nowrap border-0 bg-transparent p-0 font-mono text-[12px] font-medium leading-normal text-(--brand-soft-text)"
+            >
+              <Icon name="layers" size={14} />
+              {group.name}
+            </button>
+          )}
           {pending ? (
             <DaemonLifecycleBadge op={op} size="md" />
           ) : (
@@ -223,7 +244,7 @@ export default function DaemonDetailView() {
         </div>
 
         {/* metric grid — one seamless bordered card, internal dividers */}
-        <div className="mx-4 mt-3 mb-2 grid grid-cols-4 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
+        <div className="mx-4 mt-3 mb-2 grid grid-cols-3 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
           {metricCells.map(([label, value], i) => (
             <div
               key={label}
@@ -241,11 +262,8 @@ export default function DaemonDetailView() {
 
         {/* runtimes — full-width stacked rows */}
         <div className="mx-4 mt-1 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
-          <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3">
-            <span className="font-sans text-[14px] font-semibold leading-normal">Runtimes</span>
-            <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
-              available here
-            </span>
+          <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
+            Runtimes
           </div>
           {runtimes.length > 0 ? (
             runtimes.map((rt, i) => {
@@ -382,6 +400,11 @@ export default function DaemonDetailView() {
           )}
         </div>
 
+        {/* usage — the same session history the desktop band carries */}
+        <div className="mx-4 mt-3">
+          <FleetUsageCard agentIds={hosted.map((a) => a.id)} note="agents placed here · 30d" />
+        </div>
+
         {/* resources — CPU + Memory bars (no fabricated disk) */}
         <div className="mx-4 mt-3 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
           <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
@@ -456,11 +479,8 @@ export default function DaemonDetailView() {
 
         {/* capabilities */}
         <div className="mx-4 mt-3 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
-          <div className="flex items-center justify-between border-b border-(--border-subtle) px-4 py-3">
-            <span className="font-sans text-[14px] font-semibold leading-normal">Capabilities</span>
-            <span className="font-mono text-[11px] font-normal leading-normal text-(--text-tertiary)">
-              reported on register
-            </span>
+          <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
+            Capabilities
           </div>
           <div className="py-[6px]">
             {labeled('ACP', daemon.caps.acp ? 'supported' : '—')}
@@ -509,16 +529,6 @@ export default function DaemonDetailView() {
               <span className="dot h-[6px] w-[6px]" style={{ background: s.dot }} />
               {s.label}
             </span>
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
-            {/* No hostname chip: the CP seeds the daemon name from the host on first
-                register, so host === name === the H1 title — repeating it here is pure
-                duplication. The labeled "Hostname" row in the Details card still carries
-                it, unambiguously. */}
-            <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-              <Icon name="tag" size={14} color="var(--text-tertiary)" />
-              <span className="mono text-[12px]">{daemon.version}</span>
-            </span>
             {pending ? (
               <DaemonLifecycleBadge op={op} size="md" />
             ) : (
@@ -529,10 +539,31 @@ export default function DaemonDetailView() {
                 onClick={canUpgrade ? () => openModal('upgradeDaemon', daemon) : undefined}
               />
             )}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+            {/* No hostname chip: the CP seeds the daemon name from the host on first
+                register, so host === name === the H1 title — repeating it here is pure
+                duplication. The labeled "Hostname" row in the Details card still carries
+                it, unambiguously. */}
+            <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+              <Icon name="tag" size={14} color="var(--text-tertiary)" />
+              <span className="mono text-[12px]">{daemon.version}</span>
+            </span>
             <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
               <Icon name="timer" size={14} color="var(--text-tertiary)" />
               {seen}
             </span>
+            {/* Membership rides the title bar rather than a card of its own: it is one fact
+                about this machine, and the group's own page is where its detail lives. */}
+            {group && (
+              <button
+                onClick={() => router.push(orgPath(`/daemons/groups/${group.setId}`))}
+                className="inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--brand-soft-text)"
+              >
+                <Icon name="layers" size={14} />
+                <span className="mono text-[12px]">{group.name}</span>
+              </button>
+            )}
           </div>
         </div>
         {/* No menu at all when the caller may do none of it (a pool member is nobody's to
@@ -569,6 +600,38 @@ export default function DaemonDetailView() {
                     Restart
                   </button>
                 )}
+                {/* Joining is refused while agents are still pinned here and leaving while the
+                    machine still holds live work — the CP answers 409 and the banner says so. */}
+                {groupsOffered && daemon.canEdit && !groupBusy && (
+                  <>
+                    {group ? (
+                      <button
+                        className="dmi"
+                        onClick={() => {
+                          setMenuOpen(false)
+                          void runGroupOp(() => withdrawFromGroup(group.setId, daemon.daemonId))
+                        }}
+                      >
+                        <Icon name="log-out" size={15} />
+                        Leave {group.name}
+                      </button>
+                    ) : (
+                      memberSets.map((g) => (
+                        <button
+                          key={g.setId}
+                          className="dmi"
+                          onClick={() => {
+                            setMenuOpen(false)
+                            void runGroupOp(() => enrollInGroup(g.setId, daemon.daemonId))
+                          }}
+                        >
+                          <Icon name="boxes" size={15} />
+                          Join {g.name}
+                        </button>
+                      ))
+                    )}
+                  </>
+                )}
                 {offline && !pending && daemon.canEdit && (
                   <>
                     <button
@@ -600,337 +663,112 @@ export default function DaemonDetailView() {
         </div>
       </div>
 
-      {/* metric strip */}
-      <div className="mb-[18px] grid grid-cols-2 gap-[14px] desktop:grid-cols-4">
-        {stat('bot', 'Agents hosted', String(hosted.length))}
-        {stat('layers', 'Max agents', daemon.conns)}
-        {stat('activity', 'Active sessions', daemon.activeSessions)}
-        {stat('timer', 'Last seen', daemon.uptime)}
-      </div>
-
-      {/* runtimes */}
-      <div className="card mb-[18px]">
-        <div className="cardhead">
-          <span className="cardtitle">Runtimes</span>
-          <span className="mono ml-auto text-[11px] text-(--text-tertiary)">available on this daemon</span>
+      {groupErr && (
+        <div className="mb-[18px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
+          <Icon name="triangle-alert" size={15} />
+          {groupErr}
         </div>
-        {runtimes.length > 0 ? (
-          <div className="grid grid-cols-3 gap-3 px-4 py-[14px]">
-            {runtimes.map((rt) => {
-              const meta = acpRuntime(acpRegistry, rt.runtime)
-              // Agents on this daemon driven by this runtime (id namespaces differ
-              // across daemon generations — 'claude' vs 'claude-acp' — so match on
-              // the display family, not the raw id).
-              const users = hosted.filter(
-                (a) => a.runtime === rt.runtime || runtimeLabel(a.runtime) === runtimeLabel(rt.runtime, meta?.name)
-              )
-              const usage = users.length > 0 ? `${users.length} agent${users.length === 1 ? '' : 's'}` : 'no agents'
-              // The runtime's own release (e.g. claude-agent-acp 0.54.1), stamped by
-              // the daemon from the ACP registry doc; '' until reported.
-              const version = rt.version ? `v${rt.version.replace(/^v/, '')}` : null
-              const open = openRuntime === rt.runtime && rt.models.length > 0
-              return (
-                <div
-                  key={rt.runtime}
-                  onMouseEnter={() => setOpenRuntime(rt.runtime)}
-                  onMouseLeave={() => setOpenRuntime(null)}
-                  className="relative self-start rounded-[9px] border border-(--border-subtle)"
-                >
-                  <div className="rthead flex items-center gap-[11px] rounded-md px-[13px] py-3">
-                    <span className="imark h-[30px] w-[30px]">
-                      <AgentMark model={rt.runtime} />
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="font-sans text-[13px] font-semibold leading-normal">
-                        {runtimeLabel(rt.runtime, meta?.name)}
-                      </div>
-                      <div className="mono text-[11px] text-(--text-tertiary)">
-                        {version ? `${version} · ${usage}` : usage}
-                      </div>
-                    </div>
-                    <span className="flex flex-none items-center gap-[6px]">
-                      <span className="badge bg-(--surface-active) text-(--text-secondary)">
-                        {rt.models.length} model{rt.models.length === 1 ? '' : 's'}
-                      </span>
-                    </span>
-                  </div>
-                  {rt.authRequired && (
-                    <div
-                      title="The runtime rejected the daemon's probe with 'authentication required' — sign in to it on the daemon host. The warning clears on the next probe."
-                      className="flex items-center gap-[6px] rounded-b-[8px] bg-(--status-paused-soft) px-[13px] py-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)"
-                    >
-                      <Icon name="triangle-alert" size={12} className="flex-none" />
-                      <span className="min-w-0 truncate">Login required — sign in on the daemon host</span>
-                    </div>
-                  )}
-                  {open && (
-                    <div className="absolute top-[calc(100%_+_4px)] right-0 left-0 z-40 overflow-hidden rounded-[9px] border border-(--border-default) bg-(--surface-card) py-1 shadow-(--shadow-lg)">
-                      {rt.models.length > 0 && (
-                        <>
-                          <div className="px-[13px] pt-[7px] pb-1 font-sans text-[10px] font-semibold tracking-[.05em] uppercase leading-normal text-(--text-tertiary)">
-                            Models
-                          </div>
-                          {rt.models.map((m) => (
-                            <div key={m} className="flex items-center gap-2 px-[13px] py-[5px]">
-                              <span className="mono min-w-0 flex-1 truncate text-[11.5px]">{m}</span>
-                            </div>
-                          ))}
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
+      )}
+
+      {/* Band one — what the machine holds now, what it is spending to hold it, and what has
+          run on it. */}
+      <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_200px_1fr]">
+        <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
+          <FleetStat icon="bot" label="Agents" value={load} note="running" />
+          <FleetStat icon="activity" label="Active sessions" value={daemon.activeSessions} />
+          {/* `daemon.uptime` is time-since-last-seen (fmtSeen), not a real uptime. */}
+          <FleetStat icon="timer" label="Last seen" value={daemon.uptime} />
+        </div>
+        <div className="card flex flex-col">
+          <div className="cardhead">
+            <span className="cardtitle">Resources</span>
           </div>
-        ) : (
-          <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-            No runtimes reported — this daemon hasn&apos;t advertised its runtime profiles yet.
+          <div className="flex flex-1 flex-col justify-center gap-[14px] px-4 py-[15px]">
+            <ResourceDial label="CPU" pct={daemon.cpu} />
+            <ResourceDial label="Memory" pct={daemon.mem} />
           </div>
-        )}
+        </div>
+        <FleetUsageCard agentIds={hosted.map((a) => a.id)} note="agents placed here · 30d" />
       </div>
 
-      <div className="grid grid-cols-[340px_1fr] items-start gap-[18px]">
-        {/* left column */}
-        <div className="flex flex-col gap-[18px]">
-          <div className="card">
-            <div className="cardhead">
-              <span className="cardtitle">Resources</span>
-            </div>
-            <div className="flex flex-col gap-[14px] px-4 py-[15px]">
-              <UtilBar label="CPU" pct={daemon.cpu} />
-              <UtilBar label="Memory" pct={daemon.mem} />
-            </div>
+      {/* Band two — what this machine can run, and what runs on it. */}
+      <FleetRuntimesCard
+        title="Runtimes"
+        runtimes={runtimes}
+        agents={hosted}
+        empty="No runtimes reported — this daemon hasn't advertised its runtime profiles yet."
+      />
+
+      <FleetAgentsCard
+        title="Agents"
+        agents={hosted}
+        capabilitySource={daemon}
+        statusHost={daemon}
+        onOpen={(agentId) => router.push(orgPath(`/agents/${agentId}`))}
+        emptyTitle="No agents on this daemon"
+        emptyHint="Deploy an agent here to start handling messages."
+      />
+
+      {/* Band three — the machine's own record, beside what it told the CP it can do. */}
+      <div className="mt-[18px] grid grid-cols-1 items-start gap-[18px] desktop:grid-cols-2">
+        <div className="card">
+          <div className="cardhead">
+            <span className="cardtitle">Details</span>
           </div>
-          <GroupCard daemon={daemon} pinnedAgents={hosted.length} />
-          <div className="card">
-            <div className="cardhead">
-              <span className="cardtitle">Details</span>
+          <div className="py-[6px]">
+            {labeled('Hostname', daemon.host)}
+            {labeled('Status', s.label)}
+            {labeled('Version', daemon.version)}
+            {pending && labeled('Pending', pendingLabel)}
+            {labeled('Last seen', daemon.uptime)}
+            <div className="row grid-cols-[auto_1fr] gap-3">
+              <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">Created</span>
+              <span className="min-w-0 text-right font-sans text-[12.5px] font-medium leading-normal">
+                {creatorLabel(daemon.createdBy, me)}{' '}
+                <span className="mono font-normal whitespace-nowrap text-(--text-tertiary)">· {daemon.createdAt}</span>
+              </span>
             </div>
-            <div className="py-[6px]">
-              {labeled('Hostname', daemon.host)}
-              {labeled('Status', s.label)}
-              {labeled('Version', daemon.version)}
-              {pending && labeled('Pending', pendingLabel)}
-              {labeled('Last seen', daemon.uptime)}
-              <div className="row grid-cols-[auto_1fr] gap-3">
-                <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">Created</span>
-                <span className="min-w-0 text-right font-sans text-[12.5px] font-medium leading-normal">
-                  {creatorLabel(daemon.createdBy, me)}{' '}
-                  <span className="mono font-normal whitespace-nowrap text-(--text-tertiary)">
-                    · {daemon.createdAt}
-                  </span>
+            <div className="row grid-cols-[auto_1fr] gap-3">
+              <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">Modified</span>
+              <span className="min-w-0 text-right font-sans text-[12.5px] font-medium leading-normal">
+                {creatorLabel(daemon.lastModifiedBy, me)}{' '}
+                <span className="mono font-normal whitespace-nowrap text-(--text-tertiary)">
+                  · {daemon.lastModifiedAt}
                 </span>
-              </div>
-              <div className="row grid-cols-[auto_1fr] gap-3">
-                <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-                  Modified
-                </span>
-                <span className="min-w-0 text-right font-sans text-[12.5px] font-medium leading-normal">
-                  {creatorLabel(daemon.lastModifiedBy, me)}{' '}
-                  <span className="mono font-normal whitespace-nowrap text-(--text-tertiary)">
-                    · {daemon.lastModifiedAt}
-                  </span>
-                </span>
-              </div>
-              <div className="row grid-cols-[auto_1fr] gap-3">
-                <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
-                  Visibility
-                </span>
-                <span className="flex min-w-0 justify-end">
-                  {daemon.canManageSharing ? (
-                    <button
-                      type="button"
-                      onClick={() => openModal('editDaemon', daemon)}
-                      title="Edit visibility"
-                      className="inline-flex cursor-pointer border-0 bg-transparent p-0"
-                    >
-                      <VisibilityValue visibility={daemon.visibility} sharedWith={daemon.sharedWith} />
-                    </button>
-                  ) : (
+              </span>
+            </div>
+            <div className="row grid-cols-[auto_1fr] gap-3">
+              <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">
+                Visibility
+              </span>
+              <span className="flex min-w-0 justify-end">
+                {daemon.canManageSharing ? (
+                  <button
+                    type="button"
+                    onClick={() => openModal('editDaemon', daemon)}
+                    title="Edit visibility"
+                    className="inline-flex cursor-pointer border-0 bg-transparent p-0"
+                  >
                     <VisibilityValue visibility={daemon.visibility} sharedWith={daemon.sharedWith} />
-                  )}
-                </span>
-              </div>
+                  </button>
+                ) : (
+                  <VisibilityValue visibility={daemon.visibility} sharedWith={daemon.sharedWith} />
+                )}
+              </span>
             </div>
           </div>
         </div>
 
-        {/* right column */}
-        <div className="flex flex-col gap-[18px]">
-          <div className="card">
-            <div className="cardhead justify-between">
-              <span className="cardtitle">Agents</span>
-            </div>
-            {hosted.length > 0 ? (
-              <>
-                <div className="row h grid-cols-[auto_1.6fr_1fr_auto] gap-3">
-                  <span />
-                  <span>Agent</span>
-                  <span>Model</span>
-                  <span>Status</span>
-                </div>
-                {hosted.map((a) => {
-                  // On this page we know the daemon's status, so gate the agent's online.
-                  const as = status(effectiveAgentStatus(a, daemon))
-                  return (
-                    <div
-                      key={a.id}
-                      className="row click grid-cols-[auto_1.6fr_1fr_auto] gap-3"
-                      onClick={() => router.push(orgPath(`/agents/${a.id}`))}
-                    >
-                      <span className="av h-7 w-7 rounded-[7px]">
-                        <AgentIconView icon={a.icon} runtime={a.runtime} size={28} />
-                      </span>
-                      <span className="min-w-0 truncate font-sans text-[13px] font-semibold leading-normal">
-                        {agentLabel(a)}
-                      </span>
-                      <span className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                        {agentModelDisplay(daemon, a.runtime, a.model)}
-                      </span>
-                      <span className="badge" style={{ background: as.bg, color: as.text }}>
-                        <span className="dot h-[6px] w-[6px]" style={{ background: as.dot }} />
-                        {as.label}
-                      </span>
-                    </div>
-                  )
-                })}
-              </>
-            ) : (
-              <div className="px-4 py-7 text-center">
-                <div className="font-sans text-[13px] font-medium leading-normal text-(--text-secondary)">
-                  No agents on this daemon
-                </div>
-                <div className="mt-[3px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                  Deploy an agent here to start handling messages.
-                </div>
-              </div>
-            )}
+        <div className="card">
+          <div className="cardhead">
+            <span className="cardtitle">Capabilities</span>
           </div>
-
-          <div className="card">
-            <div className="cardhead">
-              <span className="cardtitle">Capabilities</span>
-              <span className="mono ml-auto text-[11px] text-(--text-tertiary)">reported on register</span>
-            </div>
-            <div className="py-[6px]">
-              {labeled('ACP', daemon.caps.acp ? 'supported' : '—')}
-              <ChipRow label="Platforms" items={daemon.caps.platforms.map(platName)} />
-              <ChipRow label="Features" items={daemon.caps.features} />
-            </div>
+          <div className="py-[6px]">
+            {labeled('ACP', daemon.caps.acp ? 'supported' : '—')}
+            <ChipRow label="Platforms" items={daemon.caps.platforms.map(platName)} />
+            <ChipRow label="Features" items={daemon.caps.features} />
           </div>
         </div>
-      </div>
-    </div>
-  )
-}
-
-/**
- * The group this daemon belongs to (docs/designs/daemon-groups.md §2, §3).
- *
- * Membership is here, on the machine whose runtime authority moves, rather than on the group: both
- * directions are admitted only from a state this page already shows. Joining is refused while
- * agents are still pinned here — a member serves only what it holds a lease for, so those agents
- * would be placed and unservable at once — and leaving is refused while it still holds live work,
- * which is what "drain it first" means. The dialog says so before the button is offered rather
- * than after the 409 comes back.
- */
-function GroupCard({ daemon, pinnedAgents }: { daemon: DaemonRow; pinnedAgents: number }) {
-  const { memberSets, enrollInGroup, withdrawFromGroup } = useConsoleData()
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-  // The pool is managed infrastructure — its membership is the CP's, never an operator's.
-  if (daemon.pool || !featureFlagEnabled('daemon-groups')) return null
-
-  const current = memberSets.find((group) => group.setId === daemon.memberSetId)
-  // Agents pinned here are not in the way of joining and do not move with it — they stay pinned to
-  // this machine, which remains their only eligible holder (daemon-groups.md §3).
-  const keeps = !current && pinnedAgents > 0 ? `${pinnedAgents} agent${pinnedAgents === 1 ? '' : 's'}` : null
-
-  const run = async (fn: () => Promise<void>) => {
-    setBusy(true)
-    setErr(null)
-    try {
-      await fn()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="card">
-      <div className="cardhead">
-        <span className="cardtitle">Group</span>
-      </div>
-      <div className="px-4 py-[13px]">
-        <p className="font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
-          {current ? (
-            <>
-              This daemon is in <span className="mono text-(--text-primary)">{current.name}</span>. Agents placed on
-              that group run on whichever member is serving, so it can be any of them — not only this one.
-            </>
-          ) : memberSets.length === 0 ? (
-            'Groups let an agent be placed on a set of daemons instead of one machine. Create one on the Daemons page to use them.'
-          ) : (
-            'Not in a group. Agents are pinned to this machine and stop when it does.'
-          )}
-        </p>
-        <div className="mt-[11px] flex flex-wrap items-center gap-2">
-          {current ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void run(() => withdrawFromGroup(current.setId, daemon.daemonId))}
-              className={busy ? 'cursor-default opacity-50' : undefined}
-            >
-              Leave group
-            </Button>
-          ) : (
-            memberSets.map((group) => (
-              <Button
-                key={group.setId}
-                variant="secondary"
-                size="sm"
-                onClick={() => void run(() => enrollInGroup(group.setId, daemon.daemonId))}
-                className={busy ? 'cursor-default opacity-50' : undefined}
-              >
-                <Icon name="boxes" size={14} />
-                Join {group.name}
-              </Button>
-            ))
-          )}
-        </div>
-        {keeps && memberSets.length > 0 && (
-          <p className="mt-[10px] font-sans text-[12px] font-normal leading-[1.55] text-(--text-tertiary)">
-            Joining keeps the {keeps} pinned here — a pinned agent names one machine, so this one stays the only place
-            it runs. Place an agent on the group itself to let any member serve it.
-          </p>
-        )}
-        {err && (
-          <div className="mt-[11px] flex items-start gap-2 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--status-error)">
-            <Icon name="triangle-alert" size={15} />
-            {err}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function UtilBar({ label, pct }: { label: string; pct: number }) {
-  // Clamp to 0..100 — a daemon predating the cpu-normalization fix reports a raw
-  // load average, which would otherwise render as e.g. "722%".
-  const shown = Math.max(0, Math.min(100, Math.round(pct)))
-  return (
-    <div>
-      <div className="mb-[6px] flex justify-between font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)">
-        <span>{label}</span>
-        <span className="mono text-(--text-secondary)">{shown}%</span>
-      </div>
-      <div className="h-[6px] overflow-hidden rounded-[3px] bg-(--surface-active)">
-        <div className="h-full rounded-[3px]" style={{ width: `${shown}%`, background: barColor(shown) }} />
       </div>
     </div>
   )

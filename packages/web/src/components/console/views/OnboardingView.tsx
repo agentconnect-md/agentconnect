@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { LoadingState } from '@/components/marks'
+import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
@@ -324,12 +324,15 @@ function WhereCard({
   name,
   desc,
   icon,
+  mark,
   selected,
   onSelect
 }: {
   name: string
   desc: string
   icon: string
+  /** A brand mark to draw instead of the lucide glyph — it carries its own colours. */
+  mark?: ReactNode
   selected: boolean
   onSelect: () => void
 }) {
@@ -348,7 +351,11 @@ function WhereCard({
             selected ? 'border border-(--magenta-200) bg-(--surface-card)' : 'bg-(--surface-sunken)'
           }`}
         >
-          <Icon name={icon} size={18} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />
+          {mark ? (
+            <span className="flex h-[18px] w-[18px]">{mark}</span>
+          ) : (
+            <Icon name={icon} size={18} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />
+          )}
         </span>
         <span className="font-sans text-[15px] font-semibold leading-normal text-(--text-primary)">{name}</span>
         <span
@@ -413,7 +420,10 @@ function WhereStep({
               ? 'Easiest start. Free credits on signup, nothing to install.'
               : 'The daemon pool your org already runs. Nothing to install.'
           }
-          icon={managed ? 'cloud' : 'boxes'}
+          icon="cloud"
+          // A self-hosted pool IS a Kubernetes cluster, so it is named by the thing the
+          // operator actually runs rather than by a generic box glyph.
+          mark={managed ? undefined : <KubernetesMark />}
           selected={choice === 'pool'}
           onSelect={() => onChoice('pool')}
         />

@@ -1,33 +1,36 @@
 'use client'
 
-// The blocks a FLEET detail page is built from. Three screens in the console design read a
-// set of interchangeable daemons as one thing — the managed AgentConnect Cloud, a
-// self-hoster's own cluster (both `ClusterDetailView`) and one of the org's own groups
-// (`GroupDetailView`) — and they answer the same four questions: what does the set offer,
-// what runs on it, what does it hold, and what is true of it right now.
+// The blocks an infra detail page is built from. Four screens read a set of daemons — the
+// managed AgentConnect Cloud, a self-hoster's own cluster (both `ClusterDetailView`), one of
+// the org's own groups (`GroupDetailView`) and a single machine (`DaemonDetailView`) — and
+// they answer the same two questions: what can it run, and what runs on it.
 //
-// So the answers live here once. Every aggregate is over the SERVING members — one that stopped
-// answering can no longer offer a runtime or hold a connection — but whether it UNIONS or
-// INTERSECTS them depends on the set: a pool rolls identical Pods, so the two agree and the union
-// is cheaper, while a group is machines an operator enrolled by hand and only what they ALL offer
-// is something the group can promise. Hence a pair of each.
+// So the answers live here once, as one three-up tile grid each. Every aggregate is over the
+// SERVING members — one that stopped answering can no longer offer a runtime — but whether it
+// UNIONS or INTERSECTS them depends on the set: a pool rolls identical Pods, so the two agree
+// and the union is cheaper, while a group is machines an operator enrolled by hand and only
+// what they ALL offer is something the group can promise. Hence a pair of each.
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
+import useSWR from 'swr'
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import {
   agentLabel,
   agentModelDisplay,
   effectiveAgentStatus,
-  platName,
   runtimeLabel,
   status,
   type Agent,
-  type DaemonRow,
-  type IntegrationRow,
-  type McpServerInfo
+  type DaemonRow
 } from '@/lib/data'
-import { AgentIconView, AgentMark, PlatformMark } from '@/components/marks'
+import { AgentIconView, AgentMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
+import { fetchUsage, fmtCost, type UsageRange } from '@/lib/api'
+import { amountToNumber } from '@/lib/amount'
+import { consoleKeys } from '@/lib/swr-keys'
+import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
+import { useOrgs } from '@/lib/org-context'
 
 /** Bar colour tracks the reading — one scale across Infra, cluster, group and daemon detail. */
 export function barColor(pct: number): string {
@@ -104,25 +107,7 @@ export function intersectRuntimes(members: readonly DaemonRow[]): FleetRuntime[]
   return out
 }
 
-/**
- * The MCP servers EVERY member configures — the intersection, for the same reason runtimes are
- * intersected for a group: an agent lands on whichever member is serving, so a server only one
- * member has is a tool missing from the runs that land elsewhere. Empty in, empty out.
- */
-export function intersectMcpServers(members: readonly DaemonRow[]): McpServerInfo[] {
-  const [first, ...rest] = members
-  if (!first) return []
-  return first.mcpServers.filter((s) => rest.every((m) => m.mcpServers.some((other) => other.name === s.name)))
-}
-
-/** The MCP servers a set offers, deduped by name over the members given. */
-export function unionMcpServers(members: readonly DaemonRow[]): McpServerInfo[] {
-  const byName = new Map<string, McpServerInfo>()
-  for (const m of members) for (const s of m.mcpServers) if (!byName.has(s.name)) byName.set(s.name, s)
-  return [...byName.values()]
-}
-
-/** One cell of a detail page's metric strip. */
+/** One cell of a detail page's metric column. */
 export function FleetStat({ icon, label, value, note }: { icon: string; label: string; value: string; note?: string }) {
   return (
     <div className="card stat">
@@ -136,39 +121,188 @@ export function FleetStat({ icon, label, value, note }: { icon: string; label: s
   )
 }
 
-/** One label/value row of a Details or Routing card. */
-export function FleetFact({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="row grid-cols-[1fr_auto]">
-      <span className="font-sans text-[13px] font-normal leading-normal text-(--text-tertiary)">{label}</span>
-      <span className="mono text-[12.5px]">{value}</span>
-    </div>
-  )
-}
+// One utilization reading as a dial. A ring rather than a bar because the Resources column is
+// the narrow one in band one — a bar there is a 150px track with its label crushed beside it,
+// while a ring carries the figure inside itself and leaves the width to the label.
+const DIAL_R = 15.5
+const DIAL_C = 2 * Math.PI * DIAL_R
 
-/** One labelled utilization bar (design: the fleet detail's `resources` rows). */
-export function ResourceBar({
+export function ResourceDial({
   label,
-  detail,
+  note,
   pct,
   muted = false
 }: {
   label: string
-  detail: string
+  /** The reading behind the percentage — a ratio the ring cannot hold inside itself. */
+  note?: string
   pct: number
+  /** No fraction to fill (an unbounded ceiling): the track stays empty rather than drawing a
+   *  0% that reads as a measurement. */
   muted?: boolean
 }) {
+  // Clamped — a daemon predating cpu-normalization reports a raw load average.
+  const shown = Math.max(0, Math.min(100, Math.round(pct)))
   return (
-    <div className="flex flex-col gap-[6px]">
-      <div className="flex items-baseline gap-2">
-        <span className="flex-1 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+    <div className="flex items-center gap-[11px]">
+      <span className="relative flex h-13 w-13 flex-none items-center justify-center">
+        <svg viewBox="0 0 36 36" className="h-full w-full -rotate-90" aria-hidden="true">
+          <circle cx="18" cy="18" r={DIAL_R} fill="none" stroke="var(--surface-active)" strokeWidth="3.5" />
+          {!muted && (
+            <circle
+              cx="18"
+              cy="18"
+              r={DIAL_R}
+              fill="none"
+              stroke={barColor(shown)}
+              strokeWidth="3.5"
+              strokeLinecap="round"
+              strokeDasharray={`${(shown / 100) * DIAL_C} ${DIAL_C}`}
+            />
+          )}
+        </svg>
+        <span className="mono absolute text-[11.5px] font-semibold">{muted ? '—' : `${shown}%`}</span>
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
           {label}
         </span>
-        <span className="mono text-[12.5px]">{detail}</span>
-      </div>
-      <span className="block h-[6px] overflow-hidden rounded-[3px] bg-(--surface-active)">
-        {!muted && <span className="block h-full" style={{ width: `${pct}%`, background: barColor(pct) }} />}
+        {note && <span className="mono mt-[2px] block truncate text-[11px] text-(--text-tertiary)">{note}</span>}
       </span>
+    </div>
+  )
+}
+
+/**
+ * What running here has COST, over the same window and from the same aggregate the Analytics
+ * page charts — `GET /usage`, which the console already reads. Nothing new is metered for it.
+ *
+ * The aggregate has no infrastructure dimension at all, so the only scope it can answer is the
+ * spend of the AGENTS placed here. That is a current-state reading — an agent moved here brings
+ * the 30 days it spent elsewhere along — so the header says "agents placed here" rather than
+ * claiming the machine or the cluster spent it.
+ *
+ * Metering INGRESS is not a substitute, tempting as it looks: a daemon reports its own usage by
+ * default (`usageReporting.enabled`), pool members included, and `gateway` is written only where
+ * a deployment runs an upstream collector and turns that off. So `source=gateway` would read
+ * empty on an ordinary self-hosted cluster, and `source=daemon` would sweep in every other
+ * machine the org connected. Neither isolates a fleet; the agent split does.
+ */
+const USAGE_RANGE: UsageRange = 'd30'
+
+export function FleetUsageCard({ agentIds, note }: { agentIds: readonly string[]; note: string }) {
+  const { activeOrg } = useOrgs()
+  const orgId = activeOrg?.id ?? null
+  // The SAME key the Analytics page uses for this window, so the two reads share one entry
+  // rather than fetching the org's aggregate twice.
+  const usage = useSWR(consoleKeys.usage(orgId, USAGE_RANGE), () => fetchUsage(USAGE_RANGE, orgId!))
+
+  const series = usage.data?.series
+  const points = series?.points ?? []
+  const bucket = series?.bucket ?? 'day'
+  // The split is what makes the scope possible, and an older CP sends none — say so instead of
+  // summing an absent breakdown to zero and drawing "no usage".
+  const hasSplit = points.some((p) => p.byAgent)
+  const data = points.map((p) => ({
+    label: bucketLabel(p.start, bucket),
+    spend: agentIds.reduce((sum, id) => sum + amountToNumber(p.byAgent?.[id] ?? '0'), 0)
+  }))
+  const total = data.reduce((sum, d) => sum + d.spend, 0)
+  const currency = usage.data?.totals.costCurrency ?? 'USD'
+
+  type TipRow = { payload: (typeof data)[number] }
+  const Tip = ({ active, payload }: { active?: boolean; payload?: TipRow[] }) => {
+    const row = active ? payload?.[0]?.payload : undefined
+    if (!row) return null
+    return (
+      <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) px-2.5 py-2 shadow-(--shadow-md)">
+        <div className="mono text-[11px] font-semibold text-(--text-primary)">{row.label}</div>
+        <div className="mono mt-1 text-[11px] leading-normal text-(--text-secondary)">
+          {fmtCost(row.spend, currency)}
+        </div>
+      </div>
+    )
+  }
+
+  const message =
+    usage.error && !usage.data
+      ? { icon: true, text: 'unavailable', title: (usage.error as Error).message }
+      : points.length > 0 && !hasSplit
+        ? { icon: true, text: 'This control plane reports no per-agent split.', title: undefined }
+        : total === 0
+          ? { icon: false, text: 'No usage in this window.', title: undefined }
+          : null
+
+  return (
+    // `min-w-0`: recharts measures this box, and a grid item's auto min-width would otherwise
+    // let the plot widen its own column.
+    <div className="card flex min-w-0 flex-col">
+      <div className="cardhead">
+        <span className="cardtitle">Usage</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">{note}</span>
+      </div>
+      {usage.isLoading ? (
+        <UsageSkeleton />
+      ) : message ? (
+        <div
+          className="flex flex-1 items-center justify-center gap-[6px] px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+          title={message.title}
+        >
+          {message.icon && <Icon name="triangle-alert" size={14} color="var(--status-error)" className="flex-none" />}
+          {message.text}
+        </div>
+      ) : (
+        <div className={`min-h-[150px] flex-1 px-[6px] pb-[6px] text-(--text-tertiary) ${SEG_FILL}`}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={data} margin={{ top: 10, right: 8, bottom: 0, left: 8 }} barCategoryGap="14%">
+              <XAxis
+                dataKey="label"
+                interval={tickInterval(data.length)}
+                tickLine={false}
+                axisLine={false}
+                tickMargin={6}
+                tick={{ fill: 'currentColor', fontSize: 10.5 }}
+                className="mono"
+              />
+              <Tooltip content={<Tip />} cursor={{ fill: 'var(--surface-hover)' }} />
+              {/* `seg-flat` is the shared brand hue; a day with nothing draws nothing. */}
+              <Bar dataKey="spend" name="spend" className="seg-flat" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** First-load stand-in, on the chart's own footprint so the series landing shifts nothing.
+ *  Heights are a fixed pattern, never random — a random walk redraws on every render. */
+function UsageSkeleton() {
+  return (
+    <div className="flex min-h-[150px] flex-1 animate-pulse items-end gap-[3px] px-[14px] pt-3 pb-[26px]">
+      {Array.from({ length: 30 }, (_, i) => (
+        <span
+          key={i}
+          className="min-w-0 max-w-[28px] flex-1 rounded-t-[3px] bg-(--surface-active)"
+          style={{ height: `${24 + ((i * 23 + 13) % 60)}%` }}
+        />
+      ))}
+    </div>
+  )
+}
+
+/** The three-up tile grid both band-two cards lay their tiles out on. */
+function TileGrid({ children }: { children: ReactNode }) {
+  return <div className="grid grid-cols-1 items-start gap-3 px-4 py-[14px] desktop:grid-cols-3">{children}</div>
+}
+
+function EmptyTile({ title, hint }: { title: string; hint?: string }) {
+  return (
+    <div className="px-4 py-7 text-center">
+      <div className="font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">{title}</div>
+      {hint && (
+        <div className="mt-[3px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">{hint}</div>
+      )}
     </div>
   )
 }
@@ -181,19 +315,18 @@ export function FleetRuntimesCard({
   runtimes,
   agents,
   empty,
-  note = 'Open a runtime for its models'
+  note
 }: {
   title: string
   runtimes: readonly FleetRuntime[]
-  /** Agents placed on the set — a runtime's row says how many of them use it. */
+  /** Agents placed on the set — a runtime's tile says how many of them use it. */
   agents: readonly Agent[]
   empty: string
   /** What the header says the list means — a group's is narrower than a pool's. */
   note?: string
 }) {
   const acpRegistry = useAcpRegistry()
-  // Independent disclosures — more than one runtime's models can be open at once, matching
-  // the daemon detail page's tap expansion.
+  // Independent disclosures — more than one runtime's models can be open at once.
   const [open, setOpen] = useState<Set<string>>(new Set())
   const toggle = (rid: string) =>
     setOpen((prev) => {
@@ -207,77 +340,79 @@ export function FleetRuntimesCard({
     <div className="card mb-[18px]">
       <div className="cardhead">
         <span className="cardtitle">{title}</span>
-        <span className="ml-auto font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-          {note}
-        </span>
+        {note && (
+          <span className="ml-auto font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+            {note}
+          </span>
+        )}
       </div>
       {runtimes.length > 0 ? (
-        runtimes.map((rt) => {
-          const meta = acpRuntime(acpRegistry, rt.runtime)
-          const label = runtimeLabel(rt.runtime, meta?.name)
-          // Id namespaces differ across daemon generations ('claude' vs 'claude-acp'),
-          // so agents match on the display family rather than the raw id.
-          const users = agents.filter((a) => a.runtime === rt.runtime || runtimeLabel(a.runtime) === label)
-          const hasModels = rt.models.length > 0
-          const shown = open.has(rt.runtime) && hasModels
-          return (
-            <div key={rt.runtime}>
-              <button
-                type="button"
-                aria-expanded={shown}
-                disabled={!hasModels}
-                onClick={() => toggle(rt.runtime)}
-                className="row grid w-full grid-cols-[1.4fr_.7fr_.9fr_.9fr_auto] gap-[14px] border-0 bg-transparent text-left enabled:cursor-pointer enabled:hover:bg-(--surface-hover)"
-              >
-                <span className="inline-flex min-w-0 items-center gap-[9px]">
-                  <span className="imark h-[22px] w-[22px]">
+        <TileGrid>
+          {runtimes.map((rt) => {
+            const meta = acpRuntime(acpRegistry, rt.runtime)
+            const label = runtimeLabel(rt.runtime, meta?.name)
+            // Id namespaces differ across daemon generations ('claude' vs 'claude-acp'),
+            // so agents match on the display family rather than the raw id.
+            const users = agents.filter((a) => a.runtime === rt.runtime || runtimeLabel(a.runtime) === label)
+            const usage = users.length > 0 ? `${users.length} agent${users.length === 1 ? '' : 's'}` : 'no agents'
+            const version = rt.versionsDiffer ? 'mixed' : rt.version ? `v${rt.version.replace(/^v/, '')}` : null
+            const hasModels = rt.models.length > 0
+            const shown = open.has(rt.runtime) && hasModels
+            return (
+              <div key={rt.runtime} className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
+                <button
+                  type="button"
+                  aria-expanded={shown}
+                  disabled={!hasModels}
+                  onClick={() => toggle(rt.runtime)}
+                  className="flex w-full items-center gap-[11px] border-0 bg-transparent px-[13px] py-3 text-left transition-colors enabled:cursor-pointer enabled:hover:bg-(--surface-hover)"
+                >
+                  <span className="imark h-[30px] w-[30px]">
                     <AgentMark model={rt.runtime} />
                   </span>
-                  <span className="truncate font-sans text-[13px] font-semibold leading-normal">{label}</span>
-                  {rt.authRequired && (
-                    <span
-                      className="flex flex-none"
-                      title="A member's probe was rejected with 'authentication required' — sign in to the runtime on that machine."
-                    >
-                      <Icon name="triangle-alert" size={13} color="var(--amber-500)" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-sans text-[13px] font-semibold leading-normal">{label}</span>
+                    <span className="mono block truncate text-[11px] text-(--text-tertiary)">
+                      {version ? `${version} · ${usage}` : usage}
                     </span>
-                  )}
-                </span>
-                <span className="mono text-[12px] text-(--text-secondary)">
-                  {rt.versionsDiffer ? 'mixed' : rt.version ? `v${rt.version.replace(/^v/, '')}` : '—'}
-                </span>
-                <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                  {users.length > 0 ? `${users.length} agent${users.length === 1 ? '' : 's'}` : 'no agents'}
-                </span>
-                <span className="mono text-[12px] text-(--text-tertiary)">
-                  {rt.models.length} model{rt.models.length === 1 ? '' : 's'}
-                </span>
-                <Icon
-                  name={shown ? 'chevron-up' : 'chevron-down'}
-                  size={15}
-                  color="var(--text-tertiary)"
-                  className={hasModels ? '' : 'invisible'}
-                />
-              </button>
-              {shown && (
-                <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-[10px]">
-                  <div className="pb-1 font-sans text-[10px] font-semibold leading-normal tracking-[.05em] uppercase text-(--text-tertiary)">
-                    Models
+                  </span>
+                  <span className="badge flex-none bg-(--surface-active) text-(--text-secondary)">
+                    {rt.models.length} model{rt.models.length === 1 ? '' : 's'}
+                  </span>
+                  <Icon
+                    name={shown ? 'chevron-up' : 'chevron-down'}
+                    size={15}
+                    color="var(--text-tertiary)"
+                    className={hasModels ? 'flex-none' : 'invisible flex-none'}
+                  />
+                </button>
+                {rt.authRequired && (
+                  <div
+                    title="The runtime rejected a probe with 'authentication required' — sign in to it on the daemon host. The warning clears on the next probe."
+                    className="flex items-center gap-[6px] bg-(--status-paused-soft) px-[13px] py-[6px] font-sans text-[11.5px] font-medium leading-normal text-(--amber-500)"
+                  >
+                    <Icon name="triangle-alert" size={12} className="flex-none" />
+                    <span className="min-w-0 truncate">Login required — sign in on the daemon host</span>
                   </div>
-                  {rt.models.map((m) => (
-                    <div key={m} className="mono truncate py-[3px] text-[11.5px]">
-                      {m}
+                )}
+                {shown && (
+                  <div className="border-t border-(--border-subtle) bg-(--surface-sunken) px-[13px] py-[10px]">
+                    <div className="pb-1 font-sans text-[10px] font-semibold leading-normal tracking-[.05em] uppercase text-(--text-tertiary)">
+                      Models
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )
-        })
+                    {rt.models.map((m) => (
+                      <div key={m} className="mono truncate py-[3px] text-[11.5px]">
+                        {m}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </TileGrid>
       ) : (
-        <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          {empty}
-        </div>
+        <EmptyTile title={empty} />
       )}
     </div>
   )
@@ -288,12 +423,14 @@ export function FleetRuntimesCard({
  *
  * No member stands in for one of them: whichever member holds a duty is interchangeable, so
  * status comes from the placement (`effectiveAgentStatus` reads the set branch first) and the
- * models a serving member reports name what the set can run.
+ * models a serving member reports name what the set can run. One MACHINE is the exception —
+ * its own status gates its agents', so the daemon page passes itself as `statusHost`.
  */
 export function FleetAgentsCard({
   title,
   agents,
   capabilitySource,
+  statusHost,
   onOpen,
   emptyTitle,
   emptyHint
@@ -302,6 +439,8 @@ export function FleetAgentsCard({
   agents: readonly Agent[]
   /** One serving member, standing in for the set when reading what it can run. */
   capabilitySource: DaemonRow | undefined
+  /** The machine whose status gates these agents' — set only where there IS one. */
+  statusHost?: DaemonRow
   onOpen: (agentId: string) => void
   emptyTitle: string
   emptyHint: string
@@ -312,88 +451,38 @@ export function FleetAgentsCard({
         <span className="cardtitle">{title}</span>
       </div>
       {agents.length > 0 ? (
-        agents.map((a) => {
-          const as = status(effectiveAgentStatus(a, undefined))
-          return (
-            <div key={a.id} className="row click grid-cols-[auto_1.6fr_1fr_auto] gap-3" onClick={() => onOpen(a.id)}>
-              <span className="av h-7 w-7 rounded-[7px]">
-                <AgentIconView icon={a.icon} runtime={a.runtime} size={28} />
-              </span>
-              <span className="min-w-0 truncate font-sans text-[13px] font-semibold leading-normal">
-                {agentLabel(a)}
-              </span>
-              <span className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)">
-                {agentModelDisplay(capabilitySource, a.runtime, a.model)}
-              </span>
-              <span className="badge" style={{ background: as.bg, color: as.text }}>
-                <span className="dot h-[6px] w-[6px]" style={{ background: as.dot }} />
-                {as.label}
-              </span>
-            </div>
-          )
-        })
-      ) : (
-        <div className="px-4 py-7 text-center">
-          <div className="font-sans text-[13px] font-medium leading-normal text-(--text-secondary)">{emptyTitle}</div>
-          <div className="mt-[3px] font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-            {emptyHint}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-/** The platform connections a set holds — an integration is held wherever its agent runs. */
-export function FleetConnectionsCard({
-  title,
-  conns,
-  empty
-}: {
-  title: string
-  conns: readonly IntegrationRow[]
-  empty: string
-}) {
-  return (
-    <div className="card">
-      <div className="cardhead">
-        <span className="cardtitle">{title}</span>
-      </div>
-      {conns.length > 0 ? (
-        conns.map((c) => {
-          const cs = status(c.status)
-          return (
-            <div key={c.id ?? c.name} className="row grid-cols-[auto_1.6fr_1fr_auto] gap-3">
-              <span className="imark h-6 w-6">
-                <PlatformMark platform={c.platform} fillPct={100} />
-              </span>
-              <span className="min-w-0">
-                <span className="block truncate font-sans text-[13px] font-semibold leading-normal">{c.name}</span>
-                <span className="mono block truncate text-[11px] text-(--text-tertiary)">
-                  {c.workspace || platName(c.platform)}
+        <TileGrid>
+          {agents.map((a) => {
+            const as = status(effectiveAgentStatus(a, statusHost))
+            return (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => onOpen(a.id)}
+                className="flex w-full cursor-pointer items-center gap-[11px] rounded-[9px] border border-(--border-subtle) bg-transparent px-[13px] py-3 text-left transition-colors hover:bg-(--surface-hover)"
+              >
+                <span className="av h-8 w-8 rounded-[7px]">
+                  <AgentIconView icon={a.icon} runtime={a.runtime} size={32} />
                 </span>
-              </span>
-              <span className="mono min-w-0 truncate text-[12px] text-(--text-secondary)">
-                {c.channels.length} channel{c.channels.length === 1 ? '' : 's'}
-              </span>
-              <span className="badge" style={{ background: cs.bg, color: cs.text }}>
-                <span className="dot h-[6px] w-[6px]" style={{ background: cs.dot }} />
-                {cs.label}
-              </span>
-            </div>
-          )
-        })
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-sans text-[13px] font-semibold leading-normal">
+                    {agentLabel(a)}
+                  </span>
+                  <span className="mono block truncate text-[11.5px] text-(--text-tertiary)">
+                    {agentModelDisplay(capabilitySource, a.runtime, a.model)}
+                  </span>
+                </span>
+                <span className="badge flex-none" style={{ background: as.bg, color: as.text }}>
+                  <span className="dot h-[6px] w-[6px]" style={{ background: as.dot }} />
+                  {as.label}
+                </span>
+              </button>
+            )
+          })}
+        </TileGrid>
       ) : (
-        <div className="px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          {empty}
-        </div>
+        <EmptyTile title={emptyTitle} hint={emptyHint} />
       )}
     </div>
   )
-}
-
-/** The connections a set holds: an integration is held wherever its owning agent runs. */
-export function connsHeldBy(agents: readonly Agent[], integrations: readonly IntegrationRow[]): IntegrationRow[] {
-  const ids = new Set(agents.map((a) => a.id))
-  return integrations.filter((i) => i.agentId !== undefined && ids.has(i.agentId))
 }

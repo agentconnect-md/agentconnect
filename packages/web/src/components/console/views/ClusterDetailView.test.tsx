@@ -14,7 +14,6 @@ import type { Agent, DaemonRow } from '@/lib/data'
 const mocks = vi.hoisted(() => ({
   daemons: [] as unknown[],
   agents: [] as unknown[],
-  integrations: [] as unknown[],
   daemonsLoading: false,
   agentsLoading: false,
   memberSetsLoading: false,
@@ -35,8 +34,7 @@ vi.mock('@/lib/data-context', () => ({
     daemonsLoading: mocks.daemonsLoading,
     agents: mocks.agents,
     agentsLoading: mocks.agentsLoading,
-    memberSetsLoading: mocks.memberSetsLoading,
-    integrations: mocks.integrations
+    memberSetsLoading: mocks.memberSetsLoading
   })
 }))
 vi.mock('@/lib/acp-registry', () => ({ useAcpRegistry: () => ({}), acpRuntime: () => undefined }))
@@ -160,7 +158,6 @@ const setFlags = (value: string) => {
 beforeEach(() => {
   mocks.daemons = []
   mocks.agents = []
-  mocks.integrations = []
   mocks.daemonsLoading = false
   mocks.agentsLoading = false
   mocks.memberSetsLoading = false
@@ -192,11 +189,15 @@ describe('ClusterDetailView', () => {
       member('gone', { status: 'offline', conns: '99', loadAgents: 99 })
     ]
 
+    // A set placement names the SET, never the member serving it, so the placed-agent list is
+    // not on the ceiling's axis: reading the fraction off it would report this full cluster as
+    // `0 / 60`. The heartbeat count is what the CP's own placement check compares.
+    mocks.agents = []
+
     const html = render()
 
     expect(html).toContain('34 / 60')
-    expect(html).toContain('Agent ceiling')
-    expect(html).toContain('>60<')
+    expect(html).not.toContain('0 / 60')
     // Utilization is the average across the serving nodes, never the dead one's.
     expect(html).toContain('40%')
     expect(html).toContain('60%')
@@ -207,8 +208,10 @@ describe('ClusterDetailView', () => {
 
     const html = render()
 
+    // The load its members report, over a ceiling that says ∞ rather than 0 — which would read
+    // as full about a cluster that can never be.
     expect(html).toContain('10 / ∞')
-    expect(html).toContain('unbounded')
+    expect(html).not.toContain('/ 0<')
   })
 
   it('unions the runtimes and models across the serving nodes', () => {
@@ -235,38 +238,15 @@ describe('ClusterDetailView', () => {
     expect(html).toContain('no agents')
   })
 
-  it('lists the agents on the cluster and the connections they hold', () => {
+  it('lists the agents placed on the cluster', () => {
     mocks.daemons = [member('p1')]
     mocks.agents = [onPool('a1'), onPool('a2')]
-    mocks.integrations = [
-      {
-        id: 'i1',
-        agentId: 'a1',
-        name: 'acme-ops',
-        platform: 'slack',
-        workspace: 'acme.slack.com',
-        status: 'online',
-        channels: [{ channelId: 'C1', name: 'deploys', trigger: 'mention' }]
-      },
-      {
-        id: 'i2',
-        agentId: 'elsewhere',
-        name: 'other',
-        platform: 'slack',
-        workspace: 'x',
-        status: 'online',
-        channels: []
-      }
-    ]
 
     const html = render()
 
     expect(html).toContain('Agents on this cluster')
-    expect(html).toContain('Connections held here')
-    expect(html).toContain('acme-ops')
-    expect(html).toContain('1 channel')
-    // An integration whose agent runs elsewhere is not held here.
-    expect(html).not.toContain('>other<')
+    expect(html).toContain('>a1<')
+    expect(html).toContain('>a2<')
   })
 
   it('offers neither a token action nor a log tail', () => {
@@ -486,29 +466,18 @@ describe('ClusterDetailView — managed (AgentConnect Cloud)', () => {
     expect(html).not.toContain('Credits')
   })
 
-  it('still lists the runtimes, agents and connections Cloud offers', () => {
+  it('still lists the runtimes Cloud offers and the agents on it', () => {
     mocks.daemons = [
       member('p1', {
         runtimeModels: [{ runtime: 'claude', version: '0.54.1', models: ['opus', 'sonnet'], acpProtocolVersion: 1 }]
       })
     ] as unknown[]
     mocks.agents = [onPool('a1')]
-    mocks.integrations = [
-      {
-        id: 'i1',
-        agentId: 'a1',
-        name: 'acme-ops',
-        platform: 'slack',
-        workspace: 'acme.slack.com',
-        status: 'online',
-        channels: [{ channelId: 'C1', name: 'deploys', trigger: 'mention' }]
-      }
-    ]
 
     const html = render()
 
     expect(html).toContain('Agents on Cloud')
-    expect(html).toContain('acme-ops')
+    expect(html).toContain('>a1<')
     expect(html).toContain('2 models')
     expect(html).toContain('Runtimes available')
   })

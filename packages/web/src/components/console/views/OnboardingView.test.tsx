@@ -60,7 +60,8 @@ vi.mock('@/lib/onboarding', async (importOriginal) => {
 })
 vi.mock('@/lib/daemon-commands', () => ({ daemonCommands: (command: string) => ({ run: command, login: command }) }))
 vi.mock('@/components/marks', () => ({
-  LoadingState: () => <span>loading data</span>
+  LoadingState: () => <span>loading data</span>,
+  KubernetesMark: () => <span>k8s</span>
 }))
 vi.mock('@/components/ui', () => ({
   Button: ({

@@ -22,13 +22,9 @@ import { useModal } from '@/components/console/ModalProvider'
 import { NotFound } from '@/components/console/NotFound'
 import {
   FleetAgentsCard,
-  FleetConnectionsCard,
-  FleetFact,
   FleetRuntimesCard,
   FleetStat,
   barColor,
-  connsHeldBy,
-  intersectMcpServers,
   intersectRuntimes
 } from '@/components/console/FleetDetail'
 import { LoadingState } from '@/components/marks'
@@ -39,8 +35,7 @@ export default function GroupDetailView() {
   const { orgPath } = useOrgs()
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
-  const { daemons, agents, agentsLoading, daemonsLoading, integrations, memberSets, memberSetsLoading } =
-    useConsoleData()
+  const { daemons, agents, agentsLoading, daemonsLoading, memberSets, memberSetsLoading } = useConsoleData()
   const { openModal } = useModal()
 
   const group = useMemo(() => memberSets.find((g) => g.setId === id), [memberSets, id])
@@ -60,11 +55,6 @@ export default function GroupDetailView() {
   // interchangeable replicas a pool rolls, and an agent here lands on whichever one is serving.
   // A runtime that only some members have is therefore not one the group can run.
   const runtimes = useMemo(() => intersectRuntimes(serving), [serving])
-  // Intersected for the same reason the runtimes are: a server only one member configures is a
-  // tool missing from every run that lands on another. Union here would also read as an
-  // intersection anyway, sitting one row under "Runtimes" in the same fact list.
-  const mcpServers = useMemo(() => intersectMcpServers(serving), [serving])
-  const conns = useMemo(() => connsHeldBy(hosted, integrations), [hosted, integrations])
   // Agents PINNED to a member, per member. They are not the group's — a pinned agent names one
   // machine and stays there — but they are why a member's load is what it is.
   const pinnedByDaemon = useMemo(() => {
@@ -145,10 +135,6 @@ export default function GroupDetailView() {
             </span>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
-            <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-              <Icon name="shuffle" size={14} color="var(--text-tertiary)" />
-              Any daemon in the group
-            </span>
             <span className="inline-flex min-w-0 items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
               <Icon name="server" size={14} color="var(--text-tertiary)" />
               <span className="mono truncate text-[12px]">{memberList}</span>
@@ -160,22 +146,22 @@ export default function GroupDetailView() {
         </Button>
       </div>
 
-      <div className="mb-[18px] grid grid-cols-2 gap-[14px] desktop:grid-cols-4">
-        <FleetStat
-          icon="server"
-          label="Daemons serving"
-          value={`${serving.length} / ${members.length}`}
-          note={members.length === 0 ? 'no members yet' : undefined}
-        />
-        <FleetStat icon="bot" label="Agents on group" value={String(hosted.length)} />
-        <FleetStat icon="plug" label="Connections held" value={String(conns.length)} />
-        {/* Machine-scoped, unlike its three neighbours: the CP counts active sessions per DAEMON,
-            so this includes the ones belonging to agents pinned to these members — the agents the
-            rest of the page deliberately excludes. Named for what it actually counts. */}
-        <FleetStat icon="activity" label="Sessions on members" value={String(sessions)} note="incl. pinned agents" />
-      </div>
+      {/* Band one — what the group holds, beside the machines that hold it. */}
+      <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[300px_1fr]">
+        <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
+          <FleetStat icon="bot" label="Agents" value={String(hosted.length)} />
+          {/* Machine-scoped, unlike its neighbours: the CP counts active sessions per DAEMON, so
+              this includes the ones belonging to agents pinned to these members — the agents the
+              rest of the page deliberately excludes. */}
+          <FleetStat icon="activity" label="Active sessions" value={String(sessions)} note="incl. pinned agents" />
+          <FleetStat
+            icon="server"
+            label="Daemons"
+            value={`${serving.length} / ${members.length}`}
+            note={members.length === 0 ? 'no members yet' : 'serving'}
+          />
+        </div>
 
-      <div className="mb-[18px] grid grid-cols-1 items-start gap-[18px] desktop:grid-cols-[1.15fr_1fr]">
         <div className="card">
           <div className="cardhead">
             <span className="cardtitle">Daemons in this group</span>
@@ -203,24 +189,11 @@ export default function GroupDetailView() {
             </div>
           )}
         </div>
-
-        <div className="card">
-          <div className="cardhead">
-            <span className="cardtitle">Routing</span>
-          </div>
-          <div className="py-[6px]">
-            <FleetFact label="Strategy" value="any member serving" />
-            <FleetFact label="Members" value={`${serving.length} serving of ${members.length}`} />
-            <FleetFact label="Status" value={s.label} />
-            <FleetFact label="Placement" value="group" />
-            <FleetFact label="Runtimes" value={String(runtimes.length)} />
-            <FleetFact label="MCP servers" value={String(mcpServers.length)} />
-          </div>
-        </div>
       </div>
 
+      {/* Band two — what the group can run, and what runs on it. */}
       <FleetRuntimesCard
-        title="Runtimes the whole group can run"
+        title="Runtimes"
         note="Only what every serving member offers"
         runtimes={runtimes}
         agents={hosted}
@@ -235,21 +208,14 @@ export default function GroupDetailView() {
         }
       />
 
-      <div className="grid grid-cols-1 items-start gap-[18px] desktop:grid-cols-2">
-        <FleetAgentsCard
-          title="Agents on this group"
-          agents={hosted}
-          capabilitySource={capabilitySource}
-          onOpen={(agentId) => router.push(orgPath(`/agents/${agentId}`))}
-          emptyTitle="No agents target this group yet"
-          emptyHint={`Place an agent on ${group.name} and it runs on whichever member is serving.`}
-        />
-        <FleetConnectionsCard
-          title="Connections held in the group"
-          conns={conns}
-          empty="No integration tokens are held on these daemons."
-        />
-      </div>
+      <FleetAgentsCard
+        title="Agents on this group"
+        agents={hosted}
+        capabilitySource={capabilitySource}
+        onOpen={(agentId) => router.push(orgPath(`/agents/${agentId}`))}
+        emptyTitle="No agents target this group yet"
+        emptyHint={`Place an agent on ${group.name} and it runs on whichever member is serving.`}
+      />
 
       <p className="mt-[14px] max-w-[780px] font-sans text-[12px] font-normal leading-[1.6] text-(--text-tertiary) text-pretty">
         An agent placed on this group keeps running when one member does not — whichever member is serving picks the
