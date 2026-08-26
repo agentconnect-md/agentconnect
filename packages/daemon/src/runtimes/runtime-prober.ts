@@ -60,11 +60,7 @@ export function curatedProbeEnvironment(source: NodeJS.ProcessEnv = process.env)
       env[processKey] = value
       continue
     }
-    if (
-      CERTIFICATE_ENV_KEYS.has(name) ||
-      PROVIDER_ENV_KEYS.has(name) ||
-      /^(?:https?|all|no)_proxy$/i.test(name)
-    ) {
+    if (CERTIFICATE_ENV_KEYS.has(name) || PROVIDER_ENV_KEYS.has(name) || /^(?:https?|all|no)_proxy$/i.test(name)) {
       env[name] = value
     }
   }

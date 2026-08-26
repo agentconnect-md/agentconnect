@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, win32 as windowsPath } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { LocalFileSink } from '../shim/file-sink.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
@@ -89,12 +89,14 @@ export function resolveLocalInvocation(
   args: string[],
   env: NodeJS.ProcessEnv,
   platform = process.platform,
-  nodeExecPath = process.execPath
+  nodeExecPath = process.execPath,
+  fileExists: (path: string) => boolean = existsSync
 ): { cmd: string; args: string[] } {
   const resolved = resolveCommandPath(command, env) ?? command
-  if (platform === 'win32' && basename(resolved).toLowerCase() === 'npx.cmd') {
-    const cli = join(dirname(resolved), 'node_modules', 'npm', 'bin', 'npx-cli.js')
-    if (existsSync(cli)) return { cmd: nodeExecPath, args: [cli, ...args] }
+  const pathApi = platform === 'win32' ? windowsPath : { basename, dirname, join }
+  if (platform === 'win32' && pathApi.basename(resolved).toLowerCase() === 'npx.cmd') {
+    const cli = pathApi.join(pathApi.dirname(resolved), 'node_modules', 'npm', 'bin', 'npx-cli.js')
+    if (fileExists(cli)) return { cmd: nodeExecPath, args: [cli, ...args] }
   }
   return { cmd: resolved, args }
 }
@@ -131,12 +133,12 @@ export function resolveWindowsCodexNative(
     realpath: (path) => realpathSync(path)
   }
 ): string | undefined {
-  if (platform !== 'win32' || basename(resolved).toLowerCase() !== 'codex.cmd') return undefined
+  if (platform !== 'win32' || windowsPath.basename(resolved).toLowerCase() !== 'codex.cmd') return undefined
   const target = arch === 'arm64' ? 'aarch64-pc-windows-msvc' : arch === 'x64' ? 'x86_64-pc-windows-msvc' : undefined
   const pkg = arch === 'arm64' ? 'codex-win32-arm64' : arch === 'x64' ? 'codex-win32-x64' : undefined
   if (!target || !pkg) return undefined
-  const native = join(
-    dirname(resolved),
+  const native = windowsPath.join(
+    windowsPath.dirname(resolved),
     'node_modules',
     '@openai',
     'codex',
@@ -161,7 +163,9 @@ export class LocalDriver implements SpawnDriver {
     const env = { ...request.env }
     canonicalizeWindowsSpawnEnv(env)
     if (sanitizeWindowsCodexAdapterEnv(env, request.hints)) {
-      this.opts.log?.warn('acp: disabled Codex permission-profile CLI overrides on Windows because codex-acp uses cmd.exe')
+      this.opts.log?.warn(
+        'acp: disabled Codex permission-profile CLI overrides on Windows because codex-acp uses cmd.exe'
+      )
     }
     for (const hint of request.hints ?? []) {
       if (env[hint.envVar]) continue
