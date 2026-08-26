@@ -145,9 +145,7 @@ export default function GroupDetailView() {
         <Button variant="secondary" size="sm" onClick={() => openModal('group', group)}>
           Edit group
         </Button>
-        {/* Removal lives here, not only in the list card's menu: that menu is desktop-only, so
-            this page is the only path to it below 769px — the same reason a daemon's detail page
-            carries Delete. A level deeper than Edit, because it is the destructive one. */}
+        {/* Removal lives here too: the list card's menu is desktop-only, so this is the only path below 769px. */}
         <div className="relative flex-none">
           <button
             className="iconbtn"

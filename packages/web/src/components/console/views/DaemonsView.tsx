@@ -54,10 +54,7 @@ export default function DaemonsView() {
     [agents, orgSetIds, showPool]
   )
 
-  // Whether the groups list renders — lifted out of `GroupsSection` because the "Daemons" label
-  // now depends on it too. Flagged: the surface exists in every build and appears only where the
-  // deployment asked for it. The Control Plane serves member sets either way — this hides the
-  // console entry point, not the feature, which is what keeps one server to reason about.
+  // Lifted out of `GroupsSection`: the "Daemons" label needs it too. The flag hides the entry point, not the feature.
   const showGroups = featureFlagEnabled('daemon-groups') && (ownDaemons.length > 0 || memberSets.length > 0)
 
   // Fleet summary for the mobile-only strip below — counted over what the page SHOWS,
@@ -124,8 +121,7 @@ export default function DaemonsView() {
                 ))}
               {ownDaemons.length > 0 && (
                 <>
-                  {/* The section label earns its place only where something else shares the page —
-                      the Cloud entry above, or the groups below, which now draw the same card. */}
+                  {/* Earns its place only where something else shares the page: the Cloud entry, or the groups below. */}
                   {(poolMembers.length > 0 || showGroups) && (
                     <SectionHeader label="Daemons" count={ownDaemons.length} first={poolMembers.length === 0} />
                   )}
@@ -148,27 +144,11 @@ export default function DaemonsView() {
   )
 }
 
-/**
- * Both fleet lists ride the same track: a daemon and a group are the two kinds of placement target,
- * so they read as one inventory rather than a card grid above an unrelated table.
- *
- * Two columns, as the design draws them — expressed as a 470px floor rather than `grid-cols-2` so
- * the pairing survives a narrow window instead of crushing the card. 470 is what the row actually
- * needs: 217px of avatar, gaps, padding, status and menu, plus the 150px name floor and the 100px
- * the utilization bars shrink to. Every common desktop clears two of those (1280 gives the content
- * 969px, 1440 gives 1129), and below roughly 1265 one full-width column is the honest answer —
- * two columns of ~400px is where the name collapses to a single letter. `min(…,100%)` keeps the
- * floor from overflowing the narrowest desktop of all.
- */
+// Two columns as designed, as a 470px floor — what the row needs — so a narrow window drops to one, not to a crushed card.
 const FLEET_GRID =
   'grid grid-cols-1 gap-3 desktop:grid-cols-[repeat(auto-fill,minmax(min(470px,100%),1fr))] desktop:gap-[14px]'
 
-/**
- * One row height for every card on the page, so the pool entry and the daemons and groups under it
- * read as one stack rather than three sizes. The pool entry sets the number: its capacity strip is
- * the tallest thing any of these rows carries, and a floor rather than a fixed height means a row
- * that ever needs more still gets it. Desktop only — mobile cards are as tall as their content.
- */
+// One height for every card here, floored at the tallest of them (the pool entry's capacity strip), so the page is one stack.
 const FLEET_ROW = 'desktop:min-h-[77px]'
 
 /** The label + count that separates the page's lists, with an optional action on the right. */
@@ -198,17 +178,7 @@ function SectionHeader({
   )
 }
 
-/**
- * Daemon groups — the organization's own member sets (docs/designs/daemon-groups.md §2), drawn as
- * the same card a daemon gets. A group is a placement TARGET whose members are interchangeable,
- * which is what "which machines is this" answers and why the card borrows none of a daemon's
- * telemetry: no group-wide CPU exists to quote. The table this replaced put four columns of chrome
- * around what is usually one row, and below 769px it could only scroll sideways — the group name
- * truncated to four characters.
- *
- * The caller decides whether this renders (`showGroups`): the org has a daemon that could join one,
- * or a group already exists. Before that it answers a question nobody has asked.
- */
+// Daemon groups (daemon-groups.md §2) drawn as a daemon's card — no telemetry, a group has no CPU of its own to quote.
 function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
 
@@ -251,9 +221,7 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
   const s = status(groupFleetStatus(group, daemons))
   const members = daemons.filter((d) => group.memberDaemonIds.includes(d.daemonId))
   const serving = members.filter((d) => d.status === 'online').length
-  // Names the members, because "which machines is this" is the question a group answers that a
-  // count cannot — falling back to the count once the list would not fit. The agent count rides
-  // the same line, where a daemon card carries its own.
+  // Names the members: the question a group answers that a count cannot. Falls back to a count once the list will not fit.
   const memberText =
     members.length === 0
       ? 'No daemons yet'
@@ -263,9 +231,7 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
   const meta = `${memberText} · ${group.agentCount} agent${group.agentCount === 1 ? '' : 's'}`
 
   return (
-    // The card opens the group's own page, not the editor: what a reader wants from a group is
-    // what runs on it and which members are serving, and renaming it is the rarer of the two.
-    // The editor stays one click away, in the card menu and on that page.
+    // Opens the group's page, not the editor: what runs on it is the common read. Edit stays in the menu.
     <div
       className={`card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[11px] desktop:px-4 desktop:py-[13px] ${FLEET_ROW}`}
       onClick={() => router.push(orgPath(`/daemons/groups/${group.setId}`))}
@@ -287,8 +253,7 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
         <span className="truncate font-sans text-[14px] font-semibold leading-normal desktop:text-[13.5px]">
           {group.name}
         </span>
-        {/* Wraps to a second line at 375px rather than clipping the agent count — a group's meta
-            is longer than a daemon's, and both halves of it are the point. */}
+        {/* Wraps at 375px rather than clipping the agent count — a group's meta is longer than a daemon's. */}
         <span className="line-clamp-2 font-mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:line-clamp-1 desktop:text-[11px] desktop:leading-[1.5]">
           {meta}
         </span>
@@ -301,8 +266,7 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
         {s.label}
       </span>
       <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
-      {/* Desktop-only, as a daemon card's menu is: below 769px the card is a tap target and the
-          group's own page carries Edit and Remove, which is where the chevron leads. */}
+      {/* Desktop-only like a daemon card's: below 769px the chevron leads to the group's page, which carries both. */}
       <span className="relative hidden flex-none justify-end desktop:flex" onClick={(e) => e.stopPropagation()}>
         <button
           className="iconbtn h-7 w-7"
@@ -345,8 +309,7 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
   )
 }
 
-/** Desktop's status readout — a dot and the word, on a fixed track so every card's action button
- *  lands on the same column. Mobile carries the filled badge instead. */
+/** Desktop's status readout, on a fixed track so every card's action button lands on the same column. */
 function StatusWord({ s }: { s: StatusInfo }) {
   return (
     <span className="hidden w-[76px] flex-none items-center gap-[7px] desktop:flex">
@@ -580,9 +543,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
   }
 
   return (
-    // One row per daemon on desktop: identity, the two utilizations, status, actions. Mobile keeps
-    // the taller card — a 375px row cannot hold four blocks, and the stats it drops have nowhere
-    // else to go until you tap through.
+    // One row per daemon on desktop; mobile keeps the taller card, where four blocks will not fit in 375px.
     <div
       className={`card click flex flex-col gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:flex-row desktop:items-center desktop:gap-[14px] desktop:px-4 desktop:py-[13px] ${FLEET_ROW}`}
       onClick={() => router.push(orgPath(`/daemons/${m.daemonId}`))}
@@ -642,10 +603,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
               title="Selected — only shared members can see this daemon"
             />
           </div>
-          {/* Version meta — mobile appends the host (when it differs from the name); desktop appends
-              the hosted-agent count, which is the one stat worth a compact row and which mobile
-              carries in the footer below. During a lifecycle operation the status already says
-              restarting or upgrading, so hide the available-upgrade hint rather than repeat it. */}
+          {/* Mobile appends the host, desktop the agent count; the upgrade hint hides mid-op, where the status says so. */}
           <div className="flex min-w-0 items-center gap-[7px]">
             <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11px] desktop:leading-[1.5] desktop:tabular-nums">
               {m.version}
@@ -667,9 +625,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
         </span>
         <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
       </div>
-      {/* Desktop: both utilizations inline, so the card stays one row tall. The elastic block of
-          the row — a bar reads fine at 100px, where a truncated daemon name does not, so this is
-          what gives way first as the column narrows. */}
+      {/* Both utilizations inline. The row's elastic block: a bar reads fine at 100px, a truncated name does not. */}
       <div className="hidden w-[152px] min-w-[100px] flex-col gap-[5px] desktop:flex">
         <MiniBar label="cpu" pct={m.cpu} color={barColor} hot={hot} />
         <MiniBar label="mem" pct={m.mem} color={barColor} hot={hot} />
@@ -694,8 +650,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
           </div>
         ))}
       </div>
-      {/* Hidden outright when the caller may do none of it — an empty menu is worse than
-          no menu, and every item here is refused by the CP without edit rights. */}
+      {/* Hidden outright when the caller may do none of it — the CP refuses every item here without edit rights. */}
       <div className={hasActions ? 'relative hidden flex-none desktop:block' : 'hidden'}>
         <button
           className="iconbtn h-7 w-7"
@@ -774,14 +729,12 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
   )
 }
 
-/** Clamp a reported utilization to 0..100 — a daemon predating the cpu-normalization fix reports a
- *  raw load average, which would otherwise render as e.g. "722%". */
+/** Clamp to 0..100 — a daemon predating the cpu-normalization fix reports a raw load average, e.g. "722%". */
 function utilPct(pct: number): number {
   return Math.max(0, Math.min(100, Math.round(pct)))
 }
 
-/** The desktop card's utilization readout: label, bar and percent on one line, two of them stacked
- *  in the width one `UtilBar` used to need. */
+/** The desktop card's utilization readout: label, bar and percent on one line. */
 function MiniBar({ label, pct, color, hot }: { label: string; pct: number; color: string; hot: boolean }) {
   const shown = utilPct(pct)
   return (
@@ -799,8 +752,7 @@ function MiniBar({ label, pct, color, hot }: { label: string; pct: number; color
   )
 }
 
-/** The mobile card's utilization readout — label and percent over a full-width bar, two side by
- *  side. Desktop folds the same pair into `MiniBar` so a daemon fits one row. */
+/** The mobile card's utilization readout — label and percent over a full-width bar. */
 function UtilBar({
   label,
   pct,
