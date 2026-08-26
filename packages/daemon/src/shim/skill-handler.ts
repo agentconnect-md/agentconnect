@@ -1,11 +1,22 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { lstat, mkdir, open, readdir, readFile, rm, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
+import { PINNED_SKILLS_CLI_VERSION, stageSkillsCliCell } from '../skills/skills-cli-cell.js'
+import {
+  readSkillLedger,
+  reconcileSkillBundles,
+  skillLedgerLocation,
+  treeDigest,
+  type CandidateSkillBundle
+} from '../skills/skill-install-ledger.js'
 import {
   ClusterSkillRequestSchema,
   type ClusterSkillBegin,
   type ClusterSkillBeginReply,
   type ClusterSkillFile,
+  type ClusterSkillReconcile,
+  type ClusterSkillReconcileReply,
   type ClusterSkillUpload,
   type ClusterSkillUploadReply
 } from './skill-protocol.js'
@@ -14,10 +25,13 @@ interface Operation {
   handle: string
   operationId: string
   files: Map<string, ClusterSkillFile & { received: number; complete: boolean }>
+  skillsAgentId: string
 }
 
 export interface ClusterSkillHandlerDeps {
   stagingRoot: string
+  workspaceRoot?: string
+  stateRoot?: string
   inactiveMs?: number
   now?: () => number
 }
@@ -35,13 +49,18 @@ export class ClusterSkillHandler {
     this.now = deps.now ?? Date.now
   }
 
-  async handle(payload: unknown, abort?: AbortSignal): Promise<ClusterSkillBeginReply | ClusterSkillUploadReply> {
+  async handle(
+    payload: unknown,
+    abort?: AbortSignal
+  ): Promise<ClusterSkillBeginReply | ClusterSkillUploadReply | ClusterSkillReconcileReply> {
     const parsed = ClusterSkillRequestSchema.parse(payload)
     if (abort?.aborted) {
       if (parsed.op === 'upload') await this.discard(parsed.handle)
       throw new Error('cluster skill operation aborted')
     }
-    return parsed.op === 'begin' ? await this.begin(parsed) : await this.upload(parsed, abort)
+    if (parsed.op === 'begin') return await this.begin(parsed)
+    if (parsed.op === 'upload') return await this.upload(parsed, abort)
+    return await this.reconcile(parsed, abort)
   }
 
   stagedFile(handle: string, sourceId: string, path: string): string {
@@ -69,11 +88,82 @@ export class ClusterSkillHandler {
     this.operations.set(handle, {
       handle,
       operationId: input.operationId,
+      skillsAgentId: input.skillsAgentId,
       files: new Map(
         input.files.map((file) => [fileKey(file.sourceId, file.path), { ...file, received: 0, complete: false }])
       )
     })
     return { handle }
+  }
+
+  private async reconcile(input: ClusterSkillReconcile, abort?: AbortSignal): Promise<ClusterSkillReconcileReply> {
+    const operation = this.operations.get(input.handle)
+    if (!operation || operation.operationId !== input.operationId)
+      throw new Error('unknown cluster skill staging handle')
+    if (!this.deps.workspaceRoot || !this.deps.stateRoot) throw new Error('cluster skill publication is unavailable')
+    if ([...operation.files.values()].some((file) => !file.complete))
+      throw new Error('cluster skill snapshot is incomplete')
+    if (abort?.aborted) return await this.fail(operation, 'cluster skill operation aborted')
+    const declaredSources = new Set([...operation.files.values()].map((file) => file.sourceId))
+    if (input.sources.some((source) => !declaredSources.has(source.sourceId))) {
+      throw new Error('reconcile source was not declared')
+    }
+    const sourceMeta = new Map(input.sources.map((source) => [source.sourceId, source]))
+    const candidates: CandidateSkillBundle[] = []
+    const cleanups: Array<() => void> = []
+    try {
+      for (const source of input.sources) {
+        const snapshot = join(this.deps.stagingRoot, input.handle, sourceDirectory(source.sourceId))
+        const cell = await stageSkillsCliCell({
+          sourceSnapshot: snapshot,
+          agentId: operation.skillsAgentId,
+          selectedSkills: source.selections
+        })
+        cleanups.push(cell.cleanup)
+        for (const bundle of cell.bundles) {
+          const inspected = await inspectLocalSkillSource(bundle.absolutePath)
+          const files = inspected.files.map((file) => ({
+            path: file.path,
+            mode: file.mode & 0o111 ? 0o700 : 0o600,
+            size: file.size,
+            sha256: file.sha256.replace(/^sha256:/, '')
+          }))
+          candidates.push({
+            relativeRoot: bundle.relativePath,
+            sourceKey: source.sourceId,
+            sourceDir: bundle.absolutePath,
+            files,
+            treeDigest: treeDigest(files)
+          })
+        }
+      }
+      const result = await reconcileSkillBundles({
+        cwd: this.deps.workspaceRoot,
+        stateDir: this.deps.stateRoot,
+        agentId: 'cluster-shim',
+        runtime: operation.skillsAgentId,
+        cliVersion: PINNED_SKILLS_CLI_VERSION,
+        fingerprint: createHash('sha256').update(JSON.stringify(input.sources)).digest('hex'),
+        candidates
+      })
+      const location = await skillLedgerLocation(this.deps.workspaceRoot, this.deps.stateRoot)
+      const ledger = await readSkillLedger(location)
+      if (!ledger || ledger.phase !== 'ready') throw new Error('cluster skill publisher did not produce a ready ledger')
+      const roots = ledger.owned.map((root) => {
+        const source = sourceMeta.get(root.sourceKey)
+        if (!source) throw new Error('cluster skill publisher returned an unknown source')
+        return {
+          path: root.relativeRoot,
+          sourceId: root.sourceKey,
+          sourceKind: source.sourceKind,
+          digest: root.treeDigest
+        }
+      })
+      await this.discard(operation.handle)
+      return { roots, conflicts: result.conflicts }
+    } finally {
+      for (const cleanup of cleanups) cleanup()
+    }
   }
 
   private async upload(input: ClusterSkillUpload, abort?: AbortSignal): Promise<ClusterSkillUploadReply> {

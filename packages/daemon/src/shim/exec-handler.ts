@@ -173,7 +173,11 @@ function resolveCwd(root: string, requested: string | undefined): string {
 export function createExecHandler(
   deps: ExecHandlerDeps
 ): (capability: ShimCapability, payload: unknown, abort?: AbortSignal) => Promise<unknown> {
-  const skillHandler = new ClusterSkillHandler({ stagingRoot: SANDBOX_SKILL_STAGING_DIR })
+  const skillHandler = new ClusterSkillHandler({
+    stagingRoot: SANDBOX_SKILL_STAGING_DIR,
+    workspaceRoot: deps.workspaceRoot,
+    stateRoot: '/run/agentconnect/skill-state'
+  })
   return async (capability, payload, abort) => {
     if (capability === 'materialize') {
       await applyFileSinkPayload(payload)

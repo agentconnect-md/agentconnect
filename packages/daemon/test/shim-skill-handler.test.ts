@@ -153,4 +153,46 @@ describe('cluster skill shim staging', () => {
     const invalid = new ClusterSkillClient({ request: async () => ({ received: 1, complete: false, extra: true }) })
     await expect(invalid.upload(randomUUID(), handle, { ...file, size: 1 }, Buffer.from('x'))).rejects.toThrow()
   })
+
+  it('runs the pinned CLI and publishes a verified receipt', async () => {
+    const content = Buffer.from('---\nname: cluster-golden\ndescription: cluster fixture\n---\n# Cluster\n')
+    const root = await mkdtemp(join(tmpdir(), 'ac-shim-skills-reconcile-'))
+    const workspace = join(root, 'workspace')
+    await mkdir(workspace)
+    const operationId = randomUUID()
+    const handler = new ClusterSkillHandler({
+      stagingRoot: join(root, 'staging'),
+      workspaceRoot: workspace,
+      stateRoot: join(root, 'state')
+    })
+    const file = { sourceId: 'managed:a', path: 'SKILL.md', size: content.length, sha256: sha256(content) }
+    const begin = (await handler.handle({
+      op: 'begin',
+      operationId,
+      workspaceIncarnation: 'claim',
+      skillsAgentId: 'codex',
+      files: [file]
+    })) as { handle: string }
+    await handler.handle({
+      op: 'upload',
+      operationId,
+      handle: begin.handle,
+      sourceId: file.sourceId,
+      path: file.path,
+      offset: 0,
+      data: content.toString('base64'),
+      final: true
+    })
+    const reply = await handler.handle({
+      op: 'reconcile',
+      operationId,
+      handle: begin.handle,
+      sources: [{ sourceId: file.sourceId, sourceKind: 'managed', selections: ['cluster-golden'] }]
+    })
+    expect(reply).toMatchObject({
+      roots: [{ path: '.agents/skills/cluster-golden', sourceKind: 'managed' }],
+      conflicts: []
+    })
+    expect(await readFile(join(workspace, '.agents/skills/cluster-golden/SKILL.md'), 'utf8')).toContain('# Cluster')
+  }, 120_000)
 })

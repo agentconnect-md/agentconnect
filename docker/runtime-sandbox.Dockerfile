@@ -130,8 +130,10 @@ COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/mcp-bridge
 # armed set lives and dies with this pod. Path must match SANDBOX_AUTO_MERGE_ENTRY in
 # packages/daemon/src/shim/sandbox-paths.ts — the handler reports its absence as an unsupported image.
 COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/auto-merge.js /opt/agentconnect/shim/auto-merge.js
+COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/skills /opt/agentconnect/shim/skills
 RUN chmod 0444 /opt/agentconnect/shim/index.js /opt/agentconnect/shim/git-credential.js \
   /opt/agentconnect/shim/gh-token.js /opt/agentconnect/shim/mcp-bridge.js /opt/agentconnect/shim/auto-merge.js \
+  /opt/agentconnect/shim/skills/dist/cli.js /opt/agentconnect/shim/skills/package.json \
   && chmod 0555 /opt/agentconnect/shim
 
 # The executable git runs as its credential helper. A wrapper because git needs something

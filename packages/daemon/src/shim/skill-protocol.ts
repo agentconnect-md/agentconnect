@@ -5,6 +5,7 @@ export const MAX_CLUSTER_SKILL_FILES = 4_096
 export const MAX_CLUSTER_SKILL_FILE_BYTES = 4 * 1024 * 1024
 export const MAX_CLUSTER_SKILL_TOTAL_BYTES = 32 * 1024 * 1024
 export const MAX_CLUSTER_SKILL_CHUNK_BYTES = 48 * 1024
+export const MAX_CLUSTER_SKILL_SELECTIONS = 256
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/)
 const RelativeSkillPathSchema = z
@@ -69,16 +70,63 @@ export const ClusterSkillUploadSchema = z
   })
   .strict()
 
-export const ClusterSkillRequestSchema = z.discriminatedUnion('op', [ClusterSkillBeginSchema, ClusterSkillUploadSchema])
+export const ClusterSkillSourceSchema = z
+  .object({
+    sourceId: z.string().min(1).max(160),
+    sourceKind: z.enum(['agent', 'managed', 'dream']),
+    selections: z.array(z.string().min(1).max(128)).max(MAX_CLUSTER_SKILL_SELECTIONS)
+  })
+  .strict()
+
+export const ClusterSkillReconcileSchema = z
+  .object({
+    op: z.literal('reconcile'),
+    operationId: z.string().uuid(),
+    handle: z.string().min(16).max(128),
+    sources: z.array(ClusterSkillSourceSchema).max(MAX_CLUSTER_SKILL_SOURCES)
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const ids = new Set<string>()
+    for (const source of value.sources) {
+      if (ids.has(source.sourceId)) ctx.addIssue({ code: 'custom', message: 'duplicate reconcile source' })
+      ids.add(source.sourceId)
+    }
+  })
+
+export const ClusterSkillRequestSchema = z.discriminatedUnion('op', [
+  ClusterSkillBeginSchema,
+  ClusterSkillUploadSchema,
+  ClusterSkillReconcileSchema
+])
 
 export const ClusterSkillBeginReplySchema = z.object({ handle: z.string().min(16).max(128) }).strict()
 export const ClusterSkillUploadReplySchema = z
   .object({ received: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_FILE_BYTES), complete: z.boolean() })
   .strict()
+export const ClusterSkillReconcileReplySchema = z
+  .object({
+    roots: z
+      .array(
+        z
+          .object({
+            path: RelativeSkillPathSchema,
+            sourceId: z.string().min(1).max(160),
+            sourceKind: z.enum(['agent', 'managed', 'dream']),
+            digest: Sha256Schema
+          })
+          .strict()
+      )
+      .max(512),
+    conflicts: z.array(RelativeSkillPathSchema).max(512)
+  })
+  .strict()
 
 export type ClusterSkillBegin = z.infer<typeof ClusterSkillBeginSchema>
 export type ClusterSkillFile = z.infer<typeof ClusterSkillFileSchema>
 export type ClusterSkillUpload = z.infer<typeof ClusterSkillUploadSchema>
+export type ClusterSkillReconcile = z.infer<typeof ClusterSkillReconcileSchema>
 export type ClusterSkillRequest = z.infer<typeof ClusterSkillRequestSchema>
 export type ClusterSkillBeginReply = z.infer<typeof ClusterSkillBeginReplySchema>
 export type ClusterSkillUploadReply = z.infer<typeof ClusterSkillUploadReplySchema>
+export type ClusterSkillReconcileReply = z.infer<typeof ClusterSkillReconcileReplySchema>

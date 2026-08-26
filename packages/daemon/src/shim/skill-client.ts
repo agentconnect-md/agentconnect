@@ -1,11 +1,14 @@
 import type { ShimRequester } from './channels.js'
 import {
   ClusterSkillBeginReplySchema,
+  ClusterSkillReconcileReplySchema,
   ClusterSkillUploadReplySchema,
   MAX_CLUSTER_SKILL_CHUNK_BYTES,
   type ClusterSkillBegin,
   type ClusterSkillBeginReply,
   type ClusterSkillFile,
+  type ClusterSkillReconcile,
+  type ClusterSkillReconcileReply,
   type ClusterSkillUploadReply
 } from './skill-protocol.js'
 
@@ -28,6 +31,12 @@ export class ClusterSkillClient {
       }
       offset = reply.received
     }
+  }
+
+  async reconcile(input: Omit<ClusterSkillReconcile, 'op'>): Promise<ClusterSkillReconcileReply> {
+    return ClusterSkillReconcileReplySchema.parse(
+      await this.requester.request('skills', { op: 'reconcile', ...input }, { timeoutMs: 15 * 60_000 })
+    )
   }
 
   private async uploadChunk(
