@@ -143,25 +143,26 @@ command, and create your first agent. The default stack listens only on
 
 ### Kubernetes
 
-Install the official Helm chart, published on every release under the same
-version number as the release itself:
+The official Helm chart is published on every release under the same version
+number as the release itself:
 
-```bash
-helm upgrade --install agentconnect \
-  oci://ghcr.io/agentconnect-md/charts/agentconnect \
-  --namespace agentconnect --create-namespace \
-  --values agentconnect-values.yaml
+```
+oci://ghcr.io/agentconnect-md/charts/agentconnect
 ```
 
-The chart source lives in [`charts/agentconnect`](charts/agentconnect), and the
+A cluster install is three steps — create the namespace and its secrets, write
+the values file for your deployment, then install — so follow the
 [Kubernetes guide](https://docs.agentconnect.md/docs/kubernetes-deployment)
-covers what belongs in that values file.
+rather than a one-liner. The chart source lives in
+[`charts/agentconnect`](charts/agentconnect).
 
 ### Configure the deployment
 
-**Setup Server** is a browser UI for everything past the local stack: sign-in
-through Logto, the deployment's GitHub, Slack, Google, and Lark / Feishu apps,
-and deployment options — no config files to hand-edit.
+**Setup Server** runs in the base stack at `http://localhost:8091`, always on
+loopback. It configures browser authentication through Logto, the deployment's
+GitHub, Slack, Google, and Lark / Feishu apps, the sign-in methods you show, and
+preset-agent behavior. Deployment topology — images, ports, public URLs,
+database and bootstrap secrets — stays in `compose.env` or your Helm values.
 
 Prefer to be walked through it? This repository ships a **Claude Code skill** at
 `.claude/skills/agentconnect-setup`. Open Claude Code in your checkout and ask
