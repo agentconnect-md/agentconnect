@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   agents: [] as Array<Record<string, unknown>>,
   daemons: [] as Array<Record<string, unknown>>,
+  memberSets: [] as Array<Record<string, unknown>>,
   menus: [] as Array<{ title: string; value: string; options: string[] }>,
   openPlayground: vi.fn(() => 'pg_1'),
   pgSend: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     agents: mocks.agents,
     daemons: mocks.daemons,
+    memberSets: mocks.memberSets,
     crons: [],
     allSessions: [],
     usage24h: null,
@@ -125,6 +127,7 @@ const render = async () => {
 
 beforeEach(() => {
   mocks.menus = []
+  mocks.memberSets = []
   mocks.openPlayground.mockClear()
   mocks.pgSend.mockClear()
   mocks.pgSetModel.mockClear()
@@ -375,5 +378,63 @@ describe('HomeView readiness gate', () => {
     mocks.daemons = [daemon()]
     await render()
     expect(mocks.menus.find((m) => m.title === 'Agent')?.value).toBe('a-pre')
+  })
+})
+
+// A pool or group agent names no member — `daemon` carries the set sentinel — so resolving its
+// daemon BY ID found nothing. Nothing reads as "no runtime reported a login problem", which is why
+// such an agent was never blocked and its real model catalog never reached the composer.
+describe('HomeView readiness through the placement', () => {
+  const onPool = (over: Record<string, unknown> = {}) =>
+    agent({ daemon: 'pool', placementKind: 'set', setId: null, placementReady: true, ...over })
+  const poolMember = (authRequired: boolean) =>
+    daemon({
+      daemonId: 'pod-a',
+      pool: true,
+      memberSetId: 'set-pool',
+      name: 'AgentConnect Cloud',
+      runtimeModels: [{ runtime: 'claude', models: ['claude-sonnet-4-5'], modelCatalog: claudeCatalog, authRequired }]
+    })
+
+  it('blocks a pool agent whose runtime needs a login, and names what it runs on', async () => {
+    mocks.agents = [onPool()]
+    mocks.daemons = [poolMember(true)]
+    await render()
+    expect(host.textContent).toContain('No AI runtime is signed in')
+    expect(host.textContent).toContain('Kubernetes cluster')
+  })
+
+  it('leaves it startable when the pool member is signed in', async () => {
+    mocks.agents = [onPool()]
+    mocks.daemons = [poolMember(false)]
+    await render()
+    expect(host.textContent).not.toContain('No AI runtime is signed in')
+  })
+
+  it('reads the pool’s own model catalog, not the static fallback', async () => {
+    mocks.agents = [onPool({ model: '' })]
+    mocks.daemons = [poolMember(false)]
+    await render()
+    expect(menu('Model')?.value).toBe('claude-sonnet-4-5')
+    expect(menu('Effort')?.value).toBe('high')
+  })
+
+  it('resolves a GROUP placement to its own member, never to a pool member', async () => {
+    mocks.agents = [onPool({ placementKind: 'set', setId: 'set-lab' })]
+    mocks.memberSets = [{ setId: 'set-lab', name: 'lab', memberDaemonIds: ['dmn-lab'], agentCount: 1 }]
+    mocks.daemons = [
+      poolMember(false),
+      daemon({
+        daemonId: 'dmn-lab',
+        memberSetId: 'set-lab',
+        name: 'lab-box',
+        runtimeModels: [
+          { runtime: 'claude', models: ['claude-sonnet-4-5'], modelCatalog: claudeCatalog, authRequired: true }
+        ]
+      })
+    ]
+    await render()
+    expect(host.textContent).toContain('No AI runtime is signed in')
+    expect(host.textContent).toContain('lab')
   })
 })

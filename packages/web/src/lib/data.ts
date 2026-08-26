@@ -180,6 +180,24 @@ export function agentPlacementIcon(
   return placementIcon(agentPlacementKind(agent, groups))
 }
 
+/** The daemon whose REPORTED capabilities describe an agent's placement — runtimes, model catalog,
+ *  and whether that runtime is signed in. A set target resolves to one SERVING member standing in
+ *  for the set (the rule `editAgentCapabilitySource` already uses), never to the placement:
+ *  `POOL_PLACEMENT` matches no daemon id, and the `undefined` that yields reads as "nothing to
+ *  report" rather than "not known" — which is what let a pool agent needing a login look ready. */
+export function agentCapabilitySource<T extends Pick<DaemonRow, 'daemonId' | 'pool' | 'memberSetId' | 'status'>>(
+  agent: Pick<Agent, 'daemon' | 'placementKind' | 'setId'>,
+  daemons: readonly T[],
+  groups: readonly Pick<MemberSetRow, 'setId'>[]
+): T | undefined {
+  const kind = agentPlacementKind(agent, groups)
+  if (kind === 'daemon') return daemons.find((daemon) => daemon.daemonId === agent.daemon)
+  const members = daemons.filter((daemon) =>
+    kind === 'pool' ? daemon.pool : !daemon.pool && daemon.memberSetId === agent.setId
+  )
+  return members.find((daemon) => daemon.status === 'online') ?? members[0]
+}
+
 /**
  * One of the organization's own member sets, as the console holds it (daemon-groups.md §2).
  *

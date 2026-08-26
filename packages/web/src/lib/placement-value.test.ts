@@ -4,6 +4,7 @@ import {
   CLUSTER_LABEL,
   POOL_LABEL,
   POOL_PLACEMENT,
+  agentCapabilitySource,
   agentDaemonLabel,
   agentPlacementIcon,
   agentPlacementKind,
@@ -187,5 +188,46 @@ describe('agentPlacementKind / agentPlacementIcon', () => {
   it('draws a group as a stack and a machine as a server', () => {
     expect(agentPlacementIcon({ placementKind: 'set', setId: 'set-lab' }, groups)).toBe('layers')
     expect(agentPlacementIcon({ placementKind: 'daemon', setId: null }, groups)).toBe('server')
+  })
+})
+
+// A set placement names no member, so resolving it BY DAEMON ID answers `undefined` — which every
+// caller reads as "nothing reported" rather than "not known". That is how a pool agent whose
+// runtime needs a login kept looking ready on Home.
+describe('agentCapabilitySource', () => {
+  const source = (over: Partial<DaemonRow>): DaemonRow =>
+    ({ daemonId: 'd', pool: false, memberSetId: null, status: 'online', ...over }) as DaemonRow
+  const groups = [{ setId: 'set-lab' }]
+  const fleet = [
+    source({ daemonId: 'pod-down', pool: true, memberSetId: 'set-pool', status: 'offline' }),
+    source({ daemonId: 'pod-up', pool: true, memberSetId: 'set-pool' }),
+    source({ daemonId: 'dmn-1' }),
+    source({ daemonId: 'lab-down', memberSetId: 'set-lab', status: 'offline' }),
+    source({ daemonId: 'lab-up', memberSetId: 'set-lab' })
+  ]
+
+  it('resolves a machine placement to that machine', () => {
+    expect(agentCapabilitySource({ daemon: 'dmn-1', placementKind: 'daemon' }, fleet, groups)?.daemonId).toBe('dmn-1')
+    expect(agentCapabilitySource({ daemon: 'gone', placementKind: 'daemon' }, fleet, groups)).toBeUndefined()
+  })
+
+  it('resolves the pool and a group to a SERVING member, never to the placement', () => {
+    const pool = { daemon: POOL_PLACEMENT, placementKind: 'set' as const, setId: 'set-pool' }
+    expect(agentCapabilitySource(pool, fleet, groups)?.daemonId).toBe('pod-up')
+    const group = { daemon: POOL_PLACEMENT, placementKind: 'set' as const, setId: 'set-lab' }
+    expect(agentCapabilitySource(group, fleet, groups)?.daemonId).toBe('lab-up')
+  })
+
+  it('falls back to an offline member rather than to nothing — a stale catalog still reports', () => {
+    const offlinePool = [fleet[0]!]
+    const pool = { daemon: POOL_PLACEMENT, placementKind: 'set' as const, setId: 'set-pool' }
+    expect(agentCapabilitySource(pool, offlinePool, groups)?.daemonId).toBe('pod-down')
+  })
+
+  it('never hands a group placement a pool member, nor the pool a group member', () => {
+    const group = { daemon: POOL_PLACEMENT, placementKind: 'set' as const, setId: 'set-lab' }
+    expect(agentCapabilitySource(group, [fleet[1]!], groups)).toBeUndefined()
+    const pool = { daemon: POOL_PLACEMENT, placementKind: 'set' as const, setId: 'set-pool' }
+    expect(agentCapabilitySource(pool, [fleet[4]!], groups)).toBeUndefined()
   })
 })

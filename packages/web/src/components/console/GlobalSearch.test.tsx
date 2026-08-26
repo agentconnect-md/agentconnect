@@ -24,8 +24,17 @@ vi.mock('swr', () => ({
 vi.mock('@/lib/api', () => ({
   fetchSessionExternalAccess: vi.fn()
 }))
+// Mutable so a test can hand the box a fleet; every entry defaults empty.
+const consoleData = vi.hoisted(() => ({
+  agents: [] as unknown[],
+  daemons: [] as unknown[],
+  memberSets: [] as unknown[],
+  orgSetIds: new Set<string>(),
+  crons: [] as unknown[],
+  allSessions: [] as unknown[]
+}))
 vi.mock('@/lib/data-context', () => ({
-  useConsoleData: () => ({ agents: [], daemons: [], crons: [], allSessions: [] })
+  useConsoleData: () => consoleData
 }))
 const authConfigured = vi.fn(() => true)
 vi.mock('@/lib/auth', () => ({
@@ -46,6 +55,13 @@ let root: Root
 
 beforeEach(() => {
   push.mockClear()
+  consoleData.agents = []
+  consoleData.daemons = []
+  consoleData.memberSets = []
+  consoleData.orgSetIds = new Set()
+  consoleData.crons = []
+  consoleData.allSessions = []
+  setFlags('')
   authConfigured.mockReturnValue(true)
   myRole.mockReturnValue('owner')
   sessionAccess.mockReturnValue({ available: true, enabled: false })
@@ -75,6 +91,11 @@ function type(value: string) {
     setter?.call(input, value)
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })
+}
+
+/** The console names and offers the pool and groups only where the deployment asked for them. */
+const setFlags = (value: string) => {
+  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: value }
 }
 
 // Page/setting result rows render the route as their meta line, which the
@@ -184,5 +205,73 @@ describe('GlobalSearch pages & settings', () => {
     render()
     type('zzz-no-such-thing')
     expect(host.textContent).toContain('No results for')
+  })
+})
+
+// The Infra page shows three entities — the pool as ONE entry, the machines, the groups — and the
+// box has to agree with it. Matching `daemons` alone found every pool Pod under the pool's shared
+// name (N identical rows, each opening a Pod a roll replaces) and never found a group at all.
+describe('GlobalSearch infra entities', () => {
+  const daemonRow = (over: Record<string, unknown>) => ({
+    daemonId: 'd',
+    pool: false,
+    memberSetId: null,
+    name: 'edge-1',
+    version: '1.41.0',
+    status: 'online',
+    lifecycleStatus: null,
+    ...over
+  })
+
+  const withFleet = () => {
+    // Two Pods, one pool: the shared name is exactly what used to duplicate the row.
+    consoleData.daemons = [
+      daemonRow({ daemonId: 'pod-a', pool: true, memberSetId: 'set-pool', name: 'AgentConnect Cloud' }),
+      daemonRow({ daemonId: 'pod-b', pool: true, memberSetId: 'set-pool', name: 'AgentConnect Cloud' }),
+      daemonRow({ daemonId: 'dmn-1', name: 'edge-1' }),
+      daemonRow({ daemonId: 'dmn-2', memberSetId: 'set-lab', name: 'lab-box' })
+    ]
+    consoleData.memberSets = [{ setId: 'set-lab', name: 'lab', memberDaemonIds: ['dmn-2'], agentCount: 2 }]
+    consoleData.orgSetIds = new Set(['set-lab'])
+  }
+
+  it('finds the pool as one entry and opens the pool, never a member Pod', () => {
+    setFlags('daemon-pool,managed')
+    withFleet()
+    render()
+    type('agentconnect cloud')
+    const rows = [...host.querySelectorAll('button')].filter((b) => b.textContent?.includes('AgentConnect Cloud'))
+    expect(rows).toHaveLength(1)
+    act(() => rows[0]!.click())
+    expect(push).toHaveBeenCalledWith('/org-test/daemons/cluster')
+  })
+
+  it('finds a group by name and opens the group', () => {
+    setFlags('daemon-pool,daemon-groups,managed')
+    withFleet()
+    render()
+    type('lab')
+    act(() => resultButton('1 daemon · 2 agents').click())
+    expect(push).toHaveBeenCalledWith('/org-test/daemons/groups/set-lab')
+  })
+
+  it('still finds a machine, and a group member is one', () => {
+    setFlags('daemon-pool,daemon-groups,managed')
+    withFleet()
+    render()
+    type('lab-box')
+    act(() => resultButton('lab-box').click())
+    expect(push).toHaveBeenCalledWith('/org-test/daemons/dmn-2')
+  })
+
+  it('offers neither the pool nor a group where the deployment does not', () => {
+    withFleet()
+    render()
+    type('cloud')
+    expect(host.textContent).not.toContain('AgentConnect Cloud')
+    type('lab')
+    // The group is hidden; the machine that happens to be in it is not.
+    expect(host.textContent).toContain('lab-box')
+    expect([...host.querySelectorAll('button')].some((b) => b.textContent?.includes('1 daemon ·'))).toBe(false)
   })
 })
