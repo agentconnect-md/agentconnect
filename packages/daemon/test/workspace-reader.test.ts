@@ -404,31 +404,35 @@ describe('workspace delete', () => {
 })
 
 describe('frame-size budget on listings', () => {
-  it('keeps every page under the frame cap and still returns all entries', async () => {
-    // Names full of '"' JSON-escape to 2× — enough entries at limit=500 overflow
-    // the 256 KiB frame, forcing an early page break (never a single oversized REP).
-    const quote = '"'.repeat(240)
-    const names: string[] = []
-    for (let i = 0; i < 500; i++) {
-      const n = `${quote}${String(i).padStart(3, '0')}`
-      names.push(n)
-      writeFileSync(join(ws, n), 'x')
+  // Pads its listing with names built from `"`, which Windows does not allow in a filename.
+  it.skipIf(process.platform === 'win32')(
+    'keeps every page under the frame cap and still returns all entries',
+    async () => {
+      // Names full of '"' JSON-escape to 2× — enough entries at limit=500 overflow
+      // the 256 KiB frame, forcing an early page break (never a single oversized REP).
+      const quote = '"'.repeat(240)
+      const names: string[] = []
+      for (let i = 0; i < 500; i++) {
+        const n = `${quote}${String(i).padStart(3, '0')}`
+        names.push(n)
+        writeFileSync(join(ws, n), 'x')
+      }
+      const seen = new Set<string>()
+      let cursor: string | undefined
+      let pages = 0
+      do {
+        const page = await reader.list(listReq({ limit: 500, ...(cursor ? { cursor } : {}) }))
+        expect(page.entries.length).toBeGreaterThan(0) // always makes progress
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(MAX_FRAME_BYTES)
+        for (const e of page.entries) seen.add(e.name)
+        cursor = page.nextCursor
+        pages += 1
+      } while (cursor !== undefined)
+      expect(pages).toBeGreaterThan(1) // the byte budget broke the page before the count limit
+      expect(seen.size).toBe(500)
+      expect(names.every((n) => seen.has(n))).toBe(true)
     }
-    const seen = new Set<string>()
-    let cursor: string | undefined
-    let pages = 0
-    do {
-      const page = await reader.list(listReq({ limit: 500, ...(cursor ? { cursor } : {}) }))
-      expect(page.entries.length).toBeGreaterThan(0) // always makes progress
-      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(MAX_FRAME_BYTES)
-      for (const e of page.entries) seen.add(e.name)
-      cursor = page.nextCursor
-      pages += 1
-    } while (cursor !== undefined)
-    expect(pages).toBeGreaterThan(1) // the byte budget broke the page before the count limit
-    expect(seen.size).toBe(500)
-    expect(names.every((n) => seen.has(n))).toBe(true)
-  })
+  )
   it('refuses a DIRECTORY behind an intermediate symlink instead of reporting its mtime', async () => {
     // Making a directory an ordinary answer reopened the oracle the git-diff seam had:
     // `lstat` follows intermediate components, so `vendor/private` behind a symlinked
