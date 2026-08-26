@@ -38,9 +38,11 @@ describe('GH_TRIGGER_PILL', () => {
     )
   })
 
-  it('offers the owner-qualified team form only once a repository names the organization', () => {
+  it('offers the owner-qualified team form only for an organization-owned repository', () => {
+    // No organization (a personal installation) ⇒ no team to name.
     expect(githubMentionUsage('reviewer')).toBe('Use @reviewer to trigger only this agent.')
-    const owned = githubMentionUsage('reviewer', 'acme/infra')
+    expect(githubMentionUsage('reviewer', null)).toBe('Use @reviewer to trigger only this agent.')
+    const owned = githubMentionUsage('reviewer', 'acme')
     expect(owned).toContain('@reviewer')
     expect(owned).toContain('@acme/reviewer')
   })

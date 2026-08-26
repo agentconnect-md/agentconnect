@@ -353,6 +353,9 @@ export default function AddIntegrationModal({
   const ghSelectedInstallation =
     gh?.installations.find((installation) => installation.id === ghSelectedRepo?.installationId) ??
     installationForRepo(ghRepoPick, gh?.installations ?? [])
+  // Teams exist only under an organization, so a personal installation gets no team form.
+  const ghTeamOwner =
+    ghSelectedInstallation?.accountType === 'Organization' ? ghSelectedInstallation.accountLogin : null
   const ghReviewSettingsBlocked =
     !!ghRepoPick &&
     (!repoAccessSatisfies(ghRepoAccess, ghNeededAccess) ||
@@ -1606,7 +1609,7 @@ export default function AddIntegrationModal({
                     return (
                       <div
                         key={m.mode}
-                        title={m.mode === 'mention' ? githubMentionUsage(agent.name, ghRepoPick) : undefined}
+                        title={m.mode === 'mention' ? githubMentionUsage(agent.name, ghTeamOwner) : undefined}
                         className={`flex min-w-0 cursor-pointer items-start gap-[9px] rounded-[9px] border px-3 py-[10px] ${
                           on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
                         }`}

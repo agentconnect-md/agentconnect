@@ -89,7 +89,7 @@ interface GithubPayload {
   action?: string
   changes?: { base?: unknown }
   installation?: { id?: number }
-  repository?: { id?: number; full_name?: string }
+  repository?: GithubRepositoryRef
   sender?: { login?: string; type?: string; avatar_url?: string }
   requested_reviewer?: { login?: string; type?: string }
   requested_action?: { identifier?: string }
@@ -134,6 +134,13 @@ interface GithubPayload {
   }
 }
 
+/** The delivery's own repository. `owner.type` is GitHub's signed owner kind. */
+interface GithubRepositoryRef {
+  id?: number
+  full_name?: string
+  owner?: { login?: string; type?: string }
+}
+
 interface GithubSubject {
   number?: number
   title?: string
@@ -167,8 +174,9 @@ export interface GithubMatchCtx {
   headRepoFullName?: string
   baseRepoFullName?: string
   commentAuthorLogin?: string
-  /** The repository owner login — scopes `@<owner>/<agent>` team mentions. */
-  repoOwnerLogin?: string
+  /** The organization login that scopes `@<owner>/<agent>` team mentions.
+   *  Absent for a personal repository, which has no teams to mention. */
+  teamOwnerLogin?: string
   mentionText: string | undefined
   /** GitHub's native reviewer request target. Only this App's `[bot]` login
    * turns `pull_request:review_requested` into a manual review request. */
@@ -227,9 +235,13 @@ export function mentionsGithubTeam(
   return !!owner && !!slug && mentionsGithubHandle(body, `${owner}/${slug}`)
 }
 
-/** The repository owner login — the org whose teams a team mention can name. */
-export function githubRepoOwner(repoFullName: string | undefined): string | undefined {
-  return repoFullName?.split('/')[0] || undefined
+/** The organization whose teams a team mention can name. A personal repository
+ *  has no teams, so an owner GitHub does not sign as `Organization` yields none
+ *  and `@<owner>/<agent>` stays inert there — including a payload too old or too
+ *  partial to carry the owner kind. */
+export function githubTeamOwner(repository: GithubRepositoryRef | undefined): string | undefined {
+  if (repository?.owner?.type !== 'Organization') return undefined
+  return repository.owner.login || repository.full_name?.split('/')[0] || undefined
 }
 
 function requestsGithubAppReviewer(login: string | undefined, appSlug: string | undefined): boolean {
@@ -284,7 +296,7 @@ function githubMentionsAgent(body: string | undefined, rule: RcHookAssign, owner
 function githubRuleIsSummoned(rule: RcHookAssign, ctx: GithubMatchCtx): boolean {
   return (
     mentionsGithubHandle(ctx.mentionText, rule.github?.appSlug) ||
-    githubMentionsAgent(ctx.mentionText, rule, ctx.repoOwnerLogin)
+    githubMentionsAgent(ctx.mentionText, rule, ctx.teamOwnerLogin)
   )
 }
 
@@ -477,7 +489,7 @@ export function buildTrustedGithubMetadata(
     event === 'issue_comment' &&
     payload.action === 'created' &&
     (mentionsGithubHandle(payload.comment?.body, rule.github.appSlug) ||
-      githubMentionsAgent(payload.comment?.body, rule, githubRepoOwner(payload.repository?.full_name)))
+      githubMentionsAgent(payload.comment?.body, rule, githubTeamOwner(payload.repository)))
   const pr = payload.pull_request
   const headSha = pr?.head?.sha
   const baseChanged = githubPullRequestBaseChanged(event, payload)
@@ -985,7 +997,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         headRepoFullName: subject?.head?.repo?.full_name,
         baseRepoFullName: subject?.base?.repo?.full_name,
         commentAuthorLogin: payload.comment?.user?.login,
-        repoOwnerLogin: githubRepoOwner(payload.repository?.full_name),
+        teamOwnerLogin: githubTeamOwner(payload.repository),
         requestedReviewerLogin: payload.requested_reviewer?.login,
         baseChanged: githubPullRequestBaseChanged(event, payload),
         commentSubjectFamily:
@@ -1197,7 +1209,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       const candidates =
         ctx.eventAction === 'pull_request:review_requested'
           ? rules
-          : githubMentionCandidates(rules, ctx.mentionText, ctx.repoOwnerLogin)
+          : githubMentionCandidates(rules, ctx.mentionText, ctx.teamOwnerLogin)
       const matched = candidates
         .map((rule) => ({ rule, verdict: githubRuleVerdict(rule, ctx) }))
         .filter((candidate) => candidate.verdict !== 'no-match')

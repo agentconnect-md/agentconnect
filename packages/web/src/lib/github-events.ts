@@ -80,13 +80,13 @@ export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string): st
   }
 }
 
-/** Concrete hover copy for the agent-targeted GitHub mention form. The owner
- *  form is offered whenever a repository is known: a GitHub team named after the
- *  agent makes the same handle autocomplete in GitHub's comment composer. */
-export function githubMentionUsage(agentName: string, repoFullName?: string | null): string {
-  const owner = repoFullName?.split('/')[0]
-  return owner
-    ? `Use @${agentName} — or @${owner}/${agentName}, once the organization has a team named ${agentName} — to trigger only this agent.`
+/** Concrete hover copy for the agent-targeted GitHub mention form. `teamOwner`
+ *  is the ORGANIZATION that owns the repository: a team named after the agent
+ *  makes the same handle autocomplete in GitHub's comment composer. A personal
+ *  account has no teams, so callers pass none and the copy stays on the bare form. */
+export function githubMentionUsage(agentName: string, teamOwner?: string | null): string {
+  return teamOwner
+    ? `Use @${agentName} — or @${teamOwner}/${agentName}, once the organization has a team named ${agentName} — to trigger only this agent.`
     : `Use @${agentName} to trigger only this agent.`
 }
 

@@ -952,13 +952,14 @@ separate, stricter gate: it asks the console user for `write` or `admin` and nev
 ## GitHub review mention routing
 
 An explicit `@<agent-name>` in GitHub targets only that AgentConnect agent's
-matching review integration. `@<owner>/<agent-name>` is the same targeted form
-written as a GitHub team mention: an organization that creates a visible team
-named after the agent gets that handle autocompleted in GitHub's comment
-composer, and the team needs no members because matching only reads the authored
-text and the repository's own owner. A same-named team in a different
-organization targets nobody, and AgentConnect never creates, renames, or deletes
-these teams. An explicit `@<github-app-name>` is the broadcast
+matching review integration. On an organization-owned repository,
+`@<owner>/<agent-name>` is the same targeted form written as a GitHub team
+mention: an organization that creates a visible team named after the agent gets
+that handle autocompleted in GitHub's comment composer, and the team needs no
+members because matching only reads the authored text and the repository's own
+owner. A same-named team in a different organization targets nobody, a personal
+repository has no teams and so ignores the form entirely, and AgentConnect never
+creates, renames, or deletes these teams. An explicit `@<github-app-name>` is the broadcast
 form and targets every matching review agent for the repository. When both forms
 are present, broadcast wins; mentioning an unrelated GitHub user does not change
 the configured review cadence.

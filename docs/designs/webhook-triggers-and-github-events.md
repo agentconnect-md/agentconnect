@@ -250,7 +250,8 @@ comment may match a shared `issue_comment` subscription or an explicit
 With `mentionOnly` enabled, authored event text must contain either:
 
 - `@<agent-name>` to select one agent;
-- `@<owner>/<agent-name>` to select that same agent as a GitHub team mention; or
+- `@<owner>/<agent-name>` to select that same agent as a GitHub team mention, on
+  an organization-owned repository; or
 - `@<app-slug>` to broadcast to all matching hooks in the repository.
 
 The App handle wins when both forms are present. Unrelated mentions do not
@@ -264,6 +265,11 @@ delivery's own repository, matching stays pure text against the authored body,
 the team is never read back through the API and needs no members, and a
 same-named team in any other organization selects nobody. Because `@<owner>/<slug>`
 is GitHub's team syntax, it is never also read as a bare mention of `<owner>`.
+
+The form is gated on the signed `repository.owner.type`. A personal account has
+no teams, so `@<owner>/<agent-name>` selects nobody there and neither summons an
+agent nor requests a review; a payload that does not carry the owner kind fails
+to the same inert state. The bare handle is unaffected either way.
 
 Every numbered-thread event passes a live, body-free permission decision owned
 by the CP. Webhook `author_association` values are descriptive only: `MEMBER`
