@@ -29,6 +29,7 @@ import { Icon } from '@/components/ui'
 import { AgentIconView, ModelMark, LoadingState, LogoMark, Spinner } from '@/components/marks'
 import { clipboardImageFile, prepareWebchatImage } from '@/lib/webchat-image'
 import { useProfile } from '@/lib/profile'
+import { featureFlagEnabled, type FeatureFlagId } from '@/lib/feature-flags'
 import {
   agentCapabilitySource,
   agentDaemonLabel,
@@ -142,10 +143,13 @@ export default function HomeView() {
   // if the preset's daemon is offline/unsigned-in while another daemon serves ready
   // agents, defaulting to the preset would flash the blocked banner for a daemon the
   // user isn't even using (composer must default to something startable).
+  // `memberSets` is an input because readiness reads it: agents, daemons and member sets are
+  // independent reads, and until the last lands a group placement is deliberately read as the pool
+  // — so a group agent can look ready here and settle as auth-blocked without a recompute.
   const preferred = useMemo(() => {
     const preset = agents.find((a) => a.name === 'agentconnect')
     return preset && agentReady(preset) ? preset : (agents.find(agentReady) ?? preset ?? agents[0])
-  }, [agents, daemons])
+  }, [agents, daemons, memberSets])
   const [agentId, setAgentId] = useState<string | undefined>(undefined)
   const agent = agents.find((a) => a.id === agentId) ?? preferred
   const agentOnline = agent ? isOnline(agent) : false
@@ -235,11 +239,15 @@ export default function HomeView() {
   const placementKind = agent ? agentPlacementKind(agent, memberSets) : undefined
   const placementLabel = agent ? agentDaemonLabel(agent, daemons, memberSets) : '—'
   const placementName = placementLabel === '—' ? '' : placementLabel
+  // A set target's own page exists only where the deployment offers that surface — both return
+  // NotFound behind their flag, while a placement made before the flag went off is still named
+  // here. Send those to the Infra list rather than to a dead end.
+  const setHref = (flag: FeatureFlagId, path: string) => orgPath(featureFlagEnabled(flag) ? path : '/daemons')
   const placementHref =
     placementKind === 'pool'
-      ? orgPath('/daemons/cluster')
+      ? setHref('daemon-pool', '/daemons/cluster')
       : placementKind === 'group' && agent?.setId
-        ? orgPath(`/daemons/groups/${agent.setId}`)
+        ? setHref('daemon-groups', `/daemons/groups/${agent.setId}`)
         : owningDaemon
           ? orgPath(`/daemons/${owningDaemon.daemonId}`)
           : null
