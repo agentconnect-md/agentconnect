@@ -296,45 +296,38 @@ describe.skipIf(process.platform !== 'win32')('skill install ledger on Windows',
     if (root) await rm(root, { recursive: true, force: true })
   })
 
-  // `it.fails`, not skip: skill install IS supported on Windows and this gap must stay visible. The
-  // helper exits before its stdin write lands — `write EPIPE` from skill-workspace-mutator.ts. When
-  // that is fixed this case fails for passing, which is the signal to drop the marker.
-  it.fails(
-    'installs a bundle through the gated helper and durable workspace lease',
-    async () => {
-      root = await mkdtemp(join(tmpdir(), 'ac-skill-ledger-win-'))
-      const cwd = join(root, 'workspace')
-      const stateDir = join(root, 'state')
-      const sourceDir = join(root, 'source')
-      await mkdir(cwd)
-      await mkdir(sourceDir)
-      const body = '---\nname: fixture\ndescription: fixture\n---\n'
-      await writeFile(join(sourceDir, 'SKILL.md'), body)
-      const files: SkillFileReceipt[] = [
-        { path: 'SKILL.md', mode: 0o600, size: Buffer.byteLength(body), sha256: sha256(body) }
+  it('installs a bundle through the gated helper and durable workspace lease', async () => {
+    root = await mkdtemp(join(tmpdir(), 'ac-skill-ledger-win-'))
+    const cwd = join(root, 'workspace')
+    const stateDir = join(root, 'state')
+    const sourceDir = join(root, 'source')
+    await mkdir(cwd)
+    await mkdir(sourceDir)
+    const body = '---\nname: fixture\ndescription: fixture\n---\n'
+    await writeFile(join(sourceDir, 'SKILL.md'), body)
+    const files: SkillFileReceipt[] = [
+      { path: 'SKILL.md', mode: 0o600, size: Buffer.byteLength(body), sha256: sha256(body) }
+    ]
+
+    const result = await reconcileSkillBundles({
+      cwd,
+      stateDir,
+      agentId: 'a1',
+      runtime: 'codex-acp',
+      cliVersion: '1.5.21',
+      fingerprint: 'fixture',
+      candidates: [
+        {
+          relativeRoot: '.agents/skills/fixture',
+          sourceKey: 'fixture',
+          sourceDir,
+          files,
+          treeDigest: treeDigest(files)
+        }
       ]
+    })
 
-      const result = await reconcileSkillBundles({
-        cwd,
-        stateDir,
-        agentId: 'a1',
-        runtime: 'codex-acp',
-        cliVersion: '1.5.21',
-        fingerprint: 'fixture',
-        candidates: [
-          {
-            relativeRoot: '.agents/skills/fixture',
-            sourceKey: 'fixture',
-            sourceDir,
-            files,
-            treeDigest: treeDigest(files)
-          }
-        ]
-      })
-
-      expect(result.installed).toEqual(['.agents/skills/fixture'])
-      await expect(readFile(join(cwd, '.agents/skills/fixture/SKILL.md'), 'utf8')).resolves.toBe(body)
-    },
-    20_000
-  )
+    expect(result.installed).toEqual(['.agents/skills/fixture'])
+    await expect(readFile(join(cwd, '.agents/skills/fixture/SKILL.md'), 'utf8')).resolves.toBe(body)
+  }, 20_000)
 })
