@@ -16,7 +16,20 @@ import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
-import { agentLabel, effectiveAgentStatus, presentedDaemonStatus, status } from '@/lib/data'
+import {
+  agentDaemonLabel,
+  agentLabel,
+  effectiveAgentStatus,
+  groupFleetStatus,
+  isPoolPlacementKind,
+  localDaemons,
+  placementIcon,
+  poolFleetStatus,
+  poolLabel,
+  presentedDaemonStatus,
+  status
+} from '@/lib/data'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { cronHuman } from '@/lib/cron'
 import { isAuthConfigured } from '@/lib/auth'
 import { fetchSessionExternalAccess, type SessionAccessProvider } from '@/lib/api'
@@ -40,7 +53,8 @@ interface SearchItem {
   icon?: AgentIcon | null
   model?: string
   runtime?: string
-  /** Icon-well glyph for page/setting results (the entry's nav icon). */
+  /** Icon-well glyph: the entry's nav icon for a page/setting, the placement's own glyph for the
+   *  pool and groups. Absent ⇒ the kind's default. */
   iconName?: string
   /** Org-scoped navigation target for this result. */
   href: string
@@ -61,10 +75,10 @@ type TypeFilter = 'all' | SearchKind
 // label so a wider match set is still discoverable).
 const CAP = 3
 
-// Icon-well glyph for every non-agent kind (agents render their avatar instead).
-// Page/setting results carry their own nav icon on the item.
+// Icon-well glyph for every non-agent kind (agents render their avatar instead). Pages, settings
+// and the three infra entities carry their own glyph on the item; the rest are fixed per kind.
 const wellIcon = (it: SearchItem): string => {
-  if (it.kind === 'daemon') return 'server'
+  if (it.kind === 'daemon') return it.iconName ?? 'server'
   if (it.kind === 'schedule') return 'alarm-clock'
   if (it.kind === 'session') return 'message-square-text'
   return it.iconName ?? 'panel-left'
@@ -78,7 +92,7 @@ export function GlobalSearch({
 }: { autoFocus?: boolean; mobile?: boolean; rail?: boolean; onClose?: () => void } = {}) {
   const router = useRouter()
   const { orgPath, myRole, activeOrg } = useOrgs()
-  const { agents, daemons, crons, allSessions } = useConsoleData()
+  const { agents, daemons, crons, allSessions, memberSets, orgSetIds } = useConsoleData()
 
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
@@ -131,15 +145,16 @@ export function GlobalSearch({
 
     const agentMatches = agents.filter((a) => hit(agentLabel(a)) || hit(a.name))
     const agentItems: SearchItem[] = agentMatches.slice(0, CAP).map((a) => {
-      // Gate "online" on the owning daemon being connected (as the Agents view does),
-      // and surface the daemon's display NAME — never its host.
+      // Gate "online" on the owning daemon being connected (as the Agents view does), and surface
+      // what it RUNS ON by display name — never its host, and never a set resolved as a machine.
       const owning = daemonById.get(a.daemon)
       const s = status(effectiveAgentStatus(a, owning))
+      const placement = agentDaemonLabel(a, daemons, memberSets)
       return {
         key: `agent:${a.id}`,
         kind: 'agent',
         title: agentLabel(a),
-        meta: [a.model || undefined, owning?.name].filter(Boolean).join(' · '),
+        meta: [a.model || undefined, placement === '—' ? undefined : placement].filter(Boolean).join(' · '),
         aux: s.label,
         dot: s.dot,
         icon: a.icon,
@@ -153,18 +168,54 @@ export function GlobalSearch({
     // view's "Agents hosted"). NOT daemon.agents, which is the active-session count.
     const hostedByDaemon = new Map<string, number>()
     for (const a of agents) hostedByDaemon.set(a.daemon, (hostedByDaemon.get(a.daemon) ?? 0) + 1)
-    const daemonMatches = daemons.filter((d) => hit(d.name))
-    const daemonItems: SearchItem[] = daemonMatches.slice(0, CAP).map((d) => {
-      const hosted = hostedByDaemon.get(d.daemonId) ?? 0
-      return {
+    const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
+    // The Infra page's own three entities, in its own order — the pool as ONE entry, the machines,
+    // then the groups. Matching `daemons` alone found every pool Pod under the pool's shared name
+    // (N identical rows, each opening a Pod that a roll replaces) and no group at all.
+    const poolMembers = featureFlagEnabled('daemon-pool') ? daemons.filter((d) => d.pool) : []
+    const poolMatches =
+      poolMembers.length > 0 && hit(poolLabel())
+        ? [
+            {
+              key: 'daemon:pool',
+              kind: 'daemon' as const,
+              title: poolLabel(),
+              meta: plural(
+                agents.filter((a) => isPoolPlacementKind(a.placementKind, a.setId, orgSetIds)).length,
+                'agent'
+              ),
+              aux: status(poolFleetStatus(poolMembers)).label,
+              iconName: placementIcon('pool'),
+              href: orgPath('/daemons/cluster')
+            }
+          ]
+        : []
+    const machineMatches = localDaemons(daemons)
+      .filter((d) => hit(d.name))
+      .map((d) => ({
         key: `daemon:${d.daemonId}`,
-        kind: 'daemon',
+        kind: 'daemon' as const,
         title: d.name,
-        meta: [d.version || undefined, `${hosted} agent${hosted === 1 ? '' : 's'}`].filter(Boolean).join(' · '),
+        meta: [d.version || undefined, plural(hostedByDaemon.get(d.daemonId) ?? 0, 'agent')]
+          .filter(Boolean)
+          .join(' · '),
         aux: status(presentedDaemonStatus(d)).label,
+        iconName: placementIcon('daemon'),
         href: orgPath(`/daemons/${d.daemonId}`)
-      }
-    })
+      }))
+    const groupMatches = (featureFlagEnabled('daemon-groups') ? memberSets : [])
+      .filter((group) => hit(group.name))
+      .map((group) => ({
+        key: `group:${group.setId}`,
+        kind: 'daemon' as const,
+        title: group.name,
+        meta: [plural(group.memberDaemonIds.length, 'daemon'), plural(group.agentCount, 'agent')].join(' · '),
+        aux: status(groupFleetStatus(group, daemons)).label,
+        iconName: placementIcon('group'),
+        href: orgPath(`/daemons/groups/${group.setId}`)
+      }))
+    const daemonMatches: SearchItem[] = [...poolMatches, ...machineMatches, ...groupMatches]
+    const daemonItems = daemonMatches.slice(0, CAP)
 
     // Only named schedules are searchable — legacy/CLI cron rows have a null name.
     // The `c.name` guard also keeps them out of the empty-query chip count (where
@@ -241,7 +292,21 @@ export function GlobalSearch({
         items: settingMatches.slice(0, CAP).map(toItem)
       }
     ]
-  }, [query, agents, daemons, crons, allSessions, daemonById, agentById, orgPath, authed, myRole, sessionAccessRenders])
+  }, [
+    query,
+    agents,
+    daemons,
+    memberSets,
+    orgSetIds,
+    crons,
+    allSessions,
+    daemonById,
+    agentById,
+    orgPath,
+    authed,
+    myRole,
+    sessionAccessRenders
+  ])
 
   const totalCount = useMemo(() => groups.reduce((n, g) => n + g.count, 0), [groups])
   // Chips: "All" + every kind with at least one match.

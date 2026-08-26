@@ -13,6 +13,7 @@ import {
   agentDaemonLabel,
   agentLabel,
   agentPermissionDisplay,
+  agentPlacementIcon,
   displayedEffort,
   effortLabel,
   fastModeAvailableFor,
@@ -3226,6 +3227,9 @@ export default function SessionDetailView() {
           ? focusedDaemonId.slice(0, 8)
           : focusedDaemonId
         : '')
+  // Match the glyph to what the name says: a resolved machine is a server, an unresolved
+  // placement takes its target's own icon (pool / group / daemon).
+  const focusedDaemonIcon = !focusedDaemon && focusedAgent ? agentPlacementIcon(focusedAgent, memberSets) : 'server'
   // A cron-triggered session carries `user === "cron:<scheduleId>"`. When that's the
   // shown participant, render the chip as a link back to the owning schedule
   // (name-first once the crons list resolves it; the raw `cron:<id>` still links if
@@ -3403,7 +3407,7 @@ export default function SessionDetailView() {
     { icon: 'circle-dollar-sign', label: 'Cost', value: focusedSession?.cost ?? '—' },
     { icon: 'wrench', label: 'Tool calls', value: String(displayToolCount) }
   ]
-  if (focusedDaemonName) headerFacts.push({ icon: 'server', label: 'Daemon', value: focusedDaemonName })
+  if (focusedDaemonName) headerFacts.push({ icon: focusedDaemonIcon, label: 'Daemon', value: focusedDaemonName })
   if (focusedAgentRuntime)
     headerFacts.push({
       icon: 'cpu',

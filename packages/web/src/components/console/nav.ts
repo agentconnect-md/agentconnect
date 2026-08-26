@@ -51,8 +51,8 @@ export const MOBILE_NAV: NavItem[] = [
 ]
 
 // The "More" sheet's destinations — the desktop rail items beyond the 4 primary
-// tabs, plus Settings. Profile is NOT here: it lives in the mobile app bar as a
-// top-right avatar (mirroring the desktop top bar). The org switcher is
+// tabs, plus the org's settings. Profile is NOT here: it lives in the mobile app
+// bar as a top-right avatar (mirroring the desktop top bar). The org switcher is
 // prepended separately, in the sheet itself.
 export const MORE_ROWS: NavItem[] = [
   { href: '/tools', label: 'Tools & Skills', icon: 'blocks' },
@@ -61,7 +61,7 @@ export const MORE_ROWS: NavItem[] = [
   { href: '/daemons', label: 'Infra', icon: 'server' },
   { href: '/usage', label: 'Analytics', icon: 'circle-gauge' },
   { href: '/billing', label: 'Billing', icon: 'credit-card', requires: 'billing' },
-  { href: '/settings', label: 'Settings', icon: 'settings' }
+  { href: '/settings', label: 'Organization settings', icon: 'settings' }
 ]
 
 // Section label for the mobile app bar, matched by path prefix. (Desktop has no

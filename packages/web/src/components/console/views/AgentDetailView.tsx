@@ -10,6 +10,7 @@ import {
   agentLabel,
   agentModelDisplay,
   agentPermissionDisplay,
+  agentPlacementIcon,
   effectiveAgentStatus,
   effortField,
   enrichSessionWithAgent,
@@ -586,6 +587,9 @@ export default function AgentDetailView() {
       }
     : undefined
   const daemonLabel = agentDaemonLabel(da, daemons, memberSets)
+  // The glyph says WHAT it is placed on — a machine, a group, or the pool — so the line never
+  // draws a set target as the one server that happens to answer for it.
+  const daemonIcon = agentPlacementIcon(da, memberSets)
   // Append region only when the Agent projection has a real one.
   const daemonLine = da.region && da.region !== '—' ? `${daemonLabel} · ${da.region}` : daemonLabel
   // Only a daemon in the viewer's fleet has a working detail route.
@@ -659,7 +663,7 @@ export default function AgentDetailView() {
             </span>
             {owningDaemon ? (
               <Link className="lnk font-sans text-[12.5px] font-medium leading-normal" href={daemonHref}>
-                <Icon name="server" size={14} color="var(--text-tertiary)" />
+                <Icon name={daemonIcon} size={14} color="var(--text-tertiary)" />
                 {daemonLine}
               </Link>
             ) : da.daemon === '—' ? (
@@ -681,7 +685,7 @@ export default function AgentDetailView() {
               </button>
             ) : (
               <span className="inline-flex items-center gap-[6px] font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-                <Icon name="server" size={14} color="var(--text-tertiary)" />
+                <Icon name={daemonIcon} size={14} color="var(--text-tertiary)" />
                 {daemonLine}
               </span>
             )}
@@ -785,7 +789,7 @@ export default function AgentDetailView() {
               {modelText}
             </span>
             <span className="inline-flex items-center gap-[6px] font-mono text-[12px] font-medium leading-normal whitespace-nowrap text-(--text-secondary)">
-              <Icon name="server" size={14} color="var(--text-tertiary)" />
+              <Icon name={daemonIcon} size={14} color="var(--text-tertiary)" />
               {daemonLine}
             </span>
           </div>

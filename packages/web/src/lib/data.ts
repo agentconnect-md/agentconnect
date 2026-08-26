@@ -147,6 +147,57 @@ export function agentDaemonLabel(
   return daemons.find((daemon) => daemon.daemonId === agent.daemon)?.name ?? agent.daemonName ?? '—'
 }
 
+/** What a placement TARGET is, as the console draws it: the install-wide pool, one of the org's
+ *  own groups, or a single machine. Same three cases `agentDaemonLabel` names. */
+export type PlacementIconKind = 'pool' | 'group' | 'daemon'
+
+/** The pool's own glyph — the product's cloud on a managed install, a cluster everywhere else,
+ *  matching how the pool draws itself on the Infra list and its detail page. */
+export function poolIcon(): string {
+  return featureFlagEnabled('managed') ? 'cloud' : 'boxes'
+}
+
+/** The ONE icon language for placements, so the picker, the list and every header agree. */
+export function placementIcon(kind: PlacementIconKind): string {
+  return kind === 'pool' ? poolIcon() : kind === 'group' ? 'layers' : 'server'
+}
+
+/** Which of the three a given agent is placed on — the icon half of `agentDaemonLabel`, resolved
+ *  from the same pair, so a row's glyph can never disagree with the name beside it. */
+export function agentPlacementKind(
+  agent: Pick<Agent, 'placementKind' | 'setId'>,
+  groups: readonly Pick<MemberSetRow, 'setId'>[]
+): PlacementIconKind {
+  if (!isSetPlacementKind(agent.placementKind)) return 'daemon'
+  return agent.setId && groups.some((candidate) => candidate.setId === agent.setId) ? 'group' : 'pool'
+}
+
+/** The glyph for an agent's placement. */
+export function agentPlacementIcon(
+  agent: Pick<Agent, 'placementKind' | 'setId'>,
+  groups: readonly Pick<MemberSetRow, 'setId'>[]
+): string {
+  return placementIcon(agentPlacementKind(agent, groups))
+}
+
+/** The daemon whose REPORTED capabilities describe an agent's placement — runtimes, model catalog,
+ *  and whether that runtime is signed in. A set target resolves to one SERVING member standing in
+ *  for the set (the rule `editAgentCapabilitySource` already uses), never to the placement:
+ *  `POOL_PLACEMENT` matches no daemon id, and the `undefined` that yields reads as "nothing to
+ *  report" rather than "not known" — which is what let a pool agent needing a login look ready. */
+export function agentCapabilitySource<T extends Pick<DaemonRow, 'daemonId' | 'pool' | 'memberSetId' | 'status'>>(
+  agent: Pick<Agent, 'daemon' | 'placementKind' | 'setId'>,
+  daemons: readonly T[],
+  groups: readonly Pick<MemberSetRow, 'setId'>[]
+): T | undefined {
+  const kind = agentPlacementKind(agent, groups)
+  if (kind === 'daemon') return daemons.find((daemon) => daemon.daemonId === agent.daemon)
+  const members = daemons.filter((daemon) =>
+    kind === 'pool' ? daemon.pool : !daemon.pool && daemon.memberSetId === agent.setId
+  )
+  return members.find((daemon) => daemon.status === 'online') ?? members[0]
+}
+
 /**
  * One of the organization's own member sets, as the console holds it (daemon-groups.md §2).
  *

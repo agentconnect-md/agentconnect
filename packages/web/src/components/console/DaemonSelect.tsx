@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { Icon } from '@/components/ui'
+import { placementIcon, type PlacementIconKind } from '@/lib/data'
 
 /** What a placement option NAMES (daemon-groups.md §2): the install-wide pool, one of the org's
  *  own groups, or a single machine. The first two are member sets and behave alike — the server
  *  picks the member — so they share an icon language and differ only in badge. */
-export type PlacementOptionKind = 'pool' | 'group' | 'daemon'
+export type PlacementOptionKind = PlacementIconKind
 
 export interface DaemonSelectOption {
   value: string
@@ -21,7 +22,7 @@ export interface DaemonSelectOption {
 /** A set target is drawn as a target, never as the member that happens to answer for it. */
 const isSet = (option: Pick<DaemonSelectOption, 'kind'>): boolean => option.kind === 'pool' || option.kind === 'group'
 const iconFor = (option: DaemonSelectOption): string =>
-  option.kind === 'pool' ? 'cloud' : option.kind === 'group' ? 'layers' : option.value ? 'server' : 'server-off'
+  option.kind || option.value ? placementIcon(option.kind ?? 'daemon') : 'server-off'
 
 function enabledIndex(options: readonly DaemonSelectOption[], start: number, delta: 1 | -1): number {
   if (!options.length) return -1

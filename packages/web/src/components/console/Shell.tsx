@@ -300,7 +300,7 @@ function RailAccount({
             </Link>
             <Link href={orgPath('/settings')} className="dmi no-underline" onClick={() => setOpen(false)}>
               <Icon name="settings" size={15} color="var(--text-tertiary)" />
-              Settings
+              Organization settings
             </Link>
             <div className="dmsep" />
             <button className="dmi" onClick={onToggleTheme}>
@@ -849,7 +849,7 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                       className="lnk flex-none text-[12px]"
                       onClick={() => setGithubNotice(null)}
                     >
-                      Settings
+                      Organization settings
                     </Link>
                   ) : (
                     <button
@@ -1071,7 +1071,7 @@ function UserMenu({
             </Link>
             <Link href={orgPath('/settings')} className="usermenu-item no-underline" onClick={() => setOpen(false)}>
               <Icon name="settings" size={15} color="var(--text-tertiary)" />
-              Settings
+              Organization settings
             </Link>
             <button className="usermenu-item" onClick={onSignOut}>
               <Icon name="log-out" size={15} color="var(--text-tertiary)" />

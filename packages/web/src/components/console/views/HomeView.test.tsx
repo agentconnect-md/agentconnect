@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   agents: [] as Array<Record<string, unknown>>,
   daemons: [] as Array<Record<string, unknown>>,
+  memberSets: [] as Array<Record<string, unknown>>,
   menus: [] as Array<{ title: string; value: string; options: string[] }>,
   openPlayground: vi.fn(() => 'pg_1'),
   pgSend: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     agents: mocks.agents,
     daemons: mocks.daemons,
+    memberSets: mocks.memberSets,
     crons: [],
     allSessions: [],
     usage24h: null,
@@ -123,8 +125,15 @@ const render = async () => {
   await act(async () => root.render(<HomeView />))
 }
 
+/** The console offers a set target's own page only where the deployment asked for that surface. */
+const setFlags = (value: string) => {
+  ;(window as unknown as { __AC_ENV?: Record<string, string> }).__AC_ENV = { FEATURE_FLAGS: value }
+}
+
 beforeEach(() => {
   mocks.menus = []
+  mocks.memberSets = []
+  setFlags('daemon-pool,daemon-groups')
   mocks.openPlayground.mockClear()
   mocks.pgSend.mockClear()
   mocks.pgSetModel.mockClear()
@@ -375,5 +384,160 @@ describe('HomeView readiness gate', () => {
     mocks.daemons = [daemon()]
     await render()
     expect(mocks.menus.find((m) => m.title === 'Agent')?.value).toBe('a-pre')
+  })
+})
+
+// A pool or group agent names no member — `daemon` carries the set sentinel — so resolving its
+// daemon BY ID found nothing. Nothing reads as "no runtime reported a login problem", which is why
+// such an agent was never blocked and its real model catalog never reached the composer.
+describe('HomeView readiness through the placement', () => {
+  const onPool = (over: Record<string, unknown> = {}) =>
+    agent({ daemon: 'pool', placementKind: 'set', setId: null, placementReady: true, ...over })
+  const poolMember = (authRequired: boolean) =>
+    daemon({
+      daemonId: 'pod-a',
+      pool: true,
+      memberSetId: 'set-pool',
+      name: 'AgentConnect Cloud',
+      runtimeModels: [{ runtime: 'claude', models: ['claude-sonnet-4-5'], modelCatalog: claudeCatalog, authRequired }]
+    })
+
+  it('blocks a pool agent whose runtime needs a login, and names what it runs on', async () => {
+    mocks.agents = [onPool()]
+    mocks.daemons = [poolMember(true)]
+    await render()
+    expect(host.textContent).toContain('No AI runtime is signed in')
+    expect(host.textContent).toContain('Kubernetes cluster')
+  })
+
+  it('leaves it startable when the pool member is signed in', async () => {
+    mocks.agents = [onPool()]
+    mocks.daemons = [poolMember(false)]
+    await render()
+    expect(host.textContent).not.toContain('No AI runtime is signed in')
+  })
+
+  it('reads the pool’s own model catalog, not the static fallback', async () => {
+    mocks.agents = [onPool({ model: '' })]
+    mocks.daemons = [poolMember(false)]
+    await render()
+    expect(menu('Model')?.value).toBe('claude-sonnet-4-5')
+    expect(menu('Effort')?.value).toBe('high')
+  })
+
+  it('resolves a GROUP placement to its own member, never to a pool member', async () => {
+    mocks.agents = [onPool({ placementKind: 'set', setId: 'set-lab' })]
+    mocks.memberSets = [{ setId: 'set-lab', name: 'lab', memberDaemonIds: ['dmn-lab'], agentCount: 1 }]
+    mocks.daemons = [
+      poolMember(false),
+      daemon({
+        daemonId: 'dmn-lab',
+        memberSetId: 'set-lab',
+        name: 'lab-box',
+        runtimeModels: [
+          { runtime: 'claude', models: ['claude-sonnet-4-5'], modelCatalog: claudeCatalog, authRequired: true }
+        ]
+      })
+    ]
+    await render()
+    expect(host.textContent).toContain('No AI runtime is signed in')
+    expect(host.textContent).toContain('lab')
+  })
+})
+
+// Agents, daemons and member sets are three independent reads. Readiness depends on all three, so
+// the default-agent memo has to as well — a group placement reads as the POOL until its group
+// resolves, which is exactly the window in which an auth-blocked agent looks startable.
+describe('HomeView default agent across a late member-set read', () => {
+  const catalogFor = (authRequired: boolean) => [
+    { runtime: 'claude', models: ['claude-sonnet-4-5'], modelCatalog: claudeCatalog, authRequired }
+  ]
+
+  it('re-picks the default once the group resolves the preset as auth-blocked', async () => {
+    // The preset sits on a group whose member needs a login; another agent on a machine is ready.
+    mocks.agents = [
+      agent({
+        id: 'preset',
+        name: 'agentconnect',
+        daemon: 'pool',
+        placementKind: 'set',
+        setId: 'set-lab',
+        placementReady: true
+      }),
+      agent({ id: 'ready', name: 'other', daemon: 'dmn-1' })
+    ]
+    mocks.daemons = [
+      daemon({ daemonId: 'pod-a', pool: true, memberSetId: 'set-pool', runtimeModels: catalogFor(false) }),
+      daemon({ daemonId: 'dmn-lab', memberSetId: 'set-lab', runtimeModels: catalogFor(true) }),
+      daemon({ daemonId: 'dmn-1', runtimeModels: catalogFor(false) })
+    ]
+    // Member sets have not landed: the group placement reads as the pool, whose member IS signed
+    // in, so the preset looks ready and is chosen.
+    await render()
+    expect(host.textContent).not.toContain('No AI runtime is signed in')
+
+    // The SAME mount then receives the group list — a re-render, not a remount, because a remount
+    // rebuilds the memo and would pass either way.
+    mocks.memberSets = [{ setId: 'set-lab', name: 'lab', memberDaemonIds: ['dmn-lab'], agentCount: 1 }]
+    await act(async () => root.render(<HomeView />))
+    // With the group known the preset is auth-blocked, so the default moves to the ready agent and
+    // no banner shows. While `memberSets` was not an input, the stale preset stayed selected.
+    expect(host.textContent).not.toContain('No AI runtime is signed in')
+  })
+})
+
+// Both set targets NotFound behind their own flag, while a placement made before the flag went off
+// is still NAMED here — so the banner's action must not offer a door that does not open.
+describe('HomeView blocked-banner action behind the flags', () => {
+  const blockedOnGroup = () => {
+    mocks.agents = [agent({ daemon: 'pool', placementKind: 'set', setId: 'set-lab', placementReady: true })]
+    mocks.memberSets = [{ setId: 'set-lab', name: 'lab', memberDaemonIds: ['dmn-lab'], agentCount: 1 }]
+    mocks.daemons = [
+      daemon({
+        daemonId: 'dmn-lab',
+        memberSetId: 'set-lab',
+        runtimeModels: [
+          { runtime: 'claude', models: ['claude-sonnet-4-5'], modelCatalog: claudeCatalog, authRequired: true }
+        ]
+      })
+    ]
+  }
+  const clickAction = () => {
+    const btn = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Fix')
+    if (!btn) throw new Error('Fix action not rendered')
+    act(() => btn.click())
+  }
+
+  it('opens the group where the deployment offers groups', async () => {
+    blockedOnGroup()
+    await render()
+    clickAction()
+    expect(mocks.push).toHaveBeenCalledWith('/acme/daemons/groups/set-lab')
+  })
+
+  it('falls back to Infra where it does not, instead of the group NotFound', async () => {
+    setFlags('')
+    blockedOnGroup()
+    await render()
+    clickAction()
+    expect(mocks.push).toHaveBeenCalledWith('/acme/daemons')
+  })
+
+  it('falls back to Infra for a pool placement behind the pool flag', async () => {
+    setFlags('')
+    mocks.agents = [agent({ daemon: 'pool', placementKind: 'set', setId: null, placementReady: true })]
+    mocks.daemons = [
+      daemon({
+        daemonId: 'pod-a',
+        pool: true,
+        memberSetId: 'set-pool',
+        runtimeModels: [
+          { runtime: 'claude', models: ['claude-sonnet-4-5'], modelCatalog: claudeCatalog, authRequired: true }
+        ]
+      })
+    ]
+    await render()
+    clickAction()
+    expect(mocks.push).toHaveBeenCalledWith('/acme/daemons')
   })
 })

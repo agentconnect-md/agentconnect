@@ -6,6 +6,7 @@ import {
   agentDaemonLabel,
   agentLabel,
   agentModelDisplay,
+  agentPlacementIcon,
   effectiveAgentStatus,
   isGitWorkspace,
   runtimeLabel,
@@ -655,8 +656,14 @@ export default function AgentsView() {
                     </span>
                   </div>
                 ) : (
-                  <div className="mono min-w-0 truncate pr-3 text-[12px] text-(--text-primary)" title={daemonName(a)}>
-                    {daemonName(a)}
+                  <div className="flex min-w-0 items-center gap-[6px] pr-3" title={daemonName(a)}>
+                    <Icon
+                      name={agentPlacementIcon(a, memberSets)}
+                      size={13}
+                      color="var(--text-tertiary)"
+                      className="flex-none"
+                    />
+                    <span className="mono min-w-0 truncate text-[12px] text-(--text-primary)">{daemonName(a)}</span>
                   </div>
                 )}
                 {a.createdBy ? (
