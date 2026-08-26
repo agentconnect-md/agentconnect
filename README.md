@@ -81,7 +81,11 @@ can't see what an agent is doing, can't take over a session, can't review its
 output, and the context it builds stays on one laptop. So every team writes the
 same glue: message channels, cron jobs, credential handling, context stitching.
 
-AgentConnect turns that glue into a platform. Teams use it to:
+AgentConnect turns that glue into a platform.
+
+### Use cases
+
+Teams use it to:
 
 - **Triage issues together.** People and agents investigate in one shared
   thread, bring in the right specialists, and keep the fix and verification
@@ -100,12 +104,25 @@ AgentConnect turns that glue into a platform. Teams use it to:
   them. Each reviewer can use its own model, instructions, repository access,
   tools, and sandbox policy.
 
-Behind these workflows, every agent gets the model, workspace, memory, MCP
-servers, skills, repository access, and sandbox policy its role requires, and
-permissions separate who may use an agent, who may see its sessions, and which
-repositories, tools, and other agents it may reach. Agents remember what they
-learn as they go. And the Apache-2.0 stack is yours to self-host, with agent
-execution and workspaces staying in the environment you operate.
+### Features
+
+- **Work as one team, on any runtime.** Create agents with different roles and
+  let them call on one another, while people follow along in the conversations
+  where the work happens. Claude Code, Codex, Grok Build, DeepSeek, Pi, and any
+  other ACP-compatible runtime run side by side, and changing one does not
+  rebuild the workflow around it.
+- **Keep work where it happens.** Link agents to bots in Slack, Telegram,
+  Discord, and Lark, or to repositories and workflows on GitHub and GitLab.
+- **Choose the right agent for every job.** Configure each agent's runtime,
+  model, workspace, tools, and machine independently.
+- **Carry context forward.** Give each agent its own memory and skills, and
+  publish reviewed
+  [Knowledge](https://docs.agentconnect.md/docs/knowledge) that every agent can
+  find on demand.
+- **Set clear boundaries.** Decide who can see each agent and session, which
+  repositories and tools it may use, and which other agents it may call.
+- **Stay in control.** Self-host the Apache-2.0 stack and keep agent execution
+  and workspaces in the environment you operate.
 
 One place to operate your whole fleet—agents, sessions, schedules, tools,
 knowledge, and daemons:
