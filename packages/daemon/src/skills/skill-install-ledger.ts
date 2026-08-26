@@ -168,7 +168,7 @@ export async function hasSkillPublicationOperation(
 ): Promise<boolean> {
   const location = await skillLedgerLocation(cwd, stateDir)
   const ledger = await readSkillLedger(location)
-  return ledger?.publicationOperationId === operationId && publicationMacValid(ledger, publicationKey)
+  return ledger !== null && ledger.publicationOperationId === operationId && publicationMacValid(ledger, publicationKey)
 }
 
 const cwdLocks = new Map<string, Promise<unknown>>()

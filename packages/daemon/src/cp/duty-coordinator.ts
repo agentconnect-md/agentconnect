@@ -531,7 +531,8 @@ export class DutyCoordinator {
     // that admission, or the member starts serving a group the CP has already taken away.
     const pending = this.withdrawDutyGroups(revocations.map((revocation) => revocation.groupId))
     if (pending.length > 0) this.log.info(`duty: revoked ${pending.length} group(s) mid-admission`)
-    const fenceRevocation = this.revokeProjectedFences(revocations.map((one) => one.groupId))
+    const fences = this.projectedFences(revocations.map((one) => one.groupId))
+    const fenceRevocation = this.revokeProjectedFences(fences)
     const result = this.duties.applyRevoke(revocations)
     this.log.info(
       `duty: revoked ${revocations.length} group(s) (${revocations.map((r) => r.reason).join(',')}); ` +
@@ -556,7 +557,7 @@ export class DutyCoordinator {
     if (pending.length > 0) this.log.warn(`duty: self-fenced ${pending.length} group(s) mid-admission`)
     const held = groupIds.filter((groupId) => this.duties.get(groupId) !== undefined)
     if (held.length === 0) return
-    const fenceRevocation = this.revokeProjectedFences(held)
+    const fenceRevocation = this.revokeProjectedFences(this.projectedFences(held))
     const result = this.duties.applyRevoke(held.map((groupId) => ({ groupId, reason: 'superseded' as const })))
     this.log.warn(
       `duty: self-fenced ${held.length} group(s); ${result.agentsLost.length} agent(s) left service, ` +
@@ -821,7 +822,7 @@ export class DutyCoordinator {
       for (const groupId of ready) {
         // Withdraw locally first — the same teardown a revoke runs — and wait for it to be real.
         const held = this.duties.get(groupId)
-        await this.revokeProjectedFences([groupId])
+        await this.revokeProjectedFences(this.projectedFences([groupId]))
         const result = this.duties.applyRevoke([{ groupId, reason: 'superseded' }])
         stats.groups++
         stats.agents += result.agentsLost.length
@@ -854,15 +855,20 @@ export class DutyCoordinator {
     )
   }
 
-  private async revokeProjectedFences(groupIds: readonly string[]): Promise<void> {
-    if (!this.host.revokeDutyWriteFence) return
-    for (const groupId of groupIds) {
+  private projectedFences(groupIds: readonly string[]): Array<{ groupId: string; term: string }> {
+    return groupIds.flatMap((groupId) => {
       const held = this.duties.get(groupId)
-      if (!held) continue
+      return held ? [{ groupId, term: held.term }] : []
+    })
+  }
+
+  private async revokeProjectedFences(fences: readonly { groupId: string; term: string }[]): Promise<void> {
+    if (!this.host.revokeDutyWriteFence) return
+    for (const { groupId, term } of fences) {
       try {
         await this.host.revokeDutyWriteFence({
           groupId,
-          term: held.term,
+          term,
           daemonId: this.requiredDaemonId()
         })
       } catch (error) {
