@@ -2,7 +2,9 @@ import { mkdtemp, mkdir, writeFile, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { listLocalSkills, originForSourceKey } from '../src/skills/local-skill-inventory.js'
+import { createHash } from 'node:crypto'
+import { listLocalSkills, listSandboxSkills, originForSourceKey } from '../src/skills/local-skill-inventory.js'
+import type { WorkspaceFiles } from '../src/workspace/workspace-files.js'
 
 async function writeSkill(
   cwd: string,
@@ -17,6 +19,51 @@ async function writeSkill(
 }
 
 describe('local skill inventory', () => {
+  it('classifies a cluster root only while its live receipt matches', async () => {
+    const manifest = '---\nname: managed-one\ndescription: fixture\n---\n# body\n'
+    let live = manifest
+    const files = {
+      async list(_root: string, req: { path: string }) {
+        if (req.path === '.agents/skills')
+          return { agentId: 'a', path: req.path, exists: true, entries: [{ name: 'managed-one', type: 'dir' }] }
+        return { agentId: 'a', path: req.path, exists: false, entries: [] }
+      },
+      async read(_root: string, req: { path: string }) {
+        return {
+          agentId: 'a',
+          path: req.path,
+          exists: true,
+          type: 'file',
+          size: Buffer.byteLength(live),
+          encoding: 'utf8',
+          content: live,
+          offset: 0,
+          truncated: false
+        }
+      }
+    } as WorkspaceFiles
+    const ledger = {
+      roots: [
+        {
+          path: '.agents/skills/managed-one',
+          sourceId: 'managed:one',
+          sourceKind: 'managed' as const,
+          digest: 'a'.repeat(64),
+          files: [
+            {
+              path: 'SKILL.md',
+              size: Buffer.byteLength(manifest),
+              sha256: createHash('sha256').update(manifest).digest('hex')
+            }
+          ]
+        }
+      ]
+    }
+    expect((await listSandboxSkills(files, '/workspace', 'a', ledger))[0]?.origin).toBe('managed')
+    live += 'modified\n'
+    expect((await listSandboxSkills(files, '/workspace', 'a', ledger))[0]?.origin).toBe('repo')
+  })
+
   it('maps a source key to its origin tag', () => {
     expect(originForSourceKey('dream:deploy:sha256:abc')).toBe('dream-accepted')
     expect(originForSourceKey('managed:id:1:sha256:abc')).toBe('managed')

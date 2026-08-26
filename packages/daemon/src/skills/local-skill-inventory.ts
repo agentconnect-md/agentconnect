@@ -17,11 +17,13 @@
 // bounded well under the control-frame size limit.
 
 import { promises as fsp, type Stats } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { readSkillLedger, skillLedgerLocation } from './skill-install-ledger.js'
 import { readBoundedFile } from './skill-source-snapshot.js'
 import type { WorkspaceFiles } from '../workspace/workspace-files.js'
+import type { ClusterSkillLedger } from '../store/cluster-skill-ledger.js'
 
 export type LocalSkillOrigin = 'dream-accepted' | 'managed' | 'git-source' | 'repo'
 
@@ -258,9 +260,19 @@ function skillAccumulator(ownedOrigin: Map<string, LocalSkillOrigin>): SkillAccu
 export async function listSandboxSkills(
   files: WorkspaceFiles,
   root: string,
-  agentId: string
+  agentId: string,
+  ledger?: ClusterSkillLedger
 ): Promise<LocalSkillEntry[]> {
-  const acc = skillAccumulator(new Map())
+  const owned = new Map<string, LocalSkillOrigin>()
+  for (const entry of ledger?.roots ?? []) {
+    if (await clusterRootMatches(files, root, agentId, entry.path, entry.files)) {
+      owned.set(
+        entry.path,
+        entry.sourceKind === 'managed' ? 'managed' : entry.sourceKind === 'dream' ? 'dream-accepted' : 'git-source'
+      )
+    }
+  }
+  const acc = skillAccumulator(owned)
   for (const skillRoot of SKILL_ROOTS) {
     let cursor: string | undefined
     do {
@@ -296,4 +308,30 @@ export async function listSandboxSkills(
     } while (cursor !== undefined)
   }
   return acc.done()
+}
+
+async function clusterRootMatches(
+  files: WorkspaceFiles,
+  root: string,
+  agentId: string,
+  ownedRoot: string,
+  receipts: ClusterSkillLedger['roots'][number]['files']
+): Promise<boolean> {
+  try {
+    for (const receipt of receipts) {
+      const read = await files.read(root, {
+        agentId,
+        path: `${ownedRoot}/${receipt.path}`,
+        offset: 0,
+        limit: Math.max(1, receipt.size)
+      })
+      if (!read.exists || read.encoding !== 'utf8' || read.content === undefined || read.truncated) return false
+      const body = Buffer.from(read.content, 'utf8')
+      if (body.length !== receipt.size || createHash('sha256').update(body).digest('hex') !== receipt.sha256)
+        return false
+    }
+    return true
+  } catch {
+    return false
+  }
 }

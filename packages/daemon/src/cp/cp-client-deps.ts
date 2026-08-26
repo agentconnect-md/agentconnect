@@ -396,7 +396,11 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       // console lists are the ones the agent's harness loads, and those are in the pod.
       async (id) => (await workspaceScope.location(id))?.root,
       join(host.daemonRoot(), 'skill-installs'),
-      (id) => host.k8sPlane()?.workspaceFilesFor(id)
+      (id) => host.k8sPlane()?.workspaceFilesFor(id),
+      async (id) => {
+        const incarnation = host.k8sPlane()?.workspaceIncarnationFor?.(id)
+        return incarnation ? (await host.store().clusterSkillLedger(id, incarnation))?.ledger : undefined
+      }
     ),
     runtimeCommandsReader: createRuntimeCommandsReader(host.runtimeCommands(), (id) => host.agents().has(id)),
     // webchat is no longer a CP control-WS integration (milestone A4) — it rides the

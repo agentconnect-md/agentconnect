@@ -113,7 +113,14 @@ export const ClusterSkillReconcileReplySchema = z
             path: RelativeSkillPathSchema,
             sourceId: z.string().min(1).max(160),
             sourceKind: z.enum(['agent', 'managed', 'dream']),
-            digest: Sha256Schema
+            digest: Sha256Schema,
+            files: z
+              .array(
+                z
+                  .object({ path: RelativeSkillPathSchema, size: z.number().int().nonnegative(), sha256: Sha256Schema })
+                  .strict()
+              )
+              .max(1024)
           })
           .strict()
       )

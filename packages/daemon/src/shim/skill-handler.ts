@@ -156,7 +156,8 @@ export class ClusterSkillHandler {
           path: root.relativeRoot,
           sourceId: root.sourceKey,
           sourceKind: source.sourceKind,
-          digest: root.treeDigest
+          digest: root.treeDigest,
+          files: root.files.map(({ path, size, sha256 }) => ({ path, size, sha256 }))
         }
       })
       await this.discard(operation.handle)

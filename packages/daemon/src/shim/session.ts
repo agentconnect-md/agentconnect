@@ -97,6 +97,10 @@ export class ShimSession {
     return this.channel !== undefined
   }
 
+  hasCapability(capability: ShimCapability): boolean {
+    return this.connection?.binding.grants.includes(capability) === true
+  }
+
   request(capability: ShimCapability, payload: unknown, options?: ShimRequestOptions): Promise<unknown> {
     if (!this.channel) throw new Error(`agent ${this.agentId} has no attached shim channel`)
     return this.channel.request(capability, payload, options)

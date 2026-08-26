@@ -13,6 +13,7 @@ import type { LocalSkillsList, LocalSkillsReq } from '@agentconnect.md/protocol'
 import { listLocalSkills, listSandboxSkills } from '../skills/local-skill-inventory.js'
 import type { WorkspaceFiles } from '../workspace/workspace-files.js'
 import { WorkspaceManager } from '../workspace/workspace-manager.js'
+import type { ClusterSkillLedger } from '../store/cluster-skill-ledger.js'
 
 export interface LocalSkillsReader {
   list(req: LocalSkillsReq): Promise<LocalSkillsList>
@@ -23,7 +24,8 @@ export function createLocalSkillsReader(
   workspacePathFor: (agentId: string) => Promise<string | undefined>,
   stateDir: string,
   /** The filesystem that agent's workspace lives on; undefined ⇒ this daemon's. */
-  filesFor: (agentId: string) => WorkspaceFiles | undefined = () => undefined
+  filesFor: (agentId: string) => WorkspaceFiles | undefined = () => undefined,
+  clusterLedgerFor: (agentId: string) => Promise<ClusterSkillLedger | undefined> = async () => undefined
 ): LocalSkillsReader {
   return {
     async list(req) {
@@ -46,7 +48,10 @@ export function createLocalSkillsReader(
       // filesystem that actually holds it.
       const root = await files.list(cwd, { agentId: req.agentId, path: '', limit: 1 }).catch(() => undefined)
       if (!root?.exists) return { materialized: false, skills: [] }
-      return { materialized: true, skills: await listSandboxSkills(files, cwd, req.agentId) }
+      return {
+        materialized: true,
+        skills: await listSandboxSkills(files, cwd, req.agentId, await clusterLedgerFor(req.agentId))
+      }
     }
   }
 }

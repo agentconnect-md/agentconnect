@@ -68,6 +68,12 @@ export class DutyRegistry {
     return false
   }
 
+  dutyForAgent(agentId: string): HeldDuty | undefined {
+    return [...this.held.values()]
+      .filter((duty) => duty.agentIds.includes(agentId))
+      .sort((a, b) => a.groupId.localeCompare(b.groupId))[0]
+  }
+
   /** A grant entry REPLACES its group: a bumped term after a composition change,
    *  or a term this daemon missed because the original EVT was lost. */
   applyGrant(grants: DutyGrantEntry[]): DutyApplyResult {

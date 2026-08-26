@@ -35,6 +35,16 @@ describe('cluster skill ledger fencing', () => {
         ledger: { roots: [] }
       })
     ).toEqual({ ok: false, reason: 'lost_authority' })
+    const adopted = await first.beginClusterSkillReconcile({
+      groupId,
+      term: '8',
+      daemonId: 'member-b',
+      agentId: 'agent-a',
+      workspaceIncarnation: 'claim-uid-1',
+      operationId: '33333333-3333-4333-8333-333333333333',
+      desiredHash: 'a'.repeat(64)
+    })
+    expect(adopted).toMatchObject({ ok: true, operationId })
   })
 
   it('isolates ownership by SandboxClaim uid', async () => {

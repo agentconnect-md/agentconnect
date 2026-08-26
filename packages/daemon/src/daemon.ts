@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { mkdtemp, readFile, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar'
 import { loadConfig, persistDaemonId, persistRelays, type FlatOverrides } from './config/load-config.js'
 import { readCliEntry, runCliUpgrade } from './lifecycle/cli-upgrade.js'
@@ -166,6 +166,11 @@ import {
   type SessionWorktreeRemoval
 } from './workspace/workspace-manager.js'
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
+import { acceptedDreamSkillSources } from './skills/dream-skills.js'
+import { acquireGitSkillSource } from './skills/skill-git-source.js'
+import { inspectLocalSkillSource } from './skills/skill-source-snapshot.js'
+import { resolveSkillSelections } from './skills/skill-cli-selection.js'
+import { ClusterSkillCoordinator, type ClusterSkillSnapshotSource } from './skills/cluster-skill-coordinator.js'
 import {
   OutputConverger,
   renderStatusBar,
@@ -3296,9 +3301,11 @@ export class Daemon {
       // The pod's own preparation: clone and pull happen on its volume through the runner, and
       // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
       // all land on this daemon's disk, describing a filesystem the runtime never reads.
-      return await this.withAgentVolume(agent.id, () =>
-        this.workspaces.prepareClusterWorkspace(agent, plane.workspaceRootFor(agent.id), request)
-      )
+      return await this.withAgentVolume(agent.id, async () => {
+        const cwd = await this.workspaces.prepareClusterWorkspace(agent, plane.workspaceRootFor(agent.id), request)
+        await this.reconcileClusterSkills(agent)
+        return cwd
+      })
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
     const opts = {
@@ -3309,6 +3316,92 @@ export class Daemon {
     return request
       ? this.workspaces.prepareSessionWorkspace(agent, request, opts)
       : this.workspaces.prepareWorkspace(agent, opts)
+  }
+
+  private async reconcileClusterSkills(agent: Agent): Promise<void> {
+    const plane = this.k8sPlane
+    const client = plane?.skillClientFor?.(agent.id)
+    const workspaceIncarnation = plane?.workspaceIncarnationFor?.(agent.id)
+    const duty = this.duties.dutyForAgent(agent.id)
+    const daemonId = this.cfg.daemonId
+    const skillsAgentId = this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId
+    if (!plane || !workspaceIncarnation || !duty || !daemonId) {
+      throw new Error('cluster skill preparation authority is unavailable')
+    }
+    const hasDesired = agent.skills.length > 0 || agent.managedSkills.length > 0
+    const prior = await this.store.clusterSkillLedger(agent.id, workspaceIncarnation)
+    if (!client) {
+      if (hasDesired || (prior?.ledger.roots.length ?? 0) > 0)
+        throw new Error('cluster runtime lacks skill installation support')
+      return
+    }
+    if (!skillsAgentId) {
+      if (hasDesired || (prior?.ledger.roots.length ?? 0) > 0)
+        throw new Error('cluster runtime lacks skill installation support')
+      return
+    }
+    const scratch = await mkdtemp(join(tmpdir(), 'agentconnect-cluster-skills-'))
+    try {
+      const sources: ClusterSkillSnapshotSource[] = []
+      const managed = (await this.managedSkillCache?.resolve(agent)) ?? []
+      const agentDir = (agent as { dir?: string }).dir
+      const dreamed = agentDir
+        ? await acceptedDreamSkillSources({ dir: agentDir }).catch((error: unknown) => {
+            this.log.warn(`skills: accepted Dream sources unavailable for ${agent.id} (${(error as Error).message})`)
+            return []
+          })
+        : []
+      for (const source of [...managed, ...dreamed]) {
+        sources.push({
+          sourceId: source.key,
+          sourceKind: source.kind,
+          sourceDir: source.sourceDir,
+          selections: [source.name]
+        })
+      }
+      for (const [index, entry] of agent.skills.entries()) {
+        if (!entry.githubRepoId) continue
+        const currentEntry = { ...entry, githubRepoId: entry.githubRepoId }
+        try {
+          const acquired = await acquireGitSkillSource(currentEntry, {
+            destination: join(scratch, `git-${index}`),
+            agentId: agent.id,
+            useGitCredential: this.workspaces.usesGithubApp(agent)
+          })
+          const inspected = await inspectLocalSkillSource(acquired.sourceDir)
+          const selected = await resolveSkillSelections(
+            currentEntry.name,
+            acquired.sourceDir,
+            inspected.files,
+            currentEntry.skills
+          )
+          sources.push({
+            sourceId: `agent:${currentEntry.githubRepoId}:${acquired.resolvedCommit}`,
+            sourceKind: 'agent',
+            sourceDir: acquired.sourceDir,
+            selections: selected.cliSelections
+          })
+        } catch (error) {
+          this.log.warn(
+            `skills: Git source ${currentEntry.name} unavailable for ${agent.id} (${(error as Error).message})`
+          )
+        }
+      }
+      await new ClusterSkillCoordinator(this.store).reconcile({
+        authority: {
+          groupId: duty.groupId,
+          term: duty.term,
+          daemonId,
+          agentId: agent.id,
+          workspaceIncarnation
+        },
+        skillsAgentId,
+        sources,
+        client
+      })
+    } finally {
+      await rm(scratch, { recursive: true, force: true })
+    }
   }
 
   /**

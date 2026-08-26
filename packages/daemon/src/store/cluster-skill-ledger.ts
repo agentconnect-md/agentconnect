@@ -5,7 +5,18 @@ export const ClusterSkillOwnedRootSchema = z
     path: z.string().min(1).max(512),
     sourceId: z.string().min(1).max(160),
     sourceKind: z.enum(['agent', 'managed', 'dream']),
-    digest: z.string().regex(/^[a-f0-9]{64}$/)
+    digest: z.string().regex(/^[a-f0-9]{64}$/),
+    files: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1).max(512),
+            size: z.number().int().nonnegative(),
+            sha256: z.string().regex(/^[a-f0-9]{64}$/)
+          })
+          .strict()
+      )
+      .max(1024)
   })
   .strict()
 

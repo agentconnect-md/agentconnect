@@ -6266,7 +6266,8 @@ export class LocalStore {
   async beginClusterSkillReconcile(
     input: ClusterSkillReconcileAuthority & { desiredHash: string }
   ): Promise<
-    { ok: true; priorRevision: number; priorLedger: ClusterSkillLedger } | { ok: false; reason: 'lost_authority' }
+    | { ok: true; operationId: string; priorRevision: number; priorLedger: ClusterSkillLedger }
+    | { ok: false; reason: 'lost_authority' }
   > {
     return await this.transaction(async (raw) => {
       const tx = accessOf(raw)
@@ -6281,6 +6282,17 @@ export class LocalStore {
         .get(input.agentId, input.workspaceIncarnation)) as { revision: number; ledger: string } | undefined
       const priorRevision = prior ? Number(prior.revision) : 0
       const priorLedger = prior ? ClusterSkillLedgerSchema.parse(JSON.parse(prior.ledger)) : { roots: [] }
+      const existing = (await tx
+        .prepare(
+          `SELECT operationId, priorRevision, desiredHash FROM cluster_skill_journal
+           WHERE agentId = ? AND workspaceIncarnation = ? AND state = 'applying'`
+        )
+        .get(input.agentId, input.workspaceIncarnation)) as
+        { operationId: string; priorRevision: number; desiredHash: string } | undefined
+      const operationId =
+        existing && Number(existing.priorRevision) === priorRevision && existing.desiredHash === input.desiredHash
+          ? existing.operationId
+          : input.operationId
       await tx
         .prepare(
           `INSERT INTO cluster_skill_journal
@@ -6291,8 +6303,8 @@ export class LocalStore {
              daemonId = excluded.daemonId, priorRevision = excluded.priorRevision,
              desiredHash = excluded.desiredHash, state = 'applying', resultLedger = NULL`
         )
-        .run({ ...input, priorRevision })
-      return { ok: true, priorRevision, priorLedger }
+        .run({ ...input, operationId, priorRevision })
+      return { ok: true, operationId, priorRevision, priorLedger }
     })
   }
 
