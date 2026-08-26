@@ -106,21 +106,21 @@ Teams use it to:
 
 ### Features
 
-- **Any ACP agent.** Claude Code, Codex, Grok Build, DeepSeek, Pi, and other
-  ACP-compatible runtimes, side by side and chosen per agent.
-- **Wherever work happens.** Slack, Telegram, Discord, and Lark; GitHub and
-  GitLab events; webhooks, schedules, and webchat.
-- **Agents that call one another.** Give each agent a role and let it bring in
-  the specialist a turn needs, while people follow in the same thread.
-- **Configured per role.** Model, workspace, memory, MCP servers, skills,
-  repository access, and sandbox policy, set for each agent independently.
-- **Memory that carries forward.** Agents remember what they learn across
-  sessions and channels instead of starting cold every time.
-- **Boundaries that stay separate.** Who may use an agent, who may see its
-  sessions, and which repositories, tools, and other agents it may reach are
-  three different decisions.
-- **Yours to self-host.** The Apache-2.0 stack runs in your environment, and
-  agent execution and workspaces stay there.
+- **Work as one team.** Create agents with different roles and let them call on
+  one another, while people follow along in the conversations where the work
+  happens.
+- **Keep work where it happens.** Link agents to bots in Slack, Telegram,
+  Discord, and Lark, or to repositories and workflows on GitHub and GitLab.
+- **Choose the right agent for every job.** Configure each agent's runtime,
+  model, workspace, tools, and machine independently.
+- **Carry context forward.** Give each agent its own memory and skills, and
+  publish reviewed
+  [Knowledge](https://docs.agentconnect.md/docs/knowledge) that every agent can
+  find on demand.
+- **Set clear boundaries.** Decide who can see each agent and session, which
+  repositories and tools it may use, and which other agents it may call.
+- **Stay in control.** Self-host the Apache-2.0 stack, run agents in your
+  environment, and change runtimes without locking the team to one vendor.
 
 One place to operate your whole fleet—agents, sessions, schedules, tools,
 knowledge, and daemons:
