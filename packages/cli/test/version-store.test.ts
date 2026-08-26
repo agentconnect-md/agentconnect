@@ -46,7 +46,8 @@ describe('currentVersion', () => {
   it('reads the basename of the current symlink target', () => {
     const r = root()
     mkdirSync(join(r, 'versions', '1.5.0'), { recursive: true })
-    symlinkSync('versions/1.5.0', join(r, 'current'))
+    if (process.platform === 'win32') symlinkSync(join(r, 'versions', '1.5.0'), join(r, 'current'), 'junction')
+    else symlinkSync('versions/1.5.0', join(r, 'current'))
     expect(currentVersion(r)).toBe('1.5.0')
   })
   it('is null when no current symlink exists', () => {
