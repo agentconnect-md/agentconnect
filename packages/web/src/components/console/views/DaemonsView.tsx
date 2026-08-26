@@ -290,6 +290,8 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
         {s.label}
       </span>
       <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
+      {/* Desktop-only, as a daemon card's menu is: below 769px the card is a tap target and the
+          group's own page carries Edit and Remove, which is where the chevron leads. */}
       <span className="relative hidden flex-none justify-end desktop:flex" onClick={(e) => e.stopPropagation()}>
         <button
           className="iconbtn h-7 w-7"
