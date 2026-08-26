@@ -209,7 +209,7 @@ export default function ClusterDetailView() {
           {billingOffered && <CloudCreditsCard />}
         </div>
       ) : (
-        <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_160px_1fr]">
+        <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_120px_1fr]">
           <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
             {/* The heartbeat count against the ceiling, never the placed-agent list: a set
                 placement names the set rather than the member serving it, so the two are not
