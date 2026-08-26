@@ -510,3 +510,52 @@ describe('onboarding — pool fork', () => {
     expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)
   })
 })
+
+// Managed Cloud: the pool is AgentConnect's own image, so a Cloud preset is born configured and
+// the fork stays the last step — there is no runtime for the operator to choose.
+describe('onboarding — managed Cloud fork', () => {
+  beforeEach(() => {
+    setFlags('daemon-pool,managed')
+    mocks.daemons = [
+      {
+        daemonId: 'pool-pod-1',
+        pool: true,
+        status: 'online',
+        name: 'ac-cloud-7f9',
+        runtimeModels: [{ runtime: 'dsh-acp', models: ['deepseek-v4-flash'] }]
+      }
+    ]
+    mocks.agents = [
+      {
+        id: 'ag_ac',
+        builtin: true,
+        name: 'agentconnect',
+        daemon: 'pool',
+        placementKind: 'set',
+        runtime: 'dsh-acp',
+        model: 'deepseek-v4-flash'
+      }
+    ]
+  })
+
+  it('finishes at the fork without a runtime step', async () => {
+    await render()
+    expect(host.textContent).toContain('Cloud')
+    expect(host.textContent).toContain('Step 2 of 2')
+    await click('Finish') // Cloud preselected ⇒ Finish, never a Continue
+    expect(host.textContent).not.toContain('Choose runtime')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
+    expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
+    expect(mocks.push).toHaveBeenCalledWith('/acme/home')
+  })
+
+  it('still routes the Daemon choice through the connect step', async () => {
+    await render()
+    await click('Daemon')
+    expect(host.textContent).toContain('Step 2 of 3')
+    await click('Continue')
+    expect(host.textContent).toContain('Run the daemon')
+    expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)
+  })
+})

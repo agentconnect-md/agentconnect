@@ -25,10 +25,11 @@ import type { AgentPlacementTarget, DaemonConnectDto } from '@/lib/api'
 
 // Onboarding wizard (design: "AgentConnect Onboarding v2 (forked)") — owner-only, runs
 // once per org. Creating/naming the org was step 1 (/welcome or the create-org entry),
-// so this picks up at the ONE fork on where the first agent runs. Both paths then choose the
-// runtime: the pool path (Cloud on the managed install, the operator's cluster elsewhere) has
-// nothing to install, so its last step is the pickers alone; the Daemon path puts the same
-// pickers under a copy-paste connect step (mint a real join command, poll until it's online).
+// so this picks up at the ONE fork on where the first agent runs. The Daemon path adds a
+// copy-paste connect step (mint a real join command, poll until it's online) with the runtime
+// pickers inline. A SELF-HOSTED cluster adds the pickers alone — nothing to install, but the
+// operator's own pool image decides what it can run. Managed Cloud runs AgentConnect's image, so
+// its preset is born configured and the fork is the last step.
 // Finish AND skip both persist the org's `onboardingCompleted` flag — re-entering the
 // org never bounces back here once either happened. Rendered full-screen (no rail) by
 // the shell on the /onboarding route.
@@ -80,8 +81,10 @@ export default function OnboardingView() {
 
   // Auth mode counts org creation (/welcome, already behind us) as step 1.
   const orgStepsBefore = authOn ? 1 : 0
-  // Both paths end on a step of their own: connect+configure for a daemon, pickers for the pool.
-  const total = orgStepsBefore + (poolOffered ? 1 : 0) + 1
+  // Cloud's preset is born on its pool with the deployment's runtime, so there is nothing left to
+  // ask: the fork finishes. Every other path has a step of its own after it.
+  const lastStepExists = choice === 'daemon' || !featureFlagEnabled('managed')
+  const total = Math.max(orgStepsBefore + 1, orgStepsBefore + (poolOffered ? 1 : 0) + (lastStepExists ? 1 : 0))
   const stepNumbers: Record<Step, number> = { where: orgStepsBefore + 1, run: total }
 
   // ── finish / skip: persist the flag, then leave ─────────────────────────────────
@@ -262,7 +265,10 @@ export default function OnboardingView() {
           stepLabel={`Step ${stepNumbers.where} of ${total}`}
           choice={choice}
           onChoice={setChoice}
-          onNext={() => setStep('run')}
+          finishHere={!lastStepExists}
+          finishing={finishing}
+          err={saveErr}
+          onNext={() => (lastStepExists ? setStep('run') : void finish())}
         />
       ) : choice === 'pool' ? (
         <ClusterStep
@@ -407,11 +413,18 @@ function WhereStep({
   stepLabel,
   choice,
   onChoice,
+  finishHere,
+  finishing,
+  err,
   onNext
 }: {
   stepLabel: string
   choice: 'pool' | 'daemon'
   onChoice: (choice: 'pool' | 'daemon') => void
+  /** Cloud selected: its preset needs nothing picked, so the fork IS the last step. */
+  finishHere: boolean
+  finishing: boolean
+  err: string | null
   onNext: () => void
 }) {
   const managed = featureFlagEnabled('managed')
@@ -423,9 +436,18 @@ function WhereStep({
       footer={
         <>
           <div className="flex-1" />
-          <Button onClick={onNext}>
-            Continue
-            <Icon name="arrow-right" size={15} />
+          <Button disabled={finishing} onClick={onNext}>
+            {finishHere ? (
+              <>
+                <Icon name="check" size={15} />
+                {finishing ? 'Finishing…' : 'Finish'}
+              </>
+            ) : (
+              <>
+                Continue
+                <Icon name="arrow-right" size={15} />
+              </>
+            )}
           </Button>
         </>
       }
@@ -453,6 +475,7 @@ function WhereStep({
           onSelect={() => onChoice('daemon')}
         />
       </div>
+      <SaveError err={err} />
     </StepFrame>
   )
 }
