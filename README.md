@@ -106,16 +106,15 @@ Teams use it to:
 
 ### Features
 
-- **Work as one team.** Create agents with different roles and let them call on
-  one another, while people follow along in the conversations where the work
-  happens.
+- **Work as one team, on any runtime.** Create agents with different roles and
+  let them call on one another, while people follow along in the conversations
+  where the work happens. Claude Code, Codex, Grok Build, DeepSeek, Pi, and any
+  other ACP-compatible runtime run side by side, and changing one does not
+  rebuild the workflow around it.
 - **Keep work where it happens.** Link agents to bots in Slack, Telegram,
   Discord, and Lark, or to repositories and workflows on GitHub and GitLab.
 - **Choose the right agent for every job.** Configure each agent's runtime,
   model, workspace, tools, and machine independently.
-- **Stay provider-neutral.** Claude Code, Codex, Grok Build, DeepSeek, Pi, and
-  any other ACP-compatible runtime run side by side, and changing an agent's
-  runtime does not rebuild the workflow around it.
 - **Carry context forward.** Give each agent its own memory and skills, and
   publish reviewed
   [Knowledge](https://docs.agentconnect.md/docs/knowledge) that every agent can
