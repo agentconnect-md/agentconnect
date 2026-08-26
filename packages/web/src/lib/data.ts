@@ -147,6 +147,39 @@ export function agentDaemonLabel(
   return daemons.find((daemon) => daemon.daemonId === agent.daemon)?.name ?? agent.daemonName ?? '—'
 }
 
+/** What a placement TARGET is, as the console draws it: the install-wide pool, one of the org's
+ *  own groups, or a single machine. Same three cases `agentDaemonLabel` names. */
+export type PlacementIconKind = 'pool' | 'group' | 'daemon'
+
+/** The pool's own glyph — the product's cloud on a managed install, a cluster everywhere else,
+ *  matching how the pool draws itself on the Infra list and its detail page. */
+export function poolIcon(): string {
+  return featureFlagEnabled('managed') ? 'cloud' : 'boxes'
+}
+
+/** The ONE icon language for placements, so the picker, the list and every header agree. */
+export function placementIcon(kind: PlacementIconKind): string {
+  return kind === 'pool' ? poolIcon() : kind === 'group' ? 'layers' : 'server'
+}
+
+/** Which of the three a given agent is placed on — the icon half of `agentDaemonLabel`, resolved
+ *  from the same pair, so a row's glyph can never disagree with the name beside it. */
+export function agentPlacementKind(
+  agent: Pick<Agent, 'placementKind' | 'setId'>,
+  groups: readonly Pick<MemberSetRow, 'setId'>[]
+): PlacementIconKind {
+  if (!isSetPlacementKind(agent.placementKind)) return 'daemon'
+  return agent.setId && groups.some((candidate) => candidate.setId === agent.setId) ? 'group' : 'pool'
+}
+
+/** The glyph for an agent's placement. */
+export function agentPlacementIcon(
+  agent: Pick<Agent, 'placementKind' | 'setId'>,
+  groups: readonly Pick<MemberSetRow, 'setId'>[]
+): string {
+  return placementIcon(agentPlacementKind(agent, groups))
+}
+
 /**
  * One of the organization's own member sets, as the console holds it (daemon-groups.md §2).
  *

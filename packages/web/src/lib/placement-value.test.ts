@@ -5,6 +5,8 @@ import {
   POOL_LABEL,
   POOL_PLACEMENT,
   agentDaemonLabel,
+  agentPlacementIcon,
+  agentPlacementKind,
   effectiveAgentStatus,
   agentIsPlaced,
   groupPlacementValue,
@@ -152,5 +154,38 @@ describe('what the console calls the pool', () => {
     process.env.FEATURE_FLAGS = 'managed'
     expect(poolLabel()).toBe(POOL_LABEL)
     expect(agentDaemonLabel(pool, [], [])).toBe(POOL_LABEL)
+  })
+})
+
+// The glyph beside a placement is derived from the same pair as its name, so a row can never draw
+// a group or the pool as the one machine that happens to answer for it.
+describe('agentPlacementKind / agentPlacementIcon', () => {
+  const groups = [{ setId: 'set-lab' }]
+
+  afterEach(() => {
+    delete process.env.FEATURE_FLAGS
+  })
+
+  it('tells a machine, one of the org’s groups, and the pool apart', () => {
+    expect(agentPlacementKind({ placementKind: 'daemon', setId: null }, groups)).toBe('daemon')
+    expect(agentPlacementKind({ placementKind: 'set', setId: 'set-lab' }, groups)).toBe('group')
+    expect(agentPlacementKind({ placementKind: 'set', setId: 'set-pool' }, groups)).toBe('pool')
+    expect(agentPlacementKind({ placementKind: 'pool', setId: null }, groups)).toBe('pool')
+  })
+
+  it('reads a group as the pool while the group list is still loading — same as the label does', () => {
+    expect(agentPlacementKind({ placementKind: 'set', setId: 'set-lab' }, [])).toBe('pool')
+  })
+
+  it('draws the pool as this deployment’s own infrastructure', () => {
+    const pool = { placementKind: 'set' as const, setId: 'set-pool' }
+    expect(agentPlacementIcon(pool, groups)).toBe('boxes')
+    process.env.FEATURE_FLAGS = 'managed'
+    expect(agentPlacementIcon(pool, groups)).toBe('cloud')
+  })
+
+  it('draws a group as a stack and a machine as a server', () => {
+    expect(agentPlacementIcon({ placementKind: 'set', setId: 'set-lab' }, groups)).toBe('layers')
+    expect(agentPlacementIcon({ placementKind: 'daemon', setId: null }, groups)).toBe('server')
   })
 })
