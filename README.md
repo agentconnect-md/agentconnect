@@ -127,6 +127,8 @@ knowledge, and daemons:
 
 ## Get started
 
+### Docker
+
 Start the Web console, Control Plane, Relay, and PostgreSQL with Docker Compose:
 
 ```bash
@@ -139,12 +141,36 @@ Open `http://localhost:3000`, add a daemon from the console, run its generated
 command, and create your first agent. The default stack listens only on
 `127.0.0.1` and uses local no-auth mode for evaluation.
 
-For Kubernetes, install the official Helm chart in
-[`charts/agentconnect`](charts/agentconnect), published to
-`oci://ghcr.io/agentconnect-md/charts/agentconnect` on every release with the
-same version number as the release itself. For
-authentication, public URLs, Linux sandbox requirements, provider apps, image
-pinning, secrets, and optional Mem0 configuration, follow the
+### Kubernetes
+
+Install the official Helm chart, published on every release under the same
+version number as the release itself:
+
+```bash
+helm upgrade --install agentconnect \
+  oci://ghcr.io/agentconnect-md/charts/agentconnect \
+  --namespace agentconnect --create-namespace \
+  --values agentconnect-values.yaml
+```
+
+The chart source lives in [`charts/agentconnect`](charts/agentconnect), and the
+[Kubernetes guide](https://docs.agentconnect.md/docs/kubernetes-deployment)
+covers what belongs in that values file.
+
+### Configure the deployment
+
+**Setup Server** is a browser UI for everything past the local stack: sign-in
+through Logto, the deployment's GitHub, Slack, Google, and Lark / Feishu apps,
+and deployment options — no config files to hand-edit.
+
+Prefer to be walked through it? This repository ships a **Claude Code skill** at
+`.claude/skills/agentconnect-setup`. Open Claude Code in your checkout and ask
+it to set up AgentConnect: it runs the guide as an interactive tutorial and
+verifies each checkpoint before continuing, and never asks you to paste secrets
+into chat.
+
+For authentication, public URLs, Linux sandbox requirements, provider apps,
+image pinning, secrets, and optional Mem0 configuration, follow the
 [AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
 
 ## Community
