@@ -333,17 +333,18 @@ describe('GroupDetailView', () => {
     expect(render()).not.toContain('No agents target this group yet')
   })
 
-  it('names the sessions stat for what the CP actually counts', () => {
-    // activeSessions is per-DAEMON, so it includes the sessions of agents pinned to a member —
-    // the agents every other stat on the page excludes.
-    mocks.memberSets = [group({ memberDaemonIds: ['d1'] })]
-    mocks.daemons = [daemon('d1', { activeSessions: '4' })]
+  it('sums active sessions over the SERVING members only', () => {
+    // Per-DAEMON figures, so the sum includes the sessions of agents pinned to a member — and a
+    // member that stopped answering contributes nothing, whatever it last reported.
+    mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
+    mocks.daemons = [daemon('d1', { activeSessions: '4' }), daemon('d2', { status: 'offline', activeSessions: '9' })]
     mocks.agents = [onGroup('a1'), pinned('a2', 'd1')]
 
     const html = render()
 
     expect(html).toContain('Active sessions')
-    expect(html).toContain('incl. pinned agents')
+    expect(html).toContain('>4<')
+    expect(html).not.toContain('>13<')
   })
 
   it('offers no log tail — a fabricated one is indistinguishable from telemetry', () => {

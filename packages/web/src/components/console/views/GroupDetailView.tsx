@@ -24,6 +24,7 @@ import {
   FleetAgentsCard,
   FleetRuntimesCard,
   FleetStat,
+  FleetStatColumn,
   barColor,
   intersectRuntimes
 } from '@/components/console/FleetDetail'
@@ -177,19 +178,18 @@ export default function GroupDetailView() {
 
       {/* Band one — what the group holds, beside the machines that hold it. */}
       <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[300px_1fr]">
-        <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
+        <FleetStatColumn>
           <FleetStat icon="bot" label="Agents" value={String(hosted.length)} />
-          {/* Machine-scoped, unlike its neighbours: the CP counts active sessions per DAEMON, so
-              this includes the ones belonging to agents pinned to these members — the agents the
-              rest of the page deliberately excludes. */}
-          <FleetStat icon="activity" label="Active sessions" value={String(sessions)} note="incl. pinned agents" />
+          {/* Machine-scoped, unlike its neighbours: the CP counts active sessions per DAEMON, so this
+              includes the sessions of agents pinned to these members, which the rest of the page excludes. */}
+          <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
           <FleetStat
             icon="server"
             label="Daemons"
             value={`${serving.length} / ${members.length}`}
             note={members.length === 0 ? 'no members yet' : 'serving'}
           />
-        </div>
+        </FleetStatColumn>
 
         <div className="card">
           <div className="cardhead">

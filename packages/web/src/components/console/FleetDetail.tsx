@@ -121,6 +121,17 @@ export function FleetStat({ icon, label, value, note }: { icon: string; label: s
   )
 }
 
+/** Band one's metric column — two-up on mobile, one stacked column beside a card on desktop. */
+// Stacked, its tiles grow and centre their content: the column is as tall as the card beside it, and tiles at
+// their natural height leave that card's last stretch facing whitespace, which is the misalignment.
+export function FleetStatColumn({ children }: { children: ReactNode }) {
+  return (
+    <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col desktop:[&>.stat]:flex desktop:[&>.stat]:flex-1 desktop:[&>.stat]:flex-col desktop:[&>.stat]:justify-center">
+      {children}
+    </div>
+  )
+}
+
 // One utilization reading as a dial: the label above, the ring under it carrying its own figure.
 // A ring rather than a bar because Resources is the NARROW column in band one — a bar there is a
 // short track with its label crushed beside it — and the label sits on TOP rather than alongside
