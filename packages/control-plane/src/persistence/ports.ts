@@ -1321,9 +1321,6 @@ export interface SessionFacetIndex {
   triggers: SessionFacetRecord[]
 }
 
-/** Whose sessions to count — see {@link SessionRepo.dailySessionCounts}. */
-export type SessionCountScope = { daemonIds: readonly DaemonId[] } | { setId: string }
-
 export interface SessionRepo {
   /** Upsert the converged milestone for a session (advance `phase`; NO message body).
    *  `recorded: false` means the global session id is already bound to a different
@@ -1363,23 +1360,6 @@ export interface SessionRepo {
    *  (no visibility predicate), safe to return to any org member: it reveals nothing
    *  about sessions the caller can't see. Drives the getting-started conversation step. */
   orgHasAny(orgId: OrgId): Promise<boolean>
-  /** How many sessions STARTED in this scope, per local day, empty days filled with 0. A count
-   *  of rows on the infrastructure rather than a read of what they hold, so — like `orgHasAny`
-   *  above and the usage route's `totals` — no viewer predicate narrows it; the caller's fence
-   *  is what scope the route is willing to pass in.
-   *
-   *  A MACHINE is counted by `daemonId`, a SET by `contentSetId`. Not the same key by choice:
-   *  a pool member is a Pod, reaped minutes after it goes silent, and the reap SetNulls
-   *  `daemonId` on every session it recorded — so a pool counted by its current member ids
-   *  loses a day of history to every rollout. `contentSetId` is stamped from the recorder's own
-   *  membership when the session is first reported (domain/session-content.ts), so it keeps
-   *  naming the set after the Pod is gone. */
-  dailySessionCounts(
-    orgId: OrgId,
-    scope: SessionCountScope,
-    window: { from: Date; to: Date },
-    tzOffsetMin?: number
-  ): Promise<Array<{ start: string; count: number }>>
   /** The most recently active session of one agent, org-fenced. For the shared-checkout PR link: an
    *  agent with one checkout has one branch, so that branch only speaks for the session using it now
    *  (webchat-side-panels.md §12.6). Rides `session_meta_agent_activity_page_idx`. */

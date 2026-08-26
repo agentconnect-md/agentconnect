@@ -3578,34 +3578,6 @@ export async function fetchGatewayAttribution(from: string, to: string, orgId?: 
   return new Set(usage.agents.map((a) => a.agentId))
 }
 
-/** Sessions started per local day — the infra detail pages' history strip. A count of what ran,
- *  not a read of any of it, so it needs no window preset: whole days ending today. */
-export interface DaemonSessionSeriesDto {
-  from: string
-  to: string
-  bucket: 'day'
-  points: { start: string; count: number }[]
-}
-
-/** One MACHINE is asked for by id; a SET is asked for as a set, and deliberately not as its
- *  current member ids. A pool member is a Pod, and its retirement SetNulls the daemon id on
- *  every session it recorded — so member ids would drop a day of history to every rollout. */
-export type SessionSeriesScope = { daemons: readonly string[] } | { set: string }
-
-export async function fetchDaemonSessionSeries(
-  scope: SessionSeriesScope,
-  days: number,
-  orgId?: string
-): Promise<DaemonSessionSeriesDto> {
-  // Same tz convention as the spend series: the CP buckets to the viewer's local midnight.
-  const query = new URLSearchParams({
-    ...('set' in scope ? { set: scope.set } : { daemons: scope.daemons.join(',') }),
-    days: String(days),
-    tz: String(new Date().getTimezoneOffset())
-  })
-  return apiGet<DaemonSessionSeriesDto>(`${orgBase(orgId)}/daemons/session-series?${query.toString()}`)
-}
-
 export async function fetchUsage(range: UsageRange, orgId?: string, source?: UsageSource): Promise<UsageDto> {
   // Send the viewer's tz offset so the CP buckets the spend series to local
   // day/hour (getTimezoneOffset ⇒ UTC − local; stable per client, not in the key).

@@ -126,10 +126,6 @@ export default function ClusterDetailView() {
   // substitution Add-agent and Edit-agent make (edit-agent-daemon-choice.ts).
   const capabilitySource = serving[0]
   const models = runtimes.reduce((sum, rt) => sum + rt.models.length, 0)
-  // The pool's SET, never its current member ids: a member is a Pod, and its retirement
-  // SetNulls the daemon id on every session it recorded, so member ids would drop a day of
-  // history to every rollout. Every pool member carries the org-less set it was enrolled in.
-  const poolSetId = members.find((m) => m.memberSetId)?.memberSetId ?? null
 
   return (
     <div className="wrap max-w-[1240px] px-4 pt-[14px] pb-1 desktop:p-0">
@@ -227,7 +223,10 @@ export default function ClusterDetailView() {
             <FleetStat icon="server" label="Nodes" value={`${serving.length} / ${members.length}`} note="serving" />
           </div>
           <ClusterResourcesCard {...{ online, cpu, mem }} />
-          {poolSetId && <FleetUsageCard scope={{ set: poolSetId }} />}
+          {/* Scoped by metering INGRESS, not by which members are registered right now: the
+              pool meters through the gateway, so the series is already the cluster's — the same
+              scoping the Cloud reading's Credits card uses. */}
+          <FleetUsageCard scope={{ source: 'gateway' }} note="spend · 30d" />
         </div>
       )}
 

@@ -26,7 +26,8 @@ import {
 import { AgentIconView, AgentMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-import { fetchDaemonSessionSeries, type SessionSeriesScope } from '@/lib/api'
+import { fetchUsage, fmtCost, type UsageRange, type UsageSource } from '@/lib/api'
+import { amountToNumber } from '@/lib/amount'
 import { consoleKeys } from '@/lib/swr-keys'
 import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
 import { useOrgs } from '@/lib/org-context'
@@ -173,26 +174,43 @@ export function ResourceDial({
 }
 
 /**
- * What has RUN on a set of machines: sessions started per local day.
+ * What running here has COST, over the same window and from the same aggregate the Analytics
+ * page charts — `GET /usage`, which the console already reads. Nothing new is metered for it.
  *
- * Not a spend chart. The CP has no per-daemon spend to quote — deriving one by splitting the
- * org's series by an agent's CURRENT placement is the historically-false read `ClusterDetailView`
- * documents, since an agent that moved brings its old spend with it. A session row, by contrast,
- * records where it actually ran, so counting rows is true of the infrastructure at the time.
+ * Scope is the one thing that differs, because the aggregate has no daemon dimension: a whole
+ * metering INGRESS is exact (the pool meters through the gateway — the same scoping the Credits
+ * card uses), while a machine can only be read as the spend of the agents placed on it. That
+ * second reading is CURRENT-state, so the header says so rather than claiming the machine spent
+ * it: an agent moved here brings the 30 days it spent elsewhere along.
  */
-export function FleetUsageCard({ scope, days = 14 }: { scope: SessionSeriesScope; days?: number }) {
+export type FleetUsageScope = { source: UsageSource } | { agentIds: readonly string[] }
+
+const USAGE_RANGE: UsageRange = 'd30'
+
+export function FleetUsageCard({ scope, note }: { scope: FleetUsageScope; note: string }) {
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? null
-  // A set is asked for AS a set: its members are Pods, and counting by their current ids would
-  // lose each rollout's history (see `SessionSeriesScope`).
-  const key = 'set' in scope ? `set:${scope.set}` : [...scope.daemons].sort().join(',')
-  const series = useSWR(consoleKeys.daemonSessionSeries(orgId, key, days), () =>
-    fetchDaemonSessionSeries(scope, days, orgId!)
+  const source = 'source' in scope ? scope.source : undefined
+  // The SAME key the Analytics page uses for this window, so the two reads share one entry
+  // rather than fetching the org's aggregate twice.
+  const usage = useSWR(consoleKeys.usage(orgId, USAGE_RANGE, source ?? 'all'), () =>
+    fetchUsage(USAGE_RANGE, orgId!, source)
   )
 
-  const points = series.data?.points ?? []
-  const data = points.map((p) => ({ label: bucketLabel(p.start, 'day'), sessions: p.count }))
-  const total = points.reduce((sum, p) => sum + p.count, 0)
+  const series = usage.data?.series
+  const points = series?.points ?? []
+  const bucket = series?.bucket ?? 'day'
+  // A per-agent scope needs the split, and an older CP sends none — say so instead of summing
+  // an absent breakdown to zero and drawing "no usage".
+  const needsSplit = 'agentIds' in scope
+  const hasSplit = points.some((p) => p.byAgent)
+  const spendAt = (p: (typeof points)[number]): number =>
+    'agentIds' in scope
+      ? scope.agentIds.reduce((sum, id) => sum + amountToNumber(p.byAgent?.[id] ?? '0'), 0)
+      : amountToNumber(p.costAmount)
+  const data = points.map((p) => ({ label: bucketLabel(p.start, bucket), spend: spendAt(p) }))
+  const total = data.reduce((sum, d) => sum + d.spend, 0)
+  const currency = usage.data?.totals.costCurrency ?? 'USD'
 
   type TipRow = { payload: (typeof data)[number] }
   const Tip = ({ active, payload }: { active?: boolean; payload?: TipRow[] }) => {
@@ -201,12 +219,21 @@ export function FleetUsageCard({ scope, days = 14 }: { scope: SessionSeriesScope
     return (
       <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) px-2.5 py-2 shadow-(--shadow-md)">
         <div className="mono text-[11px] font-semibold text-(--text-primary)">{row.label}</div>
-        <div className="mt-1 font-sans text-[11px] leading-normal text-(--text-secondary)">
-          <span className="mono text-(--text-primary)">{row.sessions}</span> session{row.sessions === 1 ? '' : 's'}
+        <div className="mono mt-1 text-[11px] leading-normal text-(--text-secondary)">
+          {fmtCost(row.spend, currency)}
         </div>
       </div>
     )
   }
+
+  const message =
+    usage.error && !usage.data
+      ? { icon: true, text: 'unavailable', title: (usage.error as Error).message }
+      : needsSplit && points.length > 0 && !hasSplit
+        ? { icon: true, text: 'This control plane reports no per-agent split.', title: undefined }
+        : total === 0
+          ? { icon: false, text: 'No usage in this window.', title: undefined }
+          : null
 
   return (
     // `min-w-0`: recharts measures this box, and a grid item's auto min-width would otherwise
@@ -214,21 +241,17 @@ export function FleetUsageCard({ scope, days = 14 }: { scope: SessionSeriesScope
     <div className="card flex min-w-0 flex-col">
       <div className="cardhead">
         <span className="cardtitle">Usage</span>
-        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">sessions · {days}d</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">{note}</span>
       </div>
-      {series.isLoading ? (
-        <UsageSkeleton days={days} />
-      ) : series.error && !series.data ? (
+      {usage.isLoading ? (
+        <UsageSkeleton />
+      ) : message ? (
         <div
-          className="flex flex-1 items-center justify-center gap-[6px] px-4 py-7 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
-          title={(series.error as Error).message}
+          className="flex flex-1 items-center justify-center gap-[6px] px-4 py-7 text-center font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+          title={message.title}
         >
-          <Icon name="triangle-alert" size={14} color="var(--status-error)" />
-          unavailable
-        </div>
-      ) : total === 0 ? (
-        <div className="flex flex-1 items-center justify-center px-4 py-7 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-          No sessions in the last {days} days.
+          {message.icon && <Icon name="triangle-alert" size={14} color="var(--status-error)" className="flex-none" />}
+          {message.text}
         </div>
       ) : (
         <div className={`min-h-[150px] flex-1 px-[6px] pb-[6px] text-(--text-tertiary) ${SEG_FILL}`}>
@@ -244,8 +267,8 @@ export function FleetUsageCard({ scope, days = 14 }: { scope: SessionSeriesScope
                 className="mono"
               />
               <Tooltip content={<Tip />} cursor={{ fill: 'var(--surface-hover)' }} />
-              {/* A day with none draws nothing; `seg-flat` is the shared brand hue. */}
-              <Bar dataKey="sessions" name="sessions" className="seg-flat" radius={[3, 3, 0, 0]} />
+              {/* `seg-flat` is the shared brand hue; a day with nothing draws nothing. */}
+              <Bar dataKey="spend" name="spend" className="seg-flat" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -256,10 +279,10 @@ export function FleetUsageCard({ scope, days = 14 }: { scope: SessionSeriesScope
 
 /** First-load stand-in, on the chart's own footprint so the series landing shifts nothing.
  *  Heights are a fixed pattern, never random — a random walk redraws on every render. */
-function UsageSkeleton({ days }: { days: number }) {
+function UsageSkeleton() {
   return (
     <div className="flex min-h-[150px] flex-1 animate-pulse items-end gap-[3px] px-[14px] pt-3 pb-[26px]">
-      {Array.from({ length: days }, (_, i) => (
+      {Array.from({ length: 30 }, (_, i) => (
         <span
           key={i}
           className="min-w-0 max-w-[28px] flex-1 rounded-t-[3px] bg-(--surface-active)"

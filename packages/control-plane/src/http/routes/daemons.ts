@@ -23,8 +23,6 @@ import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authoriz
 import { resolveShareSet } from '../sharing.js'
 import {
   DaemonListDto,
-  DaemonSessionSeriesDto,
-  DaemonSessionSeriesQueryDto,
   DaemonViewDto,
   DaemonLifecycleOpDto,
   UpdateDaemonBody,
@@ -35,7 +33,7 @@ import {
   ErrorDto
 } from '../dto/index.js'
 import type { DaemonViewDtoT } from '../dto/index.js'
-import type { DaemonLifecycleOpRecord, DaemonLifecycleOpRepo, SessionCountScope } from '../../persistence/ports.js'
+import type { DaemonLifecycleOpRecord, DaemonLifecycleOpRepo } from '../../persistence/ports.js'
 import { provisionDaemonConnect } from '../onboarding.js'
 import { detachDaemon } from '../daemon-removal.js'
 import { Tag } from '../plugins/openapi.js'
@@ -181,8 +179,6 @@ function toDto(
   }
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000
-
 export function daemonRoutes(deps: HttpDeps) {
   // How long after its last heartbeat a disconnected daemon still reads `connecting`
   // rather than `offline` (0 ⇒ disabled — the pre-grace behavior). Set from
@@ -229,49 +225,6 @@ export function daemonRoutes(deps: HttpDeps) {
         const ops = await deps.repos.daemonLifecycleOp.latestForDaemons(rows.map((d) => DaemonId(d.daemonId)))
         const byDaemon = new Map(ops.map((o) => [o.daemonId as string, o]))
         return rows.map((d) => dtoWith(d, ctx, byDaemon.get(d.daemonId) ?? null))
-      }
-    )
-
-    // Sessions per local day, for the infra detail pages' history strip: one machine (`daemons`)
-    // or a whole set (`set`). Either way the caller names the scope and this route fences it —
-    // to the daemons they can already list, or to a set that is theirs or the pool they share —
-    // so the count can never confirm the existence of infrastructure they cannot see.
-    r.get(
-      '/daemons/session-series',
-      {
-        schema: {
-          tags: [Tag.Daemons],
-          summary: 'Get daemon session history',
-          description:
-            'Counts the sessions that started on the named daemons, or in the named member set, bucketed by the caller’s local day over a window of whole days ending today. Daemon ids the caller cannot see are ignored; a set that is neither theirs nor the install-wide pool is 404.',
-          operationId: 'getDaemonSessionSeries',
-          querystring: DaemonSessionSeriesQueryDto,
-          response: { 200: DaemonSessionSeriesDto, 404: ErrorDto }
-        }
-      },
-      async (req, reply) => {
-        const orgId = orgOf(req)
-        let scope: SessionCountScope
-        if (req.query.set !== undefined) {
-          const set = await deps.repos.memberSet.get(req.query.set)
-          // The org's own set, or the org-less pool every org shares. Anything else is not
-          // theirs to ask about, and zeros would be a confusing lie about someone else's set.
-          if (!set || (set.orgId !== null && set.orgId !== orgId)) {
-            return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'member set not found' })
-          }
-          scope = { setId: set.id }
-        } else {
-          const visible = new Set<string>((await deps.registry.listAvailable(orgId, ctxOf(req))).map((d) => d.daemonId))
-          const asked = (req.query.daemons ?? '').split(',').filter(Boolean)
-          scope = { daemonIds: asked.filter((id) => visible.has(id)).map((id) => DaemonId(id)) }
-        }
-        // Whole local days ending at the next local midnight, so today is a full bucket the
-        // chart can fill as it goes rather than a stub that ends at "now".
-        const offMs = req.query.tz * 60 * 1000
-        const to = new Date(Math.ceil((Date.now() - offMs) / DAY_MS) * DAY_MS + offMs)
-        const from = new Date(to.getTime() - req.query.days * DAY_MS)
-        const points = await deps.repos.session.dailySessionCounts(orgId, scope, { from, to }, req.query.tz)
-        return { from: from.toISOString(), to: to.toISOString(), bucket: 'day' as const, points }
       }
     )
 

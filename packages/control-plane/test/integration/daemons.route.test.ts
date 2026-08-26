@@ -14,7 +14,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedAgent, seedSessionMeta, seedDaemon as fixtureSeedDaemon } from '../fixtures/seed.js'
+import { seedAgent } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
@@ -1128,104 +1128,5 @@ describe('lifecycle op closure on register→READY', () => {
     const latest = await ops.latestForDaemon(DaemonId(DAEMON))
     expect(latest?.status).toBe('failed')
     expect(latest?.outcome).toContain('timed out')
-  })
-})
-
-/**
- * `GET /daemons/session-series` — the infra detail pages' history strip.
- *
- * A COUNT of the sessions that started on named machines, per local day. The route fences the
- * set to what the caller can already list, so an id they cannot see contributes nothing rather
- * than being reported back as unknown — which would itself answer whether it exists.
- */
-describe('GET /daemons/session-series', () => {
-  const DAY = 24 * 60 * 60 * 1000
-  const OTHER = '2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b'
-  /** The window's end: the next UTC midnight, so `tz=0` makes today the last bucket. */
-  const endOfToday = () => Math.ceil(Date.now() / DAY) * DAY
-
-  type Series = { bucket: string; points: { start: string; count: number }[] }
-  const ask = (app: HttpApp, query: string, days = 3) =>
-    app.app.inject({ method: 'GET', url: `${ORG}/daemons/session-series?${query}&days=${days}&tz=0` })
-  const series = async (app: HttpApp, daemons: string, days = 3): Promise<Series> =>
-    (await ask(app, `daemons=${daemons}`, days)).json() as Series
-
-  it('counts a machine’s sessions by day and fills the days it had none', async () => {
-    await seedDaemon()
-    const agent = await seedAgent(prisma, randomUUID(), { daemonId: DAEMON })
-    const to = endOfToday()
-    // Two today, one the day before yesterday, nothing yesterday — and one outside the window.
-    await seedSessionMeta(prisma, randomUUID(), agent, { daemonId: DAEMON, startedAt: new Date(to - 60_000) })
-    await seedSessionMeta(prisma, randomUUID(), agent, { daemonId: DAEMON, startedAt: new Date(to - 2 * 60_000) })
-    await seedSessionMeta(prisma, randomUUID(), agent, { daemonId: DAEMON, startedAt: new Date(to - 2 * DAY - 60_000) })
-    await seedSessionMeta(prisma, randomUUID(), agent, { daemonId: DAEMON, startedAt: new Date(to - 9 * DAY) })
-    running = buildHttpApp(prisma)
-
-    const body = await series(running, DAEMON)
-
-    expect(body.bucket).toBe('day')
-    expect(body.points.map((p) => p.count)).toEqual([1, 0, 2])
-    expect(new Date(body.points[2]!.start).getTime()).toBe(to - DAY)
-  })
-
-  it('counts a set of machines together, and only the ones asked for', async () => {
-    await seedDaemon()
-    await fixtureSeedDaemon(prisma, OTHER)
-    const here = await seedAgent(prisma, randomUUID(), { daemonId: DAEMON })
-    const there = await seedAgent(prisma, randomUUID(), { daemonId: OTHER })
-    const to = endOfToday()
-    await seedSessionMeta(prisma, randomUUID(), here, { daemonId: DAEMON, startedAt: new Date(to - 60_000) })
-    await seedSessionMeta(prisma, randomUUID(), there, { daemonId: OTHER, startedAt: new Date(to - 60_000) })
-    running = buildHttpApp(prisma)
-
-    expect((await series(running, DAEMON)).points.at(-1)!.count).toBe(1)
-    expect((await series(running, `${DAEMON},${OTHER}`)).points.at(-1)!.count).toBe(2)
-  })
-
-  it('counts a SET by the store its members recorded into, so a rollout keeps its history', async () => {
-    // A pool member is a Pod: its retirement SetNulls `daemonId` on every session it recorded
-    // (domain/session-content.ts). Counting the pool by its current member ids would drop a
-    // day of history to each rollout, so the set is counted by `contentSetId` instead.
-    const set = await prisma.memberSet.create({
-      data: { id: randomUUID(), orgId: DEFAULT_ORG_ID, name: 'edge-pool' }
-    })
-    await seedDaemon()
-    const agent = await seedAgent(prisma, randomUUID(), { daemonId: DAEMON })
-    const to = endOfToday()
-    // One recorded by a member that is still here, one by a member already reaped.
-    await seedSessionMeta(prisma, randomUUID(), agent, {
-      daemonId: DAEMON,
-      contentSetId: set.id,
-      startedAt: new Date(to - 60_000)
-    })
-    await seedSessionMeta(prisma, randomUUID(), agent, { contentSetId: set.id, startedAt: new Date(to - 60_000) })
-    running = buildHttpApp(prisma)
-
-    const body = (await ask(running, `set=${set.id}`)).json() as Series
-
-    expect(body.points.at(-1)!.count).toBe(2)
-  })
-
-  it('404s a set that is neither this org’s nor the pool they share', async () => {
-    const other = await prisma.org.create({ data: { id: 'org_other', slug: 'other', name: 'Other' } })
-    const set = await prisma.memberSet.create({ data: { id: randomUUID(), orgId: other.id, name: 'theirs' } })
-    await seedDaemon()
-    running = buildHttpApp(prisma)
-
-    // Zeros would be a confusing lie about somebody else's set — this one is simply not theirs.
-    expect((await ask(running, `set=${set.id}`)).statusCode).toBe(404)
-  })
-
-  it('ignores an id the caller cannot see rather than reporting it back', async () => {
-    await seedDaemon()
-    // Restricted to somebody else: it is not in this caller's fleet, so it contributes nothing.
-    await fixtureSeedDaemon(prisma, OTHER, { visibility: 'restricted', sharedWith: ['u_someone_else'] })
-    const there = await seedAgent(prisma, randomUUID(), { daemonId: OTHER })
-    await seedSessionMeta(prisma, randomUUID(), there, { daemonId: OTHER, startedAt: new Date(endOfToday() - 60_000) })
-    running = buildHttpApp(prisma)
-
-    const body = await series(running, `${DAEMON},${OTHER}`)
-
-    expect(body.points.every((p) => p.count === 0)).toBe(true)
   })
 })

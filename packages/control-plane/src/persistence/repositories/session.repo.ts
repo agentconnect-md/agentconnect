@@ -23,7 +23,6 @@ import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockSessionLineage } from '../session-lineage-lock.js'
 import type {
   SessionRepo,
-  SessionCountScope,
   SessionMilestoneResult,
   SessionVisibilityChange,
   SessionVisibilityState,
@@ -55,7 +54,6 @@ import { sessionViewerSql } from './session-access-sql.js'
 /** Webchat conversation ids are CP-minted UUIDs; any other `channel` shape can
  *  never name a `webchat_conversation` row, so the fence path skips it. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const DAY_MS = 24 * 60 * 60 * 1000
 
 function toRecord(s: SessionMeta): SessionMetaRecord {
   return {
@@ -1301,54 +1299,6 @@ export class PgSessionRepo implements SessionRepo {
       perAgent.push(row)
     }
     return this.hydrate(perAgent)
-  }
-
-  /**
-   * How many sessions STARTED on these daemons, per local day — the infra pages' history strip.
-   *
-   * A count of rows on a machine, not a read of what they contain: it is the same kind of figure
-   * as the `activeSessions` the daemon itself reports, and like the usage route's `totals` it is a
-   * fact about the ORG rather than an attribution, so no viewer predicate narrows it. What the
-   * caller may not see is which daemons or sets exist at all, and that fence is the route's.
-   *
-   * Bucket geometry matches the spend series exactly (`session-usage.repo.ts`): shift into the
-   * viewer's local time, floor, shift back, so `start` is the UTC instant of a local midnight and
-   * two charts on one page cannot disagree about where a day begins.
-   */
-  async dailySessionCounts(
-    orgId: OrgId,
-    scope: SessionCountScope,
-    window: { from: Date; to: Date },
-    tzOffsetMin = 0
-  ): Promise<Array<{ start: string; count: number }>> {
-    const offMs = tzOffsetMin * 60 * 1000
-    const floorSince = Math.floor((window.from.getTime() - offMs) / DAY_MS) * DAY_MS + offMs
-    const n = Math.max(1, Math.ceil((window.to.getTime() - floorSince) / DAY_MS))
-    const counts = new Array<number>(n).fill(0)
-    // A machine is counted by the sessions it recorded; a SET by the store they went to, which
-    // outlives the Pod that wrote them (see the port's note).
-    const where =
-      'setId' in scope
-        ? Prisma.sql`s."contentSetId" = ${scope.setId}::uuid`
-        : scope.daemonIds.length > 0
-          ? Prisma.sql`s."daemonId" IN (${Prisma.join(scope.daemonIds.map(String))})`
-          : null
-    if (where) {
-      // Grouped in Postgres: the chart needs a count per day, and a machine's whole session
-      // history for the window is a lot of rows to carry into the process to count them.
-      const rows = await this.db.$queryRaw<Array<{ idx: number; count: bigint }>>(Prisma.sql`
-        SELECT FLOOR((EXTRACT(EPOCH FROM s."startedAt") * 1000 - ${floorSince}) / ${DAY_MS})::int AS idx,
-               COUNT(*) AS count
-        FROM "session_meta" AS s
-        WHERE s."orgId" = ${orgId}
-          AND ${where}
-          AND s."startedAt" >= ${window.from}
-          AND s."startedAt" < ${window.to}
-        GROUP BY 1
-      `)
-      for (const row of rows) if (row.idx >= 0 && row.idx < n) counts[row.idx] = Number(row.count)
-    }
-    return counts.map((count, i) => ({ start: new Date(floorSince + i * DAY_MS).toISOString(), count }))
   }
 
   async orgHasAny(orgId: OrgId): Promise<boolean> {

@@ -240,46 +240,6 @@ export const DaemonViewDto = z.object({
 })
 export const DaemonListDto = z.array(DaemonViewDto)
 
-// ── daemon session history ──
-// How many sessions STARTED on a set of daemons, per local day: the infra detail pages' history
-// strip. A COUNT of rows on the infrastructure, never a read of what they hold — the same kind of
-// figure as `activeSessions` above, and like the usage route's `totals` a fact about the org
-// rather than an attribution, so no viewer predicate narrows it. Daemon visibility still does:
-// the route counts only the daemons this caller can already list.
-
-export const DaemonSessionSeriesQueryDto = z
-  .object({
-    /** Comma-separated daemon ids to count together. Ids the caller cannot see are dropped
-     *  rather than refused: which daemons exist is itself scoped, so naming one back would
-     *  answer a question the caller may not ask. */
-    daemons: z.string().optional(),
-    /** A member set, counted by the store its members recorded into rather than by their ids.
-     *  That is the difference between a set and a machine: pool members are Pods, reaped
-     *  minutes after they go silent, and the reap SetNulls `daemonId` on every session they
-     *  recorded (domain/session-content.ts). `contentSetId` is stamped from the recorder's own
-     *  membership at report time, so it still names the set after the Pod is gone — counting a
-     *  pool by its CURRENT member ids would drop each rollout's history. */
-    set: z.string().uuid().optional(),
-    /** Window width, in whole local days ending today. */
-    days: z.coerce.number().int().min(1).max(90).default(14),
-    /** Client timezone offset in minutes, as `Date.prototype.getTimezoneOffset()` reports it
-     *  (UTC − local; e.g. UTC-8 ⇒ 480), so a bucket boundary is the viewer's midnight. */
-    tz: z.coerce.number().int().min(-900).max(900).default(0)
-  })
-  .refine((q) => (q.daemons === undefined) !== (q.set === undefined), {
-    message: 'pass either `daemons` or `set`, and not both',
-    path: ['daemons']
-  })
-
-export const DaemonSessionSeriesDto = z.object({
-  from: z.string(),
-  to: z.string(),
-  bucket: z.literal('day'),
-  /** One entry per day in the window, empty days filled with 0. `start` is the UTC instant of a
-   *  local midnight, which the client labels in its own timezone. */
-  points: z.array(z.object({ start: z.string(), count: z.number().int() }))
-})
-
 // ── member sets (docs/designs/daemon-groups.md) ──
 // A named set of this organization's daemons within which an agent's duty may be claimed. The
 // install-wide pool is the org-less set and is never one of these — it belongs to no organization.
