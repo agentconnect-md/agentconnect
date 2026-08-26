@@ -3334,7 +3334,6 @@ export class Daemon {
           return []
         })
       : []
-    if (!client && agent.skills.length === 0 && agent.managedSkills.length === 0 && dreamed.length === 0) return
     const workspaceIncarnation = plane?.workspaceIncarnationFor?.(agent.id)
     const shimGeneration = plane?.shimGenerationFor?.(agent.id)
     const duty = this.duties.dutyForAgent(agent.id)
