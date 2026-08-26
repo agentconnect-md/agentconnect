@@ -89,7 +89,7 @@ interface GithubPayload {
   action?: string
   changes?: { base?: unknown }
   installation?: { id?: number }
-  repository?: { id?: number; full_name?: string }
+  repository?: GithubRepositoryRef
   sender?: { login?: string; type?: string; avatar_url?: string }
   requested_reviewer?: { login?: string; type?: string }
   requested_action?: { identifier?: string }
@@ -134,6 +134,13 @@ interface GithubPayload {
   }
 }
 
+/** The delivery's own repository. `owner.type` is GitHub's signed owner kind. */
+interface GithubRepositoryRef {
+  id?: number
+  full_name?: string
+  owner?: { login?: string; type?: string }
+}
+
 interface GithubSubject {
   number?: number
   title?: string
@@ -167,6 +174,9 @@ export interface GithubMatchCtx {
   headRepoFullName?: string
   baseRepoFullName?: string
   commentAuthorLogin?: string
+  /** The organization login that scopes `@<owner>/<agent>` team mentions.
+   *  Absent for a personal repository, which has no teams to mention. */
+  teamOwnerLogin?: string
   mentionText: string | undefined
   /** GitHub's native reviewer request target. Only this App's `[bot]` login
    * turns `pull_request:review_requested` into a manual review request. */
@@ -206,11 +216,32 @@ export type GithubRuleVerdict = 'no-match' | 'trusted' | 'needs-authz'
 /** `@<handle>` as a whole token, case-insensitive (GitHub logins are), bounded
  *  on BOTH sides: a slug prefix must not match (`@example-review` ≠
  *  `@example-review-app`) and a word-char before the `@` must not either —
- *  GitHub never renders `team@slug.dev` as a mention. */
+ *  GitHub never renders `team@slug.dev` as a mention. A trailing `/<slug>` is
+ *  GitHub's TEAM form, so it never reads as a bare mention of the owner. */
 export function mentionsGithubHandle(body: string | undefined, handle: string | undefined): boolean {
   if (!body || !handle) return false
   const escaped = handle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`(?<![\\w-])@${escaped}(?![\\w-])`, 'i').test(body)
+  return new RegExp(`(?<![\\w-])@${escaped}(?![\\w-]|/[\\w-])`, 'i').test(body)
+}
+
+/** `@<owner>/<agent-slug>` — GitHub's team-mention form. An org team named after
+ *  the agent slug makes the targeted handle autocomplete in GitHub's composer;
+ *  the team only has to exist and be visible, and matching stays pure text. */
+export function mentionsGithubTeam(
+  body: string | undefined,
+  owner: string | undefined,
+  slug: string | undefined
+): boolean {
+  return !!owner && !!slug && mentionsGithubHandle(body, `${owner}/${slug}`)
+}
+
+/** The organization whose teams a team mention can name. A personal repository
+ *  has no teams, so an owner GitHub does not sign as `Organization` yields none
+ *  and `@<owner>/<agent>` stays inert there — including a payload too old or too
+ *  partial to carry the owner kind. */
+export function githubTeamOwner(repository: GithubRepositoryRef | undefined): string | undefined {
+  if (repository?.owner?.type !== 'Organization') return undefined
+  return repository.owner.login || repository.full_name?.split('/')[0] || undefined
 }
 
 function requestsGithubAppReviewer(login: string | undefined, appSlug: string | undefined): boolean {
@@ -256,19 +287,29 @@ function isGithubThreadComment(ctx: GithubMatchCtx): boolean {
   return ctx.event === 'issue_comment' || ctx.event === 'pull_request_review_comment'
 }
 
+/** The targeted agent handle in either accepted form: the bare slug, or the
+ *  `@<owner>/<slug>` team an org creates so the same handle autocompletes. */
+function githubMentionsAgent(body: string | undefined, rule: RcHookAssign, owner: string | undefined): boolean {
+  return mentionsGithubHandle(body, rule.github?.agentName) || mentionsGithubTeam(body, owner, rule.github?.agentName)
+}
+
 function githubRuleIsSummoned(rule: RcHookAssign, ctx: GithubMatchCtx): boolean {
   return (
     mentionsGithubHandle(ctx.mentionText, rule.github?.appSlug) ||
-    mentionsGithubHandle(ctx.mentionText, rule.github?.agentName)
+    githubMentionsAgent(ctx.mentionText, rule, ctx.teamOwnerLogin)
   )
 }
 
 /** Explicit agent handles narrow a repo fan-out; the App handle deliberately
  *  wins as the broadcast form. A non-AgentConnect @mention changes nothing. */
-export function githubMentionCandidates(rules: RcHookAssign[], body: string | undefined): RcHookAssign[] {
+export function githubMentionCandidates(
+  rules: RcHookAssign[],
+  body: string | undefined,
+  owner?: string
+): RcHookAssign[] {
   if (rules.some((rule) => mentionsGithubHandle(body, rule.github?.appSlug))) return rules
   const targetedAgentIds = new Set(
-    rules.filter((rule) => mentionsGithubHandle(body, rule.github?.agentName)).map((rule) => rule.agentId)
+    rules.filter((rule) => githubMentionsAgent(body, rule, owner)).map((rule) => rule.agentId)
   )
   return targetedAgentIds.size === 0 ? rules : rules.filter((rule) => targetedAgentIds.has(rule.agentId))
 }
@@ -448,7 +489,7 @@ export function buildTrustedGithubMetadata(
     event === 'issue_comment' &&
     payload.action === 'created' &&
     (mentionsGithubHandle(payload.comment?.body, rule.github.appSlug) ||
-      mentionsGithubHandle(payload.comment?.body, rule.github.agentName))
+      githubMentionsAgent(payload.comment?.body, rule, githubTeamOwner(payload.repository)))
   const pr = payload.pull_request
   const headSha = pr?.head?.sha
   const baseChanged = githubPullRequestBaseChanged(event, payload)
@@ -956,6 +997,7 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
         headRepoFullName: subject?.head?.repo?.full_name,
         baseRepoFullName: subject?.base?.repo?.full_name,
         commentAuthorLogin: payload.comment?.user?.login,
+        teamOwnerLogin: githubTeamOwner(payload.repository),
         requestedReviewerLogin: payload.requested_reviewer?.login,
         baseChanged: githubPullRequestBaseChanged(event, payload),
         commentSubjectFamily:
@@ -1165,7 +1207,9 @@ export function registerGithubIngress(app: FastifyInstance, deps: GithubIngressD
       }
 
       const candidates =
-        ctx.eventAction === 'pull_request:review_requested' ? rules : githubMentionCandidates(rules, ctx.mentionText)
+        ctx.eventAction === 'pull_request:review_requested'
+          ? rules
+          : githubMentionCandidates(rules, ctx.mentionText, ctx.teamOwnerLogin)
       const matched = candidates
         .map((rule) => ({ rule, verdict: githubRuleVerdict(rule, ctx) }))
         .filter((candidate) => candidate.verdict !== 'no-match')

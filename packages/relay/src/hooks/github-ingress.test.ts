@@ -21,6 +21,7 @@ import { HookRateLimiter } from './rate-limit.js'
 import {
   registerGithubIngress,
   githubRuleVerdict,
+  githubTeamOwner,
   buildGithubContext,
   buildTrustedGithubMetadata,
   GITHUB_BODY_EXCERPT_MAX
@@ -87,7 +88,7 @@ function issuesPayload(overrides: Record<string, unknown> = {}): Record<string, 
   return {
     action: 'opened',
     installation: { id: INSTALLATION },
-    repository: { id: REPO_ID, full_name: 'acme/infra' },
+    repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
     sender,
     ...overrides,
     issue,
@@ -99,7 +100,7 @@ function pullPayload(overrides: Record<string, unknown> = {}): Record<string, un
   return {
     action: 'opened',
     installation: { id: INSTALLATION },
-    repository: { id: REPO_ID, full_name: 'acme/infra' },
+    repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
     sender: { login: 'alice', type: 'User' },
     pull_request: {
       number: 77,
@@ -121,7 +122,7 @@ function rerequestPayload(overrides: Record<string, unknown> = {}): Record<strin
   return {
     action: 'rerequested',
     installation: { id: INSTALLATION },
-    repository: { id: REPO_ID, full_name: 'acme/infra' },
+    repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
     sender: { login: 'alice', type: 'User' },
     check_run: {
       id: 86617583005,
@@ -142,7 +143,7 @@ function suiteRerequestPayload(overrides: Record<string, unknown> = {}): Record<
   return {
     action: 'rerequested',
     installation: { id: INSTALLATION },
-    repository: { id: REPO_ID, full_name: 'acme/infra' },
+    repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
     sender: { login: 'alice', type: 'User' },
     check_suite: {
       id: 81913432144,
@@ -157,7 +158,7 @@ function workflowRunPayload(overrides: Record<string, unknown> = {}): Record<str
   return {
     action: 'in_progress',
     installation: { id: INSTALLATION },
-    repository: { id: REPO_ID, full_name: 'acme/infra' },
+    repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
     sender: { login: 'github-actions[bot]', type: 'Bot' },
     workflow_run: {
       event: 'pull_request',
@@ -394,7 +395,7 @@ describe('github ingress', () => {
       const failed = await post('check_suite', {
         action: 'completed',
         installation: { id: INSTALLATION },
-        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
         check_suite: { conclusion: 'failure', pull_requests: [{ number: 77 }, { number: 78 }] }
       })
       expect(failed.statusCode).toBe(202)
@@ -403,7 +404,7 @@ describe('github ingress', () => {
       await post('check_suite', {
         action: 'completed',
         installation: { id: INSTALLATION },
-        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
         check_suite: { conclusion: 'success', pull_requests: [{ number: 77 }] }
       })
       expect(h.feedback).toHaveLength(2)
@@ -1358,7 +1359,7 @@ describe('github ingress', () => {
       const basePayload = {
         action: 'edited',
         installation: { id: INSTALLATION },
-        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
         sender: { login: 'alice', type: 'User' },
         pull_request: {
           number: 77,
@@ -1832,7 +1833,7 @@ describe('github ingress', () => {
             : {
                 action: 'created',
                 installation: { id: INSTALLATION },
-                repository: { id: REPO_ID, full_name: 'acme/infra' },
+                repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
                 sender: { login: 'alice', type: 'User' },
                 pull_request: { number: 7, user: { login: 'alice' } },
                 comment: {
@@ -2062,6 +2063,59 @@ describe('github ingress', () => {
       expect(h.sent.map((msg) => msg.agentId)).toEqual([AGENT, AGENT, AGENT_B])
     })
 
+    it('a team mention narrows the fan-out exactly like the bare agent handle', async () => {
+      const github = {
+        events: ['issue_comment:created'],
+        commentFamilies: ['pull_request' as const],
+        appSlug: 'example-review-app'
+      }
+      h.table.upsert(rule({}, { ...github, agentName: 'review-alpha' }))
+      h.table.upsert(rule({ hookId: HOOK_B, agentId: AGENT_B }, { ...github, agentName: 'review-beta' }))
+      const comment = (body: string, key: string) =>
+        post(
+          'issue_comment',
+          issuesPayload({
+            action: 'created',
+            issue: { number: 43, pull_request: { url: 'https://api.github.com/repos/acme/infra/pulls/43' } },
+            comment: { body, author_association: 'MEMBER' }
+          }),
+          { headers: { 'x-github-delivery': key } }
+        )
+
+      // The team lives in the repository's org, so `@acme/review-alpha` targets that agent alone.
+      await comment('@acme/review-alpha please take another look', 'target-team')
+      await flush()
+      expect(h.sent.map((msg) => msg.agentId)).toEqual([AGENT])
+
+      // A same-named team in a foreign org targets nobody, so the whole repo fan-out stays.
+      await comment('@other-org/review-alpha please take another look', 'foreign-team')
+      await flush()
+      expect(h.sent.map((msg) => msg.agentId)).toEqual([AGENT, AGENT, AGENT_B])
+    })
+
+    it('leaves the team form inert on a personal repository, which has no teams', async () => {
+      const github = {
+        events: ['issue_comment:created'],
+        commentFamilies: ['pull_request' as const],
+        appSlug: 'example-review-app'
+      }
+      h.table.upsert(rule({}, { ...github, agentName: 'review-alpha' }))
+      h.table.upsert(rule({ hookId: HOOK_B, agentId: AGENT_B }, { ...github, agentName: 'review-beta' }))
+      const payload = issuesPayload({
+        action: 'created',
+        issue: { number: 43, pull_request: { url: 'https://api.github.com/repos/acme/infra/pulls/43' } },
+        comment: { body: '@acme/review-alpha please take another look', author_association: 'MEMBER' }
+      })
+      await post(
+        'issue_comment',
+        { ...payload, repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'User' } } },
+        { headers: { 'x-github-delivery': 'personal-owner' } }
+      )
+      await flush()
+      // `@acme/review-alpha` is not a team mention here, so it narrows nothing.
+      expect(h.sent.map((msg) => msg.agentId)).toEqual([AGENT, AGENT_B])
+    })
+
     it('mention mode fails closed when an older rule carries no mention handles', async () => {
       h.table.upsert(rule({}, { events: ['issue_comment:created'], mentionOnly: true }))
       await post(
@@ -2083,7 +2137,7 @@ describe('github ingress', () => {
           {
             action: 'created',
             installation: { id: INSTALLATION },
-            repository: { id: REPO_ID, full_name: 'acme/infra' },
+            repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
             sender: { login: 'alice', type: 'User' },
             pull_request: { number: 7, title: 'tighten backoff', user: { login: 'alice' } },
             comment: {
@@ -2128,7 +2182,7 @@ describe('github ingress', () => {
       await post('pull_request_review_comment', {
         action: 'created',
         installation: { id: INSTALLATION },
-        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
         sender: { login: 'alice', type: 'User' },
         pull_request: { number: 7, title: 'tighten backoff', user: { login: 'alice' } },
         comment: {
@@ -2154,7 +2208,7 @@ describe('github ingress', () => {
       const reviewPayload = {
         action: 'created',
         installation: { id: INSTALLATION },
-        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
         sender: { login: 'alice', type: 'User' },
         pull_request: { number: 7, title: 'tighten backoff', user: { login: 'alice' } },
         comment: {
@@ -2185,7 +2239,7 @@ describe('github ingress', () => {
       const reviewPayload = {
         action: 'created',
         installation: { id: INSTALLATION },
-        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
         sender: { login: 'alice', type: 'User' },
         pull_request: { number: 7, title: 'tighten backoff', user: { login: 'alice' } },
         comment: {
@@ -2241,7 +2295,7 @@ describe('github ingress', () => {
       await post('pull_request_review_comment', {
         action: 'created',
         installation: { id: INSTALLATION },
-        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
         sender: { login: 'alice', type: 'User' },
         pull_request: { number: 7, user: { login: 'alice' } },
         comment: { user: { login: 'alice' }, body: 'explicitly subscribed', author_association: 'MEMBER' }
@@ -2259,7 +2313,7 @@ describe('github ingress', () => {
           {
             action: 'created',
             installation: { id: INSTALLATION },
-            repository: { id: REPO_ID, full_name: 'acme/infra' },
+            repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
             sender: { login: 'alice', type: 'User' },
             pull_request: { number: 7, user: { login: 'alice' } },
             comment: { user: { login: 'alice' }, body, author_association: 'MEMBER' }
@@ -2284,7 +2338,7 @@ describe('github ingress', () => {
         compare: 'https://github.com/acme/infra/compare/abc...def',
         head_commit: { message: 'fix: tighten relay backoff' },
         installation: { id: INSTALLATION },
-        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
         sender: { login: 'alice', type: 'User' }
       })
       expect(res.statusCode).toBe(202)
@@ -2317,7 +2371,7 @@ describe('github ingress', () => {
           head_commit: { message: 'chore: bump deps' },
           commits: [{ message: 'fix: flaky test' }, { message: 'docs: ask @example-review-app to review' }],
           installation: { id: INSTALLATION },
-          repository: { id: REPO_ID, full_name: 'acme/infra' },
+          repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
           sender: { login: 'alice', type: 'User' }
         },
         { headers: { 'x-github-delivery': 'push-m-1' } }
@@ -2331,7 +2385,7 @@ describe('github ingress', () => {
       const res = await post('push', {
         ref: 'refs/heads/main',
         installation: { id: INSTALLATION },
-        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
         sender: { login: 'alice', type: 'User' }
       })
       expect(res.statusCode).toBe(202)
@@ -2453,7 +2507,7 @@ describe('buildTrustedGithubMetadata review comment ids', () => {
       'pull_request_review_comment',
       {
         installation: { id: INSTALLATION },
-        repository: { id: REPO_ID, full_name: 'acme/infra' },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
         pull_request: { number: 7 },
         comment: {
           id,
@@ -2531,8 +2585,31 @@ describe('githubRuleVerdict (pure predicate)', () => {
     // Bounded on BOTH sides — emails/URLs are not mentions, and neither is a
     // longer login that merely starts with our slug.
     expect(matches(r, { ...ctx, mentionText: 'mail team@example-review-app.test' })).toBe(false)
-    expect(matches(r, { ...ctx, mentionText: 'see /apps/@example-review-app/config' })).toBe(true) // '/' is a boundary
     expect(matches(r, { ...ctx, mentionText: 'cc @example-review-apper' })).toBe(false)
+    // `@owner/slug` is GitHub's TEAM form, so it is never a bare mention of the owner.
+    expect(matches(r, { ...ctx, mentionText: 'see /apps/@example-review-app/config' })).toBe(false)
+    expect(matches(r, { ...ctx, mentionText: 'see @example-review-app/ for the app' })).toBe(true)
+  })
+
+  it('accepts the owner-qualified team form of the agent handle, scoped to the repository owner', () => {
+    const r = rule({}, { events: ['issues:*'], mentionOnly: true, agentName: 'review-alpha' })
+    const owned = { ...ctx, eventAction: 'issues:labeled', teamOwnerLogin: 'acme' }
+    expect(matches(r, { ...owned, mentionText: 'cc @acme/review-alpha' })).toBe(true)
+    expect(matches(r, { ...owned, mentionText: 'cc @Acme/Review-Alpha' })).toBe(true) // logins fold case
+    expect(matches(r, { ...owned, mentionText: 'cc @acme/review-alpha-fast' })).toBe(false) // a prefix is not the team
+    expect(matches(r, { ...owned, mentionText: 'cc @other-org/review-alpha' })).toBe(false) // another org's team
+    // The bare handle keeps working, and an unknown owner leaves only that form.
+    expect(matches(r, { ...owned, mentionText: 'cc @review-alpha' })).toBe(true)
+    expect(matches(r, { ...ctx, eventAction: 'issues:labeled', mentionText: 'cc @acme/review-alpha' })).toBe(false)
+  })
+
+  it('yields a team owner only for an organization-owned repository', () => {
+    const org = { login: 'acme', type: 'Organization' }
+    expect(githubTeamOwner({ full_name: 'acme/infra', owner: org })).toBe('acme')
+    expect(githubTeamOwner({ full_name: 'acme/infra', owner: { login: 'acme', type: 'User' } })).toBeUndefined()
+    expect(githubTeamOwner({ full_name: 'acme/infra' })).toBeUndefined() // no signed owner kind ⇒ no team form
+    expect(githubTeamOwner(undefined)).toBeUndefined()
+    expect(githubTeamOwner({ full_name: 'acme/infra', owner: { type: 'Organization' } })).toBe('acme')
   })
 
   it.each([
@@ -2605,7 +2682,7 @@ describe('buildGithubContext', () => {
   it('pull_request deliveries source the subject from payload.pull_request', () => {
     const c = buildGithubContext('pull_request', {
       action: 'opened',
-      repository: { id: REPO_ID, full_name: 'acme/infra' },
+      repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
       sender: { login: 'alice', type: 'User', avatar_url: 'https://avatars.example.test/alice.png' },
       pull_request: { number: 7, title: 'fix', body: 'diff', html_url: 'u', author_association: 'OWNER', labels: [] }
     })
@@ -2621,7 +2698,7 @@ describe('buildGithubContext', () => {
   it('a null subject body yields no excerpt and truncated:false', () => {
     const c = buildGithubContext('issues', {
       action: 'opened',
-      repository: { id: REPO_ID, full_name: 'acme/infra' },
+      repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
       issue: { number: 1, title: 't', body: null }
     })
     expect(c.bodyExcerpt).toBeUndefined()
