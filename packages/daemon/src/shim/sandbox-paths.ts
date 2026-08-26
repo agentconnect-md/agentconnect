@@ -33,6 +33,9 @@ export const SANDBOX_GH_WRAPPER_DIR = '/opt/agentconnect/pathbin'
  *  workspace must not carry a previous incarnation's copy. */
 export const SANDBOX_GIT_CONFIG_DIR = '/run/agentconnect/git'
 
+/** Shim-owned scratch space for bounded skill snapshots; callers receive opaque handles only. */
+export const SANDBOX_SKILL_STAGING_DIR = '/run/agentconnect/skills-staging'
+
 /**
  * Where a git-repo workspace is checked out, relative to the pod's workspace mount.
  *

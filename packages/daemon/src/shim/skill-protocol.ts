@@ -71,6 +71,14 @@ export const ClusterSkillUploadSchema = z
 
 export const ClusterSkillRequestSchema = z.discriminatedUnion('op', [ClusterSkillBeginSchema, ClusterSkillUploadSchema])
 
+export const ClusterSkillBeginReplySchema = z.object({ handle: z.string().min(16).max(128) }).strict()
+export const ClusterSkillUploadReplySchema = z
+  .object({ received: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_FILE_BYTES), complete: z.boolean() })
+  .strict()
+
 export type ClusterSkillBegin = z.infer<typeof ClusterSkillBeginSchema>
+export type ClusterSkillFile = z.infer<typeof ClusterSkillFileSchema>
 export type ClusterSkillUpload = z.infer<typeof ClusterSkillUploadSchema>
 export type ClusterSkillRequest = z.infer<typeof ClusterSkillRequestSchema>
+export type ClusterSkillBeginReply = z.infer<typeof ClusterSkillBeginReplySchema>
+export type ClusterSkillUploadReply = z.infer<typeof ClusterSkillUploadReplySchema>
