@@ -121,31 +121,32 @@ export function FleetStat({ icon, label, value, note }: { icon: string; label: s
   )
 }
 
-// One utilization reading as a dial. A ring rather than a bar because the Resources column is
-// the narrow one in band one — a bar there is a 150px track with its label crushed beside it,
-// while a ring carries the figure inside itself and leaves the width to the label.
+// One utilization reading as a dial: the label above, the ring under it carrying its own figure.
+// A ring rather than a bar because Resources is the NARROW column in band one — a bar there is a
+// short track with its label crushed beside it — and the label sits on TOP rather than alongside
+// so the ring owns the column's width instead of hugging its left edge.
 const DIAL_R = 15.5
 const DIAL_C = 2 * Math.PI * DIAL_R
 
 export function ResourceDial({
   label,
-  note,
   pct,
   muted = false
 }: {
   label: string
-  /** The reading behind the percentage — a ratio the ring cannot hold inside itself. */
-  note?: string
   pct: number
-  /** No fraction to fill (an unbounded ceiling): the track stays empty rather than drawing a
-   *  0% that reads as a measurement. */
+  /** Nothing to measure (an idle fleet): the track stays empty and the figure reads '—' rather
+   *  than filling to 0%, which would be a measurement. */
   muted?: boolean
 }) {
   // Clamped — a daemon predating cpu-normalization reports a raw load average.
   const shown = Math.max(0, Math.min(100, Math.round(pct)))
   return (
-    <div className="flex items-center gap-[11px]">
-      <span className="relative flex h-13 w-13 flex-none items-center justify-center">
+    <div className="flex w-full min-w-0 flex-col items-center gap-[9px]">
+      <span className="w-full truncate text-center font-sans text-[12px] font-medium leading-normal text-(--text-tertiary)">
+        {label}
+      </span>
+      <span className="relative flex h-20 w-20 flex-none items-center justify-center">
         <svg viewBox="0 0 36 36" className="h-full w-full -rotate-90" aria-hidden="true">
           <circle cx="18" cy="18" r={DIAL_R} fill="none" stroke="var(--surface-active)" strokeWidth="3.5" />
           {!muted && (
@@ -161,16 +162,15 @@ export function ResourceDial({
             />
           )}
         </svg>
-        <span className="mono absolute text-[11.5px] font-semibold">{muted ? '—' : `${shown}%`}</span>
-      </span>
-      <span className="min-w-0">
-        <span className="block truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
-          {label}
-        </span>
-        {note && <span className="mono mt-[2px] block truncate text-[11px] text-(--text-tertiary)">{note}</span>}
+        <span className="mono absolute text-[14px] font-semibold tracking-[-.02em]">{muted ? '—' : `${shown}%`}</span>
       </span>
     </div>
   )
+}
+
+/** The dials of one Resources card, stacked — one reading per row, each filling the column. */
+export function ResourceDials({ children }: { children: ReactNode }) {
+  return <div className="flex flex-1 flex-col items-center justify-center gap-[18px] px-4 py-[18px]">{children}</div>
 }
 
 /**

@@ -33,6 +33,7 @@ import {
   FleetStat,
   FleetUsageCard,
   ResourceDial,
+  ResourceDials,
   barColor,
   unionRuntimes,
   type FleetRuntime
@@ -683,10 +684,10 @@ export default function DaemonDetailView() {
           <div className="cardhead">
             <span className="cardtitle">Resources</span>
           </div>
-          <div className="flex flex-1 flex-col justify-center gap-[14px] px-4 py-[15px]">
+          <ResourceDials>
             <ResourceDial label="CPU" pct={daemon.cpu} />
             <ResourceDial label="Memory" pct={daemon.mem} />
-          </div>
+          </ResourceDials>
         </div>
         <FleetUsageCard agentIds={hosted.map((a) => a.id)} note="agents placed here · 30d" />
       </div>
