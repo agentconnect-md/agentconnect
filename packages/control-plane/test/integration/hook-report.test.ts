@@ -134,12 +134,13 @@ async function placedCommentFamilyPair(
     reviewPolicy: 'off',
     reportingMode: 'off'
   })
-  // Both rows predate the delivery AND are unmodified since: any later
-  // definition change (lastModifiedAt) blocks the claim by design.
+  // Both rows AND their agent predate the delivery unmodified: any later
+  // definition change (either lastModifiedAt) blocks the claim by design.
   await prisma.hookDef.updateMany({
     where: { id: { in: [pullHookId, issuesHookId] } },
     data: { createdAt, lastModifiedAt: createdAt }
   })
+  await prisma.agent.update({ where: { id: agentId }, data: { lastModifiedAt: createdAt } })
   return { agentId, pullHookId, issuesHookId }
 }
 
@@ -400,6 +401,59 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     })
   })
 
+  it('blocks the claim when an unlanded candidate belongs to another agent', async () => {
+    const firedAt = new Date('2026-07-03T11:07:00.000Z')
+    const backdated = new Date(firedAt.getTime() - 60_000)
+    const pairA = await placedCommentFamilyPair(backdated)
+    const pairB = await placedCommentFamilyPair(backdated)
+    await recordGithubDeliveryFailure(
+      pairA.pullHookId,
+      pairA.agentId,
+      'cross-agent-guid',
+      firedAt,
+      HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+      DAEMON,
+      { event: 'issue_comment:created', subjectKind: 'pull_request' }
+    )
+
+    // B's same-family rule was filtered at ingestion (say, mentionOnly); this
+    // claim cannot reconstruct B's pause/rename history, so B blocks even
+    // though both timestamps predate the delivery.
+    const expected = [HookId(pairA.pullHookId), HookId(pairB.pullHookId)].sort()
+    expect(await repo().claimRetryableDeliveryRedelivery('cross-agent-guid', expected, firedAt, [30_000])).toBe(false)
+    expect(await repo().getRun(HookId(pairA.pullHookId), 'cross-agent-guid')).toMatchObject({
+      redeliveryAttempts: 0,
+      redeliveryNextAttemptAt: null
+    })
+  })
+
+  it('blocks the claim when the shared agent was modified after the delivery', async () => {
+    const firedAt = new Date('2026-07-03T11:08:00.000Z')
+    const { agentId, pullHookId, issuesHookId } = await placedCommentFamilyPair(new Date(firedAt.getTime() - 60_000))
+    await recordGithubDeliveryFailure(
+      pullHookId,
+      agentId,
+      'renamed-agent-guid',
+      firedAt,
+      HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+      DAEMON,
+      { event: 'issue_comment:created', subjectKind: 'pull_request' }
+    )
+    // A rename can change what the sibling's mention gate matches, so an agent
+    // PATCH after ingestion blocks the tolerance.
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { lastModifiedAt: new Date(firedAt.getTime() + 1_000) }
+    })
+
+    const expected = [HookId(pullHookId), HookId(issuesHookId)].sort()
+    expect(await repo().claimRetryableDeliveryRedelivery('renamed-agent-guid', expected, firedAt, [30_000])).toBe(false)
+    expect(await repo().getRun(HookId(pullHookId), 'renamed-agent-guid')).toMatchObject({
+      redeliveryAttempts: 0,
+      redeliveryNextAttemptAt: null
+    })
+  })
+
   it('blocks the claim when an unlanded candidate was modified after the delivery', async () => {
     const firedAt = new Date('2026-07-03T11:06:00.000Z')
     const { agentId, pullHookId, issuesHookId } = await placedCommentFamilyPair(new Date(firedAt.getTime() - 60_000))
@@ -417,8 +471,8 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
       DAEMON,
       { event: 'issue_comment:created', subjectKind: 'pull_request' }
     )
-    // Relaxing the filter afterwards means the redelivery would no longer be
-    // filtered — the payload is immutable, the rule is not.
+    // Family isolation keeps this sibling from ever matching a PR comment, but
+    // the hook-level fence is defense in depth: ANY post-ingestion edit blocks.
     await prisma.hookDef.update({
       where: { id: issuesHookId },
       data: { mentionOnly: false, lastModifiedAt: new Date(firedAt.getTime() + 1_000) }

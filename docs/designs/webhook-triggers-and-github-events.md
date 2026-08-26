@@ -720,12 +720,17 @@ candidate set, each of them an active side-effect-free retry row; a landed run
 from outside the set still blocks the whole request. A candidate that landed
 nothing is the relay's own precise filtering — subject family, mention text,
 labels, none of which the summary carries — which the redelivered payload
-reproduces exactly, so it is tolerated. That proof holds only while the rule
-itself is unchanged: a candidate whose definition moved after the delivery was
-ingested — created then, re-enabled, or its filters relaxed — might treat the
-redelivery as a first run of a stale event, so any unlanded candidate modified
-since the delivery blocks the claim. Every user-facing edit moves
-`lastModifiedAt`, which is the fence.
+reproduces exactly, so it can be tolerated. That proof needs the candidate's
+EFFECTIVE rule to be the one that filtered the original delivery, and the rule
+is mutable even when the payload is not — an edit, a re-enable, an agent
+rename, or a pause/resume can all change what compiles for it. Tolerance is
+therefore restricted to candidates on the same agent as a landed run: the run
+shows the agent was live and routing at ingestion, and family uniqueness plus
+the per-row shape gate keep a sibling family from ever matching the event. Two
+`lastModifiedAt` fences (hook row and agent — every user-facing edit moves
+them) remain as defense in depth. Every other unlanded candidate — cross-agent
+ones above all, whose pause and rename history the claim cannot reconstruct —
+blocks the request, exactly as the pre-split exact-fanout rule did.
 
 An admitted turn ended by a handover (`agent_handover`) is deliberately outside
 that set, and the reason is a stage question rather than a wording one. Retry

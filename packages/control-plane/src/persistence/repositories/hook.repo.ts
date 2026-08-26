@@ -2089,17 +2089,32 @@ export class PgHookRepo implements HookRepo {
       const landedSet = new Set<string>(landed)
       const unlanded = expected.filter((hookId) => !landedSet.has(hookId))
       if (unlanded.length > 0) {
-        // The payload is immutable but the relay rule is not: a candidate whose
-        // definition changed since the GUID was ingested (created, re-enabled,
-        // mention/label filter relaxed) may no longer reproduce the original
-        // filtering and would read the redelivery as a first run of a stale
-        // event. Every user-facing edit bumps lastModifiedAt, so it fences all
-        // of those at once (creation included — it starts equal to createdAt).
+        // Tolerating an unlanded candidate needs proof its EFFECTIVE relay rule
+        // is the one that filtered the original delivery — the payload is
+        // immutable, the rule is not. A candidate on the same agent as a landed
+        // row carries that proof structurally: the landed run shows the agent
+        // was live and routing at ingestion, and family uniqueness plus the
+        // per-row shape gate keep a sibling family from ever matching this
+        // event. The two lastModifiedAt fences (hook and agent — every
+        // user-facing edit bumps them, creation/rename/pause included) stay as
+        // defense in depth. Anything else — cross-agent candidates above all,
+        // whose pause/rename history this claim cannot reconstruct — blocks,
+        // exactly as the pre-split exact-fanout claim did. A deleted candidate
+        // stays tolerated: the relay no longer holds a rule for it.
         const deliveredAt = new Date(Math.min(...rows.map((row) => row.startedAt.getTime())))
-        const postdating = await tx.hookDef.count({
-          where: { id: { in: unlanded }, lastModifiedAt: { gt: deliveredAt } }
+        const landedAgentIds = new Set(rows.map((row) => row.agentId).filter((id): id is string => id !== null))
+        const candidates = await tx.hookDef.findMany({
+          where: { id: { in: unlanded } },
+          select: { agentId: true, lastModifiedAt: true, agent: { select: { lastModifiedAt: true } } }
         })
-        if (postdating > 0) {
+        const unsafeCandidate = candidates.some(
+          (candidate) =>
+            candidate.agentId === null ||
+            !landedAgentIds.has(candidate.agentId) ||
+            candidate.lastModifiedAt > deliveredAt ||
+            (candidate.agent !== null && candidate.agent.lastModifiedAt > deliveredAt)
+        )
+        if (unsafeCandidate) {
           await settleActive()
           return false
         }
