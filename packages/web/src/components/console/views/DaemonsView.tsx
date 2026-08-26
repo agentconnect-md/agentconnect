@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   POOL_LABEL,
@@ -11,7 +11,8 @@ import {
   presentedDaemonStatus,
   status,
   type DaemonRow,
-  type MemberSetRow
+  type MemberSetRow,
+  type StatusInfo
 } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -52,6 +53,9 @@ export default function DaemonsView() {
     () => (showPool ? agents.filter((a) => isPoolPlacementKind(a.placementKind, a.setId, orgSetIds)).length : 0),
     [agents, orgSetIds, showPool]
   )
+
+  // Lifted out of `GroupsSection`: the "Daemons" label needs it too. The flag hides the entry point, not the feature.
+  const showGroups = featureFlagEnabled('daemon-groups') && (ownDaemons.length > 0 || memberSets.length > 0)
 
   // Fleet summary for the mobile-only strip below — counted over what the page SHOWS,
   // so the pool contributes one entry rather than one per member.
@@ -117,15 +121,11 @@ export default function DaemonsView() {
                 ))}
               {ownDaemons.length > 0 && (
                 <>
-                  {/* The section label earns its place only next to the Cloud entry — without
-                      one there is nothing to tell these cards apart from. */}
-                  {poolMembers.length > 0 && (
-                    <div className="mt-6 mb-[9px] flex min-h-[26px] items-center gap-[9px]">
-                      <span className="font-sans text-[13px] font-semibold leading-normal">Daemons</span>
-                      <span className="mono text-[11.5px] text-(--text-tertiary)">{ownDaemons.length}</span>
-                    </div>
+                  {/* Earns its place only where something else shares the page: the Cloud entry, or the groups below. */}
+                  {(poolMembers.length > 0 || showGroups) && (
+                    <SectionHeader label="Daemons" count={ownDaemons.length} first={poolMembers.length === 0} />
                   )}
-                  <div className="grid grid-cols-1 gap-3 desktop:grid-cols-3 desktop:gap-[14px]">
+                  <div className={FLEET_GRID}>
                     {ownDaemons.map((m) => (
                       <DaemonCard key={m.daemonId} m={m} hosted={hostedByDaemon.get(m.daemonId) ?? 0} />
                     ))}
@@ -137,69 +137,83 @@ export default function DaemonsView() {
           {/* Last, as the design orders it: the machines are the inventory, a group is what you
               point an agent at once they exist. Outside the empty-fleet branch on purpose: an org
               whose only machines were pool members still manages the groups it already made. */}
-          <GroupsSection groups={memberSets} daemons={daemons} />
+          {showGroups && <GroupsSection groups={memberSets} daemons={daemons} />}
         </>
       )}
     </div>
   )
 }
 
-/**
- * Daemon groups — the organization's own member sets (docs/designs/daemon-groups.md §2), as the
- * console design draws them: a table under the machines, not cards among them. A group is a
- * placement TARGET whose members are interchangeable, which is exactly what "Any daemon in the
- * group" says and why the row borrows none of a daemon's telemetry.
- *
- * Renders once the org has a daemon that could join one, or as soon as a group exists — before
- * that it answers a question nobody has asked.
- */
+// Two columns as designed, as a 470px floor — what the row needs — so a narrow window drops to one, not to a crushed card.
+const FLEET_GRID =
+  'grid grid-cols-1 gap-3 desktop:grid-cols-[repeat(auto-fill,minmax(min(470px,100%),1fr))] desktop:gap-[14px]'
+
+// One height for every card here, floored at the tallest of them (the pool entry's capacity strip), so the page is one stack.
+const FLEET_ROW = 'desktop:min-h-[77px]'
+
+/** The label + count that separates the page's lists, with an optional action on the right. */
+function SectionHeader({
+  label,
+  count,
+  action,
+  first = false
+}: {
+  label: string
+  count: number
+  action?: ReactNode
+  /** Nothing renders above it — drop the separating margin so it does not float. */
+  first?: boolean
+}) {
+  return (
+    <div className={`${first ? '' : 'mt-6 '}mb-[9px] flex min-h-[26px] items-center gap-[9px]`}>
+      <span className="font-sans text-[13px] font-semibold leading-normal">{label}</span>
+      <span className="mono text-[11.5px] text-(--text-tertiary)">{count}</span>
+      {action && (
+        <>
+          <div className="flex-1" />
+          {action}
+        </>
+      )}
+    </div>
+  )
+}
+
+// Daemon groups (daemon-groups.md §2) drawn as a daemon's card — no telemetry, a group has no CPU of its own to quote.
 function GroupsSection({ groups, daemons }: { groups: MemberSetRow[]; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
-  // Flagged: the surface exists in every build and appears only where the deployment asked
-  // for it. The Control Plane serves member sets either way — this hides the console entry point,
-  // not the feature, which is what keeps one server to reason about.
-  if (!featureFlagEnabled('daemon-groups')) return null
-  if (!daemons.some((d) => !d.pool) && groups.length === 0) return null
 
   return (
     <>
-      <div className="mt-6 mb-[9px] flex min-h-[26px] items-center gap-[9px]">
-        <span className="font-sans text-[13px] font-semibold leading-normal">Daemon groups</span>
-        <span className="mono text-[11.5px] text-(--text-tertiary)">{groups.length}</span>
-        <div className="flex-1" />
-        <button
-          className="inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand)"
-          onClick={() => openModal('group')}
-        >
-          <Icon name="plus" size={13} />
-          New group
-        </button>
-      </div>
-      <div className="card">
-        <div className={`row h ${GROUP_COLS}`}>
-          <span>Group</span>
-          <span>Status</span>
-          <span>Daemons</span>
-          <span className="text-right">Agents</span>
-          <span />
+      <SectionHeader
+        label="Daemon groups"
+        count={groups.length}
+        action={
+          <button
+            className="inline-flex cursor-pointer items-center gap-[6px] border-0 bg-transparent p-0 font-sans text-[12.5px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand)"
+            onClick={() => openModal('group')}
+          >
+            <Icon name="plus" size={13} />
+            New group
+          </button>
+        }
+      />
+      {groups.length === 0 ? (
+        <div className="card px-4 py-[18px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
+          Place an agent on a group instead of one daemon and it keeps running when that daemon does not — whichever
+          member is serving picks the work up.
         </div>
-        {groups.length === 0 ? (
-          <div className="px-4 py-[18px] font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-secondary)">
-            Place an agent on a group instead of one machine and it keeps running when that machine does not — whichever
-            member is serving picks the work up.
-          </div>
-        ) : (
-          groups.map((group) => <GroupRow key={group.setId} group={group} daemons={daemons} />)
-        )}
-      </div>
+      ) : (
+        <div className={FLEET_GRID}>
+          {groups.map((group) => (
+            <GroupCard key={group.setId} group={group} daemons={daemons} />
+          ))}
+        </div>
+      )}
     </>
   )
 }
 
-/** The design's column track for the group table — header and rows share it verbatim. */
-const GROUP_COLS = 'grid-cols-[2.2fr_.9fr_1.9fr_.55fr_32px] gap-x-[14px]'
-
-function GroupRow({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[] }) {
+function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[] }) {
   const { openModal } = useModal()
   const { orgPath } = useOrgs()
   const router = useRouter()
@@ -207,38 +221,53 @@ function GroupRow({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[
   const s = status(groupFleetStatus(group, daemons))
   const members = daemons.filter((d) => group.memberDaemonIds.includes(d.daemonId))
   const serving = members.filter((d) => d.status === 'online').length
-  // Names the members, because "which machines is this" is the question a group row answers that a
-  // count cannot — falling back to the count once the list would not fit.
+  // Names the members: the question a group answers that a count cannot. Falls back to a count once the list will not fit.
   const memberText =
     members.length === 0
       ? 'No daemons yet'
       : members.length <= 2
         ? members.map((d) => d.name).join(', ')
         : `${members.length} daemons · ${serving} serving`
+  const meta = `${memberText} · ${group.agentCount} agent${group.agentCount === 1 ? '' : 's'}`
 
   return (
-    // The row opens the group's own page, not the editor: what a reader wants from a group is
-    // what runs on it and which members are serving, and renaming it is the rarer of the two.
-    // The editor stays one click away, in the row menu and on that page.
-    <div className={`row click ${GROUP_COLS}`} onClick={() => router.push(orgPath(`/daemons/groups/${group.setId}`))}>
-      <div className="flex min-w-0 items-center gap-[10px]">
-        <span className="flex h-7 w-7 flex-none items-center justify-center rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken)">
-          <Icon name="layers" size={15} color={serving > 0 ? 'var(--brand)' : 'var(--text-tertiary)'} />
+    // Opens the group's page, not the editor: what runs on it is the common read. Edit stays in the menu.
+    <div
+      className={`card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[11px] desktop:px-4 desktop:py-[13px] ${FLEET_ROW}`}
+      onClick={() => router.push(orgPath(`/daemons/groups/${group.setId}`))}
+    >
+      <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken) desktop:h-[38px] desktop:w-[38px] desktop:rounded-[9px]">
+        <Icon
+          name="layers"
+          size={20}
+          color={serving > 0 ? 'var(--brand)' : 'var(--text-tertiary)'}
+          className="desktop:h-[19px] desktop:w-[19px]"
+        />
+        {/* Mobile puts the status dot on the avatar corner; desktop shows it inline after the meta. */}
+        <span
+          className="absolute -right-[3px] -bottom-[3px] h-3 w-3 rounded-full border-2 border-(--surface-card) desktop:hidden"
+          style={{ background: s.dot }}
+        />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-[2px] desktop:gap-0">
+        <span className="truncate font-sans text-[14px] font-semibold leading-normal desktop:text-[13.5px]">
+          {group.name}
         </span>
-        <div className="min-w-0">
-          <div className="mono truncate text-[13px] font-semibold text-(--text-primary)">{group.name}</div>
-          <div className="truncate text-[11px] text-(--text-tertiary)">Any daemon in the group</div>
-        </div>
-      </div>
-      <div className="flex items-center gap-[7px]">
-        <span className="dot" style={{ background: s.dot }} />
-        <span className="font-sans text-[12.5px] font-medium leading-normal" style={{ color: s.text }}>
-          {s.label}
+        {/* Wraps at 375px rather than clipping the agent count — a group's meta is longer than a daemon's. */}
+        <span className="line-clamp-2 font-mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:line-clamp-1 desktop:text-[11px] desktop:leading-[1.5]">
+          {meta}
         </span>
       </div>
-      <span className="mono truncate text-[12px] text-(--text-secondary)">{memberText}</span>
-      <span className="mono text-right text-[13px] text-(--text-primary)">{group.agentCount}</span>
-      <span className="relative flex justify-end" onClick={(e) => e.stopPropagation()}>
+      <StatusWord s={s} />
+      <span
+        className="badge flex-none px-[10px] py-[3px] text-[12px] desktop:hidden"
+        style={{ background: s.bg, color: s.text }}
+      >
+        {s.label}
+      </span>
+      <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
+      {/* Desktop-only like a daemon card's: below 769px the chevron leads to the group's page, which carries both. */}
+      <span className="relative hidden flex-none justify-end desktop:flex" onClick={(e) => e.stopPropagation()}>
         <button
           className="iconbtn h-7 w-7"
           aria-label="Group actions"
@@ -280,6 +309,18 @@ function GroupRow({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow[
   )
 }
 
+/** Desktop's status readout, on a fixed track so every card's action button lands on the same column. */
+function StatusWord({ s }: { s: StatusInfo }) {
+  return (
+    <span className="hidden w-[76px] flex-none items-center gap-[7px] desktop:flex">
+      <span className="dot" style={{ background: s.dot }} />
+      <span className="truncate font-sans text-[12.5px] font-medium leading-normal" style={{ color: s.text }}>
+        {s.label}
+      </span>
+    </span>
+  )
+}
+
 /**
  * The whole pool as one entry on the MANAGED install (design: the Infra screen's `cloudSlot`).
  *
@@ -307,7 +348,7 @@ function PoolFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: numb
 
   return (
     <div
-      className="card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px]"
+      className={`card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px] ${FLEET_ROW}`}
       onClick={open}
     >
       <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md bg-(--brand-soft) desktop:h-9 desktop:w-9">
@@ -387,7 +428,7 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
 
   return (
     <div
-      className="card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px]"
+      className={`card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px] ${FLEET_ROW}`}
       onClick={open}
     >
       <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken) desktop:h-9 desktop:w-9">
@@ -502,11 +543,12 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
   }
 
   return (
+    // One row per daemon on desktop; mobile keeps the taller card, where four blocks will not fit in 375px.
     <div
-      className="card click flex flex-col gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:block desktop:p-0"
+      className={`card click flex flex-col gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:flex-row desktop:items-center desktop:gap-[14px] desktop:px-4 desktop:py-[13px] ${FLEET_ROW}`}
       onClick={() => router.push(orgPath(`/daemons/${m.daemonId}`))}
     >
-      <div className="flex w-full items-center gap-3 desktop:gap-[11px] desktop:border-b desktop:border-(--border-subtle) desktop:px-4 desktop:py-[15px]">
+      <div className="flex w-full items-center gap-3 desktop:w-auto desktop:min-w-[150px] desktop:flex-1 desktop:gap-[11px]">
         <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken) desktop:h-[38px] desktop:w-[38px] desktop:rounded-[9px]">
           <Icon
             name="server"
@@ -514,7 +556,7 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
             color={online ? 'var(--brand)' : 'var(--text-tertiary)'}
             className="desktop:h-[19px] desktop:w-[19px]"
           />
-          {/* Mobile puts the status dot on the avatar corner; desktop shows it inline after the name. */}
+          {/* Mobile puts the status dot on the avatar corner; desktop shows it inline after the meta. */}
           <span
             className="absolute -right-[3px] -bottom-[3px] h-3 w-3 rounded-full border-2 border-(--surface-card) desktop:hidden"
             style={{ background: s.dot }}
@@ -548,27 +590,25 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
                 onClick={(e) => e.stopPropagation()}
                 onDoubleClick={m.canEdit ? beginEdit : undefined}
                 title={m.canEdit ? 'Double-click to rename' : undefined}
-                className="hidden min-w-0 truncate font-sans text-[14px] font-semibold leading-normal desktop:block"
+                className="hidden min-w-0 truncate font-sans text-[14px] font-semibold leading-normal desktop:block desktop:text-[13.5px]"
               >
                 {m.name}
               </span>
             )}
-            <span className="font-sans text-[14px] font-semibold leading-normal text-(--text-primary) desktop:hidden">
+            <span className="truncate font-sans text-[14px] font-semibold leading-normal text-(--text-primary) desktop:hidden">
               {m.name}
             </span>
             <RestrictedLock
               show={m.visibility === 'restricted'}
               title="Selected — only shared members can see this daemon"
             />
-            <span className="dot hidden flex-none desktop:inline-block" style={{ background: s.dot }} />
           </div>
-          {/* Version meta — mobile appends the host (when it differs from the name); desktop shows
-              version only. During a lifecycle operation the status badge already says restarting or
-              upgrading, so hide the available-upgrade hint instead of repeating the operation here. */}
+          {/* Mobile appends the host, desktop the agent count; the upgrade hint hides mid-op, where the status says so. */}
           <div className="flex min-w-0 items-center gap-[7px]">
             <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary) desktop:text-[11px] desktop:leading-[1.5] desktop:tabular-nums">
               {m.version}
               {m.host && m.host !== m.name && <span className="desktop:hidden">{` · ${m.host}`}</span>}
+              <span className="hidden desktop:inline">{` · ${hosted} agent${hosted === 1 ? '' : 's'}`}</span>
             </span>
             <DaemonUpgradeBadge
               show={!pending && m.upgradeAvailable}
@@ -578,149 +618,158 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
           </div>
         </div>
         <span
-          className="badge flex-none max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]"
+          className="badge flex-none px-[10px] py-[3px] text-[12px] desktop:hidden"
           style={{ background: s.bg, color: s.text }}
         >
           {s.label}
         </span>
         <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
-        {/* Hidden outright when the caller may do none of it — an empty menu is worse than
-            no menu, and every item here is refused by the CP without edit rights. */}
-        <div className={hasActions ? 'relative hidden flex-none desktop:block' : 'hidden'}>
-          <button
-            className="iconbtn h-7 w-7"
-            onClick={(e) => {
-              e.stopPropagation()
-              setMenuOpen((v) => !v)
-            }}
-            title="Daemon actions"
-          >
-            <Icon name="ellipsis" size={16} />
-          </button>
-          {menuOpen && (
-            <>
-              <div
-                onClick={(e) => {
-                  e.stopPropagation()
-                  setMenuOpen(false)
-                }}
-                className="fixed inset-0 z-[45]"
-              />
-              <div className="dmenu" onClick={(e) => e.stopPropagation()}>
-                {m.canEdit && (
+      </div>
+      {/* Both utilizations inline. The row's elastic block: a bar reads fine at 100px, a truncated name does not. */}
+      <div className="hidden w-[152px] min-w-[100px] flex-col gap-[5px] desktop:flex">
+        <MiniBar label="cpu" pct={m.cpu} color={barColor} hot={hot} />
+        <MiniBar label="mem" pct={m.mem} color={barColor} hot={hot} />
+      </div>
+      <StatusWord s={s} />
+      {/* Mobile-only: the stacked bars and the stat footer the desktop row folds away. */}
+      <div className="flex w-full gap-4 desktop:hidden">
+        <UtilBar label="CPU" pct={m.cpu} color={barColor} hot={hot} />
+        <UtilBar label="MEM" pct={m.mem} color={barColor} hot={hot} />
+      </div>
+      <div className="flex w-full gap-5 border-t border-(--border-subtle) pt-[10px] desktop:hidden">
+        {(
+          [
+            ['agents', String(hosted)],
+            ['max agents', m.conns],
+            ['last seen', m.uptime]
+          ] as const
+        ).map(([label, value]) => (
+          <div key={label}>
+            <div className="mono text-[14px] leading-normal font-semibold">{value}</div>
+            <div className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">{label}</div>
+          </div>
+        ))}
+      </div>
+      {/* Hidden outright when the caller may do none of it — the CP refuses every item here without edit rights. */}
+      <div className={hasActions ? 'relative hidden flex-none desktop:block' : 'hidden'}>
+        <button
+          className="iconbtn h-7 w-7"
+          onClick={(e) => {
+            e.stopPropagation()
+            setMenuOpen((v) => !v)
+          }}
+          title="Daemon actions"
+        >
+          <Icon name="ellipsis" size={16} />
+        </button>
+        {menuOpen && (
+          <>
+            <div
+              onClick={(e) => {
+                e.stopPropagation()
+                setMenuOpen(false)
+              }}
+              className="fixed inset-0 z-[45]"
+            />
+            <div className="dmenu" onClick={(e) => e.stopPropagation()}>
+              {m.canEdit && (
+                <button
+                  className="dmi"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    beginEdit()
+                  }}
+                >
+                  <Icon name="pencil" size={15} />
+                  Rename
+                </button>
+              )}
+              {canRestart && (
+                <button
+                  className="dmi"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    openModal('restartDaemon', m)
+                  }}
+                >
+                  <Icon name="refresh-cw" size={15} />
+                  Restart
+                </button>
+              )}
+              {offline && !pending && m.canEdit && (
+                <>
                   <button
                     className="dmi"
                     onClick={() => {
                       setMenuOpen(false)
-                      beginEdit()
-                    }}
-                  >
-                    <Icon name="pencil" size={15} />
-                    Rename
-                  </button>
-                )}
-                {canRestart && (
-                  <button
-                    className="dmi"
-                    onClick={() => {
-                      setMenuOpen(false)
-                      openModal('restartDaemon', m)
+                      openModal('reconnectDaemon', m)
                     }}
                   >
                     <Icon name="refresh-cw" size={15} />
-                    Restart
+                    Reconnect
                   </button>
-                )}
-                {offline && !pending && m.canEdit && (
-                  <>
-                    <button
-                      className="dmi"
-                      onClick={() => {
-                        setMenuOpen(false)
-                        openModal('reconnectDaemon', m)
-                      }}
-                    >
-                      <Icon name="refresh-cw" size={15} />
-                      Reconnect
-                    </button>
-                    <div className="dmsep" />
-                    <button
-                      className="dmi danger"
-                      onClick={() => {
-                        setMenuOpen(false)
-                        openModal('deleteDaemon', m)
-                      }}
-                    >
-                      <Icon name="trash-2" size={15} />
-                      Delete
-                    </button>
-                  </>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-      {/* Body — display:contents at mobile so the bars row and the stats footer
-          participate directly in the card's flex-col gap-3; on desktop it is the
-          padded section under the header border. */}
-      <div className="contents desktop:flex desktop:flex-col desktop:gap-3 desktop:px-4 desktop:py-[14px]">
-        <div className="flex w-full gap-4 desktop:flex-col desktop:gap-3">
-          <UtilBar label="CPU" pct={m.cpu} color={barColor} hot={hot} />
-          <UtilBar label="Memory" mobileLabel="MEM" pct={m.mem} color={barColor} hot={hot} />
-        </div>
-        <div className="flex w-full gap-5 border-t border-(--border-subtle) pt-[10px] desktop:gap-[18px]">
-          {(
-            [
-              ['agents', String(hosted)],
-              ['max agents', m.conns],
-              ['last seen', m.uptime]
-            ] as const
-          ).map(([label, value]) => (
-            <div key={label}>
-              <div className="mono text-[14px] leading-normal font-semibold desktop:text-[15px] desktop:leading-[1.5]">
-                {value}
-              </div>
-              <div className="font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">{label}</div>
+                  <div className="dmsep" />
+                  <button
+                    className="dmi danger"
+                    onClick={() => {
+                      setMenuOpen(false)
+                      openModal('deleteDaemon', m)
+                    }}
+                  >
+                    <Icon name="trash-2" size={15} />
+                    Delete
+                  </button>
+                </>
+              )}
             </div>
-          ))}
-        </div>
+          </>
+        )}
       </div>
     </div>
   )
 }
 
+/** Clamp to 0..100 — a daemon predating the cpu-normalization fix reports a raw load average, e.g. "722%". */
+function utilPct(pct: number): number {
+  return Math.max(0, Math.min(100, Math.round(pct)))
+}
+
+/** The desktop card's utilization readout: label, bar and percent on one line. */
+function MiniBar({ label, pct, color, hot }: { label: string; pct: number; color: string; hot: boolean }) {
+  const shown = utilPct(pct)
+  return (
+    <div className="flex items-center gap-[7px]">
+      <span className="mono w-[22px] flex-none text-[10.5px] text-(--text-tertiary)">{label}</span>
+      <span className="h-[5px] flex-1 overflow-hidden rounded-[3px] bg-(--surface-active)">
+        <span className="block h-full rounded-[3px]" style={{ width: `${shown}%`, background: color }} />
+      </span>
+      <span
+        className={`mono w-[30px] flex-none text-right text-[10.5px] ${hot ? 'text-(--amber-500)' : 'text-(--text-secondary)'}`}
+      >
+        {shown}%
+      </span>
+    </div>
+  )
+}
+
+/** The mobile card's utilization readout — label and percent over a full-width bar. */
 function UtilBar({
   label,
-  mobileLabel,
   pct,
   color,
   hot
 }: {
   label: string
-  /** Shorter label used below 769px (e.g. "MEM"); omitted = same label at both widths. */
-  mobileLabel?: string
   pct: number
   color: string
   /** True when the card's hotter utilization is ≥80% — tints the % readout amber. */
   hot: boolean
 }) {
-  // Clamp to 0..100 — a daemon predating the cpu-normalization fix reports a raw load
-  // average, which would otherwise render as e.g. "722%".
-  const shown = Math.max(0, Math.min(100, Math.round(pct)))
+  const shown = utilPct(pct)
   return (
-    <div className="max-desktop:flex-1">
+    <div className="flex-1">
       <div className="mb-[5px] flex justify-between font-sans text-[11px] font-medium leading-normal text-(--text-tertiary)">
-        <span>
-          {mobileLabel ? (
-            <>
-              <span className="hidden desktop:inline">{label}</span>
-              <span className="desktop:hidden">{mobileLabel}</span>
-            </>
-          ) : (
-            label
-          )}
-        </span>
+        <span>{label}</span>
         <span className={hot ? 'mono text-(--amber-500)' : 'mono text-(--text-secondary)'}>{shown}%</span>
       </div>
       <div className="h-[5px] overflow-hidden rounded-[3px] bg-(--surface-active)">

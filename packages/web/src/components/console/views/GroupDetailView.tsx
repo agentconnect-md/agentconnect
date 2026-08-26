@@ -13,7 +13,7 @@
 // The design's pool log tail is absent for the same reason it is absent on the cluster page:
 // inventing a log stream would be indistinguishable from real telemetry.
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { groupFleetStatus, isSetPlacementKind, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
@@ -37,6 +37,7 @@ export default function GroupDetailView() {
   const router = useRouter()
   const { daemons, agents, agentsLoading, daemonsLoading, memberSets, memberSetsLoading } = useConsoleData()
   const { openModal } = useModal()
+  const [menuOpen, setMenuOpen] = useState(false)
 
   const group = useMemo(() => memberSets.find((g) => g.setId === id), [memberSets, id])
   const members = useMemo(
@@ -144,6 +145,34 @@ export default function GroupDetailView() {
         <Button variant="secondary" size="sm" onClick={() => openModal('group', group)}>
           Edit group
         </Button>
+        {/* Removal lives here too: the list card's menu is desktop-only, so this is the only path below 769px. */}
+        <div className="relative flex-none">
+          <button
+            className="iconbtn"
+            aria-label="Group actions"
+            title="Group actions"
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            <Icon name="ellipsis" size={16} />
+          </button>
+          {menuOpen && (
+            <>
+              <div onClick={() => setMenuOpen(false)} className="fixed inset-0 z-45" />
+              <div className="dmenu right-0" onClick={(e) => e.stopPropagation()}>
+                <button
+                  className="dmi danger"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    openModal('deleteGroup', group)
+                  }}
+                >
+                  <Icon name="trash-2" size={15} />
+                  Remove group
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Band one — what the group holds, beside the machines that hold it. */}
