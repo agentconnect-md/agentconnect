@@ -12,6 +12,8 @@
 // what they ALL offer is something the group can promise. Hence a pair of each.
 
 import { useState, type ReactNode } from 'react'
+import useSWR from 'swr'
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import {
   agentLabel,
   agentModelDisplay,
@@ -24,6 +26,10 @@ import {
 import { AgentIconView, AgentMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
+import { fetchDaemonSessionSeries } from '@/lib/api'
+import { consoleKeys } from '@/lib/swr-keys'
+import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
+import { useOrgs } from '@/lib/org-context'
 
 /** Bar colour tracks the reading — one scale across Infra, cluster, group and daemon detail. */
 export function barColor(pct: number): string {
@@ -114,31 +120,149 @@ export function FleetStat({ icon, label, value, note }: { icon: string; label: s
   )
 }
 
-/** One labelled utilization bar (design: the fleet detail's `resources` rows). */
-export function ResourceBar({
+// One utilization reading as a dial. A ring rather than a bar because the Resources column is
+// the narrow one in band one — a bar there is a 150px track with its label crushed beside it,
+// while a ring carries the figure inside itself and leaves the width to the label.
+const DIAL_R = 15.5
+const DIAL_C = 2 * Math.PI * DIAL_R
+
+export function ResourceDial({
   label,
-  detail,
+  note,
   pct,
   muted = false
 }: {
   label: string
-  detail: string
+  /** The reading behind the percentage — a ratio the ring cannot hold inside itself. */
+  note?: string
   pct: number
+  /** No fraction to fill (an unbounded ceiling): the track stays empty rather than drawing a
+   *  0% that reads as a measurement. */
   muted?: boolean
 }) {
   // Clamped — a daemon predating cpu-normalization reports a raw load average.
   const shown = Math.max(0, Math.min(100, Math.round(pct)))
   return (
-    <div className="flex flex-col gap-[6px]">
-      <div className="flex items-baseline gap-2">
-        <span className="flex-1 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+    <div className="flex items-center gap-[11px]">
+      <span className="relative flex h-13 w-13 flex-none items-center justify-center">
+        <svg viewBox="0 0 36 36" className="h-full w-full -rotate-90" aria-hidden="true">
+          <circle cx="18" cy="18" r={DIAL_R} fill="none" stroke="var(--surface-active)" strokeWidth="3.5" />
+          {!muted && (
+            <circle
+              cx="18"
+              cy="18"
+              r={DIAL_R}
+              fill="none"
+              stroke={barColor(shown)}
+              strokeWidth="3.5"
+              strokeLinecap="round"
+              strokeDasharray={`${(shown / 100) * DIAL_C} ${DIAL_C}`}
+            />
+          )}
+        </svg>
+        <span className="mono absolute text-[11.5px] font-semibold">{muted ? '—' : `${shown}%`}</span>
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
           {label}
         </span>
-        <span className="mono text-[12.5px]">{detail}</span>
-      </div>
-      <span className="block h-[6px] overflow-hidden rounded-[3px] bg-(--surface-active)">
-        {!muted && <span className="block h-full" style={{ width: `${shown}%`, background: barColor(shown) }} />}
+        {note && <span className="mono mt-[2px] block truncate text-[11px] text-(--text-tertiary)">{note}</span>}
       </span>
+    </div>
+  )
+}
+
+/**
+ * What has RUN on a set of machines: sessions started per local day.
+ *
+ * Not a spend chart. The CP has no per-daemon spend to quote — deriving one by splitting the
+ * org's series by an agent's CURRENT placement is the historically-false read `ClusterDetailView`
+ * documents, since an agent that moved brings its old spend with it. A session row, by contrast,
+ * records the daemon it actually ran on, so counting rows is true of the machine at the time.
+ */
+export function FleetUsageCard({ daemonIds, days = 14 }: { daemonIds: readonly string[]; days?: number }) {
+  const { activeOrg } = useOrgs()
+  const orgId = activeOrg?.id ?? null
+  const series = useSWR(consoleKeys.daemonSessionSeries(orgId, daemonIds, days), () =>
+    fetchDaemonSessionSeries(daemonIds, days, orgId!)
+  )
+
+  const points = series.data?.points ?? []
+  const data = points.map((p) => ({ label: bucketLabel(p.start, 'day'), sessions: p.count }))
+  const total = points.reduce((sum, p) => sum + p.count, 0)
+
+  type TipRow = { payload: (typeof data)[number] }
+  const Tip = ({ active, payload }: { active?: boolean; payload?: TipRow[] }) => {
+    const row = active ? payload?.[0]?.payload : undefined
+    if (!row) return null
+    return (
+      <div className="rounded-md border border-(--border-subtle) bg-(--surface-card) px-2.5 py-2 shadow-(--shadow-md)">
+        <div className="mono text-[11px] font-semibold text-(--text-primary)">{row.label}</div>
+        <div className="mt-1 font-sans text-[11px] leading-normal text-(--text-secondary)">
+          <span className="mono text-(--text-primary)">{row.sessions}</span> session{row.sessions === 1 ? '' : 's'}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    // `min-w-0`: recharts measures this box, and a grid item's auto min-width would otherwise
+    // let the plot widen its own column.
+    <div className="card flex min-w-0 flex-col">
+      <div className="cardhead">
+        <span className="cardtitle">Usage</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">sessions · {days}d</span>
+      </div>
+      {series.isLoading ? (
+        <UsageSkeleton days={days} />
+      ) : series.error && !series.data ? (
+        <div
+          className="flex flex-1 items-center justify-center gap-[6px] px-4 py-7 font-sans text-[12.5px] font-normal leading-normal text-(--text-secondary)"
+          title={(series.error as Error).message}
+        >
+          <Icon name="triangle-alert" size={14} color="var(--status-error)" />
+          unavailable
+        </div>
+      ) : total === 0 ? (
+        <div className="flex flex-1 items-center justify-center px-4 py-7 font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+          No sessions in the last {days} days.
+        </div>
+      ) : (
+        <div className={`min-h-[150px] flex-1 px-[6px] pb-[6px] text-(--text-tertiary) ${SEG_FILL}`}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={data} margin={{ top: 10, right: 8, bottom: 0, left: 8 }} barCategoryGap="14%">
+              <XAxis
+                dataKey="label"
+                interval={tickInterval(data.length)}
+                tickLine={false}
+                axisLine={false}
+                tickMargin={6}
+                tick={{ fill: 'currentColor', fontSize: 10.5 }}
+                className="mono"
+              />
+              <Tooltip content={<Tip />} cursor={{ fill: 'var(--surface-hover)' }} />
+              {/* A day with none draws nothing; `seg-flat` is the shared brand hue. */}
+              <Bar dataKey="sessions" name="sessions" className="seg-flat" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** First-load stand-in, on the chart's own footprint so the series landing shifts nothing.
+ *  Heights are a fixed pattern, never random — a random walk redraws on every render. */
+function UsageSkeleton({ days }: { days: number }) {
+  return (
+    <div className="flex min-h-[150px] flex-1 animate-pulse items-end gap-[3px] px-[14px] pt-3 pb-[26px]">
+      {Array.from({ length: days }, (_, i) => (
+        <span
+          key={i}
+          className="min-w-0 max-w-[28px] flex-1 rounded-t-[3px] bg-(--surface-active)"
+          style={{ height: `${24 + ((i * 23 + 13) % 60)}%` }}
+        />
+      ))}
     </div>
   )
 }

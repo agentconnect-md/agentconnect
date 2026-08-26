@@ -23,6 +23,8 @@ import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authoriz
 import { resolveShareSet } from '../sharing.js'
 import {
   DaemonListDto,
+  DaemonSessionSeriesDto,
+  DaemonSessionSeriesQueryDto,
   DaemonViewDto,
   DaemonLifecycleOpDto,
   UpdateDaemonBody,
@@ -179,6 +181,8 @@ function toDto(
   }
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
 export function daemonRoutes(deps: HttpDeps) {
   // How long after its last heartbeat a disconnected daemon still reads `connecting`
   // rather than `offline` (0 ⇒ disabled — the pre-grace behavior). Set from
@@ -225,6 +229,38 @@ export function daemonRoutes(deps: HttpDeps) {
         const ops = await deps.repos.daemonLifecycleOp.latestForDaemons(rows.map((d) => DaemonId(d.daemonId)))
         const byDaemon = new Map(ops.map((o) => [o.daemonId as string, o]))
         return rows.map((d) => dtoWith(d, ctx, byDaemon.get(d.daemonId) ?? null))
+      }
+    )
+
+    // How many sessions started on a set of daemons, per local day — the infra detail pages'
+    // history strip, for one machine, a group's members, or the pool's. The caller names the
+    // set; this route fences it to the daemons the caller can already list, so the count can
+    // never confirm the existence of one they cannot see.
+    r.get(
+      '/daemons/session-series',
+      {
+        schema: {
+          tags: [Tag.Daemons],
+          summary: 'Get daemon session history',
+          description:
+            'Counts the sessions that started on the named daemons, bucketed by the caller’s local day over a window of whole days ending today. Ids the caller cannot see are ignored.',
+          operationId: 'getDaemonSessionSeries',
+          querystring: DaemonSessionSeriesQueryDto,
+          response: { 200: DaemonSessionSeriesDto }
+        }
+      },
+      async (req) => {
+        const orgId = orgOf(req)
+        const visible = new Set<string>((await deps.registry.listAvailable(orgId, ctxOf(req))).map((d) => d.daemonId))
+        const asked = req.query.daemons.split(',').filter(Boolean)
+        const daemonIds = asked.filter((id) => visible.has(id)).map((id) => DaemonId(id))
+        // Whole local days ending at the next local midnight, so today is a full bucket the
+        // chart can fill as it goes rather than a stub that ends at "now".
+        const offMs = req.query.tz * 60 * 1000
+        const to = new Date(Math.ceil((Date.now() - offMs) / DAY_MS) * DAY_MS + offMs)
+        const from = new Date(to.getTime() - req.query.days * DAY_MS)
+        const points = await deps.repos.session.dailySessionCounts(orgId, daemonIds, { from, to }, req.query.tz)
+        return { from: from.toISOString(), to: to.toISOString(), bucket: 'day' as const, points }
       }
     )
 

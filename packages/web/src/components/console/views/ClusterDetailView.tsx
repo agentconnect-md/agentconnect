@@ -43,10 +43,11 @@ import {
   FleetAgentsCard,
   FleetRuntimesCard,
   FleetStat,
-  ResourceBar,
+  FleetUsageCard,
+  ResourceDial,
   unionRuntimes
 } from '@/components/console/FleetDetail'
-import { LoadingState } from '@/components/marks'
+import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
@@ -112,6 +113,8 @@ export default function ClusterDetailView() {
   const used = serving.reduce((sum, m) => sum + m.loadAgents, 0)
   const capacityPct = capacity > 0 ? Math.min(100, Math.round((used / capacity) * 100)) : 0
   const capacityLabel = `${used} / ${unbounded ? '∞' : capacity}`
+  // An idle cluster has no ceiling to quote — the members that reported one are gone. Saying
+  // "2 / 0" there would read as full, and 0% as a measurement, so neither is drawn.
   const avg = (pick: (m: DaemonRow) => number) =>
     serving.length > 0 ? Math.round(serving.reduce((sum, m) => sum + pick(m), 0) / serving.length) : 0
   const cpu = avg((m) => m.cpu)
@@ -124,15 +127,9 @@ export default function ClusterDetailView() {
   // substitution Add-agent and Edit-agent make (edit-agent-daemon-choice.ts).
   const capabilitySource = serving[0]
   const models = runtimes.reduce((sum, rt) => sum + rt.models.length, 0)
-  // Band one's right half. Cloud has none where the deployment carries no billing surface, and
-  // the metric column widens to fill the row rather than leaving a gap where a card would be.
-  const panel = managed ? (
-    billingOffered ? (
-      <CloudCreditsCard />
-    ) : null
-  ) : (
-    <ClusterCapacityCard {...{ capacityLabel, capacityPct, unbounded, cpu, mem }} />
-  )
+  // The whole fleet, not only the serving members: what has already run on a Pod that has since
+  // rolled is still what ran on this pool.
+  const memberIds = members.map((m) => m.daemonId)
 
   return (
     <div className="wrap max-w-[1240px] px-4 pt-[14px] pb-1 desktop:p-0">
@@ -145,7 +142,13 @@ export default function ClusterDetailView() {
             managed ? 'bg-(--brand-soft)' : 'border border-(--border-subtle) bg-(--surface-sunken)'
           }`}
         >
-          <Icon name={managed ? 'cloud' : 'boxes'} size={26} color={online ? 'var(--brand)' : 'var(--text-tertiary)'} />
+          {managed ? (
+            <Icon name="cloud" size={26} color={online ? 'var(--brand)' : 'var(--text-tertiary)'} />
+          ) : (
+            <span className="flex h-[26px] w-[26px]">
+              <KubernetesMark />
+            </span>
+          )}
           <span
             className="dot absolute -right-1 -bottom-1 h-[14px] w-[14px] border-[2.5px] border-(--surface-app)"
             style={{ background: s.dot }}
@@ -182,33 +185,47 @@ export default function ClusterDetailView() {
         )}
       </div>
 
-      {/* Band one — what the set is, beside what it costs or what it can hold. Cloud quotes
-          what its usage costs; a cluster quotes the capacity its own members report. Neither
-          borrows the other's figure: a plan's included usage cannot be derived from load
-          telemetry, and a self-hoster is billed nothing here. */}
-      <div className={`mb-[18px] grid grid-cols-1 gap-[14px] ${panel ? 'desktop:grid-cols-[300px_1fr]' : ''}`}>
+      {/* Band one. Cloud quotes what its usage COSTS; a cluster is the operator's own machines,
+          so it reads like one — what it can hold, then what has run on it. Neither borrows the
+          other's figure: a plan's included usage cannot be derived from load telemetry, and a
+          self-hoster is billed nothing here. */}
+      {managed ? (
         <div
-          className={
-            panel
-              ? 'grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col'
-              : 'grid grid-cols-2 gap-[14px] desktop:grid-cols-3'
-          }
+          className={`mb-[18px] grid grid-cols-1 gap-[14px] ${billingOffered ? 'desktop:grid-cols-[300px_1fr]' : ''}`}
         >
-          <FleetStat icon="bot" label="Agents" value={String(hosted.length)} />
-          <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
-          {managed ? (
+          <div
+            className={
+              billingOffered
+                ? 'grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col'
+                : 'grid grid-cols-2 gap-[14px] desktop:grid-cols-3'
+            }
+          >
+            <FleetStat icon="bot" label="Agents" value={String(hosted.length)} />
+            <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
             <FleetStat
               icon="cpu"
               label="Runtimes available"
               value={String(runtimes.length)}
               note={`${models} model${models === 1 ? '' : 's'}`}
             />
-          ) : (
-            <FleetStat icon="server" label="Nodes" value={`${serving.length} / ${members.length}`} note="serving" />
-          )}
+          </div>
+          {billingOffered && <CloudCreditsCard />}
         </div>
-        {panel}
-      </div>
+      ) : (
+        <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_200px_1fr]">
+          <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
+            <FleetStat
+              icon="bot"
+              label="Agents"
+              value={online ? `${hosted.length} / ${unbounded ? '∞' : capacity}` : String(hosted.length)}
+            />
+            <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
+            <FleetStat icon="server" label="Nodes" value={`${serving.length} / ${members.length}`} note="serving" />
+          </div>
+          <ClusterCapacityCard {...{ capacityLabel, capacityPct, unbounded, online, cpu, mem }} />
+          <FleetUsageCard daemonIds={memberIds} />
+        </div>
+      )}
 
       {/* Band two — what the set can run, and what runs on it. */}
       <FleetRuntimesCard
@@ -542,34 +559,31 @@ function ClusterCapacityCard({
   capacityLabel,
   capacityPct,
   unbounded,
+  online,
   cpu,
   mem
 }: {
   capacityLabel: string
   capacityPct: number
   unbounded: boolean
+  online: boolean
   cpu: number
   mem: number
 }) {
   return (
-    <div className="card">
+    <div className="card flex flex-col">
       <div className="cardhead">
-        <span className="cardtitle">Capacity</span>
-        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">
-          {unbounded ? 'no agent ceiling' : 'across serving nodes'}
-        </span>
+        <span className="cardtitle">Resources</span>
       </div>
-      <div className="flex flex-col gap-[14px] px-4 py-[15px]">
-        <ResourceBar
-          label="Sandbox capacity in use"
-          detail={capacityLabel}
+      <div className="flex flex-1 flex-col justify-center gap-[14px] px-4 py-[15px]">
+        <ResourceDial
+          label="Sandboxes"
+          note={!online ? 'no nodes serving' : unbounded ? 'no ceiling' : capacityLabel}
           pct={capacityPct}
-          // An unbounded cluster has no fraction to fill: the track stays empty rather
-          // than drawing a 0% that reads as a measurement.
-          muted={unbounded}
+          muted={!online || unbounded}
         />
-        <ResourceBar label="CPU" detail={`${cpu}%`} pct={cpu} />
-        <ResourceBar label="Memory" detail={`${mem}%`} pct={mem} />
+        <ResourceDial label="CPU" pct={cpu} muted={!online} />
+        <ResourceDial label="Memory" pct={mem} muted={!online} />
       </div>
     </div>
   )

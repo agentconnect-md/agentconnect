@@ -202,8 +202,11 @@ describe('ClusterDetailView', () => {
 
     const html = render()
 
-    expect(html).toContain('10 / ∞')
-    expect(html).toContain('no agent ceiling')
+    // Both the Agents figure and the sandbox dial say so — never a ceiling of 0, and the dial
+    // reads '—' rather than filling to 0% as if that were a measurement.
+    expect(html).toContain('/ ∞')
+    expect(html).toContain('no ceiling')
+    expect(html).toContain('font-semibold">—<')
   })
 
   it('unions the runtimes and models across the serving nodes', () => {

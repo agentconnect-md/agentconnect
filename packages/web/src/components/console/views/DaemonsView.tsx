@@ -18,7 +18,7 @@ import { featureFlagEnabled } from '@/lib/feature-flags'
 import { useModal } from '@/components/console/ModalProvider'
 import { RestrictedLock } from '@/components/console/VisibilityField'
 import { DaemonUpgradeBadge } from '@/components/console/DaemonUpgradeBadge'
-import { LoadingState } from '@/components/marks'
+import { KubernetesMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { useOrgs } from '@/lib/org-context'
 
@@ -391,7 +391,9 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
       onClick={open}
     >
       <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken) desktop:h-9 desktop:w-9">
-        <Icon name="boxes" size={19} color={online ? 'var(--brand)' : 'var(--text-tertiary)'} />
+        <span className="flex h-[19px] w-[19px]">
+          <KubernetesMark />
+        </span>
         {/* Mobile puts the status dot on the avatar corner; desktop shows it in the badge. */}
         <span
           className="absolute -right-[3px] -bottom-[3px] h-3 w-3 rounded-full border-2 border-(--surface-card) desktop:hidden"

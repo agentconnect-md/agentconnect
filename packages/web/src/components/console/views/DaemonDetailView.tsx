@@ -31,7 +31,8 @@ import {
   FleetAgentsCard,
   FleetRuntimesCard,
   FleetStat,
-  ResourceBar,
+  FleetUsageCard,
+  ResourceDial,
   barColor,
   unionRuntimes,
   type FleetRuntime
@@ -395,6 +396,11 @@ export default function DaemonDetailView() {
           )}
         </div>
 
+        {/* usage — the same session history the desktop band carries */}
+        <div className="mx-4 mt-3">
+          <FleetUsageCard daemonIds={[daemon.daemonId]} />
+        </div>
+
         {/* resources — CPU + Memory bars (no fabricated disk) */}
         <div className="mx-4 mt-3 overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)">
           <div className="border-b border-(--border-subtle) px-4 py-3 font-sans text-[14px] font-semibold leading-normal">
@@ -660,25 +666,25 @@ export default function DaemonDetailView() {
         </div>
       )}
 
-      {/* Band one — what the machine holds, beside what it is spending to hold it. */}
-      <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[300px_1fr]">
+      {/* Band one — what the machine holds now, what it is spending to hold it, and what has
+          run on it. */}
+      <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_200px_1fr]">
         <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
           <FleetStat icon="bot" label="Agents" value={`${hosted.length} / ${ceiling}`} />
           <FleetStat icon="activity" label="Active sessions" value={daemon.activeSessions} />
           {/* `daemon.uptime` is time-since-last-seen (fmtSeen), not a real uptime. */}
           <FleetStat icon="timer" label="Last seen" value={daemon.uptime} />
         </div>
-        {/* Two bars against three stacked figures: the card takes the row's height and centres
-            them, rather than floating short beside a column twice its size. */}
         <div className="card flex flex-col">
           <div className="cardhead">
             <span className="cardtitle">Resources</span>
           </div>
           <div className="flex flex-1 flex-col justify-center gap-[14px] px-4 py-[15px]">
-            <ResourceBar label="CPU" detail={`${clampPct(daemon.cpu)}%`} pct={daemon.cpu} />
-            <ResourceBar label="Memory" detail={`${clampPct(daemon.mem)}%`} pct={daemon.mem} />
+            <ResourceDial label="CPU" pct={daemon.cpu} />
+            <ResourceDial label="Memory" pct={daemon.mem} />
           </div>
         </div>
+        <FleetUsageCard daemonIds={[daemon.daemonId]} />
       </div>
 
       {/* Band two — what this machine can run, and what runs on it. */}
@@ -762,11 +768,6 @@ export default function DaemonDetailView() {
       </div>
     </div>
   )
-}
-
-/** Clamped — a daemon predating the cpu-normalization fix reports a raw load average. */
-function clampPct(pct: number): number {
-  return Math.max(0, Math.min(100, Math.round(pct)))
 }
 
 function ChipRow({ label, items }: { label: string; items: string[] }) {

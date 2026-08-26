@@ -1360,6 +1360,16 @@ export interface SessionRepo {
    *  (no visibility predicate), safe to return to any org member: it reveals nothing
    *  about sessions the caller can't see. Drives the getting-started conversation step. */
   orgHasAny(orgId: OrgId): Promise<boolean>
+  /** How many sessions STARTED on these daemons, per local day, empty days filled with 0. A
+   *  count of rows on the infrastructure rather than a read of what they hold, so — like
+   *  `orgHasAny` above and the usage route's `totals` — no viewer predicate narrows it; the
+   *  caller's fence is which daemon ids the route is willing to pass in. */
+  dailySessionCounts(
+    orgId: OrgId,
+    daemonIds: readonly DaemonId[],
+    window: { from: Date; to: Date },
+    tzOffsetMin?: number
+  ): Promise<Array<{ start: string; count: number }>>
   /** The most recently active session of one agent, org-fenced. For the shared-checkout PR link: an
    *  agent with one checkout has one branch, so that branch only speaks for the session using it now
    *  (webchat-side-panels.md §12.6). Rides `session_meta_agent_activity_page_idx`. */

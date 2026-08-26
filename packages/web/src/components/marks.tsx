@@ -7,6 +7,7 @@ import { useState } from 'react'
 import { Icon } from './ui'
 import { withIconUrl, type AgentIcon } from '@/lib/agent-icon'
 import gitlabIcon from '@iconify-icons/logos/gitlab'
+import kubernetesIcon from '@iconify-icons/logos/kubernetes'
 import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
 import { Icon as IconifyIcon } from '@iconify/react'
@@ -226,6 +227,12 @@ export function GithubMark({ color = 'currentColor', fillPct = 60 }: { color?: s
 // GitLab tanuki mark — {@link GithubMark}'s multi-color counterpart, hence no `color`; `ssr` draws it before mount.
 export function GitlabMark({ fillPct = 60 }: { fillPct?: number }) {
   return <IconifyIcon icon={gitlabIcon} ssr style={markBox(fillPct)} aria-hidden />
+}
+
+/** The Kubernetes wheel — what a SELF-HOSTED pool is: the operator's own cluster, named by the
+ *  thing they actually run. Cloud is the same pool as a product and keeps its own cloud glyph. */
+export function KubernetesMark({ fillPct = 100 }: { fillPct?: number }) {
+  return <IconifyIcon icon={kubernetesIcon} ssr style={markBox(fillPct)} aria-hidden />
 }
 
 /**
