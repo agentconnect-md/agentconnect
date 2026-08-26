@@ -410,7 +410,8 @@ describe('startup re-arm', () => {
 // #1036 — on a daemon pool every member shares one store, so every member could arm and fire the
 // same deadline. Only the member holding the main agent's duty may wake it (a dispatch binds the
 // agent's sandbox), and the fire itself is claimed through the store so a handoff fires once.
-describe('pool duty gate on deadlines', () => {
+// Two daemons on one root, which EADDRINUSEs on Windows: a named pipe has no stale-UDS clear.
+describe.skipIf(process.platform === 'win32')('pool duty gate on deadlines', () => {
   const GROUP = '11111111-1111-4111-8111-111111111111'
   const grant = (groupId = GROUP) => ({
     groupId,

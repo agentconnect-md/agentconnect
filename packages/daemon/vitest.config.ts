@@ -50,8 +50,8 @@ export const WINDOWS_EXCLUDED = [
   'test/gitlab-self-managed-git.test.ts',
   // Every case stands up a second daemon on one root, which EADDRINUSEs on Windows: `start()` clears
   // a stale UDS before listening and a named pipe has no equivalent. Restore once that is fixed.
+  // `orchestration.test.ts` is NOT here: only its pool-duty describe opens a root twice.
   'test/schedule-catchup.test.ts',
-  'test/orchestration.test.ts',
   'test/daemon-session-metadata-outbox-pool.test.ts',
   'test/daemon-session-sweeps-pool.test.ts',
   'test/daemon-loop-guard-pool.test.ts'

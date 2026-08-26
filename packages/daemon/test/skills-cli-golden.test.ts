@@ -219,9 +219,10 @@ describe.skipIf(!hasBwrap)('skills@1.5.21 local-source golden', () => {
 })
 
 describe.skipIf(process.platform !== 'win32')('skills@1.5.21 Windows process fallback', () => {
-  // Disabled, not platform-skipped: the confined mutation path refuses its own bundle on Windows.
-  // skill-install-ledger's Windows case fails on the same gap.
-  it.skip('runs the pinned CLI and publishes its receipt-verified bundle', async () => {
+  // `it.fails`, not skip: the confined mutation path refuses its own bundle on Windows and that gap
+  // must stay visible. Same cause as skill-install-ledger's Windows case; fixing it fails this case
+  // for passing, which is the signal to drop the marker.
+  it.fails('runs the pinned CLI and publishes its receipt-verified bundle', async () => {
     const { root, source } = await fixture()
     const cwd = join(root, 'workspace')
     const stateDir = join(root, 'state')
