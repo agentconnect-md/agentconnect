@@ -230,9 +230,10 @@ async function runSandboxProbe(target: RuntimeTarget, root: string, token: strin
     inheritProcessEnv: composed.launch.inheritProcessEnv,
     sandbox: composed.launch.sandbox
   })
+  let sessionId: string | undefined
   try {
     await withTimeout(host.start(), `${target.id}/sandbox start`)
-    const sessionId = await withTimeout(host.newSession(sandboxCwd), `${target.id}/sandbox session`)
+    sessionId = await withTimeout(host.newSession(sandboxCwd), `${target.id}/sandbox session`)
     await withTimeout(
       host.prompt(sessionId, [{ type: 'text', text: `Reply with exactly ${token} and nothing else.` }]),
       `${target.id}/sandbox prompt`
@@ -242,7 +243,12 @@ async function runSandboxProbe(target: RuntimeTarget, root: string, token: strin
       ? { status: 'ok', detail: `real model turn completed inside ${mechanism}` }
       : { status: 'fail', detail: `sandboxed model reply did not contain ${token}` }
   } finally {
-    await host.stop().catch(() => {})
+    try {
+      if (sessionId && host.deleteSupported())
+        await withTimeout(host.deleteSession(sessionId), `${target.id}/sandbox session delete`)
+    } finally {
+      await host.stop().catch(() => {})
+    }
   }
 }
 
@@ -267,6 +273,11 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
   let permissionRequested = false
   let host: AcpHost | undefined
   let endpoint: ProbeEndpoint | undefined
+  const sessionIds = new Set<string>()
+  const rememberSession = (sessionId: string): string => {
+    sessionIds.add(sessionId)
+    return sessionId
+  }
 
   try {
     const skillInstall = await installProbeSkill(target, root, agentDir, cwd, skillToken).catch((error): Outcome => ({
@@ -288,9 +299,8 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
     result.mcp = host.mcpCapabilities() ?? { http: false, sse: false }
 
     const usesMeta = host.usesMetaSystemPrompt()
-    const sessionId = await withTimeout(
-      host.newSession(cwd, [], undefined, usesMeta ? memoryToken : undefined),
-      `${target.id}/session`
+    const sessionId = rememberSession(
+      await withTimeout(host.newSession(cwd, [], undefined, usesMeta ? memoryToken : undefined), `${target.id}/session`)
     )
     result.models = host.modelOptions()?.models ?? []
     result.modes = host.permissionModeOptions()?.modes ?? []
@@ -351,7 +361,9 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
         url: endpoint.url,
         headers: []
       }
-      const mcpSession = await withTimeout(host.newSession(cwd, [descriptor]), `${target.id}/mcp session`)
+      const mcpSession = rememberSession(
+        await withTimeout(host.newSession(cwd, [descriptor]), `${target.id}/mcp session`)
+      )
       const mcpStart = updates.length
       await withTimeout(
         host.prompt(mcpSession, [
@@ -398,7 +410,9 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
 
     // Keep this independent of the permission-mode switch above: modes such as
     // read-only, plan, or full-access can suppress the permission request itself.
-    const permissionSession = await withTimeout(host.newSession(cwd), `${target.id}/permission session`)
+    const permissionSession = rememberSession(
+      await withTimeout(host.newSession(cwd), `${target.id}/permission session`)
+    )
     permissionRequested = false
     const permissionStart = updates.length
     await withTimeout(
@@ -449,9 +463,23 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
       result.features[feature] ??= { status, detail: result.error }
     }
   } finally {
-    endpoint?.server.close()
-    await host?.stop().catch(() => {})
-    rmSync(root, { recursive: true, force: true })
+    try {
+      if (host?.deleteSupported()) {
+        const failures: unknown[] = []
+        for (const sessionId of sessionIds) {
+          try {
+            await withTimeout(host.deleteSession(sessionId), `${target.id}/session delete`)
+          } catch (error) {
+            failures.push(error)
+          }
+        }
+        if (failures.length > 0) throw failures[0]
+      }
+    } finally {
+      endpoint?.server.close()
+      await host?.stop().catch(() => {})
+      rmSync(root, { recursive: true, force: true })
+    }
   }
   return result
 }

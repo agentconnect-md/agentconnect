@@ -523,6 +523,7 @@ export class AcpHost {
   // whether the agent accepts repository roots in addition to the session cwd.
   // This is capability-gated because older ACP adapters reject the field.
   private canUseAdditionalDirectories = false
+  private canDelete = false
   // prompt content-block variants the agent opted into at initialize. text +
   // resource_link are always baseline; image/audio/embeddedContext are gated.
   private promptCaps: { image?: boolean; audio?: boolean; embeddedContext?: boolean } = {}
@@ -799,6 +800,7 @@ export class AcpHost {
     this.negotiatedProtocolVersion = init.protocolVersion
     this.canLoad = init.agentCapabilities?.loadSession ?? false
     this.canUseAdditionalDirectories = init.agentCapabilities?.sessionCapabilities?.additionalDirectories != null
+    this.canDelete = init.agentCapabilities?.sessionCapabilities?.delete != null
     this.promptCaps = init.agentCapabilities?.promptCapabilities ?? {}
     const mcp = init.agentCapabilities?.mcpCapabilities
     this.mcpCaps = {
@@ -1117,6 +1119,11 @@ export class AcpHost {
     return this.canLoad
   }
 
+  /** Whether the agent advertised support for ACP session/delete. */
+  deleteSupported(): boolean {
+    return this.canDelete
+  }
+
   /** Resume a previously-created session by id (ACP `session/load`). The agent
    *  restores its own history server-side; replayed conversation/tool output is
    *  suppressed while metadata updates still converge. `mcpServers` must be
@@ -1182,9 +1189,15 @@ export class AcpHost {
     await this.conn!.agent.notify(methods.agent.session.cancel, { sessionId })
   }
 
-  /** Forget a daemon-private session that failed setup before it could be used.
-   * ACP has no portable session/delete method; dropping all local ownership keeps
-   * the host's live/session-config sets bounded until the adapter process exits. */
+  /** Delete persisted adapter state when supported, then release local ownership. */
+  async deleteSession(sessionId: string): Promise<boolean> {
+    if (!this.canDelete) return false
+    await this.conn!.agent.request(methods.agent.session.delete, { sessionId })
+    this.forgetSession(sessionId)
+    return true
+  }
+
+  /** Forget a failed setup locally without deleting persisted adapter state. */
   discardSession(sessionId: string): void {
     this.live.delete(sessionId)
     this.sessionConfigs.delete(sessionId)

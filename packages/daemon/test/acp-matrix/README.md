@@ -16,6 +16,9 @@ CI skips this suite. Run it locally with:
 pnpm --filter @agentconnect.md/daemon test:runtime-matrix
 ```
 
+Disposable sessions are removed after each probe when the adapter advertises
+ACP `session/delete`; Codex maps that request to a recoverable thread archive.
+
 To limit a diagnostic rerun:
 
 ```bash
