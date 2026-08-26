@@ -279,6 +279,7 @@ import { CpCollabRoutes, isSyntheticA2aChannel } from './cp/cp-collab-routes.js'
 import { ClientTransport, systemClock, type Clock, type TimerHandle } from '@agentconnect.md/connection'
 import {
   AgentActivate as AgentActivateSchema,
+  AgentSkillEntry as AgentSkillEntrySchema,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
@@ -3365,18 +3366,20 @@ export class Daemon {
             return []
           })
         : []
-      const configuredGitSources = agent.skills.filter((entry): entry is typeof entry & { githubRepoId: string } =>
-        Boolean(entry.githubRepoId)
-      )
+      const configuredGitSources = agent.skills.flatMap((entry, index) => {
+        if (!entry.githubRepoId) return []
+        const parsed = AgentSkillEntrySchema.safeParse(entry)
+        if (parsed.success && parsed.data.githubRepoId) return [{ index, entry: parsed.data }]
+        this.log.warn(`skills: omitted historical Git source ${index + 1}; it fails current installation admission`)
+        return []
+      })
       const resolutionsByDefinition = new Map(
-        currentGitResolutions(configuredGitSources, prior?.ledger.gitResolutions ?? []).map((resolution) => [
-          resolution.definitionDigest,
-          resolution.resolvedCommit
-        ])
+        currentGitResolutions(
+          configuredGitSources.map(({ entry }) => entry),
+          prior?.ledger.gitResolutions ?? []
+        ).map((resolution) => [resolution.definitionDigest, resolution.resolvedCommit])
       )
-      for (const [index, entry] of agent.skills.entries()) {
-        if (!entry.githubRepoId) continue
-        const currentEntry = { ...entry, githubRepoId: entry.githubRepoId }
+      for (const { index, entry: currentEntry } of configuredGitSources) {
         try {
           const definitionDigest = gitResolutionDigest(currentEntry)
           const retainedCommit = resolutionsByDefinition.get(definitionDigest)
@@ -3428,7 +3431,7 @@ export class Daemon {
         ...[...dreamed].sort((a, b) => a.key.localeCompare(b.key)).map(localSource)
       ]
       const gitResolutions = currentGitResolutions(
-        configuredGitSources,
+        configuredGitSources.map(({ entry }) => entry),
         [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))
       )
       await new ClusterSkillCoordinator(this.store).reconcile({
