@@ -504,6 +504,10 @@ export function buildTrustedGithubMetadata(
     rawReviewCommentId !== undefined && Number.isSafeInteger(rawReviewCommentId) && rawReviewCommentId > 0
       ? rawReviewCommentId
       : undefined
+  // The comment that fired an `issue_comment` delivery; its inline-review twin is
+  // `reviewCommentId` above. Trusted because it comes off the signature-verified payload.
+  const rawIssueCommentId = event === 'issue_comment' ? payload.comment?.id : undefined
+  const issueCommentId = positiveSafeInteger(rawIssueCommentId) ? rawIssueCommentId : undefined
   const rawReplyToId = event === 'pull_request_review_comment' ? payload.comment?.in_reply_to_id : undefined
   // GitHub sends a null/absent in_reply_to_id for a thread root. A present but
   // invalid parent must fail closed instead of silently redirecting the reply
@@ -531,7 +535,10 @@ export function buildTrustedGithubMetadata(
     ...(explicitReviewRequest ? { explicitReviewRequest: true } : {}),
     ...(pullRequestReviewId !== undefined ? { pullRequestReviewId: String(pullRequestReviewId) } : {}),
     ...(reviewCommentId !== undefined ? { reviewCommentId: String(reviewCommentId) } : {}),
-    ...(reviewThreadRootCommentId !== undefined ? { reviewThreadRootCommentId: String(reviewThreadRootCommentId) } : {})
+    ...(reviewThreadRootCommentId !== undefined
+      ? { reviewThreadRootCommentId: String(reviewThreadRootCommentId) }
+      : {}),
+    ...(issueCommentId !== undefined ? { issueCommentId: String(issueCommentId) } : {})
   }
 }
 

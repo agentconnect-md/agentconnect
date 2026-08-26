@@ -421,6 +421,27 @@ describe('gitlab ingress', () => {
     expect(h.authzRequests[0]?.subjectAuthorExternalId).toBeUndefined()
   })
 
+  it('carries the note that fired the delivery as the acknowledgement target', async () => {
+    h.table.upsert(rule({}, { commentFamilies: ['issues'] }))
+    const withId = notePayload({ object_attributes: { id: 8801 } })
+    expect((await post(h, withId)).statusCode).toBe(202)
+    await flush()
+    expect((h.sent[0] as RdMsgHook).gitlab).toMatchObject({ noteId: '8801', target: { kind: 'issue', iid: 42 } })
+  })
+
+  it('omits the note id for a delivery the subject itself fired, and for an unusable id', async () => {
+    h.table.upsert(rule({}, { events: ['merge_request:merged'], commentFamilies: ['issues'] }))
+    expect((await post(h, mrPayload({ object_attributes: { id: 8801, action: 'merge' } }))).statusCode).toBe(202)
+    await flush()
+    expect((h.sent[0] as RdMsgHook).gitlab?.noteId).toBeUndefined()
+
+    h.sent.length = 0
+    const unusable = notePayload({ object_attributes: { id: Number.MAX_SAFE_INTEGER + 1 } })
+    expect((await post(h, unusable, { 'webhook-id': 'msg_delivery_2' })).statusCode).toBe(202)
+    await flush()
+    expect((h.sent[0] as RdMsgHook).gitlab?.noteId).toBeUndefined()
+  })
+
   it('an unmentioned continuation also fences the subject author (§12.2)', async () => {
     h.table.upsert(rule({}, { commentFamilies: ['issues'] }))
     expect((await post(h, notePayload())).statusCode).toBe(202)

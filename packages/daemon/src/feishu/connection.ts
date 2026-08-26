@@ -36,8 +36,12 @@ import type {
   InteractionActor,
   PlatformChannelHistoryOptions,
   PlatformChannelHistoryPage,
-  PlatformConnection
+  PlatformConnection,
+  PlatformReactionIntent
 } from '../platforms/contract.js'
+
+/** Core names the intent; Feishu's alphabet is `emoji_type` keys — `GLANCE` IS 👀. */
+const FEISHU_REACTION_EMOJI_TYPES: Record<PlatformReactionIntent, string> = { seen: 'GLANCE' }
 
 /**
  * §Feishu / Lark edge unit. Mirrors discord/connection.ts but over the official
@@ -177,6 +181,8 @@ export interface FeishuApi {
   patchCardMessage(messageId: string, card: Record<string, unknown>): Promise<void>
   /** im.message.delete (retract an unfinished/no-response card). */
   deleteMessage(messageId: string): Promise<void>
+  /** im.messageReaction.create — `emojiType` is a Feishu emoji KEY, not a glyph. */
+  addReaction(messageId: string, emojiType: string): Promise<void>
   /** im.message.update (in-place text edit). */
   updateText(messageId: string, text: string): Promise<void>
   /** im.messageResource.get(...).writeFile(destPath) — auth'd resource download. */
@@ -373,6 +379,12 @@ function defaultFactory(appId: string, appSecret: string, region: FeishuRegion):
     },
     async deleteMessage(messageId) {
       await client.im.message.delete({ path: { message_id: messageId } })
+    },
+    async addReaction(messageId, emojiType) {
+      await client.im.messageReaction.create({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: emojiType } }
+      })
     },
     async updateText(messageId, text) {
       await client.im.message.update({
@@ -1151,6 +1163,18 @@ export class FeishuConnection implements PlatformConnection {
   /** No-op — Feishu has no typing / chat-action API. Present for applier parity. */
   async sendChatAction(_channel: string): Promise<void> {
     // intentionally empty
+  }
+
+  /** Turn-start acknowledgement on the message that fired the turn — the only inbound
+   *  activity signal Feishu has, since it exposes no typing indicator. An app whose
+   *  granted scopes predate message reactions degrades to nothing visible. */
+  async react(channel: string, messageId: string, intent: PlatformReactionIntent): Promise<void> {
+    try {
+      await this.handle.api.addReaction(messageId, FEISHU_REACTION_EMOJI_TYPES[intent])
+    } catch (err) {
+      this.rememberPermissionIssue(err, channel)
+      this.deps.log?.debug(`feishu: reaction failed (id=${messageId}): ${(err as Error).message}`)
+    }
   }
 
   /**

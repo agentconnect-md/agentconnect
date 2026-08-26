@@ -73,6 +73,11 @@ export interface GithubReplyTarget {
   number: number
   /** The review-comment delivery that triggered this turn (diagnostic identity). */
   reviewCommentId?: string
+  /** The comment that FIRED this turn, as the acknowledgement reaction targets it. Absent ⇒
+   *  the subject itself fired, so the subject is what carries the reaction. Distinct from
+   *  `reviewThreadRootCommentId`, which names where the ANSWER goes: a reply lands on the
+   *  thread root, while the acknowledgement belongs on the exact comment a human wrote. */
+  triggerComment?: { kind: 'issue_comment' | 'review_comment' | 'note'; id: string }
   /** Stable root of the GitHub inline-review thread; replies must target this id. */
   reviewThreadRootCommentId?: string
 }
