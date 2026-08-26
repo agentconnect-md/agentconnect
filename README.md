@@ -127,6 +127,8 @@ knowledge, and daemons:
 
 ## Get started
 
+### Docker
+
 Start the Web console, Control Plane, Relay, and PostgreSQL with Docker Compose:
 
 ```bash
@@ -139,12 +141,38 @@ Open `http://localhost:3000`, add a daemon from the console, run its generated
 command, and create your first agent. The default stack listens only on
 `127.0.0.1` and uses local no-auth mode for evaluation.
 
-For Kubernetes, install the official Helm chart in
-[`charts/agentconnect`](charts/agentconnect), published to
-`oci://ghcr.io/agentconnect-md/charts/agentconnect` on every release with the
-same version number as the release itself. For
-authentication, public URLs, Linux sandbox requirements, provider apps, image
-pinning, secrets, and optional Mem0 configuration, follow the
+### Kubernetes
+
+The official Helm chart is published on every release under the same version
+number as the release itself:
+
+```
+oci://ghcr.io/agentconnect-md/charts/agentconnect
+```
+
+A cluster install is three steps — create the namespace and its secrets, write
+the values file for your deployment, then install — so follow the
+[Kubernetes guide](https://docs.agentconnect.md/docs/kubernetes-deployment)
+rather than a one-liner. The chart source lives in
+[`charts/agentconnect`](charts/agentconnect).
+
+### Configure the deployment
+
+**Setup Server** runs in the base stack at `http://localhost:8091`, always on
+loopback. It configures browser authentication through Logto, the deployment's
+GitHub, Slack, Google, and Lark / Feishu apps, the sign-in methods you show, and
+preset-agent behavior. Deployment topology — images, ports, public URLs,
+database and bootstrap secrets — stays in `compose.env` or your Helm values.
+
+Prefer to be walked through it? This repository ships a **setup skill** at
+`.claude/skills/agentconnect-setup`, also exposed at `.agents/skills`, so Claude
+Code, Codex, and other agent harnesses pick it up. Open your coding agent in the
+checkout and ask it to set up AgentConnect: it runs the guide as an interactive
+tutorial and verifies each checkpoint before continuing, and never asks you to
+paste secrets into chat.
+
+For authentication, public URLs, Linux sandbox requirements, provider apps,
+image pinning, secrets, and optional Mem0 configuration, follow the
 [AgentConnect OSS guide](https://docs.agentconnect.md/docs/oss-get-started).
 
 ## Community
