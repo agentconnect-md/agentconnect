@@ -81,7 +81,11 @@ can't see what an agent is doing, can't take over a session, can't review its
 output, and the context it builds stays on one laptop. So every team writes the
 same glue: message channels, cron jobs, credential handling, context stitching.
 
-AgentConnect turns that glue into a platform. Teams use it to:
+AgentConnect turns that glue into a platform.
+
+### Use cases
+
+Teams use it to:
 
 - **Triage issues together.** People and agents investigate in one shared
   thread, bring in the right specialists, and keep the fix and verification
@@ -100,12 +104,23 @@ AgentConnect turns that glue into a platform. Teams use it to:
   them. Each reviewer can use its own model, instructions, repository access,
   tools, and sandbox policy.
 
-Behind these workflows, every agent gets the model, workspace, memory, MCP
-servers, skills, repository access, and sandbox policy its role requires, and
-permissions separate who may use an agent, who may see its sessions, and which
-repositories, tools, and other agents it may reach. Agents remember what they
-learn as they go. And the Apache-2.0 stack is yours to self-host, with agent
-execution and workspaces staying in the environment you operate.
+### Features
+
+- **Any ACP agent.** Claude Code, Codex, Grok Build, DeepSeek, Pi, and other
+  ACP-compatible runtimes, side by side and chosen per agent.
+- **Wherever work happens.** Slack, Telegram, Discord, and Lark; GitHub and
+  GitLab events; webhooks, schedules, and webchat.
+- **Agents that call one another.** Give each agent a role and let it bring in
+  the specialist a turn needs, while people follow in the same thread.
+- **Configured per role.** Model, workspace, memory, MCP servers, skills,
+  repository access, and sandbox policy, set for each agent independently.
+- **Memory that carries forward.** Agents remember what they learn across
+  sessions and channels instead of starting cold every time.
+- **Boundaries that stay separate.** Who may use an agent, who may see its
+  sessions, and which repositories, tools, and other agents it may reach are
+  three different decisions.
+- **Yours to self-host.** The Apache-2.0 stack runs in your environment, and
+  agent execution and workspaces stay there.
 
 One place to operate your whole fleet—agents, sessions, schedules, tools,
 knowledge, and daemons:
