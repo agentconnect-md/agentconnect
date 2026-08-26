@@ -145,7 +145,8 @@ describe('runLogin — interactive', () => {
     expect(readConfig(root).controlPlane.key).toBe('tok')
   })
 
-  it('repeats the instance selector in the manage-it hint', async () => {
+  // `shellArg` quotes with POSIX single quotes, and a Windows path always needs quoting.
+  it.skipIf(process.platform === 'win32')('repeats the instance selector in the manage-it hint', async () => {
     const root = emptyRoot()
     const { out, lines } = sink()
     await runLogin(

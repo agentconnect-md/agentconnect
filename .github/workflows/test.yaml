@@ -220,15 +220,23 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
       # POSIX-only files self-skip via `it.skipIf(process.platform === 'win32')`, or — when every
-      # case in the file is POSIX-only — via `WINDOWS_EXCLUDED` in `packages/daemon/vitest.config.ts`.
-      - name: Unit tests
+      # case in the file is POSIX-only — via `WINDOWS_EXCLUDED` in that package's vitest.config.ts.
+      #
+      # One step per package, the second running even after the first fails: a recursive `pnpm run`
+      # aborts its siblings on the first failure, which would hide one package behind the other.
+      - name: Daemon unit tests
         env:
-          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
+          GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-        run: >
-          GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY"
-          pnpm --filter @agentconnect.md/daemon --filter @agentconnect.md/cli test:unit
+        run: pnpm --filter @agentconnect.md/daemon test:unit
+      - name: CLI unit tests
+        if: ${{ !cancelled() }}
+        env:
+          GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
+          pnpm_config_enable_pre_post_scripts: false
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+        run: pnpm --filter @agentconnect.md/cli test:unit
       - name: Merge Windows unit test summaries
         if: ${{ !cancelled() }}
         env:

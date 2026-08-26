@@ -125,6 +125,7 @@ describe('named instance root resolution', () => {
     const home = tmp('ac-home-')
     const fakeUserHome = tmp('ac-userhome-')
     vi.stubEnv('HOME', fakeUserHome)
+    vi.stubEnv('USERPROFILE', fakeUserHome) // what `homedir()` reads on Windows
     vi.stubEnv('AGENTCONNECT_ROOT', undefined)
     expect(resolveServiceTarget({ instance: 'dev', home, platform: 'linux' })).toEqual({
       root: join(fakeUserHome, '.agentconnect-dev'),

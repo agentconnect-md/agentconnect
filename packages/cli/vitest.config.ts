@@ -7,7 +7,12 @@ import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js
 // POSIX-only. `test/windows-exclusions.test.ts` fails if an entry goes stale.
 export const WINDOWS_EXCLUDED = [
   // POSIX login-shell semantics end to end: `#!/bin/sh` fake shells, `-l -i -c`, process-group kills.
-  'test/service-spawn.test.ts'
+  'test/service-spawn.test.ts',
+  // `shellExecArgv` has no Windows template at all — every case asserts a POSIX shell's argv.
+  'test/shell-exec.test.ts',
+  // A unit/plist is only ever written on the OS that reads it, so every path here is POSIX by target.
+  'test/service-launchd.test.ts',
+  'test/service-systemd.test.ts'
 ]
 
 export default defineConfig({
