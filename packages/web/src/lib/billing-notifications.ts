@@ -45,9 +45,13 @@ export function useBillingSuspensionNotifier(orgId: string | null, orgPath: (pat
     refreshInterval: 60_000
   })
   const suspended = account.data?.state === 'suspended'
-  // The ledger is read only to tell spent-out from never-funded, so only while suspended.
-  const ledger = useSWR(offered && suspended ? consoleKeys.billingTransactions(orgId) : null, () =>
-    fetchBillingTransactions(orgId!)
+  // The ledger tells spent-out from never-funded, so it must stay LIVE while suspended: a
+  // never-funded org can fund and spend out between account polls with both observed states
+  // still 'suspended', and a cached empty ledger would silence exactly the outage this surfaces.
+  const ledger = useSWR(
+    offered && suspended ? consoleKeys.billingTransactions(orgId) : null,
+    () => fetchBillingTransactions(orgId!),
+    { refreshInterval: 60_000 }
   )
   const accountData = account.data
   const hasHistory = ledgerHistory(ledger.data)
