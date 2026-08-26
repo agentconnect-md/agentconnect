@@ -407,6 +407,10 @@ export class VirtualSlackConnection implements PlatformConnection {
   /** Ephemeral presence (assistant status) — not a message; not recorded. */
   async setStatus(): Promise<void> {}
 
+  /** The turn-start acknowledgement is presence too: it carries no content and scores
+   *  nothing, so the arena accepts it and records nothing, exactly like the status bar. */
+  async react(): Promise<void> {}
+
   async setTitle(): Promise<void> {}
 
   async openDirectMessage(user: string): Promise<string> {
