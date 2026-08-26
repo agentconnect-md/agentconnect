@@ -673,7 +673,7 @@ export default function DaemonDetailView() {
 
       {/* Band one — what the machine holds now, what it is spending to hold it, and what has
           run on it. */}
-      <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_200px_1fr]">
+      <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_160px_1fr]">
         <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
           <FleetStat icon="bot" label="Agents" value={load} note="running" />
           <FleetStat icon="activity" label="Active sessions" value={daemon.activeSessions} />
