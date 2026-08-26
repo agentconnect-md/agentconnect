@@ -251,7 +251,8 @@ export async function atomicWriteContainedMemoryFile(
 }
 
 // Windows cannot rename over a file another handle holds open — a scanner's transient handle on the
-// bytes just written is enough — so EPERM/EACCES/EBUSY here is a race POSIX never has. Retry bounded.
+// bytes just written is enough — so EPERM/EACCES/EBUSY here is a race POSIX never has. Bounded retry,
+// as `WorkspaceManager.renameWorkspaceDirectory` does for the same reason on a directory swap.
 async function publishOverTarget(temp: string, target: string): Promise<void> {
   if (process.platform !== 'win32') return fsp.rename(temp, target)
   const transient = new Set(['EPERM', 'EACCES', 'EBUSY'])
