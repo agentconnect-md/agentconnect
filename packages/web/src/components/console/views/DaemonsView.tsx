@@ -152,13 +152,24 @@ export default function DaemonsView() {
  * Both fleet lists ride the same track: a daemon and a group are the two kinds of placement target,
  * so they read as one inventory rather than a card grid above an unrelated table.
  *
- * Auto-fill rather than a column count, because a one-row card has a floor and no ceiling: it needs
- * ~560px before the name truncates into the utilization bars, and a fixed `grid-cols-2` broke at
- * every width below ~1400. `min(…,100%)` keeps that floor from overflowing the narrowest desktop,
- * where one full-width column is the honest answer.
+ * Two columns, as the design draws them — expressed as a 470px floor rather than `grid-cols-2` so
+ * the pairing survives a narrow window instead of crushing the card. 470 is what the row actually
+ * needs: 217px of avatar, gaps, padding, status and menu, plus the 150px name floor and the 100px
+ * the utilization bars shrink to. Every common desktop clears two of those (1280 gives the content
+ * 969px, 1440 gives 1129), and below roughly 1265 one full-width column is the honest answer —
+ * two columns of ~400px is where the name collapses to a single letter. `min(…,100%)` keeps the
+ * floor from overflowing the narrowest desktop of all.
  */
 const FLEET_GRID =
-  'grid grid-cols-1 gap-3 desktop:grid-cols-[repeat(auto-fill,minmax(min(560px,100%),1fr))] desktop:gap-[14px]'
+  'grid grid-cols-1 gap-3 desktop:grid-cols-[repeat(auto-fill,minmax(min(470px,100%),1fr))] desktop:gap-[14px]'
+
+/**
+ * One row height for every card on the page, so the pool entry and the daemons and groups under it
+ * read as one stack rather than three sizes. The pool entry sets the number: its capacity strip is
+ * the tallest thing any of these rows carries, and a floor rather than a fixed height means a row
+ * that ever needs more still gets it. Desktop only — mobile cards are as tall as their content.
+ */
+const FLEET_ROW = 'desktop:min-h-[77px]'
 
 /** The label + count that separates the page's lists, with an optional action on the right. */
 function SectionHeader({
@@ -256,7 +267,7 @@ function GroupCard({ group, daemons }: { group: MemberSetRow; daemons: DaemonRow
     // what runs on it and which members are serving, and renaming it is the rarer of the two.
     // The editor stays one click away, in the card menu and on that page.
     <div
-      className="card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[11px] desktop:px-4 desktop:py-[13px]"
+      className={`card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[11px] desktop:px-4 desktop:py-[13px] ${FLEET_ROW}`}
       onClick={() => router.push(orgPath(`/daemons/groups/${group.setId}`))}
     >
       <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken) desktop:h-[38px] desktop:w-[38px] desktop:rounded-[9px]">
@@ -374,7 +385,7 @@ function PoolFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: numb
 
   return (
     <div
-      className="card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px]"
+      className={`card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px] ${FLEET_ROW}`}
       onClick={open}
     >
       <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md bg-(--brand-soft) desktop:h-9 desktop:w-9">
@@ -454,7 +465,7 @@ function ClusterFleetCard({ members, hosted }: { members: DaemonRow[]; hosted: n
 
   return (
     <div
-      className="card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px]"
+      className={`card click flex items-center gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:gap-[14px] desktop:px-4 desktop:py-[15px] ${FLEET_ROW}`}
       onClick={open}
     >
       <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken) desktop:h-9 desktop:w-9">
@@ -573,10 +584,10 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
     // the taller card — a 375px row cannot hold four blocks, and the stats it drops have nowhere
     // else to go until you tap through.
     <div
-      className="card click flex flex-col gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:flex-row desktop:items-center desktop:gap-[14px] desktop:px-4 desktop:py-[13px]"
+      className={`card click flex flex-col gap-3 overflow-visible p-[14px] max-desktop:rounded-lg desktop:flex-row desktop:items-center desktop:gap-[14px] desktop:px-4 desktop:py-[13px] ${FLEET_ROW}`}
       onClick={() => router.push(orgPath(`/daemons/${m.daemonId}`))}
     >
-      <div className="flex w-full items-center gap-3 desktop:w-auto desktop:min-w-0 desktop:flex-1 desktop:gap-[11px]">
+      <div className="flex w-full items-center gap-3 desktop:w-auto desktop:min-w-[150px] desktop:flex-1 desktop:gap-[11px]">
         <span className="relative flex h-10 w-10 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken) desktop:h-[38px] desktop:w-[38px] desktop:rounded-[9px]">
           <Icon
             name="server"
@@ -656,8 +667,10 @@ function DaemonCard({ m, hosted }: { m: DaemonRow; hosted: number }) {
         </span>
         <Icon name="chevron-right" size={16} color="var(--text-tertiary)" className="desktop:hidden" />
       </div>
-      {/* Desktop: both utilizations inline, so the card stays one row tall. */}
-      <div className="hidden w-[152px] flex-none flex-col gap-[5px] desktop:flex">
+      {/* Desktop: both utilizations inline, so the card stays one row tall. The elastic block of
+          the row — a bar reads fine at 100px, where a truncated daemon name does not, so this is
+          what gives way first as the column narrows. */}
+      <div className="hidden w-[152px] min-w-[100px] flex-col gap-[5px] desktop:flex">
         <MiniBar label="cpu" pct={m.cpu} color={barColor} hot={hot} />
         <MiniBar label="mem" pct={m.mem} color={barColor} hot={hot} />
       </div>
