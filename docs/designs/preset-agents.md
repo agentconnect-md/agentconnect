@@ -375,8 +375,12 @@ view — non-blocking, dismissible, reopenable from Help.
 
 ### 6.2 Derived state, not stored ticks
 
-Every item derives from live resources; nothing stores "step done". The only persisted
-bit is a per-user dismissal.
+Every item derives from live resources; nothing stores a per-item "step done". What
+does persist: a per-device dismissal, and the tutorial's current position
+(`org.gettingStartedStep`, owner-only PATCH, clamped monotonic) — steps behind the
+position display as ticked (passed via signal OR Next-skipped) while the derivation
+below stays the ground truth. The checklist and its re-entry menu items render for
+the org owner only, matching the onboarding wizard.
 
 | Item                          | Derivation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

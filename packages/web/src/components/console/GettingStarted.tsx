@@ -83,8 +83,7 @@ export default function GettingStarted() {
   // Per-org client state, KEYED by org id at render time: an effect-only reset would
   // leave one commit where a cached org switch still renders — and auto-advances /
   // persists — with the previous org's values. `saReviewed` mirrors this org's
-  // localStorage flag; `localFloor` covers the window before the PATCHed org list
-  // refreshes, and non-owners whose PATCH the CP refuses (session-local progress).
+  // localStorage flag; `localFloor` covers the window before the PATCHed org list refreshes.
   const orgId = activeOrg?.id ?? null
   const [saReviewed, setSaReviewed] = useState<{ orgId: string | null; on: boolean }>({ orgId: null, on: false })
   const [localFloor, setLocalFloor] = useState<{ orgId: string | null; step: number }>({ orgId: null, step: 0 })
@@ -188,11 +187,14 @@ export default function GettingStarted() {
   // /onboarding wizard is a separate route (AgentsView redirects an empty org there);
   // the pill only steps aside for that route, not for the empty-org state itself.
   const onOnboardingRoute = pathname?.includes('/onboarding')
+  // Owner-only, like the onboarding wizard: setting an org up is the owner's job, and
+  // the step-position persistence (PATCH /orgs) is owner-gated anyway.
+  const isOwner = activeOrg?.role === 'owner'
   // Gate on the aggregate `loading`, not just agents+daemons: the checklist reads
   // integrations, sessions and members too, so a partial first paint showed the pill
   // with a too-low count that then jumped (and could even flash for an org that is
   // already allDone). One transition, once everything has landed.
-  if (loading || onOnboardingRoute) return null
+  if (loading || onOnboardingRoute || !isOwner) return null
   // The pill is the passive nudge — it hides once the tutorial is over (all steps
   // passed or every signal done) or the user skipped the whole thing.
   const showPill = !gs.allDone && !skipped && !finished
@@ -308,6 +310,9 @@ export default function GettingStarted() {
             <div className="flex-1 overflow-auto">
               {gs.items.map((it, i) => {
                 const isCurrent = i === currentIndex
+                // A step behind the position was passed (live signal OR Next) — show it
+                // ticked; the body/CTA below stay on the honest `it.done`.
+                const passed = it.done || i < step
                 const open = isCurrent || expanded === it.key
                 return (
                   <div
@@ -319,19 +324,19 @@ export default function GettingStarted() {
                   >
                     <span
                       className={`mt-[1px] flex h-[18px] w-[18px] flex-none items-center justify-center rounded-full ${
-                        it.done
+                        passed
                           ? 'bg-(--brand) text-white'
                           : isCurrent
                             ? 'border-[1.5px] border-(--brand)'
                             : 'border-[1.5px] border-(--border-strong)'
                       }`}
                     >
-                      {it.done && <Icon name="check" size={12} />}
+                      {passed && <Icon name="check" size={12} />}
                     </span>
                     <div className="min-w-0 flex-1">
                       <span
                         className={`font-sans text-[13.5px] leading-normal ${
-                          it.done
+                          passed
                             ? 'font-normal text-(--text-tertiary) line-through'
                             : 'font-medium text-(--text-primary)'
                         }`}

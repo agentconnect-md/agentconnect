@@ -761,17 +761,20 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
                       <div className="fixed inset-0 z-45" onClick={() => setHelpMenu(false)} />
                       <div className="absolute bottom-[calc(100%_+_8px)] left-0 z-50 w-[236px] rounded-[9px] border border-(--border-default) bg-(--surface-card) p-[5px] shadow-(--shadow-lg)">
                         {/* The desktop way back to a skipped checklist, both auth modes — the
-                          pill has no other desktop re-entry point. */}
-                        <button
-                          className="dmi"
-                          onClick={() => {
-                            setHelpMenu(false)
-                            openGettingStarted()
-                          }}
-                        >
-                          <Icon name="rocket" size={15} color="var(--text-tertiary)" />
-                          Getting started
-                        </button>
+                          pill has no other desktop re-entry point. Owner-only, like the
+                          checklist itself. */}
+                        {activeOrg?.role === 'owner' && (
+                          <button
+                            className="dmi"
+                            onClick={() => {
+                              setHelpMenu(false)
+                              openGettingStarted()
+                            }}
+                          >
+                            <Icon name="rocket" size={15} color="var(--text-tertiary)" />
+                            Getting started
+                          </button>
+                        )}
                         <button
                           className="dmi"
                           onClick={() => {
@@ -1198,18 +1201,21 @@ function MobileSheets({
               </Link>
             ))}
             {/* The rail (and both of its re-entry menus) is hidden at mobile widths, so
-                this is the phone/tablet way back to a skipped checklist — both auth modes. */}
-            <button
-              type="button"
-              className="msheet-row"
-              onClick={() => {
-                onClose()
-                openGettingStarted()
-              }}
-            >
-              <Icon name="rocket" size={20} color="var(--text-tertiary)" />
-              <span>Getting started</span>
-            </button>
+                this is the phone/tablet way back to a skipped checklist — both auth modes.
+                Owner-only, like the checklist itself. */}
+            {activeOrg?.role === 'owner' && (
+              <button
+                type="button"
+                className="msheet-row"
+                onClick={() => {
+                  onClose()
+                  openGettingStarted()
+                }}
+              >
+                <Icon name="rocket" size={20} color="var(--text-tertiary)" />
+                <span>Getting started</span>
+              </button>
+            )}
             <button type="button" className="msheet-cancel" onClick={onClose}>
               Cancel
             </button>
