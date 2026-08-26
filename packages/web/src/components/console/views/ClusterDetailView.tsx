@@ -41,13 +41,9 @@ import { featureFlagEnabled } from '@/lib/feature-flags'
 import { NotFound } from '@/components/console/NotFound'
 import {
   FleetAgentsCard,
-  FleetConnectionsCard,
-  FleetFact,
   FleetRuntimesCard,
   FleetStat,
   ResourceBar,
-  connsHeldBy,
-  unionMcpServers,
   unionRuntimes
 } from '@/components/console/FleetDetail'
 import { LoadingState } from '@/components/marks'
@@ -57,8 +53,7 @@ import { useOrgs } from '@/lib/org-context'
 export default function ClusterDetailView() {
   const { orgPath } = useOrgs()
   const router = useRouter()
-  const { daemons, agents, integrations, orgSetIds, daemonsLoading, agentsLoading, memberSetsLoading } =
-    useConsoleData()
+  const { daemons, agents, orgSetIds, daemonsLoading } = useConsoleData()
 
   const showPool = featureFlagEnabled('daemon-pool')
   // Whose infrastructure the pool IS decides how the page reads — see the file header.
@@ -76,11 +71,9 @@ export default function ClusterDetailView() {
     [agents, orgSetIds]
   )
 
-  // A member that stopped answering can no longer serve a runtime or hold a connection, so
-  // both unions are over the serving members only.
+  // A member that stopped answering can no longer serve a runtime, so the union is over the
+  // serving members only.
   const runtimes = useMemo(() => unionRuntimes(serving), [serving])
-  const mcpServers = useMemo(() => unionMcpServers(serving), [serving])
-  const conns = useMemo(() => connsHeldBy(hosted, integrations), [hosted, integrations])
 
   if (members.length === 0) {
     if (daemonsLoading)
@@ -131,6 +124,15 @@ export default function ClusterDetailView() {
   // substitution Add-agent and Edit-agent make (edit-agent-daemon-choice.ts).
   const capabilitySource = serving[0]
   const models = runtimes.reduce((sum, rt) => sum + rt.models.length, 0)
+  // Band one's right half. Cloud has none where the deployment carries no billing surface, and
+  // the metric column widens to fill the row rather than leaving a gap where a card would be.
+  const panel = managed ? (
+    billingOffered ? (
+      <CloudCreditsCard />
+    ) : null
+  ) : (
+    <ClusterCapacityCard {...{ capacityLabel, capacityPct, unbounded, cpu, mem }} />
+  )
 
   return (
     <div className="wrap max-w-[1240px] px-4 pt-[14px] pb-1 desktop:p-0">
@@ -159,10 +161,7 @@ export default function ClusterDetailView() {
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
             {managed ? (
-              <>
-                <MetaItem icon="cloud" text="Managed by AgentConnect" />
-                <MetaItem icon="layers" text="Runs your agents on AgentConnect's infrastructure" />
-              </>
+              <MetaItem icon="cloud" text="Managed by AgentConnect" />
             ) : (
               <>
                 <MetaItem
@@ -172,7 +171,6 @@ export default function ClusterDetailView() {
                   }
                 />
                 <MetaItem icon="tag" mono text={version} />
-                <MetaItem icon="layers" text="Runs your agents on your own cluster" />
               </>
             )}
           </div>
@@ -184,71 +182,35 @@ export default function ClusterDetailView() {
         )}
       </div>
 
-      {/* metric strip */}
-      <div className="mb-[18px] grid grid-cols-2 gap-[14px] desktop:grid-cols-4">
-        {managed ? (
-          <>
-            <FleetStat icon="bot" label="Agents on Cloud" value={String(hosted.length)} />
-            <FleetStat icon="plug" label="Connections held" value={String(conns.length)} />
-            <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
+      {/* Band one — what the set is, beside what it costs or what it can hold. Cloud quotes
+          what its usage costs; a cluster quotes the capacity its own members report. Neither
+          borrows the other's figure: a plan's included usage cannot be derived from load
+          telemetry, and a self-hoster is billed nothing here. */}
+      <div className={`mb-[18px] grid grid-cols-1 gap-[14px] ${panel ? 'desktop:grid-cols-[300px_1fr]' : ''}`}>
+        <div
+          className={
+            panel
+              ? 'grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col'
+              : 'grid grid-cols-2 gap-[14px] desktop:grid-cols-3'
+          }
+        >
+          <FleetStat icon="bot" label="Agents" value={String(hosted.length)} />
+          <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
+          {managed ? (
             <FleetStat
               icon="cpu"
               label="Runtimes available"
               value={String(runtimes.length)}
               note={`${models} model${models === 1 ? '' : 's'}`}
             />
-          </>
-        ) : (
-          <>
-            <FleetStat icon="bot" label="Agents on cluster" value={String(hosted.length)} />
-            <FleetStat icon="server" label="Nodes serving" value={`${serving.length} / ${members.length}`} />
-            <FleetStat icon="layers" label="Sandbox capacity" value={capacityLabel} />
-            <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
-          </>
-        )}
-      </div>
-
-      <div
-        className={`mb-[18px] grid grid-cols-1 gap-[18px] ${
-          managed && !billingOffered ? '' : 'desktop:grid-cols-[1.15fr_1fr]'
-        }`}
-      >
-        {/* Cloud quotes what its usage costs; a cluster quotes the capacity its own members
-            report. Neither borrows the other's figure — a plan's included usage cannot be
-            derived from load telemetry, and a self-hoster is billed nothing here. */}
-        {managed ? (
-          billingOffered && <CloudCreditsCard />
-        ) : (
-          <ClusterCapacityCard {...{ capacityLabel, capacityPct, unbounded, cpu, mem }} />
-        )}
-
-        <div className="card">
-          <div className="cardhead">
-            <span className="cardtitle">Details</span>
-          </div>
-          <div className="py-[6px]">
-            {managed ? (
-              <>
-                <FleetFact label="Status" value={s.label} />
-                <FleetFact label="Operated by" value="AgentConnect" />
-                <FleetFact label="Placement" value="pool" />
-                <FleetFact label="Runtimes" value={String(runtimes.length)} />
-                <FleetFact label="MCP servers" value={String(mcpServers.length)} />
-              </>
-            ) : (
-              <>
-                <FleetFact label="Nodes" value={`${serving.length} serving of ${members.length}`} />
-                <FleetFact label="Status" value={s.label} />
-                <FleetFact label="Version" value={version} />
-                <FleetFact label="Agent ceiling" value={unbounded ? 'unbounded' : String(capacity)} />
-                <FleetFact label="Placement" value="pool" />
-                <FleetFact label="MCP servers" value={String(mcpServers.length)} />
-              </>
-            )}
-          </div>
+          ) : (
+            <FleetStat icon="server" label="Nodes" value={`${serving.length} / ${members.length}`} note="serving" />
+          )}
         </div>
+        {panel}
       </div>
 
+      {/* Band two — what the set can run, and what runs on it. */}
       <FleetRuntimesCard
         title="Runtimes"
         runtimes={runtimes}
@@ -260,23 +222,14 @@ export default function ClusterDetailView() {
         }
       />
 
-      <div className="grid grid-cols-1 items-start gap-[18px] desktop:grid-cols-2">
-        <FleetAgentsCard
-          title={managed ? 'Agents on Cloud' : 'Agents on this cluster'}
-          agents={hosted}
-          capabilitySource={capabilitySource}
-          onOpen={(id) => router.push(orgPath(`/agents/${id}`))}
-          emptyTitle="No agents run here yet"
-          emptyHint={`Place an agent on ${poolLabel()} to start handling messages.`}
-        />
-        <FleetConnectionsCard
-          title="Connections held here"
-          conns={conns}
-          empty={
-            managed ? 'No integration tokens are held on Cloud.' : 'No integration tokens are held on this cluster.'
-          }
-        />
-      </div>
+      <FleetAgentsCard
+        title={managed ? 'Agents on Cloud' : 'Agents on this cluster'}
+        agents={hosted}
+        capabilitySource={capabilitySource}
+        onOpen={(id) => router.push(orgPath(`/agents/${id}`))}
+        emptyTitle="No agents run here yet"
+        emptyHint={`Place an agent on ${poolLabel()} to start handling messages.`}
+      />
 
       {managed && (
         <p className="mt-[14px] max-w-[780px] font-sans text-[12px] font-normal leading-[1.6] text-(--text-tertiary) text-pretty">
@@ -602,7 +555,9 @@ function ClusterCapacityCard({
     <div className="card">
       <div className="cardhead">
         <span className="cardtitle">Capacity</span>
-        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">across serving nodes</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">
+          {unbounded ? 'no agent ceiling' : 'across serving nodes'}
+        </span>
       </div>
       <div className="flex flex-col gap-[14px] px-4 py-[15px]">
         <ResourceBar

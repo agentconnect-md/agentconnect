@@ -13,7 +13,6 @@ import type { Agent, DaemonRow, MemberSetRow } from '@/lib/data'
 const mocks = vi.hoisted(() => ({
   daemons: [] as unknown[],
   agents: [] as unknown[],
-  integrations: [] as unknown[],
   memberSets: [] as unknown[],
   memberSetsLoading: false,
   daemonsLoading: false,
@@ -34,7 +33,6 @@ vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     daemons: mocks.daemons,
     agents: mocks.agents,
-    integrations: mocks.integrations,
     memberSets: mocks.memberSets,
     memberSetsLoading: mocks.memberSetsLoading,
     daemonsLoading: mocks.daemonsLoading,
@@ -142,7 +140,6 @@ const setFlags = (value: string) => {
 beforeEach(() => {
   mocks.daemons = []
   mocks.agents = []
-  mocks.integrations = []
   mocks.memberSets = []
   mocks.memberSetsLoading = false
   mocks.daemonsLoading = false
@@ -161,7 +158,7 @@ describe('GroupDetailView', () => {
     const html = render()
 
     expect(html).toContain('build-farm')
-    expect(html).toContain('Any daemon in the group')
+    expect(html).toContain('d1, d2')
     expect(html).toContain('2 daemons')
     // Serving is what routes work, so it is what the strip counts.
     expect(html).toContain('1 / 2')
@@ -172,12 +169,12 @@ describe('GroupDetailView', () => {
     mocks.daemons = [daemon('d1', { status: 'offline' }), daemon('d2')]
 
     // One serving member is what routes work, so it is what makes the group online.
-    expect(render()).toContain('1 serving of 2')
+    expect(render()).toContain('1 / 2')
 
     mocks.daemons = [daemon('d1', { status: 'offline' }), daemon('d2', { status: 'offline' })]
 
     const dark = render()
-    expect(dark).toContain('0 serving of 2')
+    expect(dark).toContain('0 / 2')
     // Nothing on the page is green once no member answers — the group's own badge included.
     expect(dark).not.toContain('var(--status-online)')
   })
@@ -224,7 +221,7 @@ describe('GroupDetailView', () => {
 
     const html = render()
 
-    expect(html).toContain('Runtimes the whole group can run')
+    expect(html).toContain('Only what every serving member offers')
     expect(html).toContain('v0.54.1')
     // A member that stopped answering can no longer offer a runtime, so it constrains nothing.
     expect(html).not.toContain('v1.0.0')
@@ -255,29 +252,6 @@ describe('GroupDetailView', () => {
     // ... and the same rule applies one level down: only d1 offers sonnet.
     expect(html).toContain('1 model')
     expect(html).not.toContain('2 models')
-    // The Routing card counts what the group can run, not what its members have between them.
-    expect(html).toContain('>1<')
-  })
-
-  it('lists only the MCP servers EVERY serving member configures', () => {
-    // Same argument as the runtimes, one row above it in the same fact list: a server only one
-    // member has is a tool missing from every run that lands on another.
-    mocks.memberSets = [group({ memberDaemonIds: ['d1', 'd2'] })]
-    mocks.daemons = [
-      daemon('d1', {
-        mcpServers: [
-          { name: 'shared', transport: 'stdio' },
-          { name: 'only-d1', transport: 'stdio' }
-        ]
-      }),
-      daemon('d2', { mcpServers: [{ name: 'shared', transport: 'stdio' }] })
-    ] as unknown[]
-
-    const html = render()
-
-    // "MCP servers 1" — `shared` counts, `only-d1` does not.
-    expect(html).toContain('MCP servers')
-    expect(html).toContain('>1<')
   })
 
   it('says "mixed" rather than picking one member’s version', () => {
@@ -312,38 +286,6 @@ describe('GroupDetailView', () => {
     const html = render()
 
     expect(html).toContain('No runtime is on every serving member')
-  })
-
-  it('lists the connections the group’s agents hold', () => {
-    mocks.memberSets = [group({ memberDaemonIds: ['d1'] })]
-    mocks.daemons = [daemon('d1')]
-    mocks.agents = [onGroup('a1')]
-    mocks.integrations = [
-      {
-        id: 'i1',
-        agentId: 'a1',
-        name: 'acme-ops',
-        platform: 'slack',
-        workspace: 'acme.slack.com',
-        status: 'online',
-        channels: [{ channelId: 'C1', name: 'deploys', trigger: 'mention' }]
-      },
-      {
-        id: 'i2',
-        agentId: 'other',
-        name: 'not-ours',
-        platform: 'slack',
-        workspace: 'x',
-        status: 'online',
-        channels: []
-      }
-    ]
-
-    const html = render()
-
-    expect(html).toContain('acme-ops')
-    expect(html).toContain('1 channel')
-    expect(html).not.toContain('not-ours')
   })
 
   it('opens a member’s own page, because that is where a machine’s detail lives', () => {
@@ -400,9 +342,8 @@ describe('GroupDetailView', () => {
 
     const html = render()
 
-    expect(html).toContain('Sessions on members')
+    expect(html).toContain('Active sessions')
     expect(html).toContain('incl. pinned agents')
-    expect(html).not.toContain('Active sessions')
   })
 
   it('offers no log tail — a fabricated one is indistinguishable from telemetry', () => {
