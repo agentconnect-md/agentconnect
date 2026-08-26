@@ -479,6 +479,21 @@ describe('onboarding — pool fork', () => {
     expect(mocks.moveAgent).not.toHaveBeenCalled()
   })
 
+  // Completion-only is honest ONLY for a preset already on the pool. An unplaced one would be
+  // marked done with no runtime and no placement, so it waits for the cluster to report.
+  it('keeps Finish disabled for an unplaced preset while the cluster advertises nothing', async () => {
+    mocks.daemons = [{ ...mocks.daemons[0], runtimeModels: [] }]
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
+    await render()
+    await click('Continue')
+    expect(host.textContent).toContain('Waiting for Kubernetes cluster to report the runtimes')
+    expect(button('Finish').disabled).toBe(true)
+    await click('Finish')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
+    expect(mocks.updateOrg).not.toHaveBeenCalled()
+  })
+
   it('says so when the cluster has no serving member', async () => {
     mocks.daemons = [{ ...mocks.daemons[0], status: 'offline' }]
     await render()

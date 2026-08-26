@@ -190,6 +190,15 @@ export default function OnboardingView() {
     setMintAttempt((n) => n + 1)
   }
 
+  // Cluster step with nothing advertised yet: poll like the daemon step does while it waits, so a
+  // member that finishes probing lands here without a reload.
+  const clusterWaiting = step === 'run' && choice === 'pool' && (poolSource?.runtimeModels.length ?? 0) === 0
+  useEffect(() => {
+    if (!clusterWaiting) return
+    const poll = setInterval(refreshDaemons, 3000)
+    return () => clearInterval(poll)
+  }, [clusterWaiting, refreshDaemons])
+
   // Poll until the daemon connects; tick the elapsed timer while waiting.
   useEffect(() => {
     if (daemonReady) {
@@ -261,6 +270,9 @@ export default function OnboardingView() {
           source={poolSource}
           serving={poolMembers.filter((d) => d.status === 'online').length}
           initial={builtinAgent ? { runtime: builtinAgent.runtime, model: builtinAgent.model } : undefined}
+          // Nothing to place — no preset at all, or one already on the pool — so a cluster with no
+          // runtimes to report yet costs this step nothing. An UNPLACED preset has to wait.
+          placed={!builtinAgent || isPoolPlacementKind(builtinAgent.placementKind)}
           showPickers={!!builtinAgent}
           saving={saving || finishing}
           err={saveErr}
@@ -526,6 +538,7 @@ function ClusterStep({
   source,
   serving,
   initial,
+  placed,
   showPickers,
   saving,
   err,
@@ -537,6 +550,8 @@ function ClusterStep({
   source?: DaemonRow
   serving: number
   initial?: { runtime?: string; model?: string }
+  /** Is the preset already on the pool (or absent)? False ⇒ Finish has to place it to be honest. */
+  placed: boolean
   /** Whether the built-in agent still needs a runtime — hides the pickers otherwise. */
   showPickers: boolean
   saving: boolean
@@ -555,6 +570,10 @@ function ClusterStep({
   const runtime = advertised ? rm.effectiveRuntime : ''
   // Same runtime, its models not in yet ⇒ keep the pin the preset came with, never clear it.
   const model = runtime && runtime === initial?.runtime && !rm.selectedModel ? (initial.model ?? '') : rm.selectedModel
+  // Completing writes nothing when nothing is advertised, which is only honest for a preset already
+  // on the pool. An unplaced one would be marked done with no runtime and no placement — the very
+  // state this step exists to fix — so it waits for the cluster instead.
+  const canFinish = advertised || placed
   return (
     <StepFrame
       stepLabel={stepLabel}
@@ -568,7 +587,7 @@ function ClusterStep({
             </Button>
           )}
           <div className="flex-1" />
-          <Button disabled={saving} onClick={() => onFinish(runtime, model)}>
+          <Button disabled={saving || !canFinish} onClick={() => onFinish(runtime, model)}>
             <Icon name="check" size={15} />
             {saving ? 'Finishing…' : 'Finish'}
           </Button>
@@ -579,7 +598,9 @@ function ClusterStep({
       {showPickers && advertised && <RuntimeModelFields rm={rm} />}
       {showPickers && !advertised && (
         <p className="mt-6 font-sans text-[13px] leading-[1.5] text-(--text-secondary)">
-          {`${poolLabel()} has not advertised its runtimes yet, so this leaves the agent's runtime as it is. Change it from the agent's page once the cluster reports them.`}
+          {placed
+            ? `${poolLabel()} has not advertised its runtimes yet, so this leaves the agent's runtime as it is. Change it from the agent's page once the cluster reports them.`
+            : `Waiting for ${poolLabel()} to report the runtimes it can run — the agent cannot be placed there until it does. This page keeps checking; pick Daemon instead to run it on your own machine.`}
         </p>
       )}
       {/* Where it lands, in the pool's own terms: the placement names the set, not a Pod. */}
