@@ -16,6 +16,12 @@ import { SESSION_TITLE_TOOL_TITLES } from '../mcp/session-title-tool.js'
 import type { ScheduleRun } from '../scheduler/scheduler.js'
 import { AsyncMutex } from './async-mutex.js'
 import type { StoreRetentionCandidate, StoreRetentionRule } from './retention.js'
+import {
+  ClusterSkillLedgerSchema,
+  type ClusterSkillLedger,
+  type ClusterSkillLedgerRecord,
+  type ClusterSkillReconcileAuthority
+} from './cluster-skill-ledger.js'
 import { SqliteAsyncDatabase } from './sqlite-async-database.js'
 import type { StoreBatchResult, StoreBatchStatement, StoreDatabase, StoreTx } from './store-database.js'
 
@@ -835,7 +841,7 @@ function restrictPath(path: string, mode: number): void {
  * fresh databases and every established one fails at query time. `SCHEMA_MIGRATIONS`
  * asserts the two stay in lockstep for exactly that reason.
  */
-const SCHEMA_VERSION = 13
+const SCHEMA_VERSION = 14
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -969,7 +975,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
     `),
   // Whether a child session's coordinates are its OWN conversation (§4.2). Left null on
   // existing rows: absent keeps the CP's ordinary child inheritance, which is what they got.
-  async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN directDestination INTEGER')
+  async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN directDestination INTEGER'),
+  // Cluster skill tables are emitted by the current CREATE block after this step.
+  async () => undefined
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1516,6 +1524,32 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS sandbox_generations (
         agentId TEXT PRIMARY KEY,
         generation INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS duty_write_fence (
+        groupId TEXT PRIMARY KEY,
+        term TEXT NOT NULL,
+        daemonId TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS cluster_skill_ledger (
+        agentId TEXT NOT NULL,
+        workspaceIncarnation TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        ledger TEXT NOT NULL,
+        PRIMARY KEY (agentId, workspaceIncarnation)
+      );
+      CREATE TABLE IF NOT EXISTS cluster_skill_journal (
+        agentId TEXT NOT NULL,
+        workspaceIncarnation TEXT NOT NULL,
+        operationId TEXT NOT NULL,
+        groupId TEXT NOT NULL,
+        term TEXT NOT NULL,
+        daemonId TEXT NOT NULL,
+        priorRevision INTEGER NOT NULL,
+        desiredHash TEXT NOT NULL,
+        replayKey TEXT,
+        state TEXT NOT NULL CHECK (state IN ('applying', 'applied')),
+        resultLedger TEXT,
+        PRIMARY KEY (agentId, workspaceIncarnation)
       );
       -- gitlab-com-integration.md §16 run projection: the write marker this daemon persists BEFORE
       -- every provider mutation. An 'in_flight' row surviving a restart is reconciled by listing the
@@ -6197,6 +6231,165 @@ export class LocalStore {
       .get(agentId)) as { generation: number } | undefined
     if (row === undefined) throw new Error(`could not allocate a sandbox generation for agent ${agentId}`)
     return Number(row.generation)
+  }
+
+  /** Advance the shared write fence before a newly granted duty may mutate cluster skill state. */
+  async projectDutyWriteFence(input: { groupId: string; term: string; daemonId: string }): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `INSERT INTO duty_write_fence (groupId, term, daemonId) VALUES (@groupId, @term, @daemonId)
+         ON CONFLICT(groupId) DO UPDATE SET term = excluded.term, daemonId = excluded.daemonId
+         WHERE length(excluded.term) > length(duty_write_fence.term)
+            OR (length(excluded.term) = length(duty_write_fence.term) AND excluded.term > duty_write_fence.term)
+            OR (excluded.term = duty_write_fence.term AND excluded.daemonId = duty_write_fence.daemonId)`
+      )
+      .run(input)
+    return result.changes === 1
+  }
+
+  async revokeDutyWriteFence(input: { groupId: string; term: string; daemonId: string }): Promise<void> {
+    await this.db
+      .prepare('DELETE FROM duty_write_fence WHERE groupId = @groupId AND term = @term AND daemonId = @daemonId')
+      .run(input)
+  }
+
+  async clusterSkillLedger(
+    agentId: string,
+    workspaceIncarnation: string
+  ): Promise<ClusterSkillLedgerRecord | undefined> {
+    const row = (await this.db
+      .prepare('SELECT revision, ledger FROM cluster_skill_ledger WHERE agentId = ? AND workspaceIncarnation = ?')
+      .get(agentId, workspaceIncarnation)) as { revision: number; ledger: string } | undefined
+    if (!row) return undefined
+    return { revision: Number(row.revision), ledger: ClusterSkillLedgerSchema.parse(JSON.parse(row.ledger)) }
+  }
+
+  async beginClusterSkillReconcile(
+    input: ClusterSkillReconcileAuthority & { desiredHash: string; replayKey: string }
+  ): Promise<
+    | {
+        ok: true
+        operationId: string
+        replayKey: string
+        priorRevision: number
+        priorLedger: ClusterSkillLedger
+        resumed: boolean
+      }
+    | { ok: false; reason: 'lost_authority' }
+  > {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const fence = (await tx
+        .prepare('SELECT term, daemonId FROM duty_write_fence WHERE groupId = ?')
+        .get(input.groupId)) as { term: string; daemonId: string } | undefined
+      if (!fence || fence.term !== input.term || fence.daemonId !== input.daemonId) {
+        return { ok: false, reason: 'lost_authority' as const }
+      }
+      const prior = (await tx
+        .prepare('SELECT revision, ledger FROM cluster_skill_ledger WHERE agentId = ? AND workspaceIncarnation = ?')
+        .get(input.agentId, input.workspaceIncarnation)) as { revision: number; ledger: string } | undefined
+      const priorRevision = prior ? Number(prior.revision) : 0
+      const priorLedger = prior ? ClusterSkillLedgerSchema.parse(JSON.parse(prior.ledger)) : { roots: [] }
+      const existing = (await tx
+        .prepare(
+          `SELECT operationId, priorRevision, desiredHash, replayKey FROM cluster_skill_journal
+           WHERE agentId = ? AND workspaceIncarnation = ? AND state = 'applying'`
+        )
+        .get(input.agentId, input.workspaceIncarnation)) as
+        { operationId: string; priorRevision: number; desiredHash: string; replayKey: string | null } | undefined
+      const resumed = Boolean(
+        existing && Number(existing.priorRevision) === priorRevision && existing.desiredHash === input.desiredHash
+      )
+      const operationId = resumed ? existing!.operationId : input.operationId
+      const replayKey = resumed && existing!.replayKey ? existing!.replayKey : input.replayKey
+      await tx
+        .prepare(
+          `INSERT INTO cluster_skill_journal
+             (agentId, workspaceIncarnation, operationId, groupId, term, daemonId, priorRevision, desiredHash, replayKey, state)
+           VALUES (@agentId, @workspaceIncarnation, @operationId, @groupId, @term, @daemonId, @priorRevision, @desiredHash, @replayKey, 'applying')
+           ON CONFLICT(agentId, workspaceIncarnation) DO UPDATE SET
+             operationId = excluded.operationId, groupId = excluded.groupId, term = excluded.term,
+             daemonId = excluded.daemonId, priorRevision = excluded.priorRevision,
+             desiredHash = excluded.desiredHash, replayKey = excluded.replayKey,
+             state = 'applying', resultLedger = NULL`
+        )
+        .run({ ...input, operationId, replayKey, priorRevision })
+      return { ok: true, operationId, replayKey, priorRevision, priorLedger, resumed }
+    })
+  }
+
+  async commitClusterSkillReconcile(
+    input: ClusterSkillReconcileAuthority & { priorRevision: number; ledger: ClusterSkillLedger }
+  ): Promise<{ ok: true; revision: number } | { ok: false; reason: 'lost_authority' }> {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const fence = (await tx
+        .prepare('SELECT term, daemonId FROM duty_write_fence WHERE groupId = ?')
+        .get(input.groupId)) as { term: string; daemonId: string } | undefined
+      const journal = (await tx
+        .prepare(
+          `SELECT operationId, term, daemonId, priorRevision FROM cluster_skill_journal
+           WHERE agentId = ? AND workspaceIncarnation = ? AND state = 'applying'`
+        )
+        .get(input.agentId, input.workspaceIncarnation)) as
+        { operationId: string; term: string; daemonId: string; priorRevision: number } | undefined
+      if (
+        !fence ||
+        fence.term !== input.term ||
+        fence.daemonId !== input.daemonId ||
+        !journal ||
+        journal.operationId !== input.operationId ||
+        journal.term !== input.term ||
+        journal.daemonId !== input.daemonId ||
+        Number(journal.priorRevision) !== input.priorRevision
+      ) {
+        return { ok: false, reason: 'lost_authority' as const }
+      }
+      const current = (await tx
+        .prepare('SELECT revision FROM cluster_skill_ledger WHERE agentId = ? AND workspaceIncarnation = ?')
+        .get(input.agentId, input.workspaceIncarnation)) as { revision: number } | undefined
+      if ((current ? Number(current.revision) : 0) !== input.priorRevision) {
+        return { ok: false, reason: 'lost_authority' as const }
+      }
+      const revision = input.priorRevision + 1
+      const ledger = JSON.stringify(ClusterSkillLedgerSchema.parse(input.ledger))
+      await tx
+        .prepare(
+          `INSERT INTO cluster_skill_ledger (agentId, workspaceIncarnation, revision, ledger)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(agentId, workspaceIncarnation) DO UPDATE SET revision = excluded.revision, ledger = excluded.ledger`
+        )
+        .run(input.agentId, input.workspaceIncarnation, revision, ledger)
+      await tx
+        .prepare(
+          `UPDATE cluster_skill_journal SET state = 'applied', resultLedger = ?
+           WHERE agentId = ? AND workspaceIncarnation = ? AND operationId = ?`
+        )
+        .run(ledger, input.agentId, input.workspaceIncarnation, input.operationId)
+      return { ok: true, revision }
+    })
+  }
+
+  async authorizeClusterSkillMutation(
+    input: ClusterSkillReconcileAuthority & { priorRevision: number }
+  ): Promise<boolean> {
+    const row = (await this.db
+      .prepare(
+        `SELECT j.operationId, j.term, j.daemonId, j.priorRevision
+         FROM cluster_skill_journal j
+         JOIN duty_write_fence f ON f.groupId = j.groupId
+         WHERE j.agentId = ? AND j.workspaceIncarnation = ? AND j.state = 'applying'
+           AND f.term = j.term AND f.daemonId = j.daemonId`
+      )
+      .get(input.agentId, input.workspaceIncarnation)) as
+      { operationId: string; term: string; daemonId: string; priorRevision: number } | undefined
+    return Boolean(
+      row &&
+      row.operationId === input.operationId &&
+      row.term === input.term &&
+      row.daemonId === input.daemonId &&
+      Number(row.priorRevision) === input.priorRevision
+    )
   }
 
   async close(): Promise<void> {

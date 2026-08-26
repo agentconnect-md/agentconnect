@@ -297,6 +297,21 @@ describe('the duty self-fence', () => {
     await daemon.stop()
   })
 
+  it('revokes every projected write fence in one multi-group self-fence', async () => {
+    const { daemon } = await boot()
+    ;(daemon as any).cpClient.fetchDutyAgent = vi.fn(async () => ({
+      bundle: bundle(AGENT_B, 'ranger', INTEGRATION_B, { botToken: 'xoxb-b', appToken: 'xapp-b' })
+    }))
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant(GROUP_B, AGENT_B)])
+    const revoke = vi.spyOn((daemon as any).store, 'revokeDutyWriteFence')
+
+    await fence(daemon, [GROUP, GROUP_B])
+
+    expect(revoke.mock.calls.map(([input]) => (input as { groupId: string }).groupId)).toEqual([GROUP, GROUP_B])
+    expect(revoke.mock.calls.map(([input]) => (input as { term: string }).term)).toEqual(['1', '1'])
+    await daemon.stop()
+  })
+
   it('fencing a group leaves an agent that another held group also covers in service', async () => {
     // `applyRevoke` reports an agent as lost only when it is in NO held group any more, and the
     // teardown follows that, not the group membership — so a shared agent keeps serving.

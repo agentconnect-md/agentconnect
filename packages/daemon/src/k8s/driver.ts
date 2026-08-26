@@ -135,8 +135,9 @@ export class K8sDriver implements SpawnDriver {
     )
     const sandboxUid = sandbox.metadata?.uid
     if (!sandboxUid) throw new Error(`sandbox ${sandboxName} has no metadata.uid to bind against`)
+    const claimUid = ensured.claim.metadata?.uid ?? sandboxUid
     this.registry.assertStillServed(agentId, releasedAt)
-    return this.registry.recordLaunch(agentId, sandboxName, sandboxUid)
+    return this.registry.recordLaunch(agentId, sandboxName, sandboxUid, claimUid)
   }
 
   /** Takeover: re-derive the launch from the cluster (claim → bound Sandbox → mode), creating nothing. */
@@ -149,13 +150,14 @@ export class K8sDriver implements SpawnDriver {
       if (!sandboxName) return undefined
       const sandbox = await readIfPresent(() => this.deps.api.getSandbox(sandboxName))
       const sandboxUid = sandbox?.metadata?.uid
+      const claimUid = claim?.metadata?.uid ?? sandboxUid
       if (!sandbox || !sandboxUid || (sandbox.spec?.operatingMode ?? 'Running') !== 'Running') return undefined
       // A turn that did not wait acquired it meanwhile, or the agent already left again.
       const current = this.registry.currentLaunch(agentId)
       if (current) return current
       if (!this.registry.stillServed(agentId, releasedAt)) return undefined
       this.deps.log.info(`cluster: agent ${agentId} taken over with sandbox ${sandboxName} running`)
-      return this.registry.recordLaunch(agentId, sandboxName, sandboxUid)
+      return this.registry.recordLaunch(agentId, sandboxName, sandboxUid, claimUid)
     })
   }
 

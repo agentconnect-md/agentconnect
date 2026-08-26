@@ -14,6 +14,7 @@ import {
   SHIM_WS_PATH,
   parseShimFrame,
   type ShimFrame,
+  type ShimIdentity,
   type ShimRejected
 } from './protocol.js'
 import type { ShimTransport } from './client.js'
@@ -317,7 +318,8 @@ export class ShimDialer {
             return
           }
           binding = true
-          void this.bindHello(frame.token, record)
+          const negotiated = this.negotiate(record, frame)
+          void this.bindHello(frame.token, negotiated)
             .then((result) => {
               binding = false
               if (settled) {
@@ -417,6 +419,14 @@ export class ShimDialer {
       return { ok: false, rejected: { type: 'shim/rejected', reason: 'stale_generation', message: 'superseded' } }
     }
     return bound
+  }
+
+  private negotiate(record: SpawnRecord, identity: ShimIdentity): SpawnRecord {
+    const supportsSkills = identity.features?.includes('cluster-skills-v1') === true
+    return {
+      ...record,
+      grants: record.grants.filter((grant) => grant !== 'skills' || supportsSkills)
+    }
   }
 
   private delay(ms: number): Promise<void> {

@@ -26,6 +26,9 @@ export const SHIM_WORKSPACE_ROOT_ENV = 'AC_SHIM_WORKSPACE_ROOT'
  *  predates workspace-root reporting — every such image mounted the volume here. */
 export const DEFAULT_SHIM_WORKSPACE_ROOT = '/agent'
 
+export const ShimFeatureSchema = z.enum(['cluster-skills-v1'])
+export type ShimFeature = z.infer<typeof ShimFeatureSchema>
+
 /** Operations the daemon may ask a bound shim to perform. Every one is authorized
  *  individually against the binding's grants — a channel is not a blanket permission.
  *  The bodies land in #814 / #815; this is the authorization vocabulary they use. */
@@ -46,6 +49,8 @@ export const ShimCapabilitySchema = z.enum([
    *  enforced in-pod on purpose, and reaching `gh` through it would turn a deliberate boundary
    *  into an arbitrary-execution surface. */
   'automerge',
+  /** Install daemon-acquired immutable skills into this pod's workspace. */
+  'skills',
   /** Report which runtimes this image actually provides, by asking them. The daemon cannot learn
    *  this any other way: `--k8s` runs no local runtime, and anything it states from its own
    *  configuration is a claim about an image it never opened. */
@@ -68,7 +73,9 @@ export const ShimIdentitySchema = z.object({
   /** Shim build, for operator diagnosis only — never an authorization input. */
   shimVersion: z.string().max(64).optional(),
   /** This pod's workspace mount; absent on legacy shims means {@link DEFAULT_SHIM_WORKSPACE_ROOT}. */
-  workspaceRoot: z.string().min(1).max(4096).optional()
+  workspaceRoot: z.string().min(1).max(4096).optional(),
+  /** Versioned optional surfaces supported by this image; absent means a legacy shim. */
+  features: z.array(ShimFeatureSchema).max(16).optional()
 })
 
 /** The daemon's answer once the token is verified and mapped to a spawn record. */

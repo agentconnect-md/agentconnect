@@ -1,8 +1,7 @@
 # Shared Skills: One Isolated `skills` CLI for Git and Local Sources
 
-> **Status:** Implemented. v3 keeps the CLI-owned runtime layout while adding
-> immutable source snapshots, an isolated exact CLI cell, receipts, and one
-> trusted external ownership ledger.
+> **Status:** Implemented. v4 applies the same immutable snapshots, exact CLI,
+> receipts, and ownership rules to daemon-local and cluster sandbox workspaces.
 >
 > **Known trust-model mismatch:** the current v3 daemon implementation also
 > forces every ordinary ACP host into the OS sandbox. That enforcement follows
@@ -77,6 +76,11 @@ digests and CLI-derived relative roots outside the agent-writable workspace.
   released daemon and owns runtime layout in a private staging cell; production
   never invokes `npx` or resolves an installer package from the network. A
   trusted external ledger owns publication and cleanup in the live workspace.
+- **Cluster sandbox:** the daemon acquires and pins sources, then uploads bounded
+  immutable snapshots over the dedicated shim capability. The runtime image
+  bundles the same `skills@1.5.21` CLI; the shim validates bytes, publishes only
+  receipt-owned roots, and returns the applied ledger before ACP starts. Shared
+  journal writes are fenced by duty term and SandboxClaim UID.
 
 Implementation anchors:
 
@@ -86,6 +90,7 @@ Implementation anchors:
 | Per-agent projection and distribution        | `orchestrator/skillSource.ts` and `AgentSpec.skills`              | Validate/filter rows and reuse `agent/upsert`/`register/ok` |
 | Workspace clone/pull and cold-host gate      | `prepareWorkspace` in `workspace/workspace-manager.ts`            | Reconcile skills **after cloning** and before every host    |
 | Bounded GitHub acquisition and origin policy | `skills/skill-git-source.ts` and `workspace/git-origin-policy.ts` | Produce commit-bound local snapshots                        |
+| Cluster journal and shim publication         | `skills/cluster-skill-coordinator.ts` and `shim/skill-handler.ts` | Upload, replay, publish, and receipt-fence sandbox skills   |
 
 ## 2. Goals and non-goals
 
