@@ -6,12 +6,13 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
-  rmdirSync,
   rmSync,
   statSync,
   writeFileSync
 } from 'node:fs'
+import { rename } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import {
   gitRepoLabel,
   normalizeGitCloneUrl,
@@ -61,6 +62,9 @@ import { SANDBOX_CHECKOUT_DIR } from '../shim/sandbox-paths.js'
 
 const skillsLog = makeLogger('info')
 const workspaceLog = makeLogger('info')
+const WINDOWS_DIRECTORY_RENAME_RETRIES = 10
+const WINDOWS_DIRECTORY_RENAME_DELAY_MS = 100
+const WINDOWS_TRANSIENT_FS_ERRORS = new Set(['EACCES', 'EBUSY', 'EPERM'])
 
 /**
  * Post-clone skills step (docs/designs/shared-skills.md §6). Installs the agent's
@@ -2113,6 +2117,62 @@ export class WorkspaceManager {
     return removed
   }
 
+  private async renameWorkspaceDirectory(from: string, to: string): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rename(from, to)
+        return
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        if (
+          process.platform !== 'win32' ||
+          code === undefined ||
+          !WINDOWS_TRANSIENT_FS_ERRORS.has(code) ||
+          attempt >= WINDOWS_DIRECTORY_RENAME_RETRIES
+        ) {
+          throw err
+        }
+        await delay(WINDOWS_DIRECTORY_RENAME_DELAY_MS)
+      }
+    }
+  }
+
+  private async publishStagedWorkspace(cwd: string, staged: string, requireEmpty: boolean): Promise<void> {
+    const previous = existsSync(cwd) ? `${cwd}.old-${randomUUID()}` : undefined
+    if (previous !== undefined) {
+      await this.renameWorkspaceDirectory(cwd, previous)
+      if (requireEmpty && readdirSync(previous).length !== 0) {
+        await this.renameWorkspaceDirectory(previous, cwd)
+        throw new Error('workspace changed while conversion was cloning; retry after making it empty')
+      }
+    }
+
+    try {
+      await this.renameWorkspaceDirectory(staged, cwd)
+    } catch (err) {
+      if (previous !== undefined && !existsSync(cwd)) {
+        try {
+          await this.renameWorkspaceDirectory(previous, cwd)
+        } catch (restoreErr) {
+          mkdirSync(cwd, { recursive: true })
+          throw new AggregateError(
+            [err, restoreErr],
+            'workspace publication failed and the previous workspace could not be restored'
+          )
+        }
+      }
+      throw err
+    }
+
+    if (previous !== undefined) {
+      try {
+        rmSync(previous, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      } catch (err) {
+        workspaceLog.warn(`workspace: could not remove replaced directory "${previous}" (${formatErr(err)})`)
+      }
+    }
+  }
+
   async prepareWorkspaceForActivation(
     agent: Agent,
     {
@@ -2212,8 +2272,7 @@ export class WorkspaceManager {
       this.resolveAcpCwd(staged, normalizeRepoSubdir(agent.workspace.agentDir))
       if (replace) {
         this.clearSessionWorktrees(agent)
-        rmSync(cwd, { recursive: true, force: true })
-        renameSync(staged, cwd)
+        await this.publishStagedWorkspace(cwd, staged, false)
         try {
           this.recordWorkspaceMaterialization(agent)
         } catch (err) {
@@ -2233,18 +2292,7 @@ export class WorkspaceManager {
       if (!this.isWorkspaceEmpty(agent)) {
         throw new Error('workspace changed while conversion was cloning; retry after making it empty')
       }
-      try {
-        // Windows cannot rename over an empty directory, so rmdir proves emptiness before publication.
-        if (process.platform === 'win32' && existsSync(cwd)) rmdirSync(cwd)
-        renameSync(staged, cwd)
-      } catch (err) {
-        if (!this.isWorkspaceEmpty(agent)) {
-          throw new Error('workspace changed while conversion was cloning; retry after making it empty', {
-            cause: err
-          })
-        }
-        throw err
-      }
+      await this.publishStagedWorkspace(cwd, staged, true)
     } catch (err) {
       rmSync(staged, { recursive: true, force: true })
       throw err
