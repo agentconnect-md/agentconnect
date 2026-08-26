@@ -13,7 +13,7 @@
 // The design's pool log tail is absent for the same reason it is absent on the cluster page:
 // inventing a log stream would be indistinguishable from real telemetry.
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { groupFleetStatus, isSetPlacementKind, status, type DaemonRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
@@ -24,6 +24,7 @@ import {
   FleetAgentsCard,
   FleetRuntimesCard,
   FleetStat,
+  FleetStatColumn,
   barColor,
   intersectRuntimes
 } from '@/components/console/FleetDetail'
@@ -37,6 +38,7 @@ export default function GroupDetailView() {
   const router = useRouter()
   const { daemons, agents, agentsLoading, daemonsLoading, memberSets, memberSetsLoading } = useConsoleData()
   const { openModal } = useModal()
+  const [menuOpen, setMenuOpen] = useState(false)
 
   const group = useMemo(() => memberSets.find((g) => g.setId === id), [memberSets, id])
   const members = useMemo(
@@ -144,23 +146,50 @@ export default function GroupDetailView() {
         <Button variant="secondary" size="sm" onClick={() => openModal('group', group)}>
           Edit group
         </Button>
+        {/* Removal lives here too: the list card's menu is desktop-only, so this is the only path below 769px. */}
+        <div className="relative flex-none">
+          <button
+            className="iconbtn"
+            aria-label="Group actions"
+            title="Group actions"
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            <Icon name="ellipsis" size={16} />
+          </button>
+          {menuOpen && (
+            <>
+              <div onClick={() => setMenuOpen(false)} className="fixed inset-0 z-45" />
+              <div className="dmenu right-0" onClick={(e) => e.stopPropagation()}>
+                <button
+                  className="dmi danger"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    openModal('deleteGroup', group)
+                  }}
+                >
+                  <Icon name="trash-2" size={15} />
+                  Remove group
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Band one — what the group holds, beside the machines that hold it. */}
       <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[300px_1fr]">
-        <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
+        <FleetStatColumn>
           <FleetStat icon="bot" label="Agents" value={String(hosted.length)} />
-          {/* Machine-scoped, unlike its neighbours: the CP counts active sessions per DAEMON, so
-              this includes the ones belonging to agents pinned to these members — the agents the
-              rest of the page deliberately excludes. */}
-          <FleetStat icon="activity" label="Active sessions" value={String(sessions)} note="incl. pinned agents" />
+          {/* Machine-scoped, unlike its neighbours: the CP counts active sessions per DAEMON, so this
+              includes the sessions of agents pinned to these members, which the rest of the page excludes. */}
+          <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
           <FleetStat
             icon="server"
             label="Daemons"
             value={`${serving.length} / ${members.length}`}
             note={members.length === 0 ? 'no members yet' : 'serving'}
           />
-        </div>
+        </FleetStatColumn>
 
         <div className="card">
           <div className="cardhead">

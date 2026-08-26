@@ -345,10 +345,22 @@ describe('onboarding — daemon online: configure + finish', () => {
   })
 })
 
-// The pool (Cloud / cluster) path: the fork appears, and picking the pool finishes right
-// there — no agent configuration, no provisioning, just the completion flag.
+// The pool (Cloud / cluster) path: the fork appears, and picking the pool leads to the runtime
+// step — nothing to install, so the pickers (against the pool's own members) are the whole step.
 describe('onboarding — pool fork', () => {
-  beforeEach(() => setFlags('daemon-pool'))
+  beforeEach(() => {
+    setFlags('daemon-pool')
+    // One serving pool member standing in for the cluster's advertised runtimes.
+    mocks.daemons = [
+      {
+        daemonId: 'pool-pod-1',
+        pool: true,
+        status: 'online',
+        name: 'ac-cloud-7f9',
+        runtimeModels: [{ runtime: 'dsh-acp', models: ['deepseek-v4-flash'] }]
+      }
+    ]
+  })
 
   it('holds a spinner while the agent snapshot is still loading — no premature Finish', async () => {
     mocks.agentsLoading = true
@@ -365,25 +377,57 @@ describe('onboarding — pool fork', () => {
     expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)
     await click('Back')
     await click('Cluster')
+    await click('Continue')
     await click('Finish')
     expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
     expect(mocks.deleteDaemon).toHaveBeenCalledWith('dmn_detour')
     expect(mocks.push).toHaveBeenCalledWith('/acme/home')
   })
 
-  it('forks after the org step and finishes right there — the fork is the last step', async () => {
+  it('forks after the org step, then asks for the runtime — no provisioning on the way', async () => {
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
     await render()
     expect(host.textContent).toContain('Where to run')
     expect(host.textContent).toContain('Cluster') // self-hosted pool label (no `managed` flag)
-    await click('Finish') // pool preselected ⇒ Finish, never a Continue
+    expect(host.textContent).toContain('Step 2 of 3')
+    await click('Continue') // pool preselected
+    expect(host.textContent).toContain('Choose runtime')
+    expect(host.textContent).toContain('Step 3 of 3')
+    // Runtimes come from the pool member, and the step says where the agent lands.
+    expect(host.textContent).toContain('runtime-dsh-acp')
+    expect(host.textContent).toContain('Runs on the Kubernetes cluster · 1 node serving')
     expect(mocks.provisionDaemon).not.toHaveBeenCalled()
+  })
+
+  it('places the unplaced built-in agent on the pool with the runtime it picked', async () => {
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
+    await render()
+    await click('Continue')
+    await click('Finish')
+    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'dsh-acp', model: 'deepseek-v4-flash' })
+    expect(mocks.moveAgent).toHaveBeenCalledWith('ag_ac', { kind: 'pool' })
     expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
     expect(mocks.push).toHaveBeenCalledWith('/acme/home')
   })
 
-  it('finishes without touching the built-in agent, even an unplaced one', async () => {
-    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
+  // A pool-born preset is already ON the pool: re-placing it would be a no-op move that can
+  // only fail (no online member mid-rollout), so the runtime PATCH is the whole change.
+  it('patches a pool-born preset without moving it', async () => {
+    mocks.agents = [
+      { id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: 'pool', placementKind: 'set', runtime: 'dsh-acp' }
+    ]
     await render()
+    await click('Continue')
+    await click('Finish')
+    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'dsh-acp', model: 'deepseek-v4-flash' })
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
+    expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
+  })
+
+  it('finishes without touching an org that has no built-in agent', async () => {
+    mocks.agents = []
+    await render()
+    await click('Continue')
     await click('Finish')
     expect(mocks.updateAgent).not.toHaveBeenCalled()
     expect(mocks.moveAgent).not.toHaveBeenCalled()
@@ -391,10 +435,125 @@ describe('onboarding — pool fork', () => {
     expect(mocks.push).toHaveBeenCalledWith('/acme/home')
   })
 
+  // A serving member mid-probe advertises nothing: the static fallback would write `claude-acp`
+  // over the deployment's pool runtime, and the pool branch skips the move that would refuse it.
+  it('writes nothing while the cluster has not advertised its runtimes', async () => {
+    mocks.daemons = [{ ...mocks.daemons[0], runtimeModels: [] }]
+    mocks.agents = [
+      {
+        id: 'ag_ac',
+        builtin: true,
+        name: 'agentconnect',
+        daemon: 'pool',
+        placementKind: 'set',
+        runtime: 'dsh-acp',
+        model: 'deepseek-v4-flash'
+      }
+    ]
+    await render()
+    await click('Continue')
+    expect(host.textContent).toContain('has not advertised its runtimes yet')
+    await click('Finish')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
+    expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
+  })
+
+  it('keeps the preset model pin when the advertised runtime has no models yet', async () => {
+    mocks.daemons = [{ ...mocks.daemons[0], runtimeModels: [{ runtime: 'dsh-acp', models: [] }] }]
+    mocks.agents = [
+      {
+        id: 'ag_ac',
+        builtin: true,
+        name: 'agentconnect',
+        daemon: 'pool',
+        placementKind: 'set',
+        runtime: 'dsh-acp',
+        model: 'deepseek-v4-flash'
+      }
+    ]
+    await render()
+    await click('Continue')
+    await click('Finish')
+    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'dsh-acp', model: 'deepseek-v4-flash' })
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
+  })
+
+  // Completion-only is honest ONLY for a preset already on the pool. An unplaced one would be
+  // marked done with no runtime and no placement, so it waits for the cluster to report.
+  it('keeps Finish disabled for an unplaced preset while the cluster advertises nothing', async () => {
+    mocks.daemons = [{ ...mocks.daemons[0], runtimeModels: [] }]
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: '—', runtime: '' }]
+    await render()
+    await click('Continue')
+    expect(host.textContent).toContain('Waiting for Kubernetes cluster to report the runtimes')
+    expect(button('Finish').disabled).toBe(true)
+    await click('Finish')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
+    expect(mocks.updateOrg).not.toHaveBeenCalled()
+  })
+
+  it('says so when the cluster has no serving member', async () => {
+    mocks.daemons = [{ ...mocks.daemons[0], status: 'offline' }]
+    await render()
+    await click('Continue')
+    expect(host.textContent).toContain('no nodes serving')
+  })
+
   it('picking Daemon at the fork routes to the connect step', async () => {
     mocks.provisionDaemon.mockResolvedValue({ daemonId: 'dmn_new', command: 'agentconnect run' })
     await render()
     await click('Daemon')
+    await click('Continue')
+    expect(host.textContent).toContain('Run the daemon')
+    expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Managed Cloud: the pool is AgentConnect's own image, so a Cloud preset is born configured and
+// the fork stays the last step — there is no runtime for the operator to choose.
+describe('onboarding — managed Cloud fork', () => {
+  beforeEach(() => {
+    setFlags('daemon-pool,managed')
+    mocks.daemons = [
+      {
+        daemonId: 'pool-pod-1',
+        pool: true,
+        status: 'online',
+        name: 'ac-cloud-7f9',
+        runtimeModels: [{ runtime: 'dsh-acp', models: ['deepseek-v4-flash'] }]
+      }
+    ]
+    mocks.agents = [
+      {
+        id: 'ag_ac',
+        builtin: true,
+        name: 'agentconnect',
+        daemon: 'pool',
+        placementKind: 'set',
+        runtime: 'dsh-acp',
+        model: 'deepseek-v4-flash'
+      }
+    ]
+  })
+
+  it('finishes at the fork without a runtime step', async () => {
+    await render()
+    expect(host.textContent).toContain('Cloud')
+    expect(host.textContent).toContain('Step 2 of 2')
+    await click('Finish') // Cloud preselected ⇒ Finish, never a Continue
+    expect(host.textContent).not.toContain('Choose runtime')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
+    expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
+    expect(mocks.push).toHaveBeenCalledWith('/acme/home')
+  })
+
+  it('still routes the Daemon choice through the connect step', async () => {
+    await render()
+    await click('Daemon')
+    expect(host.textContent).toContain('Step 2 of 3')
     await click('Continue')
     expect(host.textContent).toContain('Run the daemon')
     expect(mocks.provisionDaemon).toHaveBeenCalledTimes(1)

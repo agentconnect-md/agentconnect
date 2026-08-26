@@ -31,8 +31,12 @@ import type {
   InteractionActor,
   PlatformChannelHistoryOptions,
   PlatformChannelHistoryPage,
-  PlatformConnection
+  PlatformConnection,
+  PlatformReactionIntent
 } from '../platforms/contract.js'
+
+/** Core names the intent; Slack's alphabet is emoji shortcodes. */
+const SLACK_REACTION_NAMES: Record<PlatformReactionIntent, string> = { seen: 'eyes' }
 
 export interface ConsolidatedGroup {
   appToken: string
@@ -432,6 +436,9 @@ export type AppLike = {
         setStatus: (a: unknown) => Promise<unknown>
         setTitle: (a: unknown) => Promise<unknown>
       }
+    }
+    reactions: {
+      add: (a: unknown) => Promise<unknown>
     }
   }
   init?: () => Promise<void>
@@ -1191,6 +1198,24 @@ export class SlackConnection implements PlatformConnection {
       this.deps.log?.debug(`slack: chat.update (blocks) failed (ch=${channel} ts=${ts}): ${(err as Error).message}`)
       return false
     }
+  }
+
+  /** Turn-start acknowledgement (`reactions.add`) on the message that fired the turn.
+   *  Best-effort: an `already_reacted` repeat and a workspace whose grant predates
+   *  `reactions:write` both degrade to nothing visible. */
+  async react(channel: string, messageId: string, intent: PlatformReactionIntent): Promise<void> {
+    // The catch is on the ENQUEUE, not just the call: an abandoned queue task rejects too,
+    // and this method is never awaited by a caller that could handle it.
+    await this.queue
+      .enqueue(async () => {
+        try {
+          await this.app.client.reactions.add({ channel, timestamp: messageId, name: SLACK_REACTION_NAMES[intent] })
+        } catch (err) {
+          this.rememberMissingScopes(err)
+          this.deps.log?.debug(`slack: reactions.add failed (ch=${channel} ts=${messageId}): ${(err as Error).message}`)
+        }
+      })
+      .catch(() => {})
   }
 
   /** Delete one of this app's own messages. Used when chronological re-anchoring

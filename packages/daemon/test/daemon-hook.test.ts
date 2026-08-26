@@ -824,6 +824,9 @@ describe('Daemon rd/msg hook fires', () => {
         repo: 'acme/infra',
         number: 42,
         reviewCommentId: '3565656411',
+        // The acknowledgement targets the comment a human wrote, not the thread root the
+        // reply goes to — the two ids differ on a follow-up, which is why both are carried.
+        triggerComment: { kind: 'review_comment', id: '3565656411' },
         reviewThreadRootCommentId: '3565283658'
       },
       'acp-inline-reply'

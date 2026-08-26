@@ -100,6 +100,17 @@ for (const entry of ['index.js', 'git-credential.js', 'gh-token.js']) {
   }
 }
 
+const shimSkillsCli = new URL('../dist/shim/skills/dist/cli.js', import.meta.url)
+const shimSkillsVersion = spawnSync(process.execPath, [fileURLToPath(shimSkillsCli), '--version'], {
+  encoding: 'utf8',
+  timeout: 10_000,
+  env: { PATH: process.env.PATH ?? '' }
+})
+if (shimSkillsVersion.status !== 0 || shimSkillsVersion.stdout.trim() !== '1.5.21') {
+  console.error('✗ shim skills CLI did not report the audited 1.5.21 version')
+  process.exit(1)
+}
+
 // The sh wrapper the image puts on the agent's PATH is generated from the same renderGhWrapper the daemon uses,
 // so a build that skipped the emit step would ship an image whose `gh` is simply missing.
 const ghWrapper = new URL('../dist/shim/gh', import.meta.url)

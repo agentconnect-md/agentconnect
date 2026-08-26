@@ -2550,6 +2550,47 @@ describe('buildTrustedGithubMetadata review comment ids', () => {
   )
 })
 
+describe('buildTrustedGithubMetadata acknowledgement targets', () => {
+  const issueComment = (commentId: unknown, pullRequest?: object) =>
+    buildTrustedGithubMetadata(
+      'issue_comment',
+      {
+        installation: { id: INSTALLATION },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
+        issue: { number: 9, ...(pullRequest ? { pull_request: pullRequest } : {}) },
+        comment: { id: commentId as number }
+      },
+      rule({}, { events: ['issue_comment:created'] })
+    )
+
+  it('carries the comment that fired an issue_comment delivery', () => {
+    expect(issueComment(4242)?.issueCommentId).toBe('4242')
+    expect(issueComment(Number.MAX_SAFE_INTEGER)?.issueCommentId).toBe(String(Number.MAX_SAFE_INTEGER))
+  })
+
+  it('carries it for a PR conversation comment too — the subject kind does not change the reaction target', () => {
+    expect(issueComment(77, {})).toMatchObject({ subjectKind: 'pull_request', issueCommentId: '77' })
+  })
+
+  it.each([Number.MAX_SAFE_INTEGER + 1, -1, 1.5, undefined])('omits an unusable comment id (%s)', (id) => {
+    expect(issueComment(id)?.issueCommentId).toBeUndefined()
+  })
+
+  it('omits it for a delivery the subject itself fired', () => {
+    const github = buildTrustedGithubMetadata(
+      'issues',
+      {
+        installation: { id: INSTALLATION },
+        repository: { id: REPO_ID, full_name: 'acme/infra', owner: { login: 'acme', type: 'Organization' } },
+        issue: { number: 9 },
+        comment: { id: 4242 }
+      },
+      rule({}, { events: ['issues:opened'] })
+    )
+    expect(github?.issueCommentId).toBeUndefined()
+  })
+})
+
 describe('githubRuleVerdict (pure predicate)', () => {
   const ctx = {
     event: 'issues',

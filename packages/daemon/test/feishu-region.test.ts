@@ -41,6 +41,7 @@ function fakeHandle(): FeishuClientHandle {
     setCardEntityStreaming: async () => {},
     patchCardMessage: async () => {},
     deleteMessage: async () => {},
+    addReaction: async () => {},
     updateText: async () => {},
     downloadResource: async () => {},
     getChat: async (id: string) => ({ id }),

@@ -143,6 +143,33 @@ nothing at all, so the notice always means a real wait — and neither does the 
 outlive it: once the pod is up the status returns to the ordinary working state, so a streamed
 answer is never delivered under a line still claiming a sandbox is being allocated.
 
+## A trigger is acknowledged before it is answered
+
+An agent's answer arrives late by nature: a turn boots a session, runs tools, and
+only then writes. Until it does, whoever mentioned the agent has no way to tell
+"working on it" from "never saw it" — and the surfaces differ in how much silence
+they leave. A Slack assistant thread has a status bar and Telegram has a typing
+hint, but a message in a channel has neither, and an issue or pull request has
+nothing at all until one comment appears at the very end.
+
+So every turn with a real inbound message reacts to that message with 👀 as it
+starts. One rule across chat platforms and code hosts: the reaction lands on the
+exact message that fired the turn — the comment a human wrote, not the thread it
+sits in and not the issue that contains it — and on the issue or pull request
+itself only when the subject is what fired.
+
+It is an acknowledgement, not a status: it is placed once and never taken back or
+swapped for an outcome. That is deliberate — it records that the turn was seen,
+which stays true whether the turn answers, is interrupted, or dies with nothing
+to say, and a reader who returns later can still tell a message that was picked
+up from one that was never routed. The answer itself supersedes it.
+
+It is also chrome, never content. Nothing waits on it, a platform that cannot
+react (or an installation that was never granted permission to) simply shows
+nothing and the turn is unaffected, and origins with no inbound message to point
+at — a schedule, another agent's wake, a session opened in the console — do not
+acknowledge anything.
+
 ## Slack message attribution footer
 
 The attribution footer for an agent response must be attached to the final Slack

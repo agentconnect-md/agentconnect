@@ -61,6 +61,7 @@ interface GitlabPayload {
   project?: { id?: number; path_with_namespace?: string; web_url?: string }
   project_id?: number
   object_attributes?: {
+    id?: number
     iid?: number
     title?: string
     description?: string | null
@@ -389,13 +390,18 @@ export function buildTrustedGitlabMetadata(
       ...(ctx.eventAction === 'merge_request:review_requested' ? { explicitReviewRequest: true } : {})
     }
   }
+  const rawNoteId = ctx.family === 'note' ? payload.object_attributes?.id : undefined
+  const noteId =
+    typeof rawNoteId === 'number' && Number.isSafeInteger(rawNoteId) && rawNoteId > 0 ? rawNoteId : undefined
   return {
     projectId: gitlab.projectId,
     // §24.4: opaque pass-through. The relay never dials GitLab and never parses this — the
     // daemon fences the turn on it against the session's spec-carried host.
     ...(gitlab.host !== undefined ? { host: gitlab.host } : {}),
     projectPath: payload.project?.path_with_namespace ?? gitlab.projectPath,
-    target
+    target,
+    // The note that fired this delivery — the acknowledgement reaction's exact target.
+    ...(noteId !== undefined ? { noteId: String(noteId) } : {})
   }
 }
 

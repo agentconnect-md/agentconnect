@@ -44,14 +44,15 @@ async function main(): Promise<number> {
     // Serves materialize and git exec, and ENFORCES the declared inventory here rather than
     // trusting that the daemon sent only permitted subcommands; tunnels are served separately
     // because they own long-lived sockets rather than answering one request.
-    handle: (capability, payload, abort) =>
+    handle: (capability, payload, abort, context) =>
       capability === 'tunnel'
         ? tunnels.handle(payload)
         : capability === 'automerge'
           ? automerge(payload)
-          : exec(capability, payload, abort),
+          : exec(capability, payload, abort, context),
     // Reported in the hello so daemon-built pod paths are anchored on this filesystem.
     workspaceRoot,
+    features: ['cluster-skills-v1'],
     log
   })
   await server.start(port)

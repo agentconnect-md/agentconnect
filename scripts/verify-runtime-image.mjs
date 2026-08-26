@@ -59,6 +59,7 @@ const GH_WRAPPER_PATH = '/opt/agentconnect/pathbin/gh'
  *  path to the daemon, which copies it into the `mcpServers` spec — so a bundle missing here is a runtime
  *  retrying a module that is not there, which is how an agent silently lost its AgentConnect tools. */
 const MCP_BRIDGE_PATH = '/opt/agentconnect/shim/mcp-bridge.js'
+const SKILLS_CLI_PATH = '/opt/agentconnect/shim/skills/dist/cli.js'
 const TABLE_PATH = '/opt/agentconnect/runtime/k8s-runtimes.json'
 
 // The runtime is the untrusted party in this image, so root would hand it the whole filesystem.
@@ -90,6 +91,14 @@ check('the shim is root-owned and not writable by the runtime user', () => {
   const refused = inImage(`(echo x >> ${SHIM_PATH} && echo WRITABLE) || echo refused`)
   if (refused !== 'refused') throw new Error('the runtime user can modify the shim')
   return owner
+})
+
+check('the pinned skills CLI is present, immutable and executable', () => {
+  const owner = inImage(`stat -c '%U:%G %a' ${SKILLS_CLI_PATH}`)
+  if (!owner.startsWith('root:root')) throw new Error(`skills CLI is not root-owned (${owner})`)
+  const version = inImage(`node ${SKILLS_CLI_PATH} --version`)
+  if (version !== '1.5.21') throw new Error(`skills CLI version is ${version}`)
+  return `${owner}, version ${version}`
 })
 
 // Git spawns a credential helper per invocation, so the pod needs one as an executable — and it

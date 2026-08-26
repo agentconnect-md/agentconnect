@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { existsSync, realpathSync } from 'node:fs'
-import { isAbsolute, normalize, resolve, sep } from 'node:path'
+import { isAbsolute, join, normalize, resolve, sep } from 'node:path'
 import { applyFileSinkPayload } from './file-sink.js'
-import { SANDBOX_MCP_BRIDGE_ENTRY } from './sandbox-paths.js'
+import { SANDBOX_MCP_BRIDGE_ENTRY, SANDBOX_SKILL_STAGING_DIR } from './sandbox-paths.js'
+import { ClusterSkillHandler } from './skill-handler.js'
+import type { ClusterSkillRequestContext } from './skill-handler.js'
 import { GitExecPayloadSchema, type GitExecResult } from './git-exec.js'
 import type { ShimCapability } from './protocol.js'
 import { applyWorkspaceFilesPayload } from './workspace-files-channel.js'
@@ -171,14 +173,25 @@ function resolveCwd(root: string, requested: string | undefined): string {
  */
 export function createExecHandler(
   deps: ExecHandlerDeps
-): (capability: ShimCapability, payload: unknown, abort?: AbortSignal) => Promise<unknown> {
-  return async (capability, payload, abort) => {
+): (
+  capability: ShimCapability,
+  payload: unknown,
+  abort?: AbortSignal,
+  context?: ClusterSkillRequestContext
+) => Promise<unknown> {
+  const skillHandler = new ClusterSkillHandler({
+    stagingRoot: SANDBOX_SKILL_STAGING_DIR,
+    workspaceRoot: deps.workspaceRoot,
+    stateRoot: join(deps.workspaceRoot, '.agentconnect', 'cluster-skill-state')
+  })
+  return async (capability, payload, abort, context) => {
     if (capability === 'materialize') {
       await applyFileSinkPayload(payload)
       return null
     }
     if (capability === 'exec') return runGit(payload, deps, abort)
     if (capability === 'probe') return probeRuntimes(deps, abort)
+    if (capability === 'skills') return skillHandler.handle(payload, abort, context)
     // The console's file operations, run on the mounted volume. The mount is handed over as the
     // ANCHOR rather than the daemon's root being validated here: the operations walk to it from an
     // open descriptor, so "is this inside the mount" and "which directory is it" are one question

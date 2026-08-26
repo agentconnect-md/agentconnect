@@ -80,6 +80,9 @@ describe('fmtCountCompact', () => {
     [101_817, '102K'],
     [2_316_000, '2.32M'],
     [2_463_144, '2.46M'],
+    [1_234_567_890, '1.23B'],
+    [45_600_000_000, '46B'],
+    [2_500_000_000_000, '2,500B'],
     [undefined, '—']
   ])('formats %s as %s', (value, expected) => {
     expect(fmtCountCompact(value)).toBe(expected)
