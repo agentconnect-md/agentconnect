@@ -477,14 +477,6 @@ function AddCreditsCard({ orgId, returnPath }: { orgId: string; returnPath: stri
             </span>
           </Button>
         </div>
-        <div className="mt-auto flex items-start gap-2 pt-3.5">
-          <span className="mt-[2px] flex-none text-(--text-tertiary)">
-            <Icon name="lock" size={13} />
-          </span>
-          <span className="font-sans text-[11.5px] font-normal leading-[1.55] text-(--text-tertiary)">
-            Payment is handled on Stripe's hosted page. Card details never touch AgentConnect.
-          </span>
-        </div>
       </div>
     </div>
   )

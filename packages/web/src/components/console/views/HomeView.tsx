@@ -556,7 +556,7 @@ export default function HomeView() {
             {imageError}
           </div>
         )}
-        <div className="flex items-start gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
+        <div className="flex items-center gap-2 border-t border-(--border-subtle) py-[7px] pr-[9px] pl-[10px]">
           <div className="relative flex-none">
             <button
               type="button"
