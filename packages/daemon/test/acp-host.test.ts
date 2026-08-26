@@ -137,6 +137,21 @@ describe('AcpHost additional workspace directories', () => {
   }, 15_000)
 })
 
+describe('AcpHost session deletion', () => {
+  it('uses session/delete when advertised and releases local ownership', async () => {
+    const host = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: [] },
+      { onUpdate: () => {}, env: { AC_DELETE_SESSION: '1' } }
+    )
+    await host.start()
+    expect(host.deleteSupported()).toBe(true)
+    const sessionId = await host.newSession('/tmp')
+    expect(await host.deleteSession(sessionId)).toBe(true)
+    expect(host.hasSession(sessionId)).toBe(false)
+    await host.stop()
+  }, 15_000)
+})
+
 describe('AcpHost session/load update filtering', () => {
   it('forwards restored title metadata while suppressing replayed conversation output', async () => {
     const updates: string[] = []
