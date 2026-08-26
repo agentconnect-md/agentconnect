@@ -60,9 +60,10 @@ const platformExcluded = process.platform === 'win32' ? WINDOWS_EXCLUDED : []
 export default defineConfig({
   test: {
     environment: 'node',
-    // Keep process-heavy, integration-shaped unit files from oversubscribing
-    // available test-worker resources.
-    maxWorkers: 4,
+    // Keep process-heavy, integration-shaped unit files from oversubscribing available test-worker
+    // resources. Halved on the 4-vCPU Windows runner: at four, files carrying an inline 15 s budget
+    // land right at it, and which ones tip over varies run to run.
+    maxWorkers: process.platform === 'win32' ? 2 : 4,
     // The async store pays a microtask hop per statement; on a loaded CI box the
     // IO-heavy store files drift past vitest's 5 s default without being hung. Windows I/O is slower
     // again by enough that the same files need double the budget to measure code and not the host.
