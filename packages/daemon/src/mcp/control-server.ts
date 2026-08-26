@@ -7,6 +7,7 @@ import { executeTool, type OpsDeps, type SessionContext } from './ops.js'
 import { boundWrittenTopics } from './ops/memory.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import type { Logger } from '../log.js'
+import { isWindowsNamedPipe } from '../paths.js'
 
 export interface McpControlDeps extends OpsDeps {
   socketPath: string
@@ -50,18 +51,18 @@ export class McpControlServer {
   async start(): Promise<void> {
     if (this.server) return
     const path = this.deps.socketPath
-    const dir = dirname(path)
-    // 0700 dir + 0600 socket: confine the control socket to the daemon's uid, so
-    // a leaked session token isn't the *only* thing standing between a local
-    // process and acting as the bot. chmod after mkdir to defeat a loose umask.
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    try {
-      chmodSync(dir, 0o700)
-    } catch {
-      /* best-effort on platforms without POSIX modes */
+    const namedPipe = isWindowsNamedPipe(path)
+    if (!namedPipe) {
+      const dir = dirname(path)
+      // 0700 dir + 0600 socket confines the control socket to the daemon's uid.
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      try {
+        chmodSync(dir, 0o700)
+      } catch {
+        /* best-effort on platforms without POSIX modes */
+      }
+      rmSync(path, { force: true })
     }
-    // A stale socket from a crashed daemon makes listen() throw EADDRINUSE.
-    rmSync(path, { force: true })
 
     const server = net.createServer((socket) => this.onConnection(socket))
     this.server = server
@@ -76,10 +77,12 @@ export class McpControlServer {
         resolve()
       })
     })
-    try {
-      chmodSync(path, 0o600)
-    } catch {
-      /* best-effort */
+    if (!namedPipe) {
+      try {
+        chmodSync(path, 0o600)
+      } catch {
+        /* best-effort */
+      }
     }
     this.deps.log?.info(`mcp: control socket listening at ${path}`)
   }
@@ -128,6 +131,6 @@ export class McpControlServer {
     for (const s of this.conns) s.destroy()
     this.conns.clear()
     await new Promise<void>((resolve) => server.close(() => resolve()))
-    rmSync(this.deps.socketPath, { force: true })
+    if (!isWindowsNamedPipe(this.deps.socketPath)) rmSync(this.deps.socketPath, { force: true })
   }
 }

@@ -359,7 +359,7 @@ async function privateFreshDestination(destinationDir: string, sourceReal: strin
   if (!parentStat.isDirectory()) {
     throw new SkillSourceSnapshotError('snapshot destination parent is a symlink or non-directory')
   }
-  if ((parentStat.mode & 0o777) !== 0o700) {
+  if (process.platform !== 'win32' && (parentStat.mode & 0o777) !== 0o700) {
     throw new SkillSourceSnapshotError('snapshot destination parent must have mode 0700')
   }
   if (typeof process.geteuid === 'function' && parentStat.uid !== process.geteuid()) {
@@ -430,19 +430,21 @@ async function writeCapturedTree(tree: CapturedTree, destination: string): Promi
         await handle.close()
       }
     }
-    for (const directory of [...tree.directories].sort((a, b) => b.length - a.length)) {
-      const handle = await fsp.open(join(destination, ...directory.split('/')), constants.O_RDONLY)
-      try {
-        await handle.sync()
-      } finally {
-        await handle.close()
+    if (process.platform !== 'win32') {
+      for (const directory of [...tree.directories].sort((a, b) => b.length - a.length)) {
+        const handle = await fsp.open(join(destination, ...directory.split('/')), constants.O_RDONLY)
+        try {
+          await handle.sync()
+        } finally {
+          await handle.close()
+        }
       }
-    }
-    const root = await fsp.open(destination, constants.O_RDONLY)
-    try {
-      await root.sync()
-    } finally {
-      await root.close()
+      const root = await fsp.open(destination, constants.O_RDONLY)
+      try {
+        await root.sync()
+      } finally {
+        await root.close()
+      }
     }
   } catch (error) {
     if (created) {

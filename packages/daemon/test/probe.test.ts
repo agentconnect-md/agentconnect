@@ -56,6 +56,12 @@ describe('isCommandAvailable', () => {
 })
 
 describe('resolveCommandPath', () => {
+  it.runIf(process.platform === 'win32')('prefers a spawnable PATHEXT launcher over an extensionless sibling', () => {
+    writeFileSync(join(binDir, 'npx'), 'shell launcher')
+    writeFileSync(join(binDir, 'npx.cmd'), '@echo off\r\n')
+    expect(resolveCommandPath('npx', { PATH: binDir, PATHEXT: '.EXE;.CMD' })).toBe(join(binDir, 'npx.CMD'))
+  })
+
   it('returns the absolute path of a bare command found on PATH', () => {
     const p = makeExecutable(binDir, 'claude')
     expect(resolveCommandPath('claude', env())).toBe(p)

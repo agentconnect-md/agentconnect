@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { McpControlServer, type McpControlDeps } from '../src/mcp/control-server.js'
+import { mcpSocketPath } from '../src/paths.js'
 import { encodeFrame, decodeFrames, type IpcPrivateRequest, type IpcResponse } from '../src/mcp/ipc.js'
 import type { MessageGateway, SessionContext } from '../src/mcp/ops.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
@@ -18,7 +19,7 @@ function socketPath() {
   expect(resolved).not.toBe(repoRoot)
   expect(resolved.startsWith(repoRoot + sep)).toBe(false)
   tempRoots.push(root)
-  return join(root, 'mcp.sock')
+  return mcpSocketPath(root)
 }
 
 function gateway(): MessageGateway {

@@ -33,6 +33,7 @@ import { createRequire } from 'node:module'
 import { createServer, type Server, type Socket } from 'node:net'
 import { dirname, join } from 'node:path'
 import { GitCredentialCache, GitCredUnavailableError, type CredPlane } from './git-credential.js'
+import { isWindowsNamedPipe, localIpcPath } from '../paths.js'
 
 // Declared in `gitcred/env.ts` and re-exported here, where every daemon-side caller already looks
 // for them: the helper that also runs inside a sandbox cannot import this module (it would pull the
@@ -46,8 +47,8 @@ export function gitcredSocketFrom(env: NodeJS.ProcessEnv, root: string): string 
   return override && override.length > 0 ? override : gitcredSocketPath(root)
 }
 
-export function gitcredSocketPath(root: string): string {
-  return join(root, 'run', 'gitcred.sock')
+export function gitcredSocketPath(root: string, platform = process.platform): string {
+  return localIpcPath(root, 'gitcred', platform)
 }
 
 export function gitcredShimPath(root: string): string {
@@ -108,33 +109,44 @@ export class GitCredServer {
     if (deps.gitlabProjectOf) this.gitlabProjectOf = deps.gitlabProjectOf
   }
 
-  start(): void {
-    const dir = dirname(this.path)
-    mkdirSync(dir, { recursive: true, mode: 0o700 })
-    try {
-      chmodSync(dir, 0o700) // defeat a loose umask; best-effort on non-POSIX
-    } catch {
-      /* best-effort */
+  async start(): Promise<void> {
+    const namedPipe = isWindowsNamedPipe(this.path)
+    if (!namedPipe) {
+      const dir = dirname(this.path)
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      try {
+        chmodSync(dir, 0o700) // defeat a loose umask; best-effort on non-POSIX
+      } catch {
+        /* best-effort */
+      }
+      rmSync(this.path, { force: true })
     }
-    rmSync(this.path, { force: true }) // a stale socket from a crash makes listen() throw
 
     const server = createServer((sock) => this.serve(sock))
-    server.listen(this.path, () => {
+    this.server = server
+    await new Promise<void>((resolve, reject) => {
+      const onStartupError = (err: Error) => reject(err)
+      server.once('error', onStartupError)
+      server.listen(this.path, () => {
+        server.off('error', onStartupError)
+        server.on('error', (e) => this.log.warn(`gitcred: socket error: ${e.message}`))
+        resolve()
+      })
+    })
+    if (!namedPipe) {
       try {
         chmodSync(this.path, 0o600)
       } catch {
         /* best-effort */
       }
-      this.log.info(`gitcred: helper socket at ${this.path}`)
-    })
-    server.on('error', (e) => this.log.warn(`gitcred: socket error: ${e.message}`))
-    this.server = server
+    }
+    this.log.info(`gitcred: helper socket at ${this.path}`)
   }
 
   stop(): void {
     this.server?.close()
     this.capabilities.clear()
-    rmSync(this.path, { force: true })
+    if (!isWindowsNamedPipe(this.path)) rmSync(this.path, { force: true })
   }
 
   /** Runtime-only bearer used by the helper processes for one agent. */

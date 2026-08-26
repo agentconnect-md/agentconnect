@@ -288,3 +288,46 @@ describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
     expect(parsed.pending).toHaveLength(64)
   }, 20_000)
 })
+
+describe.skipIf(process.platform !== 'win32')('skill install ledger on Windows', () => {
+  let root: string
+
+  afterEach(async () => {
+    if (root) await rm(root, { recursive: true, force: true })
+  })
+
+  it('installs a bundle through the gated helper and durable workspace lease', async () => {
+    root = await mkdtemp(join(tmpdir(), 'ac-skill-ledger-win-'))
+    const cwd = join(root, 'workspace')
+    const stateDir = join(root, 'state')
+    const sourceDir = join(root, 'source')
+    await mkdir(cwd)
+    await mkdir(sourceDir)
+    const body = '---\nname: fixture\ndescription: fixture\n---\n'
+    await writeFile(join(sourceDir, 'SKILL.md'), body)
+    const files: SkillFileReceipt[] = [
+      { path: 'SKILL.md', mode: 0o600, size: Buffer.byteLength(body), sha256: sha256(body) }
+    ]
+
+    const result = await reconcileSkillBundles({
+      cwd,
+      stateDir,
+      agentId: 'a1',
+      runtime: 'codex-acp',
+      cliVersion: '1.5.21',
+      fingerprint: 'fixture',
+      candidates: [
+        {
+          relativeRoot: '.agents/skills/fixture',
+          sourceKey: 'fixture',
+          sourceDir,
+          files,
+          treeDigest: treeDigest(files)
+        }
+      ]
+    })
+
+    expect(result.installed).toEqual(['.agents/skills/fixture'])
+    await expect(readFile(join(cwd, '.agents/skills/fixture/SKILL.md'), 'utf8')).resolves.toBe(body)
+  }, 20_000)
+})

@@ -284,6 +284,14 @@ describe('probeRuntime', () => {
 })
 
 describe('curatedProbeEnvironment', () => {
+  it('canonicalizes case-insensitive Windows process environment keys', () => {
+    expect(curatedProbeEnvironment({ Path: 'C:\\bin', PathExt: '.EXE;.CMD', SYSTEMROOT: 'C:\\Windows' })).toEqual({
+      PATH: 'C:\\bin',
+      PATHEXT: '.EXE;.CMD',
+      SystemRoot: 'C:\\Windows'
+    })
+  })
+
   it('allows only process/proxy/certificate essentials and scalar provider keys', () => {
     const env = curatedProbeEnvironment({
       PATH: '/usr/bin',

@@ -758,7 +758,7 @@ async function acquireExternalWorkspaceLock(workspaceKey: string, stateDir: stri
           const existing = readDatabaseLockOwner(database, key)
           if (
             existing &&
-            (processAlive(existing.pid) || (existing.helperPgid && processGroupAlive(existing.helperPgid)))
+            (processAlive(existing.pid) || (existing.helperPgid && mutationHelperAlive(existing.helperPgid)))
           ) {
             return false
           }
@@ -798,11 +798,11 @@ async function acquireExternalWorkspaceLock(workspaceKey: string, stateDir: stri
 
   return {
     async registerHelper(pgid) {
-      if (!Number.isSafeInteger(pgid) || pgid <= 0 || !processGroupAlive(pgid)) {
-        throw safety('skill mutation helper process group is unavailable')
+      if (!Number.isSafeInteger(pgid) || pgid <= 0 || !mutationHelperAlive(pgid)) {
+        throw safety('skill mutation helper is unavailable')
       }
       await withImmediateTransactionRetry(database, () => {
-        if (!processGroupAlive(pgid)) throw safety('skill mutation helper process group is unavailable')
+        if (!mutationHelperAlive(pgid)) throw safety('skill mutation helper is unavailable')
         const owner = readDatabaseLockOwner(database, key)
         if (!owner || owner.pid !== process.pid || owner.token !== token || owner.helperPgid !== undefined) {
           throw safety('workspace skill lock ownership changed')
@@ -819,9 +819,9 @@ async function acquireExternalWorkspaceLock(workspaceKey: string, stateDir: stri
     },
     async clearHelper(pgid) {
       if (!Number.isSafeInteger(pgid) || pgid <= 0) throw safety('invalid skill mutation helper process group')
-      if (processGroupAlive(pgid)) throw safety('skill mutation helper process group is still alive')
+      if (mutationHelperAlive(pgid)) throw safety('skill mutation helper is still alive')
       await withImmediateTransactionRetry(database, () => {
-        if (processGroupAlive(pgid)) throw safety('skill mutation helper process group is still alive')
+        if (mutationHelperAlive(pgid)) throw safety('skill mutation helper is still alive')
         const owner = readDatabaseLockOwner(database, key)
         if (!owner || owner.pid !== process.pid || owner.token !== token || owner.helperPgid !== pgid) {
           throw safety('workspace skill lock ownership changed')
@@ -983,7 +983,12 @@ function processGroupAlive(pgid: number): boolean {
   }
 }
 
+function mutationHelperAlive(id: number): boolean {
+  return process.platform === 'win32' ? processAlive(id) : processGroupAlive(id)
+}
+
 async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === 'win32') return
   const handle = await fsp.open(path, fsConstants.O_RDONLY)
   try {
     await handle.sync()
@@ -1025,12 +1030,7 @@ async function writeSkillLedger(file: string, ledger: SkillInstallLedger): Promi
   }
   try {
     await fsp.rename(temp, file)
-    const directory = await fsp.open(dirname(file), fsConstants.O_RDONLY)
-    try {
-      await directory.sync()
-    } finally {
-      await directory.close()
-    }
+    await syncDirectory(dirname(file))
   } catch (error) {
     await fsp.rm(temp, { force: true }).catch(() => undefined)
     throw error

@@ -10,7 +10,12 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { effectiveAgentId, repoFromPath } from '../../src/cli/git-credential.js'
 import { normalizeRepoArg } from '../../src/cp/gh-target.js'
-import { GITCRED_AGENT_ENV, GitCredServer, type GitCredServerDeps } from '../../src/cp/gitcred-server.js'
+import {
+  GITCRED_AGENT_ENV,
+  GitCredServer,
+  gitcredSocketPath,
+  type GitCredServerDeps
+} from '../../src/cp/gitcred-server.js'
 import type { GitCredentialCache } from '../../src/cp/git-credential.js'
 
 describe('repoFromPath (git credential path → owner/repo)', () => {
@@ -94,9 +99,9 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     if (dir) rmSync(dir, { recursive: true, force: true })
   })
 
-  function boot(workspace?: string, spec?: Partial<GitCredServerDeps>) {
+  async function boot(workspace?: string, spec?: Partial<GitCredServerDeps>) {
     dir = mkdtempSync(join(tmpdir(), 'gitcred-routing-'))
-    const sockPath = join(dir, 'gitcred.sock')
+    const sockPath = gitcredSocketPath(dir)
     const gets: GetCall[] = []
     const erases: EraseCall[] = []
     const logs: string[] = []
@@ -122,7 +127,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
       ...spec
     })
     const capability = server.capabilityFor('a1')
-    server.start()
+    await server.start()
     return { sockPath, gets, erases, logs, warnings, capability }
   }
 
@@ -143,7 +148,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
   }
 
   it('routes get by (plane, repo) and echoes the served repo', async () => {
-    const { sockPath, gets, logs, capability } = boot()
+    const { sockPath, gets, logs, capability } = await boot()
     const res = await roundtrip(sockPath, {
       op: 'get',
       agentId: 'a1',
@@ -162,7 +167,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     // Without the id the ask travels as a display path only, the control plane
     // answers with the WORKSPACE grant, and the echo check rejects it — which is
     // what leaves an exact checkout of an authorized project credential-less.
-    const { sockPath, gets, capability } = boot('example-group/example-project', {
+    const { sockPath, gets, capability } = await boot('example-group/example-project', {
       providerOf: () => 'gitlab',
       gitlabProjectOf: (_agentId, repoFullName) =>
         repoFullName === 'example-group/example-second' ? '4455668' : undefined
@@ -184,7 +189,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
   })
 
   it('denies a gitlab project the replicated spec does not authorize', async () => {
-    const { sockPath, gets, capability } = boot(undefined, {
+    const { sockPath, gets, capability } = await boot(undefined, {
       providerOf: () => 'github',
       gitlabProjectOf: () => undefined
     })
@@ -200,7 +205,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
   })
 
   it('folds a request naming the workspace repo onto the repo-less key', async () => {
-    const { sockPath, gets, capability } = boot('acme/infra')
+    const { sockPath, gets, capability } = await boot('acme/infra')
     const res = await roundtrip(sockPath, {
       op: 'get',
       agentId: 'a1',
@@ -216,7 +221,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
     // cache entry keyed gitlab, while its WORKSPACE says github. Deriving erase from
     // the workspace alone would invalidate the github key and leave the rejected
     // GitLab token live until its TTL.
-    const { sockPath, erases, capability } = boot(undefined, {
+    const { sockPath, erases, capability } = await boot(undefined, {
       providerOf: () => 'github',
       gitlabProjectOf: (_agentId, repoFullName) =>
         repoFullName === 'example-group/example-second' ? '4455668' : undefined
@@ -240,7 +245,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
   })
 
   it('routes erase to the same key the get used', async () => {
-    const { sockPath, erases, capability } = boot()
+    const { sockPath, erases, capability } = await boot()
     const res = await roundtrip(sockPath, {
       op: 'erase',
       agentId: 'a1',
@@ -253,7 +258,7 @@ describe('GitCredServer routing (gitcred.sock)', () => {
   })
 
   it('rejects missing, cross-agent, and revoked capabilities before cache access', async () => {
-    const { sockPath, gets, warnings, capability } = boot()
+    const { sockPath, gets, warnings, capability } = await boot()
     await expect(roundtrip(sockPath, { op: 'get', agentId: 'a1' })).resolves.toMatchObject({ ok: false })
 
     const otherCapability = server!.capabilityFor('a2')

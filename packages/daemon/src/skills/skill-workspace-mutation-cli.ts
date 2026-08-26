@@ -461,6 +461,7 @@ async function populateReservation(
 }
 
 async function syncDirectoryTree(root: string, receipt: BundleReceipt): Promise<void> {
+  if (process.platform === 'win32') return
   const dirs = new Set<string>([root])
   for (const file of receipt.files) {
     let current = dirname(join(root, ...file.path.split('/')))
@@ -481,6 +482,7 @@ async function syncDirectoryTree(root: string, receipt: BundleReceipt): Promise<
 }
 
 async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === 'win32') return
   const handle = await fsp.open(path, constants.O_RDONLY)
   try {
     await handle.sync()
@@ -490,6 +492,7 @@ async function syncDirectory(path: string): Promise<void> {
 }
 
 async function syncParent(path: string): Promise<void> {
+  if (process.platform === 'win32') return
   const handle = await fsp.open(dirname(path), constants.O_RDONLY)
   try {
     await handle.sync()

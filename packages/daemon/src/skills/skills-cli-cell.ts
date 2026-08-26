@@ -15,7 +15,7 @@ import {
 import { basename, isAbsolute, dirname, join, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { offlineSandboxLaunch } from './offline-sandbox.js'
+import { offlineSandboxLaunch, probeOfflineSandboxHost } from './offline-sandbox.js'
 
 export const PINNED_SKILLS_CLI_VERSION = '1.5.21'
 
@@ -44,6 +44,8 @@ export interface SkillsCliRunResult {
   exitCode: number
   stdout: string
   stderr: string
+  isolation?: 'kernel' | 'process'
+  isolationReason?: string
 }
 
 export type SkillsCliRunner = (
@@ -272,7 +274,7 @@ export async function stageSkillsCliCell(options: StageSkillsCliCellOptions): Pr
   // paths are often much longer. Use the short, sticky system temp root for real
   // sandboxed runs on either platform, or the SRT mux socket fails with EINVAL.
   // Injected test runners keep their requested parent because they do not start SRT.
-  const cell = createCell(options.runner ? options.tempParent : '/tmp')
+  const cell = createCell(options.runner ? options.tempParent : tmpdir())
   const cleanup = (): void => {
     try {
       rmSync(cell.root, { recursive: true, force: true })
@@ -344,25 +346,35 @@ export async function execFileSkillsCliRunner(
   if (!home) throw new SkillsCliCellError('skills CLI private HOME is missing')
   const scopeRoot = dirname(options.cwd)
   let launch: { cmd: string; args: string[] }
-  try {
-    launch = offlineSandboxLaunch({
-      command: executable,
-      args,
-      scopeRoot,
-      cwd: options.cwd,
-      home,
-      readRoots: options.readRoots,
-      writeRoots: [scopeRoot]
-    })
-  } catch (error) {
-    throw new SkillsCliCellError(
-      `skills CLI kernel sandbox is unavailable: ${error instanceof Error ? error.message : ''}`
-    )
+  let isolation: 'kernel' | 'process' = 'kernel'
+  let isolationReason: string | undefined
+  const sandboxProbe = probeOfflineSandboxHost()
+  const shouldFallback = !sandboxProbe.available
+  if (shouldFallback) {
+    launch = { cmd: executable, args }
+    isolation = 'process'
+    isolationReason = sandboxProbe.reason || 'the offline kernel sandbox probe failed'
+  } else {
+    try {
+      launch = offlineSandboxLaunch({
+        command: executable,
+        args,
+        scopeRoot,
+        cwd: options.cwd,
+        home,
+        readRoots: options.readRoots,
+        writeRoots: [scopeRoot]
+      })
+    } catch (error) {
+      launch = { cmd: executable, args }
+      isolation = 'process'
+      isolationReason = error instanceof Error ? error.message : 'the kernel sandbox launch failed'
+    }
   }
   // Source/dev launches the trusted SRT provider through tsx. Keep tsx's own
   // IPC socket in a short private path (macOS limits Unix socket path length);
   // the provider resets the sandboxed child's TMPDIR back into private HOME.
-  const providerTmp = mkdtempSync('/tmp/agentconnect-srt-')
+  const providerTmp = mkdtempSync(join(tmpdir(), 'agentconnect-srt-'))
   chmodSync(providerTmp, 0o700)
   try {
     return await new Promise<SkillsCliRunResult>((resolveRun, rejectRun) => {
@@ -380,7 +392,7 @@ export async function execFileSkillsCliRunner(
         },
         (error, stdout, stderr) => {
           if (!error) {
-            resolveRun({ exitCode: 0, stdout, stderr })
+            resolveRun({ exitCode: 0, stdout, stderr, isolation, ...(isolationReason ? { isolationReason } : {}) })
             return
           }
           if (error.killed) {
@@ -392,7 +404,13 @@ export async function execFileSkillsCliRunner(
             return
           }
           if (typeof error.code === 'number') {
-            resolveRun({ exitCode: error.code, stdout, stderr })
+            resolveRun({
+              exitCode: error.code,
+              stdout,
+              stderr,
+              isolation,
+              ...(isolationReason ? { isolationReason } : {})
+            })
             return
           }
           rejectRun(new SkillsCliCellError('skills CLI could not be started'))

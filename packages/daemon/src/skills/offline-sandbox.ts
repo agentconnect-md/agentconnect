@@ -1,5 +1,7 @@
-import { existsSync, realpathSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
 import { getApplySeccompBinaryPath } from '@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js'
 import { sandboxWrap, writeSandboxSettings, type SandboxMechanism } from '../acp/sandbox.js'
 
@@ -8,6 +10,53 @@ export class OfflineSandboxUnavailableError extends Error {
     super(message)
     this.name = 'OfflineSandboxUnavailableError'
   }
+}
+
+export interface OfflineSandboxProbe {
+  available: boolean
+  reason?: string
+}
+
+let cachedProbe: OfflineSandboxProbe | undefined
+
+/** Live, platform-neutral probe of the exact offline provider used for skills. */
+export function probeOfflineSandboxHost(): OfflineSandboxProbe {
+  if (cachedProbe) return cachedProbe
+  const root = mkdtempSync(join(tmpdir(), 'agentconnect-offline-sandbox-probe-'))
+  try {
+    const cwd = join(root, 'workspace')
+    const home = join(root, 'home')
+    mkdirSync(cwd)
+    mkdirSync(home)
+    const launch = offlineSandboxLaunch({
+      command: process.execPath,
+      args: ['-e', 'process.exit(0)'],
+      scopeRoot: root,
+      cwd,
+      home,
+      readRoots: [process.execPath],
+      writeRoots: [root]
+    })
+    const result = spawnSync(launch.cmd, launch.args, {
+      cwd,
+      env: { PATH: process.env.PATH ?? '', HOME: home, TMPDIR: home, TMP: home, TEMP: home },
+      encoding: 'utf8',
+      timeout: 10_000,
+      windowsHide: true
+    })
+    cachedProbe =
+      result.status === 0
+        ? { available: true }
+        : {
+            available: false,
+            reason: (result.stderr || result.error?.message || `provider exited with status ${result.status}`).trim()
+          }
+  } catch (error) {
+    cachedProbe = { available: false, reason: error instanceof Error ? error.message : String(error) }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+  return cachedProbe
 }
 
 function mechanism(): SandboxMechanism {

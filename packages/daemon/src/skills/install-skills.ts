@@ -119,6 +119,8 @@ export interface SkillsCliInvocationResult {
   bundles: SkillsCliInvocationBundle[]
   stdoutDigest: string
   stderrDigest: string
+  isolation?: 'kernel' | 'process'
+  isolationReason?: string
   cleanup?: () => void
 }
 
@@ -370,6 +372,11 @@ async function installSkillsLocked(
           skills: source.skills,
           cellDir
         })
+        if (invocation.isolation === 'process') {
+          opts.warn?.(
+            `skills: kernel sandbox unavailable; using private-process fallback${invocation.isolationReason ? ` (${invocation.isolationReason})` : ''}`
+          )
+        }
         if (invocation.bundles.length === 0) {
           throw new Error(`skills CLI produced no bundles for ${source.name}`)
         }
@@ -510,6 +517,8 @@ async function runPinnedSkillsCli(input: SkillsCliInvocation): Promise<SkillsCli
     bundles: result.bundles.map((bundle) => ({ relativeRoot: bundle.relativePath, sourceDir: bundle.absolutePath })),
     stdoutDigest: fingerprint(result.execution.stdout),
     stderrDigest: fingerprint(result.execution.stderr),
+    ...(result.execution.isolation ? { isolation: result.execution.isolation } : {}),
+    ...(result.execution.isolationReason ? { isolationReason: result.execution.isolationReason } : {}),
     cleanup: result.cleanup
   }
 }

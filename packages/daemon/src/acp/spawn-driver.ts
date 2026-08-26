@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { LocalFileSink } from '../shim/file-sink.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
@@ -82,6 +83,74 @@ export interface SpawnDriver {
   launch(request: SpawnRequest): Promise<SpawnedRuntime>
 }
 
+/** Resolve a local command without a shell; Windows npm shims are Node scripts behind `.cmd`. */
+export function resolveLocalInvocation(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  platform = process.platform,
+  nodeExecPath = process.execPath
+): { cmd: string; args: string[] } {
+  const resolved = resolveCommandPath(command, env) ?? command
+  if (platform === 'win32' && basename(resolved).toLowerCase() === 'npx.cmd') {
+    const cli = join(dirname(resolved), 'node_modules', 'npm', 'bin', 'npx-cli.js')
+    if (existsSync(cli)) return { cmd: nodeExecPath, args: [cli, ...args] }
+  }
+  return { cmd: resolved, args }
+}
+
+/** Canonicalize the case-insensitive process keys that plain Windows env objects expose with arbitrary casing. */
+export function canonicalizeWindowsSpawnEnv(env: Record<string, string>, platform = process.platform): void {
+  if (platform !== 'win32') return
+  for (const canonical of ['PATH', 'PATHEXT', 'SystemRoot']) {
+    const found = Object.keys(env).find((name) => name.toLowerCase() === canonical.toLowerCase())
+    if (!found) continue
+    const value = env[found]!
+    if (found !== canonical) delete env[found]
+    env[canonical] = value
+  }
+}
+
+/** Drop TOML overrides that codex-acp's Windows `shell:true` launcher would split into subcommands. */
+export function sanitizeWindowsCodexAdapterEnv(
+  env: Record<string, string>,
+  hints: ExecutableHint[] = [],
+  platform = process.platform
+): boolean {
+  if (platform !== 'win32' || !hints.some((hint) => hint.envVar === 'CODEX_PATH')) return false
+  return delete env.CODEX_ACP_PERMISSION_PROFILE_CONFIG
+}
+
+/** Resolve the native Codex binary behind a global npm `.cmd` shim. */
+export function resolveWindowsCodexNative(
+  resolved: string,
+  platform = process.platform,
+  arch = process.arch,
+  fs: { exists(path: string): boolean; realpath(path: string): string } = {
+    exists: existsSync,
+    realpath: (path) => realpathSync(path)
+  }
+): string | undefined {
+  if (platform !== 'win32' || basename(resolved).toLowerCase() !== 'codex.cmd') return undefined
+  const target = arch === 'arm64' ? 'aarch64-pc-windows-msvc' : arch === 'x64' ? 'x86_64-pc-windows-msvc' : undefined
+  const pkg = arch === 'arm64' ? 'codex-win32-arm64' : arch === 'x64' ? 'codex-win32-x64' : undefined
+  if (!target || !pkg) return undefined
+  const native = join(
+    dirname(resolved),
+    'node_modules',
+    '@openai',
+    'codex',
+    'node_modules',
+    '@openai',
+    pkg,
+    'vendor',
+    target,
+    'bin',
+    'codex.exe'
+  )
+  return fs.exists(native) ? fs.realpath(native) : undefined
+}
+
 /** The ACP runtime as a child process of this daemon: today's only behavior. */
 export class LocalDriver implements SpawnDriver {
   constructor(private opts: { log?: Logger } = {}) {}
@@ -90,11 +159,15 @@ export class LocalDriver implements SpawnDriver {
     const sink = new LocalFileSink()
     for (const file of request.files ?? []) await sink.write(file.root, file.relPath, file.content)
     const env = { ...request.env }
+    canonicalizeWindowsSpawnEnv(env)
+    if (sanitizeWindowsCodexAdapterEnv(env, request.hints)) {
+      this.opts.log?.warn('acp: disabled Codex permission-profile CLI overrides on Windows because codex-acp uses cmd.exe')
+    }
     for (const hint of request.hints ?? []) {
       if (env[hint.envVar]) continue
       const resolved = resolveCommandPath(hint.command, env)
       if (!resolved) continue
-      env[hint.envVar] = resolved
+      env[hint.envVar] = hint.envVar === 'CODEX_PATH' ? (resolveWindowsCodexNative(resolved) ?? resolved) : resolved
       this.opts.log?.info(`acp: ${hint.envVar} not set — using ${hint.command} on PATH (${resolved})`)
     }
     // Resolve the command to an absolute path (or a path-qualified relative one for
@@ -102,14 +175,15 @@ export class LocalDriver implements SpawnDriver {
     // ("./opencode", "./goose", …) are not resolved against CWD only and missed on
     // `$PATH`. Falls back to the raw command when resolution fails — spawn's own
     // error surface is clearer than a synthetic one.
-    const resolvedCommand = resolveCommandPath(request.command, env) ?? request.command
+    const invocation = resolveLocalInvocation(request.command, request.args, env)
+    const resolvedCommand = invocation.cmd
     const resolved = request.sandbox && existsSync(resolvedCommand) ? realpathSync(resolvedCommand) : resolvedCommand
     // Linux SRT sandbox (issue #312). Fail-open — ensureHost only sets sandbox after a
     // live probe, so no mechanism means the adapter runs unconfined unless daemon
     // policy required sandboxing and refused startup.
     const launch = request.sandbox
-      ? sandboxWrap(resolved, request.args, request.sandbox)
-      : { cmd: resolved, args: request.args }
+      ? sandboxWrap(resolved, invocation.args, request.sandbox)
+      : { cmd: resolved, args: invocation.args }
     const child = spawn(launch.cmd, launch.args, {
       stdio: ['pipe', 'pipe', request.suppressChildStderr ? 'ignore' : 'inherit'],
       env,
