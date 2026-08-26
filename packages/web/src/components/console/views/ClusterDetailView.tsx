@@ -111,10 +111,9 @@ export default function ClusterDetailView() {
   const unbounded = caps.some((c) => !Number.isFinite(c) || c <= 0)
   const capacity = unbounded ? 0 : caps.reduce((sum, c) => sum + c, 0)
   const used = serving.reduce((sum, m) => sum + m.loadAgents, 0)
-  const capacityPct = capacity > 0 ? Math.min(100, Math.round((used / capacity) * 100)) : 0
+  // An idle cluster has no ceiling to quote — the members that reported one are gone, so the
+  // figure drops its denominator rather than reading "0 / 0", which says full.
   const capacityLabel = `${used} / ${unbounded ? '∞' : capacity}`
-  // An idle cluster has no ceiling to quote — the members that reported one are gone. Saying
-  // "2 / 0" there would read as full, and 0% as a measurement, so neither is drawn.
   const avg = (pick: (m: DaemonRow) => number) =>
     serving.length > 0 ? Math.round(serving.reduce((sum, m) => sum + pick(m), 0) / serving.length) : 0
   const cpu = avg((m) => m.cpu)
@@ -127,9 +126,10 @@ export default function ClusterDetailView() {
   // substitution Add-agent and Edit-agent make (edit-agent-daemon-choice.ts).
   const capabilitySource = serving[0]
   const models = runtimes.reduce((sum, rt) => sum + rt.models.length, 0)
-  // The whole fleet, not only the serving members: what has already run on a Pod that has since
-  // rolled is still what ran on this pool.
-  const memberIds = members.map((m) => m.daemonId)
+  // The pool's SET, never its current member ids: a member is a Pod, and its retirement
+  // SetNulls the daemon id on every session it recorded, so member ids would drop a day of
+  // history to every rollout. Every pool member carries the org-less set it was enrolled in.
+  const poolSetId = members.find((m) => m.memberSetId)?.memberSetId ?? null
 
   return (
     <div className="wrap max-w-[1240px] px-4 pt-[14px] pb-1 desktop:p-0">
@@ -214,16 +214,20 @@ export default function ClusterDetailView() {
       ) : (
         <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_200px_1fr]">
           <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
+            {/* The heartbeat count against the ceiling, never the placed-agent list: a set
+                placement names the set rather than the member serving it, so the two are not
+                on one axis. This is the pair the CP's placement check compares. */}
             <FleetStat
               icon="bot"
               label="Agents"
-              value={online ? `${hosted.length} / ${unbounded ? '∞' : capacity}` : String(hosted.length)}
+              value={online ? capacityLabel : String(used)}
+              note={online ? 'running' : undefined}
             />
             <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
             <FleetStat icon="server" label="Nodes" value={`${serving.length} / ${members.length}`} note="serving" />
           </div>
-          <ClusterCapacityCard {...{ capacityLabel, capacityPct, unbounded, online, cpu, mem }} />
-          <FleetUsageCard daemonIds={memberIds} />
+          <ClusterResourcesCard {...{ online, cpu, mem }} />
+          {poolSetId && <FleetUsageCard scope={{ set: poolSetId }} />}
         </div>
       )}
 
@@ -554,34 +558,17 @@ function Figure({
   )
 }
 
-/** The capacity a self-hoster's own members report — the numbers only they can act on. */
-function ClusterCapacityCard({
-  capacityLabel,
-  capacityPct,
-  unbounded,
-  online,
-  cpu,
-  mem
-}: {
-  capacityLabel: string
-  capacityPct: number
-  unbounded: boolean
-  online: boolean
-  cpu: number
-  mem: number
-}) {
+/** What a self-hoster's own members are spending — the daemon page's pair, averaged. */
+function ClusterResourcesCard({ online, cpu, mem }: { online: boolean; cpu: number; mem: number }) {
   return (
     <div className="card flex flex-col">
       <div className="cardhead">
         <span className="cardtitle">Resources</span>
+        <span className="mono ml-auto text-[11px] text-(--text-tertiary)">across serving nodes</span>
       </div>
       <div className="flex flex-1 flex-col justify-center gap-[14px] px-4 py-[15px]">
-        <ResourceDial
-          label="Sandboxes"
-          note={!online ? 'no nodes serving' : unbounded ? 'no ceiling' : capacityLabel}
-          pct={capacityPct}
-          muted={!online || unbounded}
-        />
+        {/* An idle cluster has nothing to average: the dials read '—' rather than 0%, which
+            would be a measurement it cannot make. */}
         <ResourceDial label="CPU" pct={cpu} muted={!online} />
         <ResourceDial label="Memory" pct={mem} muted={!online} />
       </div>

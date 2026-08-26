@@ -23,6 +23,7 @@ import { withAmbientTx, type PrismaLike } from '../prisma.js'
 import { lockSessionLineage } from '../session-lineage-lock.js'
 import type {
   SessionRepo,
+  SessionCountScope,
   SessionMilestoneResult,
   SessionVisibilityChange,
   SessionVisibilityState,
@@ -1308,8 +1309,7 @@ export class PgSessionRepo implements SessionRepo {
    * A count of rows on a machine, not a read of what they contain: it is the same kind of figure
    * as the `activeSessions` the daemon itself reports, and like the usage route's `totals` it is a
    * fact about the ORG rather than an attribution, so no viewer predicate narrows it. What the
-   * caller may not see is which daemons exist at all, and that fence is the route's — it passes
-   * only the ids the caller can already list.
+   * caller may not see is which daemons or sets exist at all, and that fence is the route's.
    *
    * Bucket geometry matches the spend series exactly (`session-usage.repo.ts`): shift into the
    * viewer's local time, floor, shift back, so `start` is the UTC instant of a local midnight and
@@ -1317,7 +1317,7 @@ export class PgSessionRepo implements SessionRepo {
    */
   async dailySessionCounts(
     orgId: OrgId,
-    daemonIds: readonly DaemonId[],
+    scope: SessionCountScope,
     window: { from: Date; to: Date },
     tzOffsetMin = 0
   ): Promise<Array<{ start: string; count: number }>> {
@@ -1325,7 +1325,15 @@ export class PgSessionRepo implements SessionRepo {
     const floorSince = Math.floor((window.from.getTime() - offMs) / DAY_MS) * DAY_MS + offMs
     const n = Math.max(1, Math.ceil((window.to.getTime() - floorSince) / DAY_MS))
     const counts = new Array<number>(n).fill(0)
-    if (daemonIds.length > 0) {
+    // A machine is counted by the sessions it recorded; a SET by the store they went to, which
+    // outlives the Pod that wrote them (see the port's note).
+    const where =
+      'setId' in scope
+        ? Prisma.sql`s."contentSetId" = ${scope.setId}::uuid`
+        : scope.daemonIds.length > 0
+          ? Prisma.sql`s."daemonId" IN (${Prisma.join(scope.daemonIds.map(String))})`
+          : null
+    if (where) {
       // Grouped in Postgres: the chart needs a count per day, and a machine's whole session
       // history for the window is a lot of rows to carry into the process to count them.
       const rows = await this.db.$queryRaw<Array<{ idx: number; count: bigint }>>(Prisma.sql`
@@ -1333,7 +1341,7 @@ export class PgSessionRepo implements SessionRepo {
                COUNT(*) AS count
         FROM "session_meta" AS s
         WHERE s."orgId" = ${orgId}
-          AND s."daemonId" IN (${Prisma.join(daemonIds.map(String))})
+          AND ${where}
           AND s."startedAt" >= ${window.from}
           AND s."startedAt" < ${window.to}
         GROUP BY 1

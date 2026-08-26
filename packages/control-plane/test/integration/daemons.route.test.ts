@@ -1145,10 +1145,10 @@ describe('GET /daemons/session-series', () => {
   const endOfToday = () => Math.ceil(Date.now() / DAY) * DAY
 
   type Series = { bucket: string; points: { start: string; count: number }[] }
+  const ask = (app: HttpApp, query: string, days = 3) =>
+    app.app.inject({ method: 'GET', url: `${ORG}/daemons/session-series?${query}&days=${days}&tz=0` })
   const series = async (app: HttpApp, daemons: string, days = 3): Promise<Series> =>
-    (
-      await app.app.inject({ method: 'GET', url: `${ORG}/daemons/session-series?daemons=${daemons}&days=${days}&tz=0` })
-    ).json() as Series
+    (await ask(app, `daemons=${daemons}`, days)).json() as Series
 
   it('counts a machine’s sessions by day and fills the days it had none', async () => {
     await seedDaemon()
@@ -1180,6 +1180,40 @@ describe('GET /daemons/session-series', () => {
 
     expect((await series(running, DAEMON)).points.at(-1)!.count).toBe(1)
     expect((await series(running, `${DAEMON},${OTHER}`)).points.at(-1)!.count).toBe(2)
+  })
+
+  it('counts a SET by the store its members recorded into, so a rollout keeps its history', async () => {
+    // A pool member is a Pod: its retirement SetNulls `daemonId` on every session it recorded
+    // (domain/session-content.ts). Counting the pool by its current member ids would drop a
+    // day of history to each rollout, so the set is counted by `contentSetId` instead.
+    const set = await prisma.memberSet.create({
+      data: { id: randomUUID(), orgId: DEFAULT_ORG_ID, name: 'edge-pool' }
+    })
+    await seedDaemon()
+    const agent = await seedAgent(prisma, randomUUID(), { daemonId: DAEMON })
+    const to = endOfToday()
+    // One recorded by a member that is still here, one by a member already reaped.
+    await seedSessionMeta(prisma, randomUUID(), agent, {
+      daemonId: DAEMON,
+      contentSetId: set.id,
+      startedAt: new Date(to - 60_000)
+    })
+    await seedSessionMeta(prisma, randomUUID(), agent, { contentSetId: set.id, startedAt: new Date(to - 60_000) })
+    running = buildHttpApp(prisma)
+
+    const body = (await ask(running, `set=${set.id}`)).json() as Series
+
+    expect(body.points.at(-1)!.count).toBe(2)
+  })
+
+  it('404s a set that is neither this org’s nor the pool they share', async () => {
+    const other = await prisma.org.create({ data: { id: 'org_other', slug: 'other', name: 'Other' } })
+    const set = await prisma.memberSet.create({ data: { id: randomUUID(), orgId: other.id, name: 'theirs' } })
+    await seedDaemon()
+    running = buildHttpApp(prisma)
+
+    // Zeros would be a confusing lie about somebody else's set — this one is simply not theirs.
+    expect((await ask(running, `set=${set.id}`)).statusCode).toBe(404)
   })
 
   it('ignores an id the caller cannot see rather than reporting it back', async () => {

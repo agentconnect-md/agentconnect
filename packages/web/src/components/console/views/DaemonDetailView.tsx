@@ -121,8 +121,12 @@ export default function DaemonDetailView() {
     : daemon.caps.runtimes.map((runtime) => ({ runtime, version: '', models: [], authRequired: false }))
   const seen = daemon.uptime === '—' ? 'never connected' : `last seen ${daemon.uptime} ago`
   // `conns` is the daemon's agent ceiling; <= 0 is its UNBOUNDED sentinel, not a ceiling of zero.
+  // Its numerator is the daemon's OWN heartbeat count, never `hosted`: a group duty this member
+  // is serving names the set, not the machine, so a full 8-slot member would read `0 / 8` — and
+  // `loadAgents` against `conns` is the pair the CP's own placement check compares.
   const maxAgents = Number(daemon.conns)
   const ceiling = !Number.isFinite(maxAgents) || maxAgents <= 0 ? '∞' : String(maxAgents)
+  const load = `${daemon.loadAgents} / ${ceiling}`
   // The group this machine belongs to. The pool is managed infrastructure — its membership is
   // the CP's, never an operator's — so it offers neither the chip nor the actions.
   const groupsOffered = !daemon.pool && featureFlagEnabled('daemon-groups')
@@ -152,7 +156,7 @@ export default function DaemonDetailView() {
     // the body (Reconnect + edit). Data-honest: no fabricated host/os/ip/heartbeat —
     // the design's "System" card maps onto the real Details + Capabilities fields.
     const metricCells: [string, string][] = [
-      ['Agents', `${hosted.length} / ${ceiling}`],
+      ['Agents', load],
       ['Sessions', daemon.activeSessions],
       // `daemon.uptime` is time-since-last-seen (fmtSeen), not a real uptime — label it honestly.
       ['Last seen', daemon.uptime]
@@ -398,7 +402,7 @@ export default function DaemonDetailView() {
 
         {/* usage — the same session history the desktop band carries */}
         <div className="mx-4 mt-3">
-          <FleetUsageCard daemonIds={[daemon.daemonId]} />
+          <FleetUsageCard scope={{ daemons: [daemon.daemonId] }} />
         </div>
 
         {/* resources — CPU + Memory bars (no fabricated disk) */}
@@ -670,7 +674,7 @@ export default function DaemonDetailView() {
           run on it. */}
       <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_200px_1fr]">
         <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
-          <FleetStat icon="bot" label="Agents" value={`${hosted.length} / ${ceiling}`} />
+          <FleetStat icon="bot" label="Agents" value={load} note="running" />
           <FleetStat icon="activity" label="Active sessions" value={daemon.activeSessions} />
           {/* `daemon.uptime` is time-since-last-seen (fmtSeen), not a real uptime. */}
           <FleetStat icon="timer" label="Last seen" value={daemon.uptime} />
@@ -684,7 +688,7 @@ export default function DaemonDetailView() {
             <ResourceDial label="Memory" pct={daemon.mem} />
           </div>
         </div>
-        <FleetUsageCard daemonIds={[daemon.daemonId]} />
+        <FleetUsageCard scope={{ daemons: [daemon.daemonId] }} />
       </div>
 
       {/* Band two — what this machine can run, and what runs on it. */}

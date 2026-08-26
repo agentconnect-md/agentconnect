@@ -189,9 +189,15 @@ describe('ClusterDetailView', () => {
       member('gone', { status: 'offline', conns: '99', loadAgents: 99 })
     ]
 
+    // A set placement names the SET, never the member serving it, so the placed-agent list is
+    // not on the ceiling's axis: reading the fraction off it would report this full cluster as
+    // `0 / 60`. The heartbeat count is what the CP's own placement check compares.
+    mocks.agents = []
+
     const html = render()
 
     expect(html).toContain('34 / 60')
+    expect(html).not.toContain('0 / 60')
     // Utilization is the average across the serving nodes, never the dead one's.
     expect(html).toContain('40%')
     expect(html).toContain('60%')
@@ -202,11 +208,10 @@ describe('ClusterDetailView', () => {
 
     const html = render()
 
-    // Both the Agents figure and the sandbox dial say so — never a ceiling of 0, and the dial
-    // reads '—' rather than filling to 0% as if that were a measurement.
-    expect(html).toContain('/ ∞')
-    expect(html).toContain('no ceiling')
-    expect(html).toContain('font-semibold">—<')
+    // The load its members report, over a ceiling that says ∞ rather than 0 — which would read
+    // as full about a cluster that can never be.
+    expect(html).toContain('10 / ∞')
+    expect(html).not.toContain('/ 0<')
   })
 
   it('unions the runtimes and models across the serving nodes', () => {

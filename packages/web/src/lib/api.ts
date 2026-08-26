@@ -3578,9 +3578,8 @@ export async function fetchGatewayAttribution(from: string, to: string, orgId?: 
   return new Set(usage.agents.map((a) => a.agentId))
 }
 
-/** Sessions started per local day on a set of daemons — the infra detail pages' history strip.
- *  A count of what ran on the machines, not a read of any of it, so it needs no window preset:
- *  whole days ending today, and the CP drops any id this caller cannot already list. */
+/** Sessions started per local day — the infra detail pages' history strip. A count of what ran,
+ *  not a read of any of it, so it needs no window preset: whole days ending today. */
 export interface DaemonSessionSeriesDto {
   from: string
   to: string
@@ -3588,14 +3587,19 @@ export interface DaemonSessionSeriesDto {
   points: { start: string; count: number }[]
 }
 
+/** One MACHINE is asked for by id; a SET is asked for as a set, and deliberately not as its
+ *  current member ids. A pool member is a Pod, and its retirement SetNulls the daemon id on
+ *  every session it recorded — so member ids would drop a day of history to every rollout. */
+export type SessionSeriesScope = { daemons: readonly string[] } | { set: string }
+
 export async function fetchDaemonSessionSeries(
-  daemonIds: readonly string[],
+  scope: SessionSeriesScope,
   days: number,
   orgId?: string
 ): Promise<DaemonSessionSeriesDto> {
   // Same tz convention as the spend series: the CP buckets to the viewer's local midnight.
   const query = new URLSearchParams({
-    daemons: daemonIds.join(','),
+    ...('set' in scope ? { set: scope.set } : { daemons: scope.daemons.join(',') }),
     days: String(days),
     tz: String(new Date().getTimezoneOffset())
   })

@@ -10,11 +10,10 @@ function consoleKey<const Resource extends string, const Parts extends readonly 
 export const consoleKeys = {
   agents: (orgId: string | null | undefined) => consoleKey(orgId, 'agents'),
   daemons: (orgId: string | null | undefined) => consoleKey(orgId, 'daemons'),
-  /** Sessions-per-day over a set of daemons — one machine, a group's members, or the pool's.
-   *  The id set IS the request, so it keys the read: two infra pages asking about different
-   *  machines must not share an entry. */
-  daemonSessionSeries: (orgId: string | null | undefined, daemonIds: readonly string[], days: number) =>
-    consoleKey(orgId, 'daemon-session-series', [...daemonIds].sort().join(','), String(days)),
+  /** Sessions-per-day for one machine or one member set. The scope IS the request, so it keys
+   *  the read: two infra pages asking about different infrastructure must not share an entry. */
+  daemonSessionSeries: (orgId: string | null | undefined, scope: string, days: number) =>
+    consoleKey(orgId, 'daemon-session-series', scope, String(days)),
   crons: (orgId: string | null | undefined) => consoleKey(orgId, 'crons'),
   integrations: (orgId: string | null | undefined) => consoleKey(orgId, 'integrations'),
   bots: (orgId: string | null | undefined) => consoleKey(orgId, 'bots'),

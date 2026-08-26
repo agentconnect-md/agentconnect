@@ -247,17 +247,29 @@ export const DaemonListDto = z.array(DaemonViewDto)
 // rather than an attribution, so no viewer predicate narrows it. Daemon visibility still does:
 // the route counts only the daemons this caller can already list.
 
-export const DaemonSessionSeriesQueryDto = z.object({
-  /** Comma-separated daemon ids to count together — one machine, a group's members, or the
-   *  pool's. Ids the caller cannot see are dropped rather than refused: which daemons exist is
-   *  itself scoped, so naming one back would answer a question the caller may not ask. */
-  daemons: z.string(),
-  /** Window width, in whole local days ending today. */
-  days: z.coerce.number().int().min(1).max(90).default(14),
-  /** Client timezone offset in minutes, as `Date.prototype.getTimezoneOffset()` reports it
-   *  (UTC − local; e.g. UTC-8 ⇒ 480), so a bucket boundary is the viewer's midnight. */
-  tz: z.coerce.number().int().min(-900).max(900).default(0)
-})
+export const DaemonSessionSeriesQueryDto = z
+  .object({
+    /** Comma-separated daemon ids to count together. Ids the caller cannot see are dropped
+     *  rather than refused: which daemons exist is itself scoped, so naming one back would
+     *  answer a question the caller may not ask. */
+    daemons: z.string().optional(),
+    /** A member set, counted by the store its members recorded into rather than by their ids.
+     *  That is the difference between a set and a machine: pool members are Pods, reaped
+     *  minutes after they go silent, and the reap SetNulls `daemonId` on every session they
+     *  recorded (domain/session-content.ts). `contentSetId` is stamped from the recorder's own
+     *  membership at report time, so it still names the set after the Pod is gone — counting a
+     *  pool by its CURRENT member ids would drop each rollout's history. */
+    set: z.string().uuid().optional(),
+    /** Window width, in whole local days ending today. */
+    days: z.coerce.number().int().min(1).max(90).default(14),
+    /** Client timezone offset in minutes, as `Date.prototype.getTimezoneOffset()` reports it
+     *  (UTC − local; e.g. UTC-8 ⇒ 480), so a bucket boundary is the viewer's midnight. */
+    tz: z.coerce.number().int().min(-900).max(900).default(0)
+  })
+  .refine((q) => (q.daemons === undefined) !== (q.set === undefined), {
+    message: 'pass either `daemons` or `set`, and not both',
+    path: ['daemons']
+  })
 
 export const DaemonSessionSeriesDto = z.object({
   from: z.string(),

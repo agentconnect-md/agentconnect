@@ -26,7 +26,7 @@ import {
 import { AgentIconView, AgentMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-import { fetchDaemonSessionSeries } from '@/lib/api'
+import { fetchDaemonSessionSeries, type SessionSeriesScope } from '@/lib/api'
 import { consoleKeys } from '@/lib/swr-keys'
 import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
 import { useOrgs } from '@/lib/org-context'
@@ -178,13 +178,16 @@ export function ResourceDial({
  * Not a spend chart. The CP has no per-daemon spend to quote — deriving one by splitting the
  * org's series by an agent's CURRENT placement is the historically-false read `ClusterDetailView`
  * documents, since an agent that moved brings its old spend with it. A session row, by contrast,
- * records the daemon it actually ran on, so counting rows is true of the machine at the time.
+ * records where it actually ran, so counting rows is true of the infrastructure at the time.
  */
-export function FleetUsageCard({ daemonIds, days = 14 }: { daemonIds: readonly string[]; days?: number }) {
+export function FleetUsageCard({ scope, days = 14 }: { scope: SessionSeriesScope; days?: number }) {
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? null
-  const series = useSWR(consoleKeys.daemonSessionSeries(orgId, daemonIds, days), () =>
-    fetchDaemonSessionSeries(daemonIds, days, orgId!)
+  // A set is asked for AS a set: its members are Pods, and counting by their current ids would
+  // lose each rollout's history (see `SessionSeriesScope`).
+  const key = 'set' in scope ? `set:${scope.set}` : [...scope.daemons].sort().join(',')
+  const series = useSWR(consoleKeys.daemonSessionSeries(orgId, key, days), () =>
+    fetchDaemonSessionSeries(scope, days, orgId!)
   )
 
   const points = series.data?.points ?? []
