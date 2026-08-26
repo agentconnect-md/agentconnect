@@ -59,7 +59,7 @@ function fakeApi() {
     api: {
       ensureClaim: async (claim: SandboxClaim & { metadata: { name: string } }) => {
         state.claim = { ...claim, status: { sandbox: { name: 'sb-1' } } }
-        return state.claim
+        return { claim: state.claim, created: true }
       },
       getClaim: async () => {
         if (!state.claim) throw new K8sApiError(404, 'NotFound', 'no claim')
