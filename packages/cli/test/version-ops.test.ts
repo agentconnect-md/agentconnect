@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, mkdirSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, existsSync, readlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pruneVersions, useVersion } from '../src/version-ops.js'
@@ -14,6 +14,12 @@ describe('useVersion', () => {
     install(r, '1.0.0')
     useVersion(r, '1.0.0')
     expect(currentVersion(r)).toBe('1.0.0')
+  })
+  it.skipIf(process.platform !== 'win32')('uses a privilege-free Windows directory junction', () => {
+    const r = root()
+    install(r, '1.0.0')
+    useVersion(r, '1.0.0')
+    expect(readlinkSync(join(r, 'current'))).toBe(join(r, 'versions', '1.0.0'))
   })
   it('records the replaced version as previous (rollback target)', () => {
     const r = root()

@@ -2,7 +2,7 @@
  * Activation + cleanup for the version store (cli-daemon-split.md §5). Both MUTATE
  * and must run inside the version lock (version-lock.ts).
  */
-import { renameSync, rmSync, statSync, symlinkSync } from 'node:fs'
+import { existsSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs'
 import { basename } from 'node:path'
 import { currentLink, versionDir } from './paths.js'
 import { commandSelector } from './service/instance.js'
@@ -24,13 +24,37 @@ export function useVersion(root: string, version: string): void {
 
   const link = currentLink(root)
   const tmp = `${link}.tmp`
-  rmSync(tmp, { force: true })
-  // Relative target so the whole root stays relocatable.
-  symlinkSync(`versions/${version}`, tmp)
-  renameSync(tmp, link) // atomic replace of the existing symlink
+  rmSync(tmp, { recursive: true, force: true })
+  if (process.platform === 'win32') replaceWindowsCurrentJunction(root, version, link, tmp)
+  else {
+    symlinkSync(`versions/${version}`, tmp)
+    renameSync(tmp, link)
+  }
 
   if (prev && prev !== version) {
     writeMeta(root, { ...readMeta(root), previous: prev })
+  }
+}
+
+/** Publish a Windows junction without requiring Developer Mode or administrator symlink privileges. */
+function replaceWindowsCurrentJunction(root: string, version: string, link: string, tmp: string): void {
+  const backup = `${link}.previous`
+  if (!existsSync(link) && existsSync(backup)) renameSync(backup, link)
+  rmSync(backup, { recursive: true, force: true })
+  symlinkSync(versionDir(root, version), tmp, 'junction')
+  let movedCurrent = false
+  try {
+    if (existsSync(link)) {
+      renameSync(link, backup)
+      movedCurrent = true
+    }
+    renameSync(tmp, link)
+  } catch (error) {
+    if (movedCurrent && !existsSync(link)) renameSync(backup, link)
+    throw error
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+    if (existsSync(link)) rmSync(backup, { recursive: true, force: true })
   }
 }
 

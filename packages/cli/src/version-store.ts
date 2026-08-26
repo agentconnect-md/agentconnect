@@ -2,7 +2,7 @@
  * The on-disk daemon version store (cli-daemon-split.md §3/§5). Layout under
  * `<root>`:
  *   versions/<v>/        — one extracted, self-contained daemon bundle
- *   current -> versions/<v>  — the active version (atomic symlink)
+ *   current -> versions/<v>  — the active version (symlink; directory junction on Windows)
  *   versions.json        — CLI-private metadata (channel + rollback target)
  *
  * All MUTATING operations here must run inside the version lock (version-lock.ts);
