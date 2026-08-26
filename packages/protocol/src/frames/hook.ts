@@ -63,7 +63,11 @@ export const GithubHookMetadata = z
     explicitReviewRequest: z.boolean().optional(),
     pullRequestReviewId: HookBigIntString.refine((value) => value !== '0').optional(),
     reviewCommentId: HookBigIntString.optional(),
-    reviewThreadRootCommentId: HookBigIntString.optional()
+    reviewThreadRootCommentId: HookBigIntString.optional(),
+    // The `issue_comment` delivery's own comment id — the exact acknowledgement-reaction
+    // target. `reviewCommentId` above is the same fact for an inline review comment; a
+    // delivery with neither was fired by the subject itself.
+    issueCommentId: HookBigIntString.optional()
   })
   .superRefine((value, ctx) => {
     if (value.subjectKind === 'pull_request' && value.pullNumber === undefined) {
@@ -131,7 +135,10 @@ export const GitlabHookMetadata = z.object({
   // off the payload (§24.4). The turn-time fence: a delivery whose host disagrees with the
   // session's spec-carried host is refused, never re-targeted. Absent means GitLab.com.
   host: z.string().optional(),
-  target: GitlabHookTarget
+  target: GitlabHookTarget,
+  // The note delivery's own id — GitLab's counterpart of `issueCommentId`, and the exact
+  // acknowledgement-reaction target. Absent ⇒ the subject itself fired this delivery.
+  noteId: HookBigIntString.optional()
 })
 export type GitlabHookMetadata = z.infer<typeof GitlabHookMetadata>
 

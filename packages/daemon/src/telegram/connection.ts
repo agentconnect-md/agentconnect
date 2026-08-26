@@ -1,4 +1,5 @@
 import { Bot, InputFile } from 'grammy'
+import type { ReactionTypeEmoji } from 'grammy/types'
 import type { Agent } from '../agents/agent-schema.js'
 import { platformIntegrationConfig } from '../platforms/integration-config.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
@@ -6,7 +7,10 @@ import type { Logger } from '../log.js'
 import { isSendQueueTimeout, PlatformSendQueue } from '../platforms/send-queue.js'
 import type { UploadAnchor, UploadFailReason, UploadOutcome } from '../mcp/ops/context.js'
 import { isTelegramMembershipServiceMessage, normalizeTelegramMessage, type TelegramMessage } from './normalize.js'
-import type { PlatformConnection } from '../platforms/contract.js'
+import type { PlatformConnection, PlatformReactionIntent } from '../platforms/contract.js'
+
+/** Core names the intent; Telegram's alphabet is a fixed set of literal emoji. */
+const TELEGRAM_REACTION_EMOJI: Record<PlatformReactionIntent, ReactionTypeEmoji['emoji']> = { seen: '👀' }
 
 /** Map a Telegram Bot API error to the port's typed failure vocabulary, from its description. */
 function classifyTelegramUploadError(err: unknown): UploadFailReason {
@@ -180,6 +184,11 @@ export interface TelegramApi {
   ): Promise<{ message_id: number }>
   answerCallbackQuery(callbackQueryId: string, opts?: { text?: string }): Promise<unknown>
   sendChatAction(chatId: number | string, action: string): Promise<unknown>
+  setMessageReaction(
+    chatId: number | string,
+    messageId: number,
+    reaction: { type: 'emoji'; emoji: ReactionTypeEmoji['emoji'] }[]
+  ): Promise<unknown>
   setMyCommands(commands: { command: string; description: string }[]): Promise<unknown>
   getChat(
     chatId: number | string
@@ -546,6 +555,19 @@ export class TelegramConnection implements PlatformConnection {
       await this.bot.api.sendChatAction(channel, 'typing')
     } catch (err) {
       this.deps.log?.debug(`telegram: sendChatAction failed (ch=${channel}): ${(err as Error).message}`)
+    }
+  }
+
+  /** Turn-start acknowledgement on the message that fired the turn. Not queued, for the
+   *  same reason the typing hint is not: its whole value is arriving before the answer.
+   *  A chat that forbids bot reactions degrades to nothing visible. */
+  async react(channel: string, messageId: string, intent: PlatformReactionIntent): Promise<void> {
+    const id = Number(messageId)
+    if (!Number.isSafeInteger(id)) return
+    try {
+      await this.bot.api.setMessageReaction(channel, id, [{ type: 'emoji', emoji: TELEGRAM_REACTION_EMOJI[intent] }])
+    } catch (err) {
+      this.deps.log?.debug(`telegram: setMessageReaction failed (ch=${channel} msg=${id}): ${(err as Error).message}`)
     }
   }
 

@@ -40,6 +40,7 @@ function connectionFor(
       setCardEntityStreaming: async () => {},
       patchCardMessage: async () => {},
       deleteMessage: async () => {},
+      addReaction: async () => {},
       uploadImage: async () => ({}),
       createImage: async () => ({}),
       replyImage: async () => ({}),

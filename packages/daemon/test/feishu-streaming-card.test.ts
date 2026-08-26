@@ -54,6 +54,7 @@ function connection() {
       setCardEntityStreaming,
       patchCardMessage,
       deleteMessage,
+      addReaction: async () => {},
       updateText: async () => {},
       downloadResource: async () => {},
       getChat: async (id) => ({ id }),

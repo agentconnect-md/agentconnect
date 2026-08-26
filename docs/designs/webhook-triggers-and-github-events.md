@@ -480,6 +480,25 @@ submission.
 
 ## GitHub Output Ownership
 
+### Turn-Start Acknowledgement
+
+A GitHub turn publishes one comment at the very end, so between the mention and
+the answer a reader sees nothing — and a review turn can hold that silence open
+for minutes. The daemon therefore reacts `eyes` on whatever fired the turn as
+soon as the turn starts: the conversation comment, the inline review comment, or
+the issue/pull request itself when the subject fired it. The trusted comment id
+comes off the signature-verified payload (`GithubHookMetadata.issueCommentId`,
+`reviewCommentId`); nothing is derived from the model-visible excerpt.
+
+The reaction is chrome, not output, and the single-writer rule above is
+unaffected: it carries no content, it uses the same purpose-bound comment token,
+and it is placed before the poster exists. It is best-effort and never awaited —
+a failed reaction is one warning and no change to the turn. It is never
+withdrawn either: it records that the turn was seen, which stays true even when
+the turn later dies with nothing to publish. A redelivery whose comment already
+published does not re-acknowledge, and both hosts treat an already-present
+reaction as success, so no state is kept for it.
+
 ### Ordinary Reply
 
 `GithubPoster` is always enabled for a numbered GitHub turn. It collects ACP

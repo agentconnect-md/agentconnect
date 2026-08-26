@@ -426,6 +426,18 @@ this surface; the interface is lifted **from** them, and evals become the
 contract's second implementer (a standing compatibility test — see the S2
 exit criteria).
 
+One optional facet is neither transport nor read: `react(container, messageId,
+intent)`, the turn-start acknowledgement. Core names an INTENT (`seen`) and the
+adapter picks the glyph, because a reaction vocabulary is platform vocabulary —
+Slack takes an emoji shortcode, Telegram a literal emoji from a fixed allowed
+set, Lark an `emoji_type` key. Naming the glyph in core would put a platform's
+alphabet where core can read it, which is exactly what D2 forbids; naming the
+intent leaves the mapping in the module that owns it. This is not a manifest
+field: nothing reads it before dispatch (§5's test), so it is a host-contract
+member. `container` is the message's NATIVE container rather than the
+normalized `channel` — a Discord message inside a thread reports its parent
+there, and only the native pair can address the message at all.
+
 ### 7.2 Host services
 
 Enumerated from the union of the four existing `Deps` shapes rather than

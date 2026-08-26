@@ -144,6 +144,7 @@ import { telegramCommandChrome } from './platforms/telegram/command-chrome.js'
 import { discordCommandChrome } from './platforms/discord/command-chrome.js'
 import { feishuCommandChrome } from './platforms/feishu/command-chrome.js'
 import {
+  nativeMessageCoordinates,
   resolveSlackMentionedAgents,
   slackTextAddressesAnyone,
   SLACK_RESPONSE_FINAL_EVENT_TAG
@@ -9274,6 +9275,7 @@ export class Daemon {
       ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
       : undefined
     this.showActivity(replyConn, msg.channel, plan.statusThread, plan.startupActivityLabel, plan.statusOptions)
+    this.acknowledgeTrigger(run)
     if (plan.clusterPodBootstrap) this.announceSandboxBootstrap(run, pendingWebchat)
     const releaseReplyConn = this.holdReplyConnection(replyConn)
     const opened = await this.openSession(run, releaseReplyConn)
@@ -11634,6 +11636,32 @@ export class Daemon {
       else void slack.setStatus(channel, thread, text)
     } else if (text && typeof (conn as Partial<TelegramConnection>).sendChatAction === 'function')
       void (conn as TelegramConnection).sendChatAction(channel)
+  }
+
+  /** Light the "seen it" reaction on the message that started this turn — for a code-host
+   *  turn, the only signal a human gets before the single end-of-turn comment lands, and in
+   *  a chat channel the only one outside an assistant thread.
+   *
+   *  Fire-and-forget chrome: never awaited, never retried, and never withdrawn — it records
+   *  that the turn was seen, which stays true even if the turn later dies with nothing to
+   *  say. Origins with no inbound message to react to (cron, an agent wake, webchat) and
+   *  platforms with no reactions both fall through silently, and a turn whose reply
+   *  connection is withheld stays as silent here as it is everywhere else. */
+  private acknowledgeTrigger(run: TurnRun): void {
+    const { entry, plan, replyConn } = run
+    const { msg } = entry
+    if (msg.source !== 'user' && msg.source !== 'hook') return
+    // `githubTurnEligible` is also the redelivery fence: a replay whose comment already
+    // published owns no public output this turn, and its reaction is already in place.
+    if (entry.githubReply) {
+      if (plan.githubTurnEligible)
+        void this.githubReviews.acknowledgeTrigger(entry.agentId, entry.githubReply).catch(() => {})
+      return
+    }
+    // Duck-typed like showActivity, so a connection fake without the optional facet is fine.
+    const react = (replyConn as Partial<PlatformConnection> | undefined)?.react
+    const at = nativeMessageCoordinates(msg)
+    if (react && at) void react.call(replyConn, at.channel, at.messageId, 'seen').catch(() => {})
   }
 
   /** Serialize action application per session so in-place edits never race on the
