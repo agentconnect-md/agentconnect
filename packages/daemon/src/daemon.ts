@@ -3327,6 +3327,14 @@ export class Daemon {
   private async reconcileClusterSkills(agent: Agent): Promise<void> {
     const plane = this.k8sPlane
     const client = plane?.skillClientFor?.(agent.id)
+    const agentDir = (agent as { dir?: string }).dir
+    const dreamed = agentDir
+      ? await acceptedDreamSkillSources({ dir: agentDir }).catch((error: unknown) => {
+          this.log.warn(`skills: accepted Dream sources unavailable for ${agent.id} (${(error as Error).message})`)
+          return []
+        })
+      : []
+    if (!client && agent.skills.length === 0 && agent.managedSkills.length === 0 && dreamed.length === 0) return
     const workspaceIncarnation = plane?.workspaceIncarnationFor?.(agent.id)
     const shimGeneration = plane?.shimGenerationFor?.(agent.id)
     const duty = this.duties.dutyForAgent(agent.id)
@@ -3335,13 +3343,6 @@ export class Daemon {
     if (!plane || !workspaceIncarnation || shimGeneration === undefined || !duty || !daemonId) {
       throw new Error('cluster skill preparation authority is unavailable')
     }
-    const agentDir = (agent as { dir?: string }).dir
-    const dreamed = agentDir
-      ? await acceptedDreamSkillSources({ dir: agentDir }).catch((error: unknown) => {
-          this.log.warn(`skills: accepted Dream sources unavailable for ${agent.id} (${(error as Error).message})`)
-          return []
-        })
-      : []
     const prior = await this.store.clusterSkillLedger(agent.id, workspaceIncarnation)
     const supportRequired = clusterSkillSupportRequired({
       configuredSources: agent.skills.length,

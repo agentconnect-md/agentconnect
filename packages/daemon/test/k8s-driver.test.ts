@@ -52,7 +52,7 @@ function fakeApi(options: { ready?: boolean; mode?: 'Running' | 'Suspended'; tem
     ensureClaim: vi.fn(async (claim: SandboxClaim & { metadata: { name: string } }) => {
       state.created.push(claim)
       state.claims.set(claim.metadata.name, { ...claim, status: { sandbox: { name: 'sb-1' } } })
-      return state.claims.get(claim.metadata.name)!
+      return { claim: state.claims.get(claim.metadata.name)!, created: true }
     }),
     getClaim: vi.fn(async (name: string) => {
       const claim = state.claims.get(name)
@@ -201,7 +201,7 @@ describe('cluster spawn driver', () => {
         agentId: 'agent-a',
         sandboxUid: 'sandbox-uid-1',
         generation: 1,
-        grants: ['acp', 'materialize', 'exec', 'read', 'tunnel', 'automerge'],
+        grants: ['acp', 'materialize', 'exec', 'read', 'tunnel', 'automerge', 'skills'],
         podName: 'sb-1'
       }
     ])

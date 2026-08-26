@@ -841,7 +841,7 @@ function restrictPath(path: string, mode: number): void {
  * fresh databases and every established one fails at query time. `SCHEMA_MIGRATIONS`
  * asserts the two stay in lockstep for exactly that reason.
  */
-const SCHEMA_VERSION = 15
+const SCHEMA_VERSION = 14
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -977,8 +977,7 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
   // existing rows: absent keeps the CP's ordinary child inheritance, which is what they got.
   async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN directDestination INTEGER'),
   // Cluster skill tables are emitted by the current CREATE block after this step.
-  async () => undefined,
-  async (db) => await db.exec('ALTER TABLE cluster_skill_journal ADD COLUMN replayKey TEXT')
+  async () => undefined
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
