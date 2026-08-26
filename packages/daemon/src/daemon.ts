@@ -7650,6 +7650,8 @@ export class Daemon {
       draining: () => this.draining,
       drainingAgents: () => this.drainingAgents,
       shutdownDutyDrain: () => this.shutdownDutyDrain,
+      projectDutyWriteFence: (input) => this.store.projectDutyWriteFence(input),
+      revokeDutyWriteFence: (input) => this.store.revokeDutyWriteFence(input),
       cpAgents: () => this.cpAgents,
       cpIntegrations: () => this.cpIntegrations,
       cpCrons: () => this.cpCrons,

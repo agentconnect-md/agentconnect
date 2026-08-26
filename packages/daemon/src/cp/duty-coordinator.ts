@@ -50,6 +50,8 @@ export interface DutyCoreHost {
   draining(): boolean
   drainingAgents(): Set<string>
   shutdownDutyDrain(): ShutdownDutyDrain | undefined
+  projectDutyWriteFence?(input: { groupId: string; term: string; daemonId: string }): Promise<boolean>
+  revokeDutyWriteFence?(input: { groupId: string; term: string; daemonId: string }): Promise<void>
 }
 
 /** The CP-owned in-memory definition registries a granted bundle lands in. */
@@ -274,6 +276,26 @@ export class DutyCoordinator {
         entries.filter((entry) => this.dutyAdmissions.get(entry.groupId) !== admission).map((e) => e.groupId)
       )
       const refused = new Set([...withdrawn, ...failed])
+      const candidates = entries.filter((entry) => !refused.has(entry.groupId))
+      for (const entry of candidates) {
+        try {
+          if (
+            this.host.projectDutyWriteFence &&
+            !(await this.host.projectDutyWriteFence({
+              groupId: entry.groupId,
+              term: entry.term,
+              daemonId: this.requiredDaemonId()
+            }))
+          ) {
+            refused.add(entry.groupId)
+          }
+        } catch (error) {
+          refused.add(entry.groupId)
+          this.log.warn(
+            `duty: write fence for ${entry.groupId} failed — grant not served (${(error as Error).message})`
+          )
+        }
+      }
       const servable = entries.filter((entry) => !refused.has(entry.groupId))
       if (servable.length > 0) {
         const result = this.duties.applyGrant(servable)
@@ -509,12 +531,14 @@ export class DutyCoordinator {
     // that admission, or the member starts serving a group the CP has already taken away.
     const pending = this.withdrawDutyGroups(revocations.map((revocation) => revocation.groupId))
     if (pending.length > 0) this.log.info(`duty: revoked ${pending.length} group(s) mid-admission`)
+    const fenceRevocation = this.revokeProjectedFences(revocations.map((one) => one.groupId))
     const result = this.duties.applyRevoke(revocations)
     this.log.info(
       `duty: revoked ${revocations.length} group(s) (${revocations.map((r) => r.reason).join(',')}); ` +
         `${result.agentsLost.length} agent(s) left service`
     )
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
+    await fenceRevocation
     await this.onDutyChanged()
   }
 
@@ -532,12 +556,14 @@ export class DutyCoordinator {
     if (pending.length > 0) this.log.warn(`duty: self-fenced ${pending.length} group(s) mid-admission`)
     const held = groupIds.filter((groupId) => this.duties.get(groupId) !== undefined)
     if (held.length === 0) return
+    const fenceRevocation = this.revokeProjectedFences(held)
     const result = this.duties.applyRevoke(held.map((groupId) => ({ groupId, reason: 'superseded' as const })))
     this.log.warn(
       `duty: self-fenced ${held.length} group(s); ${result.agentsLost.length} agent(s) left service, ` +
         `${this.duties.size()} group(s) still held — no confirmed lease renewal before the CP's horizon`
     )
     for (const agentId of result.agentsLost) this.stopServingAgent(agentId)
+    await fenceRevocation
     await this.onDutyChanged()
   }
 
@@ -795,6 +821,7 @@ export class DutyCoordinator {
       for (const groupId of ready) {
         // Withdraw locally first — the same teardown a revoke runs — and wait for it to be real.
         const held = this.duties.get(groupId)
+        await this.revokeProjectedFences([groupId])
         const result = this.duties.applyRevoke([{ groupId, reason: 'superseded' }])
         stats.groups++
         stats.agents += result.agentsLost.length
@@ -825,6 +852,29 @@ export class DutyCoordinator {
         `plus ${stats.late} late grant(s) in ${Math.round((this.host.clock().now() - startedAt) / 1000)}s — ` +
         `${stats.acked} acknowledged, ${stats.lapsing} left to lapse`
     )
+  }
+
+  private async revokeProjectedFences(groupIds: readonly string[]): Promise<void> {
+    if (!this.host.revokeDutyWriteFence) return
+    for (const groupId of groupIds) {
+      const held = this.duties.get(groupId)
+      if (!held) continue
+      try {
+        await this.host.revokeDutyWriteFence({
+          groupId,
+          term: held.term,
+          daemonId: this.requiredDaemonId()
+        })
+      } catch (error) {
+        this.log.warn(`duty: write fence revoke for ${groupId} failed (${(error as Error).message})`)
+      }
+    }
+  }
+
+  private requiredDaemonId(): string {
+    const daemonId = this.host.cfg().daemonId
+    if (!daemonId) throw new Error('duty write fencing requires a daemon id')
+    return daemonId
   }
 
   /** Grants that landed after the latch, settled once the release loop is done: every held group has
