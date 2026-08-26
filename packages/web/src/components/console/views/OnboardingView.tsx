@@ -110,7 +110,9 @@ export default function OnboardingView() {
       // the target daemon, so moving a pool-born preset (e.g. runtime dsh-acp) before the
       // spec update is rejected with "target daemon does not support runtime …". The picker
       // sources runtime/model from the target's own profiles, so patch-then-move admits.
-      await updateAgent(builtinAgent.id, { runtime, ...(model ? { model } : {}) })
+      // model || null: an empty selection (target's model probe not settled yet) must CLEAR
+      // the pool preset's old model pin, not silently keep it across the runtime change.
+      await updateAgent(builtinAgent.id, { runtime, model: model || null })
       if (target) await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: target.daemonId })
       await refresh()
       return true

@@ -324,6 +324,16 @@ describe('onboarding — daemon online: configure + finish', () => {
     expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
   })
 
+  it('clears the old model pin when the target advertises no models yet', async () => {
+    // Runtime probe not settled: the runtime is known but its model list is empty. The
+    // PATCH must send model:null so the pool preset's cross-runtime pin does not survive.
+    mocks.daemons = [{ ...mocks.daemons[0], runtimeModels: [{ runtime: 'claude', models: [] }] }]
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: 'dmn_pool', runtime: 'dsh-acp' }]
+    await render()
+    await click('Finish')
+    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'claude', model: null })
+  })
+
   it('hides the pickers only when the org has no built-in agent at all', async () => {
     mocks.agents = []
     await render()
