@@ -203,9 +203,8 @@ export async function publishAcceptedDreamSkill(input: {
     await syncDirectory(bundles)
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
-    // Linux commonly reports ENOTEMPTY, Darwin EEXIST, and Windows EPERM when an identical
-    // digest-addressed directory was already published. EPERM is broad on Windows, so it is only
-    // read as a collision there — and the digest re-read below is what actually proves it was one.
+    // An already-published identical digest reads as ENOTEMPTY on Linux, EEXIST on Darwin, EPERM on
+    // Windows. EPERM is broad there, so the digest re-read below is what actually proves a collision.
     const collision = code === 'EEXIST' || code === 'ENOTEMPTY' || (code === 'EPERM' && process.platform === 'win32')
     if (!collision) {
       await fsp.rm(temporary, { recursive: true, force: true }).catch(() => undefined)

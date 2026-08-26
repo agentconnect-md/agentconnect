@@ -121,9 +121,8 @@ export interface RuntimeStateLocation {
 // --- home / XDG path resolution (honors the standard env overrides) ----------
 
 export function home(env: NodeJS.ProcessEnv): string {
-  // USERPROFILE first on Windows, since that is what a runtime's own `~` expands to — but HOME still
-  // counts as a fallback there, the way Git for Windows reads it, so a caller that pins only HOME is
-  // honored instead of silently resolving to the daemon's own home.
+  // USERPROFILE first on Windows — a runtime's own `~` — then HOME, the way Git for Windows reads it,
+  // so a caller pinning only HOME is honored instead of resolving to the daemon's own home.
   return (isWin ? env.USERPROFILE || env.HOME : env.HOME) || homedir()
 }
 function xdgConfigHome(env: NodeJS.ProcessEnv): string {
