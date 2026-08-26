@@ -11,17 +11,24 @@ import { daemonCompletesOnboarding, firstReconnectableDaemonId, skipOnboarding }
 import { daemonCommands } from '@/lib/daemon-commands'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
-import { FALLBACK_RUNTIME_IDS, localDaemons, modelLabel, preferredModelFor, loginRequiredRuntimeIds } from '@/lib/data'
+import {
+  FALLBACK_RUNTIME_IDS,
+  isPoolPlacementKind,
+  localDaemons,
+  modelLabel,
+  poolLabel,
+  preferredModelFor,
+  loginRequiredRuntimeIds
+} from '@/lib/data'
 import type { DaemonRow } from '@/lib/data'
-import type { DaemonConnectDto } from '@/lib/api'
+import type { AgentPlacementTarget, DaemonConnectDto } from '@/lib/api'
 
 // Onboarding wizard (design: "AgentConnect Onboarding v2 (forked)") — owner-only, runs
 // once per org. Creating/naming the org was step 1 (/welcome or the create-org entry),
-// so this picks up at the ONE fork on where the first agent runs. The pool path (Cloud
-// on the managed install, the operator's cluster elsewhere) finishes right at the fork —
-// no agent configuration, just the completion flag; the Daemon path adds the copy-paste
-// connect step (mint a real join command, poll until it comes online) with the runtime
-// pickers inline.
+// so this picks up at the ONE fork on where the first agent runs. Both paths then choose the
+// runtime: the pool path (Cloud on the managed install, the operator's cluster elsewhere) has
+// nothing to install, so its last step is the pickers alone; the Daemon path puts the same
+// pickers under a copy-paste connect step (mint a real join command, poll until it's online).
 // Finish AND skip both persist the org's `onboardingCompleted` flag — re-entering the
 // org never bounces back here once either happened. Rendered full-screen (no rail) by
 // the shell on the /onboarding route.
@@ -60,18 +67,21 @@ export default function OnboardingView() {
   const [step, setStep] = useState<Step>(poolOffered ? 'where' : 'run')
   const [choice, setChoice] = useState<'pool' | 'daemon'>(poolOffered ? 'pool' : 'daemon')
 
-  // The org's built-in preset agent: the daemon path configures its runtime/model once
-  // a machine is online; the pool path leaves it untouched.
+  // The org's built-in preset agent: both paths configure its runtime/model — the daemon path
+  // once a machine is online, the pool path against what the cluster's members advertise.
   const builtinAgent = agents.find((a) => a.builtin)
   const machines = localDaemons(daemons)
+  // The cluster's runtimes come from one live member standing in for the pool (the placement
+  // names the SET — a Pod is a replaceable identity, never the target).
+  const poolMembers = daemons.filter((d) => d.pool)
+  const poolSource = poolMembers.find((d) => d.status === 'online') ?? poolMembers[0]
   const daemonReady = machines.some(daemonCompletesOnboarding)
   const servingDaemon = machines.find((d) => d.status === 'online') ?? machines.find(daemonCompletesOnboarding)
 
   // Auth mode counts org creation (/welcome, already behind us) as step 1.
   const orgStepsBefore = authOn ? 1 : 0
-  // The pool path always finishes at the fork; only the Daemon path adds a step.
-  const lastStepExists = choice === 'daemon'
-  const total = Math.max(orgStepsBefore + 1, orgStepsBefore + (poolOffered ? 1 : 0) + (lastStepExists ? 1 : 0))
+  // Both paths end on a step of their own: connect+configure for a daemon, pickers for the pool.
+  const total = orgStepsBefore + (poolOffered ? 1 : 0) + 1
   const stepNumbers: Record<Step, number> = { where: orgStepsBefore + 1, run: total }
 
   // ── finish / skip: persist the flag, then leave ─────────────────────────────────
@@ -101,7 +111,7 @@ export default function OnboardingView() {
   }
 
   // ── built-in agent setup: runtime/model + placement, ordered by what the CP accepts ──
-  const saveAgentSetup = async (runtime: string, model: string, target: DaemonRow | null) => {
+  const saveAgentSetup = async (runtime: string, model: string, target: AgentPlacementTarget | null) => {
     if (!builtinAgent || !runtime) return true
     setSaving(true)
     setSaveErr(null)
@@ -113,7 +123,7 @@ export default function OnboardingView() {
       // model || null: an empty selection (target's model probe not settled yet) must CLEAR
       // the pool preset's old model pin, not silently keep it across the runtime change.
       await updateAgent(builtinAgent.id, { runtime, model: model || null })
-      if (target) await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: target.daemonId })
+      if (target) await moveAgent(builtinAgent.id, target)
       await refresh()
       return true
     } catch (e) {
@@ -180,6 +190,15 @@ export default function OnboardingView() {
     setMintAttempt((n) => n + 1)
   }
 
+  // Cluster step with nothing advertised yet: poll like the daemon step does while it waits, so a
+  // member that finishes probing lands here without a reload.
+  const clusterWaiting = step === 'run' && choice === 'pool' && (poolSource?.runtimeModels.length ?? 0) === 0
+  useEffect(() => {
+    if (!clusterWaiting) return
+    const poll = setInterval(refreshDaemons, 3000)
+    return () => clearInterval(poll)
+  }, [clusterWaiting, refreshDaemons])
+
   // Poll until the daemon connects; tick the elapsed timer while waiting.
   useEffect(() => {
     if (daemonReady) {
@@ -243,10 +262,28 @@ export default function OnboardingView() {
           stepLabel={`Step ${stepNumbers.where} of ${total}`}
           choice={choice}
           onChoice={setChoice}
-          finishHere={!lastStepExists}
-          finishing={finishing}
+          onNext={() => setStep('run')}
+        />
+      ) : choice === 'pool' ? (
+        <ClusterStep
+          stepLabel={`Step ${total} of ${total}`}
+          source={poolSource}
+          serving={poolMembers.filter((d) => d.status === 'online').length}
+          initial={builtinAgent ? { runtime: builtinAgent.runtime, model: builtinAgent.model } : undefined}
+          // Nothing to place — no preset at all, or one already on the pool — so a cluster with no
+          // runtimes to report yet costs this step nothing. An UNPLACED preset has to wait.
+          placed={!builtinAgent || isPoolPlacementKind(builtinAgent.placementKind)}
+          showPickers={!!builtinAgent}
+          saving={saving || finishing}
           err={saveErr}
-          onNext={() => (lastStepExists ? setStep('run') : void finish())}
+          onBack={poolOffered ? () => setStep('where') : undefined}
+          onFinish={async (runtime, model) => {
+            // A pool-born preset is already placed there, so the runtime PATCH is the whole change.
+            const target: AgentPlacementTarget | null = isPoolPlacementKind(builtinAgent?.placementKind)
+              ? null
+              : { kind: 'pool' }
+            if (!builtinAgent || (await saveAgentSetup(runtime, model, target))) void finish()
+          }}
         />
       ) : (
         <DaemonStep
@@ -269,7 +306,10 @@ export default function OnboardingView() {
           onBack={backFrom('run') ? () => setStep(backFrom('run')!) : undefined}
           onSkip={() => void finish()}
           onFinish={async (runtime, model) => {
-            if (!builtinAgent || (await saveAgentSetup(runtime, model, servingDaemon ?? null))) void finish()
+            const target: AgentPlacementTarget | null = servingDaemon
+              ? { kind: 'daemon', daemonId: servingDaemon.daemonId }
+              : null
+            if (!builtinAgent || (await saveAgentSetup(runtime, model, target))) void finish()
           }}
         />
       )}
@@ -367,18 +407,11 @@ function WhereStep({
   stepLabel,
   choice,
   onChoice,
-  finishHere,
-  finishing,
-  err,
   onNext
 }: {
   stepLabel: string
   choice: 'pool' | 'daemon'
   onChoice: (choice: 'pool' | 'daemon') => void
-  /** Pool selected with nothing left to configure — the fork is the last step. */
-  finishHere: boolean
-  finishing: boolean
-  err: string | null
   onNext: () => void
 }) {
   const managed = featureFlagEnabled('managed')
@@ -390,18 +423,9 @@ function WhereStep({
       footer={
         <>
           <div className="flex-1" />
-          <Button disabled={finishing} onClick={onNext}>
-            {finishHere ? (
-              <>
-                <Icon name="check" size={15} />
-                {finishing ? 'Finishing…' : 'Finish'}
-              </>
-            ) : (
-              <>
-                Continue
-                <Icon name="arrow-right" size={15} />
-              </>
-            )}
+          <Button onClick={onNext}>
+            Continue
+            <Icon name="arrow-right" size={15} />
           </Button>
         </>
       }
@@ -429,7 +453,6 @@ function WhereStep({
           onSelect={() => onChoice('daemon')}
         />
       </div>
-      <SaveError err={err} />
     </StepFrame>
   )
 }
@@ -506,6 +529,91 @@ function SaveError({ err }: { err: string | null }) {
       <Icon name="alert-triangle" size={15} className="mt-[1px] flex-none" />
       <span>{err}</span>
     </div>
+  )
+}
+
+// ── last step, pool path: nothing to install, so the runtime is the whole step ────────
+function ClusterStep({
+  stepLabel,
+  source,
+  serving,
+  initial,
+  placed,
+  showPickers,
+  saving,
+  err,
+  onBack,
+  onFinish
+}: {
+  stepLabel: string
+  /** The pool member whose reported profiles stand in for the cluster; undefined ⇒ no member. */
+  source?: DaemonRow
+  serving: number
+  initial?: { runtime?: string; model?: string }
+  /** Is the preset already on the pool (or absent)? False ⇒ Finish has to place it to be honest. */
+  placed: boolean
+  /** Whether the built-in agent still needs a runtime — hides the pickers otherwise. */
+  showPickers: boolean
+  saving: boolean
+  err: string | null
+  onBack?: () => void
+  onFinish: (runtime: string, model: string) => void
+}) {
+  const rm = useRuntimeModel(source, initial)
+  // "AgentConnect Cloud" is a name; "Kubernetes cluster" is a thing the operator runs.
+  const where = featureFlagEnabled('managed') ? poolLabel() : `the ${poolLabel()}`
+  // A serving member can still be mid-probe and advertise no profiles at all. Offering the
+  // static fallback list there would write `claude-acp` over the pool runtime the deployment
+  // configured, and Finish on the pool skips the move that would have refused it — so with
+  // nothing advertised there is nothing to pick and nothing to write.
+  const advertised = (source?.runtimeModels.length ?? 0) > 0
+  const runtime = advertised ? rm.effectiveRuntime : ''
+  // Same runtime, its models not in yet ⇒ keep the pin the preset came with, never clear it.
+  const model = runtime && runtime === initial?.runtime && !rm.selectedModel ? (initial.model ?? '') : rm.selectedModel
+  // Completing writes nothing when nothing is advertised, which is only honest for a preset already
+  // on the pool. An unplaced one would be marked done with no runtime and no placement — the very
+  // state this step exists to fix — so it waits for the cluster instead.
+  const canFinish = advertised || placed
+  return (
+    <StepFrame
+      stepLabel={stepLabel}
+      title="Choose runtime"
+      sub={`What the agent runs on ${where}.`}
+      footer={
+        <>
+          {onBack && (
+            <Button variant="ghost" disabled={saving} onClick={onBack}>
+              Back
+            </Button>
+          )}
+          <div className="flex-1" />
+          <Button disabled={saving || !canFinish} onClick={() => onFinish(runtime, model)}>
+            <Icon name="check" size={15} />
+            {saving ? 'Finishing…' : 'Finish'}
+          </Button>
+        </>
+      }
+    >
+      {showPickers && advertised && <div className="mt-6" />}
+      {showPickers && advertised && <RuntimeModelFields rm={rm} />}
+      {showPickers && !advertised && (
+        <p className="mt-6 font-sans text-[13px] leading-[1.5] text-(--text-secondary)">
+          {placed
+            ? `${poolLabel()} has not advertised its runtimes yet, so this leaves the agent's runtime as it is. Change it from the agent's page once the cluster reports them.`
+            : `Waiting for ${poolLabel()} to report the runtimes it can run — the agent cannot be placed there until it does. This page keeps checking; pick Daemon instead to run it on your own machine.`}
+        </p>
+      )}
+      {/* Where it lands, in the pool's own terms: the placement names the set, not a Pod. */}
+      <div className="mt-4 flex items-center gap-[10px] rounded-[10px] bg-(--surface-sunken) px-4 py-[13px]">
+        <span className="flex h-[18px] w-[18px] flex-none">
+          <KubernetesMark />
+        </span>
+        <span className="font-sans text-[13px] font-normal leading-normal text-(--text-secondary)">
+          Runs on {where} · {serving > 0 ? `${serving} node${serving === 1 ? '' : 's'} serving` : 'no nodes serving'}
+        </span>
+      </div>
+      <SaveError err={err} />
+    </StepFrame>
   )
 }
 
