@@ -217,3 +217,26 @@ describe.skipIf(!hasBwrap)('skills@1.5.21 local-source golden', () => {
     }
   })
 })
+
+describe.skipIf(process.platform !== 'win32')('skills@1.5.21 Windows process fallback', () => {
+  it('runs the pinned CLI and publishes its receipt-verified bundle', async () => {
+    const { root, source } = await fixture()
+    const cwd = join(root, 'workspace')
+    const stateDir = join(root, 'state')
+    await mkdir(cwd)
+
+    const result = await installSkills(
+      { id: 'agent-windows', runtime: 'codex-acp', skills: [], managedSkills: [] } as never,
+      cwd,
+      {
+        stateDir,
+        skillsAgentId: 'codex',
+        localSkills: [{ kind: 'managed', key: 'fixture', name: 'local-golden', sourceDir: source }]
+      }
+    )
+
+    expect(result.errors).toEqual([])
+    expect(result.installed).toEqual(['.agents/skills/local-golden'])
+    expect(await readFile(join(cwd, '.agents/skills/local-golden/SKILL.md'), 'utf8')).toContain('# Local golden')
+  })
+})

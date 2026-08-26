@@ -24,7 +24,11 @@ import type { PreparedRuntimeLaunch } from '../launch/prepare.js'
 import { composeRuntimeLaunch } from '../launch/compose.js'
 import { PACKAGE_LAUNCHERS } from './probe.js'
 
-const PROCESS_ENV_KEYS = new Set(['PATH', 'PATHEXT', 'SystemRoot'])
+const PROCESS_ENV_KEYS = new Map([
+  ['PATH', 'PATH'],
+  ['PATHEXT', 'PATHEXT'],
+  ['SYSTEMROOT', 'SystemRoot']
+])
 const CERTIFICATE_ENV_KEYS = new Set([
   'SSL_CERT_FILE',
   'SSL_CERT_DIR',
@@ -51,12 +55,12 @@ export function curatedProbeEnvironment(source: NodeJS.ProcessEnv = process.env)
   const env: Record<string, string> = {}
   for (const [name, value] of Object.entries(source)) {
     if (value === undefined) continue
-    if (
-      PROCESS_ENV_KEYS.has(name) ||
-      CERTIFICATE_ENV_KEYS.has(name) ||
-      PROVIDER_ENV_KEYS.has(name) ||
-      /^(?:https?|all|no)_proxy$/i.test(name)
-    ) {
+    const processKey = PROCESS_ENV_KEYS.get(name.toUpperCase())
+    if (processKey) {
+      env[processKey] = value
+      continue
+    }
+    if (CERTIFICATE_ENV_KEYS.has(name) || PROVIDER_ENV_KEYS.has(name) || /^(?:https?|all|no)_proxy$/i.test(name)) {
       env[name] = value
     }
   }

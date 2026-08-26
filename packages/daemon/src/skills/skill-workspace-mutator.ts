@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, promises as fsp, realpathSync, rmSync, type Stats } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { under } from '../fs/contained-path.js'
-import { offlineSandboxLaunch } from './offline-sandbox.js'
+import { offlineSandboxLaunch, probeOfflineSandboxHost } from './offline-sandbox.js'
 import { currentSkillMutationHelperLease } from './skill-workspace-lock-lease.js'
 
 const MAX_MUTATION_OUTPUT = 64 * 1024
@@ -60,15 +61,12 @@ function helperPath(): string {
   throw new Error('skill workspace mutation helper is unavailable')
 }
 
-/** Run one audited workspace mutation under SRT/Seatbelt or SRT/bwrap. The
- * helper can read the receipts/source and mutate the selected workspace, but
- * the kernel denies every write outside that workspace and all network/socket
- * access. */
+/** Run one audited workspace mutation with kernel confinement when the host supports it. */
 export async function runSkillWorkspaceMutation<T extends object>(
   spec: T & { cwd: string },
   readRoots: string[] = []
 ): Promise<Record<string, unknown>> {
-  const root = mkdtempSync('/tmp/agentconnect-skill-mutation-')
+  const root = mkdtempSync(join(tmpdir(), 'agentconnect-skill-mutation-'))
   chmodSync(root, 0o700)
   try {
     const canonicalWorkspace = realpathSync(spec.cwd)
@@ -106,17 +104,26 @@ export async function runSkillWorkspaceMutation<T extends object>(
 
     const helper = helperPath()
     const canonicalSpecPath = realpathSync(specPath)
-    const launch = offlineSandboxLaunch({
-      command: process.execPath,
-      args: [helper, canonicalSpecPath],
-      scopeRoot: root,
-      cwd: runnerCwd,
-      home,
-      readRoots: [helper, canonicalSpecPath, canonicalWorkspace, ...readRoots],
-      writeRoots: [root, canonicalWorkspace],
-      startGated: true
-    })
-    const providerTmp = mkdtempSync('/tmp/agentconnect-srt-')
+    const directLaunch = { cmd: process.execPath, args: [helper, canonicalSpecPath] }
+    const sandboxProbe = probeOfflineSandboxHost()
+    let launch = directLaunch
+    if (sandboxProbe.available) {
+      try {
+        launch = offlineSandboxLaunch({
+          command: process.execPath,
+          args: [helper, canonicalSpecPath],
+          scopeRoot: root,
+          cwd: runnerCwd,
+          home,
+          readRoots: [helper, canonicalSpecPath, canonicalWorkspace, ...readRoots],
+          writeRoots: [root, canonicalWorkspace],
+          startGated: true
+        })
+      } catch {
+        launch = directLaunch
+      }
+    }
+    const providerTmp = mkdtempSync(join(tmpdir(), 'agentconnect-srt-'))
     chmodSync(providerTmp, 0o700)
     try {
       const output = await runConfinedHelper(launch.cmd, launch.args, {
@@ -153,18 +160,14 @@ async function runConfinedHelper(
   if (!lease) throw new Error('confined skill workspace mutation requires the external workspace lock')
   return new Promise((resolve, reject) => {
     const grouped = process.platform !== 'win32'
-    if (!grouped) {
-      reject(new Error('confined skill workspace mutation requires POSIX process groups'))
-      return
-    }
     const child = spawn(command, args, {
       ...options,
       detached: grouped,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true
     })
-    const pgid = child.pid
-    if (!pgid) {
+    const helperId = child.pid
+    if (!helperId) {
       child.kill('SIGKILL')
       reject(new Error('confined skill workspace mutation has no process-group id'))
       return
@@ -174,9 +177,10 @@ async function runConfinedHelper(
     let bytes = 0
     let failure: Error | undefined
     let leaseRegistered = false
-    const killGroup = (): void => {
+    const killHelper = (): void => {
       try {
-        process.kill(-pgid, 'SIGKILL')
+        if (grouped) process.kill(-helperId, 'SIGKILL')
+        else child.kill('SIGKILL')
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure ??= error as Error
       }
@@ -185,7 +189,7 @@ async function runConfinedHelper(
       bytes += chunk.length
       if (bytes > MAX_MUTATION_OUTPUT) {
         failure ??= new Error('confined skill workspace mutation output exceeded its limit')
-        killGroup()
+        killHelper()
         return
       }
       target.push(chunk)
@@ -194,40 +198,40 @@ async function runConfinedHelper(
     child.stderr.on('data', (chunk: Buffer) => collect(stderr, chunk))
     child.stdin.on('error', (error) => {
       failure ??= error
-      killGroup()
+      killHelper()
     })
     child.once('error', (error) => {
       failure ??= error
-      killGroup()
+      killHelper()
     })
     const registration = (async () => {
       try {
-        await lease.registerHelper(pgid)
+        await lease.registerHelper(helperId)
         leaseRegistered = true
         child.stdin.end('GO\n')
       } catch (error) {
         failure ??= error as Error
         child.stdin.destroy()
-        killGroup()
+        killHelper()
       }
     })()
     const timer = setTimeout(() => {
       failure ??= new Error('confined skill workspace mutation timed out')
-      killGroup()
+      killHelper()
     }, MUTATION_TIMEOUT_MS)
     child.once('close', (code) => {
       void (async () => {
         clearTimeout(timer)
         await registration
-        if (processGroupAlive(pgid)) {
-          killGroup()
-          if (!(await waitForProcessGroupExit(pgid))) {
-            failure ??= new Error('confined skill workspace mutation process group did not exit')
+        if (helperAlive(helperId, grouped)) {
+          killHelper()
+          if (!(await waitForHelperExit(helperId, grouped))) {
+            failure ??= new Error('confined skill workspace mutation helper did not exit')
           }
         }
         if (leaseRegistered) {
           try {
-            await lease.clearHelper(pgid)
+            await lease.clearHelper(helperId)
           } catch (error) {
             failure ??= error as Error
           }
@@ -252,9 +256,22 @@ function processGroupAlive(pgid: number): boolean {
   }
 }
 
-async function waitForProcessGroupExit(pgid: number): Promise<boolean> {
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+  }
+}
+
+function helperAlive(id: number, grouped: boolean): boolean {
+  return grouped ? processGroupAlive(id) : processAlive(id)
+}
+
+async function waitForHelperExit(id: number, grouped: boolean): Promise<boolean> {
   const deadline = Date.now() + 3_000
-  while (processGroupAlive(pgid)) {
+  while (helperAlive(id, grouped)) {
     if (Date.now() >= deadline) return false
     await new Promise((resolveWait) => setTimeout(resolveWait, 25))
   }

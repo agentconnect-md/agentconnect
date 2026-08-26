@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, posix, resolve } from 'node:path'
 
 export function resolveRoot(root?: string): string {
   const r = root ?? process.env.AGENTCONNECT_ROOT ?? join(homedir(), '.agentconnect')
@@ -47,8 +48,19 @@ export function logsDir(root: string): string {
  * here to forward tool calls back to the daemon. Kept short (macOS caps UDS
  * paths at ~104 bytes) and under `run/` so it's separate from durable state.
  */
-export function mcpSocketPath(root: string): string {
-  return join(root, 'run', 'mcp.sock')
+export function mcpSocketPath(root: string, platform = process.platform): string {
+  return localIpcPath(root, 'mcp', platform)
+}
+
+/** Stable per-daemon IPC endpoint: a named pipe on Windows, a filesystem UDS elsewhere. */
+export function localIpcPath(root: string, channel: 'mcp' | 'gitcred', platform = process.platform): string {
+  if (platform !== 'win32') return posix.join(root, 'run', `${channel}.sock`)
+  const instance = createHash('sha256').update(resolveRoot(root).toLowerCase()).digest('hex').slice(0, 16)
+  return `\\\\.\\pipe\\agentconnect-${instance}-${channel}`
+}
+
+export function isWindowsNamedPipe(path: string): boolean {
+  return path.startsWith('\\\\.\\pipe\\')
 }
 
 export function daemonLogPath(root: string): string {

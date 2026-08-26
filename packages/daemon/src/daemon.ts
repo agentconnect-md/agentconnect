@@ -1544,7 +1544,7 @@ export class Daemon {
     // with a `controlPlane.key` — or an in-cluster identity token — and no explicit
     // id, the CP resolves the id and the daemon adopts it (see startCpClient).
     const cpKeyOnboarding = !!(cfg.controlPlane?.enabled && (cfg.controlPlane.key || this.clusterIdentityToken))
-    this.initGitCredentials(root)
+    await this.initGitCredentials(root)
     this.mintDaemonIdentity(root, cfg, cpKeyOnboarding)
     this.sweepProbeRoots()
     this.log.info(
@@ -1702,7 +1702,7 @@ export class Daemon {
   }
 
   /** Phase 5 — github-app git credentials, BEFORE agents load: reconcile-time prefetch clones pre-warm through this cache. */
-  private initGitCredentials(root: string): void {
+  private async initGitCredentials(root: string): Promise<void> {
     // github-app git credentials — initialized FIRST: reconcile-time prefetch
     // clones can fire as soon as agents load, and they pre-warm through this
     // cache. The request fn resolves this.cpClient lazily (it connects later);
@@ -1828,7 +1828,7 @@ export class Daemon {
     } catch (err) {
       this.log.warn(`gitcred: glab wrapper shim write failed — spawning agents without it (${formatErr(err)})`)
     }
-    this.gitCredServer.start()
+    await this.gitCredServer.start()
     // The watcher dispatches on placement: a cluster agent's pod gets the `automerge` channel and
     // owns the loop, a local agent gets a loop in this process. Both read a token through the same
     // clamped credential path the agent's own gh does.

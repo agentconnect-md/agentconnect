@@ -6,6 +6,7 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync
@@ -2233,9 +2234,8 @@ export class WorkspaceManager {
         throw new Error('workspace changed while conversion was cloning; retry after making it empty')
       }
       try {
-        // POSIX directory replacement is atomic when the destination is still
-        // empty. If an operator writes into cwd after the check above, rename
-        // fails with the original tree untouched instead of deleting that data.
+        // Windows cannot rename over an empty directory, so rmdir proves emptiness before publication.
+        if (process.platform === 'win32' && existsSync(cwd)) rmdirSync(cwd)
         renameSync(staged, cwd)
       } catch (err) {
         if (!this.isWorkspaceEmpty(agent)) {

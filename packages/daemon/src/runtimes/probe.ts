@@ -61,7 +61,9 @@ export function isCommandAvailable(command: string, env: NodeJS.ProcessEnv = pro
  * `$PATH` (trying `$PATHEXT` extensions on Windows). Returns undefined if not found.
  */
 export function resolveCommandPath(command: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const exts = isWin ? ['', ...(env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')] : ['']
+  // Windows cannot spawn extensionless npm launcher scripts directly. Prefer PATHEXT
+  // executables (notably npx.cmd) before an extensionless sibling.
+  const exts = isWin ? [...(env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';'), ''] : ['']
   const hasSep = command.includes('/') || (isWin && command.includes('\\'))
   if (hasSep) {
     // Try as a literal path relative to CWD first (covers auto-downloaded archives
