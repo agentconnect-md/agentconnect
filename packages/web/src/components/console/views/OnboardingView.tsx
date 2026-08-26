@@ -547,6 +547,14 @@ function ClusterStep({
   const rm = useRuntimeModel(source, initial)
   // "AgentConnect Cloud" is a name; "Kubernetes cluster" is a thing the operator runs.
   const where = featureFlagEnabled('managed') ? poolLabel() : `the ${poolLabel()}`
+  // A serving member can still be mid-probe and advertise no profiles at all. Offering the
+  // static fallback list there would write `claude-acp` over the pool runtime the deployment
+  // configured, and Finish on the pool skips the move that would have refused it — so with
+  // nothing advertised there is nothing to pick and nothing to write.
+  const advertised = (source?.runtimeModels.length ?? 0) > 0
+  const runtime = advertised ? rm.effectiveRuntime : ''
+  // Same runtime, its models not in yet ⇒ keep the pin the preset came with, never clear it.
+  const model = runtime && runtime === initial?.runtime && !rm.selectedModel ? (initial.model ?? '') : rm.selectedModel
   return (
     <StepFrame
       stepLabel={stepLabel}
@@ -560,18 +568,20 @@ function ClusterStep({
             </Button>
           )}
           <div className="flex-1" />
-          <Button
-            disabled={saving || (showPickers && !rm.effectiveRuntime)}
-            onClick={() => onFinish(rm.effectiveRuntime, rm.selectedModel)}
-          >
+          <Button disabled={saving} onClick={() => onFinish(runtime, model)}>
             <Icon name="check" size={15} />
             {saving ? 'Finishing…' : 'Finish'}
           </Button>
         </>
       }
     >
-      {showPickers && <div className="mt-6" />}
-      {showPickers && <RuntimeModelFields rm={rm} />}
+      {showPickers && advertised && <div className="mt-6" />}
+      {showPickers && advertised && <RuntimeModelFields rm={rm} />}
+      {showPickers && !advertised && (
+        <p className="mt-6 font-sans text-[13px] leading-[1.5] text-(--text-secondary)">
+          {`${poolLabel()} has not advertised its runtimes yet, so this leaves the agent's runtime as it is. Change it from the agent's page once the cluster reports them.`}
+        </p>
+      )}
       {/* Where it lands, in the pool's own terms: the placement names the set, not a Pod. */}
       <div className="mt-4 flex items-center gap-[10px] rounded-[10px] bg-(--surface-sunken) px-4 py-[13px]">
         <span className="flex h-[18px] w-[18px] flex-none">

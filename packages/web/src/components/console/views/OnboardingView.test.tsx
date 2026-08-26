@@ -435,6 +435,50 @@ describe('onboarding — pool fork', () => {
     expect(mocks.push).toHaveBeenCalledWith('/acme/home')
   })
 
+  // A serving member mid-probe advertises nothing: the static fallback would write `claude-acp`
+  // over the deployment's pool runtime, and the pool branch skips the move that would refuse it.
+  it('writes nothing while the cluster has not advertised its runtimes', async () => {
+    mocks.daemons = [{ ...mocks.daemons[0], runtimeModels: [] }]
+    mocks.agents = [
+      {
+        id: 'ag_ac',
+        builtin: true,
+        name: 'agentconnect',
+        daemon: 'pool',
+        placementKind: 'set',
+        runtime: 'dsh-acp',
+        model: 'deepseek-v4-flash'
+      }
+    ]
+    await render()
+    await click('Continue')
+    expect(host.textContent).toContain('has not advertised its runtimes yet')
+    await click('Finish')
+    expect(mocks.updateAgent).not.toHaveBeenCalled()
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
+    expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
+  })
+
+  it('keeps the preset model pin when the advertised runtime has no models yet', async () => {
+    mocks.daemons = [{ ...mocks.daemons[0], runtimeModels: [{ runtime: 'dsh-acp', models: [] }] }]
+    mocks.agents = [
+      {
+        id: 'ag_ac',
+        builtin: true,
+        name: 'agentconnect',
+        daemon: 'pool',
+        placementKind: 'set',
+        runtime: 'dsh-acp',
+        model: 'deepseek-v4-flash'
+      }
+    ]
+    await render()
+    await click('Continue')
+    await click('Finish')
+    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'dsh-acp', model: 'deepseek-v4-flash' })
+    expect(mocks.moveAgent).not.toHaveBeenCalled()
+  })
+
   it('says so when the cluster has no serving member', async () => {
     mocks.daemons = [{ ...mocks.daemons[0], status: 'offline' }]
     await render()
