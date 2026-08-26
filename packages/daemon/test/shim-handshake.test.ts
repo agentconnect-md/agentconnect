@@ -132,8 +132,9 @@ function scriptedDialer(deps: {
 }
 
 /** Answers every daemon hello with a fixed projected token, which is what a healthy shim does. */
-function presents(token = 'projected-token') {
-  return (_hello: ShimDialHello, peer: ScriptedPeer): void => peer.reply({ type: 'shim/identity', token })
+function presents(token = 'projected-token', features?: string[]) {
+  return (_hello: ShimDialHello, peer: ScriptedPeer): void =>
+    peer.reply({ type: 'shim/identity', token, ...(features ? { features } : {}) })
 }
 
 describe('session attachment', () => {
@@ -170,6 +171,37 @@ describe('session attachment', () => {
     })
     for (const listen of frameListeners) listen(frame)
     expect(seen).toEqual(['aGk='])
+  })
+})
+
+describe('shim feature negotiation', () => {
+  it('does not send the skills grant to a legacy shim', async () => {
+    const clock = new VirtualClock()
+    const { dialer, peers } = scriptedDialer({
+      answer: presents(),
+      verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+      clock
+    })
+    const connection = await runVirtual(
+      clock,
+      dialer.connect(SCRIPTED_ENDPOINT, record({ grants: ['materialize', 'skills'] as never }), 500)
+    )
+    expect(connection.binding.grants).toEqual(['materialize'])
+    expect(peers[0]!.received.at(-1)).toMatchObject({ type: 'shim/bound', grants: ['materialize'] })
+  })
+
+  it('sends the skills grant when the shim advertises cluster-skills-v1', async () => {
+    const clock = new VirtualClock()
+    const { dialer } = scriptedDialer({
+      answer: presents('projected-token', ['cluster-skills-v1']),
+      verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+      clock
+    })
+    const connection = await runVirtual(
+      clock,
+      dialer.connect(SCRIPTED_ENDPOINT, record({ grants: ['materialize', 'skills'] as never }), 500)
+    )
+    expect(connection.binding.grants).toEqual(['materialize', 'skills'])
   })
 })
 

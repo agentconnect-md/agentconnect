@@ -52,6 +52,7 @@ async function main(): Promise<number> {
           : exec(capability, payload, abort),
     // Reported in the hello so daemon-built pod paths are anchored on this filesystem.
     workspaceRoot,
+    features: ['cluster-skills-v1'],
     log
   })
   await server.start(port)

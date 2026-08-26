@@ -15,6 +15,7 @@ import {
   type ShimEvent,
   type ShimFrame
 } from './protocol.js'
+import type { ShimFeature } from './protocol.js'
 
 export interface ShimTransport {
   send(text: string): void
@@ -46,6 +47,8 @@ export interface ShimClientDeps {
   podEnv?: Record<string, string | undefined>
   /** This pod's workspace mount, reported in the hello so the daemon builds pod paths on it. */
   workspaceRoot?: string
+  /** Versioned optional surfaces this shim image can accept. */
+  features?: ShimFeature[]
   clock?: Clock
   backoff?: Backoff
   log?: { info: (m: string) => void; warn: (m: string) => void }
@@ -265,7 +268,8 @@ export class ShimClient {
             JSON.stringify({
               type: 'shim/identity',
               token,
-              ...(this.deps.workspaceRoot ? { workspaceRoot: this.deps.workspaceRoot } : {})
+              ...(this.deps.workspaceRoot ? { workspaceRoot: this.deps.workspaceRoot } : {}),
+              ...(this.deps.features?.length ? { features: this.deps.features } : {})
             } satisfies Extract<ShimFrame, { type: 'shim/identity' }>)
           )
           return
