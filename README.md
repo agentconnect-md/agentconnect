@@ -164,11 +164,12 @@ GitHub, Slack, Google, and Lark / Feishu apps, the sign-in methods you show, and
 preset-agent behavior. Deployment topology — images, ports, public URLs,
 database and bootstrap secrets — stays in `compose.env` or your Helm values.
 
-Prefer to be walked through it? This repository ships a **Claude Code skill** at
-`.claude/skills/agentconnect-setup`. Open Claude Code in your checkout and ask
-it to set up AgentConnect: it runs the guide as an interactive tutorial and
-verifies each checkpoint before continuing, and never asks you to paste secrets
-into chat.
+Prefer to be walked through it? This repository ships a **setup skill** at
+`.claude/skills/agentconnect-setup`, also exposed at `.agents/skills`, so Claude
+Code, Codex, and other agent harnesses pick it up. Open your coding agent in the
+checkout and ask it to set up AgentConnect: it runs the guide as an interactive
+tutorial and verifies each checkpoint before continuing, and never asks you to
+paste secrets into chat.
 
 For authentication, public URLs, Linux sandbox requirements, provider apps,
 image pinning, secrets, and optional Mem0 configuration, follow the
