@@ -75,7 +75,17 @@ export function currentVersion(root: string): string | null {
   try {
     return basename(readlinkSync(link))
   } catch {
-    return null
+    if (process.platform !== 'win32') return null
+    try {
+      renameSync(`${link}.previous`, link)
+      return basename(readlinkSync(link))
+    } catch {
+      try {
+        return basename(readlinkSync(link))
+      } catch {
+        return null
+      }
+    }
   }
 }
 
