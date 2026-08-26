@@ -402,7 +402,7 @@ export default function DaemonDetailView() {
 
         {/* usage — the same session history the desktop band carries */}
         <div className="mx-4 mt-3">
-          <FleetUsageCard scope={{ agentIds: hosted.map((a) => a.id) }} note="agents placed here · 30d" />
+          <FleetUsageCard agentIds={hosted.map((a) => a.id)} note="agents placed here · 30d" />
         </div>
 
         {/* resources — CPU + Memory bars (no fabricated disk) */}
@@ -688,7 +688,7 @@ export default function DaemonDetailView() {
             <ResourceDial label="Memory" pct={daemon.mem} />
           </div>
         </div>
-        <FleetUsageCard scope={{ agentIds: hosted.map((a) => a.id) }} note="agents placed here · 30d" />
+        <FleetUsageCard agentIds={hosted.map((a) => a.id)} note="agents placed here · 30d" />
       </div>
 
       {/* Band two — what this machine can run, and what runs on it. */}

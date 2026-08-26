@@ -26,7 +26,7 @@ import {
 import { AgentIconView, AgentMark } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
-import { fetchUsage, fmtCost, type UsageRange, type UsageSource } from '@/lib/api'
+import { fetchUsage, fmtCost, type UsageRange } from '@/lib/api'
 import { amountToNumber } from '@/lib/amount'
 import { consoleKeys } from '@/lib/swr-keys'
 import { SEG_FILL, bucketLabel, tickInterval } from '@/lib/spend-chart'
@@ -177,38 +177,36 @@ export function ResourceDial({
  * What running here has COST, over the same window and from the same aggregate the Analytics
  * page charts — `GET /usage`, which the console already reads. Nothing new is metered for it.
  *
- * Scope is the one thing that differs, because the aggregate has no daemon dimension: a whole
- * metering INGRESS is exact (the pool meters through the gateway — the same scoping the Credits
- * card uses), while a machine can only be read as the spend of the agents placed on it. That
- * second reading is CURRENT-state, so the header says so rather than claiming the machine spent
- * it: an agent moved here brings the 30 days it spent elsewhere along.
+ * The aggregate has no infrastructure dimension at all, so the only scope it can answer is the
+ * spend of the AGENTS placed here. That is a current-state reading — an agent moved here brings
+ * the 30 days it spent elsewhere along — so the header says "agents placed here" rather than
+ * claiming the machine or the cluster spent it.
+ *
+ * Metering INGRESS is not a substitute, tempting as it looks: a daemon reports its own usage by
+ * default (`usageReporting.enabled`), pool members included, and `gateway` is written only where
+ * a deployment runs an upstream collector and turns that off. So `source=gateway` would read
+ * empty on an ordinary self-hosted cluster, and `source=daemon` would sweep in every other
+ * machine the org connected. Neither isolates a fleet; the agent split does.
  */
-export type FleetUsageScope = { source: UsageSource } | { agentIds: readonly string[] }
-
 const USAGE_RANGE: UsageRange = 'd30'
 
-export function FleetUsageCard({ scope, note }: { scope: FleetUsageScope; note: string }) {
+export function FleetUsageCard({ agentIds, note }: { agentIds: readonly string[]; note: string }) {
   const { activeOrg } = useOrgs()
   const orgId = activeOrg?.id ?? null
-  const source = 'source' in scope ? scope.source : undefined
   // The SAME key the Analytics page uses for this window, so the two reads share one entry
   // rather than fetching the org's aggregate twice.
-  const usage = useSWR(consoleKeys.usage(orgId, USAGE_RANGE, source ?? 'all'), () =>
-    fetchUsage(USAGE_RANGE, orgId!, source)
-  )
+  const usage = useSWR(consoleKeys.usage(orgId, USAGE_RANGE), () => fetchUsage(USAGE_RANGE, orgId!))
 
   const series = usage.data?.series
   const points = series?.points ?? []
   const bucket = series?.bucket ?? 'day'
-  // A per-agent scope needs the split, and an older CP sends none — say so instead of summing
-  // an absent breakdown to zero and drawing "no usage".
-  const needsSplit = 'agentIds' in scope
+  // The split is what makes the scope possible, and an older CP sends none — say so instead of
+  // summing an absent breakdown to zero and drawing "no usage".
   const hasSplit = points.some((p) => p.byAgent)
-  const spendAt = (p: (typeof points)[number]): number =>
-    'agentIds' in scope
-      ? scope.agentIds.reduce((sum, id) => sum + amountToNumber(p.byAgent?.[id] ?? '0'), 0)
-      : amountToNumber(p.costAmount)
-  const data = points.map((p) => ({ label: bucketLabel(p.start, bucket), spend: spendAt(p) }))
+  const data = points.map((p) => ({
+    label: bucketLabel(p.start, bucket),
+    spend: agentIds.reduce((sum, id) => sum + amountToNumber(p.byAgent?.[id] ?? '0'), 0)
+  }))
   const total = data.reduce((sum, d) => sum + d.spend, 0)
   const currency = usage.data?.totals.costCurrency ?? 'USD'
 
@@ -229,7 +227,7 @@ export function FleetUsageCard({ scope, note }: { scope: FleetUsageScope; note: 
   const message =
     usage.error && !usage.data
       ? { icon: true, text: 'unavailable', title: (usage.error as Error).message }
-      : needsSplit && points.length > 0 && !hasSplit
+      : points.length > 0 && !hasSplit
         ? { icon: true, text: 'This control plane reports no per-agent split.', title: undefined }
         : total === 0
           ? { icon: false, text: 'No usage in this window.', title: undefined }

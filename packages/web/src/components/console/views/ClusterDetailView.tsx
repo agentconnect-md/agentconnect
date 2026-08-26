@@ -223,10 +223,11 @@ export default function ClusterDetailView() {
             <FleetStat icon="server" label="Nodes" value={`${serving.length} / ${members.length}`} note="serving" />
           </div>
           <ClusterResourcesCard {...{ online, cpu, mem }} />
-          {/* Scoped by metering INGRESS, not by which members are registered right now: the
-              pool meters through the gateway, so the series is already the cluster's — the same
-              scoping the Cloud reading's Credits card uses. */}
-          <FleetUsageCard scope={{ source: 'gateway' }} note="spend · 30d" />
+          {/* The agents placed here, exactly as the daemon page reads it. A metering ingress
+              cannot stand in for a fleet: a daemon reports its own usage by default, pool
+              members included, so `gateway` is empty on an ordinary cluster and `daemon` sweeps
+              in every other machine the org connected. */}
+          <FleetUsageCard agentIds={hosted.map((a) => a.id)} note="agents placed here · 30d" />
         </div>
       )}
 
