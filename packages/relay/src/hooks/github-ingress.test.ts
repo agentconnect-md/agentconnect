@@ -2062,6 +2062,36 @@ describe('github ingress', () => {
       expect(h.sent.map((msg) => msg.agentId)).toEqual([AGENT, AGENT, AGENT_B])
     })
 
+    it('a team mention narrows the fan-out exactly like the bare agent handle', async () => {
+      const github = {
+        events: ['issue_comment:created'],
+        commentFamilies: ['pull_request' as const],
+        appSlug: 'example-review-app'
+      }
+      h.table.upsert(rule({}, { ...github, agentName: 'review-alpha' }))
+      h.table.upsert(rule({ hookId: HOOK_B, agentId: AGENT_B }, { ...github, agentName: 'review-beta' }))
+      const comment = (body: string, key: string) =>
+        post(
+          'issue_comment',
+          issuesPayload({
+            action: 'created',
+            issue: { number: 43, pull_request: { url: 'https://api.github.com/repos/acme/infra/pulls/43' } },
+            comment: { body, author_association: 'MEMBER' }
+          }),
+          { headers: { 'x-github-delivery': key } }
+        )
+
+      // The team lives in the repository's org, so `@acme/review-alpha` targets that agent alone.
+      await comment('@acme/review-alpha please take another look', 'target-team')
+      await flush()
+      expect(h.sent.map((msg) => msg.agentId)).toEqual([AGENT])
+
+      // A same-named team in a foreign org targets nobody, so the whole repo fan-out stays.
+      await comment('@other-org/review-alpha please take another look', 'foreign-team')
+      await flush()
+      expect(h.sent.map((msg) => msg.agentId)).toEqual([AGENT, AGENT, AGENT_B])
+    })
+
     it('mention mode fails closed when an older rule carries no mention handles', async () => {
       h.table.upsert(rule({}, { events: ['issue_comment:created'], mentionOnly: true }))
       await post(
@@ -2531,8 +2561,22 @@ describe('githubRuleVerdict (pure predicate)', () => {
     // Bounded on BOTH sides — emails/URLs are not mentions, and neither is a
     // longer login that merely starts with our slug.
     expect(matches(r, { ...ctx, mentionText: 'mail team@example-review-app.test' })).toBe(false)
-    expect(matches(r, { ...ctx, mentionText: 'see /apps/@example-review-app/config' })).toBe(true) // '/' is a boundary
     expect(matches(r, { ...ctx, mentionText: 'cc @example-review-apper' })).toBe(false)
+    // `@owner/slug` is GitHub's TEAM form, so it is never a bare mention of the owner.
+    expect(matches(r, { ...ctx, mentionText: 'see /apps/@example-review-app/config' })).toBe(false)
+    expect(matches(r, { ...ctx, mentionText: 'see @example-review-app/ for the app' })).toBe(true)
+  })
+
+  it('accepts the owner-qualified team form of the agent handle, scoped to the repository owner', () => {
+    const r = rule({}, { events: ['issues:*'], mentionOnly: true, agentName: 'review-alpha' })
+    const owned = { ...ctx, eventAction: 'issues:labeled', repoOwnerLogin: 'acme' }
+    expect(matches(r, { ...owned, mentionText: 'cc @acme/review-alpha' })).toBe(true)
+    expect(matches(r, { ...owned, mentionText: 'cc @Acme/Review-Alpha' })).toBe(true) // logins fold case
+    expect(matches(r, { ...owned, mentionText: 'cc @acme/review-alpha-fast' })).toBe(false) // a prefix is not the team
+    expect(matches(r, { ...owned, mentionText: 'cc @other-org/review-alpha' })).toBe(false) // another org's team
+    // The bare handle keeps working, and an unknown owner leaves only that form.
+    expect(matches(r, { ...owned, mentionText: 'cc @review-alpha' })).toBe(true)
+    expect(matches(r, { ...ctx, eventAction: 'issues:labeled', mentionText: 'cc @acme/review-alpha' })).toBe(false)
   })
 
   it.each([

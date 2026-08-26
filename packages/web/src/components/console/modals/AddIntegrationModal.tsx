@@ -1606,7 +1606,7 @@ export default function AddIntegrationModal({
                     return (
                       <div
                         key={m.mode}
-                        title={m.mode === 'mention' ? githubMentionUsage(agent.name) : undefined}
+                        title={m.mode === 'mention' ? githubMentionUsage(agent.name, ghRepoPick) : undefined}
                         className={`flex min-w-0 cursor-pointer items-start gap-[9px] rounded-[9px] border px-3 py-[10px] ${
                           on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
                         }`}

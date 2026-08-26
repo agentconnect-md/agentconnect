@@ -80,9 +80,14 @@ export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string): st
   }
 }
 
-/** Concrete hover copy for the agent-targeted GitHub mention form. */
-export function githubMentionUsage(agentName: string): string {
-  return `Use @${agentName} to trigger only this agent.`
+/** Concrete hover copy for the agent-targeted GitHub mention form. The owner
+ *  form is offered whenever a repository is known: a GitHub team named after the
+ *  agent makes the same handle autocomplete in GitHub's comment composer. */
+export function githubMentionUsage(agentName: string, repoFullName?: string | null): string {
+  const owner = repoFullName?.split('/')[0]
+  return owner
+    ? `Use @${agentName} — or @${owner}/${agentName}, once the organization has a team named ${agentName} — to trigger only this agent.`
+    : `Use @${agentName} to trigger only this agent.`
 }
 
 /** The default create-form selection: pull requests only. */

@@ -8,6 +8,7 @@ import {
   GH_TRIGGER_MODES,
   GH_TRIGGER_PILL,
   githubHookNeedsNormalization,
+  githubMentionUsage,
   githubTriggerTooltip,
   THREAD_COMMENT_EVENT
 } from './github-events'
@@ -35,6 +36,13 @@ describe('GH_TRIGGER_PILL', () => {
     expect(githubTriggerTooltip('every', 'reviewer')).toBe(
       'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and title/body edits are ignored).'
     )
+  })
+
+  it('offers the owner-qualified team form only once a repository names the organization', () => {
+    expect(githubMentionUsage('reviewer')).toBe('Use @reviewer to trigger only this agent.')
+    const owned = githubMentionUsage('reviewer', 'acme/infra')
+    expect(owned).toContain('@reviewer')
+    expect(owned).toContain('@acme/reviewer')
   })
 
   it('mention-mode copy admits the App broadcast and explicit App review requests, without an absolute "only"', () => {

@@ -249,11 +249,21 @@ comment may match a shared `issue_comment` subscription or an explicit
 
 With `mentionOnly` enabled, authored event text must contain either:
 
-- `@<agent-name>` to select one agent; or
+- `@<agent-name>` to select one agent;
+- `@<owner>/<agent-name>` to select that same agent as a GitHub team mention; or
 - `@<app-slug>` to broadcast to all matching hooks in the repository.
 
 The App handle wins when both forms are present. Unrelated mentions do not
 change the candidate set.
+
+The team form exists for discoverability. GitHub's comment composer
+autocompletes organization teams but never a bare agent slug, so an organization
+that creates a visible team named after the agent gets the targeted handle
+suggested as a reporter types. Nothing else changes: the owner comes from the
+delivery's own repository, matching stays pure text against the authored body,
+the team is never read back through the API and needs no members, and a
+same-named team in any other organization selects nobody. Because `@<owner>/<slug>`
+is GitHub's team syntax, it is never also read as a bare mention of `<owner>`.
 
 Every numbered-thread event passes a live, body-free permission decision owned
 by the CP. Webhook `author_association` values are descriptive only: `MEMBER`
@@ -692,6 +702,9 @@ The implementation does not provide:
 - daemon polling as an alternative public ingress;
 - queueing arbitrary generic deliveries while a daemon is offline;
 - automatic replay of ambiguous dispatches;
+- creating, renaming, or deleting the GitHub teams that back the team-mention
+  form — an organization owns those, and the App requests no organization
+  permissions;
 - required GitHub review gates;
 - commit-status reporting; or
 - per-organization custom GitHub Apps or GitHub Enterprise Server support.
