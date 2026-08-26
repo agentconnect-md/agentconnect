@@ -239,6 +239,27 @@ describe('HookRedeliveryReconciler', () => {
     expect(pullRequest.redelivered).toEqual(['7', '8'])
   })
 
+  // The summary carries no issue-vs-PR subject, so BOTH family rows are handed
+  // to the claim; deciding which of them actually landed a run is its job.
+  it('offers both comment-family sibling rows as candidates for one issue_comment GUID', async () => {
+    const pullRow = HookId('33333333-3333-4333-8333-333333333333')
+    const issuesRow = HookId('44444444-4444-4444-8444-444444444444')
+    const h = make({
+      hooks: [
+        ghHook({ id: pullRow, events: ['pull_request:*', 'issue_comment:created'], commentFamilies: ['pull_request'] }),
+        ghHook({ id: issuesRow, events: ['issues:*', 'issue_comment:created'], commentFamilies: ['issues'] })
+      ],
+      deliveries: [delivery({ id: '9', guid: 'shared-comment', event: 'issue_comment', action: 'created' })],
+      landed: ['shared-comment'],
+      claim: true
+    })
+    await h.reconciler.tick()
+    expect(h.claimMock).toHaveBeenCalledWith('shared-comment', [pullRow, issuesRow], new Date(NOW), [
+      ...FAILED_DELIVERY_BACKOFF_MS
+    ])
+    expect(h.redelivered).toEqual(['9'])
+  })
+
   it('silences issue/PR edits and close/reopen events', async () => {
     const h = make({
       hooks: [ghHook({ events: ['issues:*', 'pull_request:*'] })],

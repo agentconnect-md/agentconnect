@@ -1737,6 +1737,61 @@ describe('R1/R2a persistence foundation', () => {
     ).toEqual({ repoFullName: 'acme/new-name', lastFiredAt: redeliveredAt })
   })
 
+  it('adopts the destination sibling session namespace when a github row is reassigned', async () => {
+    await seedDaemon(prisma, D1)
+    const hooks = new PgHookRepo(prisma)
+    const agentA = AgentId(randomUUID())
+    const agentB = AgentId(randomUUID())
+    await seedAgent(prisma, agentA, { daemonId: D1, name: `move-from-${randomUUID().slice(0, 8)}` })
+    await seedAgent(prisma, agentB, { daemonId: D1, name: `move-to-${randomUUID().slice(0, 8)}` })
+    const sharedRepoId = 7701n
+    const soloRepoId = 7702n
+    const githubRow = (hookId: HookId, agentId: AgentId, repoId: bigint, family: string, events: string[]) => ({
+      hookId,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      agentId,
+      kind: 'github' as const,
+      name: `family-${family}-${hookId}`,
+      sessionMode: 'perThread' as const,
+      repoId,
+      repoFullName: 'acme/legacy',
+      family,
+      events
+    })
+
+    // B already watches the shared repo on a grandfathered owner/repo namespace.
+    const destinationSibling = HookId(randomUUID())
+    await hooks.upsert(githubRow(destinationSibling, agentB, sharedRepoId, 'issues', ['issues:*']))
+    await prisma.hookDef.update({ where: { id: destinationSibling }, data: { githubSessionKey: 'acme/legacy' } })
+
+    const moved = HookId(randomUUID())
+    await hooks.upsert(githubRow(moved, agentA, sharedRepoId, 'pull_request', ['pull_request:*']))
+    expect(
+      await prisma.hookDef.findUniqueOrThrow({ where: { id: moved }, select: { githubSessionKey: true } })
+    ).toEqual({ githubSessionKey: `github:${sharedRepoId}` })
+
+    // Reassigning to B on the SAME repo must join B's family namespace.
+    await hooks.upsert({
+      ...githubRow(moved, agentB, sharedRepoId, 'pull_request', ['pull_request:*']),
+      expectedAgentId: agentA
+    })
+    expect(
+      await prisma.hookDef.findUniqueOrThrow({ where: { id: moved }, select: { githubSessionKey: true } })
+    ).toEqual({ githubSessionKey: 'acme/legacy' })
+
+    // With no destination sibling, a same-repo agent move keeps its own key.
+    const solo = HookId(randomUUID())
+    await hooks.upsert(githubRow(solo, agentA, soloRepoId, 'pull_request', ['pull_request:*']))
+    await prisma.hookDef.update({ where: { id: solo }, data: { githubSessionKey: 'acme/solo' } })
+    await hooks.upsert({
+      ...githubRow(solo, agentB, soloRepoId, 'pull_request', ['pull_request:*']),
+      expectedAgentId: agentA
+    })
+    expect(await prisma.hookDef.findUniqueOrThrow({ where: { id: solo }, select: { githubSessionKey: true } })).toEqual(
+      { githubSessionKey: 'acme/solo' }
+    )
+  })
+
   it('persists effective installation permissions and never moves an org claim', async () => {
     const repo = new PgGithubInstallationRepo(prisma)
     const installationId = BigInt(4_000_000 + Math.floor(Math.random() * 100_000))

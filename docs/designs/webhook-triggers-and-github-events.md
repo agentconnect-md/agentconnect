@@ -627,6 +627,9 @@ Three constraints keep those rules from overlapping:
 
 Sibling rows of one repository answer the same threads, so they must agree on the
 anchoring target and share one session-key prefix; a divergent anchor is refused.
+Either half of a row's binding moving — a repository re-target or a reassignment
+to another agent — re-reads the destination's siblings and adopts their prefix,
+so a moved row never opens a second namespace beside the family it joins.
 Legacy rows are split by migration, the review-capable family keeping the
 original row id so review projections, publication leases and run history stay
 attached to it.
@@ -708,6 +711,18 @@ Reconciliation does not retry an ambiguous dispatch, an agent/business
 rejection, or any row that may already have produced an effect. Partial
 `review_request_required` fanout is retried only when every observed sibling
 proves that no agent or external review effect occurred.
+
+A delivery summary names only the event, action and repository, so the candidate
+set for one GUID is deliberately coarse — an `issue_comment` delivery lists both
+comment-family sibling rows even though only one of them can own the thread. The
+retryable claim therefore requires the landed runs to be a _subset_ of that
+candidate set, each of them an active side-effect-free retry row; a landed run
+from outside the set still blocks the whole request. A candidate that landed
+nothing is the relay's own precise filtering — subject family, mention text,
+labels, none of which the summary carries — which the redelivered payload
+reproduces exactly, so it is tolerated. The single exception is a candidate hook
+created after the delivery was ingested: it would read the redelivery as a first
+run of a stale event, and it blocks.
 
 An admitted turn ended by a handover (`agent_handover`) is deliberately outside
 that set, and the reason is a stage question rather than a wording one. Retry
