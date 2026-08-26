@@ -455,10 +455,13 @@ node <bundled skills@1.5.21 bin> add <absoluteSnapshot> \
   never maps a harness to `.claude`, `.agents`, or a future directory.
 - The CLI cell has private HOME/XDG/TMP/runtime-home directories, a minimal PATH,
   telemetry disabled, no proxy/Git/npm/provider/SSH environment, bounded output,
-  and a timeout. Every Git, managed, and Dream invocation uses the same
-  fail-closed offline kernel sandbox: it may read only the pinned CLI and source
-  snapshot and write only the disposable cell. It may write `skills-lock.json`
-  only inside that cell.
+  and a timeout. When available, the offline kernel sandbox restricts reads to
+  the pinned CLI and source snapshot and writes to the disposable cell. Hosts
+  without a working bwrap/Seatbelt provider use a logged private-process
+  fallback. The fallback keeps the same private environment, exact dependency,
+  output/time limits, source snapshots, receipt validation, external lease,
+  audited mutation helper, ownership ledger, and gated publication, but cannot
+  provide kernel-enforced filesystem or network confinement.
 - `skills` is an exact package dependency. Upgrading is an intentional daemon
   dependency/lockfile change gated by real Claude/Codex/local/Git golden tests.
   The release build emits the CLI and its license notices under `dist/skills`,

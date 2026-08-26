@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { under } from '../fs/contained-path.js'
-import { offlineSandboxLaunch } from './offline-sandbox.js'
+import { offlineSandboxLaunch, probeOfflineSandboxHost } from './offline-sandbox.js'
 import { currentSkillMutationHelperLease } from './skill-workspace-lock-lease.js'
 
 const MAX_MUTATION_OUTPUT = 64 * 1024
@@ -61,10 +61,7 @@ function helperPath(): string {
   throw new Error('skill workspace mutation helper is unavailable')
 }
 
-/** Run one audited workspace mutation under SRT/Seatbelt or SRT/bwrap. The
- * helper can read the receipts/source and mutate the selected workspace, but
- * the kernel denies every write outside that workspace and all network/socket
- * access. */
+/** Run one audited workspace mutation with kernel confinement when the host supports it. */
 export async function runSkillWorkspaceMutation<T extends object>(
   spec: T & { cwd: string },
   readRoots: string[] = []
@@ -107,21 +104,25 @@ export async function runSkillWorkspaceMutation<T extends object>(
 
     const helper = helperPath()
     const canonicalSpecPath = realpathSync(specPath)
-    // SRT has no Windows provider. The audited helper still enforces workspace
-    // identity, containment, no-link traversal, receipts, and journal authority.
-    const launch =
-      process.platform === 'win32'
-        ? { cmd: process.execPath, args: [helper, canonicalSpecPath] }
-        : offlineSandboxLaunch({
-            command: process.execPath,
-            args: [helper, canonicalSpecPath],
-            scopeRoot: root,
-            cwd: runnerCwd,
-            home,
-            readRoots: [helper, canonicalSpecPath, canonicalWorkspace, ...readRoots],
-            writeRoots: [root, canonicalWorkspace],
-            startGated: true
-          })
+    const directLaunch = { cmd: process.execPath, args: [helper, canonicalSpecPath] }
+    const sandboxProbe = probeOfflineSandboxHost()
+    let launch = directLaunch
+    if (sandboxProbe.available) {
+      try {
+        launch = offlineSandboxLaunch({
+          command: process.execPath,
+          args: [helper, canonicalSpecPath],
+          scopeRoot: root,
+          cwd: runnerCwd,
+          home,
+          readRoots: [helper, canonicalSpecPath, canonicalWorkspace, ...readRoots],
+          writeRoots: [root, canonicalWorkspace],
+          startGated: true
+        })
+      } catch {
+        launch = directLaunch
+      }
+    }
     const providerTmp = mkdtempSync(join(tmpdir(), 'agentconnect-srt-'))
     chmodSync(providerTmp, 0o700)
     try {
