@@ -51,6 +51,7 @@ function build(
     log?: Logger
     participants?: Array<{ agentId: string; daemonId?: string; primary?: boolean }>
     targetSessionId?: string
+    supports?: boolean
   } = {}
 ) {
   const sent: RdMsgWebchat[] = []
@@ -58,7 +59,10 @@ function build(
     sent.push(m)
     return over.ack ?? { msgId: m.msgId, accepted: true }
   })
-  const daemon = 'daemon' in over ? over.daemon : ({ sendMsg } as unknown as RelayDaemonConnection)
+  const daemon =
+    'daemon' in over
+      ? over.daemon
+      : ({ sendMsg, supports: () => over.supports !== false } as unknown as RelayDaemonConnection)
   const register = vi.fn()
   const unregister = vi.fn()
   const transport = new FakeBrowserTransport()
@@ -152,6 +156,11 @@ describe('parseBrowserFrame', () => {
       op: { op: 'set_fast', fastMode: true }
     })
     expect(parseBrowserFrame({ type: 'cancel' }, USER)).toEqual({ op: { op: 'cancel' } })
+    expect(parseBrowserFrame({ type: 'attach' }, USER)).toEqual({ op: { op: 'attach' } })
+    expect(parseBrowserFrame({ type: 'attach', agentId: AGENT }, USER)).toEqual({
+      op: { op: 'attach', agentId: AGENT }
+    })
+    expect(parseBrowserFrame({ type: 'attach', agentId: 'not-a-uuid' }, USER)).toBeNull()
   })
   it('preserves structured mentions on the turn op and surfaces targets separately', () => {
     const PEER = '22222222-2222-4222-8222-222222222222'
@@ -320,6 +329,40 @@ describe('RelayBrowserConnection', () => {
       type: 'resumed',
       ack: { accepted: true, turnId, agentId: AGENT }
     })
+  })
+
+  it('forwards an attach probe and surfaces the named stream on {type:"attached"}', async () => {
+    const turnId = '22222222-2222-4222-8222-222222222222'
+    const { transport, sent } = build({ ack: { msgId: 'attach-1', accepted: true, turnId, generation: 2 } })
+    transport.feed({ type: 'attach', agentId: AGENT })
+    await tick()
+    expect(sent[0]).toMatchObject({ agentId: AGENT, payload: { op: 'attach', agentId: AGENT } })
+    expect(transport.last('attached')).toEqual({
+      type: 'attached',
+      ack: { accepted: true, turnId, agentId: AGENT, generation: 2 }
+    })
+  })
+
+  it('refuses the attach probe locally for a daemon without webchat-attach-v1', async () => {
+    const { transport, sent } = build({ supports: false })
+    transport.feed({ type: 'attach', agentId: AGENT })
+    await tick()
+    expect(sent).toHaveLength(0)
+    expect(transport.last('attached')).toEqual({
+      type: 'attached',
+      ack: { accepted: false, agentId: AGENT, reason: 'unsupported' }
+    })
+  })
+
+  it('answers the attach probe with a quiet per-agent refusal when the daemon is offline', async () => {
+    const { transport } = build({ daemon: undefined })
+    transport.feed({ type: 'attach' })
+    await tick()
+    expect(transport.last('attached')).toEqual({
+      type: 'attached',
+      ack: { accepted: false, agentId: AGENT, reason: 'no_agent' }
+    })
+    expect(transport.last('error')).toBeUndefined()
   })
 
   // A stream that "never came back" is diagnosed from these lines alone: who joined/left the

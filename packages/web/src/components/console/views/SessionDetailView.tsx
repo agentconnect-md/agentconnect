@@ -1537,6 +1537,7 @@ export default function SessionDetailView() {
     isPgBusy,
     setPgImage,
     pgSend,
+    pgAttach,
     markSessionTarget,
     getPgQueue,
     pgCancelQueued,
@@ -2323,6 +2324,15 @@ export default function SessionDetailView() {
     if (!visibleTailReady || sessionBusy) return
     void refreshTail()
   }, [visibleTailReady, sessionBusy, sessionActivityVersion, sessionStreamGeneration, refreshTail])
+
+  // A reload mid-turn wipes the provider's live state (busy flag, stream lanes,
+  // streamed reply). Probe the conversation's daemons for a still-streaming turn
+  // and reattach, restoring the typing indicator and the live reply stream.
+  useEffect(() => {
+    if (!sid || !session || session.platform !== 'webchat') return
+    if (!session.channelId || !session.agentId) return
+    pgAttach(sid, session.agentId, session.channelId)
+  }, [sid, session?.platform, session?.channelId, session?.agentId, pgAttach])
 
   // Everything above only APPENDS rows; nothing ever moved the viewport, so a
   // live session's newest output landed below the fold. Follow it — but only for

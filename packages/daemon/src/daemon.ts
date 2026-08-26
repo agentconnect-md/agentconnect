@@ -6831,9 +6831,9 @@ export class Daemon {
     // Session-targeted continuation: `turn` dispatches onto the target session's
     // own coordinates; runtime-set ops are refused (this ingress adds human
     // input, never session-global administration); a context copy is a no-op
-    // (the roster is fixed at one). resume/cancel/close keep their ordinary
-    // shape — resume is keyed by (turnId, agentId), cancel by the conversation's
-    // own webchat-attached turns.
+    // (the roster is fixed at one). resume/attach/cancel/close keep their ordinary
+    // shape — resume is keyed by (turnId, agentId), attach by (conversation,
+    // agentId), cancel by the conversation's own webchat-attached turns.
     if (msg.targetSessionId !== undefined) {
       switch (op.op) {
         case 'turn':
@@ -6921,6 +6921,18 @@ export class Daemon {
           accepted: resumed.accepted,
           ...(resumed.turnId ? { turnId: resumed.turnId } : {}),
           ...(resumed.reason ? { reason: resumed.reason } : {})
+        }
+      }
+      case 'attach': {
+        // Read-only probe: an accepted verdict names the live stream (turnId +
+        // current generation) and the browser follows with an ordinary resume.
+        const probed = this.webchatTransport.probeWebchatStream(msg.agentId, msg.chatId)
+        return {
+          msgId: msg.msgId,
+          accepted: probed.accepted,
+          ...(probed.turnId ? { turnId: probed.turnId } : {}),
+          ...(probed.generation !== undefined ? { generation: probed.generation } : {}),
+          ...(probed.reason ? { reason: probed.reason } : {})
         }
       }
       case 'set_model':

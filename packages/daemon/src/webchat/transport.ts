@@ -630,6 +630,28 @@ export class WebchatTransport {
     else sink.done(event.done)
   }
 
+  /** Cold-load discovery (`attach`, webchat-attach-v1): name the live stream for
+   *  (conversation, agent) so a browser that reloaded mid-turn can resume it from
+   *  scratch. Read-only — the follow-up `resume` does the rebind + replay. */
+  probeWebchatStream(
+    agentId: string,
+    conversationId: string
+  ): { accepted: boolean; turnId?: string; generation?: number; reason?: string } {
+    this.pruneWebchatStreams()
+    let match: WebchatTurnStream | undefined
+    for (const stream of this.webchatStreams.values()) {
+      if (stream.agentId !== agentId || stream.conversationId !== conversationId) continue
+      // A completed turn is already in the transcript; nothing live to reattach.
+      if (stream.completedAt !== undefined || stream.replayDisabled) continue
+      match = stream // insertion order: the last match is the newest admitted turn
+    }
+    if (!match) return { accepted: false, reason: 'stream_not_found' }
+    // A trimmed replay head cannot rebuild the reply from scratch — refuse; the
+    // transcript covers it at turn end.
+    if (match.replayFloor > 0) return { accepted: false, turnId: match.turnId, reason: 'stream_gap' }
+    return { accepted: true, turnId: match.turnId, generation: match.resumeGeneration }
+  }
+
   resumeWebchatStream(
     agentId: string,
     conversationId: string,

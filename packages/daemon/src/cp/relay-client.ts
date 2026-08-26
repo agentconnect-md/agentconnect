@@ -17,6 +17,7 @@ import {
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
+  RD_WEBCHAT_ATTACH_V1,
   type RelayDaemonFrame,
   type RdHelloOk,
   type RdMsg,
@@ -46,6 +47,8 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
+  // The relay refuses the webchat `attach` probe for daemons without this.
+  RD_WEBCHAT_ATTACH_V1,
   // The relay gates gitlab rd/msg dispatch on this capability.
   GITLAB_COM_V1_FEATURE,
   // §24.4: and gates a SELF-MANAGED gitlab delivery on this one, per delivery attempt.

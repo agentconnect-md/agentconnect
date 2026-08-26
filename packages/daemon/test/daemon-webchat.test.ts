@@ -1730,6 +1730,68 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
         () => {}
       )
     ).toMatchObject({ accepted: false, turnId, reason: 'stream_gap' })
+
+    // A from-scratch reattach cannot rebuild past the trimmed head either — the
+    // cold-load probe refuses the same way instead of naming an unresumable turn.
+    expect(
+      await (daemon as any).handleRelayMsg(rd({ op: 'attach' }, { msgId: 'attach-overflow' }), () => {})
+    ).toMatchObject({ accepted: false, turnId, reason: 'stream_gap' })
+    await daemon.stop()
+  })
+
+  it('attach names the live stream so a reloaded browser can resume it from scratch', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    // Idle conversation: the probe answers the quiet not-found, never an error.
+    expect(
+      await (daemon as any).handleRelayMsg(rd({ op: 'attach' }, { msgId: 'attach-idle' }), () => {})
+    ).toMatchObject({ accepted: false, reason: 'stream_not_found' })
+
+    const pre: RdChatEvent[] = []
+    const stream = (daemon as any).webchatTransport.createWebchatTurnStream(AGENT_ID, CONV, turnId, {
+      output: (output: WebchatOutput) => pre.push({ kind: 'output', output }),
+      done: (done: WebchatDone) => pre.push({ kind: 'done', done })
+    })
+    stream.sink.output({ conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'partial' } })
+
+    // The probe is read-only: it names the turn + its current resume generation and
+    // replays nothing itself — the follow-up resume does the rebind + replay.
+    const probeEvents: RdChatEvent[] = []
+    expect(
+      await (daemon as any).handleRelayMsg(rd({ op: 'attach' }, { msgId: 'attach-live' }), (event: RdChatEvent) =>
+        probeEvents.push(event)
+      )
+    ).toMatchObject({ accepted: true, turnId, generation: 0 })
+    expect(probeEvents).toEqual([])
+
+    const replayed: RdChatEvent[] = []
+    expect(
+      await (daemon as any).handleRelayMsg(
+        rd({ op: 'resume', turnId, generation: 1, afterIndex: -1 }, { msgId: 'attach-resume' }),
+        (event: RdChatEvent) => replayed.push(event)
+      )
+    ).toMatchObject({ accepted: true, turnId })
+    expect(replayed).toEqual([
+      {
+        kind: 'output',
+        output: {
+          conversationId: CONV,
+          turnId,
+          agentId: AGENT_ID,
+          index: 0,
+          event: { kind: 'message', text: 'partial' }
+        }
+      }
+    ])
+
+    // A completed turn is transcript-owned — the probe stops naming it.
+    stream.sink.done({ conversationId: CONV, turnId, stopReason: 'end_turn' })
+    expect(
+      await (daemon as any).handleRelayMsg(rd({ op: 'attach' }, { msgId: 'attach-done' }), () => {})
+    ).toMatchObject({ accepted: false, reason: 'stream_not_found' })
     await daemon.stop()
   })
 

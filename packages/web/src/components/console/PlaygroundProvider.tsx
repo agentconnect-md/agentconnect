@@ -111,6 +111,11 @@ interface PlaygroundData {
      *  agent whose runtime has the skill instead of waking the roster to decline. */
     commandPick?: { agentId: string; name: string }
   ) => boolean
+  /** Reattach a webchat session after a cold page load: probe the conversation's
+   *  daemons for a turn still streaming (the reload wiped the busy flag, lanes,
+   *  and streamed reply) and, on a hit, recreate the lane, restore the typing
+   *  indicator, and replay the reply from the start. No-op while already busy. */
+  pgAttach: (id: string, agentId: string, conversationId: string) => void
   /** Mark `id` (a CP session id) as a session-targeted continuation: the socket
    *  mints through the session-target token route and the daemon dispatches
    *  turns onto that session's own platform coordinates
@@ -803,7 +808,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
    *  existing conversation (adopted webchat sessions); omit it for a fresh playground
    *  turn (the CP mints the id). */
   const connect = useCallback(
-    (id: string, agentId: string, conversationId?: string, resumeStream = false): Conn => {
+    (id: string, agentId: string, conversationId?: string, resumeStream = false, probeOnReady = false): Conn => {
       const resumeId = conversationId ?? conversationIds.current.get(id)
       if (resumeId) conversationIds.current.set(id, resumeId)
       const existing = conns.current.get(id)
@@ -975,7 +980,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 participants?: WebchatParticipant[]
                 output?: WebchatOutput
                 done?: WebchatDone
-                ack?: { accepted?: boolean; reason?: string; detail?: string; turnId?: string; agentId?: string }
+                ack?: {
+                  accepted?: boolean
+                  reason?: string
+                  detail?: string
+                  turnId?: string
+                  agentId?: string
+                  generation?: number
+                }
                 post?: WebchatPost
                 initiator?: string
               }
@@ -1016,6 +1028,12 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 }
                 if (resumeStream && busyRef.current[id]) {
                   sendResume(ws)
+                } else if (probeOnReady && !busyRef.current[id] && lanesOf(id).length === 0) {
+                  // Cold-load discovery: ask each verified participant's daemon
+                  // whether a turn is still streaming here (see the 'attached'
+                  // handler below). Idle daemons answer with a quiet refusal.
+                  const probeIds = m.participants?.length ? m.participants.map((p) => p.agentId) : [agentId]
+                  for (const probeId of probeIds) ws.send(JSON.stringify({ type: 'attach', agentId: probeId }))
                 }
               } else if (m.type === 'output') {
                 if (m.output) receiveOutput(id, m.output)
@@ -1067,6 +1085,25 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 }
                 const cursor = key ? streamCursors.current.get(key) : undefined
                 if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
+              } else if (m.type === 'attached') {
+                // Cold-load probe verdict: a hit names the in-flight turn — recreate
+                // its lane, seed the cursor's generation from the daemon's (so our
+                // resume outruns pre-reload generations), restore busy, and pull the
+                // stream from the start through the ordinary resume path. A miss is
+                // the normal idle answer and stays silent.
+                const a = m.ack
+                if (a?.accepted === true && typeof a.turnId === 'string' && typeof a.agentId === 'string') {
+                  const key = laneKey(id, a.agentId)
+                  if (!streamCursors.current.has(key) && !finishedFor(id, a.turnId)?.has(a.agentId)) {
+                    const cursor = createWebchatCursor<WebchatOutput, WebchatDone>(a.turnId)
+                    bindWebchatTurn(cursor, a.turnId)
+                    if (typeof a.generation === 'number') cursor.resumeGeneration = a.generation
+                    streamCursors.current.set(key, cursor)
+                    syncBusyLanes(id)
+                    setBusy(id, true)
+                    sendLaneResume(ws, key)
+                  }
+                }
               } else if (m.type === 'resumed' && m.ack?.accepted !== false) {
                 const key = cursorKeyFor(id, m.ack?.agentId)
                 const cursor = key ? streamCursors.current.get(key) : undefined
@@ -1112,7 +1149,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               } else if (m.type === 'ack' && m.ack?.accepted === false) {
                 rejectLane(m.ack.agentId, m.ack.turnId, m.ack.reason, m.ack.detail)
               } else if (m.type === 'error') {
-                failStream(id, 'Connection error.')
+                // An error frame with nothing in flight (e.g. an older relay answering
+                // the attach probe with 'unrecognized frame') must not push a warning
+                // step into an idle transcript.
+                if (busyRef.current[id]) failStream(id, 'Connection error.')
               }
             }
             if (conns.current.get(id) === conn) conn.ws = ws
@@ -1536,6 +1576,16 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     sessionTargets.current.add(id)
   }, [])
 
+  /** See PlaygroundData.pgAttach. Doubles as socket warming: a reused live conn
+   *  skips the probe (its ready already passed — nothing was lost in a reload). */
+  const pgAttach = useCallback(
+    (id: string, agentId: string, conversationId: string): void => {
+      if (!conversationId || busyRef.current[id]) return
+      connect(id, agentId, conversationId, false, true).ready.catch(() => {})
+    },
+    [connect]
+  )
+
   const value = useMemo<PlaygroundData>(
     () => ({
       getPgInput,
@@ -1549,6 +1599,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      pgAttach,
       markSessionTarget,
       getPgQueue,
       pgCancelQueued,
@@ -1575,6 +1626,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      pgAttach,
       markSessionTarget,
       getPgQueue,
       pgCancelQueued,
