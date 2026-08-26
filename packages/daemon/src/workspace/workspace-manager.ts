@@ -2154,6 +2154,7 @@ export class WorkspaceManager {
         try {
           await this.renameWorkspaceDirectory(previous, cwd)
         } catch (restoreErr) {
+          mkdirSync(cwd, { recursive: true })
           throw new AggregateError(
             [err, restoreErr],
             'workspace publication failed and the previous workspace could not be restored'

@@ -709,9 +709,10 @@ describe('prepareWorkspaceForActivation', () => {
     expect(readdirSync(path)).toEqual([])
   })
 
-  it.runIf(process.platform === 'win32')('retries transient Windows directory rename failures', async () => {
+  it('retries transient Windows directory rename failures', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'ac-ws-convert-'))
     const path = join(parent, 'workspace')
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
     let failed = false
     renameMock.mockImplementation(async (from, to) => {
       if (!failed && from === path) {
@@ -724,7 +725,11 @@ describe('prepareWorkspaceForActivation', () => {
       mkdirSync(join(target, '.git'), { recursive: true })
     })
 
-    await workspaces.prepareWorkspaceForActivation(gitRepoAgent(path))
+    try {
+      await workspaces.prepareWorkspaceForActivation(gitRepoAgent(path))
+    } finally {
+      platform.mockRestore()
+    }
 
     expect(failed).toBe(true)
     expect(existsSync(join(path, '.git'))).toBe(true)
