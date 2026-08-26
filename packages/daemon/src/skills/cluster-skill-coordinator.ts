@@ -11,6 +11,7 @@ export interface ClusterSkillSnapshotSource {
   sourceKind: 'agent' | 'managed' | 'dream'
   sourceDir: string
   selections: string[]
+  expectedLeaves: string[]
 }
 
 export function clusterSkillSupportRequired(input: {
@@ -52,6 +53,7 @@ export class ClusterSkillCoordinator {
     skillsAgentId: string
     shimGeneration: number
     sources: ClusterSkillSnapshotSource[]
+    gitResolutions?: NonNullable<ClusterSkillLedger['gitResolutions']>
     client: ClusterSkillClient
     isLaunchCurrent?: () => boolean
   }): Promise<ClusterSkillLedger> {
@@ -59,7 +61,7 @@ export class ClusterSkillCoordinator {
       throw new Error('cluster skill reconciliation targets a stale sandbox launch')
     }
     const operationId = randomUUID()
-    const sources = [...input.sources].sort((a, b) => a.sourceId.localeCompare(b.sourceId))
+    const sources = [...input.sources]
     if (new Set(sources.map((source) => source.sourceId)).size !== sources.length) {
       throw new Error('cluster skill sources contain duplicate identities')
     }
@@ -133,16 +135,16 @@ export class ClusterSkillCoordinator {
       returnedSelections.set(root.sourceId, selected)
     }
     for (const source of sources) {
-      if (source.selections.length === 0) continue
+      if (source.expectedLeaves.length === 0) continue
       const returned = returnedSelections.get(source.sourceId) ?? new Set<string>()
       if (
-        source.selections.some((selection) => !returned.has(selection)) ||
-        returned.size !== source.selections.length
+        source.expectedLeaves.some((selection) => !returned.has(selection)) ||
+        returned.size !== source.expectedLeaves.length
       ) {
         throw new Error('cluster skill shim returned an incomplete selection receipt')
       }
     }
-    const ledger = { roots: reply.roots }
+    const ledger = { roots: reply.roots, gitResolutions: input.gitResolutions ?? [] }
     const committed = await this.store.commitClusterSkillReconcile({
       ...authority,
       priorRevision: begun.priorRevision,

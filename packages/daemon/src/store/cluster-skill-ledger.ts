@@ -22,7 +22,20 @@ export const ClusterSkillOwnedRootSchema = z
   .strict()
 
 export const ClusterSkillLedgerSchema = z
-  .object({ roots: z.array(ClusterSkillOwnedRootSchema).max(256) })
+  .object({
+    roots: z.array(ClusterSkillOwnedRootSchema).max(256),
+    gitResolutions: z
+      .array(
+        z
+          .object({
+            definitionDigest: z.string().regex(/^[a-f0-9]{64}$/),
+            resolvedCommit: z.string().regex(/^[a-f0-9]{40}$/)
+          })
+          .strict()
+      )
+      .max(64)
+      .optional()
+  })
   .strict()
   .superRefine((value, ctx) => {
     if (value.roots.reduce((total, root) => total + root.files.length, 0) > 256) {

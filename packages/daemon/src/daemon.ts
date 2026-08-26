@@ -170,6 +170,7 @@ import { acceptedDreamSkillSources } from './skills/dream-skills.js'
 import { acquireGitSkillSource } from './skills/skill-git-source.js'
 import { inspectLocalSkillSource } from './skills/skill-source-snapshot.js'
 import { resolveSkillSelections } from './skills/skill-cli-selection.js'
+import { currentGitResolutions, gitResolutionDigest } from './skills/install-skills.js'
 import {
   ClusterSkillCoordinator,
   clusterSkillSupportRequired,
@@ -3357,30 +3358,41 @@ export class Daemon {
     }
     const scratch = await mkdtemp(join(tmpdir(), 'agentconnect-cluster-skills-'))
     try {
-      const sources: ClusterSkillSnapshotSource[] = []
+      const gitSources: ClusterSkillSnapshotSource[] = []
       const managed = this.managedSkillCache
         ? await this.managedSkillCache.resolve(agent).catch((error: unknown) => {
             this.log.warn(`skills: managed sources unavailable for ${agent.id} (${(error as Error).message})`)
             return []
           })
         : []
-      for (const source of [...managed, ...dreamed]) {
-        sources.push({
-          sourceId: source.key,
-          sourceKind: source.kind,
-          sourceDir: source.sourceDir,
-          selections: [source.name]
-        })
-      }
+      const configuredGitSources = agent.skills.filter((entry): entry is typeof entry & { githubRepoId: string } =>
+        Boolean(entry.githubRepoId)
+      )
+      const resolutionsByDefinition = new Map(
+        currentGitResolutions(configuredGitSources, prior?.ledger.gitResolutions ?? []).map((resolution) => [
+          resolution.definitionDigest,
+          resolution.resolvedCommit
+        ])
+      )
       for (const [index, entry] of agent.skills.entries()) {
         if (!entry.githubRepoId) continue
         const currentEntry = { ...entry, githubRepoId: entry.githubRepoId }
         try {
-          const acquired = await acquireGitSkillSource(currentEntry, {
-            destination: join(scratch, `git-${index}`),
-            agentId: agent.id,
-            useGitCredential: this.workspaces.usesGithubApp(agent)
-          })
+          const definitionDigest = gitResolutionDigest(currentEntry)
+          const retainedCommit = resolutionsByDefinition.get(definitionDigest)
+          const acquired = await acquireGitSkillSource(
+            retainedCommit ? { ...currentEntry, ref: retainedCommit } : currentEntry,
+            {
+              destination: join(scratch, `git-${index}`),
+              agentId: agent.id,
+              useGitCredential: this.workspaces.usesGithubApp(agent)
+            }
+          )
+          const resolvedCommit = acquired.resolvedCommit.toLowerCase()
+          if (!/^[a-f0-9]{40}$/.test(resolvedCommit) || (retainedCommit && resolvedCommit !== retainedCommit)) {
+            throw new Error(`Git source "${currentEntry.name}" did not resolve to its retained commit`)
+          }
+          resolutionsByDefinition.set(definitionDigest, resolvedCommit)
           const inspected = await inspectLocalSkillSource(acquired.sourceDir)
           const selected = await resolveSkillSelections(
             currentEntry.name,
@@ -3388,11 +3400,12 @@ export class Daemon {
             inspected.files,
             currentEntry.skills
           )
-          sources.push({
-            sourceId: `agent:${currentEntry.githubRepoId}:${acquired.resolvedCommit}`,
+          gitSources.push({
+            sourceId: `agent:${index}:${definitionDigest}:${resolvedCommit}`,
             sourceKind: 'agent',
             sourceDir: acquired.sourceDir,
-            selections: selected.cliSelections
+            selections: selected.cliSelections,
+            expectedLeaves: selected.expectedLeaves
           })
         } catch (error) {
           this.log.warn(
@@ -3400,6 +3413,24 @@ export class Daemon {
           )
         }
       }
+      const localSource = (
+        source: (typeof managed)[number] | (typeof dreamed)[number]
+      ): ClusterSkillSnapshotSource => ({
+        sourceId: source.key,
+        sourceKind: source.kind,
+        sourceDir: source.sourceDir,
+        selections: [source.name],
+        expectedLeaves: [source.name]
+      })
+      const sources = [
+        ...gitSources,
+        ...[...managed].sort((a, b) => a.key.localeCompare(b.key)).map(localSource),
+        ...[...dreamed].sort((a, b) => a.key.localeCompare(b.key)).map(localSource)
+      ]
+      const gitResolutions = currentGitResolutions(
+        configuredGitSources,
+        [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))
+      )
       await new ClusterSkillCoordinator(this.store).reconcile({
         authority: {
           groupId: duty.groupId,
@@ -3411,6 +3442,7 @@ export class Daemon {
         skillsAgentId,
         shimGeneration,
         sources,
+        gitResolutions,
         client,
         isLaunchCurrent: () =>
           plane.workspaceIncarnationFor?.(agent.id) === workspaceIncarnation &&

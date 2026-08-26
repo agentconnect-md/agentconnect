@@ -30,14 +30,16 @@ describe('cluster skill coordinator', () => {
         await mkdir(sourceDir)
         await writeFile(join(sourceDir, 'SKILL.md'), `---\nname: ${kind}\ndescription: fixture\n---\n# ${kind}\n`)
         return {
-          sourceId: `${kind}:one`,
+          sourceId: `${kind === 'agent' ? 'z' : kind === 'managed' ? 'm' : 'a'}:${kind}`,
           sourceKind: kind as 'agent' | 'managed' | 'dream',
           sourceDir,
-          selections: [kind]
+          selections: [kind === 'agent' ? 'Agent Display Name' : kind],
+          expectedLeaves: [kind]
         }
       })
     )
     const events: string[] = []
+    let reconciledSourceIds: string[] = []
     const store: ClusterSkillJournalStore = {
       async beginClusterSkillReconcile() {
         events.push('begin-journal')
@@ -68,6 +70,7 @@ describe('cluster skill coordinator', () => {
           const data = Buffer.from(String(request.data), 'base64')
           return { received: Number(request.offset) + data.length, complete: request.final }
         }
+        reconciledSourceIds = (request.sources as Array<{ sourceId: string }>).map((source) => source.sourceId)
         return {
           roots: sources.map((source) => ({
             path: `.agents/skills/${source.sourceKind}`,
@@ -91,6 +94,7 @@ describe('cluster skill coordinator', () => {
     expect(ledger.roots).toHaveLength(3)
     expect(events[0]).toBe('begin-journal')
     expect(events.at(-1)).toBe('commit:3')
+    expect(reconciledSourceIds).toEqual(sources.map((source) => source.sourceId))
   })
 
   it('fails closed when duty is lost before publication', async () => {
