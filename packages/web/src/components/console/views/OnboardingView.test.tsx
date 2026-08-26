@@ -309,18 +309,29 @@ describe('onboarding — daemon online: configure + finish', () => {
     expect(moveOrder).toBeLessThan(flagOrder)
   })
 
-  it('re-homes an already-placed built-in agent: move onto the daemon FIRST, then patch', async () => {
-    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: 'dmn_pool', runtime: 'claude' }]
+  it('re-homes an already-placed built-in agent: patch the spec FIRST, then move', async () => {
+    // Born pool-placed with a pool-only runtime — the move validates the CURRENT
+    // runtime against the target, so moving first would be rejected.
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: 'dmn_pool', runtime: 'dsh-acp' }]
     await render()
     expect(host.textContent).toContain('What should the agent run on?')
     await click('Finish')
-    expect(mocks.moveAgent).toHaveBeenCalledWith('ag_ac', { kind: 'daemon', daemonId: 'dmn_new' })
     expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'claude', model: 'claude-sonnet-4-5' })
-    // Already configured ⇒ the spec PATCH must run against its new home, so the move lands first.
-    const moveOrder = mocks.moveAgent.mock.invocationCallOrder[0] ?? Infinity
-    const updateOrder = mocks.updateAgent.mock.invocationCallOrder[0] ?? 0
-    expect(moveOrder).toBeLessThan(updateOrder)
+    expect(mocks.moveAgent).toHaveBeenCalledWith('ag_ac', { kind: 'daemon', daemonId: 'dmn_new' })
+    const updateOrder = mocks.updateAgent.mock.invocationCallOrder[0] ?? Infinity
+    const moveOrder = mocks.moveAgent.mock.invocationCallOrder[0] ?? 0
+    expect(updateOrder).toBeLessThan(moveOrder)
     expect(mocks.updateOrg).toHaveBeenCalledWith('org-1', { onboardingCompleted: true })
+  })
+
+  it('clears the old model pin when the target advertises no models yet', async () => {
+    // Runtime probe not settled: the runtime is known but its model list is empty. The
+    // PATCH must send model:null so the pool preset's cross-runtime pin does not survive.
+    mocks.daemons = [{ ...mocks.daemons[0], runtimeModels: [{ runtime: 'claude', models: [] }] }]
+    mocks.agents = [{ id: 'ag_ac', builtin: true, name: 'agentconnect', daemon: 'dmn_pool', runtime: 'dsh-acp' }]
+    await render()
+    await click('Finish')
+    expect(mocks.updateAgent).toHaveBeenCalledWith('ag_ac', { runtime: 'claude', model: null })
   })
 
   it('hides the pickers only when the org has no built-in agent at all', async () => {
