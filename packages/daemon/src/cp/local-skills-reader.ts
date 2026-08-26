@@ -25,7 +25,11 @@ export function createLocalSkillsReader(
   stateDir: string,
   /** The filesystem that agent's workspace lives on; undefined ⇒ this daemon's. */
   filesFor: (agentId: string) => WorkspaceFiles | undefined = () => undefined,
-  clusterLedgerFor: (agentId: string) => Promise<ClusterSkillLedger | undefined> = async () => undefined
+  clusterLedgerFor: (agentId: string) => Promise<ClusterSkillLedger | undefined> = async () => undefined,
+  verifyClusterRoots: (agentId: string, roots: ClusterSkillLedger['roots']) => Promise<boolean[]> = async (
+    _agentId,
+    roots
+  ) => roots.map(() => false)
 ): LocalSkillsReader {
   return {
     async list(req) {
@@ -50,7 +54,9 @@ export function createLocalSkillsReader(
       if (!root?.exists) return { materialized: false, skills: [] }
       return {
         materialized: true,
-        skills: await listSandboxSkills(files, cwd, req.agentId, await clusterLedgerFor(req.agentId))
+        skills: await listSandboxSkills(files, cwd, req.agentId, await clusterLedgerFor(req.agentId), (roots) =>
+          verifyClusterRoots(req.agentId, roots)
+        )
       }
     }
   }

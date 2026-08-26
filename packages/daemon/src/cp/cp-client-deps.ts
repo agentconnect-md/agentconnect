@@ -400,7 +400,9 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       async (id) => {
         const incarnation = host.k8sPlane()?.workspaceIncarnationFor?.(id)
         return incarnation ? (await host.store().clusterSkillLedger(id, incarnation))?.ledger : undefined
-      }
+      },
+      async (id, roots) =>
+        (await host.k8sPlane()?.skillClientFor?.(id)?.verify(roots))?.intact ?? roots.map(() => false)
     ),
     runtimeCommandsReader: createRuntimeCommandsReader(host.runtimeCommands(), (id) => host.agents().has(id)),
     // webchat is no longer a CP control-WS integration (milestone A4) — it rides the

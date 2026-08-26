@@ -13,9 +13,9 @@ import {
   type ShimBound,
   type ShimCapability,
   type ShimEvent,
+  type ShimFeature,
   type ShimFrame
 } from './protocol.js'
-import type { ShimFeature } from './protocol.js'
 
 export interface ShimTransport {
   send(text: string): void
@@ -40,7 +40,12 @@ export interface ShimClientDeps {
   readToken?: () => string
   /** Handles an authorized non-ACP request from the daemon (materialize / exec / read /
    *  tunnel). The ACP capability is served by the built-in runner instead. */
-  handle?: (capability: ShimCapability, payload: unknown, abort?: AbortSignal) => Promise<unknown>
+  handle?: (
+    capability: ShimCapability,
+    payload: unknown,
+    abort?: AbortSignal,
+    context?: { agentId: string; generation: number }
+  ) => Promise<unknown>
   /** Resolves executables in THIS filesystem for the ACP runner. */
   resolveCommand?: ResolveCommand
   /** Pod environment the ACP runner consults for provider fill-ins (SANDBOX_PROVIDER_ENV). */
@@ -405,7 +410,10 @@ export class ShimClient {
       this.inFlight.set(request.id, { transport, controller })
       try {
         const handle = this.deps.handle ?? (async () => undefined)
-        const payload = await handle(request.capability, request.payload, controller.signal)
+        const payload = await handle(request.capability, request.payload, controller.signal, {
+          agentId: bound.agentId,
+          generation: bound.generation
+        })
         transport.send(JSON.stringify({ type: 'shim/response', id: request.id, ok: true, payload }))
       } finally {
         this.inFlight.delete(request.id)

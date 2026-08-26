@@ -167,6 +167,7 @@ export interface K8sRuntimePlane {
   workspaceRootFor: (agentId: string) => string | undefined
   skillClientFor?: (agentId: string) => ClusterSkillClient | undefined
   workspaceIncarnationFor?: (agentId: string) => string | undefined
+  shimGenerationFor?: (agentId: string) => number | undefined
   /** Agents this daemon holds a Sandbox for, and since when — the idle sweep's candidates. Read from
    *  the driver, not inferred from live hosts: a launch outlives the host it was made for. */
   launchedAgents: () => Array<{ agentId: string; since: number }>
@@ -358,6 +359,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       return new ClusterSkillClient(driver.sessionFor(agentId)!)
     },
     workspaceIncarnationFor: (agentId) => driver.currentLaunch(agentId)?.claimUid,
+    shimGenerationFor: (agentId) => driver.currentLaunch(agentId)?.generation,
     launchedAgents: () => driver.launchedAgents(),
     suspendIdle: (agentId) => driver.suspendIfIdle(agentId),
     adoptAgent: async (agentId) => {

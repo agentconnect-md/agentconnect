@@ -11,16 +11,24 @@ export const ClusterSkillOwnedRootSchema = z
         z
           .object({
             path: z.string().min(1).max(512),
+            mode: z.number().int().min(0).max(0o777),
             size: z.number().int().nonnegative(),
             sha256: z.string().regex(/^[a-f0-9]{64}$/)
           })
           .strict()
       )
-      .max(1024)
+      .max(64)
   })
   .strict()
 
-export const ClusterSkillLedgerSchema = z.object({ roots: z.array(ClusterSkillOwnedRootSchema).max(512) }).strict()
+export const ClusterSkillLedgerSchema = z
+  .object({ roots: z.array(ClusterSkillOwnedRootSchema).max(256) })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.roots.reduce((total, root) => total + root.files.length, 0) > 256) {
+      ctx.addIssue({ code: 'custom', message: 'cluster skill ledger receipt exceeds limit' })
+    }
+  })
 
 export type ClusterSkillLedger = z.infer<typeof ClusterSkillLedgerSchema>
 

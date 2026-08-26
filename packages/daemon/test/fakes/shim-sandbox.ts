@@ -2,6 +2,7 @@ import type { Backoff, Clock } from '@agentconnect.md/connection'
 import { ShimClient, type ShimClientDeps, type ShimTransport } from '../../src/shim/client.js'
 import { ShimDialer, type ShimDialerDeps } from '../../src/shim/dialer.js'
 import { ShimServer } from '../../src/shim/server.js'
+import type { ShimFeature } from '../../src/shim/protocol.js'
 
 /** The production shape a test drives: the daemon dials IN, and the pod runs a ShimServer. */
 export interface ShimSandboxOptions {
@@ -10,6 +11,7 @@ export interface ShimSandboxOptions {
   clock?: Clock
   /** The pod's workspace mount as the shim reports it in its identity. */
   workspaceRoot?: string
+  features?: ShimFeature[]
 }
 
 export interface ShimSandbox {
@@ -48,6 +50,7 @@ export function shimFixtures(): {
       dial: () => server.nextTransport() as Promise<ShimTransport>,
       readToken: () => 'projected-token',
       workspaceRoot: options.workspaceRoot ?? '/agent',
+      ...(options.features ? { features: options.features } : {}),
       ...(options.handle ? { handle: options.handle } : {}),
       ...(options.backoff ? { backoff: options.backoff } : {}),
       ...(options.clock ? { clock: options.clock } : {}),

@@ -4,21 +4,23 @@ import { dirname, join } from 'node:path'
 import { inspectLocalSkillSource } from '../skills/skill-source-snapshot.js'
 import { PINNED_SKILLS_CLI_VERSION, stageSkillsCliCell } from '../skills/skills-cli-cell.js'
 import {
-  readSkillLedger,
   reconcileSkillBundles,
-  skillLedgerLocation,
+  hasSkillPublicationOperation,
+  skillBundleReceiptIntact,
   treeDigest,
   type CandidateSkillBundle
 } from '../skills/skill-install-ledger.js'
 import {
   ClusterSkillRequestSchema,
+  ClusterSkillReconcileReplySchema,
   type ClusterSkillBegin,
   type ClusterSkillBeginReply,
   type ClusterSkillFile,
   type ClusterSkillReconcile,
   type ClusterSkillReconcileReply,
   type ClusterSkillUpload,
-  type ClusterSkillUploadReply
+  type ClusterSkillUploadReply,
+  type ClusterSkillVerifyReply
 } from './skill-protocol.js'
 
 interface Operation {
@@ -26,6 +28,13 @@ interface Operation {
   operationId: string
   files: Map<string, ClusterSkillFile & { received: number; complete: boolean }>
   skillsAgentId: string
+  authority: ClusterSkillBegin['authority']
+  abort: AbortController
+}
+
+export interface ClusterSkillRequestContext {
+  agentId: string
+  generation: number
 }
 
 export interface ClusterSkillHandlerDeps {
@@ -41,6 +50,7 @@ const fileKey = (sourceId: string, path: string): string => `${sourceId}\0${path
 
 export class ClusterSkillHandler {
   private readonly operations = new Map<string, Operation>()
+  private readonly highestTerms = new Map<string, { term: string; daemonId: string }>()
   private readonly inactiveMs: number
   private readonly now: () => number
 
@@ -51,16 +61,32 @@ export class ClusterSkillHandler {
 
   async handle(
     payload: unknown,
-    abort?: AbortSignal
-  ): Promise<ClusterSkillBeginReply | ClusterSkillUploadReply | ClusterSkillReconcileReply> {
+    abort?: AbortSignal,
+    context?: ClusterSkillRequestContext
+  ): Promise<ClusterSkillBeginReply | ClusterSkillUploadReply | ClusterSkillReconcileReply | ClusterSkillVerifyReply> {
     const parsed = ClusterSkillRequestSchema.parse(payload)
     if (abort?.aborted) {
       if (parsed.op === 'upload') await this.discard(parsed.handle)
       throw new Error('cluster skill operation aborted')
     }
-    if (parsed.op === 'begin') return await this.begin(parsed)
+    if (parsed.op === 'begin') return await this.begin(parsed, context)
     if (parsed.op === 'upload') return await this.upload(parsed, abort)
-    return await this.reconcile(parsed, abort)
+    if (parsed.op === 'verify') {
+      if (!this.deps.workspaceRoot) throw new Error('cluster skill verification is unavailable')
+      return {
+        intact: await Promise.all(
+          parsed.roots.map((root) =>
+            skillBundleReceiptIntact(this.deps.workspaceRoot!, {
+              relativeRoot: root.path,
+              sourceKey: root.sourceId,
+              treeDigest: root.digest,
+              files: root.files
+            })
+          )
+        )
+      }
+    }
+    return await this.reconcile(parsed, abort, context)
   }
 
   stagedFile(handle: string, sourceId: string, path: string): string {
@@ -81,14 +107,37 @@ export class ClusterSkillHandler {
     return removed
   }
 
-  private async begin(input: ClusterSkillBegin): Promise<ClusterSkillBeginReply> {
+  private async begin(input: ClusterSkillBegin, context?: ClusterSkillRequestContext): Promise<ClusterSkillBeginReply> {
+    this.assertBoundAuthority(input.authority, context)
+    const current = this.highestTerms.get(input.authority.workspaceIncarnation)
+    if (current && compareDecimalTerms(input.authority.term, current.term) < 0) {
+      throw new Error('stale cluster skill duty term')
+    }
+    if (!current || compareDecimalTerms(input.authority.term, current.term) > 0) {
+      for (const operation of this.operations.values()) {
+        if (
+          operation.authority.workspaceIncarnation === input.authority.workspaceIncarnation &&
+          compareDecimalTerms(operation.authority.term, input.authority.term) < 0
+        ) {
+          operation.abort.abort()
+        }
+      }
+      this.highestTerms.set(input.authority.workspaceIncarnation, {
+        term: input.authority.term,
+        daemonId: input.authority.daemonId
+      })
+    } else if (current.daemonId !== input.authority.daemonId) {
+      throw new Error('cluster skill duty term belongs to another daemon')
+    }
     await mkdir(this.deps.stagingRoot, { recursive: true, mode: 0o700 })
     const handle = randomBytes(24).toString('hex')
     await mkdir(join(this.deps.stagingRoot, handle), { mode: 0o700 })
     this.operations.set(handle, {
       handle,
       operationId: input.operationId,
+      authority: input.authority,
       skillsAgentId: input.skillsAgentId,
+      abort: new AbortController(),
       files: new Map(
         input.files.map((file) => [fileKey(file.sourceId, file.path), { ...file, received: 0, complete: false }])
       )
@@ -96,14 +145,38 @@ export class ClusterSkillHandler {
     return { handle }
   }
 
-  private async reconcile(input: ClusterSkillReconcile, abort?: AbortSignal): Promise<ClusterSkillReconcileReply> {
+  private async reconcile(
+    input: ClusterSkillReconcile,
+    abort?: AbortSignal,
+    context?: ClusterSkillRequestContext
+  ): Promise<ClusterSkillReconcileReply> {
     const operation = this.operations.get(input.handle)
     if (!operation || operation.operationId !== input.operationId)
       throw new Error('unknown cluster skill staging handle')
+    this.assertBoundAuthority(input.authority, context)
+    if (JSON.stringify(operation.authority) !== JSON.stringify(input.authority)) {
+      throw new Error('cluster skill authority changed during staging')
+    }
+    const current = this.highestTerms.get(input.authority.workspaceIncarnation)
+    if (!current || current.term !== input.authority.term || current.daemonId !== input.authority.daemonId) {
+      throw new Error('cluster skill reconciliation lost duty authority')
+    }
     if (!this.deps.workspaceRoot || !this.deps.stateRoot) throw new Error('cluster skill publication is unavailable')
     if ([...operation.files.values()].some((file) => !file.complete))
       throw new Error('cluster skill snapshot is incomplete')
     if (abort?.aborted) return await this.fail(operation, 'cluster skill operation aborted')
+    const mutationSignal = abort ? AbortSignal.any([abort, operation.abort.signal]) : operation.abort.signal
+    const assertMutationAuthority = (): void => {
+      const latest = this.highestTerms.get(input.authority.workspaceIncarnation)
+      if (
+        mutationSignal.aborted ||
+        !latest ||
+        latest.term !== input.authority.term ||
+        latest.daemonId !== input.authority.daemonId
+      ) {
+        throw new Error('cluster skill reconciliation lost duty authority')
+      }
+    }
     const declaredSources = new Set([...operation.files.values()].map((file) => file.sourceId))
     if (input.sources.some((source) => !declaredSources.has(source.sourceId))) {
       throw new Error('reconcile source was not declared')
@@ -112,6 +185,12 @@ export class ClusterSkillHandler {
     const candidates: CandidateSkillBundle[] = []
     const cleanups: Array<() => void> = []
     try {
+      const replayingPublication = await hasSkillPublicationOperation(
+        this.deps.workspaceRoot,
+        this.deps.stateRoot,
+        input.operationId,
+        input.replayKey
+      )
       for (const source of input.sources) {
         const snapshot = join(this.deps.stagingRoot, input.handle, sourceDirectory(source.sourceId))
         const cell = await stageSkillsCliCell({
@@ -144,12 +223,24 @@ export class ClusterSkillHandler {
         runtime: operation.skillsAgentId,
         cliVersion: PINNED_SKILLS_CLI_VERSION,
         fingerprint: createHash('sha256').update(JSON.stringify(input.sources)).digest('hex'),
+        ...(replayingPublication
+          ? {}
+          : {
+              trustedPrior: input.priorRoots.map((root) => ({
+                relativeRoot: root.path,
+                sourceKey: root.sourceId,
+                treeDigest: root.digest,
+                files: root.files
+              }))
+            }),
+        allowDesiredAdoption: false,
+        assertMutationAuthority,
+        mutationSignal,
+        publicationOperationId: input.operationId,
+        publicationKey: input.replayKey,
         candidates
       })
-      const location = await skillLedgerLocation(this.deps.workspaceRoot, this.deps.stateRoot)
-      const ledger = await readSkillLedger(location)
-      if (!ledger || ledger.phase !== 'ready') throw new Error('cluster skill publisher did not produce a ready ledger')
-      const roots = ledger.owned.map((root) => {
+      const roots = result.owned.map((root) => {
         const source = sourceMeta.get(root.sourceKey)
         if (!source) throw new Error('cluster skill publisher returned an unknown source')
         return {
@@ -157,14 +248,20 @@ export class ClusterSkillHandler {
           sourceId: root.sourceKey,
           sourceKind: source.sourceKind,
           digest: root.treeDigest,
-          files: root.files.map(({ path, size, sha256 }) => ({ path, size, sha256 }))
+          files: root.files.map(({ path, mode, size, sha256 }) => ({ path, mode, size, sha256 }))
         }
       })
       await this.discard(operation.handle)
-      return { roots, conflicts: result.conflicts }
+      return ClusterSkillReconcileReplySchema.parse({ roots, conflicts: result.conflicts })
     } finally {
       for (const cleanup of cleanups) cleanup()
     }
+  }
+
+  private assertBoundAuthority(authority: ClusterSkillBegin['authority'], context?: ClusterSkillRequestContext): void {
+    if (!context) return
+    if (authority.shimGeneration !== context.generation) throw new Error('stale cluster skill shim generation')
+    if (context.agentId !== authority.agentId) throw new Error('cluster skill request targets another agent')
   }
 
   private async upload(input: ClusterSkillUpload, abort?: AbortSignal): Promise<ClusterSkillUploadReply> {
@@ -247,4 +344,9 @@ export class ClusterSkillHandler {
     this.operations.delete(handle)
     await rm(join(this.deps.stagingRoot, handle), { recursive: true, force: true })
   }
+}
+
+function compareDecimalTerms(left: string, right: string): number {
+  if (left.length !== right.length) return left.length < right.length ? -1 : 1
+  return left === right ? 0 : left < right ? -1 : 1
 }

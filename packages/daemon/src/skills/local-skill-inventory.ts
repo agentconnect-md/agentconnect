@@ -17,7 +17,6 @@
 // bounded well under the control-frame size limit.
 
 import { promises as fsp, type Stats } from 'node:fs'
-import { createHash } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { readSkillLedger, skillLedgerLocation } from './skill-install-ledger.js'
@@ -254,18 +253,20 @@ function skillAccumulator(ownedOrigin: Map<string, LocalSkillOrigin>): SkillAccu
  * (realpath confinement, a final-component symlink refused, a bounded read), so the difference
  * stays traversal-shaped and does not reopen a safety question.
  *
- * Origins are always `repo`: the daemon installs no skills into a cluster agent's workspace, so
- * there is no ownership ledger for one and anything present came with the repository.
+ * Cluster origins come only from durable receipts that the shim verifies against the live tree.
  */
 export async function listSandboxSkills(
   files: WorkspaceFiles,
   root: string,
   agentId: string,
-  ledger?: ClusterSkillLedger
+  ledger?: ClusterSkillLedger,
+  verifyRoots?: (roots: ClusterSkillLedger['roots']) => Promise<boolean[]>
 ): Promise<LocalSkillEntry[]> {
   const owned = new Map<string, LocalSkillOrigin>()
-  for (const entry of ledger?.roots ?? []) {
-    if (await clusterRootMatches(files, root, agentId, entry.path, entry.files)) {
+  const roots = ledger?.roots ?? []
+  const verified = verifyRoots ? await verifyRoots(roots).catch(() => roots.map(() => false)) : roots.map(() => false)
+  for (const [index, entry] of roots.entries()) {
+    if (verified[index]) {
       owned.set(
         entry.path,
         entry.sourceKind === 'managed' ? 'managed' : entry.sourceKind === 'dream' ? 'dream-accepted' : 'git-source'
@@ -308,30 +309,4 @@ export async function listSandboxSkills(
     } while (cursor !== undefined)
   }
   return acc.done()
-}
-
-async function clusterRootMatches(
-  files: WorkspaceFiles,
-  root: string,
-  agentId: string,
-  ownedRoot: string,
-  receipts: ClusterSkillLedger['roots'][number]['files']
-): Promise<boolean> {
-  try {
-    for (const receipt of receipts) {
-      const read = await files.read(root, {
-        agentId,
-        path: `${ownedRoot}/${receipt.path}`,
-        offset: 0,
-        limit: Math.max(1, receipt.size)
-      })
-      if (!read.exists || read.encoding !== 'utf8' || read.content === undefined || read.truncated) return false
-      const body = Buffer.from(read.content, 'utf8')
-      if (body.length !== receipt.size || createHash('sha256').update(body).digest('hex') !== receipt.sha256)
-        return false
-    }
-    return true
-  } catch {
-    return false
-  }
 }

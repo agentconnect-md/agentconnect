@@ -1,12 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import {
   ClusterSkillBeginSchema,
+  ClusterSkillReconcileReplySchema,
+  ClusterSkillReconcileSchema,
   ClusterSkillUploadSchema,
   MAX_CLUSTER_SKILL_FILE_BYTES
 } from '../src/shim/skill-protocol.js'
 
 const operationId = '11111111-1111-4111-8111-111111111111'
 const digest = 'a'.repeat(64)
+const authority = {
+  groupId: 'group',
+  term: '1',
+  daemonId: 'daemon',
+  agentId: 'agent',
+  workspaceIncarnation: 'claim-uid',
+  shimGeneration: 1
+}
 
 describe('cluster skill protocol', () => {
   it('accepts a bounded immutable snapshot manifest', () => {
@@ -14,7 +24,7 @@ describe('cluster skill protocol', () => {
       ClusterSkillBeginSchema.parse({
         op: 'begin',
         operationId,
-        workspaceIncarnation: 'claim-uid',
+        authority,
         skillsAgentId: 'codex',
         files: [{ sourceId: 'managed:one', path: 'SKILL.md', size: 3, sha256: digest }]
       }).files
@@ -26,7 +36,7 @@ describe('cluster skill protocol', () => {
       ClusterSkillBeginSchema.safeParse({
         op: 'begin',
         operationId,
-        workspaceIncarnation: 'claim-uid',
+        authority,
         skillsAgentId: 'codex',
         files: [{ sourceId: 'managed:one', path, size: 3, sha256: digest }]
       }).success
@@ -38,7 +48,7 @@ describe('cluster skill protocol', () => {
     const base = {
       op: 'begin',
       operationId,
-      workspaceIncarnation: 'claim-uid',
+      authority,
       skillsAgentId: 'codex'
     }
     expect(ClusterSkillBeginSchema.safeParse({ ...base, files: [file, file] }).success).toBe(false)
@@ -73,6 +83,37 @@ describe('cluster skill protocol', () => {
         offset: 0,
         data: 'aA==',
         final: true
+      }).success
+    ).toBe(false)
+  })
+
+  it('requires all reconciliation fences and rejects inconsistent receipts', () => {
+    const request = {
+      op: 'reconcile',
+      operationId,
+      handle: 'opaque-handle-1234',
+      authority,
+      priorRoots: [],
+      replayKey: 'a'.repeat(64),
+      allowDesiredAdoption: false,
+      sources: []
+    }
+    expect(ClusterSkillReconcileSchema.safeParse(request).success).toBe(true)
+    expect(ClusterSkillReconcileSchema.safeParse({ ...request, authority: { ...authority, term: '01' } }).success).toBe(
+      false
+    )
+    expect(
+      ClusterSkillReconcileReplySchema.safeParse({
+        roots: [
+          {
+            path: '.agents/skills/one',
+            sourceId: 'managed:one',
+            sourceKind: 'managed',
+            digest,
+            files: [{ path: 'SKILL.md', mode: 0o600, size: 3, sha256: digest }]
+          }
+        ],
+        conflicts: []
       }).success
     ).toBe(false)
   })

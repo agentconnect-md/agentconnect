@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, mkdir, mkdtemp, readFile, symlink, utimes } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, readFile, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -7,6 +7,8 @@ import type { ShimRequester } from '../src/shim/channels.js'
 import { ClusterSkillClient } from '../src/shim/skill-client.js'
 import { ClusterSkillHandler } from '../src/shim/skill-handler.js'
 import { MAX_CLUSTER_SKILL_CHUNK_BYTES } from '../src/shim/skill-protocol.js'
+import { inspectLocalSkillSource } from '../src/skills/skill-source-snapshot.js'
+import { treeDigest } from '../src/skills/skill-install-ledger.js'
 
 const sha256 = (value: Buffer): string => createHash('sha256').update(value).digest('hex')
 
@@ -17,7 +19,14 @@ async function fixture(content = Buffer.from('hello')) {
   const begin = await handler.handle({
     op: 'begin',
     operationId,
-    workspaceIncarnation: 'claim-1',
+    authority: {
+      groupId: 'g',
+      term: '1',
+      daemonId: 'd',
+      agentId: 'a',
+      workspaceIncarnation: 'claim-1',
+      shimGeneration: 1
+    },
     skillsAgentId: 'codex',
     files: [{ sourceId: 'managed:a', path: 'nested/SKILL.md', size: content.length, sha256: sha256(content) }]
   })
@@ -143,7 +152,14 @@ describe('cluster skill shim staging', () => {
     const file = { sourceId: 'managed:a', path: 'SKILL.md', size: content.length, sha256: sha256(content) }
     const { handle } = await client.begin({
       operationId: randomUUID(),
-      workspaceIncarnation: 'claim',
+      authority: {
+        groupId: 'g',
+        term: '1',
+        daemonId: 'd',
+        agentId: 'a',
+        workspaceIncarnation: 'claim',
+        shimGeneration: 1
+      },
       skillsAgentId: 'codex',
       files: [file]
     })
@@ -166,10 +182,18 @@ describe('cluster skill shim staging', () => {
       stateRoot: join(root, 'state')
     })
     const file = { sourceId: 'managed:a', path: 'SKILL.md', size: content.length, sha256: sha256(content) }
+    const authority = {
+      groupId: 'g',
+      term: '1',
+      daemonId: 'd',
+      agentId: 'a',
+      workspaceIncarnation: 'claim',
+      shimGeneration: 1
+    }
     const begin = (await handler.handle({
       op: 'begin',
       operationId,
-      workspaceIncarnation: 'claim',
+      authority,
       skillsAgentId: 'codex',
       files: [file]
     })) as { handle: string }
@@ -187,12 +211,189 @@ describe('cluster skill shim staging', () => {
       op: 'reconcile',
       operationId,
       handle: begin.handle,
+      authority,
+      priorRoots: [],
+      replayKey: 'a'.repeat(64),
+      allowDesiredAdoption: false,
       sources: [{ sourceId: file.sourceId, sourceKind: 'managed', selections: ['cluster-golden'] }]
     })
     expect(reply).toMatchObject({
       roots: [{ path: '.agents/skills/cluster-golden', sourceKind: 'managed' }],
       conflicts: []
     })
+    const replay = new ClusterSkillHandler({
+      stagingRoot: join(root, 'staging-replay'),
+      workspaceRoot: workspace,
+      stateRoot: join(root, 'state')
+    })
+    const replayBegin = (await replay.handle({
+      op: 'begin',
+      operationId,
+      authority,
+      skillsAgentId: 'codex',
+      files: [file]
+    })) as { handle: string }
+    await replay.handle({
+      op: 'upload',
+      operationId,
+      handle: replayBegin.handle,
+      sourceId: file.sourceId,
+      path: file.path,
+      offset: 0,
+      data: content.toString('base64'),
+      final: true
+    })
+    await expect(
+      replay.handle({
+        op: 'reconcile',
+        operationId,
+        handle: replayBegin.handle,
+        authority,
+        priorRoots: [],
+        replayKey: 'a'.repeat(64),
+        allowDesiredAdoption: false,
+        sources: [{ sourceId: file.sourceId, sourceKind: 'managed', selections: ['cluster-golden'] }]
+      })
+    ).resolves.toMatchObject({ roots: [{ path: '.agents/skills/cluster-golden' }], conflicts: [] })
     expect(await readFile(join(workspace, '.agents/skills/cluster-golden/SKILL.md'), 'utf8')).toContain('# Cluster')
   }, 120_000)
+
+  it('uses the durable receipt to remove an owned root after pod-local state is lost', async () => {
+    const content = Buffer.from('---\nname: replacement\ndescription: fixture\n---\n# Replacement\n')
+    const root = await mkdtemp(join(tmpdir(), 'ac-shim-skills-replacement-'))
+    const workspace = join(root, 'workspace')
+    await mkdir(workspace)
+    const authority = {
+      groupId: 'g',
+      term: '2',
+      daemonId: 'd',
+      agentId: 'a',
+      workspaceIncarnation: 'claim',
+      shimGeneration: 2
+    }
+    const first = new ClusterSkillHandler({
+      stagingRoot: join(root, 'staging-1'),
+      workspaceRoot: workspace,
+      stateRoot: join(root, 'state-1')
+    })
+    const operationId = randomUUID()
+    const file = { sourceId: 'managed:a', path: 'SKILL.md', size: content.length, sha256: sha256(content) }
+    const begin = (await first.handle({
+      op: 'begin',
+      operationId,
+      authority,
+      skillsAgentId: 'codex',
+      files: [file]
+    })) as {
+      handle: string
+    }
+    await first.handle({
+      op: 'upload',
+      operationId,
+      handle: begin.handle,
+      sourceId: file.sourceId,
+      path: file.path,
+      offset: 0,
+      data: content.toString('base64'),
+      final: true
+    })
+    const applied = (await first.handle({
+      op: 'reconcile',
+      operationId,
+      handle: begin.handle,
+      authority,
+      priorRoots: [],
+      replayKey: 'b'.repeat(64),
+      allowDesiredAdoption: false,
+      sources: [{ sourceId: file.sourceId, sourceKind: 'managed', selections: ['replacement'] }]
+    })) as { roots: Array<Record<string, unknown>> }
+
+    const replacement = new ClusterSkillHandler({
+      stagingRoot: join(root, 'staging-2'),
+      workspaceRoot: workspace,
+      stateRoot: join(root, 'state-2')
+    })
+    const removeId = randomUUID()
+    const removeBegin = (await replacement.handle({
+      op: 'begin',
+      operationId: removeId,
+      authority,
+      skillsAgentId: 'codex',
+      files: []
+    })) as { handle: string }
+    await replacement.handle({
+      op: 'reconcile',
+      operationId: removeId,
+      handle: removeBegin.handle,
+      authority,
+      priorRoots: applied.roots,
+      replayKey: 'c'.repeat(64),
+      allowDesiredAdoption: false,
+      sources: []
+    })
+    await expect(lstat(join(workspace, '.agents/skills/replacement'))).rejects.toMatchObject({ code: 'ENOENT' })
+  }, 120_000)
+
+  it('fences the bound agent, shim generation, and monotonically observed duty term', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-shim-skills-fence-'))
+    const handler = new ClusterSkillHandler({ stagingRoot: join(root, 'staging') })
+    const base = {
+      groupId: 'g',
+      term: '7',
+      daemonId: 'd',
+      agentId: 'a',
+      workspaceIncarnation: 'claim',
+      shimGeneration: 3
+    }
+    await expect(
+      handler.handle(
+        { op: 'begin', operationId: randomUUID(), authority: base, skillsAgentId: 'codex', files: [] },
+        undefined,
+        { agentId: 'a', generation: 2 }
+      )
+    ).rejects.toThrow(/generation/)
+    await handler.handle(
+      { op: 'begin', operationId: randomUUID(), authority: { ...base, term: '8' }, skillsAgentId: 'codex', files: [] },
+      undefined,
+      { agentId: 'a', generation: 3 }
+    )
+    await expect(
+      handler.handle(
+        { op: 'begin', operationId: randomUUID(), authority: base, skillsAgentId: 'codex', files: [] },
+        undefined,
+        { agentId: 'a', generation: 3 }
+      )
+    ).rejects.toThrow(/stale/)
+  })
+
+  it('verifies exact receipts including mode, binary bytes, and unexpected files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-shim-skills-verify-'))
+    const workspace = join(root, 'workspace')
+    const skill = join(workspace, '.agents/skills/binary')
+    await mkdir(skill, { recursive: true })
+    const body = Buffer.from([0, 1, 2, 255])
+    await writeFile(join(skill, 'SKILL.md'), '---\nname: binary\ndescription: fixture\n---\n')
+    await writeFile(join(skill, 'asset.bin'), body, { mode: 0o600 })
+    const inspected = await inspectLocalSkillSource(skill)
+    const receiptFiles = inspected.files.map((file) => ({
+      path: file.path,
+      mode: file.mode & 0o111 ? 0o700 : 0o600,
+      size: file.size,
+      sha256: file.sha256.replace(/^sha256:/, '')
+    }))
+    const receipt = {
+      path: '.agents/skills/binary',
+      sourceId: 'managed:binary',
+      sourceKind: 'managed' as const,
+      digest: treeDigest(receiptFiles),
+      files: receiptFiles
+    }
+    const handler = new ClusterSkillHandler({ stagingRoot: join(root, 'staging'), workspaceRoot: workspace })
+    await expect(handler.handle({ op: 'verify', roots: [receipt] })).resolves.toEqual({ intact: [true] })
+    await chmod(join(skill, 'asset.bin'), 0o700)
+    await expect(handler.handle({ op: 'verify', roots: [receipt] })).resolves.toEqual({ intact: [false] })
+    await chmod(join(skill, 'asset.bin'), 0o600)
+    await writeFile(join(skill, 'extra.txt'), 'extra')
+    await expect(handler.handle({ op: 'verify', roots: [receipt] })).resolves.toEqual({ intact: [false] })
+  })
 })

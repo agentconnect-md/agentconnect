@@ -52,6 +52,7 @@ describe('local skill inventory', () => {
           files: [
             {
               path: 'SKILL.md',
+              mode: 0o600,
               size: Buffer.byteLength(manifest),
               sha256: createHash('sha256').update(manifest).digest('hex')
             }
@@ -59,9 +60,10 @@ describe('local skill inventory', () => {
         }
       ]
     }
-    expect((await listSandboxSkills(files, '/workspace', 'a', ledger))[0]?.origin).toBe('managed')
+    const verify = async () => [live === manifest]
+    expect((await listSandboxSkills(files, '/workspace', 'a', ledger, verify))[0]?.origin).toBe('managed')
     live += 'modified\n'
-    expect((await listSandboxSkills(files, '/workspace', 'a', ledger))[0]?.origin).toBe('repo')
+    expect((await listSandboxSkills(files, '/workspace', 'a', ledger, verify))[0]?.origin).toBe('repo')
   })
 
   it('maps a source key to its origin tag', () => {

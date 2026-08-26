@@ -841,7 +841,7 @@ function restrictPath(path: string, mode: number): void {
  * fresh databases and every established one fails at query time. `SCHEMA_MIGRATIONS`
  * asserts the two stay in lockstep for exactly that reason.
  */
-const SCHEMA_VERSION = 14
+const SCHEMA_VERSION = 15
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -977,7 +977,8 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
   // existing rows: absent keeps the CP's ordinary child inheritance, which is what they got.
   async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN directDestination INTEGER'),
   // Cluster skill tables are emitted by the current CREATE block after this step.
-  async () => undefined
+  async () => undefined,
+  async (db) => await db.exec('ALTER TABLE cluster_skill_journal ADD COLUMN replayKey TEXT')
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1546,6 +1547,7 @@ export class LocalStore {
         daemonId TEXT NOT NULL,
         priorRevision INTEGER NOT NULL,
         desiredHash TEXT NOT NULL,
+        replayKey TEXT,
         state TEXT NOT NULL CHECK (state IN ('applying', 'applied')),
         resultLedger TEXT,
         PRIMARY KEY (agentId, workspaceIncarnation)
@@ -6264,9 +6266,16 @@ export class LocalStore {
   }
 
   async beginClusterSkillReconcile(
-    input: ClusterSkillReconcileAuthority & { desiredHash: string }
+    input: ClusterSkillReconcileAuthority & { desiredHash: string; replayKey: string }
   ): Promise<
-    | { ok: true; operationId: string; priorRevision: number; priorLedger: ClusterSkillLedger }
+    | {
+        ok: true
+        operationId: string
+        replayKey: string
+        priorRevision: number
+        priorLedger: ClusterSkillLedger
+        resumed: boolean
+      }
     | { ok: false; reason: 'lost_authority' }
   > {
     return await this.transaction(async (raw) => {
@@ -6284,27 +6293,29 @@ export class LocalStore {
       const priorLedger = prior ? ClusterSkillLedgerSchema.parse(JSON.parse(prior.ledger)) : { roots: [] }
       const existing = (await tx
         .prepare(
-          `SELECT operationId, priorRevision, desiredHash FROM cluster_skill_journal
+          `SELECT operationId, priorRevision, desiredHash, replayKey FROM cluster_skill_journal
            WHERE agentId = ? AND workspaceIncarnation = ? AND state = 'applying'`
         )
         .get(input.agentId, input.workspaceIncarnation)) as
-        { operationId: string; priorRevision: number; desiredHash: string } | undefined
-      const operationId =
+        { operationId: string; priorRevision: number; desiredHash: string; replayKey: string | null } | undefined
+      const resumed = Boolean(
         existing && Number(existing.priorRevision) === priorRevision && existing.desiredHash === input.desiredHash
-          ? existing.operationId
-          : input.operationId
+      )
+      const operationId = resumed ? existing!.operationId : input.operationId
+      const replayKey = resumed && existing!.replayKey ? existing!.replayKey : input.replayKey
       await tx
         .prepare(
           `INSERT INTO cluster_skill_journal
-             (agentId, workspaceIncarnation, operationId, groupId, term, daemonId, priorRevision, desiredHash, state)
-           VALUES (@agentId, @workspaceIncarnation, @operationId, @groupId, @term, @daemonId, @priorRevision, @desiredHash, 'applying')
+             (agentId, workspaceIncarnation, operationId, groupId, term, daemonId, priorRevision, desiredHash, replayKey, state)
+           VALUES (@agentId, @workspaceIncarnation, @operationId, @groupId, @term, @daemonId, @priorRevision, @desiredHash, @replayKey, 'applying')
            ON CONFLICT(agentId, workspaceIncarnation) DO UPDATE SET
              operationId = excluded.operationId, groupId = excluded.groupId, term = excluded.term,
              daemonId = excluded.daemonId, priorRevision = excluded.priorRevision,
-             desiredHash = excluded.desiredHash, state = 'applying', resultLedger = NULL`
+             desiredHash = excluded.desiredHash, replayKey = excluded.replayKey,
+             state = 'applying', resultLedger = NULL`
         )
-        .run({ ...input, operationId, priorRevision })
-      return { ok: true, operationId, priorRevision, priorLedger }
+        .run({ ...input, operationId, replayKey, priorRevision })
+      return { ok: true, operationId, replayKey, priorRevision, priorLedger, resumed }
     })
   }
 
@@ -6358,6 +6369,28 @@ export class LocalStore {
         .run(ledger, input.agentId, input.workspaceIncarnation, input.operationId)
       return { ok: true, revision }
     })
+  }
+
+  async authorizeClusterSkillMutation(
+    input: ClusterSkillReconcileAuthority & { priorRevision: number }
+  ): Promise<boolean> {
+    const row = (await this.db
+      .prepare(
+        `SELECT j.operationId, j.term, j.daemonId, j.priorRevision
+         FROM cluster_skill_journal j
+         JOIN duty_write_fence f ON f.groupId = j.groupId
+         WHERE j.agentId = ? AND j.workspaceIncarnation = ? AND j.state = 'applying'
+           AND f.term = j.term AND f.daemonId = j.daemonId`
+      )
+      .get(input.agentId, input.workspaceIncarnation)) as
+      { operationId: string; term: string; daemonId: string; priorRevision: number } | undefined
+    return Boolean(
+      row &&
+      row.operationId === input.operationId &&
+      row.term === input.term &&
+      row.daemonId === input.daemonId &&
+      Number(row.priorRevision) === input.priorRevision
+    )
   }
 
   async close(): Promise<void> {

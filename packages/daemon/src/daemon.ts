@@ -170,7 +170,11 @@ import { acceptedDreamSkillSources } from './skills/dream-skills.js'
 import { acquireGitSkillSource } from './skills/skill-git-source.js'
 import { inspectLocalSkillSource } from './skills/skill-source-snapshot.js'
 import { resolveSkillSelections } from './skills/skill-cli-selection.js'
-import { ClusterSkillCoordinator, type ClusterSkillSnapshotSource } from './skills/cluster-skill-coordinator.js'
+import {
+  ClusterSkillCoordinator,
+  clusterSkillSupportRequired,
+  type ClusterSkillSnapshotSource
+} from './skills/cluster-skill-coordinator.js'
 import {
   OutputConverger,
   renderStatusBar,
@@ -3322,32 +3326,41 @@ export class Daemon {
     const plane = this.k8sPlane
     const client = plane?.skillClientFor?.(agent.id)
     const workspaceIncarnation = plane?.workspaceIncarnationFor?.(agent.id)
+    const shimGeneration = plane?.shimGenerationFor?.(agent.id)
     const duty = this.duties.dutyForAgent(agent.id)
     const daemonId = this.cfg.daemonId
     const skillsAgentId = this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId
-    if (!plane || !workspaceIncarnation || !duty || !daemonId) {
+    if (!plane || !workspaceIncarnation || shimGeneration === undefined || !duty || !daemonId) {
       throw new Error('cluster skill preparation authority is unavailable')
     }
-    const hasDesired = agent.skills.length > 0 || agent.managedSkills.length > 0
+    const agentDir = (agent as { dir?: string }).dir
+    const dreamed = agentDir
+      ? await acceptedDreamSkillSources({ dir: agentDir }).catch((error: unknown) => {
+          this.log.warn(`skills: accepted Dream sources unavailable for ${agent.id} (${(error as Error).message})`)
+          return []
+        })
+      : []
     const prior = await this.store.clusterSkillLedger(agent.id, workspaceIncarnation)
+    const supportRequired = clusterSkillSupportRequired({
+      configuredSources: agent.skills.length,
+      managedBindings: agent.managedSkills.length,
+      acceptedDreamSources: dreamed.length,
+      priorRoots: prior?.ledger.roots.length ?? 0
+    })
     if (!client) {
-      if (hasDesired || (prior?.ledger.roots.length ?? 0) > 0)
-        throw new Error('cluster runtime lacks skill installation support')
+      if (supportRequired) throw new Error('cluster runtime lacks skill installation support')
       return
     }
     if (!skillsAgentId) {
-      if (hasDesired || (prior?.ledger.roots.length ?? 0) > 0)
-        throw new Error('cluster runtime lacks skill installation support')
+      if (supportRequired) throw new Error('cluster runtime lacks skill installation support')
       return
     }
     const scratch = await mkdtemp(join(tmpdir(), 'agentconnect-cluster-skills-'))
     try {
       const sources: ClusterSkillSnapshotSource[] = []
-      const managed = (await this.managedSkillCache?.resolve(agent)) ?? []
-      const agentDir = (agent as { dir?: string }).dir
-      const dreamed = agentDir
-        ? await acceptedDreamSkillSources({ dir: agentDir }).catch((error: unknown) => {
-            this.log.warn(`skills: accepted Dream sources unavailable for ${agent.id} (${(error as Error).message})`)
+      const managed = this.managedSkillCache
+        ? await this.managedSkillCache.resolve(agent).catch((error: unknown) => {
+            this.log.warn(`skills: managed sources unavailable for ${agent.id} (${(error as Error).message})`)
             return []
           })
         : []
@@ -3396,8 +3409,12 @@ export class Daemon {
           workspaceIncarnation
         },
         skillsAgentId,
+        shimGeneration,
         sources,
-        client
+        client,
+        isLaunchCurrent: () =>
+          plane.workspaceIncarnationFor?.(agent.id) === workspaceIncarnation &&
+          plane.shimGenerationFor?.(agent.id) === shimGeneration
       })
     } finally {
       await rm(scratch, { recursive: true, force: true })

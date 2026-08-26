@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Backoff, ClientTransport, DEFAULT_BACKOFF_BASE_MS } from '@agentconnect.md/connection'
 import { MAX_FRAME_BYTES } from '@agentconnect.md/protocol'
 import { WebSocket } from 'ws'
@@ -19,6 +23,8 @@ import {
 } from '../src/shim/protocol.js'
 import { shimFixtures } from './fakes/shim-sandbox.js'
 import { runVirtual, VirtualClock } from './fakes/virtual-clock.js'
+import { ClusterSkillHandler } from '../src/shim/skill-handler.js'
+import { ClusterSkillClient } from '../src/shim/skill-client.js'
 
 // Zero-jitter millisecond backoff so reconnect tests never sleep real seconds.
 const fastBackoff = (): Backoff => new Backoff({ baseMs: 5, jitter: () => 0 })
@@ -237,6 +243,90 @@ describe('sandbox shim dial-in', () => {
     expect(replacement).not.toBe(first)
     expect(dialer.connectionsFor('agent-a')).toEqual([replacement])
   }, 40_000)
+
+  it('installs and removes a skill through the real channel across a reconnect', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-shim-channel-skills-'))
+    const workspace = join(root, 'workspace')
+    await mkdir(workspace)
+    const handler = new ClusterSkillHandler({
+      stagingRoot: join(root, 'staging'),
+      workspaceRoot: workspace,
+      stateRoot: join(root, 'state')
+    })
+    const bound: ShimConnection[] = []
+    const session = new ShimSession('agent-a', 1, {
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout)
+    })
+    const { endpoint } = await sandbox({
+      workspaceRoot: workspace,
+      features: ['cluster-skills-v1'],
+      backoff: fastBackoff(),
+      handle: (capability, payload, abort, context) =>
+        capability === 'skills' ? handler.handle(payload, abort, context) : Promise.resolve(undefined)
+    })
+    const dialer = new ShimDialer({
+      verifier: {
+        reviewToken: async () => ({ authenticated: true, podName: 'sandbox-pod-1', podUid: 'pod-uid-1' })
+      },
+      backoff: fastBackoff,
+      onConnection: (connection) => {
+        bound.push(connection)
+        session.attach(connection)
+      },
+      log: quiet
+    })
+    dialers.push(dialer)
+    const spawn: SpawnRecord = { ...record(), grants: ['skills'] }
+    await dialer.connect(endpoint, spawn, 8_000)
+    await waitFor(() => session.isAttached())
+
+    const content = Buffer.from('---\nname: channel-skill\ndescription: fixture\n---\n# Channel\n')
+    const authority = {
+      groupId: 'g',
+      term: '1',
+      daemonId: 'd',
+      agentId: 'agent-a',
+      workspaceIncarnation: 'claim',
+      shimGeneration: 1
+    }
+    const client = new ClusterSkillClient(session)
+    const operationId = randomUUID()
+    const file = {
+      sourceId: 'managed:channel',
+      path: 'SKILL.md',
+      size: content.length,
+      sha256: createHash('sha256').update(content).digest('hex')
+    }
+    const begin = await client.begin({ operationId, authority, skillsAgentId: 'codex', files: [file] })
+    await client.upload(operationId, begin.handle, file, content)
+    const applied = await client.reconcile({
+      operationId,
+      handle: begin.handle,
+      authority,
+      priorRoots: [],
+      replayKey: 'a'.repeat(64),
+      allowDesiredAdoption: false,
+      sources: [{ sourceId: file.sourceId, sourceKind: 'managed', selections: ['channel-skill'] }]
+    })
+    expect(applied.roots).toHaveLength(1)
+
+    bound[0]!.close('force reconnect')
+    await waitFor(() => bound.length === 2, 30_000)
+    const removeId = randomUUID()
+    const remove = await client.begin({ operationId: removeId, authority, skillsAgentId: 'codex', files: [] })
+    await expect(
+      client.reconcile({
+        operationId: removeId,
+        handle: remove.handle,
+        authority,
+        priorRoots: applied.roots,
+        replayKey: 'b'.repeat(64),
+        allowDesiredAdoption: false,
+        sources: []
+      })
+    ).resolves.toMatchObject({ roots: [], conflicts: [] })
+  }, 120_000)
 
   it('replays frames that arrived while the accepted daemon socket was still unclaimed', async () => {
     const server = new ShimServer()

@@ -1,22 +1,27 @@
 import type { ShimRequester } from './channels.js'
 import {
   ClusterSkillBeginReplySchema,
+  ClusterSkillBeginSchema,
+  ClusterSkillReconcileSchema,
   ClusterSkillReconcileReplySchema,
   ClusterSkillUploadReplySchema,
+  ClusterSkillVerifyReplySchema,
   MAX_CLUSTER_SKILL_CHUNK_BYTES,
   type ClusterSkillBegin,
   type ClusterSkillBeginReply,
   type ClusterSkillFile,
   type ClusterSkillReconcile,
   type ClusterSkillReconcileReply,
-  type ClusterSkillUploadReply
+  type ClusterSkillUploadReply,
+  type ClusterSkillVerifyReply
 } from './skill-protocol.js'
 
 export class ClusterSkillClient {
   constructor(private readonly requester: ShimRequester) {}
 
   async begin(input: Omit<ClusterSkillBegin, 'op'>): Promise<ClusterSkillBeginReply> {
-    return ClusterSkillBeginReplySchema.parse(await this.requester.request('skills', { op: 'begin', ...input }))
+    const request = ClusterSkillBeginSchema.parse({ op: 'begin', ...input })
+    return ClusterSkillBeginReplySchema.parse(await this.requester.request('skills', request))
   }
 
   async upload(operationId: string, handle: string, file: ClusterSkillFile, content: Buffer): Promise<void> {
@@ -34,9 +39,14 @@ export class ClusterSkillClient {
   }
 
   async reconcile(input: Omit<ClusterSkillReconcile, 'op'>): Promise<ClusterSkillReconcileReply> {
+    const request = ClusterSkillReconcileSchema.parse({ op: 'reconcile', ...input })
     return ClusterSkillReconcileReplySchema.parse(
-      await this.requester.request('skills', { op: 'reconcile', ...input }, { timeoutMs: 15 * 60_000 })
+      await this.requester.request('skills', request, { timeoutMs: 15 * 60_000 })
     )
+  }
+
+  async verify(roots: ClusterSkillReconcile['priorRoots']): Promise<ClusterSkillVerifyReply> {
+    return ClusterSkillVerifyReplySchema.parse(await this.requester.request('skills', { op: 'verify', roots }))
   }
 
   private async uploadChunk(

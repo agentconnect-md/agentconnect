@@ -18,11 +18,34 @@ describe('cluster skill ledger fencing', () => {
       agentId: 'agent-a',
       workspaceIncarnation: 'claim-uid-1',
       operationId,
-      desiredHash: 'a'.repeat(64)
+      desiredHash: 'a'.repeat(64),
+      replayKey: 'b'.repeat(64)
     })
     expect(begun).toMatchObject({ ok: true, priorRevision: 0, priorLedger: { roots: [] } })
+    expect(
+      await first.authorizeClusterSkillMutation({
+        groupId,
+        term: '7',
+        daemonId: 'member-a',
+        agentId: 'agent-a',
+        workspaceIncarnation: 'claim-uid-1',
+        operationId,
+        priorRevision: 0
+      })
+    ).toBe(true)
 
     expect(await first.projectDutyWriteFence({ groupId, term: '8', daemonId: 'member-b' })).toBe(true)
+    expect(
+      await first.authorizeClusterSkillMutation({
+        groupId,
+        term: '7',
+        daemonId: 'member-a',
+        agentId: 'agent-a',
+        workspaceIncarnation: 'claim-uid-1',
+        operationId,
+        priorRevision: 0
+      })
+    ).toBe(false)
     expect(
       await first.commitClusterSkillReconcile({
         groupId,
@@ -42,7 +65,8 @@ describe('cluster skill ledger fencing', () => {
       agentId: 'agent-a',
       workspaceIncarnation: 'claim-uid-1',
       operationId: '33333333-3333-4333-8333-333333333333',
-      desiredHash: 'a'.repeat(64)
+      desiredHash: 'a'.repeat(64),
+      replayKey: 'c'.repeat(64)
     })
     expect(adopted).toMatchObject({ ok: true, operationId })
   })
@@ -62,7 +86,8 @@ describe('cluster skill ledger fencing', () => {
       agentId: 'agent-a',
       workspaceIncarnation: 'claim-uid-1',
       operationId,
-      desiredHash: 'a'.repeat(64)
+      desiredHash: 'a'.repeat(64),
+      replayKey: 'd'.repeat(64)
     })
     expect(
       await store.commitClusterSkillReconcile({

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { constants as fsConstants, promises as fsp, type BigIntStats } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -82,6 +82,8 @@ interface LedgerBase {
   agentId: string
   runtime: string
   cliVersion: string
+  publicationOperationId?: string
+  publicationMac?: string
 }
 
 interface ReadyLedger extends LedgerBase {
@@ -117,6 +119,20 @@ export interface ReconcileSkillBundlesOptions {
   cliVersion: string
   fingerprint: string
   candidates: CandidateSkillBundle[]
+  /** Durable receipts supplied by a trusted coordinator. When present they replace,
+   * rather than merge with, any pod-local ledger before mutation authority is derived. */
+  trustedPrior?: Array<{
+    relativeRoot: string
+    sourceKey: string
+    treeDigest: string
+    files: SkillFileReceipt[]
+  }>
+  /** Same durable journal operation is being replayed after a lost response. */
+  allowDesiredAdoption?: boolean
+  assertMutationAuthority?: () => void
+  mutationSignal?: AbortSignal
+  publicationOperationId?: string
+  publicationKey?: string
   gitResolutions?: SkillGitResolution[]
   /** Untrusted compatibility hints from old workspace-local markers. They may
    * improve a conflict error, but never confer deletion or replacement rights. */
@@ -133,6 +149,8 @@ export interface ReconcileSkillBundlesResult {
   skipped: 'unchanged' | null
   /** Destinations left untouched because they are not owned by this ledger. */
   conflicts: string[]
+  /** Exact in-memory receipt set produced by this reconciliation. */
+  owned: OwnedSkillBundle[]
 }
 
 export class SkillLedgerSafetyError extends Error {
@@ -140,6 +158,17 @@ export class SkillLedgerSafetyError extends Error {
     super(message, options)
     this.name = 'SkillLedgerSafetyError'
   }
+}
+
+export async function hasSkillPublicationOperation(
+  cwd: string,
+  stateDir: string,
+  operationId: string,
+  publicationKey: string
+): Promise<boolean> {
+  const location = await skillLedgerLocation(cwd, stateDir)
+  const ledger = await readSkillLedger(location)
+  return ledger?.publicationOperationId === operationId && publicationMacValid(ledger, publicationKey)
 }
 
 const cwdLocks = new Map<string, Promise<unknown>>()
@@ -234,7 +263,8 @@ export async function installedBundlesIntact(
 export async function recoverSkillLedger(
   cwd: string,
   location: SkillLedgerLocation,
-  ledger: SkillInstallLedger
+  ledger: SkillInstallLedger,
+  publicationKey?: string
 ): Promise<ReadyLedger> {
   try {
     await assertCurrentWorkspace(cwd, location.workspaceIdentity)
@@ -243,7 +273,7 @@ export async function recoverSkillLedger(
       await finishReadyCleanup(cwd, location, ledger, ledger.cleanup)
       const cleaned: ReadyLedger = { ...ledger }
       delete cleaned.cleanup
-      await writeSkillLedger(location.file, cleaned)
+      await writeSkillLedger(location.file, cleaned, publicationKey)
       return cleaned
     }
 
@@ -294,6 +324,7 @@ export async function recoverSkillLedger(
       agentId: ledger.agentId,
       runtime: ledger.runtime,
       cliVersion: ledger.cliVersion,
+      ...(ledger.publicationOperationId ? { publicationOperationId: ledger.publicationOperationId } : {}),
       ...(ledger.priorFingerprint ? { fingerprint: ledger.priorFingerprint } : {}),
       owned: ledger.prior,
       gitResolutions: ledger.priorGitResolutions
@@ -301,7 +332,7 @@ export async function recoverSkillLedger(
     if (!(await installedBundlesIntact(cwd, ready.owned, location.workspaceIdentity))) {
       throw safety('interrupted skill publication could not restore the prior receipt set')
     }
-    await writeSkillLedger(location.file, ready)
+    await writeSkillLedger(location.file, ready, publicationKey)
     return ready
   } catch (error) {
     if (error instanceof SkillLedgerSafetyError) throw error
@@ -365,17 +396,40 @@ async function reconcileSkillBundlesLocked(
   let location: SkillLedgerLocation | undefined
   try {
     location = await skillLedgerLocation(options.cwd, options.stateDir)
-    let ledger = await readSkillLedger(location)
-    if (ledger) {
+    let ledger = options.trustedPrior ? null : await readSkillLedger(location)
+    if (ledger?.publicationOperationId && !publicationMacValid(ledger, options.publicationKey)) {
+      throw safety('cluster skill publication journal authentication failed')
+    }
+    if (options.trustedPrior) {
+      const owned: OwnedSkillBundle[] = []
+      for (const receipt of options.trustedPrior) {
+        const found = await bundleIdentity(join(options.cwd, ...receipt.relativeRoot.split('/')), receipt)
+        if (!found) throw safety(`durable skill receipt does not match ${receipt.relativeRoot}`)
+        owned.push({ ...receipt, identity: found })
+      }
+      ledger = {
+        version: 3,
+        phase: 'ready',
+        workspaceRealpath: location.workspaceRealpath,
+        workspaceIdentity: location.workspaceIdentity,
+        agentId: options.agentId,
+        runtime: options.runtime,
+        cliVersion: options.cliVersion,
+        ...(options.publicationOperationId ? { publicationOperationId: options.publicationOperationId } : {}),
+        owned,
+        gitResolutions: []
+      }
+      await writeSkillLedger(location.file, ledger, options.publicationKey)
+    } else if (ledger) {
       assertSkillLedgerOwner(ledger, options.agentId)
-      ledger = await recoverSkillLedger(options.cwd, location, ledger)
+      ledger = await recoverSkillLedger(options.cwd, location, ledger, options.publicationKey)
     }
     if (
       ledger?.phase === 'ready' &&
       ledger.fingerprint === options.fingerprint &&
       (await installedBundlesIntact(options.cwd, ledger.owned, location.workspaceIdentity))
     ) {
-      return { installed: [], removed: [], skipped: 'unchanged', conflicts: [] }
+      return { installed: [], removed: [], skipped: 'unchanged', conflicts: [], owned: ledger.owned }
     }
 
     const deduped = dedupeCandidates(await canonicalizeCandidates(options.cwd, options.candidates))
@@ -396,6 +450,7 @@ async function reconcileSkillBundlesLocked(
     }
     const conflicts: string[] = []
     const candidates: CandidateSkillBundle[] = []
+    const adopted: OwnedSkillBundle[] = []
     for (const candidate of deduped) {
       if (
         priorByPath.has(candidate.relativeRoot) ||
@@ -403,6 +458,13 @@ async function reconcileSkillBundlesLocked(
       ) {
         candidates.push(candidate)
         continue
+      }
+      if (options.allowDesiredAdoption) {
+        const found = await bundleIdentity(join(options.cwd, ...candidate.relativeRoot.split('/')), candidate)
+        if (found) {
+          adopted.push({ ...stripCandidate(candidate), identity: found })
+          continue
+        }
       }
       const detail = legacyHints.has(candidate.relativeRoot)
         ? 'legacy workspace marker is not trusted; remove or migrate it explicitly'
@@ -430,24 +492,26 @@ async function reconcileSkillBundlesLocked(
       agentId: options.agentId,
       runtime: options.runtime,
       cliVersion: options.cliVersion,
+      ...(options.publicationOperationId ? { publicationOperationId: options.publicationOperationId } : {}),
       ...(ledger?.fingerprint ? { priorFingerprint: ledger.fingerprint } : {}),
       priorGitResolutions: ledger?.gitResolutions ?? [],
       prior,
       pending: candidates.map(stripCandidate),
       operations
     }
-    await writeSkillLedger(location.file, nextApplying)
+    await writeSkillLedger(location.file, nextApplying, options.publicationKey)
     // Recovery authority begins only after the journal is durable. If writing
     // the applying ledger failed, no live mutation has occurred and pretending
     // otherwise could operate from state that never became authoritative.
     recoveryLedger = nextApplying
 
     const candidatesByPath = new Map(candidates.map((entry) => [entry.relativeRoot, entry]))
-    const owned: OwnedSkillBundle[] = []
+    const owned: OwnedSkillBundle[] = [...adopted]
     for (const operation of operations) {
       const priorEntry = priorByPath.get(operation.relativeRoot)
       const candidate = candidatesByPath.get(operation.relativeRoot)
       if (candidate) {
+        options.assertMutationAuthority?.()
         const reserved = await mutate(
           {
             action: 'reserve',
@@ -459,7 +523,8 @@ async function reconcileSkillBundlesLocked(
             quarantineName: operation.quarantineName,
             ...(priorEntry ? { prior: priorEntry } : {})
           },
-          []
+          [],
+          options.mutationSignal
         )
         const reservationIdentity = parseIdentity(reserved.identity)
         const markerIdentity = parseIdentity(reserved.markerIdentity)
@@ -471,9 +536,10 @@ async function reconcileSkillBundlesLocked(
         // This fsynced journal update is the deletion-authority boundary. The
         // populate helper is not invoked until both inodes are durable, so a
         // crash without them can leave only an empty/marker-only reservation.
-        await writeSkillLedger(location.file, nextApplying)
+        await writeSkillLedger(location.file, nextApplying, options.publicationKey)
         recoveryLedger = nextApplying
       }
+      options.assertMutationAuthority?.()
       const result = await mutate(
         {
           action: 'apply',
@@ -494,7 +560,8 @@ async function reconcileSkillBundlesLocked(
           ...(!candidate && priorEntry ? { prior: priorEntry } : {}),
           ...(candidate ? { candidate: { ...stripCandidate(candidate), sourceDir: candidate.sourceDir } } : {})
         },
-        candidate ? [candidate.sourceDir] : []
+        candidate ? [candidate.sourceDir] : [],
+        options.mutationSignal
       )
       if (candidate) {
         const targetIdentity = parseIdentity(result.targetIdentity)
@@ -514,18 +581,26 @@ async function reconcileSkillBundlesLocked(
       agentId: options.agentId,
       runtime: options.runtime,
       cliVersion: options.cliVersion,
+      ...(options.publicationOperationId ? { publicationOperationId: options.publicationOperationId } : {}),
       // A skipped conflict leaves the plan unmet, so keep the fingerprint non-matching and let the next preparation retry once the path is clear.
       fingerprint: conflicts.length > 0 ? `conflicts:${randomUUID()}` : options.fingerprint,
       owned,
       gitResolutions,
       cleanup: { operations, prior }
     }
-    await writeSkillLedger(location.file, readyWithCleanup)
+    await writeSkillLedger(location.file, readyWithCleanup, options.publicationKey)
     recoveryLedger = readyWithCleanup
-    await finishReadyCleanup(options.cwd, location, readyWithCleanup, readyWithCleanup.cleanup!)
+    await finishReadyCleanup(
+      options.cwd,
+      location,
+      readyWithCleanup,
+      readyWithCleanup.cleanup!,
+      options.assertMutationAuthority,
+      options.mutationSignal
+    )
     const ready: ReadyLedger = { ...readyWithCleanup }
     delete ready.cleanup
-    await writeSkillLedger(location.file, ready)
+    await writeSkillLedger(location.file, ready, options.publicationKey)
     if (!(await installedBundlesIntact(options.cwd, owned, location.workspaceIdentity))) {
       throw safety('published skill set failed final receipt verification')
     }
@@ -533,12 +608,13 @@ async function reconcileSkillBundlesLocked(
       installed: candidates.map((entry) => entry.relativeRoot),
       removed: prior.map((entry) => entry.relativeRoot),
       skipped: null,
-      conflicts
+      conflicts,
+      owned
     }
   } catch (error) {
     if (recoveryLedger && location) {
       try {
-        await recoverSkillLedger(options.cwd, location, recoveryLedger)
+        await recoverSkillLedger(options.cwd, location, recoveryLedger, options.publicationKey)
       } catch (recoveryError) {
         throw safety('skill installation failed and the prior executable set could not be restored', recoveryError)
       }
@@ -552,7 +628,9 @@ async function finishReadyCleanup(
   cwd: string,
   location: SkillLedgerLocation,
   ledger: ReadyLedger,
-  cleanup: ReadyCleanup
+  cleanup: ReadyCleanup,
+  assertMutationAuthority?: () => void,
+  mutationSignal?: AbortSignal
 ): Promise<void> {
   const ownedByPath = new Map(ledger.owned.map((entry) => [entry.relativeRoot, entry]))
   const priorByPath = new Map(cleanup.prior.map((entry) => [entry.relativeRoot, entry]))
@@ -560,6 +638,7 @@ async function finishReadyCleanup(
     const owned = ownedByPath.get(operation.relativeRoot)
     if (owned) {
       if (!operation.markerIdentity) throw safety('ready cleanup is missing reservation marker authority')
+      assertMutationAuthority?.()
       await mutate(
         {
           action: 'finalize',
@@ -570,11 +649,13 @@ async function finishReadyCleanup(
           markerIdentity: operation.markerIdentity,
           expected: owned
         },
-        []
+        [],
+        mutationSignal
       )
     }
     const prior = priorByPath.get(operation.relativeRoot)
     if (prior) {
+      assertMutationAuthority?.()
       await mutate(
         {
           action: 'cleanup',
@@ -585,7 +666,8 @@ async function finishReadyCleanup(
           tombstoneName: operation.tombstoneName,
           expected: prior
         },
-        []
+        [],
+        mutationSignal
       )
     }
   }
@@ -594,10 +676,11 @@ async function finishReadyCleanup(
 
 async function mutate(
   spec: { cwd: string } & Record<string, unknown>,
-  readRoots: string[]
+  readRoots: string[],
+  signal?: AbortSignal
 ): Promise<Record<string, unknown>> {
   try {
-    return await runSkillWorkspaceMutation(spec, readRoots)
+    return await runSkillWorkspaceMutation(spec, readRoots, signal)
   } catch (error) {
     throw safety('confined skill workspace mutation was refused', error)
   }
@@ -623,6 +706,14 @@ async function bundleIdentity(root: string, bundle: SkillBundleReceipt): Promise
   } catch {
     return null
   }
+}
+
+/** Verify an externally stored receipt without granting ownership or consulting local state. */
+export async function skillBundleReceiptIntact(
+  cwd: string,
+  bundle: { relativeRoot: string; sourceKey: string; treeDigest: string; files: SkillFileReceipt[] }
+): Promise<boolean> {
+  return (await bundleIdentity(join(cwd, ...bundle.relativeRoot.split('/')), bundle)) !== null
 }
 
 export function treeDigest(files: SkillFileReceipt[]): string {
@@ -1016,8 +1107,35 @@ async function ensureTrustedStateDir(stateDir: string, child: string): Promise<v
   await fsp.chmod(childReal, 0o700)
 }
 
-async function writeSkillLedger(file: string, ledger: SkillInstallLedger): Promise<void> {
-  const body = `${JSON.stringify(ledger)}\n`
+function publicationMac(ledger: SkillInstallLedger, key?: string): string {
+  if (!key || !/^[a-f0-9]{64}$/.test(key)) throw safety('cluster skill publication key is unavailable')
+  const { publicationMac: _publicationMac, ...unsigned } = ledger
+  return createHmac('sha256', Buffer.from(key, 'hex')).update(canonicalJson(unsigned)).digest('hex')
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function publicationMacValid(ledger: SkillInstallLedger, key?: string): boolean {
+  if (!ledger.publicationMac) return false
+  const expected = publicationMac(ledger, key)
+  return timingSafeEqual(Buffer.from(ledger.publicationMac, 'hex'), Buffer.from(expected, 'hex'))
+}
+
+async function writeSkillLedger(file: string, ledger: SkillInstallLedger, publicationKey?: string): Promise<void> {
+  const signed = ledger.publicationOperationId
+    ? { ...ledger, publicationMac: publicationMac(ledger, publicationKey) }
+    : ledger
+  const body = `${JSON.stringify(signed)}\n`
   if (Buffer.byteLength(body) > MAX_SKILL_LEDGER_BYTES) throw safety('skill ownership ledger exceeds its size limit')
   const temp = join(dirname(file), `.${basename(file)}.${randomUUID()}.tmp`)
   const handle = await fsp.open(temp, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o600)
@@ -1058,7 +1176,19 @@ function parseLedger(value: unknown, location: SkillLedgerLocation): SkillInstal
     workspaceIdentity: location.workspaceIdentity,
     agentId: row.agentId,
     runtime: row.runtime,
-    cliVersion: row.cliVersion
+    cliVersion: row.cliVersion,
+    ...(typeof row.publicationOperationId === 'string' && SAFE_OPERATION.test(row.publicationOperationId)
+      ? { publicationOperationId: row.publicationOperationId }
+      : {}),
+    ...(typeof row.publicationMac === 'string' && /^[a-f0-9]{64}$/.test(row.publicationMac)
+      ? { publicationMac: row.publicationMac }
+      : {})
+  }
+  if (row.publicationOperationId !== undefined && base.publicationOperationId === undefined) {
+    throw safety('skill ownership ledger has an invalid publication operation')
+  }
+  if (row.publicationMac !== undefined && base.publicationMac === undefined) {
+    throw safety('skill ownership ledger has an invalid publication authentication code')
   }
   if (row.phase === 'ready') {
     return {
