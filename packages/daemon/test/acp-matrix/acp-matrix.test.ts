@@ -43,6 +43,7 @@ interface RuntimeResult {
   reachable: boolean
   features: Partial<Record<FeatureId, Outcome>>
   error?: string
+  cleanupError?: string
   models: string[]
   modes: string[]
   mcp: { http: boolean; sse: boolean }
@@ -475,6 +476,7 @@ async function runRuntime(target: RuntimeTarget): Promise<RuntimeResult> {
         }
         if (failures.length > 0) {
           const cleanupError = `session cleanup: ${failures.map(turnFailureReason).join('; ')}`
+          result.cleanupError = cleanupError
           result.error = result.error ? `${result.error}; ${cleanupError}` : cleanupError
         }
       }
@@ -584,11 +586,12 @@ describe.skipIf(IS_CI)('local live ACP runtime support matrix', () => {
         }
       }
 
-      const failures = results.flatMap((result) =>
-        features
+      const failures = results.flatMap((result) => [
+        ...features
           .filter((feature) => result.features[feature]?.status === 'fail')
-          .map((feature) => `${result.id}/${feature}: ${result.features[feature]!.detail}`)
-      )
+          .map((feature) => `${result.id}/${feature}: ${result.features[feature]!.detail}`),
+        ...(result.cleanupError ? [`${result.id}/cleanup: ${result.cleanupError}`] : [])
+      ])
       if (features.includes('lifecycle')) {
         expect(
           results.some((result) => result.features.lifecycle?.status === 'ok'),
