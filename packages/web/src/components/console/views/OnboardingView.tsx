@@ -106,20 +106,12 @@ export default function OnboardingView() {
     setSaving(true)
     setSaveErr(null)
     try {
-      const place = async () => {
-        if (target) await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: target.daemonId })
-      }
-      const patch = () => updateAgent(builtinAgent.id, { runtime, ...(model ? { model } : {}) })
-      // A deferred-runtime preset must set the runtime FIRST (the CP rejects a move on a
-      // runtime-less agent). An already-configured one (e.g. born pool-placed) moves onto
-      // the chosen home FIRST, so the spec PATCH runs against the daemon it will run on.
-      if (builtinAgent.runtime) {
-        await place()
-        await patch()
-      } else {
-        await patch()
-        await place()
-      }
+      // PATCH first, always: the move validates the agent's CURRENT runtime/model against
+      // the target daemon, so moving a pool-born preset (e.g. runtime dsh-acp) before the
+      // spec update is rejected with "target daemon does not support runtime …". The picker
+      // sources runtime/model from the target's own profiles, so patch-then-move admits.
+      await updateAgent(builtinAgent.id, { runtime, ...(model ? { model } : {}) })
+      if (target) await moveAgent(builtinAgent.id, { kind: 'daemon', daemonId: target.daemonId })
       await refresh()
       return true
     } catch (e) {
