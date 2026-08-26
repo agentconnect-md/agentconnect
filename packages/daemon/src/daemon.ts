@@ -3339,7 +3339,9 @@ export class Daemon {
     const duty = this.duties.dutyForAgent(agent.id)
     const daemonId = this.cfg.daemonId
     const skillsAgentId = this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId
-    if (!plane || !workspaceIncarnation || shimGeneration === undefined || !duty || !daemonId) {
+    const desiredSources = agent.skills.length + agent.managedSkills.length + dreamed.length
+    if (!plane || !workspaceIncarnation) {
+      if (!client && desiredSources === 0) return
       throw new Error('cluster skill preparation authority is unavailable')
     }
     const prior = await this.store.clusterSkillLedger(agent.id, workspaceIncarnation)
@@ -3356,6 +3358,9 @@ export class Daemon {
     if (!skillsAgentId) {
       if (supportRequired) throw new Error('cluster runtime lacks skill installation support')
       return
+    }
+    if (shimGeneration === undefined || !duty || !daemonId) {
+      throw new Error('cluster skill preparation authority is unavailable')
     }
     const scratch = await mkdtemp(join(tmpdir(), 'agentconnect-cluster-skills-'))
     try {
