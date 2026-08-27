@@ -327,7 +327,7 @@ describe('stream text delta batching', () => {
     ])
   })
 
-  it('renders a daemon notice in the work lane without swallowing the reply that follows', async () => {
+  it('renders a daemon notice in its own lane without swallowing the reply that follows', async () => {
     const runFrame = captureAnimationFrames()
     const { socket, turnId } = await openStream()
 
@@ -349,7 +349,7 @@ describe('stream text delta batching', () => {
 
     // The notice is its own step: `boundary` keeps the thinking chunk from accumulating into it.
     expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
-      { kind: 'plan', text: 'Allocating a sandbox pod…', boundary: true },
+      { kind: 'notice', text: 'Allocating a sandbox pod…', boundary: true },
       { kind: 'plan', text: 'here goes' }
     ])
   })

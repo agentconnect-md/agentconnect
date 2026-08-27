@@ -531,9 +531,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         }
         if (ev.kind === 'notice') {
           // Daemon chrome for a wait with nothing else to show (a sandbox pod coming up).
-          // Live-only, so it goes in the collapsible work lane; `boundary` keeps the reply
-          // chunks that follow from accumulating into it.
-          return [...steps, lane({ kind: 'plan', text: ev.text, boundary: true })]
+          // Its own lane, not the work lane: it is not something the agent thought or did,
+          // so it must not be counted or hidden as a reasoning step. `boundary` keeps the
+          // reply chunks that follow from accumulating into it.
+          return [...steps, lane({ kind: 'notice', text: ev.text, boundary: true })]
         }
         if (ev.kind === 'message') {
           if (last && last.kind === 'done' && last.who === who) {

@@ -3,6 +3,11 @@
 // file edits (EDIT) — behind a per-turn "Thought through…" toggle.
 export const WORK_LANES = new Set(['THINK', 'PLAN', 'TOOL', 'EDIT'])
 
+/** Daemon chrome for a wait (a sandbox pod coming up) — deliberately NOT a work lane:
+ *  it is not something the agent thought or did, so it renders as its own standalone
+ *  line instead of being counted and hidden as a reasoning step. */
+export const NOTICE_LANE = 'NOTICE'
+
 /** Split an agent turn's collapsed work steps into the counts the summary reports:
  *  reasoning STEPS (THINK/PLAN), tool-command STEPS (TOOL), and edited FILES — the
  *  DISTINCT file paths across all EDIT steps (a single EDIT row can touch several
