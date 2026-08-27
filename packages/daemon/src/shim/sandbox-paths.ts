@@ -61,3 +61,13 @@ export const SANDBOX_TUNNEL_PATHS: Readonly<Record<SandboxTunnelName, string>> =
   gitcred: '/run/agentconnect/gitcred.sock',
   mcp: '/run/agentconnect/mcp.sock'
 })
+
+/** The no-search DeepSeek Harness preset the image bakes (docker/runtime-sandbox/bake-dsh-preset.mjs),
+ *  which the shim copies into the pod's `$DSH_HOME/.agent-presets` before launching that runtime. Its
+ *  presence is CONSULTED rather than assumed: an image built before it ships none, and such a pod must
+ *  keep launching exactly as it always did. */
+export const SANDBOX_DSH_PRESET_DIR = '/opt/agentconnect/dsh/agent-presets/standard-no-search'
+
+/** The preset id the directory above supplies — the roster reads it from the directory NAME, so this
+ *  is the same string as that path's last segment and the settings default the shim writes. */
+export const SANDBOX_DSH_PRESET_ID = 'standard-no-search'

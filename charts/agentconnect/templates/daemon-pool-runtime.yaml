@@ -100,6 +100,15 @@ spec:
             # while the other two move.
             - name: AC_SHIM_PORT
               value: {{ $.Values.daemonPool.shimPort | quote }}
+            {{- if $runtime.deepseekWebSearch }}
+            # The deployment asserts its DeepSeek key reaches the real API, so the harness keeps the
+            # web_search its shipped preset offers. Off by default because the search provider ignores
+            # DEEPSEEK_BASE_URL and takes the key to api.deepseek.com itself: behind a gateway key every
+            # search fails as an invalid key, and the shim seeds a preset without the tool instead
+            # (packages/daemon/src/shim/dsh-preset.ts).
+            - name: AC_DEEPSEEK_WEB_SEARCH
+              value: 'on'
+            {{- end }}
             {{- if $.Values.modelEgress.enabled }}
             # Point the runtimes at a managed egress endpoint instead of the provider. The shim
             # maps these onto the runtime's own ANTHROPIC_*/OPENAI_* at spawn, fill-in only —

@@ -319,6 +319,12 @@ daemonPool:
     workspace:
       size: 10Gi
       storageClass: standard
+    # Keep the DeepSeek Harness's `web_search`. Off by default: its search provider ignores
+    # DEEPSEEK_BASE_URL and takes DEEPSEEK_API_KEY to api.deepseek.com itself, so a sandbox
+    # carrying a gateway key fails every search as an invalid key — the shim seeds a preset
+    # without the tool instead. Turn this on only where the key a sandbox gets reaches the
+    # real DeepSeek API.
+    deepseekWebSearch: false
     # Where agent pods schedule. Empty ⇒ the scheduler's choice, which on a shared
     # cluster means they land next to control-plane workloads. Each environment that runs
     # agents should pin its node group here and tolerate that group's taint.
