@@ -10,7 +10,10 @@
 // after tsdown in the daemon's `build` script; it ships nowhere (files: ["dist"]).
 import { existsSync, readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { builtinModules } from 'node:module'
 import { fileURLToPath } from 'node:url'
+
+const nodeBuiltins = new Set(builtinModules.flatMap((spec) => [spec, `node:${spec}`]))
 
 const bundlePath = new URL('../dist/index.js', import.meta.url)
 const bundle = readFileSync(bundlePath, 'utf8')
@@ -86,10 +89,10 @@ for (const entry of ['index.js', 'git-credential.js', 'gh-token.js']) {
     ...shim.matchAll(/\bfrom\s*["']([^"']+)["']/g),
     ...shim.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)
   ].map((match) => match[1])
-  const shimLeaked = shimSpecs.filter((spec) => !spec.startsWith('node:'))
+  const shimLeaked = shimSpecs.filter((spec) => !nodeBuiltins.has(spec))
   if (shimLeaked.length > 0) {
     console.error(
-      `✗ shim bundle ${entry} is not self-contained — it imports outside node: builtins:\n` +
+      `✗ shim bundle ${entry} is not self-contained — it imports outside Node builtins:\n` +
         [...new Set(shimLeaked)]
           .sort()
           .map((s) => `    ${s}`)
@@ -98,6 +101,20 @@ for (const entry of ['index.js', 'git-credential.js', 'gh-token.js']) {
     )
     process.exit(1)
   }
+}
+
+const shimEntry = new URL('../dist/shim/index.js', import.meta.url)
+const shimOfflineProvider = spawnSync(process.execPath, [fileURLToPath(shimEntry), '__sandbox-runtime-offline'], {
+  encoding: 'utf8',
+  timeout: 10_000,
+  env: { PATH: process.env.PATH ?? '' }
+})
+if (
+  shimOfflineProvider.status !== 2 ||
+  !shimOfflineProvider.stderr.includes('expected <settings> <owner-pid> <cwd> -- <command> [args...]')
+) {
+  console.error('✗ shim bundle does not dispatch its confined offline-sandbox provider entry')
+  process.exit(1)
 }
 
 const shimSkillsCli = new URL('../dist/shim/skills/dist/cli.js', import.meta.url)
@@ -124,4 +141,4 @@ if (!readFileSync(ghWrapper, 'utf8').includes('/opt/agentconnect/shim/gh-token.j
 }
 
 console.log('✓ daemon bundle is self-contained (including skills CLI 1.5.21 and SRT seccomp helpers)')
-console.log('✓ shim bundles are self-contained (channel + credential helper + gh token, node: builtins only)')
+console.log('✓ shim bundles are self-contained (channel + credential helper + gh token, Node builtins only)')
