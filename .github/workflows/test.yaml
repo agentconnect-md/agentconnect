@@ -21,6 +21,11 @@ on:
         required: false
         type: boolean
         default: false
+      skip_windows:
+        description: 'Skip the Windows unit suite (PR runs always keep it)'
+        required: false
+        type: boolean
+        default: false
     outputs:
       build_test_summary:
         description: 'Unit test summary markdown'
@@ -188,14 +193,53 @@ jobs:
             echo '__AGENTCONNECT_UNIT_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
 
+  # Whether this PR can change what the Windows job tests at all. It runs ~15-23 min against ~3 for
+  # the slowest Linux job, so it sets the whole workflow's wall clock — and most PRs here never touch
+  # the daemon/CLI closure. Costs one ~30 s Linux job to spare the other PRs that wait. Non-PR events
+  # and any diff this cannot read answer yes, so the gate fails open, never silently off.
+  windows-scope:
+    name: Windows Scope
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_windows }}
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Does this diff reach the daemon/CLI closure?
+        id: filter
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          reaches() { echo 'changed=true' >> "$GITHUB_OUTPUT"; exit 0; }
+          [ "${{ github.event_name }}" = 'pull_request' ] || reaches
+          [ -n "$BASE" ] && [ -n "$HEAD" ] || reaches
+          files=$(git diff --name-only "$BASE...$HEAD") || reaches
+          # The two packages plus their workspace dependency closure, and the files that decide how
+          # any of it is installed, resolved or run.
+          if printf '%s\n' "$files" | grep -qE '^(packages/(daemon|cli|protocol|connection|message|activation-policy|k8s-client)/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.nvmrc$|scripts/|\.github/workflows/test\.yaml$)'; then
+            reaches
+          fi
+          echo 'changed=false' >> "$GITHUB_OUTPUT"
+
   # The two packages with real Windows surface — the daemon (runtimes, skills, spawn driver, IPC
   # paths) and the CLI (junction-based version pointers) — on a Windows runner. `windows-latest`
   # rather than a win32-simulating unit test: the failures this catches are the ones only a real
   # Win32 filesystem and process model produce.
   #
+  # Release callers pass `skip_windows` for the same reason they pass `skip_sandbox`: the PR already
+  # ran it, and a 15-23 min Windows leg that can lose its own runner would strand a merged commit
+  # unpublished. `inputs` is empty on `pull_request`, so the unset input reads falsy and PRs run it.
+  #
   # No `prisma:generate` step: neither package imports the generated client.
   unit-windows:
     name: Unit Test (Windows)
+    needs: windows-scope
+    if: ${{ needs.windows-scope.outputs.changed == 'true' }}
     runs-on: windows-latest
     # The daemon suite alone runs ~20 min here against ~3 on Linux — Windows filesystem and
     # process-spawn cost, not extra work — so the cap is set well clear of it rather than near it.

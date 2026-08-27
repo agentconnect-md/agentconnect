@@ -27,12 +27,15 @@ jobs:
   # this exact SHA; the publishing job below waits for all of them.
   # `skip_sandbox` drops the kernel-sandbox suite here — the PR already ran it, and its
   # bwrap/apt setup is the leg whose failures would strand a merged commit unpublished.
+  # `skip_windows` drops the Windows suite for the same reason: it is 15-23 min, it can fail
+  # without ever acquiring a hosted runner, and the PR already ran it against this content.
   test:
     name: Test
     uses: ./.github/workflows/test.yaml
     with:
       defer_summaries: true
       skip_sandbox: true
+      skip_windows: true
 
   release:
     needs: test
