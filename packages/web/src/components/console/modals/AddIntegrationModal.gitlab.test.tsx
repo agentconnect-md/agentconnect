@@ -132,7 +132,13 @@ const tileNamed = (label: string) =>
 const clickText = (text: string) =>
   Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes(text))
 const family = (fam: string) => document.querySelector<HTMLDivElement>(`[data-gitlab-family="${fam}"]`)
-const trigger = (mode: string) => document.querySelector<HTMLDivElement>(`[data-gitlab-trigger="${mode}"]`)
+/** Cadence is per subject now, so a tile is addressed by (family, mode). */
+const trigger = (fam: string, mode: string) =>
+  document.querySelector<HTMLButtonElement>(`[data-gitlab-trigger="${fam}:${mode}"]`)
+const format = (id: string) => document.querySelector<HTMLButtonElement>(`[data-review-format="${id}"]`)
+const checkbox = (label: string) =>
+  Array.from(document.querySelectorAll<HTMLLabelElement>('label')).find((row) => row.textContent?.includes(label))
+    ?.firstElementChild as HTMLInputElement | undefined
 
 async function pickProject() {
   await act(async () => tileNamed('GitLab')?.click())
@@ -204,12 +210,12 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     expect(document.body.textContent).not.toContain('Couldn’t load your GitLab projects')
   })
 
-  it('defaults to the updated trigger, scoping replies to the selected subjects', async () => {
+  it('defaults to the opened trigger, which subscribes to no notes', async () => {
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
     await pickProject()
 
-    // No cadence click: the form opens on "updated", merge requests only.
+    // No cadence click: the form opens on "opened", merge requests only.
     await act(async () => clickText('Connect')?.click())
 
     expect(mocks.createGitlabHook).toHaveBeenCalledWith({
@@ -217,21 +223,22 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       name: 'acme/platform',
       projectId: '4210',
       family: 'merge_request',
-      events: ['merge_request:*'],
-      commentFamilies: ['merge_request'],
+      events: ['merge_request:opened'],
+      commentFamilies: [],
       mentionOnly: false,
-      // The review disclosure opens on the full preset, exactly like the github pane.
+      // The review format opens on the full set, exactly like the github pane.
       reviewPolicy: 'full',
       reportingMode: 'check'
     })
   })
 
-  it('compiles the created trigger to openings with no note subscription', async () => {
+  it('compiles the opened trigger to openings with no note subscription', async () => {
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
     await pickProject()
     await act(async () => family('issues')?.click())
-    await act(async () => trigger('first')?.click())
+    await act(async () => trigger('issues', 'first')?.click())
+    await act(async () => trigger('merge_request', 'first')?.click())
 
     await act(async () => clickText('Connect')?.click())
 
@@ -256,7 +263,8 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     await render()
     await pickProject()
     await act(async () => family('issues')?.click())
-    await act(async () => trigger('mention')?.click())
+    await act(async () => trigger('issues', 'mention')?.click())
+    await act(async () => trigger('merge_request', 'mention')?.click())
 
     await act(async () => clickText('Connect')?.click())
 
@@ -285,19 +293,99 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     })
   })
 
-  it('offers the review disclosure and sends whichever preset is chosen', async () => {
+  it('gives each selected subject its own cadence in a single pass', async () => {
+    // The point of the per-family rows: one wizard pass can watch merge requests
+    // on every update while issues only answer an @mention.
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    await render()
+    await pickProject()
+    await act(async () => family('issues')?.click())
+    await act(async () => trigger('issues', 'mention')?.click())
+    await act(async () => trigger('merge_request', 'every')?.click())
+
+    await act(async () => clickText('Connect')?.click())
+
+    expect(mocks.createGitlabHook).toHaveBeenCalledTimes(2)
+    expect(mocks.createGitlabHook).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        family: 'issues',
+        events: ['issues:*'],
+        commentFamilies: ['issues'],
+        mentionOnly: true
+      })
+    )
+    expect(mocks.createGitlabHook).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        family: 'merge_request',
+        events: ['merge_request:*'],
+        commentFamilies: ['merge_request'],
+        mentionOnly: false
+      })
+    )
+  })
+
+  it('clears the note subscription only on the row picked as opened', async () => {
+    // Opened mode is the one cadence that drops notes entirely (a shared note
+    // subscription would fire on every reply), and it must drop them for THAT
+    // row alone — the sibling on "any update" keeps its own.
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    await render()
+    await pickProject()
+    await act(async () => family('issues')?.click())
+    await act(async () => trigger('merge_request', 'every')?.click())
+
+    await act(async () => clickText('Connect')?.click())
+
+    expect(mocks.createGitlabHook).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ family: 'issues', events: ['issues:opened'], commentFamilies: [], mentionOnly: false })
+    )
+    expect(mocks.createGitlabHook).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        family: 'merge_request',
+        events: ['merge_request:*'],
+        commentFamilies: ['merge_request'],
+        mentionOnly: false
+      })
+    )
+  })
+
+  it('offers a cadence row per selected subject and none for an already-watched one', async () => {
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    mocks.fetchAgentHooks.mockResolvedValue([
+      { id: 'hook-mr', kind: 'gitlab', repoId: '4210', family: 'merge_request', events: ['merge_request:*'] }
+    ])
+    await renderAgent({ id: 'agent-one-row' })
+    await pickProject()
+
+    // Merge requests are taken, so only the issues card opens.
+    await act(async () => family('issues')?.click())
+    expect(document.querySelectorAll('[data-gitlab-trigger]')).toHaveLength(3)
+    expect(trigger('issues', 'every')).not.toBeNull()
+    expect(trigger('merge_request', 'every')).toBeNull()
+
+    // Deselecting the last subject leaves nothing to schedule.
+    await act(async () => family('issues')?.click())
+    expect(document.querySelectorAll('[data-gitlab-trigger]')).toHaveLength(0)
+  })
+
+  it('carries the review format inside the merge-request card, with no None tile', async () => {
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
     await pickProject()
 
-    // The section exists on the GitLab pane, worded for merge requests.
-    const disclosure = clickText('MR review')
-    expect(disclosure).toBeDefined()
-    await act(async () => disclosure?.click())
-    expect(document.body.textContent).toContain('Run note')
+    expect(document.body.textContent).toContain('Review format')
+    expect(format('details')?.getAttribute('aria-pressed')).toBe('true')
+    expect(format('none')).toBeNull()
 
-    // "None" turns both axes off in one click.
-    await act(async () => clickText('None')?.click())
+    // Turning every Custom capability off is the no-review state the None tile used to be.
+    await act(async () => format('custom')?.click())
+    expect(document.body.textContent).toContain('Run note')
+    await act(async () => checkbox('Inline comments')?.click())
+    await act(async () => checkbox('Run note')?.click())
     await act(async () => clickText('Connect')?.click())
 
     expect(mocks.createGitlabHook).toHaveBeenCalledWith(
@@ -305,11 +393,20 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     )
   })
 
+  it('folds the review format away with the merge-request card', async () => {
+    mocks.fetchGitlabProjects.mockResolvedValue([project])
+    await render()
+    await pickProject()
+    await act(async () => family('merge_request')?.click())
+
+    expect(document.body.textContent).not.toContain('Review format')
+  })
+
   it('names GitLab tier semantics in the review copy, not GitHub ones', async () => {
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
     await pickProject()
-    await act(async () => clickText('MR review')?.click())
+    await act(async () => format('custom')?.click())
 
     const help = Array.from(document.querySelectorAll('label[title]')).map((row) => row.getAttribute('title') ?? '')
     // §15.3: request-changes needs the bot to be a current reviewer; approval is its own act.
@@ -335,7 +432,10 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     await act(async () => clickText('Connect')?.click())
 
     expect(mocks.createGitlabHook.mock.calls.map(([body]) => body.family)).toEqual(['issues', 'merge_request'])
-    expect(mocks.createGitlabHook.mock.calls.flatMap(([body]) => body.events)).toEqual(['issues:*', 'merge_request:*'])
+    expect(mocks.createGitlabHook.mock.calls.flatMap(([body]) => body.events)).toEqual([
+      'issues:opened',
+      'merge_request:opened'
+    ])
   })
 
   it('drops the separate comments row and mention checkbox the form used to expose', async () => {

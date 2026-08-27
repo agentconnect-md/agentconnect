@@ -237,7 +237,21 @@ describe('AgentDetailView, code-host repository blocks', () => {
     expect(menuItem('Add Issues')).toBeUndefined()
   })
 
+  it('offers the label cadence on an issues row only', async () => {
+    const scope = await render()
+    // The menu is body-portaled, so read it off the document after opening.
+    await act(async () => scope.querySelector<HTMLElement>('[aria-label="Trigger for acme/api Issues"]')!.click())
+    expect(menuItem('labeled')).toBeTruthy()
+    expect(menuItem('update')).toBeTruthy()
+    await act(async () => menuItem('@-mention')!.click())
+
+    await act(async () => scope.querySelector<HTMLElement>('[aria-label="Trigger for acme/api PRs"]')!.click())
+    expect(menuItem('labeled')).toBeUndefined()
+    expect(menuItem('update')).toBeTruthy()
+  })
+
   it('creates the missing family row at the default trigger', async () => {
+    // The same default the wizard opens a new subject on: the opening itself.
     const scope = await render()
     await act(async () => byTitle(scope, 'Watch another subject')[0]!.click())
     await act(async () => menuItem('Add Pull requests')!.click())
@@ -247,7 +261,7 @@ describe('AgentDetailView, code-host repository blocks', () => {
         agentId: 'agent-1',
         repoFullName: 'acme/web',
         family: 'pull_request',
-        events: ['pull_request:*', 'issue_comment:created'],
+        events: ['pull_request:opened'],
         commentFamilies: ['pull_request'],
         mentionOnly: false
       })

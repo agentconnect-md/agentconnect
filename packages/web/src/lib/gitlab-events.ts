@@ -8,14 +8,14 @@
  * rows and the family is immutable; the row's `events` patterns,
  * `commentFamilies` and `mentionOnly` flag encode the mode:
  *
- *   created  → `family:opened` for a thread family and NO note family; the
+ *   opened   → `family:opened` for a thread family and NO note family; the
  *              relay additionally accepts a later explicit @mention in an
  *              `:opened`-cadence thread family. Pushes have no "first" — a push
  *              subscription is inherently per-push, so `push:*` rides along.
- *   updated  → `family:*` plus the row's own thread family as its note family,
+ *   any update → `family:*` plus the row's own thread family as its note family,
  *              so replies fire too. Close, reopen, merge and draft toggles stay
  *              inert; supported updates and replies run.
- *   mention only → the same subscriptions as updated, with `mentionOnly: true` —
+ *   @-mention → the same subscriptions as any update, with `mentionOnly: true` —
  *              an event fires ONLY when its text (issue/MR description, note
  *              body, commit message) @-mentions the agent or the project's
  *              service account. The agent handle targets one rule; the service
@@ -24,7 +24,7 @@
  *
  * One asymmetry with GitHub is deliberate: there, `commentFamilies` only
  * NARROWS a shared `issue_comment` subscription, so it may stay populated in
- * created mode. Here it is the note subscription itself, so created mode must
+ * opened mode. Here it is the note subscription itself, so opened mode must
  * clear it or every reply would fire.
  *
  * The wire accepts finer `family:action` patterns; these helpers never emit one.
@@ -40,23 +40,15 @@ export interface GlFamilyTile {
   pill: string
   icon: string
   label: string
-  desc: string
 }
 
-// `desc` is the Add-integration tile subtitle — keep it to a short fragment
-// naming signals the relay really forwards, on one or two 11.5px lines.
 // Every subject the wire knows, in display order — a stored push row still
-// reads its own label from here even though the console never offers one.
+// reads its own label from here even though the console never offers one. What
+// a subject listens to is stated by its cadence tiles, not a subtitle.
 const GL_ALL_FAMILIES: GlFamilyTile[] = [
-  { fam: 'issues', pill: 'Issues', icon: 'circle-dot', label: 'Issues', desc: 'opened, labels, replies' },
-  {
-    fam: 'merge_request',
-    pill: 'MRs',
-    icon: 'git-pull-request',
-    label: 'Merge requests',
-    desc: 'opened, new commits, replies'
-  },
-  { fam: 'push', pill: 'Pushes', icon: 'git-commit-horizontal', label: 'Pushes', desc: 'commits pushed to a branch' }
+  { fam: 'issues', pill: 'Issues', icon: 'circle-dot', label: 'Issues' },
+  { fam: 'merge_request', pill: 'MRs', icon: 'git-pull-request', label: 'Merge requests' },
+  { fam: 'push', pill: 'Pushes', icon: 'git-commit-horizontal', label: 'Pushes' }
 ]
 
 // The subjects the console OFFERS — the two GitHub offers too. The push tile is
@@ -76,11 +68,11 @@ export function gitlabFamilyCarriesReviews(fam: GlFamily): boolean {
 
 /** The trigger modes in display order — mention deliberately last. */
 export const GL_TRIGGER_MODES: readonly GlTriggerMode[] = ['first', 'every', 'mention']
-/** The Add-integration cadence tiles' vocabulary ("Trigger when …"). */
+/** The cadence vocabulary ("Trigger when …") the create surfaces spell out. */
 export const GL_TRIGGER_LABEL: Record<GlTriggerMode, string> = {
-  first: 'created',
-  every: 'updated',
-  mention: 'mention only'
+  first: 'opened',
+  every: 'any update',
+  mention: '@-mention'
 }
 /** The agent-detail trigger bar's segment vocabulary, worded like the IM bar. */
 export const GL_TRIGGER_PILL: Record<GlTriggerMode, string> = {
@@ -111,15 +103,16 @@ export function gitlabMentionUsage(agentName: string): string {
 /** The default create-form selection: merge requests only. */
 export const GL_DEFAULT_FAMILIES: readonly GlFamily[] = ['merge_request']
 
-/** The default create-form cadence: react to issue or merge-request updates. */
-export const GL_DEFAULT_TRIGGER_MODE: GlTriggerMode = 'every'
+/** The default cadence every create surface opens a new subject on: the opening
+ *  itself, exactly as the GitHub side does. */
+export const GL_DEFAULT_TRIGGER_MODE: GlTriggerMode = 'first'
 
 /** Narrow a stored cross-host comment scope to the GitLab families a gitlab hook may carry. */
 export function gitlabCommentFamilies(families: readonly HookCommentFamily[]): GitlabCommentFamily[] {
   return families.filter((family): family is GitlabCommentFamily => family === 'issues' || family === 'merge_request')
 }
 
-/** The note families replies may arrive on — empty in created mode, where a
+/** The note families replies may arrive on — empty in opened mode, where a
  *  reply fires only by summoning the agent in an already-opened thread. */
 export function commentFamiliesForGitlabFamilies(
   families: Iterable<GlFamily>,
