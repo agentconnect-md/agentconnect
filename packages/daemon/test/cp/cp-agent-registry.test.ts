@@ -153,7 +153,8 @@ describe('CpAgentRegistry (memory-only CP specs)', () => {
     expect(existsSync(join(dir, 'helper'))).toBe(false)
   })
 
-  it('keeps removal retryable when deleting the owned root fails', () => {
+  // The failure is forced by revoking directory permissions, which a Windows chmod cannot express.
+  it.skipIf(process.platform === 'win32')('keeps removal retryable when deleting the owned root fails', () => {
     const { dir, reg } = makeReg()
     reg.upsert(A1, spec())
     const root = join(dir, 'helper')

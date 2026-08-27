@@ -506,7 +506,7 @@ describe('daemon durable inbox', () => {
     )
     await Promise.all(queued)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('removes the inbox row when a turn completes (not replayed next startup)', async () => {
     const g = gatedHost()
@@ -522,7 +522,7 @@ describe('daemon durable inbox', () => {
     // Terminal (success) → row deleted.
     await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('namespaces durable message identity per physical bot and deduplicates within one bot', async () => {
     const g = gatedHost()
@@ -549,7 +549,7 @@ describe('daemon durable inbox', () => {
     await Promise.all([pA, pB])
     await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a fail-stopped queued rest has its rows removed too', async () => {
     const g = gatedHost()
@@ -570,7 +570,7 @@ describe('daemon durable inbox', () => {
     await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     expect((daemon as any).serialQueue.has(key)).toBe(false)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('startup replay: pre-seeded rows for a sessionKey are re-admitted through the gate in FIFO order', async () => {
     const g = gatedHost()
@@ -633,7 +633,7 @@ describe('daemon durable inbox', () => {
     // All replayed rows removed once their turns completed.
     await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('startup replay trips on a persisted anonymous empty event, purges it without prompting, and stays open after another restart', async () => {
     const root = scaffold()
@@ -670,7 +670,7 @@ describe('daemon durable inbox', () => {
     expect(secondHost.host.prompt).not.toHaveBeenCalled()
     expect(await loopGuard(root)).toMatchObject({ reason: 'malformed_platform_event' })
     await second.stop()
-  }, 15_000)
+  })
 
   it('bounds a legacy non-empty platform-echo backlog that predates loop counters', async () => {
     const root = scaffold()
@@ -701,7 +701,7 @@ describe('daemon durable inbox', () => {
     expect(g.host.prompt).not.toHaveBeenCalled()
     expect(await loopGuard(root)).toMatchObject({ reason: 'automatic_turn_burst' })
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('counts legacy marker-zero rows even when another owner already created the scope guard', async () => {
     const root = scaffold()
@@ -736,7 +736,7 @@ describe('daemon durable inbox', () => {
     expect(g.host.prompt).not.toHaveBeenCalled()
     expect(await loopGuard(root)).toMatchObject({ automaticCount: 9, reason: 'automatic_turn_burst' })
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('resumes an unrelated durable replay after a legacy scope trips and its safety drain closes', async () => {
     const root = scaffold()
@@ -792,7 +792,7 @@ describe('daemon durable inbox', () => {
     await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('does not resurrect a deferred replay that pause purged before a quick unpause', async () => {
     const root = scaffold()
@@ -857,7 +857,7 @@ describe('daemon durable inbox', () => {
     g.releasePrompt()
     await expect(fresh).resolves.toBe('acp-2')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('startup with a paused agent purges its inbox so unpause plus another restart cannot resurrect old work', async () => {
     const root = scaffold()
@@ -893,7 +893,7 @@ describe('daemon durable inbox', () => {
     resumedHost.releaseOne()
     await expect(fresh).resolves.toBe('acp-1')
     await resumed.stop()
-  }, 15_000)
+  })
 
   it('startup pause terminalizes a retained hook instead of deleting or replaying its report', async () => {
     const root = scaffold([HOOK_AGENT_ID])
@@ -923,7 +923,7 @@ describe('daemon durable inbox', () => {
     expect(resumedHost.host.prompt).not.toHaveBeenCalled()
     expect((await inbox(root))[0]).toMatchObject({ id: retained.id, terminalReport: expect.any(String) })
     await resumed.stop()
-  }, 15_000)
+  })
 
   it('startup open-loop purges ordinary backlog but terminalizes a retained hook in the same scope', async () => {
     const root = scaffold([HOOK_AGENT_ID])
@@ -969,7 +969,7 @@ describe('daemon durable inbox', () => {
     })
     expect(rows.find((row) => row.id === pendingReport.id)?.terminalReport).not.toBeNull()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('an untrusted platform-turn burst opens the guard, clears the durable queue, and cancels the running turn', async () => {
     const root = scaffold()
@@ -1021,7 +1021,7 @@ describe('daemon durable inbox', () => {
     await (daemon as any).onInboundOutcome(msg('11', '!resume'))
     expect(await loopGuard(root)).toBeUndefined()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('shares one guard across agents in a thread while leaving another thread unaffected', async () => {
     const root = scaffold(['bot-a', 'bot-b'])
@@ -1094,7 +1094,7 @@ describe('daemon durable inbox', () => {
     a.releaseOne()
     await expect(fresh).resolves.toBe('acp-a')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('replay idempotency: a row whose entry is already live in the gate is not double-processed', async () => {
     const g = gatedHost()
@@ -1115,7 +1115,7 @@ describe('daemon durable inbox', () => {
     g.releaseOne()
     await p1
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a redelivery with an existing durable id is acknowledged without a second QueueEntry', async () => {
     const g = gatedHost()
@@ -1135,7 +1135,7 @@ describe('daemon durable inbox', () => {
     g.releaseOne()
     await first
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('replays an unknown-agent row only after its CP integration binding converges', async () => {
     const g = gatedHost()
@@ -1195,7 +1195,7 @@ describe('daemon durable inbox', () => {
     g.releaseOne()
     await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('purges a retained unknown-agent row when that agent is later added already paused', async () => {
     const root = scaffold(['bot-a'])
@@ -1235,7 +1235,7 @@ describe('daemon durable inbox', () => {
     await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     expect(g.host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('SHUTDOWN keeps rows for replay: a deadline-cancel that unwinds the in-flight prompt must NOT delete the head OR queued rows', async () => {
     // Bug (§6.9 #353): on a shutdown that hits the drain deadline, drainForShutdown calls
@@ -1285,7 +1285,7 @@ describe('daemon durable inbox', () => {
 
     // All three rows SURVIVE (head + queued rest) so a subsequent replayInbox would recover them.
     expect((await inbox(root)).map((r) => r.id).sort()).toEqual(['slack:C1:100', 'slack:C1:200', 'slack:C1:300'])
-  }, 15_000)
+  })
 
   it('a webchat message is NOT durably persisted (live sink cannot be restored)', async () => {
     const g = gatedHost()
@@ -1315,7 +1315,7 @@ describe('daemon durable inbox', () => {
     await daemon.stop()
     // Still no webchat row after the head drained.
     expect((await inbox(root)).some((r) => r.id === 'slack:C1:200')).toBe(false)
-  }, 15_000)
+  })
 
   it('durably persists an agent-initiated post-only webchat wake', async () => {
     const g = gatedHost()
@@ -1350,7 +1350,7 @@ describe('daemon durable inbox', () => {
     await expect(turn).resolves.toBe('acp-1')
     await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('replays an agent-initiated webchat wake with its canonical live post sink', async () => {
     const root = scaffold()
@@ -1425,5 +1425,5 @@ describe('daemon durable inbox', () => {
     })
     await vi.waitFor(async () => expect(await inbox(root)).toHaveLength(0), WAIT)
     await daemon.stop()
-  }, 15_000)
+  })
 })

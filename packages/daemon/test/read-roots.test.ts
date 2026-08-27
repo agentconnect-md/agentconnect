@@ -11,7 +11,8 @@ afterEach(() => {
 })
 
 describe('trusted runtime read roots', () => {
-  it('collapses a package installation to a small code-store policy', () => {
+  // The trusted executable is an extensionless symlink at mode 0755, which Windows PATH resolution does not accept.
+  it.skipIf(process.platform === 'win32')('collapses a package installation to a small code-store policy', () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-runtime-roots-'))
     temporaryRoots.push(root)
     const bin = join(root, 'home', 'bin')

@@ -241,13 +241,30 @@ export async function atomicWriteContainedMemoryFile(
       }
     }
     if ((await fsp.realpath(parent)) !== parent) throw new MemoryPathError('path resolves outside the memory root')
-    await fsp.rename(temp, target)
+    await publishOverTarget(temp, target)
   } finally {
     await fsp.rm(temp, { force: true }).catch(() => {})
   }
   const stat = await fsp.lstat(target)
   if (!stat.isFile()) throw new MemoryPathError('memory target is not a regular file')
   return { size: stat.size, mtime: stat.mtime.toISOString() }
+}
+
+// Windows cannot rename over a file another handle holds open — a scanner's transient handle on the
+// bytes just written is enough — so EPERM/EACCES/EBUSY here is a race POSIX never has. Bounded retry,
+// as `WorkspaceManager.renameWorkspaceDirectory` does for the same reason on a directory swap.
+async function publishOverTarget(temp: string, target: string): Promise<void> {
+  if (process.platform !== 'win32') return fsp.rename(temp, target)
+  const transient = new Set(['EPERM', 'EACCES', 'EBUSY'])
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fsp.rename(temp, target)
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (attempt === 9 || code === undefined || !transient.has(code)) throw error
+      await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)))
+    }
+  }
 }
 
 /** The port over this process's own filesystem, contained to `root`. */

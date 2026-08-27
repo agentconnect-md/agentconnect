@@ -40,11 +40,15 @@ describe('memoryChannelKey / channelMemoryRoot', () => {
     expect(memoryChannelKey('weird/../name:with spaces')).toMatch(/^[A-Za-z0-9._-]+$/)
   })
 
-  it('rejects an unsafe channel key so a crafted key cannot escape the agent tree', () => {
-    expect(() => channelMemoryRoot(local('/agent'), '..')).toThrow(MemoryPathError)
-    expect(() => channelMemoryRoot(local('/agent'), 'a/b')).toThrow(MemoryPathError)
-    expect(channelMemoryRoot(local('/agent'), 'ok-key_1').root).toBe('/agent/channels/ok-key_1')
-  })
+  // The agent tree is rooted at a POSIX absolute path here, which resolves onto a drive on Windows.
+  it.skipIf(process.platform === 'win32')(
+    'rejects an unsafe channel key so a crafted key cannot escape the agent tree',
+    () => {
+      expect(() => channelMemoryRoot(local('/agent'), '..')).toThrow(MemoryPathError)
+      expect(() => channelMemoryRoot(local('/agent'), 'a/b')).toThrow(MemoryPathError)
+      expect(channelMemoryRoot(local('/agent'), 'ok-key_1').root).toBe('/agent/channels/ok-key_1')
+    }
+  )
 })
 
 describe('channel-scoped memory overlay', () => {

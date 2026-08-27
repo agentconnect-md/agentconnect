@@ -402,7 +402,8 @@ describe('the console git scope keys on the MANAGED credential, not the github-a
   })
 })
 
-describe('a cluster daemon addresses a secondary root on the pod volume', () => {
+// Pod coordinates are POSIX by construction — the sandbox pod is always Linux.
+describe.skipIf(process.platform === 'win32')('a cluster daemon addresses a secondary root on the pod volume', () => {
   const POD_ROOT = '/agent'
   const POD_SECONDARY = `${POD_ROOT}/repos/${AUTHORIZED}`
 

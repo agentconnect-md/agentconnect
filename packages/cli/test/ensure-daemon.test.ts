@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { join } from 'node:path'
 
 // Mock the version layer so the bootstrap never touches the registry/filesystem;
 // we only assert HOW ensureDaemonInstalled drives it.
@@ -48,7 +49,7 @@ describe('ensureDaemonInstalled', () => {
     currentVersion.mockReturnValue('1.2.3')
     await ensureDaemonInstalled('/root')
     expect(versionInstall).not.toHaveBeenCalled()
-    expect(repairDaemonBundleModes).toHaveBeenCalledWith('/root/versions/1.2.3')
+    expect(repairDaemonBundleModes).toHaveBeenCalledWith(join('/root', 'versions', '1.2.3'))
   })
 
   it('skips in dev mode (AGENTCONNECT_DAEMON_ENTRY set)', async () => {

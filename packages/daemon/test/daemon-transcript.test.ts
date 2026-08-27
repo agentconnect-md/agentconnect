@@ -208,7 +208,7 @@ describe('Daemon transcript records the agent reply', () => {
       { ts: 'reply-1', sender: 'bot-a', kind: 'text', text: 'here is my answer' }
     ])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('records post-turn memory for a CP-published session only after the reply is delivered', async () => {
     const { factory } = replyingHost('here is my answer')
@@ -252,7 +252,7 @@ describe('Daemon transcript records the agent reply', () => {
       undefined
     )
     await daemon.stop()
-  }, 15_000)
+  })
 
   // A Slack/Feishu channel (external identity domain) is no longer memory-excluded
   // just for being external — it captures like any other channel. DMs stay private
@@ -274,7 +274,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(await (daemon as any).store.isCaptureExcluded('bot-a', 'acp-1')).toBe(false)
     await vi.waitFor(() => expect(recordTurn).toHaveBeenCalledOnce(), WAIT)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('rejects a Slack audience change on a session created from another source', async () => {
     const { factory, host } = replyingHost('here is my answer')
@@ -298,7 +298,7 @@ describe('Daemon transcript records the agent reply', () => {
       'T1'
     )
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('reuses an external runtime only for the same inherited Slack source', async () => {
     const { factory, host } = replyingHost('here is my answer')
@@ -332,7 +332,7 @@ describe('Daemon transcript records the agent reply', () => {
       'T1'
     )
     await daemon.stop()
-  }, 15_000)
+  })
 
   // A cross-channel root post used to seed its new thread with the ORIGIN conversation's audience,
   // so the first human reply there rejected as a cross-source turn — and the session claimed the
@@ -388,7 +388,7 @@ describe('Daemon transcript records the agent reply', () => {
     )
     expect(host.prompt).toHaveBeenCalledTimes(2)
     await daemon.stop()
-  }, 15_000)
+  })
 
   // session-visibility.md §5.1: managed memory is agent-scoped and shared across
   // users, so a private conversation must never be distilled into it. A DM is
@@ -410,7 +410,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(await (daemon as any).store.isCaptureExcluded('bot-a', 'acp-1')).toBe(true)
     expect(recordTurn).not.toHaveBeenCalled()
     await daemon.stop()
-  }, 15_000)
+  })
 
   // Reads are always allowed (#653): automatic recall runs even for a private DM
   // or an A2A child. Only WRITES (memory write tools + post-turn distillation) stay
@@ -430,7 +430,7 @@ describe('Daemon transcript records the agent reply', () => {
 
     expect(recallForTurn).toHaveBeenCalledOnce()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('runs automatic recall for an A2A child (reads are always allowed, #653)', async () => {
     const { factory } = replyingHost('here is my answer')
@@ -448,7 +448,7 @@ describe('Daemon transcript records the agent reply', () => {
 
     expect(recallForTurn).toHaveBeenCalledOnce()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('uses the stable bot name in linked attribution instead of the display name', async () => {
     const { factory, host } = replyingHost('the answer')
@@ -476,7 +476,7 @@ describe('Daemon transcript records the agent reply', () => {
     const botRows = (await transcript(daemon)).filter((r) => r.sender === 'bot-a')
     expect(botRows.map((r) => r.text)).toEqual(['the answer'])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('marks the last admitted agent turn in the attached Slack footer', async () => {
     const { factory } = replyingHost('the final autonomous answer')
@@ -516,7 +516,7 @@ describe('Daemon transcript records the agent reply', () => {
     )
     expect(separateNotice).toBeUndefined()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('uses session-scoped model metadata refreshed at turn completion', async () => {
     const { factory, host } = replyingHost('the answer')
@@ -545,7 +545,7 @@ describe('Daemon transcript records the agent reply', () => {
       trailingBlocks: [classicFooter('bot-a', 'claude', 'model-after-prompt')]
     })
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('never resends linked footer blocks when model metadata changes after an early flush', async () => {
     let onUpdate!: (sid: string, update: unknown) => void
@@ -591,7 +591,7 @@ describe('Daemon transcript records the agent reply', () => {
     )
     expect(linkedReplyUpdates).toEqual([])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('minimal mode: includes the footer in the initial live-reply post', async () => {
     const { factory } = replyingHost('here is my answer')
@@ -616,7 +616,7 @@ describe('Daemon transcript records the agent reply', () => {
     const separateFooter = conn.postBlocks.mock.calls.find((c) => JSON.stringify(c).includes('open in session'))
     expect(separateFooter).toBeUndefined()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('minimal mode: delivers an over-limit final reply across messages and attaches the footer last', async () => {
     const reply = `${'a'.repeat(12_000)}\nsecond section`
@@ -654,7 +654,7 @@ describe('Daemon transcript records the agent reply', () => {
         .join('')
     ).toBe(reply)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('minimal mode: re-anchors the live reply below a card that needs human input', async () => {
     let onUpdate!: (sid: string, update: unknown) => void
@@ -731,7 +731,7 @@ describe('Daemon transcript records the agent reply', () => {
       expect.stringContaining('second part')
     )
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('serializes a human-input card behind chrome already queued on the apply chain', async () => {
     // The card must not race pre-card chrome: both funnel through the connection's send-queue
@@ -768,7 +768,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(ts).toBe('card-ts')
     expect(order).toEqual(['chrome', 'card']) // pre-card chrome above, card below
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('moves the attached footer to the latest body section across a flush boundary', async () => {
     const { factory } = streamingHost([text('first section'), tool('t1', 'Read file.ts'), text('last section')])
@@ -793,7 +793,7 @@ describe('Daemon transcript records the agent reply', () => {
     )
     expect(conn.updateBlocks.mock.calls.some((call) => call[1] === 'reply-2')).toBe(false)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('retries a failed stale-footer cleanup at finalization', async () => {
     const { factory } = streamingHost([text('first section'), tool('t1', 'Read file.ts'), text('last section')])
@@ -809,7 +809,7 @@ describe('Daemon transcript records the agent reply', () => {
       ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }], undefined, false, 'bot-a']
     ])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('keeps the prior footer when a later body post returns no timestamp', async () => {
     const { factory } = streamingHost([text('first section'), tool('t1', 'Read file.ts'), text('last section')])
@@ -823,7 +823,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(conn.postMessage.mock.calls.map((call) => call[1])).toEqual(['first section', 'last section'])
     expect(conn.updateBlocks.mock.calls.some((call) => call[1] === 'reply-1')).toBe(false)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('does not create an orphan attribution message when the turn has no reply body', async () => {
     const { factory } = streamingHost([tool('t1', 'Read file.ts')])
@@ -840,7 +840,7 @@ describe('Daemon transcript records the agent reply', () => {
     })
     expect(conn.postMessage.mock.calls.some((call) => call[3]?.trailingBlocks)).toBe(false)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('does not attach agent attribution to a daemon-generated failure notice', async () => {
     const { factory, host } = streamingHost([])
@@ -860,7 +860,7 @@ describe('Daemon transcript records the agent reply', () => {
     const failure = conn.postMessage.mock.calls.find((call) => String(call[1]).includes('Agent failed to respond'))
     expect(failure?.[3]?.trailingBlocks).toBeUndefined()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('retries stale-footer cleanup when prompt failure bypasses normal attribution finalization', async () => {
     let onUpdate!: (sid: string, update: unknown) => void
@@ -904,7 +904,7 @@ describe('Daemon transcript records the agent reply', () => {
       ['C1', 'reply-1', [{ type: 'markdown', text: 'first section' }], undefined, false, 'bot-a']
     ])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a replayed reply is filtered out of its own author’s catch-up context', async () => {
     const { factory } = replyingHost('my first reply')
@@ -927,7 +927,7 @@ describe('Daemon transcript records the agent reply', () => {
     expect(replayed).not.toContain('my first reply')
     expect(replayed).toContain('third')
     await daemon.stop()
-  }, 15_000)
+  })
 })
 
 describe('Daemon transcript captures the full activity log (mode-independent)', () => {
@@ -956,7 +956,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
         { kind: 'text', sender: 'bot-a', text: 'here is the answer' }
       ])
       await daemon.stop()
-    }, 15_000)
+    })
   }
 
   it('tool/reasoning rows are excluded from §8.5 catch-up replay', async () => {
@@ -973,7 +973,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
     expect(gap.every((r: TranscriptEntry) => r.kind === 'text')).toBe(true)
     expect(gap.map((r: TranscriptEntry) => r.text)).toEqual(['go', 'here is the answer'])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('masks write-only secret values out of every recorded and delivered surface', async () => {
     // The agent echoes the secret in its reply text, tool title, rawInput, and
@@ -1022,7 +1022,7 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
     expect(posted).not.toContain('s3cret-value')
     expect(posted).toContain('[secret:TestSA]')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a burst of tool_call_update for one call collapses to a single tool row', async () => {
     const { factory } = streamingHost([
@@ -1044,5 +1044,5 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
     const tools = (await activity(daemon)).filter((r) => r.kind === 'tool')
     expect(tools).toEqual([{ kind: 'tool', sender: 'bot-a', text: 'Edit file.ts' }])
     await daemon.stop()
-  }, 15_000)
+  })
 })

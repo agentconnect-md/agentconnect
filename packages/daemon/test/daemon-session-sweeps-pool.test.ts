@@ -162,7 +162,7 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     expect((await store.getSession('a-busy'))?.state).toBe('idle')
     expect((await store.getSession('a-quiet'))?.state).toBe('closed')
     await stop()
-  }, 15_000)
+  })
 
   it("a member's retention GC never deletes a session of an agent another member is mid-turn on", async () => {
     const { a, b, stop } = await bootPool()
@@ -187,7 +187,7 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     await a.inner.sweepSessionRetention()
     expect(await store.getSession('a-turn')).toBeUndefined()
     await stop()
-  }, 15_000)
+  })
 
   it("the purge-receipt drain skips a peer's rows and still reports its own", async () => {
     const { a, b, root, stop } = await bootPool()
@@ -238,7 +238,7 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     expect(await owed()).toEqual([])
     await stop()
     for (const local of locals) await local.close()
-  }, 15_000)
+  })
 
   it("a member's own receipt for an agent it no longer serves is left for the holder, not reported", async () => {
     const { a, b, root, stop } = await bootPool()
@@ -276,7 +276,7 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     expect(await shared.listSessionPurges(10, a.clock.now(), 'daemon-b', [AGENT_A])).toEqual([])
     await stop()
     for (const local of locals) await local.close()
-  }, 15_000)
+  })
 
   it('gaining a duty after the socket came up replays the receipt a prior holder left, once', async () => {
     const { a, b, root, stop } = await bootPool()
@@ -312,5 +312,5 @@ describe('session sweeps on a daemon pool are holder-only (#1032)', () => {
     expect(await shared.listSessionPurges(10, b.clock.now(), 'daemon-b', [AGENT_A])).toEqual([])
     await stop()
     for (const local of locals) await local.close()
-  }, 15_000)
+  })
 })

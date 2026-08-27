@@ -138,7 +138,7 @@ describe('SpawnDriver seam', () => {
 
     await host.stop(1234)
     expect(stopCalls).toEqual([1234])
-  }, 15_000)
+  })
 
   it('refuses a second start and reports terminal exit through the driver', async () => {
     const { runtime } = inMemoryRuntime()
@@ -156,7 +156,7 @@ describe('SpawnDriver seam', () => {
     expect(terminal).toBe(1)
     await host.stop(10)
     expect(terminal).toBe(1)
-  }, 15_000)
+  })
 
   it('asks the driver to resolve installed CLI hints for adapter runtimes', async () => {
     const claude = new InMemoryDriver(inMemoryRuntime().runtime)
@@ -182,5 +182,5 @@ describe('SpawnDriver seam', () => {
     await npxHost.start()
     expect(npx.requests[0]?.hints).toEqual([{ envVar: 'CODEX_PATH', command: 'codex' }])
     await npxHost.stop(10)
-  }, 15_000)
+  })
 })

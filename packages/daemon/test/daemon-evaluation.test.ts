@@ -155,7 +155,7 @@ describe('Daemon evaluation surface', () => {
 
     await daemon.stop()
     collector.assertValid()
-  }, 15_000)
+  })
 
   it('records a dream as a metered session with its original ACP activity', async () => {
     const collector = new EvaluationEventCollector()
@@ -313,7 +313,7 @@ describe('Daemon evaluation surface', () => {
 
     await daemon.stop()
     collector.assertValid()
-  }, 15_000)
+  })
 
   it('does not attribute or price a configured model when the runtime still reports default', async () => {
     const collector = new EvaluationEventCollector()
@@ -363,7 +363,7 @@ describe('Daemon evaluation surface', () => {
 
     await daemon.stop()
     collector.assertValid()
-  }, 15_000)
+  })
 
   it('quarantines stragglers during teardown then reclaims the tombstone when a runtime ignores cancellation', async () => {
     const collector = new EvaluationEventCollector()
@@ -465,7 +465,7 @@ describe('Daemon evaluation surface', () => {
     }
     expect((daemon as any).memoryExtractionQuarantines.size).toBe(0)
     collector.assertValid()
-  }, 15_000)
+  })
 
   it('requires an observer so evaluation calls cannot silently produce no evidence', async () => {
     const { factory } = scriptedHost()
@@ -475,7 +475,7 @@ describe('Daemon evaluation surface', () => {
       daemon.runEvaluationTurn({ agentId: AGENT_ID, conversationId: 'case-2', text: 'hello' })
     ).rejects.toThrow('evaluation observer is not enabled')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('rejects a treatment profile without an observer before it can change daemon behavior', () => {
     const { factory } = scriptedHost()
@@ -578,7 +578,7 @@ describe('Daemon evaluation surface', () => {
     expect((await (allowed as any).store.getDream(AGENT_ID, dreamId)).organizationSuggestions[0].state).toBe('accepted')
     expect(() => readFileSync(bodyPath, 'utf8')).toThrow()
     await allowed.stop()
-  }, 15_000)
+  })
 
   it('omits memory recall and capture evidence when the treatment is off', async () => {
     const collector = new EvaluationEventCollector()
@@ -608,7 +608,7 @@ describe('Daemon evaluation surface', () => {
     )
     await daemon.stop()
     collector.assertValid()
-  }, 15_000)
+  })
 })
 
 describe('managed memory auto-distillation runtime support (#653)', () => {
@@ -660,7 +660,7 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     expect(text.startsWith(MEMORY_DISTILLATION_SYSTEM_PROMPT)).toBe(true)
     expect(text).toContain('DISTILL THIS')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('rides the trusted system-prompt channel when the runtime has one', async () => {
     const { host, daemon } = distillHost({ usesMetaSystemPrompt: true })
@@ -675,7 +675,7 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     // Trusted: the prompt carries only the turn data, not the inline policy.
     expect(host.prompt.mock.calls[0]![1][0]!.text).toBe('DISTILL THIS')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('abandons the session of a failed pass instead of leaving it live on the warm host', async () => {
     const { host, daemon } = distillHost({ usesMetaSystemPrompt: false, promptFails: true })
@@ -688,7 +688,7 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     expect(host.hasSession('distill-session-1')).toBe(false)
     expect((daemon as any).internalPassSessions.size).toBe(0)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('still fails closed when the runtime has no read-only/plan mode (the one hard gate)', async () => {
     const { host, daemon } = distillHost({ usesMetaSystemPrompt: false, modes: ['default', 'agent'] })
@@ -696,5 +696,5 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     await expect((daemon as any).runMemoryExtraction(AGENT_ID, 'DISTILL THIS')).rejects.toThrow(/read-only/)
     expect(host.newSession).not.toHaveBeenCalled()
     await daemon.stop()
-  }, 15_000)
+  })
 })

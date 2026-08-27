@@ -230,7 +230,7 @@ describe('Daemon rd/msg hook fires', () => {
     }>
     expect(transcript.some((r) => r.sender === AGENT_ID && r.text === 'done!')).toBe(true)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('persists a structured initial title for a GitHub pull-request session', async () => {
     const { factory } = streamingHost()
@@ -283,7 +283,7 @@ describe('Daemon rd/msg hook fires', () => {
       repoFullName: 'agentconnect-md/agentconnect'
     })
     await daemon.stop()
-  }, 15_000)
+  })
 
   // §17.2: the gitlab arm of `hook/start` records the head this turn runs on, but only against a CP
   // that advertises it — an older one cannot route a provider member and the frame would be fatal.
@@ -633,7 +633,7 @@ describe('Daemon rd/msg hook fires', () => {
     // Fail-closed is preserved: the barrier never opened, so no public write was attempted.
     expect(poster.publish).not.toHaveBeenCalled()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('still reports success when the gitlab note published — the poster reports no failure', async () => {
     const { factory } = streamingHost()
@@ -652,7 +652,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect(cp.hookReports[0]).toMatchObject({ status: 'success' })
     expect(cp.hookReports[0]!.reason).toBeUndefined()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it.each([
     {
@@ -836,7 +836,7 @@ describe('Daemon rd/msg hook fires', () => {
       publishedComment: { kind: 'review_comment', commentId: '3566000000' }
     })
     await daemon.stop()
-  }, 15_000)
+  })
 
   it.each([
     { mode: 'headless', target: undefined },
@@ -1090,7 +1090,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect(prompts[0]).toContain('Second finding.')
     expect(prompts[0]).toContain('Authorized thread roots: 101, 102')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('grants formal-review authority only when an issue_comment explicitly requests review', async () => {
     const daemon = new Daemon({
@@ -2063,7 +2063,7 @@ describe('Daemon rd/msg hook fires', () => {
       reviewResult: { state: 'ambiguous', code: 'ambiguous_write' }
     })
     await restarted.stop()
-  }, 15_000)
+  })
 
   it('preserves the inline review-thread target through durable inbox replay', async () => {
     const root = scaffold()
@@ -2148,7 +2148,7 @@ describe('Daemon rd/msg hook fires', () => {
     )
     expect(poster.publish).toHaveBeenCalledWith('done!')
     await restarted.stop()
-  }, 15_000)
+  })
 
   /** A github fire on the acme/infra#42 thread, family/action-parameterized. */
   const ghFire = (event: 'issues' | 'issue_comment', action: string, deliveryKey = 'd-1'): RdMsgHook =>
@@ -2318,7 +2318,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect(restartedHost.host.newSession).not.toHaveBeenCalled()
     expect(restartedHost.host.prompt).not.toHaveBeenCalled()
     await restarted.stop()
-  }, 15_000)
+  })
 
   it('keeps a deleted GitHub comment silent when the thread already has a session', async () => {
     const { factory, host } = streamingHost()
@@ -2344,7 +2344,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect(cp.hookReports[1]).toMatchObject({ status: 'success', reason: 'deleted_event_ignored' })
     expect(cp.hookReports[1]!.sessionId).toBeUndefined()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('rejects a fire for an agent not on this daemon (no_agent)', async () => {
     const { factory } = streamingHost()
@@ -2433,7 +2433,7 @@ describe('Daemon rd/msg hook fires', () => {
     const replyCall = conn.postMessage.mock.calls[1] as unknown[] | undefined
     expect(replyCall?.[2]).toBe('ts-1') // threaded under the anchor
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('does not classify a post-anchor drain race as safe to redeliver', async () => {
     const { factory, host } = streamingHost()
@@ -2529,7 +2529,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect(getCredential).toHaveBeenCalledTimes(1)
     expect(getCredential).toHaveBeenCalledWith(AGENT_ID, 'pull')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('replays the original ack on a redelivered (sessionKey, msgId) without re-running', async () => {
     const { factory, host } = streamingHost()
@@ -2545,7 +2545,7 @@ describe('Daemon rd/msg hook fires', () => {
     await vi.waitFor(() => expect(cp.hookReports.length).toBe(1), WAIT)
     expect(host.prompt.mock.calls.length).toBe(1) // ONE turn, not two
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('emits exactly one durable completion when an accepted queued hook is gate-dropped', async () => {
     let releasePrompt!: () => void
@@ -2596,7 +2596,7 @@ describe('Daemon rd/msg hook fires', () => {
       expect.objectContaining({ status: 'failed', reason: 'dropped' })
     ])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('reports a turn the infrastructure killed as a handover, not as a stop', async () => {
     // A duty handover (revoke, self-fence, drain) ends a turn that judged nothing. Reporting it
@@ -2650,7 +2650,7 @@ describe('Daemon rd/msg hook fires', () => {
       ])
     )
     await daemon.stop()
-  }, 15_000)
+  })
 
   // A duty handoff keeps an agent's ordinary unrun rows for its successor (#1050), but a hook fire
   // is fenced to the daemon the CP accepted as its dispatch target: nobody else can cross
@@ -2696,7 +2696,7 @@ describe('Daemon rd/msg hook fires', () => {
       expect.objectContaining({ id: `${HOOK_ID}:d-1`, msg: '{}', hookContext: null })
     ])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('reports a handover for a replayed hook row belonging to another daemon’s dispatch', async () => {
     const root = scaffold()
@@ -2751,7 +2751,7 @@ describe('Daemon rd/msg hook fires', () => {
       expect.objectContaining({ id: message.msgId, hookContext: null, completedAt: expect.any(Number) })
     ])
     await restarted.stop()
-  }, 15_000)
+  })
 
   it('sends that handover report on a pool’s shared outbox, where the claim is fenced by owner', async () => {
     // Invisible on a single-daemon store, where every claim succeeds unfenced. Only a SHARED outbox
@@ -2814,7 +2814,7 @@ describe('Daemon rd/msg hook fires', () => {
       WAIT
     )
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('keeps only the newest relay-fired PR revision without reordering explicit GitHub turns', async () => {
     let onUpdate!: (sid: string, update: unknown) => void
@@ -2979,7 +2979,7 @@ describe('Daemon rd/msg hook fires', () => {
     ).toEqual(['comment', 'newest'])
     expect(restartedHost.host.prompt).toHaveBeenCalledTimes(2)
     await restarted.stop()
-  }, 15_000)
+  })
 
   it('collapses a burst of check re-requests for one head onto the newest delivery', async () => {
     let onUpdate!: (sid: string, update: unknown) => void
@@ -3080,7 +3080,7 @@ describe('Daemon rd/msg hook fires', () => {
     )
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('keeps targeted PR revision reviews latest-wins across distinct anchor session keys', async () => {
     let onUpdate!: (sid: string, update: unknown) => void
@@ -3187,7 +3187,7 @@ describe('Daemon rd/msg hook fires', () => {
     )
     expect(host.prompt).toHaveBeenCalledTimes(2)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it.each([
     {
@@ -3309,7 +3309,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect(emitHookReport).toHaveBeenCalledTimes(100)
     expect((daemon as any).hookReportInflight.size).toBe(100)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('retries the durable report drain after local read or ACK-cleanup failures', async () => {
     const { factory } = streamingHost()
@@ -3334,7 +3334,7 @@ describe('Daemon rd/msg hook fires', () => {
     )
     await vi.waitFor(() => expect(retry).toHaveBeenCalledTimes(2), WAIT)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('keeps the first terminal owner as the only durable report writer', async () => {
     const { factory } = streamingHost()
@@ -3381,7 +3381,7 @@ describe('Daemon rd/msg hook fires', () => {
     )
     expect(JSON.parse(receipt.terminalReport)).toMatchObject({ status: 'success' })
     await daemon.stop()
-  }, 15_000)
+  })
 
   it("keeps a peer dispatch's report body when the CP answers a permanent CONFLICT", async () => {
     // #1035: on a pool the outbox is one shared table. A member that emitted a peer's
@@ -3441,7 +3441,7 @@ describe('Daemon rd/msg hook fires', () => {
     await (daemon as any).replayHookTerminalReports()
     expect((await rowById(peers)).terminalReport).not.toBeNull()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('does not ACK-clean a live hook row when terminal redaction fails', async () => {
     const { factory } = streamingHost()
@@ -3484,7 +3484,7 @@ describe('Daemon rd/msg hook fires', () => {
       completedAt: null
     })
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('lets a terminal receipt beat duty and drain refusals after restart', async () => {
     const root = scaffold()
@@ -3531,7 +3531,7 @@ describe('Daemon rd/msg hook fires', () => {
     expect(secondAnchor.postMessage).not.toHaveBeenCalled()
     ;(second as any).drainingAgents.delete(AGENT_ID)
     await second.stop()
-  }, 15_000)
+  })
 
   // §24.4: the host is established at spawn — the credential git-config block, the injected helper
   // table and the `GITLAB_HOST` export — so a hook reaching an already-running session may not
@@ -3598,7 +3598,7 @@ describe('Daemon rd/msg hook fires', () => {
       await vi.waitFor(() => expect(cp.hookReports).toHaveLength(1), WAIT)
       expect(cp.hookReports[0]).toMatchObject({ status: 'success' })
       await daemon.stop()
-    }, 15_000)
+    })
   })
 })
 

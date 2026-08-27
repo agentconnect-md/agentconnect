@@ -160,7 +160,7 @@ describe('EvaluationRunner', () => {
     expect(events).not.toContain('ARGUMENT-SECRET-7319')
     expect(events).toContain('[secret:redacted]')
     expect(events.trim().split('\n').length).toBeGreaterThan(0)
-  }, 15_000)
+  })
 
   it('records a raw ACP baseline with AgentConnect context and add-ons absent', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-raw-subject-'))
@@ -263,7 +263,7 @@ describe('EvaluationRunner', () => {
     ])
     expect(JSON.stringify(events)).not.toContain('# Agent')
     expect(JSON.stringify(events)).not.toContain('# Collaborating with other agents')
-  }, 15_000)
+  })
 
   it('redacts infrastructure errors and removes the disposable subject root', async () => {
     const secret = 'RUNNER-SECRET-7319'

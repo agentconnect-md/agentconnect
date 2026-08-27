@@ -8,7 +8,7 @@ const realNodeBin = dirname(realpathSync(process.execPath))
 
 describe('ensureNodeBinOnPath', () => {
   it('prepends the Node bin dir to a service-manager-style minimal PATH', () => {
-    const env: NodeJS.ProcessEnv = { PATH: '/usr/local/bin:/usr/bin:/bin' }
+    const env: NodeJS.ProcessEnv = { PATH: ['/usr/local/bin', '/usr/bin', '/bin'].join(delimiter) }
     ensureNodeBinOnPath(env)
     const dirs = env.PATH!.split(delimiter)
     expect(dirs[0]).toBe(nodeBin)

@@ -2224,7 +2224,7 @@ describe('spawnChannelRootSession — case 2a new-session seed', () => {
     expect(host.newSession).toHaveBeenCalledOnce()
     expect(host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('keys a Feishu spawn as feishu, not a folded fallback', async () => {
     const root = scaffold([{ id: 'bot-a' }])

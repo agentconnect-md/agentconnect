@@ -96,7 +96,13 @@ describe('runtime install repair', () => {
       GITHUB_TOKEN: 'ghp_secret',
       HOME: '/root'
     })
-    expect(env).toEqual({ PATH: '/bin', HTTPS_PROXY: 'http://proxy:3128', HOME: '/agents/a/home' })
+    // The repair env pins USERPROFILE alongside HOME on Windows, where that is the one `~` reads.
+    expect(env).toEqual({
+      PATH: '/bin',
+      HTTPS_PROXY: 'http://proxy:3128',
+      HOME: '/agents/a/home',
+      ...(process.platform === 'win32' ? { USERPROFILE: '/agents/a/home' } : {})
+    })
   })
 })
 

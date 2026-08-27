@@ -33,7 +33,7 @@ describe('AcpHost (against a fake ACP agent)', () => {
     expect(res.stopReason).toBe('end_turn')
     expect(updates).toContainEqual({ sessionId, text: 'echo:hi' })
     await host.stop()
-  }, 15_000)
+  })
 
   // A runtime can advertise from inside `newSession()`: the host makes the session ownable and
   // then awaits its configuration round trips. Whatever the daemon needs in order to name that
@@ -51,7 +51,7 @@ describe('AcpHost (against a fake ACP agent)', () => {
     expect(reachableWhenAnnounced).toBe(false)
     expect(host.hasSession(sessionId)).toBe(true)
     await host.stop()
-  }, 15_000)
+  })
 
   it('applies and switches the composite Auto permission preset through independent selectors', async () => {
     const host = new AcpHost(
@@ -81,7 +81,7 @@ describe('AcpHost (against a fake ACP agent)', () => {
     expect(mode()?.currentValue).toBe('agent')
     expect(reviewer()?.currentValue).toBe('auto_review')
     await host.stop()
-  }, 15_000)
+  })
 })
 
 describe('AcpHost.mcpCapabilities (MCP transports from initialize)', () => {
@@ -91,7 +91,7 @@ describe('AcpHost.mcpCapabilities (MCP transports from initialize)', () => {
     await host.start()
     expect(host.mcpCapabilities()).toEqual({ http: false, sse: false })
     await host.stop()
-  }, 15_000)
+  })
 
   it('captures the transports the agent advertised', async () => {
     const host = new AcpHost(
@@ -101,7 +101,7 @@ describe('AcpHost.mcpCapabilities (MCP transports from initialize)', () => {
     await host.start()
     expect(host.mcpCapabilities()).toEqual({ http: true, sse: false })
     await host.stop()
-  }, 15_000)
+  })
 })
 
 describe('AcpHost additional workspace directories', () => {
@@ -134,7 +134,7 @@ describe('AcpHost additional workspace directories', () => {
     await unsupported.start()
     await unsupported.newSession(cwd, [], undefined, undefined, [repoRoot])
     await unsupported.stop()
-  }, 15_000)
+  })
 })
 
 describe('AcpHost session deletion', () => {
@@ -167,7 +167,7 @@ describe('AcpHost session/load update filtering', () => {
     await host.loadSession('persisted-session', '/tmp')
     expect(updates).toEqual(['session_info_update'])
     await host.stop()
-  }, 15_000)
+  })
 
   it('disables Auto-review before widening permissions on a restored session', async () => {
     const host = new AcpHost(
@@ -191,7 +191,7 @@ describe('AcpHost session/load update filtering', () => {
     expect(options?.find((option) => option.category === 'mode')?.currentValue).toBe('agent-full-access')
     expect(options?.find((option) => option.category === '_approvals_reviewer')?.currentValue).toBe('user')
     await host.stop()
-  }, 15_000)
+  })
 
   it('allows only latest-wins metadata through during load', () => {
     expect(shouldForwardUpdateDuringLoad({ sessionUpdate: 'session_info_update', title: 'Restored' })).toBe(true)
@@ -273,7 +273,7 @@ describe('AcpHost.setSessionModel (mid-session model switch)', () => {
     expect(await host.setSessionModel(sid, 'nope')).toBe(false)
     expect(await host.setSessionModel('s-unknown', 'model-a')).toBe(false)
     await host.stop()
-  }, 15_000)
+  })
 
   it('returns false when the runtime advertises no model selector', async () => {
     const host = new AcpHost({ command: process.execPath, args: [fakeAgent], env: [] }, { onUpdate: () => {} })
@@ -282,7 +282,7 @@ describe('AcpHost.setSessionModel (mid-session model switch)', () => {
     expect(host.modelOptions()).toBeNull()
     expect(await host.setSessionModel(sid, 'model-a')).toBe(false)
     await host.stop()
-  }, 15_000)
+  })
 })
 
 const envEchoAgent = join(here, 'fixtures', 'env-echo-acp-agent.mjs')
@@ -306,7 +306,7 @@ it('injects opts.env into the spawned child process', async () => {
   await host.prompt(sid, [{ type: 'text', text: 'go' }])
   expect(updates).toContain('env:injected-value')
   await host.stop()
-}, 15_000)
+})
 
 it('can use an exact env without re-inheriting daemon variables', async () => {
   const updates: string[] = []
@@ -334,7 +334,7 @@ it('can use an exact env without re-inheriting daemon variables', async () => {
     if (saved === undefined) delete process.env.AC_ECHO_VAR
     else process.env.AC_ECHO_VAR = saved
   }
-}, 15_000)
+})
 
 async function runIsolatedFixture(
   runtimeId: string,
@@ -387,7 +387,7 @@ describe('AcpHost — account-bound app isolation', () => {
       model: 'gpt-test',
       features: { fast_mode: true, apps: false }
     })
-  }, 15_000)
+  })
 
   it('warns and replaces unsafe CODEX_CONFIG without blocking child startup', async () => {
     const warns: string[] = []
@@ -399,18 +399,18 @@ describe('AcpHost — account-bound app isolation', () => {
     const echoed = out.find((line) => line.startsWith('env:'))?.slice('env:'.length)
     expect(JSON.parse(echoed ?? '')).toEqual({ features: { apps: false } })
     expect(warns.join('\n')).toContain('ignoring unsafe inherited CODEX_CONFIG')
-  }, 15_000)
+  })
 
   it('forces Claude.ai MCP servers off in the spawned process', async () => {
     const out = await runIsolatedFixture('claude-acp', 'ENABLE_CLAUDEAI_MCP_SERVERS', 'true')
     expect(out).toContain('env:false')
-  }, 15_000)
+  })
 
   it('appends Copilot --disable-builtin-mcps to the spawned argv', async () => {
     const out = await runIsolatedFixture('github-copilot-cli', 'ARGV', 'x')
     const argv = JSON.parse(out.find((line) => line.startsWith('argv:'))?.slice('argv:'.length) ?? '[]')
     expect(argv).toContain('--disable-builtin-mcps')
-  }, 15_000)
+  })
 
   it('preserves Codex account apps when the daemon explicitly opts out', async () => {
     const warns: string[] = []
@@ -426,13 +426,13 @@ describe('AcpHost — account-bound app isolation', () => {
     const echoed = out.find((line) => line.startsWith('env:'))?.slice('env:'.length)
     expect(JSON.parse(echoed ?? '')).toEqual({ model: 'gpt-test', features: { apps: true } })
     expect(warns.join('\n')).toContain('account-app isolation disabled by daemon config')
-  }, 15_000)
+  })
 
   it('preserves Copilot built-in MCPs when the daemon explicitly opts out', async () => {
     const out = await runIsolatedFixture('github-copilot-cli', 'ARGV', 'x', undefined, false)
     const argv = JSON.parse(out.find((line) => line.startsWith('argv:'))?.slice('argv:'.length) ?? '[]')
     expect(argv).not.toContain('--disable-builtin-mcps')
-  }, 15_000)
+  })
 
   it('warns for a known account-app runtime with no safe isolation switch when opted out', async () => {
     const warns: string[] = []
@@ -445,7 +445,7 @@ describe('AcpHost — account-bound app isolation', () => {
     )
     expect(warns.join('\n')).toContain('account-app isolation disabled by daemon config for auggie')
     expect(warns.join('\n')).toContain('no narrow switch')
-  }, 15_000)
+  })
 
   it('does not warn for a runtime with no account-connector concept', async () => {
     const warns: string[] = []
@@ -454,7 +454,7 @@ describe('AcpHost — account-bound app isolation', () => {
       warn: (message) => warns.push(message)
     })
     expect(warns).toEqual([])
-  }, 15_000)
+  })
 
   it('warns when the runtime is unrecognized', async () => {
     const warns: string[] = []
@@ -463,7 +463,7 @@ describe('AcpHost — account-bound app isolation', () => {
       warn: (message) => warns.push(message)
     })
     expect(warns.join('\n')).toContain('not verified')
-  }, 15_000)
+  })
 })
 
 const claudeAgent = join(here, 'fixtures', 'claude-env-echo-acp-agent.mjs')
@@ -507,12 +507,12 @@ describe('AcpHost — auto-inject CLAUDE_CODE_EXECUTABLE for a Claude runtime', 
       if (saved === undefined) delete process.env.CLAUDE_CODE_EXECUTABLE
       else process.env.CLAUDE_CODE_EXECUTABLE = saved
     }
-  }, 15_000)
+  })
 
   it('does NOT override an already-set CLAUDE_CODE_EXECUTABLE', async () => {
     const out = await runClaudeHost({ CLAUDE_CODE_EXECUTABLE: '/custom/claude', PATH: '/nonexistent' })
     expect(out).toContain('claude_exec:/custom/claude')
-  }, 15_000)
+  })
 })
 
 describe('turnFailureReason (actionable message from a failed ACP request)', () => {
@@ -646,20 +646,25 @@ describe('AcpHost.stop', () => {
     // The regression hung here forever (once('exit') never re-fires); well under
     // the 5s SIGTERM deadline proves the pre-exited guard took the early return.
     expect(Date.now() - t0).toBeLessThan(1000)
-  }, 15_000)
+  })
 
-  it('escalates to SIGKILL when the child ignores SIGTERM', async () => {
-    const warns: string[] = []
-    const host = new AcpHost(
-      { command: process.execPath, args: [fakeAgent], env: [] },
-      {
-        onUpdate: () => {},
-        env: { AC_IGNORE_SIGTERM: '1' },
-        log: { trace: () => {}, debug: () => {}, info: () => {}, warn: (m: string) => warns.push(m), error: () => {} }
-      }
-    )
-    await host.start()
-    await host.stop(200)
-    expect(warns.join('\n')).toContain('ignored SIGTERM')
-  }, 15_000)
+  // Windows has no POSIX signals, so there is no SIGTERM to ignore and no SIGKILL to escalate to.
+  it.skipIf(process.platform === 'win32')(
+    'escalates to SIGKILL when the child ignores SIGTERM',
+    async () => {
+      const warns: string[] = []
+      const host = new AcpHost(
+        { command: process.execPath, args: [fakeAgent], env: [] },
+        {
+          onUpdate: () => {},
+          env: { AC_IGNORE_SIGTERM: '1' },
+          log: { trace: () => {}, debug: () => {}, info: () => {}, warn: (m: string) => warns.push(m), error: () => {} }
+        }
+      )
+      await host.start()
+      await host.stop(200)
+      expect(warns.join('\n')).toContain('ignored SIGTERM')
+    },
+    15_000
+  )
 })

@@ -62,11 +62,14 @@ export async function persistSkillSandboxRequirement(daemonRoot: string): Promis
     } finally {
       await handle.close()
     }
-    const directory = await fsp.open(stateDir, constants.O_RDONLY)
-    try {
-      await directory.sync()
-    } finally {
-      await directory.close()
+    // No POSIX directory-fsync primitive on Windows — the marker's own sync above is all we get.
+    if (process.platform !== 'win32') {
+      const directory = await fsp.open(stateDir, constants.O_RDONLY)
+      try {
+        await directory.sync()
+      } finally {
+        await directory.close()
+      }
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
