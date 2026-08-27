@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { AcpHost } from '../src/acp/acp-host.js'
-import { resolveWindowsCodexNative, sanitizeWindowsCodexAdapterEnv } from '../src/acp/spawn-driver.js'
+import { LocalDriver, resolveWindowsCodexNative, sanitizeWindowsCodexAdapterEnv } from '../src/acp/spawn-driver.js'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../src/acp/spawn-driver.js'
 
 /**
@@ -182,5 +184,41 @@ describe('SpawnDriver seam', () => {
     await npxHost.start()
     expect(npx.requests[0]?.hints).toEqual([{ envVar: 'CODEX_PATH', command: 'codex' }])
     await npxHost.stop(10)
+  })
+})
+
+/**
+ * A missing or unrunnable command must fail the launch, not the daemon. Node emits
+ * `error` (and then `close`) on the ChildProcess with no `exit`; an unhandled
+ * `error` event is rethrown as an uncaught exception, which would take down every
+ * other agent this daemon runs.
+ */
+describe('LocalDriver spawn failures', () => {
+  const missing = join(tmpdir(), 'agentconnect-nonexistent-runtime')
+
+  it('surfaces the spawn error on the agent stream instead of crashing the process', async () => {
+    const driver = new LocalDriver()
+    const runtime = await driver.launch({ command: missing, args: ['acp'], env: {} })
+    await expect(new Response(runtime.fromAgent as any).text()).rejects.toThrow(/ENOENT/)
+  })
+
+  it('stops immediately instead of waiting out the kill deadline for a pid that never existed', async () => {
+    const driver = new LocalDriver()
+    const runtime = await driver.launch({ command: missing, args: ['acp'], env: {} })
+    await new Promise<void>((resolve) => runtime.onExit(resolve))
+    const started = Date.now()
+    await runtime.stop(5000)
+    expect(Date.now() - started).toBeLessThan(1000)
+  })
+
+  it('reaches terminal exit so lifecycle waiters do not hang', async () => {
+    const driver = new LocalDriver()
+    const runtime = await driver.launch({ command: missing, args: ['acp'], env: {} })
+    await expect(
+      new Promise<void>((resolve, reject) => {
+        runtime.onExit(resolve)
+        setTimeout(() => reject(new Error('onExit never fired after a failed spawn')), 2000)
+      })
+    ).resolves.toBeUndefined()
   })
 })
