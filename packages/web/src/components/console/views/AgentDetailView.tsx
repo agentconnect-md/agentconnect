@@ -26,6 +26,8 @@ import {
   type IntegrationRow
 } from '@/lib/data'
 import {
+  createGithubHook,
+  createGitlabHook,
   creatorLabel,
   fetchAgentHooks,
   fetchAgentRepos,
@@ -55,6 +57,7 @@ import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { IntegrationChannelList, roomGlyph, rowLabel } from '@/components/console/IntegrationChannelList'
 import { RecentSessionsCard } from '@/components/console/RecentSessionsCard'
 import { TriggerSelect } from '@/components/console/TriggerSelect'
+import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { discordBotInviteUrl } from '@/components/console/platforms/discord/invite'
 import { WorkspaceCard, type WorkspaceHeaderInfo } from '@/components/console/WorkspaceCard'
 import { WorkspaceFiles, workspaceReadModelKey } from '@/components/console/WorkspaceFiles'
@@ -73,6 +76,7 @@ import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { INTEGRATION_BLURB, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
 import {
+  GL_DEFAULT_TRIGGER_MODE,
   GL_TRIGGER_MODES,
   GL_TRIGGER_PILL,
   gitlabCadencePick,
@@ -88,6 +92,7 @@ import {
   type GlTriggerMode
 } from '@/lib/gitlab-events'
 import { gitlabInstanceHost } from '@/lib/gitlab-projects'
+import { orderedGithubHookRows, orderedGitlabHookRows } from '@/lib/code-host-hook-groups'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { BuiltinBadge } from '@/components/console/BuiltinBadge'
 import { NotFound } from '@/components/console/NotFound'
@@ -97,6 +102,7 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { useSessionList } from '@/lib/use-session-list'
 import {
+  GH_DEFAULT_TRIGGER_MODE,
   GH_TRIGGER_MODES,
   GH_TRIGGER_PILL,
   githubCommentFamilies,
@@ -238,6 +244,9 @@ export default function AgentDetailView() {
   const webhookHooks = agentHooks.filter((h) => h.kind === 'webhook')
   const githubHooks = agentHooks.filter((h) => h.kind === 'github')
   const gitlabHooks = agentHooks.filter((h) => h.kind === 'gitlab')
+  // One flat row per subscription still — the grouping is only the ORDER (a repo's rows adjacent) plus its add offer.
+  const githubRows = orderedGithubHookRows(githubHooks)
+  const gitlabRows = orderedGitlabHookRows(gitlabHooks)
   const githubInstallationsKey =
     activeOrg && githubHooks.length > 0 ? (['github-review-installations', activeOrg.id] as const) : null
   const { data: githubInstallationsData } = useSWR<GithubInstallationDto[]>(githubInstallationsKey, () =>
@@ -457,6 +466,55 @@ export default function AgentDetailView() {
     if (!fam) return
     if (mode === triggerModeOf(h) && !githubHookNeedsNormalization(h)) return
     await saveHookEvents(h, fam, mode)
+  }
+  // Watch one MORE subject on a watched repo: the family is create-only, so a missing family is a new row, not an edit.
+  const [addFamilyBusy, setAddFamilyBusy] = useState<string | null>(null)
+  const [addFamilyError, setAddFamilyError] = useState<{ key: string; message: string } | null>(null)
+  const addFamilyKey = (repoKey: string, fam: string) => `${repoKey}:${fam}`
+  // `seed` is any row of the repository — the siblings all name the same repo.
+  const addGithubFamily = async (seed: HookDto, repoKey: string, fam: GhFamily) => {
+    if (addFamilyBusy || !seed.agentId || !seed.repoFullName) return
+    setAddFamilyBusy(addFamilyKey(repoKey, fam))
+    setAddFamilyError(null)
+    try {
+      await createGithubHook({
+        agentId: seed.agentId,
+        name: seed.repoFullName,
+        repoFullName: seed.repoFullName,
+        family: fam,
+        ...githubFamilySubscription(fam, GH_DEFAULT_TRIGGER_MODE),
+        reviewPolicy: 'off',
+        reportingMode: 'off',
+        gateMode: 'informational'
+      })
+      await mutateHooks()
+    } catch (error) {
+      setAddFamilyError({ key: repoKey, message: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setAddFamilyBusy(null)
+    }
+  }
+  // The GitLab counterpart — its create keys on the numeric project id.
+  const addGitlabFamily = async (seed: HookDto, repoKey: string, fam: GlFamily) => {
+    if (addFamilyBusy || !seed.agentId || !seed.repoId) return
+    setAddFamilyBusy(addFamilyKey(repoKey, fam))
+    setAddFamilyError(null)
+    try {
+      await createGitlabHook({
+        agentId: seed.agentId,
+        name: seed.repoFullName ?? seed.name,
+        projectId: seed.repoId,
+        family: fam,
+        ...gitlabFamilySubscription(fam, GL_DEFAULT_TRIGGER_MODE),
+        reviewPolicy: 'off',
+        reportingMode: 'off'
+      })
+      await mutateHooks()
+    } catch (error) {
+      setAddFamilyError({ key: repoKey, message: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setAddFamilyBusy(null)
+    }
   }
   // The row's family is a read-only fact now: it labels the row and decides
   // whether the review/Check surface applies to it at all.
@@ -1376,34 +1434,63 @@ export default function AgentDetailView() {
                       </span>
                     </div>
                   ))}
-                  {githubHooks.map((h, i) => (
+                  {/* The desktop blocks in mobile anatomy: the repo's first row names it, its siblings indent under it. */}
+                  {githubRows.map(({ hook: h, repoKey, first, last, addFamilies }, i) => (
                     <div
                       key={h.id}
-                      className={`flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3 ${
-                        agentInts.length + webhookHooks.length + i > 0 ? 'border-t' : ''
+                      className={`${codeHostMobileRowCls(first, last)} ${
+                        first && agentInts.length + webhookHooks.length + i > 0 ? 'border-t' : ''
                       }`}
                     >
-                      <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
-                        <span className="flex h-[18px] w-[18px] items-center justify-center">
-                          <PlatformMark platform="github" fillPct={100} />
-                        </span>
-                      </span>
-                      <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                        <span className="flex min-w-0 items-center gap-2">
-                          <span className="mono min-w-0 truncate text-[13px] font-semibold">
-                            {h.repoFullName ?? h.name}
+                      {first && (
+                        <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
+                          <span className="flex h-[18px] w-[18px] items-center justify-center">
+                            <PlatformMark platform="github" fillPct={100} />
                           </span>
-                          {watchUnauthorized(h) && <UnauthorizedWatchBadge />}
                         </span>
-                        <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                          {/* One row = one subject family, so this states which. */}
-                          {ghRowPill(h)}
-                          {` · ${GH_TRIGGER_PILL[triggerModeOf(h)]}`}
+                      )}
+                      <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                        {first && (
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className="mono min-w-0 truncate text-[13px] font-semibold">
+                              {h.repoFullName ?? h.name}
+                            </span>
+                            {/* The repo's first row offers what it does not watch yet — same + menu as desktop. */}
+                            {addFamilies.length > 0 && (
+                              <RowMoreMenu
+                                ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
+                                icon="plus"
+                                title="Watch another subject"
+                                triggerClassName={ADD_SUBJECT_BTN}
+                                align="start"
+                                items={addFamilies.map((fam) => ({
+                                  icon: (githubFamilyTile(fam)?.icon ?? 'plus') as Parameters<typeof Icon>[0]['name'],
+                                  label: `Add ${githubFamilyTile(fam)?.label ?? fam}`,
+                                  onClick: () => void addGithubFamily(h, repoKey, fam)
+                                }))}
+                              />
+                            )}
+                            {watchUnauthorized(h) && <UnauthorizedWatchBadge />}
+                          </span>
+                        )}
+                        <span className="flex min-w-0 items-center gap-2">
+                          {/* What this row subscribes to — a label, not a control — then when it runs. */}
+                          <span className="flex-none font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                            {ghRowPill(h)}
+                          </span>
+                          <span className="truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                            {GH_TRIGGER_PILL[triggerModeOf(h)]}
+                          </span>
                         </span>
                         {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
                           <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                             {reviewPolicyLabel(h.reviewPolicy)} review
                             {h.reportingMode === 'check' ? ' · informational Check' : ''}
+                          </span>
+                        )}
+                        {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
+                          <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+                            {addFamilyError.message}
                           </span>
                         )}
                       </span>
@@ -1419,31 +1506,61 @@ export default function AgentDetailView() {
                       )}
                     </div>
                   ))}
-                  {gitlabHooks.map((h, i) => (
+                  {gitlabRows.map(({ hook: h, repoKey, first, last, addFamilies }, i) => (
                     <div
                       key={h.id}
-                      className={`flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3 ${
-                        agentInts.length + webhookHooks.length + githubHooks.length + i > 0 ? 'border-t' : ''
+                      className={`${codeHostMobileRowCls(first, last)} ${
+                        first && agentInts.length + webhookHooks.length + githubRows.length + i > 0 ? 'border-t' : ''
                       }`}
                     >
-                      <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
-                        <span className="flex h-[18px] w-[18px] items-center justify-center">
-                          <PlatformMark platform="gitlab" fillPct={100} />
+                      {first && (
+                        <span className="flex h-9 w-9 flex-none items-center justify-center rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
+                          <span className="flex h-[18px] w-[18px] items-center justify-center">
+                            <PlatformMark platform="gitlab" fillPct={100} />
+                          </span>
                         </span>
-                      </span>
+                      )}
                       <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                        <span className="mono min-w-0 truncate text-[13px] font-semibold">
-                          {h.repoFullName ?? h.name}
-                        </span>
-                        <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                          {/* One row = one subject family, so this states which. */}
-                          {glRowPill(h)}
-                          {` · ${GL_TRIGGER_PILL[gitlabTriggerModeOf(h)]}`}
+                        {first && (
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span className="mono min-w-0 truncate text-[13px] font-semibold">
+                              {h.repoFullName ?? h.name}
+                            </span>
+                            {/* The project's first row offers what it does not watch yet — same + menu as desktop. */}
+                            {addFamilies.length > 0 && (
+                              <RowMoreMenu
+                                ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
+                                icon="plus"
+                                title="Watch another subject"
+                                triggerClassName={ADD_SUBJECT_BTN}
+                                align="start"
+                                items={addFamilies.map((fam) => ({
+                                  icon: (gitlabFamilyTile(fam)?.icon ?? 'plus') as Parameters<typeof Icon>[0]['name'],
+                                  label: `Add ${gitlabFamilyTile(fam)?.label ?? fam}`,
+                                  onClick: () => void addGitlabFamily(h, repoKey, fam)
+                                }))}
+                              />
+                            )}
+                          </span>
+                        )}
+                        <span className="flex min-w-0 items-center gap-2">
+                          {/* What this row subscribes to — a label, not a control — then when it runs. */}
+                          <span className="flex-none font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                            {glRowPill(h)}
+                          </span>
+                          <span className="truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                            {GL_TRIGGER_PILL[gitlabTriggerModeOf(h)]}
+                          </span>
                         </span>
                         {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
                           <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
                             {reviewPolicyLabel(h.reviewPolicy)} review
                             {h.reportingMode === 'check' ? ' · run note' : ''}
+                          </span>
+                        )}
+                        {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
+                          <span className="font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+                            {addFamilyError.message}
                           </span>
                         )}
                       </span>
@@ -1559,9 +1676,7 @@ export default function AgentDetailView() {
                       )}
                     </div>
                   ))}
-                  {/* GitHub group (design): one card, a row per hook — one per
-                        (repo, subject family) — each with its family pill and its
-                        own "when created/updated" cadence select. */}
+                  {/* GitHub group (design): one card, one group per watched repo, a family line per row under it. */}
                   {githubHooks.length > 0 && (
                     <div className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
                       <div className="flex items-center gap-3 px-[14px] py-3">
@@ -1578,7 +1693,6 @@ export default function AgentDetailView() {
                               connected
                             </span>
                           </div>
-                          <div className="mono mt-[3px] text-[11.5px] font-normal text-(--text-tertiary)">GitHub</div>
                         </div>
                         <button
                           className="iconbtn"
@@ -1589,29 +1703,48 @@ export default function AgentDetailView() {
                         </button>
                       </div>
                       <div className="border-t border-(--border-subtle) bg-(--surface-app)">
-                        {githubHooks.map((h) => (
-                          <div key={h.id} className="border-b border-(--border-subtle)">
-                            {/* Design row: wraps (gap 6×8) — the repo name keeps ≥90px and the
-                                  control clusters flow to the next line instead of crushing it. */}
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-[6px] px-[14px] py-[9px]">
-                              <Icon name="folder-git-2" size={14} color="var(--text-tertiary)" className="flex-none" />
-                              <span className="mono min-w-[90px] flex-1 truncate text-[12px] text-(--text-primary)">
-                                {h.repoFullName ?? h.name}
+                        {githubRows.map(({ hook: h, repoKey, first, last, addFamilies }) => (
+                          <div key={h.id} className={last ? 'border-b border-(--border-subtle)' : undefined}>
+                            {/* One repo = one attached block: its first row names it, its
+                                  siblings indent to that name and only state their family. */}
+                            <div className={codeHostRowCls(first, last)}>
+                              {first ? (
+                                <>
+                                  <Icon
+                                    name="folder-git-2"
+                                    size={14}
+                                    color="var(--text-tertiary)"
+                                    className="flex-none"
+                                  />
+                                  <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
+                                    {h.repoFullName ?? h.name}
+                                  </span>
+                                </>
+                              ) : null}
+                              {/* The repo's first row offers what it does not watch yet — a + menu, so new subjects just add items. */}
+                              {addFamilies.length > 0 && (
+                                <RowMoreMenu
+                                  ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
+                                  icon="plus"
+                                  title="Watch another subject"
+                                  triggerClassName={ADD_SUBJECT_BTN}
+                                  align="start"
+                                  items={addFamilies.map((fam) => ({
+                                    icon: (githubFamilyTile(fam)?.icon ?? 'plus') as Parameters<typeof Icon>[0]['name'],
+                                    label: `Add ${githubFamilyTile(fam)?.label ?? fam}`,
+                                    onClick: () => void addGithubFamily(h, repoKey, fam)
+                                  }))}
+                                />
+                              )}
+                              {/* Authorization is repo-scoped, so the badge shows once per group. */}
+                              {first && watchUnauthorized(h) && <UnauthorizedWatchBadge />}
+                              {/* What this row subscribes to, stated at the head of its control cluster — a label, not a control. Fixed width so the trigger column aligns across rows. */}
+                              <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                                {ghRowPill(h)}
                               </span>
-                              {watchUnauthorized(h) && <UnauthorizedWatchBadge />}
-                              {/* One row = one subject family, and the family is
-                                  immutable — the pill states it, it no longer toggles. */}
-                              <div
-                                className="ml-auto inline-flex flex-none gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]"
-                                title="Add or remove families from Add integration"
-                              >
-                                <span className="rounded-[7px] bg-(--surface-card) px-[9px] py-[3px] font-sans text-[11.5px] font-semibold leading-normal text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
-                                  {ghRowPill(h)}
-                                </span>
-                              </div>
                               {/* Trigger — the same ⚡ dropdown the IM channel rows carry, mention last. */}
                               <TriggerSelect
-                                className="flex-none"
+                                className="w-[126px] flex-none"
                                 options={GH_TRIGGER_MODES.map((mode) => ({
                                   value: mode,
                                   label: GH_TRIGGER_PILL[mode],
@@ -1619,37 +1752,45 @@ export default function AgentDetailView() {
                                 }))}
                                 value={triggerModeOf(h)}
                                 onChange={(mode) => void setHookCadence(h, mode)}
-                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name}`}
+                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${ghRowPill(h)}`}
                                 hint="Trigger — when this agent runs"
                                 busy={hookBusy === h.id}
                               />
                               <span className="inline-flex flex-none gap-[2px]">
                                 {/* Reviews and Checks exist on the pull-request row only. */}
-                                {ghRowCarriesReviews(h) && (
-                                  <button
-                                    className="iconbtn h-[26px] w-[26px] flex-none"
-                                    title="PR review and Checks settings"
-                                    onClick={() => openReviewSettings(h)}
-                                  >
-                                    <Icon name="settings-2" size={13} />
-                                  </button>
-                                )}
+                                <RowMoreMenu
+                                  ariaLabel={`More for ${h.repoFullName ?? h.name} ${ghRowPill(h)}`}
+                                  items={[
+                                    ...(ghRowCarriesReviews(h)
+                                      ? [
+                                          {
+                                            icon: 'settings-2' as const,
+                                            label: 'Review & Checks settings',
+                                            onClick: () => openReviewSettings(h)
+                                          }
+                                        ]
+                                      : []),
+                                    {
+                                      icon: 'history' as const,
+                                      label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
+                                      onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
+                                    }
+                                  ]}
+                                />
                                 <button
                                   className="iconbtn h-[26px] w-[26px] flex-none"
-                                  title="Recent deliveries"
-                                  onClick={() => setHookRunsFor(hookRunsFor === h.id ? null : h.id)}
-                                >
-                                  <Icon name={hookRunsFor === h.id ? 'chevron-up' : 'history'} size={13} />
-                                </button>
-                                <button
-                                  className="iconbtn h-[26px] w-[26px] flex-none"
-                                  title="Remove repository"
+                                  title={`Stop watching ${ghRowPill(h)}`}
                                   onClick={() => openModal('deleteHook', h)}
                                 >
                                   <Icon name="x" size={13} />
                                 </button>
                               </span>
                             </div>
+                            {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
+                              <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+                                {addFamilyError.message}
+                              </div>
+                            )}
                             {hookRunsFor === h.id && (
                               <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
                             )}
@@ -1698,13 +1839,39 @@ export default function AgentDetailView() {
                         </div>
                       </div>
                       <div className="border-t border-(--border-subtle) bg-(--surface-app)">
-                        {gitlabHooks.map((h) => (
-                          <div key={h.id} className="border-b border-(--border-subtle)">
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-[6px] px-[14px] py-[9px]">
-                              <Icon name="folder-git-2" size={14} color="var(--text-tertiary)" className="flex-none" />
-                              <span className="mono min-w-[90px] flex-1 truncate text-[12px] text-(--text-primary)">
-                                {h.repoFullName ?? h.name}
-                              </span>
+                        {gitlabRows.map(({ hook: h, repoKey, first, last, addFamilies }) => (
+                          <div key={h.id} className={last ? 'border-b border-(--border-subtle)' : undefined}>
+                            {/* One project = one attached block: its first row names it, its
+                                  siblings indent to that name and only state their family. */}
+                            <div className={codeHostRowCls(first, last)}>
+                              {first ? (
+                                <>
+                                  <Icon
+                                    name="folder-git-2"
+                                    size={14}
+                                    color="var(--text-tertiary)"
+                                    className="flex-none"
+                                  />
+                                  <span className="mono min-w-[90px] max-w-full truncate text-[12px] text-(--text-primary)">
+                                    {h.repoFullName ?? h.name}
+                                  </span>
+                                </>
+                              ) : null}
+                              {/* The project's first row offers what it does not watch yet — a + menu, so new subjects just add items. */}
+                              {addFamilies.length > 0 && (
+                                <RowMoreMenu
+                                  ariaLabel={`Watch more on ${h.repoFullName ?? h.name}`}
+                                  icon="plus"
+                                  title="Watch another subject"
+                                  triggerClassName={ADD_SUBJECT_BTN}
+                                  align="start"
+                                  items={addFamilies.map((fam) => ({
+                                    icon: (gitlabFamilyTile(fam)?.icon ?? 'plus') as Parameters<typeof Icon>[0]['name'],
+                                    label: `Add ${gitlabFamilyTile(fam)?.label ?? fam}`,
+                                    onClick: () => void addGitlabFamily(h, repoKey, fam)
+                                  }))}
+                                />
+                              )}
                               {gitlabHookNeedsNormalization(h) && (
                                 <span
                                   className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
@@ -1713,19 +1880,13 @@ export default function AgentDetailView() {
                                   custom rule
                                 </span>
                               )}
-                              {/* One row = one subject family, and the family is
-                                  immutable — the pill states it, it no longer toggles. */}
-                              <div
-                                className="ml-auto inline-flex flex-none gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]"
-                                title="Add or remove families from Add integration"
-                              >
-                                <span className="rounded-[7px] bg-(--surface-card) px-[9px] py-[3px] font-sans text-[11.5px] font-semibold leading-normal text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
-                                  {glRowPill(h)}
-                                </span>
-                              </div>
+                              {/* What this row subscribes to, stated at the head of its control cluster — a label, not a control. Fixed width so the trigger column aligns across rows. */}
+                              <span className="ml-auto w-[56px] flex-none whitespace-nowrap text-right font-sans text-[12px] font-semibold leading-normal text-(--text-primary)">
+                                {glRowPill(h)}
+                              </span>
                               {/* Trigger — the same ⚡ dropdown the GitHub rows carry. */}
                               <TriggerSelect
-                                className="flex-none"
+                                className="w-[126px] flex-none"
                                 options={GL_TRIGGER_MODES.map((mode) => ({
                                   value: mode,
                                   label: GL_TRIGGER_PILL[mode],
@@ -1733,37 +1894,45 @@ export default function AgentDetailView() {
                                 }))}
                                 value={gitlabTriggerModeOf(h)}
                                 onChange={(mode) => void setGitlabHookCadence(h, mode)}
-                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name}`}
+                                ariaLabel={`Trigger for ${h.repoFullName ?? h.name} ${glRowPill(h)}`}
                                 hint="Trigger — when this agent runs"
                                 busy={hookBusy === h.id}
                               />
                               <span className="inline-flex flex-none gap-[2px]">
                                 {/* Reviews and the run note exist on the merge-request row only. */}
-                                {glRowCarriesReviews(h) && (
-                                  <button
-                                    className="iconbtn h-[26px] w-[26px] flex-none"
-                                    title="MR review and run note settings"
-                                    onClick={() => openReviewSettings(h)}
-                                  >
-                                    <Icon name="settings-2" size={13} />
-                                  </button>
-                                )}
+                                <RowMoreMenu
+                                  ariaLabel={`More for ${h.repoFullName ?? h.name} ${glRowPill(h)}`}
+                                  items={[
+                                    ...(glRowCarriesReviews(h)
+                                      ? [
+                                          {
+                                            icon: 'settings-2' as const,
+                                            label: 'Review & run note settings',
+                                            onClick: () => openReviewSettings(h)
+                                          }
+                                        ]
+                                      : []),
+                                    {
+                                      icon: 'history' as const,
+                                      label: hookRunsFor === h.id ? 'Hide recent deliveries' : 'Recent deliveries',
+                                      onClick: () => setHookRunsFor(hookRunsFor === h.id ? null : h.id)
+                                    }
+                                  ]}
+                                />
                                 <button
                                   className="iconbtn h-[26px] w-[26px] flex-none"
-                                  title="Recent deliveries"
-                                  onClick={() => setHookRunsFor(hookRunsFor === h.id ? null : h.id)}
-                                >
-                                  <Icon name={hookRunsFor === h.id ? 'chevron-up' : 'history'} size={13} />
-                                </button>
-                                <button
-                                  className="iconbtn h-[26px] w-[26px] flex-none"
-                                  title="Remove project"
+                                  title={`Stop watching ${glRowPill(h)}`}
                                   onClick={() => openModal('deleteHook', h)}
                                 >
                                   <Icon name="x" size={13} />
                                 </button>
                               </span>
                             </div>
+                            {addFamilyError?.key === repoKey && addFamilies.length > 0 && (
+                              <div className="px-[14px] pb-[9px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--status-error)">
+                                {addFamilyError.message}
+                              </div>
+                            )}
                             {hookRunsFor === h.id && (
                               <HookRunsPanel hookId={h.id} sessionHref={(sid) => orgPath(`/sessions/${sid}`)} />
                             )}
@@ -2181,6 +2350,84 @@ function UnauthorizedWatchBadge() {
       write-back unauthorized
     </span>
   )
+}
+
+// The add-subject trigger keeps the retired dashed chip's look — transparent ground, tint on hover only.
+const ADD_SUBJECT_BTN =
+  'inline-flex h-[26px] w-[26px] flex-none items-center justify-center rounded-[7px] border border-dashed border-(--border-subtle) bg-transparent text-(--text-tertiary) transition-colors hover:border-(--border-strong) hover:bg-(--surface-hover) hover:text-(--text-secondary)'
+
+// A one-button flyout for row controls: ⋯ folds the secondary actions, + offers the subjects a repo could still watch.
+function RowMoreMenu({
+  ariaLabel,
+  items,
+  icon = 'ellipsis',
+  title = 'More',
+  align = 'end',
+  triggerClassName = 'iconbtn h-[26px] w-[26px] flex-none'
+}: {
+  ariaLabel: string
+  items: { icon: Parameters<typeof Icon>[0]['name']; label: string; onClick: () => void }[]
+  icon?: Parameters<typeof Icon>[0]['name']
+  title?: string
+  align?: 'start' | 'end'
+  triggerClassName?: string
+}) {
+  return (
+    <AnchoredFlyout
+      ariaLabel={ariaLabel}
+      align={align}
+      width={210}
+      estimatedHeight={10 + items.length * 34}
+      triggerClassName="flex"
+      trigger={({ open, menuId, toggle }) => (
+        <button
+          type="button"
+          aria-label={ariaLabel}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-controls={open ? menuId : undefined}
+          title={title}
+          onClick={toggle}
+          className={triggerClassName}
+        >
+          <Icon name={icon} size={13} />
+        </button>
+      )}
+    >
+      {({ close }) => (
+        <>
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              className="fopt"
+              onClick={() => {
+                close(true)
+                item.onClick()
+              }}
+            >
+              <Icon name={item.icon} size={14} className="flex-none" />
+              <span className="min-w-0 flex-1 truncate">{item.label}</span>
+            </button>
+          ))}
+        </>
+      )}
+    </AnchoredFlyout>
+  )
+}
+
+// A repo's rows read as one block: the opener carries the name, the siblings indent to it and the pair breathes as one.
+// No wrapping: the right cluster is fixed-width columns, so the truncating repo name absorbs the squeeze instead.
+function codeHostRowCls(first: boolean, last: boolean): string {
+  const base = 'flex flex-nowrap items-center gap-x-2 px-[14px]'
+  return `${base} ${first ? 'pt-[9px]' : 'pt-[3px]'} ${last ? 'pb-[9px]' : 'pb-[3px]'} ${first ? '' : 'pl-[36px]'}`
+}
+
+// The same block on mobile, where the platform mark — not a folder icon — sets the sibling rows' indent.
+function codeHostMobileRowCls(first: boolean, last: boolean): string {
+  const base = 'flex items-center gap-3 border-(--border-subtle) px-4'
+  return `${base} ${first ? 'pt-3' : 'pt-1'} ${last ? 'border-b pb-3' : 'pb-1'} ${first ? '' : 'pl-16'}`
 }
 
 // "3m ago" for a hook's last-fired stamp and its delivery rows.
