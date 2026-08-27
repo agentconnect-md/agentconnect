@@ -415,7 +415,6 @@ import type {
   SessionKey,
   SessionActivity,
   Ack,
-  RdWebchatPost,
   RdMsg,
   RdMsgHook,
   RdMsgWebchat,
@@ -6047,11 +6046,7 @@ export class Daemon {
    * replay the original ack (so the relay settles) without re-dispatching. For hooks
    * the same replay absorbs a GitHub/manual REDELIVERY of the same deliveryKey.
    */
-  private handleRelayMsg(
-    msg: RdMsg,
-    chat: (event: RdChatEvent) => void,
-    post?: (p: RdWebchatPost) => void
-  ): RdAck | Promise<RdAck> {
+  private handleRelayMsg(msg: RdMsg, chat: (event: RdChatEvent) => void): RdAck | Promise<RdAck> {
     const dedupKey = `${msg.source === 'im' ? `${msg.botId}:` : ''}${msg.sessionKey}:${msg.msgId}`
     const prior = this.relayMsgAcks.get(dedupKey)
     if (prior) {
@@ -6070,7 +6065,7 @@ export class Daemon {
     if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
       const task = this.dutyCoordinator.claimDutyForTrigger(msg.agentId).then((claimed) => {
         this.pendingRelayMsgAcks.delete(dedupKey)
-        if (claimed.granted) return this.handleRelayMsg(msg, chat, post)
+        if (claimed.granted) return this.handleRelayMsg(msg, chat)
         return {
           msgId: msg.msgId,
           accepted: false,
@@ -6084,7 +6079,7 @@ export class Daemon {
 
     const ack =
       msg.source === 'webchat'
-        ? this.dispatchRelayOp(msg, chat, post)
+        ? this.dispatchRelayOp(msg, chat)
         : msg.source === 'platform_action'
           ? this.handleRelayPlatformAction(msg)
           : this.handleRelayIm(msg)
@@ -6968,11 +6963,7 @@ export class Daemon {
   }
 
   /** The op-switch behind {@link handleRelayMsg} (dedup handled by the caller). */
-  private async dispatchRelayOp(
-    msg: RdMsgWebchat,
-    chat: (event: RdChatEvent) => void,
-    post?: (p: RdWebchatPost) => void
-  ): Promise<RdAck> {
+  private async dispatchRelayOp(msg: RdMsgWebchat, chat: (event: RdChatEvent) => void): Promise<RdAck> {
     const sink: WebchatSink = {
       output: (o) => chat({ kind: 'output', output: o }),
       done: (d) => chat({ kind: 'done', done: d })
@@ -6982,9 +6973,9 @@ export class Daemon {
     // Session-targeted continuation: `turn` dispatches onto the target session's
     // own coordinates; runtime-set ops are refused (this ingress adds human
     // input, never session-global administration); a context copy is a no-op
-    // (the roster is fixed at one). resume/cancel/close keep their ordinary
-    // shape — resume is keyed by (turnId, agentId), cancel by the conversation's
-    // own webchat-attached turns.
+    // (the roster is fixed at one). resume/attach/cancel/close keep their ordinary
+    // shape — resume is keyed by (turnId, agentId), attach by (conversation,
+    // agentId), cancel by the conversation's own webchat-attached turns.
     if (msg.targetSessionId !== undefined) {
       switch (op.op) {
         case 'turn':
@@ -7030,7 +7021,6 @@ export class Daemon {
           msg.remoteMcp,
           op.mentions,
           op.post,
-          post,
           op.worktree
         )
         return {
@@ -7072,6 +7062,18 @@ export class Daemon {
           accepted: resumed.accepted,
           ...(resumed.turnId ? { turnId: resumed.turnId } : {}),
           ...(resumed.reason ? { reason: resumed.reason } : {})
+        }
+      }
+      case 'attach': {
+        // Read-only probe: an accepted verdict names the live stream (turnId +
+        // current generation) and the browser follows with an ordinary resume.
+        const probed = this.webchatTransport.probeWebchatStream(msg.agentId, msg.chatId)
+        return {
+          msgId: msg.msgId,
+          accepted: probed.accepted,
+          ...(probed.turnId ? { turnId: probed.turnId } : {}),
+          ...(probed.generation !== undefined ? { generation: probed.generation } : {}),
+          ...(probed.reason ? { reason: probed.reason } : {})
         }
       }
       case 'set_model':
@@ -15743,7 +15745,7 @@ export class Daemon {
         }),
       log: this.log,
       // Bridge an inbound relay webchat op onto the shared turn engine (webchat, PR 3).
-      onRelayMsg: (msg, chat, post) => this.handleRelayMsg(msg, chat, post),
+      onRelayMsg: (msg, chat) => this.handleRelayMsg(msg, chat),
       // A forwarded cross-daemon agent-call — terminal-verify + dispatch (P2).
       onRelayAgentMsg: (msg) => this.handleRelayAgentMsg(msg)
     })

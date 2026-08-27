@@ -6,8 +6,8 @@
  *
  * It speaks the browser-facing, type-tagged webchat envelope. The browser sends
  * `{text, turnId, mentions?, targets?, attachments?, runtime?}` (a turn) or
- * `{type:'resume'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
- * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'post'|'error'}`.
+ * `{type:'resume'|'attach'|'set_model'|'set_effort'|'set_permission_mode'|'set_fast'|'cancel'}`,
+ * and the relay sends `{type:'ready'|'output'|'done'|'ack'|'resumed'|'attached'|'post'|'error'}`.
  * A turn fans out as one pre-addressed `rd/msg(webchat)` per targeted agent's
  * daemon (targets are validated against the verified roster) plus a transcript-only
  * `context` copy to every other participant's daemon; each `rd/chat` chunk a daemon
@@ -23,6 +23,7 @@ import {
   ErrorCode,
   RelayWebchatOp,
   RD_ACK_NOT_HOLDER,
+  RD_WEBCHAT_ATTACH_V1,
   type RdChat,
   type RdMsgWebchat,
   type RdWebchatPost,
@@ -163,6 +164,12 @@ export function parseBrowserFrame(msg: unknown, user: string, userId?: string): 
             }
           }
         : null
+    case 'attach':
+      // Cold-load probe: name the live stream for (conversation, agent) so a reloaded
+      // browser can resume it. `agentId` defaults to the primary at dispatch.
+      return m.agentId === undefined || (typeof m.agentId === 'string' && UUID_RE.test(m.agentId))
+        ? { op: { op: 'attach', ...(typeof m.agentId === 'string' ? { agentId: m.agentId.toLowerCase() } : {}) } }
+        : null
     case 'set_model':
       return typeof m.model === 'string' ? { op: { op: 'set_model', model: m.model } } : null
     case 'set_effort':
@@ -286,10 +293,13 @@ export class RelayBrowserConnection implements ChatSink {
       for (const p of this.byAgentId.values()) void this.sendToParticipant(p.agentId, { op: 'cancel' }, 'cancel')
       return
     }
-    // Single-daemon ops: resume/cancel go to the named participant, everything
+    // Single-daemon ops: resume/attach/cancel go to the named participant, everything
     // else (set_*) to the primary — multi-agent conversations expose no runtime
     // override (webchat-multi-agents.md §9.3), so set_* only occurs single-agent.
-    const targetAgent = op.op === 'resume' || op.op === 'cancel' ? (op.agentId ?? this.deps.agentId) : this.deps.agentId
+    const targetAgent =
+      op.op === 'resume' || op.op === 'attach' || op.op === 'cancel'
+        ? (op.agentId ?? this.deps.agentId)
+        : this.deps.agentId
     await this.sendToParticipant(targetAgent, op, op.op)
   }
 
@@ -356,6 +366,12 @@ export class RelayBrowserConnection implements ChatSink {
       }
     }
     if (!daemon) {
+      // The attach probe is background discovery — always a quiet per-agent
+      // refusal, never the legacy error frame.
+      if (kind === 'attach') {
+        this.send({ type: 'attached', ack: { accepted: false, agentId, reason: 'no_agent' } })
+        return
+      }
       // A single-participant conversation keeps the legacy error frame; a
       // multi-agent one degrades per agent so the other targets still run.
       if (this.byAgentId.size === 1) {
@@ -374,6 +390,12 @@ export class RelayBrowserConnection implements ChatSink {
         this.deps.log.warn(`webchat: resume for ${agentId} in ${this.deps.chatId} has no live daemon to reach`)
         this.send({ type: 'resumed', ack: { accepted: false, agentId, reason: 'no_agent' } })
       }
+      return
+    }
+    // Fail closed on an older daemon that cannot parse the probe op — refusing
+    // here degrades to the pre-attach behavior (the reload recovers at turn end).
+    if (kind === 'attach' && !daemon.supports(RD_WEBCHAT_ATTACH_V1)) {
+      this.send({ type: 'attached', ack: { accepted: false, agentId, reason: 'unsupported' } })
       return
     }
     const rdMsg: RdMsgWebchat = {
@@ -410,9 +432,11 @@ export class RelayBrowserConnection implements ChatSink {
         ...(ack.turnId ? { turnId: ack.turnId } : {}),
         agentId,
         ...(ack.reason ? { reason: ack.reason } : {}),
-        ...(ack.detail ? { detail: ack.detail } : {})
+        ...(ack.detail ? { detail: ack.detail } : {}),
+        ...(ack.generation !== undefined ? { generation: ack.generation } : {})
       }
-      // A refusal is the whole story of a stream that "never came back" — name it, and who refused.
+      // A refusal is the whole story of a stream that "never came back" — name it, and who
+      // refused. Attach misses are the normal idle answer, not worth a line.
       if (!ack.accepted && (op.op === 'turn' || op.op === 'resume')) {
         this.deps.log.info(
           `webchat: ${op.op} ${op.turnId ?? '?'} for ${agentId} in ${this.deps.chatId} refused by ${daemonId}: ${ack.reason ?? 'unspecified'}`
@@ -422,12 +446,16 @@ export class RelayBrowserConnection implements ChatSink {
         this.send({ type: 'ack', ack: browserAck })
       } else if (kind === 'resume') {
         this.send({ type: 'resumed', ack: browserAck })
+      } else if (kind === 'attach') {
+        this.send({ type: 'attached', ack: browserAck })
       }
     } catch (error) {
       // Lower layers may include the outbound frame in an error. Do not let the opaque
       // remote-MCP entitlement become log content.
       this.deps.log.warn(`relay: webchat op delivery failed ${deliveryFailureDiagnostic(error)}`)
-      if (this.byAgentId.size > 1 && kind === 'turn') {
+      if (kind === 'attach') {
+        this.send({ type: 'attached', ack: { accepted: false, agentId, reason: 'no_agent' } })
+      } else if (this.byAgentId.size > 1 && kind === 'turn') {
         this.send({
           type: 'ack',
           ack: {

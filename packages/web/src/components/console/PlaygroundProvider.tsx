@@ -111,6 +111,11 @@ interface PlaygroundData {
      *  agent whose runtime has the skill instead of waking the roster to decline. */
     commandPick?: { agentId: string; name: string }
   ) => boolean
+  /** Reattach a webchat session after a cold page load: probe the conversation's
+   *  daemons for a turn still streaming (the reload wiped the busy flag, lanes,
+   *  and streamed reply) and, on a hit, recreate the lane, restore the typing
+   *  indicator, and replay the reply from the start. No-op while already busy. */
+  pgAttach: (id: string, agentId: string, conversationId: string) => void
   /** Mark `id` (a CP session id) as a session-targeted continuation: the socket
    *  mints through the session-target token route and the daemon dispatches
    *  turns onto that session's own platform coordinates
@@ -344,6 +349,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
   // never receive another terminal frame and wedge the busy state. Reset on
   // each send (one in-flight turn per session).
   const finishedTurnLanes = useRef<Map<string, { turnId: string; agents: Set<string> }>>(new Map())
+  // Cold-attached lanes (the `attach` probe reattached a reload to a live turn),
+  // keyed by lane. Such a replay has no local prompt step, so the turn-shaped arm of
+  // `reconcilePersistedLiveSteps` cannot retire it and the reply would render twice
+  // once the transcript tail persists it. The reply post frame carries the canonical
+  // postId — stamp it onto the replayed steps so the exact-postId arm retires them
+  // (the same anchor #753 gave agent-initiated posts).
+  const coldAttached = useRef<Map<string, { turnId: string; postId?: string; done?: boolean }>>(new Map())
   // Participant display names per session id, mirrored in a ref: the socket's
   // message handlers are closures captured when the socket opened — often the
   // same tick openPlayground staged the session — so state-based lookups there
@@ -711,7 +723,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     // Preserve text already received before surfacing a terminal connection
     // error; otherwise the final sub-frame would disappear from the transcript.
     deltaBuffer.flushSession(id)
-    for (const key of lanesOf(id)) streamCursors.current.delete(key)
+    for (const key of lanesOf(id)) {
+      streamCursors.current.delete(key)
+      coldAttached.current.delete(key)
+    }
     syncBusyLanes(id)
   }
 
@@ -723,6 +738,27 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       setBusy(id, false)
     },
     [pushStep, setBusy]
+  )
+
+  /** Retire a cold-attached turn's replayed steps by stamping the reply's canonical
+   *  postId on them (see `coldAttached`), once both the postId and the lane's `done`
+   *  are in — either order: the failure path sends `done` before the reply post. */
+  const anchorColdTurn = useCallback(
+    (id: string, cursorKey: string): void => {
+      const cold = coldAttached.current.get(cursorKey)
+      const postId = cold?.postId
+      if (!cold || !postId || !cold.done) return
+      coldAttached.current.delete(cursorKey)
+      const agentId = laneAgentId(cursorKey)
+      mutateSteps(id, (steps) =>
+        steps.map((step) =>
+          step.turnId === cold.turnId && (step.agentId ?? undefined) === agentId && !step.postId
+            ? { ...step, postId }
+            : step
+        )
+      )
+    },
+    [mutateSteps]
   )
 
   const applyStreamResult = useCallback(
@@ -754,6 +790,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // `done` is a hard fence and must not clear busy state before the last
       // buffered reply text has committed.
       deltaBuffer.flush(cursorKey)
+      // Every replayed step of a cold-attached turn is now committed — anchor it. Only
+      // after the flush: the final chunk becomes a step here.
+      const cold = coldAttached.current.get(cursorKey)
+      if (cold) {
+        cold.done = true
+        anchorColdTurn(id, cursorKey)
+      }
       reconnectAttempts.current.delete(id)
       streamCursors.current.delete(cursorKey)
       syncBusyLanes(id)
@@ -780,7 +823,18 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       // The turn stays busy until every targeted participant's lane finished.
       if (lanesOf(id).length === 0) setBusy(id, false)
     },
-    [applyEvent, applyStatus, applyTitle, deltaBuffer, failStream, participantName, pushStep, retireWaitNotice, setBusy]
+    [
+      anchorColdTurn,
+      applyEvent,
+      applyStatus,
+      applyTitle,
+      deltaBuffer,
+      failStream,
+      participantName,
+      pushStep,
+      retireWaitNotice,
+      setBusy
+    ]
   )
 
   const receiveOutput = useCallback(
@@ -828,7 +882,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
    *  existing conversation (adopted webchat sessions); omit it for a fresh playground
    *  turn (the CP mints the id). */
   const connect = useCallback(
-    (id: string, agentId: string, conversationId?: string, resumeStream = false): Conn => {
+    (id: string, agentId: string, conversationId?: string, resumeStream = false, probeOnReady = false): Conn => {
       const resumeId = conversationId ?? conversationIds.current.get(id)
       if (resumeId) conversationIds.current.set(id, resumeId)
       const existing = conns.current.get(id)
@@ -1000,7 +1054,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 participants?: WebchatParticipant[]
                 output?: WebchatOutput
                 done?: WebchatDone
-                ack?: { accepted?: boolean; reason?: string; detail?: string; turnId?: string; agentId?: string }
+                ack?: {
+                  accepted?: boolean
+                  reason?: string
+                  detail?: string
+                  turnId?: string
+                  agentId?: string
+                  generation?: number
+                }
                 post?: WebchatPost
                 initiator?: string
               }
@@ -1041,38 +1102,55 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 }
                 if (resumeStream && busyRef.current[id]) {
                   sendResume(ws)
+                } else if (probeOnReady && !busyRef.current[id] && lanesOf(id).length === 0) {
+                  // Cold-load discovery: ask each verified participant's daemon
+                  // whether a turn is still streaming here (see the 'attached'
+                  // handler below). Idle daemons answer with a quiet refusal.
+                  const probeIds = m.participants?.length ? m.participants.map((p) => p.agentId) : [agentId]
+                  for (const probeId of probeIds) ws.send(JSON.stringify({ type: 'attach', agentId: probeId }))
                 }
               } else if (m.type === 'output') {
                 if (m.output) receiveOutput(id, m.output)
               } else if (m.type === 'done') {
                 if (m.done) receiveDone(id, m.done)
-              } else if (m.type === 'post' && m.initiator === 'agent' && m.post?.author.kind === 'agent') {
-                // Agent-initiated turn (another participant's sendMessage/lineage-reply
-                // wake, #753): it never streamed output/done to this socket, so the
-                // completed post IS its first and only rendering here.
+              } else if (m.type === 'post' && m.post?.author.kind === 'agent') {
                 const agentId = m.post.author.agentId
                 const post = m.post
+                // This lane's own reply post while cold-attached: keep the canonical
+                // postId as that turn's retirement anchor. An agent-initiated post is
+                // a DIFFERENT turn's reply and must not anchor the attached one.
+                const coldKey = laneKey(id, agentId)
+                const cold = m.initiator === 'agent' ? undefined : coldAttached.current.get(coldKey)
+                if (cold) {
+                  cold.postId = post.postId
+                  anchorColdTurn(id, coldKey)
+                }
+                // Agent-initiated turn (another participant's sendMessage/lineage-reply
+                // wake, #753): it never streamed output/done to this socket, so the
+                // completed post IS its first and only rendering here. A human-initiated
+                // turn already streamed it and only needs the anchor above.
                 // Keyed by postId so a daemon re-broadcast (inbox replay, relay fan-out
                 // echo) upserts instead of duplicating the step.
-                mutateSteps(id, (steps) =>
-                  steps.some((step) => step.postId === post.postId)
-                    ? steps
-                    : [
-                        ...steps,
-                        stampStep({
-                          kind: 'done',
-                          turnId: post.postId,
-                          // The daemon persists this reply before the post frame ever arrives, so
-                          // `postId` is what lets `reconcilePersistedLiveSteps` drop this step once
-                          // the canonical row lands in a later transcript refresh (#753) — text/time
-                          // matching (the prompt-turn heuristic) has nothing to anchor on here.
-                          postId: post.postId,
-                          agentId,
-                          ...(participantName(id, agentId) ? { who: participantName(id, agentId) } : {}),
-                          text: post.text
-                        })
-                      ]
-                )
+                if (m.initiator === 'agent')
+                  mutateSteps(id, (steps) =>
+                    steps.some((step) => step.postId === post.postId)
+                      ? steps
+                      : [
+                          ...steps,
+                          stampStep({
+                            kind: 'done',
+                            turnId: post.postId,
+                            // The daemon persists this reply before the post frame ever arrives, so
+                            // `postId` is what lets `reconcilePersistedLiveSteps` drop this step once
+                            // the canonical row lands in a later transcript refresh (#753) — text/time
+                            // matching (the prompt-turn heuristic) has nothing to anchor on here.
+                            postId: post.postId,
+                            agentId,
+                            ...(participantName(id, agentId) ? { who: participantName(id, agentId) } : {}),
+                            text: post.text
+                          })
+                        ]
+                  )
               } else if (m.type === 'ack' && m.ack?.accepted !== false) {
                 let key = cursorKeyFor(id, m.ack?.agentId)
                 // The relay may target participants the client did not lane (a
@@ -1092,6 +1170,28 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
                 }
                 const cursor = key ? streamCursors.current.get(key) : undefined
                 if (cursor && m.ack?.turnId) bindWebchatTurn(cursor, m.ack.turnId)
+              } else if (m.type === 'attached') {
+                // Cold-load probe verdict: a hit names the in-flight turn — recreate
+                // its lane, seed the cursor's generation from the daemon's (so our
+                // resume outruns pre-reload generations), restore busy, and pull the
+                // stream from the start through the ordinary resume path. A miss is
+                // the normal idle answer and stays silent.
+                const a = m.ack
+                if (a?.accepted === true && typeof a.turnId === 'string' && typeof a.agentId === 'string') {
+                  const key = laneKey(id, a.agentId)
+                  if (!streamCursors.current.has(key) && !finishedFor(id, a.turnId)?.has(a.agentId)) {
+                    const cursor = createWebchatCursor<WebchatOutput, WebchatDone>(a.turnId)
+                    bindWebchatTurn(cursor, a.turnId)
+                    if (typeof a.generation === 'number') cursor.resumeGeneration = a.generation
+                    streamCursors.current.set(key, cursor)
+                    // No local prompt step to reconcile against — the reply post frame
+                    // will name this turn's retirement anchor (see `coldAttached`).
+                    coldAttached.current.set(key, { turnId: a.turnId })
+                    syncBusyLanes(id)
+                    setBusy(id, true)
+                    sendLaneResume(ws, key)
+                  }
+                }
               } else if (m.type === 'resumed' && m.ack?.accepted !== false) {
                 const key = cursorKeyFor(id, m.ack?.agentId)
                 const cursor = key ? streamCursors.current.get(key) : undefined
@@ -1137,7 +1237,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               } else if (m.type === 'ack' && m.ack?.accepted === false) {
                 rejectLane(m.ack.agentId, m.ack.turnId, m.ack.reason, m.ack.detail)
               } else if (m.type === 'error') {
-                failStream(id, 'Connection error.')
+                // An error frame with nothing in flight (e.g. an older relay answering
+                // the attach probe with 'unrecognized frame') must not push a warning
+                // step into an idle transcript.
+                if (busyRef.current[id]) failStream(id, 'Connection error.')
               }
             }
             if (conns.current.get(id) === conn) conn.ws = ws
@@ -1561,6 +1664,16 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     sessionTargets.current.add(id)
   }, [])
 
+  /** See PlaygroundData.pgAttach. Doubles as socket warming: a reused live conn
+   *  skips the probe (its ready already passed — nothing was lost in a reload). */
+  const pgAttach = useCallback(
+    (id: string, agentId: string, conversationId: string): void => {
+      if (!conversationId || busyRef.current[id]) return
+      connect(id, agentId, conversationId, false, true).ready.catch(() => {})
+    },
+    [connect]
+  )
+
   const value = useMemo<PlaygroundData>(
     () => ({
       getPgInput,
@@ -1574,6 +1687,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      pgAttach,
       markSessionTarget,
       getPgQueue,
       pgCancelQueued,
@@ -1600,6 +1714,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       openPlayground,
       pgAddAgent,
       pgSend,
+      pgAttach,
       markSessionTarget,
       getPgQueue,
       pgCancelQueued,

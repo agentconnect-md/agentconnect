@@ -86,6 +86,15 @@ export const RD_AGENT_IMPLICIT_ROUTING_V1 = 'agent-implicit-routing-v1'
  */
 export const RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2 = 'github-thread-worktree-cleanup-v2'
 
+/**
+ * `webchat-attach-v1`: this daemon answers the webchat `attach` probe — naming the
+ * live reply stream for (conversation, agent) so a browser that reloaded mid-turn
+ * can rediscover and resume it. The relay refuses the probe locally
+ * (`attached {reason:'unsupported'}`) for a daemon without it, instead of
+ * forwarding an op an older daemon cannot parse.
+ */
+export const RD_WEBCHAT_ATTACH_V1 = 'webchat-attach-v1'
+
 // D→R REQ → rd/hello/ok. The daemon presents the same credential it uses on the CP
 // socket — an API key, or an in-cluster daemon's projected ServiceAccount token. The
 // relay holds no database, so it delegates either to the CP via `rc/verify` and caches
@@ -184,6 +193,11 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     generation: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
     afterIndex: z.number().int().min(-1)
   }),
+  // Cold-load stream discovery (a page reload lost the browser's turn state): name
+  // the LIVE stream for (conversation, agent). Read-only — the accepted ack carries
+  // the stream's turnId + current resume generation, and the browser follows with an
+  // ordinary `resume` from scratch; nothing rebinds until that resume lands.
+  z.object({ op: z.literal('attach'), agentId: z.string().uuid().optional() }),
   z.object({ op: z.literal('set_model'), model: z.string() }),
   z.object({ op: z.literal('set_effort'), effort: z.string() }),
   z.object({ op: z.literal('set_permission_mode'), permissionMode: z.string() }),
@@ -443,6 +457,9 @@ export const RdAck = z.object({
   reason: z.string().optional(),
   /** Bounded human-readable cause for a refusal the browser should explain (see WebchatAck.detail). */
   detail: z.string().max(240).optional(),
+  /** `attach` verdicts only: the named stream's current resume generation — the browser
+   *  seeds its cursor from it so the follow-up `resume` outruns pre-reload generations. */
+  generation: z.number().int().min(0).optional(),
   /** Set with `reason: 'not_holder'`: the member that holds the duty now, as the
    *  losing claimant learned it from the CP. Absent when even the CP could not
    *  name one — the router then retries rather than re-routing. */

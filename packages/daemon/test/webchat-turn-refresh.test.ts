@@ -107,10 +107,11 @@ describe('webchat turn-final context refresh', () => {
 
     const events: RdChatEvent[] = []
     const posts: RdWebchatPost[] = []
+    // Completed posts use daemon-wide relay fan-out.
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost: (p: RdWebchatPost) => posts.push(p) }
     const ack = await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'original request', user: 'owner', turnId: TURN, post: { postId: TURN, at: 1_000 } }),
-      (event: RdChatEvent) => events.push(event),
-      (post: RdWebchatPost) => posts.push(post)
+      (event: RdChatEvent) => events.push(event)
     )
     expect(ack).toMatchObject({ accepted: true, turnId: TURN })
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
@@ -200,10 +201,11 @@ describe('webchat turn-final context refresh', () => {
     const first: RdChatEvent[] = []
     const second: RdChatEvent[] = []
     const posts: RdWebchatPost[] = []
+    // Completed posts use daemon-wide relay fan-out.
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost: (p: RdWebchatPost) => posts.push(p) }
     await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'original request', user: 'owner', turnId: TURN, post: { postId: TURN, at: 1_000 } }),
-      (event: RdChatEvent) => first.push(event),
-      (post: RdWebchatPost) => posts.push(post)
+      (event: RdChatEvent) => first.push(event)
     )
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
 
@@ -221,8 +223,7 @@ describe('webchat turn-final context refresh', () => {
         },
         { msgId: 'm-2' }
       ),
-      (event: RdChatEvent) => second.push(event),
-      (post: RdWebchatPost) => posts.push(post)
+      (event: RdChatEvent) => second.push(event)
     )
     expect(ack2).toMatchObject({ accepted: true, turnId: secondTurn })
     releaseFirst()
@@ -278,10 +279,11 @@ describe('webchat turn-final context refresh', () => {
     const first: RdChatEvent[] = []
     const second: RdChatEvent[] = []
     const posts: RdWebchatPost[] = []
+    // Completed posts use daemon-wide relay fan-out.
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost: (p: RdWebchatPost) => posts.push(p) }
     await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'original request', user: 'owner', turnId: TURN, post: { postId: TURN, at: 1_000 } }),
-      (event: RdChatEvent) => first.push(event),
-      (post: RdWebchatPost) => posts.push(post)
+      (event: RdChatEvent) => first.push(event)
     )
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
 
@@ -309,8 +311,7 @@ describe('webchat turn-final context refresh', () => {
         },
         { msgId: 'm-2' }
       ),
-      (event: RdChatEvent) => second.push(event),
-      (post: RdWebchatPost) => posts.push(post)
+      (event: RdChatEvent) => second.push(event)
     )
     releaseFirst()
 
@@ -368,10 +369,11 @@ describe('webchat turn-final context refresh', () => {
 
     const events: RdChatEvent[] = []
     const posts: RdWebchatPost[] = []
+    // Completed posts use daemon-wide relay fan-out.
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost: (p: RdWebchatPost) => posts.push(p) }
     await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'original request', user: 'owner', turnId: TURN, post: { postId: TURN, at: 1_000 } }),
-      (event: RdChatEvent) => events.push(event),
-      (post: RdWebchatPost) => posts.push(post)
+      (event: RdChatEvent) => events.push(event)
     )
 
     await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)

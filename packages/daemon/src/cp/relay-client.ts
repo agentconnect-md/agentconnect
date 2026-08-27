@@ -17,6 +17,7 @@ import {
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
+  RD_WEBCHAT_ATTACH_V1,
   type RelayDaemonFrame,
   type RdHelloOk,
   type RdMsg,
@@ -46,6 +47,8 @@ const DAEMON_RD_CAPABILITIES: readonly string[] = [
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
+  // The relay refuses the webchat `attach` probe for daemons without this.
+  RD_WEBCHAT_ATTACH_V1,
   // The relay gates gitlab rd/msg dispatch on this capability.
   GITLAB_COM_V1_FEATURE,
   // §24.4: and gates a SELF-MANAGED gitlab delivery on this one, per delivery attempt.
@@ -69,23 +72,8 @@ export interface RelayClientDeps {
   log: Logger
   /** Backoff jitter in [0,1); defaults to Math.random. Injected as `() => 0` in tests. */
   jitter?: () => number
-  /**
-   * Handle one inbound item from the relay (`rd/msg` — a webchat op or a hook
-   * fire): dispatch it (explicit-agent, same engine as the retired CP path) and
-   * return the `rd/ack` verdict. Hook admission may be asynchronous because
-   * its ACK is a durability barrier; webchat/IM handlers remain synchronous.
-   * The `chat` callback streams a
-   * webchat reply back over THIS relay's socket (`rd/chat`); for a hook fire it
-   * is a no-op — the turn's outcome goes to the CP as `hook/report` instead.
-   * The optional `post` callback (webchat only) sends a completed reply as a
-   * canonical conversation post (`rd/webchat-post`) over the same socket so the
-   * relay can fan it to the other participants' daemons as context.
-   */
-  onRelayMsg: (
-    msg: RdMsg,
-    chat: (event: RdChatEvent) => void,
-    post?: (p: RdWebchatPost) => void
-  ) => RdAck | Promise<RdAck>
+  /** Admit one relay delivery; chat streams over this socket, while completed posts fan out through RelayManager. */
+  onRelayMsg: (msg: RdMsg, chat: (event: RdChatEvent) => void) => RdAck | Promise<RdAck>
   /**
    * Handle a forwarded cross-daemon agent-call (`rd/agentmsg/fwd`, agent-collaboration
    * P2): the relay validated the caller and minted a TRUSTED claim. The daemon
@@ -244,8 +232,7 @@ export class RelayClient {
   private async handleMsg(reqId: string, msg: RdMsg): Promise<void> {
     const chat =
       msg.source === 'webchat' ? (event: RdChatEvent) => this.sendChat(msg.chatId, event) : (): void => undefined
-    const post = msg.source === 'webchat' ? (p: RdWebchatPost) => this.sendWebchatPost(p) : undefined
-    const ack = await this.deps.onRelayMsg(msg, chat, post)
+    const ack = await this.deps.onRelayMsg(msg, chat)
     this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/ack', ack, { corr: reqId })))
   }
 
@@ -261,12 +248,7 @@ export class RelayClient {
     }
     this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/agentmsg/ack', ack, { corr: reqId })))
   }
-  /** One completed conversation post (fire-and-forget EVT) — either on the socket the
-   *  triggering turn arrived on, or (agent-initiated turns, #753) broadcast by
-   *  {@link RelayManager.sendWebchatPost} to every relay this daemon holds, since none
-   *  of them is "the" socket for a wake with no browser turn of its own. A dead
-   *  transport drops it — bounded loss, the transcript row already exists on the
-   *  authoring daemon. */
+  /** Send one completed post on this relay; RelayManager owns daemon-wide fan-out. */
   sendWebchatPost(post: RdWebchatPost): void {
     this.transport?.send(JSON.stringify(buildRelayDaemonFrame('rd/webchat-post', post)))
   }

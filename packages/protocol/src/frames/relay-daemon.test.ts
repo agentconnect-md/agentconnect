@@ -188,6 +188,8 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
         runtime: { model: 'gpt-5.6-sol', effort: 'xhigh', permissionMode: 'full-access', fastMode: true }
       },
       { op: 'resume', turnId: TURN_ID, generation: 2, afterIndex: 3 },
+      { op: 'attach' },
+      { op: 'attach', agentId: AGENT_ID },
       { op: 'set_model', model: 'opus-4.8' },
       { op: 'set_effort', effort: 'high' },
       { op: 'set_permission_mode', permissionMode: 'plan' },
@@ -213,6 +215,12 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
     expect(RelayWebchatOp.safeParse({ op: 'resume', turnId: TURN_ID, generation: 0, afterIndex: 0 }).success).toBe(
       false
     )
+    expect(RelayWebchatOp.safeParse({ op: 'attach', agentId: 'not-a-uuid' }).success).toBe(false)
+  })
+
+  it('rd/ack carries the attach probe verdict (turnId + resume generation)', () => {
+    expect(RdAck.safeParse({ msgId: 'm-1', accepted: true, turnId: TURN_ID, generation: 0 }).success).toBe(true)
+    expect(RdAck.safeParse({ msgId: 'm-1', accepted: true, turnId: TURN_ID, generation: -1 }).success).toBe(false)
   })
 
   it('carries one bounded inline image on a webchat turn', () => {

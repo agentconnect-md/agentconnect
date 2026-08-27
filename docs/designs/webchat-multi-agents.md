@@ -564,6 +564,28 @@ Two scope rules:
   - new `payload.op: 'context'` carrying a `WebchatPost` (transcript-only, no
     ack beyond transport, deduplicated by `postId`);
   - `resume` and `cancel` carry `agentId` as above;
+  - new `payload.op: 'attach' { agentId? }` (daemon capability
+    `webchat-attach-v1`): cold-load stream discovery for a browser that
+    reloaded mid-turn and lost its local turn state. Read-only — the ack names
+    the live stream for (conversation, agent) (`turnId` plus its current
+    resume generation) and the browser follows with an ordinary from-scratch
+    `resume`; the browser envelope is `{type:'attach'}` answered by
+    `{type:'attached'}`. The relay refuses the probe locally
+    (`attached {reason:'unsupported'}`) for a daemon without the capability,
+    and an idle conversation answers `stream_not_found` — both are quiet
+    misses, never errors. This is what restores the typing indicator and the
+    partially streamed reply after a page refresh, instead of both being lost
+    until the turn completes and persists. A cold-attached replay carries no
+    local prompt step, so the console's turn-shaped live/persisted
+    reconciliation has nothing to anchor on — it takes the canonical reply
+    `postId` off the turn's `rd/webchat-post` instead (whichever of that frame
+    and the lane's `done` lands second stamps it onto the replayed steps), and
+    the ordinary exact-`postId` arm retires them when the transcript tail
+    persists the reply. Because that post is now a reconciliation anchor and not
+    just a record, a browser turn's reply post is fanned out to EVERY relay the
+    daemon holds rather than back down the socket that admitted the turn — a
+    reload may land on a different relay instance, and only the one owning the
+    conversation acts on the post;
   - the `set_*` runtime ops are unchanged and carry no `agentId`: multi-agent
     conversations expose no runtime override (section 9.3), so these ops
     occur only in single-agent conversations.

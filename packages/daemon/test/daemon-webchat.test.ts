@@ -1513,11 +1513,11 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     const turnId = '77777777-7777-4777-8777-777777777777'
     const events: RdChatEvent[] = []
-    const posts: unknown[] = []
+    const sendWebchatPost = vi.fn()
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost }
     const ack = await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'anyone?', user: 'owner', turnId, post: { postId: turnId, at: 1_000 } }),
-      (event: RdChatEvent) => events.push(event),
-      (post: unknown) => posts.push(post)
+      (event: RdChatEvent) => events.push(event)
     )
     expect(ack).toMatchObject({ accepted: true })
     await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
@@ -1526,7 +1526,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       e.kind === 'output' && e.output.event?.kind === 'message' ? [e.output.event.text] : []
     )
     expect(messages).toEqual([]) // the sentinel was held and dropped
-    expect(posts).toEqual([]) // no canonical post fan-out
+    expect(sendWebchatPost).not.toHaveBeenCalled() // no canonical post fan-out
     const replies = (await (daemon as any).store.transcriptSince(`${CONV}`, `webchat:${CONV}`, null)).filter(
       (row: { sender: string }) => row.sender === AGENT_ID
     )
@@ -1730,6 +1730,68 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
         () => {}
       )
     ).toMatchObject({ accepted: false, turnId, reason: 'stream_gap' })
+
+    // A from-scratch reattach cannot rebuild past the trimmed head either — the
+    // cold-load probe refuses the same way instead of naming an unresumable turn.
+    expect(
+      await (daemon as any).handleRelayMsg(rd({ op: 'attach' }, { msgId: 'attach-overflow' }), () => {})
+    ).toMatchObject({ accepted: false, turnId, reason: 'stream_gap' })
+    await daemon.stop()
+  })
+
+  it('attach names the live stream so a reloaded browser can resume it from scratch', async () => {
+    const { factory } = streamingHost([])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    // Idle conversation: the probe answers the quiet not-found, never an error.
+    expect(
+      await (daemon as any).handleRelayMsg(rd({ op: 'attach' }, { msgId: 'attach-idle' }), () => {})
+    ).toMatchObject({ accepted: false, reason: 'stream_not_found' })
+
+    const pre: RdChatEvent[] = []
+    const stream = (daemon as any).webchatTransport.createWebchatTurnStream(AGENT_ID, CONV, turnId, {
+      output: (output: WebchatOutput) => pre.push({ kind: 'output', output }),
+      done: (done: WebchatDone) => pre.push({ kind: 'done', done })
+    })
+    stream.sink.output({ conversationId: CONV, turnId, index: 0, event: { kind: 'message', text: 'partial' } })
+
+    // The probe is read-only: it names the turn + its current resume generation and
+    // replays nothing itself — the follow-up resume does the rebind + replay.
+    const probeEvents: RdChatEvent[] = []
+    expect(
+      await (daemon as any).handleRelayMsg(rd({ op: 'attach' }, { msgId: 'attach-live' }), (event: RdChatEvent) =>
+        probeEvents.push(event)
+      )
+    ).toMatchObject({ accepted: true, turnId, generation: 0 })
+    expect(probeEvents).toEqual([])
+
+    const replayed: RdChatEvent[] = []
+    expect(
+      await (daemon as any).handleRelayMsg(
+        rd({ op: 'resume', turnId, generation: 1, afterIndex: -1 }, { msgId: 'attach-resume' }),
+        (event: RdChatEvent) => replayed.push(event)
+      )
+    ).toMatchObject({ accepted: true, turnId })
+    expect(replayed).toEqual([
+      {
+        kind: 'output',
+        output: {
+          conversationId: CONV,
+          turnId,
+          agentId: AGENT_ID,
+          index: 0,
+          event: { kind: 'message', text: 'partial' }
+        }
+      }
+    ])
+
+    // A completed turn is transcript-owned — the probe stops naming it.
+    stream.sink.done({ conversationId: CONV, turnId, stopReason: 'end_turn' })
+    expect(
+      await (daemon as any).handleRelayMsg(rd({ op: 'attach' }, { msgId: 'attach-done' }), () => {})
+    ).toMatchObject({ accepted: false, reason: 'stream_not_found' })
     await daemon.stop()
   })
 
@@ -1986,6 +2048,31 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
     expect(a2).toEqual(a1) // same ack (same turnId) replayed so the relay settles
     await daemon.stop()
   })
+
+  // Reply posts use daemon-wide relay fan-out so a cold attach through another relay can reconcile.
+  it('fans a browser turn reply post out daemon-wide, not down the admitting relay socket', async () => {
+    const { factory } = streamingHost([text('the answer')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    const sendWebchatPost = vi.fn()
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost }
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const events: RdChatEvent[] = []
+    const ack = await (daemon as any).handleRelayMsg(
+      rd({ op: 'turn', text: 'ask', user: 'owner', turnId, post: { postId: turnId, at: 1_000 } }),
+      (event: RdChatEvent) => events.push(event)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(sendWebchatPost).toHaveBeenCalledTimes(1), WAIT)
+    expect(sendWebchatPost.mock.calls[0]![0]).toMatchObject({
+      conversationId: CONV,
+      agentId: AGENT_ID,
+      post: { conversationId: CONV, text: 'the answer', author: { kind: 'agent', agentId: AGENT_ID } }
+    })
+    await daemon.stop()
+  }, 15_000)
 
   it('rejects a turn while draining (accepted:false, reason draining) — no turn dispatched', async () => {
     const { factory } = streamingHost([])
