@@ -38,7 +38,9 @@ const hasBwrap = detectSandbox() === 'bwrap'
 describe.skipIf(!hasBwrap)('skills@1.5.21 local-source golden', () => {
   it.each([
     ['claude-code', '.claude/skills/local-golden'],
-    ['codex', '.agents/skills/local-golden']
+    ['codex', '.agents/skills/local-golden'],
+    // dsh-acp's identity: the DeepSeek Harness scans `<projectRoot>/.agents/skills`.
+    ['universal', '.agents/skills/local-golden']
   ])('uses the exact installed CLI for %s and derives %s', async (agentId, expectedPath) => {
     const { root, source } = await fixture()
     const result = await stageSkillsCliCell({
