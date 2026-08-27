@@ -64,6 +64,9 @@ const MCP_BRIDGE_PATH = '/opt/agentconnect/shim/mcp-bridge.js'
 const SKILLS_CLI_PATH = '/opt/agentconnect/shim/skills/dist/cli.js'
 const SKILL_MUTATION_PATH = '/opt/agentconnect/shim/skills/workspace-mutation.js'
 const TABLE_PATH = '/opt/agentconnect/runtime/k8s-runtimes.json'
+/** Must match SANDBOX_DSH_PRESET_DIR in packages/daemon/src/shim/sandbox-paths.ts: the shim copies this
+ *  directory into a pod's $DSH_HOME, so a rename here is a DeepSeek agent that keeps its broken web_search. */
+const DSH_PRESET_DIR = '/opt/agentconnect/dsh/agent-presets/standard-no-search'
 
 // The runtime is the untrusted party in this image, so root would hand it the whole filesystem.
 check('runs as a non-root user', () => {
@@ -255,6 +258,23 @@ check('the published runtime table matches a fresh ACP probe of this image', () 
     throw new Error(`the shipped table differs from a fresh probe — ${drift.join('; ')}`)
   }
   return table.runtimes.map((entry) => `${entry.id}@${entry.version} acp/${entry.acp.protocolVersion}`).join(' ')
+})
+
+// Asserted against the BUILT image because the preset is generated from whatever adapter the build
+// installed: a bake step that silently found no shipped preset, or an upstream row this repo's editor
+// no longer recognizes, would otherwise ship a sandbox whose DeepSeek agent keeps a tool that cannot
+// work. Read-only for the same reason the shim is — the runtime must not edit its own composition.
+check('bakes the no-search DeepSeek preset the shim seeds', () => {
+  const composition = `${DSH_PRESET_DIR}/agent.cordis.yml`
+  const listing = inImage(`ls ${DSH_PRESET_DIR} 2>/dev/null | tr "\\n" " "`)
+  if (!listing.includes('agent.cordis.yml')) throw new Error(`no preset composition under ${DSH_PRESET_DIR}`)
+  const rows = inImage(`grep -c "^- id: " ${composition}`)
+  if (Number(rows) < 2) throw new Error(`${composition} carries ${rows} plugin rows, so it is not a copied preset`)
+  const disabled = inImage(`grep -A6 "^- id: tool-web" ${composition} | grep -c "search: false" || true`)
+  if (disabled !== '1') throw new Error(`tool-web in ${composition} does not deregister web_search`)
+  const writable = inImage(`test -w ${composition} && echo y || echo n`)
+  if (writable === 'y') throw new Error('the runtime user can rewrite the preset it is seeded with')
+  return `${listing.trim()} (${rows.trim()} rows, read-only)`
 })
 
 // The workspace surface runs git INSIDE the sandbox over the shim's exec channel, so a missing

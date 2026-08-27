@@ -19,7 +19,16 @@ pair. The runtime image still accepts the legacy deployment-owned `AC_CLAUDE_BAS
 variables as fill-ins, but a daemon-sent value wins — including for DeepSeek Harness, whose
 `DEEPSEEK_BASE_URL`/`DEEPSEEK_API_KEY` the daemon now writes itself; the pod variables remain
 its floor, since a sandbox seeds no `$DSH_HOME` credential store. See
-[key-server.md](key-server.md) for precedence and lifecycle. The pod may also carry
+[key-server.md](key-server.md) for precedence and lifecycle. A sandbox also seeds no `$DSH_HOME` PRESET, which the shim
+supplies before that runtime launches: the image bakes a copy of the harness's shipped `standard`
+preset with `web_search` deregistered, and the shim copies it into `$DSH_HOME/.agent-presets` and
+names it the default — a floor rather than a lock, since a client can still switch a blank session to
+a shipped preset through the ACP `agent` option. The tool cannot work in a pod — the harness's search provider ignores
+`DEEPSEEK_BASE_URL` and takes `DEEPSEEK_API_KEY` to api.deepseek.com itself, so a gateway key fails
+every search as an invalid key — and dropping the row is only possible as a whole preset file, since
+the host-plane patch layer cannot reach into a preset subtree. A deployment whose sandbox key reaches
+the real API sets `AC_DEEPSEEK_WEB_SEARCH=on` (chart: `daemonPool.runtime.deepseekWebSearch`) and
+keeps the shipped preset. The pod may also carry
 `AC_CODEX_CONFIG`, a JSON object of codex session config the deployment asserts about its
 endpoint (for example, disabling a feature whose request shape the endpoint's gateway
 rejects); the shim merges it under any daemon-sent `CODEX_CONFIG`, one level deep for a table

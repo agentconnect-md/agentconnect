@@ -8,6 +8,7 @@ import {
   objectFromJson
 } from '../runtimes/codex-config.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
+import { seedDshPreset } from './dsh-preset.js'
 import { SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
 import type { ShimEvent } from './protocol.js'
 
@@ -136,6 +137,8 @@ export class AcpRunner {
       resolveCommand?: ResolveCommand
       /** Pod environment consulted for SANDBOX_PROVIDER_ENV fill-ins; absent means none. */
       podEnv?: Record<string, string | undefined>
+      /** Test seam: the image directory the DeepSeek preset is seeded from. */
+      dshPresetSource?: string
       log?: { info: (m: string) => void; warn: (m: string) => void }
     }
   ) {}
@@ -206,6 +209,15 @@ export class AcpRunner {
           this.deps.log?.warn(`acp: leaving the codex auth request uncomposed — ${reason}`)
         }
       }
+    }
+    if (sandboxProfile(payload.command) === 'deepseek') {
+      // After the env is final: the seed writes under whatever `$DSH_HOME` this launch resolves to.
+      seedDshPreset({
+        env,
+        podEnv,
+        source: this.deps.dshPresetSource,
+        log: { info: (m) => this.deps.log?.info(m), warn: (m) => this.deps.log?.warn(m) }
+      })
     }
     const command = this.deps.resolveCommand?.(payload.command, env) ?? payload.command
     return this.spawnChild(command, payload, env)
