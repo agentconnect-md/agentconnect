@@ -61,6 +61,29 @@ describe('DaemonSelect', () => {
     expect(rows[1]?.className).not.toMatch(/\bon\b/)
   })
 
+  it('draws an action row with its own icon and reports it like any other choice', async () => {
+    const picked: string[] = []
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () =>
+      root?.render(
+        <DaemonSelect
+          value="pool-1"
+          options={[...options, { value: '__add_daemon__', label: 'Add daemon', icon: 'plus' }]}
+          onChange={(next) => picked.push(next)}
+        />
+      )
+    )
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]')!
+    await act(async () => trigger.click())
+    const rows = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+
+    expect(rows[3]?.querySelector('svg')?.getAttribute('class')).toContain('lucide-plus')
+    await act(async () => rows[3]?.click())
+    expect(picked).toEqual(['__add_daemon__'])
+  })
+
   it('selects a local daemon and skips unavailable choices with the keyboard', async () => {
     await mount()
     const trigger = container!.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]')!
