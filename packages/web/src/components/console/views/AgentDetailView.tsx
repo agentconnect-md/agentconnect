@@ -75,14 +75,13 @@ import { INTEGRATION_BLURB, PLATFORMS, isCoreTriggerKind } from '@/components/co
 import {
   GL_TRIGGER_MODES,
   GL_TRIGGER_PILL,
-  commentFamiliesForGitlabFamilies,
-  eventsForGitlabFamilies,
   gitlabCadencePick,
   gitlabCommentFamilies,
-  gitlabFamCovered,
-  gitlabFamilyToggle,
+  gitlabFamilyCarriesReviews,
+  gitlabFamilySubscription,
+  gitlabFamilyTile,
+  gitlabHookFamily,
   gitlabHookNeedsNormalization,
-  gitlabRowFamilies,
   gitlabTriggerModeOf,
   gitlabTriggerTooltip,
   type GlFamily,
@@ -98,13 +97,13 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { useSessionList } from '@/lib/use-session-list'
 import {
-  GH_FAMILIES,
   GH_TRIGGER_MODES,
   GH_TRIGGER_PILL,
-  commentFamiliesForFamilies,
   githubCommentFamilies,
-  eventsForFamilies,
-  famCovered,
+  githubFamilyCarriesReviews,
+  githubFamilySubscription,
+  githubFamilyTile,
+  githubHookFamily,
   githubHookNeedsNormalization,
   githubTriggerTooltip,
   triggerModeOf,
@@ -402,10 +401,10 @@ export default function AgentDetailView() {
   }
 
   // Edit one github subscription in place (PUT re-sends the whole block); the
-  // SWR row is patched — no full revalidation. Families and the
-  // create/update/@-mention trigger both ride the stored event patterns.
+  // SWR row is patched — no full revalidation. The row's family is immutable and
+  // absent from the body; only the create/update/@-mention trigger moves.
   const [hookBusy, setHookBusy] = useState<string | null>(null)
-  const saveHookEvents = async (h: HookDto, fams: GhFamily[], mode: GhTriggerMode) => {
+  const saveHookEvents = async (h: HookDto, fam: GhFamily, mode: GhTriggerMode) => {
     if (hookBusy || !h.agentId || !h.repoFullName) return
     setHookBusy(h.id)
     try {
@@ -414,10 +413,8 @@ export default function AgentDetailView() {
         name: h.name,
         enabled: h.enabled,
         repoFullName: h.repoFullName,
-        events: eventsForFamilies(fams, mode),
-        commentFamilies: commentFamiliesForFamilies(fams),
+        ...githubFamilySubscription(fam, mode),
         labelFilter: h.labelFilter,
-        mentionOnly: mode === 'mention',
         reviewPolicy: h.reviewPolicy,
         reportingMode: h.reportingMode,
         gateMode: 'informational'
@@ -429,9 +426,8 @@ export default function AgentDetailView() {
       setHookBusy(null)
     }
   }
-  // The GitLab counterpart of saveHookEvents — same two axes, no review knobs
-  // yet (the M6 slice adds those, and the row must not imply them).
-  const saveGitlabHookEvents = async (h: HookDto, families: GlFamily[], mode: GlTriggerMode) => {
+  // The GitLab counterpart of saveHookEvents — its own whole-block PUT, no gateMode.
+  const saveGitlabHookEvents = async (h: HookDto, fam: GlFamily, mode: GlTriggerMode) => {
     if (hookBusy || !h.agentId || !h.repoId) return
     setHookBusy(h.id)
     try {
@@ -440,9 +436,7 @@ export default function AgentDetailView() {
         name: h.name,
         enabled: h.enabled,
         projectId: h.repoId,
-        events: eventsForGitlabFamilies(families, mode),
-        commentFamilies: commentFamiliesForGitlabFamilies(families, mode),
-        mentionOnly: mode === 'mention',
+        ...gitlabFamilySubscription(fam, mode),
         reviewPolicy: h.reviewPolicy,
         reportingMode: h.reportingMode
       })
@@ -453,27 +447,34 @@ export default function AgentDetailView() {
       setHookBusy(null)
     }
   }
-  // Pure helpers decide both edits: the toggle refuses to drop the last family, and the cadence pick refuses a no-op write, which is what leaves an inexpressible stored rule untouched.
-  const toggleGitlabHookFam = async (h: HookDto, fam: GlFamily) => {
-    const edit = gitlabFamilyToggle(h, fam)
-    if (edit) await saveGitlabHookEvents(h, edit.families, edit.mode)
-  }
+  // A pure helper decides the gitlab edit: it refuses a no-op write, which is what leaves an inexpressible stored rule untouched.
   const setGitlabHookCadence = async (h: HookDto, mode: GlTriggerMode) => {
     const edit = gitlabCadencePick(h, mode)
-    if (edit) await saveGitlabHookEvents(h, edit.families, edit.mode)
-  }
-  const toggleHookFam = async (h: HookDto, fam: GhFamily) => {
-    const fams = GH_FAMILIES.map((f) => f.fam).filter((f) =>
-      f === fam ? !famCovered(h.events, f) : famCovered(h.events, f)
-    )
-    if (fams.length === 0) return // at least one family must stay subscribed
-    const mode = triggerModeOf(h)
-    await saveHookEvents(h, fams, mode)
+    if (edit) await saveGitlabHookEvents(h, edit.family, edit.mode)
   }
   const setHookCadence = async (h: HookDto, mode: GhTriggerMode) => {
+    const fam = githubHookFamily(h)
+    if (!fam) return
     if (mode === triggerModeOf(h) && !githubHookNeedsNormalization(h)) return
-    const fams = GH_FAMILIES.map((f) => f.fam).filter((f) => famCovered(h.events, f))
-    await saveHookEvents(h, fams, mode)
+    await saveHookEvents(h, fam, mode)
+  }
+  // The row's family is a read-only fact now: it labels the row and decides
+  // whether the review/Check surface applies to it at all.
+  const ghRowPill = (h: HookDto) => {
+    const fam = githubHookFamily(h)
+    return fam ? (githubFamilyTile(fam)?.pill ?? fam) : 'no events'
+  }
+  const ghRowCarriesReviews = (h: HookDto) => {
+    const fam = githubHookFamily(h)
+    return !!fam && githubFamilyCarriesReviews(fam)
+  }
+  const glRowPill = (h: HookDto) => {
+    const fam = gitlabHookFamily(h)
+    return fam ? (gitlabFamilyTile(fam)?.pill ?? fam) : 'no events'
+  }
+  const glRowCarriesReviews = (h: HookDto) => {
+    const fam = gitlabHookFamily(h)
+    return !!fam && gitlabFamilyCarriesReviews(fam)
   }
   // One open-state drives both agent-actions surfaces: the desktop kebab dropdown
   // and the mobile bottom sheet (only one is ever visible — CSS gates them).
@@ -1395,9 +1396,9 @@ export default function AgentDetailView() {
                           {watchUnauthorized(h) && <UnauthorizedWatchBadge />}
                         </span>
                         <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                          {GH_FAMILIES.filter((f) => famCovered(h.events, f.fam))
-                            .map((f) => f.pill)
-                            .join(' · ') || 'no events'}
+                          {/* One row = one subject family, so this states which. */}
+                          {ghRowPill(h)}
+                          {` · ${GH_TRIGGER_PILL[triggerModeOf(h)]}`}
                         </span>
                         {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
                           <span className="truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
@@ -1406,13 +1407,16 @@ export default function AgentDetailView() {
                           </span>
                         )}
                       </span>
-                      <button
-                        className="iconbtn flex-none"
-                        title="PR review and Checks settings"
-                        onClick={() => openReviewSettings(h)}
-                      >
-                        <Icon name="settings-2" size={15} />
-                      </button>
+                      {/* Reviews and Checks exist on the pull-request row only. */}
+                      {ghRowCarriesReviews(h) && (
+                        <button
+                          className="iconbtn flex-none"
+                          title="PR review and Checks settings"
+                          onClick={() => openReviewSettings(h)}
+                        >
+                          <Icon name="settings-2" size={15} />
+                        </button>
+                      )}
                     </div>
                   ))}
                   {gitlabHooks.map((h, i) => (
@@ -1432,10 +1436,8 @@ export default function AgentDetailView() {
                           {h.repoFullName ?? h.name}
                         </span>
                         <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                          {gitlabRowFamilies(h.events)
-                            .filter((f) => gitlabFamCovered(h.events, f.fam))
-                            .map((f) => f.pill)
-                            .join(' · ') || 'no events'}
+                          {/* One row = one subject family, so this states which. */}
+                          {glRowPill(h)}
                           {` · ${GL_TRIGGER_PILL[gitlabTriggerModeOf(h)]}`}
                         </span>
                         {(h.reviewPolicy !== 'off' || h.reportingMode === 'check') && (
@@ -1445,13 +1447,16 @@ export default function AgentDetailView() {
                           </span>
                         )}
                       </span>
-                      <button
-                        className="iconbtn flex-none"
-                        title="MR review and run note settings"
-                        onClick={() => openReviewSettings(h)}
-                      >
-                        <Icon name="settings-2" size={15} />
-                      </button>
+                      {/* Reviews and the run note exist on the merge-request row only. */}
+                      {glRowCarriesReviews(h) && (
+                        <button
+                          className="iconbtn flex-none"
+                          title="MR review and run note settings"
+                          onClick={() => openReviewSettings(h)}
+                        >
+                          <Icon name="settings-2" size={15} />
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1554,9 +1559,9 @@ export default function AgentDetailView() {
                       )}
                     </div>
                   ))}
-                  {/* GitHub group (design): one card, a row per watched repo with
-                        event toggle pills + a "when created/updated" cadence select;
-                        hooks under the hood — one per repo. */}
+                  {/* GitHub group (design): one card, a row per hook — one per
+                        (repo, subject family) — each with its family pill and its
+                        own "when created/updated" cadence select. */}
                   {githubHooks.length > 0 && (
                     <div className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
                       <div className="flex items-center gap-3 px-[14px] py-3">
@@ -1594,25 +1599,15 @@ export default function AgentDetailView() {
                                 {h.repoFullName ?? h.name}
                               </span>
                               {watchUnauthorized(h) && <UnauthorizedWatchBadge />}
-                              <div className="ml-auto inline-flex flex-none gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]">
-                                {GH_FAMILIES.map((f) => {
-                                  const on = famCovered(h.events, f.fam)
-                                  return (
-                                    <button
-                                      key={f.fam}
-                                      onClick={() => void toggleHookFam(h, f.fam)}
-                                      disabled={hookBusy === h.id}
-                                      title={on ? `Stop listening for ${f.pill}` : `Listen for ${f.pill}`}
-                                      className={`cursor-pointer rounded-[7px] border-0 px-[9px] py-[3px] font-sans text-[11.5px] leading-normal ${
-                                        on
-                                          ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
-                                          : 'bg-transparent font-normal text-(--text-tertiary)'
-                                      } ${hookBusy === h.id ? 'opacity-60' : ''}`}
-                                    >
-                                      {f.pill}
-                                    </button>
-                                  )
-                                })}
+                              {/* One row = one subject family, and the family is
+                                  immutable — the pill states it, it no longer toggles. */}
+                              <div
+                                className="ml-auto inline-flex flex-none gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]"
+                                title="Add or remove families from Add integration"
+                              >
+                                <span className="rounded-[7px] bg-(--surface-card) px-[9px] py-[3px] font-sans text-[11.5px] font-semibold leading-normal text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
+                                  {ghRowPill(h)}
+                                </span>
                               </div>
                               {/* Trigger — the same ⚡ dropdown the IM channel rows carry, mention last. */}
                               <TriggerSelect
@@ -1629,13 +1624,16 @@ export default function AgentDetailView() {
                                 busy={hookBusy === h.id}
                               />
                               <span className="inline-flex flex-none gap-[2px]">
-                                <button
-                                  className="iconbtn h-[26px] w-[26px] flex-none"
-                                  title="PR review and Checks settings"
-                                  onClick={() => openReviewSettings(h)}
-                                >
-                                  <Icon name="settings-2" size={13} />
-                                </button>
+                                {/* Reviews and Checks exist on the pull-request row only. */}
+                                {ghRowCarriesReviews(h) && (
+                                  <button
+                                    className="iconbtn h-[26px] w-[26px] flex-none"
+                                    title="PR review and Checks settings"
+                                    onClick={() => openReviewSettings(h)}
+                                  >
+                                    <Icon name="settings-2" size={13} />
+                                  </button>
+                                )}
                                 <button
                                   className="iconbtn h-[26px] w-[26px] flex-none"
                                   title="Recent deliveries"
@@ -1675,8 +1673,7 @@ export default function AgentDetailView() {
                       </div>
                     </div>
                   )}
-                  {/* GitLab group — the same one-card shape as GitHub, minus the
-                      review and Check controls the M6 slice has not landed yet. */}
+                  {/* GitLab group — the same one-card, one-row-per-family shape. */}
                   {gitlabHooks.length > 0 && (
                     <div className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
                       <div className="flex items-center gap-3 px-[14px] py-3">
@@ -1716,26 +1713,15 @@ export default function AgentDetailView() {
                                   custom rule
                                 </span>
                               )}
-                              <div className="ml-auto inline-flex flex-none gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]">
-                                {/* Pushes appear only on a hook that already listens to them — visible and removable, never addable. */}
-                                {gitlabRowFamilies(h.events).map((f) => {
-                                  const on = gitlabFamCovered(h.events, f.fam)
-                                  return (
-                                    <button
-                                      key={f.fam}
-                                      onClick={() => void toggleGitlabHookFam(h, f.fam)}
-                                      disabled={hookBusy === h.id}
-                                      title={on ? `Stop listening for ${f.label}` : `Listen for ${f.label}`}
-                                      className={`cursor-pointer rounded-[7px] border-0 px-[9px] py-[3px] font-sans text-[11.5px] leading-normal ${
-                                        on
-                                          ? 'bg-(--surface-card) font-semibold text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]'
-                                          : 'bg-transparent font-normal text-(--text-tertiary)'
-                                      } ${hookBusy === h.id ? 'opacity-60' : ''}`}
-                                    >
-                                      {f.pill}
-                                    </button>
-                                  )
-                                })}
+                              {/* One row = one subject family, and the family is
+                                  immutable — the pill states it, it no longer toggles. */}
+                              <div
+                                className="ml-auto inline-flex flex-none gap-[2px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[2px]"
+                                title="Add or remove families from Add integration"
+                              >
+                                <span className="rounded-[7px] bg-(--surface-card) px-[9px] py-[3px] font-sans text-[11.5px] font-semibold leading-normal text-(--text-primary) shadow-[0_1px_2px_rgba(0,0,0,0.08)]">
+                                  {glRowPill(h)}
+                                </span>
                               </div>
                               {/* Trigger — the same ⚡ dropdown the GitHub rows carry. */}
                               <TriggerSelect
@@ -1752,13 +1738,16 @@ export default function AgentDetailView() {
                                 busy={hookBusy === h.id}
                               />
                               <span className="inline-flex flex-none gap-[2px]">
-                                <button
-                                  className="iconbtn h-[26px] w-[26px] flex-none"
-                                  title="MR review and run note settings"
-                                  onClick={() => openReviewSettings(h)}
-                                >
-                                  <Icon name="settings-2" size={13} />
-                                </button>
+                                {/* Reviews and the run note exist on the merge-request row only. */}
+                                {glRowCarriesReviews(h) && (
+                                  <button
+                                    className="iconbtn h-[26px] w-[26px] flex-none"
+                                    title="MR review and run note settings"
+                                    onClick={() => openReviewSettings(h)}
+                                  >
+                                    <Icon name="settings-2" size={13} />
+                                  </button>
+                                )}
                                 <button
                                   className="iconbtn h-[26px] w-[26px] flex-none"
                                   title="Recent deliveries"

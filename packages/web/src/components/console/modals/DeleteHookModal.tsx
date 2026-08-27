@@ -3,6 +3,8 @@
 import { useState } from 'react'
 import { useConsoleData } from '@/lib/data-context'
 import type { HookDto } from '@/lib/api'
+import { githubFamilyTile, githubHookFamily } from '@/lib/github-events'
+import { gitlabFamilyTile, gitlabHookFamily } from '@/lib/gitlab-events'
 import { Button, Icon } from '@/components/ui'
 
 // Confirm-delete a trigger. The CP drops the row and the relay pool drops its
@@ -18,6 +20,20 @@ export default function DeleteHookModal({ hook, onClose }: { hook: HookDto | Hoo
   const [err, setErr] = useState<string | null>(null)
   const hooks = Array.isArray(hook) ? hook : [hook]
   const group = Array.isArray(hook)
+  // A repo watched for two subject families is two rows — name each repo once.
+  const repoNames = [...new Set(hooks.map((h) => h.repoFullName ?? h.name))]
+  // A code-host row covers ONE family, so name it: the repo's other families keep firing.
+  const familyOf = (h: HookDto) => {
+    if (h.kind === 'gitlab') {
+      const fam = gitlabHookFamily(h)
+      return fam ? gitlabFamilyTile(fam)?.pill : undefined
+    }
+    if (h.kind === 'github') {
+      const fam = githubHookFamily(h)
+      return fam ? githubFamilyTile(fam)?.pill : undefined
+    }
+    return undefined
+  }
   const first = hooks[0]!
   const isGithub = group || first.kind === 'github'
   const isGitlab = !group && first.kind === 'gitlab'
@@ -58,23 +74,28 @@ export default function DeleteHookModal({ hook, onClose }: { hook: HookDto | Hoo
         <p className="m-0 font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
           {group ? (
             <>
-              Removes {hooks.length === 1 ? 'the' : `all ${hooks.length}`} repository subscription
-              {hooks.length === 1 ? '' : 's'} (
-              <span className="mono text-(--text-primary)">
-                {hooks.map((h) => h.repoFullName ?? h.name).join(', ')}
-              </span>
-              ) — GitHub events stop triggering this agent. Past runs and their sessions stay.
+              Removes {repoNames.length === 1 ? 'the' : `all ${repoNames.length}`} repository subscription
+              {repoNames.length === 1 ? '' : 's'} (
+              <span className="mono text-(--text-primary)">{repoNames.join(', ')}</span>) — GitHub events stop
+              triggering this agent. Past runs and their sessions stay.
             </>
           ) : isGithub ? (
             <>
-              <span className="mono text-(--text-primary)">{first.repoFullName ?? first.name}</span>&#32;stops
-              triggering this agent — its GitHub events are ignored from now on. Past runs and their sessions stay.
+              <span className="mono text-(--text-primary)">
+                {first.repoFullName ?? first.name}
+                {familyOf(first) ? ` · ${familyOf(first)}` : ''}
+              </span>
+              &#32;stops triggering this agent — those GitHub events are ignored from now on. Past runs and their
+              sessions stay.
             </>
           ) : isGitlab ? (
             <>
-              <span className="mono text-(--text-primary)">{first.repoFullName ?? first.name}</span>&#32;stops
-              triggering this agent — its GitLab events are ignored from now on. The project itself, its bot and its
-              webhook are untouched. Past runs and their sessions stay.
+              <span className="mono text-(--text-primary)">
+                {first.repoFullName ?? first.name}
+                {familyOf(first) ? ` · ${familyOf(first)}` : ''}
+              </span>
+              &#32;stops triggering this agent — those GitLab events are ignored from now on. The project itself, its
+              bot and its webhook are untouched. Past runs and their sessions stay.
             </>
           ) : (
             <>

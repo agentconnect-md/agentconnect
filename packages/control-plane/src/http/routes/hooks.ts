@@ -33,6 +33,7 @@ import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
 import { toDbPlatform, type DbPlatform } from '../../persistence/platform.js'
 import { AgentWorkspaceIntegrationConflict } from '../../persistence/errors.js'
+import { hookFamilyShapeError, hookSiblingShapeError, type HookFamily } from '../../hooks/hook-family.js'
 import { Tag } from '../plugins/openapi.js'
 import {
   CreateHookBody,
@@ -55,6 +56,19 @@ const RERUN_STATUS_TEXT = {
   502: 'Bad Gateway',
   503: 'Service Unavailable'
 } as const
+
+/** The (agent, kind, repo, family) uniqueness lives in Postgres, so a duplicate
+ *  subscription arrives here as a constraint violation rather than a probe. */
+class DuplicateHookFamily extends Error {}
+const HOOK_FAMILY_INDEX = 'hook_def_agent_repo_family_key'
+function isHookFamilyCollision(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false
+  if (Reflect.get(err, 'code') !== 'P2002') return false
+  // Prisma names the violated constraint differently per driver — a `target`
+  // field list, or the driver error's own index name — so read the whole meta.
+  const meta = JSON.stringify(Reflect.get(err, 'meta') ?? '')
+  return meta.includes(HOOK_FAMILY_INDEX) || meta.includes('family')
+}
 
 /** The full ingress URL for a hook's urlToken (pool-level origin + fixed path). */
 export function hookIngressUrl(publicRelayUrl: string, urlToken: string): string {
@@ -81,6 +95,7 @@ function toDto(h: HookRecord, publicRelayUrl?: string): HookDtoT {
     hmacConfigured: h.hmacConfigured,
     repoId: h.repoId?.toString() ?? null,
     repoFullName: h.repoFullName,
+    family: h.family,
     events: h.events,
     commentFamilies: h.commentFamilies,
     labelFilter: h.labelFilter,
@@ -200,7 +215,8 @@ export function hookRoutes(deps: HttpDeps) {
     // The repository repeats the workspace-access invariant under its shared
     // transaction fence. Surface a concurrent loser as the same 409 as the
     // route's fast preflight instead of leaking it as a generic 500.
-    const persistHook = async (input: UpsertHookInput): Promise<HookRecord | AgentWorkspaceIntegrationConflict> => {
+    type PersistOutcome = HookRecord | AgentWorkspaceIntegrationConflict | DuplicateHookFamily
+    const persistHook = async (input: UpsertHookInput): Promise<PersistOutcome> => {
       try {
         // §24.1: every gitlab-kind write carries the instance its repoId names,
         // enabled or not — the disabled path reaches this with no lease at all.
@@ -209,8 +225,56 @@ export function hookRoutes(deps: HttpDeps) {
         return await deps.repos.hook.upsert(fenced)
       } catch (err) {
         if (err instanceof AgentWorkspaceIntegrationConflict) return err
+        if (isHookFamilyCollision(err)) return new DuplicateHookFamily()
         throw err
       }
+    }
+
+    // The pure per-row shape gate: every stored pattern belongs to the row's own
+    // family, comments are scoped to it, and only a change-proposal family may
+    // carry the review/reporting axes. Runs before any upstream call.
+    const familyShapeError = (body: {
+      kind: 'github' | 'gitlab'
+      family: HookFamily
+      events: string[]
+      commentFamilies?: string[]
+      reviewPolicy?: string
+      reportingMode?: string
+      gateMode?: string
+    }): string | null =>
+      hookFamilyShapeError({
+        kind: body.kind,
+        family: body.family,
+        events: body.events,
+        commentFamilies: body.commentFamilies ?? [],
+        reviewPolicy: body.reviewPolicy ?? 'off',
+        reportingMode: body.reportingMode ?? 'off',
+        gateMode: body.gateMode ?? 'informational'
+      })
+
+    // Sibling rows of one (agent, repo) answer the same threads, so they must
+    // agree on where the turn posts. Excludes the row being written.
+    const siblingShapeError = async (
+      agentId: string,
+      kind: HookRecord['kind'],
+      repoId: bigint,
+      repoLabel: string,
+      selfId: string,
+      proposed: { targetPlatform: string; targetChannel: string | null; targetIntegrationId: string | null }
+    ): Promise<string | null> => {
+      const siblings = (await deps.repos.hook.listForAgent(AgentId(agentId))).filter(
+        (h) => h.id !== selfId && h.kind === kind && h.repoId === repoId
+      )
+      return hookSiblingShapeError(
+        siblings.map((h) => ({
+          targetPlatform: h.targetPlatform,
+          targetChannel: h.targetChannel,
+          targetIntegrationId: h.targetIntegrationId,
+          sessionMode: h.sessionMode
+        })),
+        { ...proposed, sessionMode: 'perThread' },
+        repoLabel
+      )
     }
 
     // github kind: resolve "owner/repo" to the NUMERIC repo id through the org's
@@ -435,7 +499,7 @@ export function hookRoutes(deps: HttpDeps) {
           tags: [Tag.Hooks],
           summary: 'Create a hook',
           description:
-            'Create a trigger for one agent. `kind:"webhook"` mints an ingress URL (the response carries it plus — when requested — the one-time HMAC signing secret, never retrievable again). `kind:"github"` subscribes a repository covered by one of the organization’s GitHub App installations to issue/PR events.',
+            'Create a trigger for one agent. `kind:"webhook"` mints an ingress URL (the response carries it plus — when requested — the one-time HMAC signing secret, never retrievable again). `kind:"github"` subscribes a repository covered by one of the organization’s GitHub App installations to issue/PR events. A code-host trigger covers ONE subject `family`, so a repository watched for both pull requests and issues is two triggers, each with its own cadence and mention gate; a second trigger on the same family is a 409.',
           operationId: 'createHook',
           body: CreateHookBody,
           response: { 200: CreatedHookDto, 400: ErrorDto, 403: ErrorDto, 409: ErrorDto, 429: ErrorDto, 502: ErrorDto }
@@ -462,6 +526,20 @@ export function hookRoutes(deps: HttpDeps) {
             message: 'targetIntegrationId is not an integration of this agent'
           })
         }
+        if (req.body.kind !== 'webhook') {
+          const shapeError = familyShapeError({
+            kind: req.body.kind,
+            family: req.body.family,
+            events: req.body.events,
+            commentFamilies: req.body.commentFamilies,
+            reviewPolicy: req.body.reviewPolicy,
+            reportingMode: req.body.reportingMode,
+            gateMode: req.body.kind === 'github' ? req.body.gateMode : 'informational'
+          })
+          if (shapeError) {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: shapeError })
+          }
+        }
         // Server-minted identifiers: the row id and (webhook kind) the ≥128-bit
         // capability token. Prefixes follow the Stripe-style shapes (whk_ / whsec_).
         const hookId = HookId(randomUUID())
@@ -486,15 +564,22 @@ export function hookRoutes(deps: HttpDeps) {
                       message: 'the project is not a managed GitLab binding in this organization'
                     }
                   }
-                  const dup = (await deps.repos.hook.listForAgent(agent.id)).some(
-                    (h) => h.kind === 'gitlab' && h.repoId === projectId
-                  )
-                  if (dup) {
-                    return {
-                      ok: false as const,
-                      status: 409 as const,
-                      message: `this agent already watches ${binding.projectPath}`
+                  // A duplicate family is the database's own rule; what only the
+                  // route can see is a sibling family anchored somewhere else.
+                  const siblingError = await siblingShapeError(
+                    agent.id,
+                    'gitlab',
+                    projectId,
+                    binding.projectPath,
+                    hookId,
+                    {
+                      targetPlatform: target.targetPlatform,
+                      targetChannel: req.body.targetChannel ?? null,
+                      targetIntegrationId: target.targetIntegrationId ?? null
                     }
+                  )
+                  if (siblingError) {
+                    return { ok: false as const, status: 409 as const, message: siblingError }
                   }
                   // §8.3: creating a hook never creates a grant, so the project must
                   // ALREADY be the workspace or an explicit additional authorization.
@@ -517,17 +602,20 @@ export function hookRoutes(deps: HttpDeps) {
               : await (async () => {
                   const repo = await resolveGithubRepo(orgId, (req.body as { repoFullName: string }).repoFullName)
                   if (!repo.ok) return repo
-                  // One subscription per (agent, repo): edit the existing hook's
-                  // events instead of stacking duplicates that would double-fire.
-                  const dup = (await deps.repos.hook.listForAgent(agent.id)).some(
-                    (h) => h.kind === 'github' && h.repoId === repo.repoId
-                  )
-                  if (dup) {
-                    return {
-                      ok: false as const,
-                      status: 409 as const,
-                      message: `this agent already watches ${repo.repoFullName}`
+                  const siblingError = await siblingShapeError(
+                    agent.id,
+                    'github',
+                    repo.repoId,
+                    repo.repoFullName,
+                    hookId,
+                    {
+                      targetPlatform: target.targetPlatform,
+                      targetChannel: req.body.targetChannel ?? null,
+                      targetIntegrationId: target.targetIntegrationId ?? null
                     }
+                  )
+                  if (siblingError) {
+                    return { ok: false as const, status: 409 as const, message: siblingError }
                   }
                   const authz = await watchRepoAuthorized(agent, 'github', repo.repoId, repo.repoFullName)
                   if (!authz.ok) return authz
@@ -553,7 +641,7 @@ export function hookRoutes(deps: HttpDeps) {
           return reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })
         }
         const { hmacSecret, ...upsertFields } = kindFields
-        const writeHook = (): Promise<HookRecord | AgentWorkspaceIntegrationConflict> =>
+        const writeHook = (): Promise<PersistOutcome> =>
           persistHook({
             hookId,
             orgId,
@@ -564,6 +652,7 @@ export function hookRoutes(deps: HttpDeps) {
             ...upsertFields,
             ...(req.body.kind === 'github'
               ? {
+                  family: req.body.family,
                   events: req.body.events,
                   commentFamilies: req.body.commentFamilies,
                   labelFilter: req.body.labelFilter,
@@ -575,6 +664,7 @@ export function hookRoutes(deps: HttpDeps) {
               : {}),
             ...(req.body.kind === 'gitlab'
               ? {
+                  family: req.body.family,
                   events: req.body.events,
                   commentFamilies: req.body.commentFamilies,
                   mentionOnly: req.body.mentionOnly,
@@ -602,6 +692,15 @@ export function hookRoutes(deps: HttpDeps) {
         const hook = written.result
         if (hook instanceof AgentWorkspaceIntegrationConflict) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
+        }
+        if (hook instanceof DuplicateHookFamily) {
+          const label = 'repoFullName' in upsertFields ? upsertFields.repoFullName : null
+          const family = req.body.kind === 'webhook' ? null : req.body.family
+          return reply.code(409).send({
+            error: ERROR_NAMES[409],
+            statusCode: 409,
+            message: `this agent already watches ${label} (${family})`
+          })
         }
         if (hmacSecret) await deps.repos.hookSecret.put(orgOf(req), hookId, hmacSecret)
         void deps.repos.audit
@@ -681,7 +780,7 @@ export function hookRoutes(deps: HttpDeps) {
           tags: [Tag.Hooks],
           summary: 'Update a hook',
           description:
-            'Update a hook definition. `kind` is immutable (it discriminates the body); a webhook hook’s ingress URL and signing secret are immutable too — rotating either is a delete + re-create. A github hook’s repository may be re-targeted (re-validated against the organization’s installations).',
+            'Update a hook definition. `kind` is immutable (it discriminates the body); so is a code-host trigger’s subject `family`, which is why the update body carries none — delete and re-create to change it. A webhook hook’s ingress URL and signing secret are immutable too — rotating either is a delete + re-create. A github hook’s repository may be re-targeted (re-validated against the organization’s installations).',
           operationId: 'updateHook',
           params: IdParam,
           body: UpdateHookBody,
@@ -745,6 +844,20 @@ export function hookRoutes(deps: HttpDeps) {
             reportingMode: req.body.reportingMode ?? existing.reportingMode,
             gateMode: req.body.gateMode ?? existing.gateMode
           }
+          // The family is immutable, so the edit is re-shaped against the STORED
+          // one. A legacy row the split could not place has none and is grandfathered.
+          const shapeError = existing.family
+            ? familyShapeError({
+                kind: 'github',
+                family: existing.family as HookFamily,
+                events: req.body.events,
+                commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
+                ...effectConfig
+              })
+            : null
+          if (shapeError) {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: shapeError })
+          }
           // Future modes remain fail-closed even on a disabled definition; a
           // later re-enable must never activate a value R2a cannot execute.
           if (effectConfig.gateMode === 'required' || effectConfig.reportingMode === 'status') {
@@ -777,17 +890,22 @@ export function hookRoutes(deps: HttpDeps) {
             const { status, message } = repo
             return reply.code(status).send({ error: ERROR_NAMES[status], statusCode: status, message })
           }
-          // Same one-subscription-per-(agent, repo) rule as create — a re-target
-          // onto a repo another hook of this agent already watches would double-fire.
-          const dup = (await deps.repos.hook.listForAgent(agent.id)).some(
-            (h) => h.id !== existing.id && h.kind === 'github' && h.repoId === repo.repoId
+          // The duplicate-family rule is the database's; the route's own check is
+          // that the sibling families of this repo post to the same place.
+          const siblingError = await siblingShapeError(
+            agent.id,
+            'github',
+            repo.repoId,
+            repo.repoFullName,
+            existing.id,
+            {
+              targetPlatform: target.targetPlatform,
+              targetChannel: req.body.targetChannel ?? null,
+              targetIntegrationId: target.targetIntegrationId ?? null
+            }
           )
-          if (dup) {
-            return reply.code(409).send({
-              error: ERROR_NAMES[409],
-              statusCode: 409,
-              message: `this agent already watches ${repo.repoFullName}`
-            })
+          if (siblingError) {
+            return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: siblingError })
           }
           // Binding-CHANGING edits go through the authorization gate — a new
           // repo, or the same repo moved onto a different agent. An edit that
@@ -835,15 +953,20 @@ export function hookRoutes(deps: HttpDeps) {
               message: 'the project is not a managed GitLab binding in this organization'
             })
           }
-          const dup = (await deps.repos.hook.listForAgent(agent.id)).some(
-            (h) => h.id !== existing.id && h.kind === 'gitlab' && h.repoId === projectId
+          const siblingError = await siblingShapeError(
+            agent.id,
+            'gitlab',
+            projectId,
+            binding.projectPath,
+            existing.id,
+            {
+              targetPlatform: target.targetPlatform,
+              targetChannel: req.body.targetChannel ?? null,
+              targetIntegrationId: target.targetIntegrationId ?? null
+            }
           )
-          if (dup) {
-            return reply.code(409).send({
-              error: ERROR_NAMES[409],
-              statusCode: 409,
-              message: `this agent already watches ${binding.projectPath}`
-            })
+          if (siblingError) {
+            return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: siblingError })
           }
           // Binding-CHANGING edits go through the §8.3 gate — a new project, or the
           // same project moved onto a different agent. An edit that keeps the
@@ -861,6 +984,18 @@ export function hookRoutes(deps: HttpDeps) {
           const effectConfig = {
             reviewPolicy: req.body.reviewPolicy ?? existing.reviewPolicy,
             reportingMode: req.body.reportingMode ?? existing.reportingMode
+          }
+          const shapeError = existing.family
+            ? familyShapeError({
+                kind: 'gitlab',
+                family: existing.family as HookFamily,
+                events: req.body.events,
+                commentFamilies: req.body.commentFamilies ?? existing.commentFamilies,
+                ...effectConfig
+              })
+            : null
+          if (shapeError) {
+            return reply.code(400).send({ error: 'Bad Request', statusCode: 400, message: shapeError })
           }
           const effectError = validateGitlabEffects(binding, effectConfig)
           if (effectError) {
@@ -886,7 +1021,7 @@ export function hookRoutes(deps: HttpDeps) {
         // enablement changes tombstone the old projection epoch before this
         // definition advances to its new epoch.
         const nowEnabled = req.body.enabled ?? existing.enabled
-        const writeHook = (): Promise<HookRecord | AgentWorkspaceIntegrationConflict> =>
+        const writeHook = (): Promise<PersistOutcome> =>
           persistHook({
             hookId: existing.id,
             expectedAgentId: existing.agentId!,
@@ -913,6 +1048,15 @@ export function hookRoutes(deps: HttpDeps) {
         const hook = written.result
         if (hook instanceof AgentWorkspaceIntegrationConflict) {
           return reply.code(409).send({ error: ERROR_NAMES[409], statusCode: 409, message: hook.message })
+        }
+        // A retarget carries the row's own family onto the new repository, where
+        // another row of this agent may already own it.
+        if (hook instanceof DuplicateHookFamily) {
+          return reply.code(409).send({
+            error: ERROR_NAMES[409],
+            statusCode: 409,
+            message: `this agent already watches ${kindFields.repoFullName} (${existing.family})`
+          })
         }
         void deps.repos.audit
           .append({

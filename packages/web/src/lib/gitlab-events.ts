@@ -3,14 +3,16 @@
  *
  * The console presents the same two axes GitHub does: SUBJECT families (issues
  * and merge requests — pushes are wire-supported but held back from the console,
- * see `GL_FAMILIES`) plus one TRIGGER MODE. The stored `events` patterns,
- * `commentFamilies` and the `mentionOnly` flag encode both:
+ * see `GL_FAMILIES`) plus one TRIGGER MODE. A stored row covers exactly ONE
+ * family and carries its own mode, so a project watched for both subjects is two
+ * rows and the family is immutable; the row's `events` patterns,
+ * `commentFamilies` and `mentionOnly` flag encode the mode:
  *
- *   created  → `family:opened` for the thread families and NO note family; the
+ *   created  → `family:opened` for a thread family and NO note family; the
  *              relay additionally accepts a later explicit @mention in an
  *              `:opened`-cadence thread family. Pushes have no "first" — a push
  *              subscription is inherently per-push, so `push:*` rides along.
- *   updated  → `family:*` plus the selected thread families as note families,
+ *   updated  → `family:*` plus the row's own thread family as its note family,
  *              so replies fire too. Close, reopen, merge and draft toggles stay
  *              inert; supported updates and replies run.
  *   mention only → the same subscriptions as updated, with `mentionOnly: true` —
@@ -28,9 +30,9 @@
  * The wire accepts finer `family:action` patterns; these helpers never emit one.
  */
 
-import type { GitlabCommentFamily, HookCommentFamily } from './api'
+import type { GitlabCommentFamily, GitlabHookFamily, HookCommentFamily } from './api'
 
-export type GlFamily = 'issues' | 'merge_request' | 'push'
+export type GlFamily = GitlabHookFamily
 export type GlTriggerMode = 'first' | 'every' | 'mention'
 
 export interface GlFamilyTile {
@@ -43,9 +45,8 @@ export interface GlFamilyTile {
 
 // `desc` is the Add-integration tile subtitle — keep it to a short fragment
 // naming signals the relay really forwards, on one or two 11.5px lines.
-// Every subject the wire knows, in display order. The event helpers read THIS
-// list, so an already-stored push subscription round-trips instead of being
-// silently dropped by an edit that never mentioned pushes.
+// Every subject the wire knows, in display order — a stored push row still
+// reads its own label from here even though the console never offers one.
 const GL_ALL_FAMILIES: GlFamilyTile[] = [
   { fam: 'issues', pill: 'Issues', icon: 'circle-dot', label: 'Issues', desc: 'opened, labels, replies' },
   {
@@ -63,10 +64,14 @@ const GL_ALL_FAMILIES: GlFamilyTile[] = [
 // re-add it here (and restore the 3-up grid) to bring the feature back.
 export const GL_FAMILIES: GlFamilyTile[] = GL_ALL_FAMILIES.filter((entry) => entry.fam !== 'push')
 
-/** The subject toggles ONE stored hook shows: the offered ones, plus pushes when
- *  it already listens to them so the stored rule stays legible and removable. */
-export function gitlabRowFamilies(events: readonly string[]): GlFamilyTile[] {
-  return GL_ALL_FAMILIES.filter((entry) => entry.fam !== 'push' || gitlabFamCovered(events, 'push'))
+/** The display metadata for one family, including the held-back push subject. */
+export function gitlabFamilyTile(fam: GlFamily): GlFamilyTile | undefined {
+  return GL_ALL_FAMILIES.find((entry) => entry.fam === fam)
+}
+
+/** Reviews and the run note exist only on the change-proposal subject (the CP 400s otherwise). */
+export function gitlabFamilyCarriesReviews(fam: GlFamily): boolean {
+  return fam === 'merge_request'
 }
 
 /** The trigger modes in display order — mention deliberately last. */
@@ -176,29 +181,40 @@ export function gitlabHookNeedsNormalization(hook: {
   )
 }
 
-/** One edit-path write: the whole subscription block the row must PUT. */
-export interface GitlabSubscriptionEdit {
-  families: GlFamily[]
-  mode: GlTriggerMode
-}
-
 /** The stored subject families, in display order. */
 function gitlabFamiliesOf(events: readonly string[]): GlFamily[] {
   return GL_ALL_FAMILIES.map((entry) => entry.fam).filter((family) => gitlabFamCovered(events, family))
 }
 
-/** A subject toggle on an existing hook — null when it would leave the hook
- *  watching nothing. The stored cadence rides along unchanged; a rule the radio
- *  cannot express is normalized, because the toggle is an explicit edit. */
-export function gitlabFamilyToggle(
-  hook: { events: readonly string[]; mentionOnly: boolean },
-  fam: GlFamily
-): GitlabSubscriptionEdit | null {
-  const families = GL_ALL_FAMILIES.map((entry) => entry.fam).filter((family) =>
-    family === fam ? !gitlabFamCovered(hook.events, family) : gitlabFamCovered(hook.events, family)
-  )
-  if (families.length === 0) return null
-  return { families, mode: gitlabTriggerModeOf(hook) }
+/** The one subject family a stored row covers: its own `family`, or — for a
+ *  legacy row the split could not place — the first family its events cover. */
+export function gitlabHookFamily(hook: { family: string | null; events: readonly string[] }): GlFamily | null {
+  const declared = GL_ALL_FAMILIES.find((entry) => entry.fam === hook.family)
+  if (declared) return declared.fam
+  return gitlabFamiliesOf(hook.events)[0] ?? null
+}
+
+/** The subscription block ONE (family, mode) row writes — `family` itself is
+ *  create-only, so it is not part of this body. */
+export interface GitlabFamilySubscription {
+  events: string[]
+  commentFamilies: GitlabCommentFamily[]
+  mentionOnly: boolean
+}
+
+/** Compile one row's family+mode into the fields its create/update body carries. */
+export function gitlabFamilySubscription(fam: GlFamily, mode: GlTriggerMode): GitlabFamilySubscription {
+  return {
+    events: eventsForGitlabFamilies([fam], mode),
+    commentFamilies: commentFamiliesForGitlabFamilies([fam], mode),
+    mentionOnly: mode === 'mention'
+  }
+}
+
+/** One edit-path write: the row's immutable family plus the cadence to store. */
+export interface GitlabSubscriptionEdit {
+  family: GlFamily
+  mode: GlTriggerMode
 }
 
 /** A cadence pick on an existing hook — null when nothing would change, which
@@ -206,11 +222,18 @@ export function gitlabFamilyToggle(
  *  the mere act of displaying it. Re-picking the DISPLAYED cadence on such a
  *  rule does write: that is the explicit opt-in that normalizes it. */
 export function gitlabCadencePick(
-  hook: { events: readonly string[]; commentFamilies: readonly HookCommentFamily[]; mentionOnly: boolean },
+  hook: {
+    family: string | null
+    events: readonly string[]
+    commentFamilies: readonly HookCommentFamily[]
+    mentionOnly: boolean
+  },
   mode: GlTriggerMode
 ): GitlabSubscriptionEdit | null {
+  const family = gitlabHookFamily(hook)
+  if (!family) return null
   if (mode === gitlabTriggerModeOf(hook) && !gitlabHookNeedsNormalization(hook)) return null
-  return { families: gitlabFamiliesOf(hook.events), mode }
+  return { family, mode }
 }
 
 /**

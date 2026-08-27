@@ -415,12 +415,15 @@ describe('GitHub hook review settings', () => {
       gateMode: 'informational' as const
     }
 
-    await createGithubHook(input)
+    // The family is create-only: it discriminates the row, and the update body
+    // must not carry it (the row's family is immutable).
+    await createGithubHook({ ...input, family: 'pull_request' })
     await updateGithubHook('hook-1', input)
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toMatchObject({
       kind: 'github',
+      family: 'pull_request',
       reviewPolicy: 'request_changes',
       reportingMode: 'check',
       gateMode: 'informational'

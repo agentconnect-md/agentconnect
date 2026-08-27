@@ -95,6 +95,7 @@ function hook(overrides: Partial<HookRecord> = {}): HookRecord {
     repoId: PROJECT,
     repoFullName: 'example-group/example-project',
     events: ['merge_request:*'],
+    family: 'merge_request',
     commentFamilies: [],
     labelFilter: [],
     mentionOnly: false,

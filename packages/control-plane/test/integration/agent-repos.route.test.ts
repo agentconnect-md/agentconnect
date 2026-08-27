@@ -957,6 +957,7 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
       kind: 'github',
       name: 'gh-hook',
       repoFullName: 'acme/tools',
+      family: 'issues',
       events: ['issues:opened'],
       ...over
     })
