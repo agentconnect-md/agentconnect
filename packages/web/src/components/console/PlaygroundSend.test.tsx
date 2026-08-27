@@ -327,7 +327,26 @@ describe('stream text delta batching', () => {
     ])
   })
 
-  it('renders a daemon notice in its own lane without swallowing the reply that follows', async () => {
+  it('renders a daemon notice in its own lane while the wait it announces is all there is', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 0, event: { kind: 'notice', text: 'Allocating a sandbox pod…' } }
+        })
+      })
+    })
+    act(runFrame)
+
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
+      { kind: 'notice', text: 'Allocating a sandbox pod…', boundary: true }
+    ])
+  })
+
+  it('retires the notice as soon as the turn streams, so it never stands above the answer', async () => {
     const runFrame = captureAnimationFrames()
     const { socket, turnId } = await openStream()
 
@@ -344,14 +363,111 @@ describe('stream text delta batching', () => {
           output: { turnId, agentId: 'agent-1', index: 1, event: { kind: 'thinking', text: 'here goes' } }
         })
       })
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 2, event: { kind: 'message', text: 'Hello!' } }
+        })
+      })
     })
     act(runFrame)
 
-    // The notice is its own step: `boundary` keeps the thinking chunk from accumulating into it.
+    // The pod is up — the wait's line is gone, and the reply chunks still start their own blocks.
     expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
-      { kind: 'notice', text: 'Allocating a sandbox pod…', boundary: true },
-      { kind: 'plan', text: 'here goes' }
+      { kind: 'plan', text: 'here goes' },
+      { kind: 'done', text: 'Hello!' }
     ])
+  })
+
+  it("retires only the streaming lane's notice — a lane still waiting keeps its own", async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      for (const output of [
+        { agentId: 'agent-1', index: 0, event: { kind: 'notice', text: 'Allocating a sandbox pod…' } },
+        { agentId: 'agent-2', index: 0, event: { kind: 'notice', text: 'Allocating a sandbox pod…' } },
+        { agentId: 'agent-1', index: 1, event: { kind: 'thinking', text: 'mine is up' } }
+      ]) {
+        socket.onmessage?.({ data: JSON.stringify({ type: 'output', output: { turnId, ...output } }) })
+      }
+    })
+    act(runFrame)
+
+    expect(getLiveSteps('s1').filter((step) => step.agentId)).toMatchObject([
+      { kind: 'notice', agentId: 'agent-2' },
+      { kind: 'plan', agentId: 'agent-1', text: 'mine is up' }
+    ])
+  })
+
+  it('retires the notice when a lane ends cleanly having streamed nothing', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    // A silent AC_NO_RESPONSE decline holds every chunk back: the lane closes with no events.
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 0, event: { kind: 'notice', text: 'Allocating a sandbox pod…' } }
+        })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'done', done: { turnId, agentId: 'agent-1', lastIndex: 0 } })
+      })
+    })
+    act(runFrame)
+
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toEqual([])
+  })
+
+  it('keeps the notice when the turn fails, where it explains the failure', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 0, event: { kind: 'notice', text: 'Allocating a sandbox pod…' } }
+        })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'done',
+          done: { turnId, agentId: 'agent-1', lastIndex: 0, error: 'the sandbox never came up' }
+        })
+      })
+    })
+    act(runFrame)
+
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
+      { kind: 'notice', text: 'Allocating a sandbox pod…' },
+      { kind: 'done', text: '⚠️ the sandbox never came up' }
+    ])
+  })
+
+  it('retires the notice on a streamed session title', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 0, event: { kind: 'notice', text: 'Allocating a sandbox pod…' } }
+        })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: { turnId, agentId: 'agent-1', index: 1, event: { kind: 'session_info', title: 'Skills on hand' } }
+        })
+      })
+    })
+    act(runFrame)
+
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toEqual([])
   })
 
   it('flushes the final text before applying done', async () => {
