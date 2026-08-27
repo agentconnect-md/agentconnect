@@ -133,7 +133,8 @@ COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/auto-merge
 COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/skills /opt/agentconnect/shim/skills
 RUN chmod 0444 /opt/agentconnect/shim/index.js /opt/agentconnect/shim/git-credential.js \
   /opt/agentconnect/shim/gh-token.js /opt/agentconnect/shim/mcp-bridge.js /opt/agentconnect/shim/auto-merge.js \
-  /opt/agentconnect/shim/skills/dist/cli.js /opt/agentconnect/shim/skills/package.json \
+  /opt/agentconnect/shim/skills/dist/cli.js /opt/agentconnect/shim/skills/workspace-mutation.js \
+  /opt/agentconnect/shim/skills/package.json \
   && chmod 0555 /opt/agentconnect/shim
 
 # The executable git runs as its credential helper. A wrapper because git needs something

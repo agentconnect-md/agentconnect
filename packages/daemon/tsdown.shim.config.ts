@@ -38,5 +38,6 @@ export default defineConfig([
   { ...shared, entry: { 'gh-token': 'src/shim/gh-token.ts' } },
   { ...shared, entry: { 'mcp-bridge': 'src/shim/mcp-bridge.ts' } },
   { ...shared, entry: { 'auto-merge': 'src/shim/auto-merge.ts' } },
+  { ...shared, entry: { 'skills/workspace-mutation': 'src/skills/skill-workspace-mutation-cli.ts' } },
   { ...shared, entry: { 'skills/dist/cli': skillsCliEntry } }
 ])

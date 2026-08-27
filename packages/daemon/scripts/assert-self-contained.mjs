@@ -78,7 +78,7 @@ for (const arch of ['x64', 'arm64']) {
 // Every entry the image ships, checked identically: the credential helper and the gh token fetch are separate
 // bundles precisely so their graphs stay disjoint from the channel's, and a shared module would show up here
 // as a relative chunk import — a file the image never copies.
-for (const entry of ['index.js', 'git-credential.js', 'gh-token.js']) {
+for (const entry of ['index.js', 'git-credential.js', 'gh-token.js', 'skills/workspace-mutation.js']) {
   const shimPath = new URL(`../dist/shim/${entry}`, import.meta.url)
   if (!existsSync(shimPath)) {
     console.error(`✗ shim bundle ${entry} is missing — \`tsdown --config tsdown.shim.config.ts\` did not run`)
