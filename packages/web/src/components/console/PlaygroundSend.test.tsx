@@ -53,6 +53,7 @@ let openPlayground: ReturnType<typeof usePlayground>['openPlayground']
 let getPgQueue: ReturnType<typeof usePlayground>['getPgQueue']
 let pgCancelQueued: ReturnType<typeof usePlayground>['pgCancelQueued']
 let getLiveSteps: ReturnType<typeof usePlayground>['getLiveSteps']
+let pgAttach: ReturnType<typeof usePlayground>['pgAttach']
 
 function Probe() {
   const pg = usePlayground()
@@ -61,6 +62,7 @@ function Probe() {
   getPgQueue = pg.getPgQueue
   pgCancelQueued = pg.pgCancelQueued
   getLiveSteps = pg.getLiveSteps
+  pgAttach = pg.pgAttach
   return null
 }
 
@@ -548,5 +550,112 @@ describe('reconnect after an unacked turn', () => {
     const sent = frames(second)
     expect(sent.filter((frame) => frame.text === 'hello')).toHaveLength(1)
     expect(sent.at(-1)).toMatchObject({ type: 'resume', turnId: turn.turnId })
+  })
+})
+
+// A cold attach replays a live turn with NO local prompt step, so the turn-shaped arm
+// of `reconcilePersistedLiveSteps` cannot retire it. The reply post's canonical postId
+// is the anchor that keeps the transcript tail from rendering the answer twice.
+describe('cold-attach retirement anchor', () => {
+  class AttachSocket extends StubSocket {
+    static instances: AttachSocket[] = []
+    onopen?: () => void
+    onmessage?: (e: { data: string }) => void
+    onerror?: (e: unknown) => void
+    onclose?: () => void
+    constructor() {
+      super()
+      AttachSocket.instances.push(this)
+    }
+  }
+
+  async function coldAttach() {
+    AttachSocket.instances = []
+    Reflect.set(globalThis, 'WebSocket', AttachSocket)
+    const api = await import('@/lib/api')
+    vi.mocked(api.webchatWsUrl).mockResolvedValue('wss://relay.test/ws')
+    await act(async () => {
+      pgAttach('s-cold', 'agent-1', 'c-cold')
+    })
+    const socket = AttachSocket.instances[0]!
+    await act(async () => {
+      socket.readyState = 1
+      socket.onopen?.()
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'ready', conversationId: 'c-cold', participants: [{ agentId: 'agent-1' }] })
+      })
+    })
+    return socket
+  }
+
+  it('probes on ready and stamps the reply postId on the replayed steps', async () => {
+    const socket = await coldAttach()
+    expect(socket.send.mock.calls.map((c) => JSON.parse(String(c[0])))).toContainEqual({
+      type: 'attach',
+      agentId: 'agent-1'
+    })
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'attached',
+          ack: { accepted: true, turnId: 'turn-cold', agentId: 'agent-1', generation: 4 }
+        })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: {
+            turnId: 'turn-cold',
+            agentId: 'agent-1',
+            index: 0,
+            event: { kind: 'tool_call', toolCallId: 't1', title: 'Read file', status: 'completed' }
+          }
+        })
+      })
+    })
+    expect(getLiveSteps('s-cold').filter((s) => s.turnId === 'turn-cold')).toHaveLength(1)
+    // Human-initiated: no `initiator`, so the frame only carries the anchor.
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'post',
+          post: { postId: 'post-cold', author: { kind: 'agent', agentId: 'agent-1' }, text: 'done' }
+        })
+      })
+      socket.onmessage?.({ data: JSON.stringify({ type: 'done', done: { turnId: 'turn-cold', agentId: 'agent-1' } }) })
+    })
+    const replayed = getLiveSteps('s-cold').filter((s) => s.turnId === 'turn-cold')
+    expect(replayed.length).toBeGreaterThan(0)
+    expect(replayed.every((s) => s.postId === 'post-cold')).toBe(true)
+  })
+
+  it('anchors when the reply post arrives after done (the failure path order)', async () => {
+    const socket = await coldAttach()
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'attached', ack: { accepted: true, turnId: 'turn-late', agentId: 'agent-1' } })
+      })
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'output',
+          output: {
+            turnId: 'turn-late',
+            agentId: 'agent-1',
+            index: 0,
+            event: { kind: 'tool_call', toolCallId: 't1', title: 'Read file', status: 'completed' }
+          }
+        })
+      })
+      socket.onmessage?.({ data: JSON.stringify({ type: 'done', done: { turnId: 'turn-late', agentId: 'agent-1' } }) })
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: 'post',
+          post: { postId: 'post-late', author: { kind: 'agent', agentId: 'agent-1' }, text: 'partial' }
+        })
+      })
+    })
+    const replayed = getLiveSteps('s-cold').filter((s) => s.turnId === 'turn-late')
+    expect(replayed.length).toBeGreaterThan(0)
+    expect(replayed.every((s) => s.postId === 'post-late')).toBe(true)
   })
 })

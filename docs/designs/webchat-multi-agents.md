@@ -575,7 +575,13 @@ Two scope rules:
     and an idle conversation answers `stream_not_found` — both are quiet
     misses, never errors. This is what restores the typing indicator and the
     partially streamed reply after a page refresh, instead of both being lost
-    until the turn completes and persists;
+    until the turn completes and persists. A cold-attached replay carries no
+    local prompt step, so the console's turn-shaped live/persisted
+    reconciliation has nothing to anchor on — it takes the canonical reply
+    `postId` off the turn's `rd/webchat-post` instead (whichever of that frame
+    and the lane's `done` lands second stamps it onto the replayed steps), and
+    the ordinary exact-`postId` arm retires them when the transcript tail
+    persists the reply;
   - the `set_*` runtime ops are unchanged and carry no `agentId`: multi-agent
     conversations expose no runtime override (section 9.3), so these ops
     occur only in single-agent conversations.
