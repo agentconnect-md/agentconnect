@@ -44,6 +44,9 @@ export const AUDITED_RUNTIME_SKILLS_AGENTS: Readonly<Record<string, string>> = O
   // Curated/legacy ids whose RuntimeDef also carries the declaration.
   hermes: 'hermes-agent',
   'hermes-agent': 'hermes-agent',
+  // DeepSeek Harness has no CLI agent id of its own; its filesystem skill provider scans the
+  // cross-agent `<projectRoot>/.agents/skills` root the CLI's `universal` identity writes.
+  'dsh-acp': 'universal',
   'kiro-cli': 'kiro-cli',
   'qoder-cli': 'qoder',
   'qoder-cli-cn': 'qoder-cn'

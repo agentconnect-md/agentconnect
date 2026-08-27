@@ -275,7 +275,12 @@ describe('curated native ACP runtimes', () => {
       },
       'dsh-acp': {
         name: 'DeepSeek Harness',
-        runtime: { command: 'npx', args: ['-y', '-p', '@openma/deepseek-harness-acp@^0.4', 'dsh-acp'], env: [] }
+        runtime: {
+          command: 'npx',
+          args: ['-y', '-p', '@openma/deepseek-harness-acp@^0.4', 'dsh-acp'],
+          env: [],
+          skillsAgentId: 'universal'
+        }
       }
     })
   })

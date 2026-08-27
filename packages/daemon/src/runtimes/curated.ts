@@ -56,8 +56,15 @@ export const CURATED_RUNTIME_CATALOG: Readonly<Record<string, CuratedRuntimeEntr
   // bundles the harness itself and only reuses $DSH_HOME credentials — so it is
   // fetched on demand rather than installed into the operator's dsh profile.
   // `-p` is required: the package's single bin (`dsh-acp`) is not its name.
+  // Its skill provider scans `<projectRoot>/.agents/skills`, which is exactly what the CLI's
+  // `universal` identity writes; `dsh` is not a CLI agent id.
   'dsh-acp': {
     name: 'DeepSeek Harness',
-    runtime: { command: 'npx', args: ['-y', '-p', '@openma/deepseek-harness-acp@^0.4', 'dsh-acp'], env: [] }
+    runtime: {
+      command: 'npx',
+      args: ['-y', '-p', '@openma/deepseek-harness-acp@^0.4', 'dsh-acp'],
+      env: [],
+      skillsAgentId: 'universal'
+    }
   }
 })
