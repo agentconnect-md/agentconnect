@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   codeHostReviewCapabilities,
   codeHostReviewSettingsFromCapabilities,
+  REVIEW_FORMAT_DEFAULT,
+  REVIEW_FORMATS,
   REVIEW_PRESETS,
+  reviewFormatOf,
+  reviewFormatValue,
   reviewPolicyLabel,
   reviewPresetOf,
   withCapability,
@@ -77,6 +81,37 @@ describe('reviewPresetOf', () => {
   it('reads anything richer than brief as details', () => {
     expect(reviewPresetOf({ reviewPolicy: 'comment', reportingMode: 'check' })).toBe('details')
     expect(reviewPresetOf({ reviewPolicy: 'request_changes', reportingMode: 'off' })).toBe('details')
+  })
+})
+
+describe('reviewFormatOf', () => {
+  it('offers Brief, Details and Custom — never None', () => {
+    expect(REVIEW_FORMATS.map(({ id }) => id)).toEqual(['brief', 'details', 'custom'])
+    expect(REVIEW_FORMATS.map(({ label }) => label)).not.toContain('None')
+  })
+
+  it('opens on Details — the full set of capabilities', () => {
+    expect(REVIEW_FORMAT_DEFAULT).toEqual({ reviewPolicy: 'full', reportingMode: 'check' })
+    expect(reviewFormatOf(REVIEW_FORMAT_DEFAULT)).toBe('details')
+    expect(codeHostReviewCapabilities(REVIEW_FORMAT_DEFAULT)).toEqual({
+      inlineComments: true,
+      requestChanges: true,
+      approve: true,
+      statusCheck: true
+    })
+  })
+
+  it('reads the old None value and every hand-tuned mix as custom', () => {
+    expect(reviewFormatOf({ reviewPolicy: 'off', reportingMode: 'off' })).toBe('custom')
+    expect(reviewFormatOf({ reviewPolicy: 'request_changes', reportingMode: 'off' })).toBe('custom')
+    expect(reviewFormatOf({ reviewPolicy: 'comment', reportingMode: 'check' })).toBe('custom')
+    expect(reviewFormatOf({ reviewPolicy: 'comment', reportingMode: 'off' })).toBe('brief')
+  })
+
+  it('applies a preset value for the two preset tiles and none for custom', () => {
+    expect(reviewFormatValue('brief')).toEqual({ reviewPolicy: 'comment', reportingMode: 'off' })
+    expect(reviewFormatValue('details')).toEqual(REVIEW_FORMAT_DEFAULT)
+    expect(reviewFormatValue('custom')).toBeNull()
   })
 })
 

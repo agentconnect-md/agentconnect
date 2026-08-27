@@ -7,7 +7,8 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode
 } from 'react'
 import useSWR from 'swr'
 import LarkFeishuSwitcher, { type LarkFeishuTarget } from '@/components/LarkFeishuSwitcher'
@@ -72,6 +73,7 @@ import {
   githubFamilyCarriesReviews,
   githubFamilySubscription,
   githubMentionUsage,
+  githubTriggerTooltip,
   type GhFamily,
   type GhTriggerMode
 } from '@/lib/github-events'
@@ -84,6 +86,7 @@ import {
   gitlabFamilyCarriesReviews,
   gitlabFamilySubscription,
   gitlabMentionUsage,
+  gitlabTriggerTooltip,
   type GlFamily,
   type GlTriggerMode
 } from '@/lib/gitlab-events'
@@ -142,37 +145,185 @@ export type FeishuRegion = LarkFeishuTarget
 
 type GithubRepoChoice = GithubRepoDto & { installationId: string }
 
-/** The trigger cadences (design vocabulary: "when created / updated / mention only"
- *  — the stored event patterns + the mentionOnly flag encode the choice).
- *  `desc` stays a one-liner so the design's 3-up tiles keep equal height. */
-const GH_TRIGGER_TILES: { mode: GhTriggerMode; label: string; desc: string }[] = [
-  { mode: 'first', label: GH_TRIGGER_LABEL.first, desc: 'When opened, plus later @mentions.' },
-  {
-    mode: 'every',
-    label: GH_TRIGGER_LABEL.every,
-    desc: 'Updates, plus replies for selected issues and PRs.'
-  },
-  {
-    mode: 'mention',
-    label: GH_TRIGGER_LABEL.mention,
-    desc: 'Only when @-mentioned.'
-  }
-]
+/** One cadence choice offered inside a family card. */
+interface TriggerTile<M extends string> {
+  mode: M
+  label: string
+  desc: string
+}
 
-/** The GitLab cadences — the same three choices, worded like GitHub's. */
-const GL_TRIGGER_TILES: { mode: GlTriggerMode; label: string; desc: string }[] = [
-  { mode: 'first', label: GL_TRIGGER_LABEL.first, desc: 'When opened, plus later @mentions.' },
-  {
-    mode: 'every',
-    label: GL_TRIGGER_LABEL.every,
-    desc: 'Updates, plus replies for selected issues and MRs.'
-  },
-  {
-    mode: 'mention',
-    label: GL_TRIGGER_LABEL.mention,
-    desc: 'Only when @-mentioned.'
-  }
-]
+/** The cadences each GitHub subject offers, worded for that subject. Issues trade
+ *  "any update" for "labeled" here: a label is the signal a triaging agent waits
+ *  on, and the agent page still offers the full four. */
+const GH_TRIGGER_TILES: Partial<Record<GhFamily, TriggerTile<GhTriggerMode>[]>> = {
+  pull_request: [
+    { mode: 'first', label: GH_TRIGGER_LABEL.first, desc: 'A PR is opened or marked ready' },
+    { mode: 'every', label: GH_TRIGGER_LABEL.every, desc: 'Every push, review or comment' },
+    { mode: 'mention', label: GH_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
+  ],
+  issues: [
+    { mode: 'first', label: GH_TRIGGER_LABEL.first, desc: 'A new issue is filed' },
+    { mode: 'labeled', label: GH_TRIGGER_LABEL.labeled, desc: 'A watched label is applied' },
+    { mode: 'mention', label: GH_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
+  ]
+}
+
+/** The GitLab cadences — the same shape, minus the label mode: GitLab label
+ *  events are not a verified subscription here, so its issues keep the three
+ *  modes the wire already carries. */
+const GL_TRIGGER_TILES: Partial<Record<GlFamily, TriggerTile<GlTriggerMode>[]>> = {
+  merge_request: [
+    { mode: 'first', label: GL_TRIGGER_LABEL.first, desc: 'An MR is opened or marked ready' },
+    { mode: 'every', label: GL_TRIGGER_LABEL.every, desc: 'Every push, review or comment' },
+    { mode: 'mention', label: GL_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
+  ],
+  issues: [
+    { mode: 'first', label: GL_TRIGGER_LABEL.first, desc: 'A new issue is filed' },
+    { mode: 'every', label: GL_TRIGGER_LABEL.every, desc: 'Every update or comment' },
+    { mode: 'mention', label: GL_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
+  ]
+}
+
+/**
+ * "Listen for": one full-width card per subject family. Unchecked it is a slim
+ * row — glyph, name, checkbox. Checked, that row becomes the card's tinted
+ * header band and the body opens beneath it with the subject's own "Trigger
+ * when" tiles, plus whatever else rides that subject (the review format, on the
+ * change-proposal family). A code-host hook row is (agent, repo, family) and
+ * carries its own cadence, so one wizard pass can watch PRs on every update and
+ * issues on a label. A family the picked repository already watches is not on
+ * offer — its row is inert and says so.
+ */
+function FamilyCards<F extends string, M extends string>({
+  families,
+  tilesOf,
+  takenOf,
+  onOf,
+  onToggle,
+  modeOf,
+  onPick,
+  familyAttr,
+  triggerAttr,
+  titleOf,
+  bodyExtra
+}: {
+  families: readonly { fam: F; pill: string; icon: string; label: string }[]
+  tilesOf: (fam: F) => readonly TriggerTile<M>[]
+  takenOf: (fam: F) => boolean
+  onOf: (fam: F) => boolean
+  onToggle: (fam: F) => void
+  modeOf: (fam: F) => M
+  onPick: (fam: F, mode: M) => void
+  familyAttr: 'data-github-family' | 'data-gitlab-family'
+  triggerAttr: 'data-github-trigger' | 'data-gitlab-trigger'
+  /** Hover copy that goes BEYOND the tile's own subtitle, which the user can already read. */
+  titleOf: (mode: M) => string
+  bodyExtra?: (fam: F) => ReactNode
+}) {
+  return (
+    <>
+      <div className="fldlbl mb-2">Listen for</div>
+      <div className="mb-4 flex flex-col gap-[9px]">
+        {families.map((row) => {
+          const taken = takenOf(row.fam)
+          const on = !taken && onOf(row.fam)
+          const active = modeOf(row.fam)
+          const extra = on ? bodyExtra?.(row.fam) : null
+          return (
+            <div
+              key={row.fam}
+              className={`overflow-hidden rounded-[9px] border ${
+                on ? 'border-(--brand)' : 'border-(--border-default)'
+              }`}
+            >
+              <div
+                {...{ [familyAttr]: row.fam }}
+                aria-disabled={taken}
+                title={taken ? 'Already watched — change its trigger on the agent page' : undefined}
+                className={`flex min-w-0 items-center gap-[9px] px-3 py-[10px] ${
+                  taken ? 'cursor-default opacity-55' : 'cursor-pointer'
+                } ${on ? 'bg-(--brand-soft)' : 'bg-(--surface-card)'}`}
+                onClick={() => {
+                  if (!taken) onToggle(row.fam)
+                }}
+              >
+                <Icon
+                  name={row.icon}
+                  size={16}
+                  color={on ? 'var(--brand)' : 'var(--text-tertiary)'}
+                  className="flex-none"
+                />
+                <span className="min-w-0 flex-1 truncate font-sans text-[12.5px] font-semibold leading-normal">
+                  {row.label}
+                </span>
+                {taken && (
+                  <span className="flex-none font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                    already watched
+                  </span>
+                )}
+                <span
+                  className={`flex h-[18px] w-[18px] flex-none items-center justify-center rounded-[5px] border-[1.5px] ${
+                    on ? 'border-(--brand) bg-(--brand)' : 'border-(--border-default) bg-(--surface-card)'
+                  }`}
+                >
+                  {on && <Icon name="check" size={12} color="#fff" />}
+                </span>
+              </div>
+              {on && (
+                <div className="flex flex-col gap-3 border-t border-(--brand) bg-(--surface-card) px-3 py-3">
+                  <div>
+                    <div className="fldlbl mb-2">Trigger when</div>
+                    <div
+                      className="grid grid-cols-1 gap-2 desktop:grid-cols-3"
+                      role="group"
+                      aria-label={`Trigger for ${row.pill}`}
+                    >
+                      {tilesOf(row.fam).map((tile) => {
+                        const picked = tile.mode === active
+                        return (
+                          <button
+                            key={tile.mode}
+                            type="button"
+                            {...{ [triggerAttr]: `${row.fam}:${tile.mode}` }}
+                            aria-pressed={picked}
+                            title={titleOf(tile.mode)}
+                            className={`flex min-w-0 cursor-pointer items-start gap-[9px] rounded-[9px] border px-3 py-[10px] text-left ${
+                              picked
+                                ? 'border-(--brand) bg-(--brand-soft)'
+                                : 'border-(--border-default) bg-(--surface-card)'
+                            }`}
+                            onClick={() => onPick(row.fam, tile.mode)}
+                          >
+                            <span
+                              className={`mt-[1px] flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] bg-(--surface-card) ${
+                                picked ? 'border-(--brand)' : 'border-(--border-default)'
+                              }`}
+                            >
+                              {picked && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block font-sans text-[12.5px] font-semibold leading-normal">
+                                {tile.label}
+                              </span>
+                              <span className="mt-[2px] block font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
+                                {tile.desc}
+                              </span>
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                  {extra && <div className="border-t border-(--border-subtle) pt-3">{extra}</div>}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </>
+  )
+}
 
 // "12d ago" for the freed-bot sub-line; null ⇒ the bot was never installed.
 function fmtAgo(iso: string | null): string {
@@ -295,7 +446,10 @@ export default function AddIntegrationModal({
   const [ghQ, setGhQ] = useState('')
   const [ghExactRepoLoading, setGhExactRepoLoading] = useState(false)
   const [ghFams, setGhFams] = useState<Set<GhFamily>>(new Set(GH_DEFAULT_FAMILIES))
-  const [ghMode, setGhMode] = useState<GhTriggerMode>(GH_DEFAULT_TRIGGER_MODE)
+  // Cadence is per SUBJECT — one hook row per family, each with its own trigger.
+  // Unset ⇒ the shared default, so a newly ticked family needs no seeding here.
+  const [ghModes, setGhModes] = useState<Partial<Record<GhFamily, GhTriggerMode>>>({})
+  const ghModeOf = (fam: GhFamily): GhTriggerMode => ghModes[fam] ?? GH_DEFAULT_TRIGGER_MODE
   const [ghReviewPolicy, setGhReviewPolicy] = useState<HookReviewPolicy>('full')
   const [ghReportingMode, setGhReportingMode] = useState<HookReportingMode>('check')
   const [ghSyncing, setGhSyncing] = useState(false)
@@ -396,7 +550,8 @@ export default function AddIntegrationModal({
   const [glQ, setGlQ] = useState('')
   const gl = useGitlabProjects(platform === 'gitlab', glQ)
   const [glFams, setGlFams] = useState<Set<GlFamily>>(new Set(GL_DEFAULT_FAMILIES))
-  const [glMode, setGlMode] = useState<GlTriggerMode>(GL_DEFAULT_TRIGGER_MODE)
+  const [glModes, setGlModes] = useState<Partial<Record<GlFamily, GlTriggerMode>>>({})
+  const glModeOf = (fam: GlFamily): GlTriggerMode => glModes[fam] ?? GL_DEFAULT_TRIGGER_MODE
   const [glReviewPolicy, setGlReviewPolicy] = useState<HookReviewPolicy>('full')
   const [glReportingMode, setGlReportingMode] = useState<HookReportingMode>('check')
 
@@ -875,9 +1030,10 @@ export default function AddIntegrationModal({
     (agent.workspace.mode === 'gitlab' && agent.workspace.projectId === glProject) ||
     authorizedRepos.some((r) => repoAuthProvider(r) === 'gitlab' && r.repoId === glProject)
 
-  // One subscription = one hook row PER SELECTED FAMILY on this agent, all named
-  // after the project. The creates run in order; a failure part-way leaves the
-  // earlier families created, which the refreshed picker then shows as watched.
+  // One subscription = one hook row PER SELECTED FAMILY on this agent, each with
+  // its OWN cadence, all named after the project. The creates run in order; a
+  // failure part-way leaves the earlier families created, which the refreshed
+  // picker then shows as watched.
   const submitGitlab = async () => {
     if (busyRef.current || !glProject || glSelectedFams.length === 0) return
     if (glAlreadyWatched) {
@@ -904,7 +1060,7 @@ export default function AddIntegrationModal({
           name: glPicked?.projectPath ?? glProject,
           projectId: glProject,
           family: fam,
-          ...gitlabFamilySubscription(fam, glMode),
+          ...gitlabFamilySubscription(fam, glModeOf(fam)),
           reviewPolicy: reviews ? glEffectiveReviewPolicy : 'off',
           reportingMode: reviews ? glEffectiveReportingMode : 'off'
         })
@@ -918,9 +1074,10 @@ export default function AddIntegrationModal({
     }
   }
 
-  // One subscription = one hook row PER SELECTED FAMILY on this agent, all named
-  // after the repo. The CP resolves owner/repo to the numeric id, 400s anything
-  // outside the grant, and 409s a (repo, family) this agent already watches.
+  // One subscription = one hook row PER SELECTED FAMILY on this agent, each with
+  // its OWN cadence, all named after the repo. The CP resolves owner/repo to the
+  // numeric id, 400s anything outside the grant, and 409s a (repo, family) this
+  // agent already watches.
   const submitGithub = async () => {
     if (busyRef.current || !ghRepoPick || ghSelectedFams.length === 0) return
     if (repoFullyWatched(ghRepoPick)) {
@@ -976,7 +1133,7 @@ export default function AddIntegrationModal({
           name: ghRepoPick,
           repoFullName: ghRepoPick,
           family: fam,
-          ...githubFamilySubscription(fam, ghMode),
+          ...githubFamilySubscription(fam, ghModeOf(fam)),
           reviewPolicy: reviews ? ghEffectiveReviewPolicy : 'off',
           reportingMode: reviews ? ghEffectiveReportingMode : 'off',
           gateMode: 'informational'
@@ -1615,108 +1772,52 @@ export default function AddIntegrationModal({
                     </div>
                   )
                 })()}
-                {/* Design: compact 3-up tile grids — 16px lead glyph, 12.5px title,
-                    11.5px fragment subtitle; checkbox / radio per tile. */}
-                <div className="fldlbl mb-2">Listen for</div>
-                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-2">
-                  {GH_FAMILIES.map((r) => {
-                    // A family the picked repo is already watched for is not a
-                    // second trigger — it is edited on the agent page.
-                    const taken = ghPickedWatched.has(r.fam)
-                    const on = !taken && ghFams.has(r.fam)
-                    return (
-                      <div
-                        key={r.fam}
-                        data-github-family={r.fam}
-                        aria-disabled={taken}
-                        title={taken ? 'Already watched — change its trigger on the agent page' : undefined}
-                        className={`flex min-w-0 items-start gap-[9px] rounded-[9px] border px-3 py-[10px] ${
-                          taken ? 'cursor-default opacity-55' : 'cursor-pointer'
-                        } ${on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'}`}
-                        onClick={() => {
-                          if (!taken) toggleGhFam(r.fam)
+                <FamilyCards
+                  families={GH_FAMILIES}
+                  tilesOf={(fam) => GH_TRIGGER_TILES[fam] ?? []}
+                  // A family the picked repo is already watched for is not a
+                  // second trigger — it is edited on the agent page.
+                  takenOf={(fam) => ghPickedWatched.has(fam)}
+                  onOf={(fam) => ghFams.has(fam)}
+                  onToggle={toggleGhFam}
+                  modeOf={ghModeOf}
+                  onPick={(fam, mode) => setGhModes((prev) => ({ ...prev, [fam]: mode }))}
+                  familyAttr="data-github-family"
+                  triggerAttr="data-github-trigger"
+                  titleOf={(mode) =>
+                    mode === 'mention'
+                      ? githubMentionUsage(agent.name, ghTeamOwner)
+                      : githubTriggerTooltip(mode, agent.name)
+                  }
+                  // Reviews and Checks ride the change-proposal subject, so the
+                  // format section lives in that card's body and nowhere else.
+                  bodyExtra={(fam) =>
+                    githubFamilyCarriesReviews(fam) ? (
+                      <GithubReviewSettings
+                        layout="format"
+                        value={{ reviewPolicy: ghReviewPolicy, reportingMode: ghReportingMode }}
+                        onReviewPolicyChange={(policy) => {
+                          setGhReviewPolicy(policy)
+                          setErr(null)
                         }}
-                      >
-                        <Icon
-                          name={r.icon}
-                          size={16}
-                          color={on ? 'var(--brand)' : 'var(--text-tertiary)'}
-                          className="mt-[1px] flex-none"
-                        />
-                        <span className="min-w-0 flex-1">
-                          <span className="block font-sans text-[12.5px] font-semibold leading-normal">{r.label}</span>
-                          <span className="mt-[2px] block font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                            {taken ? 'already watched' : r.desc}
-                          </span>
-                        </span>
-                        <span
-                          className={`mt-[1px] flex h-[18px] w-[18px] flex-none items-center justify-center rounded-[5px] border-[1.5px] ${
-                            on ? 'border-(--brand) bg-(--brand)' : 'border-(--border-default) bg-(--surface-card)'
-                          }`}
-                        >
-                          {on && <Icon name="check" size={12} color="#fff" />}
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-                <div className="fldlbl mb-2">Trigger when</div>
-                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-3">
-                  {GH_TRIGGER_TILES.map((m) => {
-                    const on = ghMode === m.mode
-                    return (
-                      <div
-                        key={m.mode}
-                        title={m.mode === 'mention' ? githubMentionUsage(agent.name, ghTeamOwner) : undefined}
-                        className={`flex min-w-0 cursor-pointer items-start gap-[9px] rounded-[9px] border px-3 py-[10px] ${
-                          on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
-                        }`}
-                        onClick={() => setGhMode(m.mode)}
-                      >
-                        <span
-                          className={`mt-[1px] flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] bg-(--surface-card) ${
-                            on ? 'border-(--brand)' : 'border-(--border-default)'
-                          }`}
-                        >
-                          {on && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block font-sans text-[12.5px] font-semibold leading-normal">{m.label}</span>
-                          <span className="mt-[2px] block font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                            {m.desc}
-                          </span>
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-                {/* Reviews and Checks live on the pull-request row, so the section
-                    appears only when that family is part of the pick. */}
-                {ghPrSelected && (
-                  <div className="mb-4">
-                    <GithubReviewSettings
-                      value={{ reviewPolicy: ghReviewPolicy, reportingMode: ghReportingMode }}
-                      onReviewPolicyChange={(policy) => {
-                        setGhReviewPolicy(policy)
-                        setErr(null)
-                      }}
-                      onReportingModeChange={(m) => {
-                        setGhReportingMode(m)
-                        setErr(null)
-                      }}
-                      repoAccess={ghRepoAccess}
-                      installation={ghSelectedInstallation}
-                      publicRepo={ghSelectedRepo ? !ghSelectedRepo.private : false}
-                      repoSelected={Boolean(ghRepoPick)}
-                      canAuthorizeRepo={
-                        canEditAgent &&
-                        (ghRepoAccess === 'none' || ghSelectedIsWorkspace || ghSelectedAuthorization !== undefined)
-                      }
-                      authorizingRepo={ghAccessSaving}
-                      onAuthorizeRepo={() => void authorizeSelectedRepo()}
-                    />
-                  </div>
-                )}
+                        onReportingModeChange={(m) => {
+                          setGhReportingMode(m)
+                          setErr(null)
+                        }}
+                        repoAccess={ghRepoAccess}
+                        installation={ghSelectedInstallation}
+                        publicRepo={ghSelectedRepo ? !ghSelectedRepo.private : false}
+                        repoSelected={Boolean(ghRepoPick)}
+                        canAuthorizeRepo={
+                          canEditAgent &&
+                          (ghRepoAccess === 'none' || ghSelectedIsWorkspace || ghSelectedAuthorization !== undefined)
+                        }
+                        authorizingRepo={ghAccessSaving}
+                        onAuthorizeRepo={() => void authorizeSelectedRepo()}
+                      />
+                    ) : null
+                  }
+                />
               </>
             )}
           </>
@@ -1786,97 +1887,40 @@ export default function AddIntegrationModal({
                     </span>
                   </div>
                 )}
-                <div className="fldlbl mb-2">Listen for</div>
-                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-2">
-                  {GL_FAMILIES.map((r) => {
-                    // A family the picked project is already watched for is not a
-                    // second trigger — it is edited on the agent page.
-                    const taken = glPickedWatched.has(r.fam)
-                    const on = !taken && glFams.has(r.fam)
-                    return (
-                      <div
-                        key={r.fam}
-                        data-gitlab-family={r.fam}
-                        aria-disabled={taken}
-                        title={taken ? 'Already watched — change its trigger on the agent page' : undefined}
-                        className={`flex min-w-0 items-start gap-[9px] rounded-[9px] border px-3 py-[10px] ${
-                          taken ? 'cursor-default opacity-55' : 'cursor-pointer'
-                        } ${on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'}`}
-                        onClick={() => {
-                          if (!taken) toggleGlFam(r.fam)
+                <FamilyCards
+                  families={GL_FAMILIES}
+                  tilesOf={(fam) => GL_TRIGGER_TILES[fam] ?? []}
+                  // A family the picked project is already watched for is not a
+                  // second trigger — it is edited on the agent page.
+                  takenOf={(fam) => glPickedWatched.has(fam)}
+                  onOf={(fam) => glFams.has(fam)}
+                  onToggle={toggleGlFam}
+                  modeOf={glModeOf}
+                  onPick={(fam, mode) => setGlModes((prev) => ({ ...prev, [fam]: mode }))}
+                  familyAttr="data-gitlab-family"
+                  triggerAttr="data-gitlab-trigger"
+                  titleOf={(mode) =>
+                    mode === 'mention' ? gitlabMentionUsage(agent.name) : gitlabTriggerTooltip(mode, agent.name)
+                  }
+                  // Reviews and the run note ride the merge-request subject only.
+                  bodyExtra={(fam) =>
+                    gitlabFamilyCarriesReviews(fam) ? (
+                      <GitlabReviewSettings
+                        layout="format"
+                        value={{ reviewPolicy: glReviewPolicy, reportingMode: glReportingMode }}
+                        onReviewPolicyChange={(policy) => {
+                          setGlReviewPolicy(policy)
+                          setErr(null)
                         }}
-                      >
-                        <Icon
-                          name={r.icon}
-                          size={16}
-                          color={on ? 'var(--brand)' : 'var(--text-tertiary)'}
-                          className="mt-[1px] flex-none"
-                        />
-                        <span className="min-w-0 flex-1">
-                          <span className="block font-sans text-[12.5px] font-semibold leading-normal">{r.label}</span>
-                          <span className="mt-[2px] block font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                            {taken ? 'already watched' : r.desc}
-                          </span>
-                        </span>
-                        <span
-                          className={`mt-[1px] flex h-[18px] w-[18px] flex-none items-center justify-center rounded-[5px] border-[1.5px] ${
-                            on ? 'border-(--brand) bg-(--brand)' : 'border-(--border-default) bg-(--surface-card)'
-                          }`}
-                        >
-                          {on && <Icon name="check" size={12} color="#fff" />}
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-                <div className="fldlbl mb-2">Trigger when</div>
-                <div className="mb-4 grid grid-cols-1 gap-[9px] min-[440px]:grid-cols-3">
-                  {GL_TRIGGER_TILES.map((m) => {
-                    const on = glMode === m.mode
-                    return (
-                      <div
-                        key={m.mode}
-                        data-gitlab-trigger={m.mode}
-                        title={m.mode === 'mention' ? gitlabMentionUsage(agent.name) : undefined}
-                        className={`flex min-w-0 cursor-pointer items-start gap-[9px] rounded-[9px] border px-3 py-[10px] ${
-                          on ? 'border-(--brand) bg-(--brand-soft)' : 'border-(--border-default) bg-(--surface-card)'
-                        }`}
-                        onClick={() => setGlMode(m.mode)}
-                      >
-                        <span
-                          className={`mt-[1px] flex h-4 w-4 flex-none items-center justify-center rounded-full border-[1.5px] bg-(--surface-card) ${
-                            on ? 'border-(--brand)' : 'border-(--border-default)'
-                          }`}
-                        >
-                          {on && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block font-sans text-[12.5px] font-semibold leading-normal">{m.label}</span>
-                          <span className="mt-[2px] block font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-                            {m.desc}
-                          </span>
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-                {/* Reviews and the run note live on the merge-request row only. */}
-                {glMrSelected && (
-                  <div className="mb-4">
-                    <GitlabReviewSettings
-                      value={{ reviewPolicy: glReviewPolicy, reportingMode: glReportingMode }}
-                      onReviewPolicyChange={(policy) => {
-                        setGlReviewPolicy(policy)
-                        setErr(null)
-                      }}
-                      onReportingModeChange={(mode) => {
-                        setGlReportingMode(mode)
-                        setErr(null)
-                      }}
-                      projectBotReady={!glPicked?.binding || glPicked.binding.state !== 'provisioning'}
-                    />
-                  </div>
-                )}
+                        onReportingModeChange={(mode) => {
+                          setGlReportingMode(mode)
+                          setErr(null)
+                        }}
+                        projectBotReady={!glPicked?.binding || glPicked.binding.state !== 'provisioning'}
+                      />
+                    ) : null
+                  }
+                />
               </>
             )}
           </>

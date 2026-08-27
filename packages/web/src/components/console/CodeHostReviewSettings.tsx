@@ -5,7 +5,10 @@ import { Icon } from '@/components/ui'
 import {
   codeHostReviewCapabilities,
   codeHostReviewSettingsFromCapabilities,
+  REVIEW_FORMATS,
   REVIEW_PRESETS,
+  reviewFormatOf,
+  reviewFormatValue,
   reviewPresetOf,
   withCapability,
   type CodeHostReviewCapabilities,
@@ -22,8 +25,11 @@ export interface ReviewCapabilityHelp {
   statusCheck: string
 }
 
-// The disclosure both code hosts render: preset row, capability checkboxes, and a notice slot.
-// It holds no authorization opinion — each host computes its own blockers and passes them in.
+// The surface both code hosts render, in one of two layouts. `disclosure` is the
+// agent page's collapsible None/Brief/Details block; `format` is the create
+// surface's "Review format" section, where None is replaced by Custom — an
+// all-off Custom IS the no-review state. It holds no authorization opinion —
+// each host computes its own blockers and passes them in.
 export function CodeHostReviewSettings({
   title,
   value,
@@ -31,6 +37,7 @@ export function CodeHostReviewSettings({
   onReportingModeChange,
   help,
   statusCheckLabel,
+  layout = 'disclosure',
   defaultExpanded = false,
   notices
 }: {
@@ -40,10 +47,14 @@ export function CodeHostReviewSettings({
   onReportingModeChange: (mode: HookReportingMode) => void
   help: ReviewCapabilityHelp
   statusCheckLabel: string
+  layout?: 'disclosure' | 'format'
   defaultExpanded?: boolean
   notices?: ReactNode
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
+  // Custom is a disclosure the value cannot express: an exact Details value the
+  // user opened Custom on must keep the checkboxes visible.
+  const [customPinned, setCustomPinned] = useState(() => reviewFormatOf(value) === 'custom')
   const preset = reviewPresetOf(value)
   const capabilities = codeHostReviewCapabilities(value)
 
@@ -54,6 +65,71 @@ export function CodeHostReviewSettings({
 
   const setCapability = (key: keyof CodeHostReviewCapabilities, enabled: boolean) => {
     applyValue(codeHostReviewSettingsFromCapabilities(withCapability(capabilities, key, enabled)))
+  }
+
+  const checkboxes = (
+    <div className="grid grid-cols-2 gap-x-3 gap-y-2 desktop:grid-cols-4">
+      <Capability
+        label="Inline comments"
+        help={help.inlineComments}
+        checked={capabilities.inlineComments}
+        onChange={(checked) => setCapability('inlineComments', checked)}
+      />
+      <Capability
+        label="Request changes"
+        help={help.requestChanges}
+        checked={capabilities.requestChanges}
+        onChange={(checked) => setCapability('requestChanges', checked)}
+      />
+      <Capability
+        label="Approve"
+        help={help.approve}
+        checked={capabilities.approve}
+        onChange={(checked) => setCapability('approve', checked)}
+      />
+      <Capability
+        label={statusCheckLabel}
+        help={help.statusCheck}
+        checked={capabilities.statusCheck}
+        onChange={(checked) => setCapability('statusCheck', checked)}
+      />
+    </div>
+  )
+
+  if (layout === 'format') {
+    const format = customPinned ? 'custom' : reviewFormatOf(value)
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="fldlbl">Review format</div>
+        <div className="grid grid-cols-3 gap-2">
+          {REVIEW_FORMATS.map((option) => {
+            const active = format === option.id
+            return (
+              <button
+                key={option.id}
+                type="button"
+                data-review-format={option.id}
+                aria-pressed={active}
+                onClick={() => {
+                  setCustomPinned(option.id === 'custom')
+                  const next = reviewFormatValue(option.id)
+                  if (next) applyValue(next)
+                }}
+                className={
+                  active
+                    ? 'h-10 rounded-md border border-(--brand) bg-(--brand-soft) font-sans text-[12.5px] font-semibold leading-normal text-(--brand-soft-text)'
+                    : 'h-10 rounded-md border border-(--border-default) bg-(--surface-card) font-sans text-[12.5px] font-semibold leading-normal text-(--text-secondary)'
+                }
+              >
+                {option.label}
+              </button>
+            )
+          })}
+        </div>
+        {format === 'custom' && checkboxes}
+        {notices}
+      </div>
+    )
   }
 
   return (
@@ -91,34 +167,7 @@ export function CodeHostReviewSettings({
             })}
           </div>
 
-          {preset === 'details' && (
-            <div className="grid grid-cols-2 gap-x-3 gap-y-2 desktop:grid-cols-4">
-              <Capability
-                label="Inline comments"
-                help={help.inlineComments}
-                checked={capabilities.inlineComments}
-                onChange={(checked) => setCapability('inlineComments', checked)}
-              />
-              <Capability
-                label="Request changes"
-                help={help.requestChanges}
-                checked={capabilities.requestChanges}
-                onChange={(checked) => setCapability('requestChanges', checked)}
-              />
-              <Capability
-                label="Approve"
-                help={help.approve}
-                checked={capabilities.approve}
-                onChange={(checked) => setCapability('approve', checked)}
-              />
-              <Capability
-                label={statusCheckLabel}
-                help={help.statusCheck}
-                checked={capabilities.statusCheck}
-                onChange={(checked) => setCapability('statusCheck', checked)}
-              />
-            </div>
-          )}
+          {preset === 'details' && checkboxes}
         </div>
       )}
 

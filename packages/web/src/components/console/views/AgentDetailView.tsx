@@ -111,6 +111,7 @@ import {
   githubFamilyTile,
   githubHookFamily,
   githubHookNeedsNormalization,
+  githubTriggerModes,
   githubTriggerTooltip,
   triggerModeOf,
   type GhFamily,
@@ -525,6 +526,11 @@ export default function AgentDetailView() {
   const ghRowCarriesReviews = (h: HookDto) => {
     const fam = githubHookFamily(h)
     return !!fam && githubFamilyCarriesReviews(fam)
+  }
+  // The cadences THIS row may pick: label events ride issues alone.
+  const ghRowTriggerModes = (h: HookDto): readonly GhTriggerMode[] => {
+    const fam = githubHookFamily(h)
+    return fam ? githubTriggerModes(fam) : GH_TRIGGER_MODES
   }
   const glRowPill = (h: HookDto) => {
     const fam = gitlabHookFamily(h)
@@ -1745,7 +1751,8 @@ export default function AgentDetailView() {
                               {/* Trigger — the same ⚡ dropdown the IM channel rows carry, mention last. */}
                               <TriggerSelect
                                 className="w-[126px] flex-none"
-                                options={GH_TRIGGER_MODES.map((mode) => ({
+                                // Per family: the label cadence exists on issues alone.
+                                options={ghRowTriggerModes(h).map((mode) => ({
                                   value: mode,
                                   label: GH_TRIGGER_PILL[mode],
                                   hint: githubTriggerTooltip(mode, da.name)

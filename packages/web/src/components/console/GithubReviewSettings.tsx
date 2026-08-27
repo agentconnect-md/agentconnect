@@ -29,6 +29,7 @@ export function GithubReviewSettings({
   installation,
   publicRepo = false,
   repoSelected = true,
+  layout = 'disclosure',
   defaultExpanded = false,
   canAuthorizeRepo = false,
   authorizingRepo = false,
@@ -41,6 +42,7 @@ export function GithubReviewSettings({
   installation?: InstallationPermissionView
   publicRepo?: boolean
   repoSelected?: boolean
+  layout?: 'disclosure' | 'format'
   defaultExpanded?: boolean
   canAuthorizeRepo?: boolean
   authorizingRepo?: boolean
@@ -70,6 +72,7 @@ export function GithubReviewSettings({
       value={value}
       onReviewPolicyChange={onReviewPolicyChange}
       onReportingModeChange={onReportingModeChange}
+      layout={layout}
       defaultExpanded={defaultExpanded}
       statusCheckLabel="Status check"
       help={{

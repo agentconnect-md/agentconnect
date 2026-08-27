@@ -13,18 +13,30 @@ import {
   githubHookFamily,
   githubHookNeedsNormalization,
   githubMentionUsage,
+  githubTriggerModes,
   githubTriggerTooltip,
+  triggerModeOf,
   THREAD_COMMENT_EVENT
 } from './github-events'
 
 describe('GH_TRIGGER_LABEL', () => {
-  it('defaults new subscriptions to updated mode', () => {
-    expect(GH_DEFAULT_TRIGGER_MODE).toBe('every')
-    expect(GH_TRIGGER_LABEL[GH_DEFAULT_TRIGGER_MODE]).toBe('updated')
+  it('opens every new subscription on the opening itself', () => {
+    expect(GH_DEFAULT_TRIGGER_MODE).toBe('first')
+    expect(GH_TRIGGER_LABEL[GH_DEFAULT_TRIGGER_MODE]).toBe('opened')
   })
 
-  it('makes the restrictive mention mode explicit', () => {
-    expect(GH_TRIGGER_LABEL.mention).toBe('mention only')
+  it('spells the cadences out for the create surfaces', () => {
+    expect(GH_TRIGGER_LABEL.every).toBe('any update')
+    expect(GH_TRIGGER_LABEL.labeled).toBe('labeled')
+    expect(GH_TRIGGER_LABEL.mention).toBe('@-mention')
+  })
+})
+
+describe('githubTriggerModes', () => {
+  it('offers the label cadence on issues alone', () => {
+    expect(githubTriggerModes('issues')).toEqual(['first', 'every', 'labeled', 'mention'])
+    expect(githubTriggerModes('pull_request')).toEqual(['first', 'every', 'mention'])
+    expect(githubTriggerModes('push')).toEqual(['first', 'every', 'mention'])
   })
 })
 
@@ -32,6 +44,12 @@ describe('GH_TRIGGER_PILL', () => {
   it('keeps mention as the last segment, worded like the IM bar', () => {
     expect(GH_TRIGGER_MODES[GH_TRIGGER_MODES.length - 1]).toBe('mention')
     expect(GH_TRIGGER_PILL.mention).toBe('@-mention')
+  })
+
+  it('keeps the short forms the IM trigger bar shares', () => {
+    expect(GH_TRIGGER_PILL.first).toBe('create')
+    expect(GH_TRIGGER_PILL.every).toBe('update')
+    expect(GH_TRIGGER_PILL.labeled).toBe('labeled')
   })
 
   it('names the agent in the per-segment hover copy', () => {
@@ -60,9 +78,8 @@ describe('GH_TRIGGER_PILL', () => {
 })
 
 describe('GH_FAMILIES', () => {
-  it('describes the supported update signals without promising silent lifecycle or metadata events', () => {
-    expect(GH_FAMILIES.find(({ fam }) => fam === 'pull_request')?.desc).toBe('opened, revision changes, replies')
-    expect(GH_FAMILIES.find(({ fam }) => fam === 'issues')?.desc).toBe('opened, labels, replies')
+  it('names each subject without promising signals its cadences do not carry', () => {
+    expect(GH_FAMILIES.map(({ label }) => label)).toEqual(['Pull requests', 'Issues'])
   })
 
   it('omits the commit (push) family — the subscription flow is held back for now', () => {
@@ -117,6 +134,24 @@ describe('githubFamilySubscription', () => {
       commentFamilies: [],
       mentionOnly: false
     })
+  })
+
+  it('compiles the label cadence to the bare label event, with no reply scope', () => {
+    // A label is applied to a thread, not said in it — so no issue_comment
+    // subscription and no commentFamilies to narrow one.
+    expect(githubFamilySubscription('issues', 'labeled')).toEqual({
+      events: ['issues:labeled'],
+      commentFamilies: [],
+      mentionOnly: false
+    })
+  })
+
+  it('falls back to the default cadence for a family that has no label events', () => {
+    // The console never offers `labeled` off the issues subject; a stray pick
+    // must not compile `pull_request:labeled`.
+    expect(githubFamilySubscription('pull_request', 'labeled')).toEqual(
+      githubFamilySubscription('pull_request', GH_DEFAULT_TRIGGER_MODE)
+    )
   })
 
   it('never emits a pattern from another family', () => {
@@ -210,5 +245,31 @@ describe('githubHookNeedsNormalization', () => {
     expect(
       githubHookNeedsNormalization({ events: [THREAD_COMMENT_EVENT], commentFamilies: [], mentionOnly: false })
     ).toBe(false)
+  })
+
+  it('accepts a canonical labeled row', () => {
+    expect(githubHookNeedsNormalization({ events: ['issues:labeled'], commentFamilies: [], mentionOnly: false })).toBe(
+      false
+    )
+    // A labeled row that also carries a reply scope is not what the console writes.
+    expect(
+      githubHookNeedsNormalization({ events: ['issues:labeled'], commentFamilies: ['issues'], mentionOnly: false })
+    ).toBe(true)
+  })
+})
+
+describe('triggerModeOf', () => {
+  it('round-trips the label cadence, and only for the exact issues subscription', () => {
+    expect(triggerModeOf({ events: ['issues:labeled'], mentionOnly: false })).toBe('labeled')
+    // Anything wider than the bare label event is an update rule, not a label one.
+    expect(triggerModeOf({ events: ['issues:labeled', THREAD_COMMENT_EVENT], mentionOnly: false })).toBe('every')
+    expect(triggerModeOf({ events: ['pull_request:labeled'], mentionOnly: false })).toBe('every')
+    // The mention flag still wins over every events shape.
+    expect(triggerModeOf({ events: ['issues:labeled'], mentionOnly: true })).toBe('mention')
+  })
+
+  it('keeps reading the opened and updated encodings', () => {
+    expect(triggerModeOf({ events: ['issues:opened'], mentionOnly: false })).toBe('first')
+    expect(triggerModeOf({ events: ['issues:*', THREAD_COMMENT_EVENT], mentionOnly: false })).toBe('every')
   })
 })

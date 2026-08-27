@@ -20,14 +20,18 @@ import {
 
 describe('GL_TRIGGER_LABEL', () => {
   it('speaks the same vocabulary as the GitHub form', () => {
-    expect(GL_TRIGGER_LABEL.first).toBe('created')
-    expect(GL_TRIGGER_LABEL.every).toBe('updated')
-    expect(GL_TRIGGER_LABEL.mention).toBe('mention only')
+    expect(GL_TRIGGER_LABEL.first).toBe('opened')
+    expect(GL_TRIGGER_LABEL.every).toBe('any update')
+    expect(GL_TRIGGER_LABEL.mention).toBe('@-mention')
   })
 
-  it('defaults new subscriptions to updated mode', () => {
-    expect(GL_DEFAULT_TRIGGER_MODE).toBe('every')
-    expect(GL_TRIGGER_LABEL[GL_DEFAULT_TRIGGER_MODE]).toBe('updated')
+  it('opens every new subscription on the opening itself', () => {
+    expect(GL_DEFAULT_TRIGGER_MODE).toBe('first')
+    expect(GL_TRIGGER_LABEL[GL_DEFAULT_TRIGGER_MODE]).toBe('opened')
+  })
+
+  it('offers no label cadence — GitLab label events are not subscribed here', () => {
+    expect(GL_TRIGGER_MODES).toEqual(['first', 'every', 'mention'])
   })
 })
 
@@ -54,15 +58,14 @@ describe('GL_TRIGGER_PILL', () => {
 describe('GL_FAMILIES', () => {
   it('offers the same two subjects GitHub does — pushes stay held back', () => {
     expect(GL_FAMILIES.map(({ fam }) => fam)).toEqual(['issues', 'merge_request'])
-    expect(GL_FAMILIES.find(({ fam }) => fam === 'issues')?.desc).toBe('opened, labels, replies')
-    expect(GL_FAMILIES.find(({ fam }) => fam === 'merge_request')?.desc).toBe('opened, new commits, replies')
+    expect(GL_FAMILIES.map(({ label }) => label)).toEqual(['Issues', 'Merge requests'])
   })
 })
 
 describe('gitlabFamilyTile', () => {
   it('still labels a stored push row the console never offers', () => {
     expect(gitlabFamilyTile('push')?.pill).toBe('Pushes')
-    expect(gitlabFamilyTile('push')?.desc).toBe('commits pushed to a branch')
+    expect(gitlabFamilyTile('push')?.label).toBe('Pushes')
   })
 })
 
