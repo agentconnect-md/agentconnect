@@ -225,6 +225,8 @@ class LocalSpawnedRuntime implements SpawnedRuntime {
   readonly toAgent: WritableStream<Uint8Array>
   readonly fromAgent: ReadableStream<Uint8Array>
   private stopped = false
+  /** Set when the command never became a process, so there is nothing to signal. */
+  private neverStarted = false
 
   constructor(
     private child: ChildProcess,
@@ -232,10 +234,31 @@ class LocalSpawnedRuntime implements SpawnedRuntime {
   ) {
     this.toAgent = Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>
     this.fromAgent = Readable.toWeb(child.stdout!) as unknown as ReadableStream<Uint8Array>
+    // A command that cannot be executed — missing binary, no execute bit, or a script
+    // whose shebang interpreter is gone — emits 'error' and never 'exit'. Node rethrows
+    // an unhandled 'error' event as an uncaught exception, so one broken runtime on
+    // PATH would kill the daemon and every agent it hosts. Fail this launch alone:
+    // destroying the pipes hands the real errno to whoever reads the stream pair,
+    // which is the only failure channel this seam has.
+    child.once('error', (err: Error) => {
+      this.neverStarted = true
+      this.log?.warn(`acp: ${child.spawnfile} failed to start — ${err.message}`)
+      child.stdin?.destroy(err)
+      child.stdout?.destroy(err)
+    })
   }
 
   onExit(listener: () => void): void {
-    this.child.once('exit', listener)
+    // 'close' as well as 'exit': a child that never started emits only 'close', and a
+    // waiter that listens for 'exit' alone would hang there forever.
+    let fired = false
+    const once = () => {
+      if (fired) return
+      fired = true
+      listener()
+    }
+    this.child.once('exit', once)
+    this.child.once('close', once)
   }
 
   async stop(deadlineMs: number): Promise<void> {
@@ -261,6 +284,10 @@ class LocalSpawnedRuntime implements SpawnedRuntime {
     // minutes (idle sweep cadence) and its pgid recycled to an unrelated process;
     // the spawn-time 'exit' listener already swept while the pgid was provably ours.
     if (child.exitCode !== null || child.signalCode !== null) return
+    // A failed spawn leaves both codes null forever: there is no pid to signal, and
+    // waiting below would burn the full deadline and then warn about a SIGTERM that
+    // no process ever ignored.
+    if (this.neverStarted) return
     // Graceful first: ACP is a stdio protocol, EOF on stdin is the idiomatic "we're
     // done" and propagates through an npx wrapper to the adapter. The web-stream
     // wrapper may hold the pipe locked mid-write — then the signals below still land.
