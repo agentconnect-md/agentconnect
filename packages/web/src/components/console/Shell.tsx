@@ -38,7 +38,6 @@ import { NotificationProvider } from '@/lib/notifications'
 import { NotificationBell, NotificationToastContainer } from './NotificationCenter'
 import { useDaemonNotifier } from '@/lib/daemon-notifications'
 import { useSessionAccessNotifier } from '@/lib/session-access-notifier'
-import { useBillingSuspensionNotifier } from '@/lib/billing-notifications'
 import { MOBILE_NAV, MORE_ROWS, NAV_GROUPS, SECTIONS, navVisible } from './nav'
 
 // Top-level routes own the tab-bar + list app bar (no back button, bottom nav shown);
@@ -339,7 +338,6 @@ function ShellChromeInner({ children }: { children: ReactNode }) {
     useConsoleData()
   useDaemonNotifier(daemons)
   useSessionAccessNotifier({ sessionAccessSnapshot, usageAccessSnapshot, orgPath })
-  useBillingSuspensionNotifier(activeOrg?.id ?? null, orgPath)
   // Mobile-only chrome state: which bottom sheet is open, and the full-screen search.
   const [mobileSheet, setMobileSheet] = useState<'more' | 'org' | null>(null)
   const [mobileSearch, setMobileSearch] = useState(false)
