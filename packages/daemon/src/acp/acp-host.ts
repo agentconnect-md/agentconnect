@@ -23,6 +23,7 @@ import type { RuntimeDef } from '../config/config-schema.js'
 import {
   augmentClaudeEfforts,
   claudeInnerSandboxSettings,
+  CLAUDE_DISALLOWED_BUILTIN_TOOLS,
   isClaudeRuntimeDef,
   type ClaudeInnerSandboxSettings,
   type ClaudeProtectedSettings,
@@ -339,7 +340,7 @@ export { ULTRACODE_EFFORT }
 
 /** The session `_meta` sent to a Claude runtime on session/new and session/load
  *  (`_meta.claudeCode.options` is spread into the SDK `query()` options layer), or
- *  undefined off Claude runtimes. Four things ride on it:
+ *  undefined off Claude runtimes. Five things ride on it:
  *
  *  - `thinking`: recent models default `thinking.display` to "omitted" — thinking
  *    blocks stream signature-only with empty text, so the ACP wrapper never emits
@@ -353,6 +354,10 @@ export { ULTRACODE_EFFORT }
  *  - `options.sandbox` (only when the ACP runtime already has an outer
  *    AgentConnect sandbox): enables Claude's native Bash sandbox fail-closed and
  *    denies its sandboxed commands the provider credentials the parent can read.
+ *  - `disallowedTools`: suppresses Claude Code's built-in agent-teams `SendMessage`,
+ *    which collides with `mcp__agentconnect__sendMessage` (#800) and can DELIVER
+ *    session-private content to unrelated co-located sessions (#998). Sent on every
+ *    Claude session — AgentConnect owns all inter-session messaging for its sessions.
  *  - `systemPrompt` (top-level, sibling of `claudeCode`): the agent's system-prompt
  *    seed PLUS, on a fresh session, the agent's memory index (standing context, not a
  *    user turn — see SessionManager). We send it as `{ append }` so it layers ON TOP
@@ -394,6 +399,7 @@ export function claudeSessionMeta(
       claudeCode: {
         options: {
           thinking: { type: 'adaptive'; display: 'summarized' }
+          disallowedTools: readonly string[]
           settings?: ClaudeSessionSettings
           sandbox?: ClaudeInnerSandboxSettings
         }
@@ -415,6 +421,9 @@ export function claudeSessionMeta(
     claudeCode: {
       options: {
         thinking: { type: 'adaptive', display: 'summarized' },
+        // #998: the built-in agent-teams SendMessage is a live misdelivery channel;
+        // adapters spread this into SDK query() options (older ones ignore it).
+        disallowedTools: CLAUDE_DISALLOWED_BUILTIN_TOOLS,
         ...(protectedCredentialRoots
           ? { sandbox: claudeInnerSandboxSettings(protectedCredentialRoots, allowModelToolUnixSockets) }
           : {}),
