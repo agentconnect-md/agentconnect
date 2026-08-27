@@ -219,9 +219,10 @@ jobs:
           [ "${{ github.event_name }}" = 'pull_request' ] || reaches
           [ -n "$BASE" ] && [ -n "$HEAD" ] || reaches
           files=$(git diff --name-only "$BASE...$HEAD") || reaches
-          # The two packages plus their workspace dependency closure, and the files that decide how
-          # any of it is installed, resolved or run.
-          if printf '%s\n' "$files" | grep -qE '^(packages/(daemon|cli|protocol|connection|message|activation-policy|k8s-client)/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.nvmrc$|scripts/|\.github/workflows/test\.yaml$)'; then
+          # Listed by what CANNOT reach the job: the packages nothing in the daemon/CLI closure
+          # depends on, plus docs and the chart. Everything else runs it — a new root config, a new
+          # script, a new shared package are all in scope without anyone remembering to list them.
+          if grep -qvE '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability)/|charts/|docs/)' <<<"$files"; then
             reaches
           fi
           echo 'changed=false' >> "$GITHUB_OUTPUT"
