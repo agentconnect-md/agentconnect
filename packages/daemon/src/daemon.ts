@@ -403,7 +403,6 @@ import type {
   SessionKey,
   SessionActivity,
   Ack,
-  RdWebchatPost,
   RdMsg,
   RdMsgHook,
   RdMsgWebchat,
@@ -5896,11 +5895,7 @@ export class Daemon {
    * replay the original ack (so the relay settles) without re-dispatching. For hooks
    * the same replay absorbs a GitHub/manual REDELIVERY of the same deliveryKey.
    */
-  private handleRelayMsg(
-    msg: RdMsg,
-    chat: (event: RdChatEvent) => void,
-    post?: (p: RdWebchatPost) => void
-  ): RdAck | Promise<RdAck> {
+  private handleRelayMsg(msg: RdMsg, chat: (event: RdChatEvent) => void): RdAck | Promise<RdAck> {
     const dedupKey = `${msg.source === 'im' ? `${msg.botId}:` : ''}${msg.sessionKey}:${msg.msgId}`
     const prior = this.relayMsgAcks.get(dedupKey)
     if (prior) {
@@ -5919,7 +5914,7 @@ export class Daemon {
     if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
       const task = this.dutyCoordinator.claimDutyForTrigger(msg.agentId).then((claimed) => {
         this.pendingRelayMsgAcks.delete(dedupKey)
-        if (claimed.granted) return this.handleRelayMsg(msg, chat, post)
+        if (claimed.granted) return this.handleRelayMsg(msg, chat)
         return {
           msgId: msg.msgId,
           accepted: false,
@@ -5933,7 +5928,7 @@ export class Daemon {
 
     const ack =
       msg.source === 'webchat'
-        ? this.dispatchRelayOp(msg, chat, post)
+        ? this.dispatchRelayOp(msg, chat)
         : msg.source === 'platform_action'
           ? this.handleRelayPlatformAction(msg)
           : this.handleRelayIm(msg)
@@ -6817,11 +6812,7 @@ export class Daemon {
   }
 
   /** The op-switch behind {@link handleRelayMsg} (dedup handled by the caller). */
-  private async dispatchRelayOp(
-    msg: RdMsgWebchat,
-    chat: (event: RdChatEvent) => void,
-    post?: (p: RdWebchatPost) => void
-  ): Promise<RdAck> {
+  private async dispatchRelayOp(msg: RdMsgWebchat, chat: (event: RdChatEvent) => void): Promise<RdAck> {
     const sink: WebchatSink = {
       output: (o) => chat({ kind: 'output', output: o }),
       done: (d) => chat({ kind: 'done', done: d })
@@ -6879,7 +6870,6 @@ export class Daemon {
           msg.remoteMcp,
           op.mentions,
           op.post,
-          post,
           op.worktree
         )
         return {
@@ -15575,7 +15565,7 @@ export class Daemon {
         }),
       log: this.log,
       // Bridge an inbound relay webchat op onto the shared turn engine (webchat, PR 3).
-      onRelayMsg: (msg, chat, post) => this.handleRelayMsg(msg, chat, post),
+      onRelayMsg: (msg, chat) => this.handleRelayMsg(msg, chat),
       // A forwarded cross-daemon agent-call — terminal-verify + dispatch (P2).
       onRelayAgentMsg: (msg) => this.handleRelayAgentMsg(msg)
     })

@@ -169,7 +169,6 @@ export class WebchatTransport {
     remoteMcp?: WebchatRemoteMcpEntitlement,
     mentions?: string[],
     post?: { postId: string; at: number },
-    postSink?: (p: RdWebchatPost) => void,
     requestedWorktree?: boolean
   ): Promise<WebchatAck> {
     const turnId = requestedTurnId ?? randomUUID()
@@ -275,7 +274,8 @@ export class WebchatTransport {
       remoteMcp,
       requestedWorktree
     )
-    if (postSink) stream.postSink = postSink
+    // Broadcast the reconciliation post daemon-wide so a cold attach through another relay receives it.
+    stream.postSink = (p) => this.host.sendWebchatPost(p)
     // Observed-inbound analogue for webchat (turn-final refresh, §5.4): record the
     // user message at ADMISSION — not only when its turn eventually runs — so a
     // generation already in flight for this agent can see it at the final fence

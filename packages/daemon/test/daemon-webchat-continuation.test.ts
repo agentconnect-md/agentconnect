@@ -75,8 +75,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
         },
         { agentId: P1, msgId: 'turn-p1' }
       ),
-      (_e: RdChatEvent) => {},
-      fanOut
+      (_e: RdChatEvent) => {}
     )
     expect(ack).toMatchObject({ accepted: true })
     for (const [peer, msgId] of [
@@ -184,8 +183,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
         },
         { agentId: P1, msgId: 'turn-p1' }
       ),
-      () => {},
-      fanOut
+      () => {}
     )
 
     // Posts at depths 0..MAX-1; the wake that would run at depth MAX is refused.
@@ -316,8 +314,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
         { op: 'turn', text: 'go', user: 'owner', turnId: KICKOFF_TURN, post: { postId: KICKOFF_TURN, at: 1_000 } },
         { agentId: P1, msgId: 'turn-p1' }
       ),
-      () => {},
-      fanOut
+      () => {}
     )
     await vi.waitFor(() => expect(prompts.get(P1)).toHaveLength(1), WAIT)
     await settle()

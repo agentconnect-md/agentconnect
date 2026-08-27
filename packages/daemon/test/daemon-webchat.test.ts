@@ -1513,11 +1513,11 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     const turnId = '77777777-7777-4777-8777-777777777777'
     const events: RdChatEvent[] = []
-    const posts: unknown[] = []
+    const sendWebchatPost = vi.fn()
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost }
     const ack = await (daemon as any).handleRelayMsg(
       rd({ op: 'turn', text: 'anyone?', user: 'owner', turnId, post: { postId: turnId, at: 1_000 } }),
-      (event: RdChatEvent) => events.push(event),
-      (post: unknown) => posts.push(post)
+      (event: RdChatEvent) => events.push(event)
     )
     expect(ack).toMatchObject({ accepted: true })
     await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
@@ -1526,7 +1526,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       e.kind === 'output' && e.output.event?.kind === 'message' ? [e.output.event.text] : []
     )
     expect(messages).toEqual([]) // the sentinel was held and dropped
-    expect(posts).toEqual([]) // no canonical post fan-out
+    expect(sendWebchatPost).not.toHaveBeenCalled() // no canonical post fan-out
     const replies = (await (daemon as any).store.transcriptSince(`${CONV}`, `webchat:${CONV}`, null)).filter(
       (row: { sender: string }) => row.sender === AGENT_ID
     )
@@ -2046,6 +2046,31 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
 
     expect(spy).toHaveBeenCalledTimes(1) // dispatched exactly once
     expect(a2).toEqual(a1) // same ack (same turnId) replayed so the relay settles
+    await daemon.stop()
+  }, 15_000)
+
+  // Reply posts use daemon-wide relay fan-out so a cold attach through another relay can reconcile.
+  it('fans a browser turn reply post out daemon-wide, not down the admitting relay socket', async () => {
+    const { factory } = streamingHost([text('the answer')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    ;(daemon as any).cpClient = fakeCpClient()
+    const sendWebchatPost = vi.fn()
+    ;(daemon as any).relays = { stop: vi.fn(async () => {}), sendWebchatPost }
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    const events: RdChatEvent[] = []
+    const ack = await (daemon as any).handleRelayMsg(
+      rd({ op: 'turn', text: 'ask', user: 'owner', turnId, post: { postId: turnId, at: 1_000 } }),
+      (event: RdChatEvent) => events.push(event)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(sendWebchatPost).toHaveBeenCalledTimes(1), WAIT)
+    expect(sendWebchatPost.mock.calls[0]![0]).toMatchObject({
+      conversationId: CONV,
+      agentId: AGENT_ID,
+      post: { conversationId: CONV, text: 'the answer', author: { kind: 'agent', agentId: AGENT_ID } }
+    })
     await daemon.stop()
   }, 15_000)
 

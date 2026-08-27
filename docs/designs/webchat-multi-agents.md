@@ -581,7 +581,11 @@ Two scope rules:
     `postId` off the turn's `rd/webchat-post` instead (whichever of that frame
     and the lane's `done` lands second stamps it onto the replayed steps), and
     the ordinary exact-`postId` arm retires them when the transcript tail
-    persists the reply;
+    persists the reply. Because that post is now a reconciliation anchor and not
+    just a record, a browser turn's reply post is fanned out to EVERY relay the
+    daemon holds rather than back down the socket that admitted the turn — a
+    reload may land on a different relay instance, and only the one owning the
+    conversation acts on the post;
   - the `set_*` runtime ops are unchanged and carry no `agentId`: multi-agent
     conversations expose no runtime override (section 9.3), so these ops
     occur only in single-agent conversations.
