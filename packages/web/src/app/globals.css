@@ -1361,6 +1361,12 @@
     border-color: var(--border-focus);
     box-shadow: 0 0 0 3px var(--brand-ring);
   }
+  /* The focus highlight is the brand ring above — the UA outline would double it in the
+     browser's own blue, on `.inp` itself and on a field nested inside one. */
+  .inp:focus,
+  .inp :focus {
+    outline: none;
+  }
   .inp.ph {
     color: var(--text-disabled);
   }

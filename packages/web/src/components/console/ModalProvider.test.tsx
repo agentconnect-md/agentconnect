@@ -40,6 +40,7 @@ vi.mock('@/lib/data-context', () => ({
 vi.mock('@/lib/profile', () => ({ useProfile: () => ({ user: null, me: null }) }))
 
 import { ModalProvider, useModal } from './ModalProvider'
+import AddDaemonModal from './modals/AddDaemonModal'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -161,5 +162,26 @@ describe('ModalProvider dismissal', () => {
       await Promise.resolve()
     })
     expect(host.textContent).not.toContain('Daemon connected')
+  })
+})
+
+// The chained Edit-agent dialog preselects the machine the operator just connected, so
+// Continue has to name it — closing alone would drop the operator back on the old placement.
+describe('AddDaemonModal chaining', () => {
+  it('hands Continue’s chain the daemon that just connected', async () => {
+    mocks.provisionDaemon.mockResolvedValue({
+      daemonId: 'dmn_live',
+      command: 'npx -y @agentconnect.md/daemon run --api-url https://example.test --api-key test'
+    })
+    mocks.daemons = [{ daemonId: 'dmn_live', name: 'edge-1', status: 'online' }]
+    const onDone = vi.fn()
+
+    await act(async () =>
+      root.render(<AddDaemonModal onClose={() => {}} onDone={onDone} registerDismiss={() => () => {}} />)
+    )
+    const done = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Continue')!
+    await act(async () => done.click())
+
+    expect(onDone).toHaveBeenCalledWith('dmn_live')
   })
 })

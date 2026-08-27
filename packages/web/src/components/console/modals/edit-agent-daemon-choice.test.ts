@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { editAgentCapabilitySource, editAgentDaemonChoices } from './edit-agent-daemon-choice'
+import { editAgentCapabilitySource, editAgentDaemonChoices, preselectPlacementReset } from './edit-agent-daemon-choice'
 
 type Row = {
   caps: { features: string[] }
@@ -139,5 +139,30 @@ describe('editAgentCapabilitySource', () => {
 
     expect(editAgentCapabilitySource(daemons, 'local-2', [group], undefined)?.daemonId).toBe('local-2')
     expect(editAgentCapabilitySource(daemons, 'gone', [group], undefined)).toBeUndefined()
+  })
+})
+
+describe('preselectPlacementReset', () => {
+  const profiles = [
+    { runtime: 'claude', models: ['claude-opus-5', 'claude-sonnet-5'] },
+    { runtime: 'codex', models: ['gpt-5'] }
+  ]
+
+  it('keeps a pair the new machine reports', () => {
+    expect(preselectPlacementReset(profiles, 'claude', 'claude-sonnet-5')).toBeNull()
+  })
+
+  it('switches to the machine’s first runtime when it does not run the saved one', () => {
+    expect(preselectPlacementReset(profiles, 'gemini', 'gemini-3-pro')).toEqual({ kind: 'runtime', runtime: 'claude' })
+  })
+
+  it('falls the model back to the runtime default when only the model is unknown', () => {
+    expect(preselectPlacementReset(profiles, 'codex', 'gpt-4')).toEqual({ kind: 'model' })
+  })
+
+  it('resets nothing when the machine reports no profiles, or the runtime advertises no models', () => {
+    expect(preselectPlacementReset(undefined, 'claude', 'claude-opus-5')).toBeNull()
+    expect(preselectPlacementReset([], 'claude', 'claude-opus-5')).toBeNull()
+    expect(preselectPlacementReset([{ runtime: 'cursor', models: [] }], 'cursor', 'auto')).toBeNull()
   })
 })

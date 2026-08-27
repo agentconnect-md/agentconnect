@@ -69,3 +69,21 @@ export function editAgentCapabilitySource<T extends DaemonChoiceRow>(
   if (selectedDaemonId === POOL_PLACEMENT) return poolChoice
   return daemons.find((daemon) => daemon.daemonId === selectedDaemonId)
 }
+
+/** What a freshly chained Add-daemon forces the runtime/model back to. A brand-new machine need
+ *  not run the saved runtime or advertise the saved model, and Save refuses a placement it cannot
+ *  honour — so the form lands on what the target reports instead of on a blocked choice.
+ *  `null` keeps the saved pair; `runtime` also clears model/effort/permission (a new runtime's
+ *  vocabularies are its own); `model` falls back to the runtime's own default, stored as ''. */
+export function preselectPlacementReset(
+  profiles: ReadonlyArray<{ runtime: string; models: readonly string[] }> | undefined,
+  savedRuntime: string,
+  savedModel: string
+): { kind: 'runtime'; runtime: string } | { kind: 'model' } | null {
+  if (!profiles?.length) return null
+  const profile = profiles.find((candidate) => candidate.runtime === savedRuntime)
+  if (!profile) return { kind: 'runtime', runtime: profiles[0]!.runtime }
+  // No advertised models means nothing to contradict — a runtime like cursor reports none.
+  if (savedModel && profile.models.length && !profile.models.includes(savedModel)) return { kind: 'model' }
+  return null
+}

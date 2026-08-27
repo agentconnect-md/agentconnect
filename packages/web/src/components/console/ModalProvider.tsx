@@ -62,6 +62,8 @@ interface ModalOpts {
   platform?: IntegrationPlatform
   feishuRegion?: FeishuRegion
   focusSection?: EditAgentSection
+  /** The daemon the Edit-agent picker opens on — the one the chained Add-daemon dialog just connected. */
+  daemonId?: string
 }
 
 interface ModalData {
@@ -130,13 +132,17 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               <DeleteGroupModal group={open.target as MemberSetRow} onClose={close} />
             )}
             {open.kind === 'agent' && <AddAgentModal onClose={close} />}
-            {/* Opened from an unplaced agent's "Add daemon" chip: once the daemon
-                connects, Continue chains back into that agent's edit dialog, where
-                the fresh (and only) daemon is auto-preselected by its autofill. */}
+            {/* Opened from an agent's "Add daemon" affordance: once the daemon connects,
+                Continue chains back into that agent's edit dialog with the fresh daemon
+                selected in the placement picker. */}
             {open.kind === 'daemon' && (
               <AddDaemonModal
                 onClose={close}
-                onDone={open.target ? () => openModal('editAgent', open.target, open.opts) : undefined}
+                onDone={
+                  open.target
+                    ? (daemonId) => openModal('editAgent', open.target, { ...open.opts, daemonId })
+                    : undefined
+                }
                 registerDismiss={registerDismiss}
               />
             )}
@@ -184,7 +190,12 @@ export function ModalProvider({ children }: { children: ReactNode }) {
               <DeleteAgentModal agent={open.target as Agent} onClose={close} />
             )}
             {open.kind === 'editAgent' && open.target && (
-              <EditAgentModal agent={open.target as Agent} focusSection={open.opts?.focusSection} onClose={close} />
+              <EditAgentModal
+                agent={open.target as Agent}
+                focusSection={open.opts?.focusSection}
+                preselectDaemonId={open.opts?.daemonId}
+                onClose={close}
+              />
             )}
             {open.kind === 'editAgentDesc' && open.target && (
               <EditDescriptionModal agent={open.target as Agent} onClose={close} />
