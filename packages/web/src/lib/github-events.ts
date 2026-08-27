@@ -17,7 +17,9 @@ import type { GithubCommentFamily, GithubHookFamily, HookCommentFamily } from '.
  *              supported updates, and replies run.
  *   labeled  → `issues:labeled` alone. Issues-only, and the one cadence that
  *              subscribes to no replies at all: a label is applied to a thread,
- *              not said in it. An empty `labelFilter` means any label.
+ *              not said in it. A `labelFilter` intersects the issue's CURRENT
+ *              label set (relay semantics for every cadence), not the label
+ *              this delivery applied; empty means any label.
  *   @-mention → the same subscriptions as any update, with `mentionOnly: true` —
  *              an event fires ONLY when its text (issue/PR body, comment body,
  *              commit message) @-mentions the assigned agent or the App. The
@@ -98,7 +100,7 @@ export function githubTriggerTooltip(mode: GhTriggerMode, agentName: string): st
     case 'every':
       return 'Runs when an issue or PR is opened and on supported updates and replies (close, reopen and title/body edits are ignored).'
     case 'labeled':
-      return 'Runs when a label is applied to an issue — any label while no label filter is set. Replies do not run it.'
+      return "Runs when a label is applied to an issue. A label filter matches the issue's current labels, not just the one applied. Replies do not run it."
     case 'mention':
       // Not "only @agent": the App handle is the repository-wide broadcast, and
       // an authorized native App review request bypasses cadence/mention/label.

@@ -157,13 +157,15 @@ interface TriggerTile<M extends string> {
  *  on, and the agent page still offers the full four. */
 const GH_TRIGGER_TILES: Partial<Record<GhFamily, TriggerTile<GhTriggerMode>[]>> = {
   pull_request: [
-    { mode: 'first', label: GH_TRIGGER_LABEL.first, desc: 'A PR is opened or marked ready' },
-    { mode: 'every', label: GH_TRIGGER_LABEL.every, desc: 'Every push, review or comment' },
+    // Subtitles promise only what the ingress admits: ready-for-review and
+    // submitted formal reviews are deliberately silent there.
+    { mode: 'first', label: GH_TRIGGER_LABEL.first, desc: 'A new PR is opened' },
+    { mode: 'every', label: GH_TRIGGER_LABEL.every, desc: 'Every new commit or reply' },
     { mode: 'mention', label: GH_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
   ],
   issues: [
     { mode: 'first', label: GH_TRIGGER_LABEL.first, desc: 'A new issue is filed' },
-    { mode: 'labeled', label: GH_TRIGGER_LABEL.labeled, desc: 'A watched label is applied' },
+    { mode: 'labeled', label: GH_TRIGGER_LABEL.labeled, desc: 'A label is applied' },
     { mode: 'mention', label: GH_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
   ]
 }
@@ -173,8 +175,9 @@ const GH_TRIGGER_TILES: Partial<Record<GhFamily, TriggerTile<GhTriggerMode>[]>> 
  *  modes the wire already carries. */
 const GL_TRIGGER_TILES: Partial<Record<GlFamily, TriggerTile<GlTriggerMode>[]>> = {
   merge_request: [
-    { mode: 'first', label: GL_TRIGGER_LABEL.first, desc: 'An MR is opened or marked ready' },
-    { mode: 'every', label: GL_TRIGGER_LABEL.every, desc: 'Every push, review or comment' },
+    // Same honesty rule: draft/ready flips are dropped by ingress normalization.
+    { mode: 'first', label: GL_TRIGGER_LABEL.first, desc: 'A new MR is opened' },
+    { mode: 'every', label: GL_TRIGGER_LABEL.every, desc: 'Every new commit or reply' },
     { mode: 'mention', label: GL_TRIGGER_LABEL.mention, desc: 'Only when the agent is @-mentioned' }
   ],
   issues: [
