@@ -1,11 +1,14 @@
 'use client'
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { SessionAccessNotificationAction } from '@/lib/session-access-notifications'
+import type {
+  SessionAccessNotificationAction,
+  SessionAccessNotificationInput
+} from '@/lib/session-access-notifications'
 
 export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error'
-export type NotificationCategory = 'daemon_lifecycle' | 'session_retention' | 'session_access' | 'billing'
-export type NotificationSourceScope = 'sessions-access' | 'usage-access' | 'billing'
+export type NotificationCategory = 'daemon_lifecycle' | 'session_retention' | 'session_access'
+export type NotificationSourceScope = 'sessions-access' | 'usage-access'
 
 export interface NotificationItem {
   id: string
@@ -28,10 +31,6 @@ export interface NotificationStoreState {
 }
 
 type AddNotificationInput = Omit<NotificationItem, 'id' | 'timestamp' | 'read'>
-/** A snapshot-synced source item: keyed by `sourceKey` so it can resolve when the condition clears. */
-export type NotificationSnapshotInput = Omit<NotificationItem, 'id' | 'timestamp' | 'read' | 'resolvedAt'> & {
-  sourceKey: string
-}
 type NotificationStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 interface NotificationContextValue {
@@ -39,7 +38,7 @@ interface NotificationContextValue {
   unreadCount: number
   toasts: NotificationItem[]
   addNotification: (item: AddNotificationInput) => void
-  syncSourceSnapshot: (scope: NotificationSourceScope, items: NotificationSnapshotInput[]) => void
+  syncSourceSnapshot: (scope: NotificationSourceScope, items: SessionAccessNotificationInput[]) => void
   markAsRead: (id: string) => void
   markAllAsRead: () => void
   clearAll: () => void
@@ -67,8 +66,7 @@ export function emptyNotificationState(): NotificationStoreState {
     notifications: [],
     activeSources: {
       'sessions-access': [],
-      'usage-access': [],
-      billing: []
+      'usage-access': []
     }
   }
 }
@@ -90,9 +88,6 @@ export function loadNotificationState(orgId?: string | null, storage?: Notificat
           : [],
         'usage-access': Array.isArray(activeRecord['usage-access'])
           ? activeRecord['usage-access'].filter((key): key is string => typeof key === 'string')
-          : [],
-        billing: Array.isArray(activeRecord['billing'])
-          ? activeRecord['billing'].filter((key): key is string => typeof key === 'string')
           : []
       }
     }
@@ -126,7 +121,7 @@ function defaultNotificationId(): string {
 export function syncNotificationSourceSnapshot(
   state: NotificationStoreState,
   scope: NotificationSourceScope,
-  items: NotificationSnapshotInput[],
+  items: SessionAccessNotificationInput[],
   now = new Date().toISOString(),
   makeId: () => string = defaultNotificationId
 ): { state: NotificationStoreState; added: NotificationItem[] } {
@@ -230,7 +225,7 @@ export function NotificationProvider({ orgId, children }: { orgId?: string | nul
     }))
   }, [])
 
-  const syncSourceSnapshot = useCallback((scope: NotificationSourceScope, items: NotificationSnapshotInput[]) => {
+  const syncSourceSnapshot = useCallback((scope: NotificationSourceScope, items: SessionAccessNotificationInput[]) => {
     setProviderState((prev) => {
       const nextKeys = new Set(items.map((item) => item.sourceKey))
       const resolvedKeys = new Set(prev.store.activeSources[scope].filter((key) => !nextKeys.has(key)))
