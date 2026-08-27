@@ -504,8 +504,8 @@ describe('serveInvocationFor', () => {
   it('rewrites an npx-distributed runtime by replacing the trailing acp arg', () => {
     const rt: RuntimeDef = { command: 'npx', args: ['-y', '@kilocode/cli@7.4.9', 'acp'], env: [] }
     const out = serveInvocationFor('kilo', rt, serveArgs)
-    // command resolves to an absolute path via PATH lookup
-    expect(out.command.endsWith('npx')).toBe(true)
+    // command resolves to an absolute path via PATH lookup — a `.CMD` launcher on Windows
+    expect(out.command).toMatch(/npx(\.cmd|\.exe)?$/i)
     expect(out.args).toEqual(['-y', '@kilocode/cli@7.4.9', ...serveArgs])
   })
 

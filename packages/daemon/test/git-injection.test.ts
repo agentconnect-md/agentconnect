@@ -710,7 +710,8 @@ describe('sessionGitEnv', () => {
     expect(configPairs(sessionGitEnv('agent-1'))).toEqual(configPairs(sessionGitPolicyEnv()))
   })
 
-  it('pins the CP-provided bot as both author and committer', () => {
+  // The runner shells out to `git var GIT_AUTHOR_IDENT`, which the runner image cannot answer here.
+  it.skipIf(process.platform === 'win32')('pins the CP-provided bot as both author and committer', () => {
     const env = sessionGitEnv('agent-1', {
       name: 'agentconnect-example[bot]',
       email: '123456+agentconnect-example[bot]@users.noreply.github.com'
@@ -738,7 +739,8 @@ describe('sessionGitEnv', () => {
   })
 })
 
-describe('pointers for an agent whose git runs in a sandbox pod', () => {
+// Pod coordinates are POSIX by construction — the sandbox pod is always Linux.
+describe.skipIf(process.platform === 'win32')('pointers for an agent whose git runs in a sandbox pod', () => {
   // The bug every case here is about: a path is only meaningful in one filesystem, and a helper
   // line built from this daemon's root names an executable the pod has never had. What makes it
   // expensive is the failure mode — git reports an authentication failure, not a missing file.

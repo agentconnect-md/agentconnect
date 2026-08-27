@@ -29,6 +29,7 @@ const sessionPermissionModes = new Map()
 const reviewerEnabled = process.env.AC_APPROVALS_REVIEWER === '1'
 const sessionReviewers = new Map()
 const additionalDirectoriesEnabled = process.env.AC_ADDITIONAL_DIRECTORIES === '1'
+const deleteSessionEnabled = process.env.AC_DELETE_SESSION === '1'
 const expectedAdditionalDirectories = process.env.AC_EXPECT_ADDITIONAL_DIRECTORIES
   ? JSON.parse(process.env.AC_EXPECT_ADDITIONAL_DIRECTORIES)
   : undefined
@@ -62,7 +63,14 @@ const agentCapabilities = () => ({
       }
     : {}),
   ...(process.env.AC_LOAD_UPDATES ? { loadSession: true } : {}),
-  ...(additionalDirectoriesEnabled ? { sessionCapabilities: { additionalDirectories: {} } } : {})
+  ...(additionalDirectoriesEnabled || deleteSessionEnabled
+    ? {
+        sessionCapabilities: {
+          ...(additionalDirectoriesEnabled ? { additionalDirectories: {} } : {}),
+          ...(deleteSessionEnabled ? { delete: {} } : {})
+        }
+      }
+    : {})
 })
 const configOptions = (sessionId) => {
   const options = []
@@ -154,6 +162,11 @@ rl.on('line', async (line) => {
       })
     }
     send({ jsonrpc: '2.0', id, result: { configOptions: configOptions(params.sessionId) } })
+  } else if (method === 'session/delete') {
+    sessionModels.delete(params.sessionId)
+    sessionPermissionModes.delete(params.sessionId)
+    sessionReviewers.delete(params.sessionId)
+    send({ jsonrpc: '2.0', id, result: {} })
   } else if (method === 'session/prompt') {
     const text = (params.prompt ?? []).map((b) => b.text ?? '').join('')
     // send a session/update notification to the client

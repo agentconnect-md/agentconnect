@@ -90,6 +90,7 @@ function toRecord(h: HookWithUsers): HookRecord {
     repoId: h.repoId,
     repoFullName: h.repoFullName,
     githubSessionKey: h.githubSessionKey,
+    family: h.family,
     events: h.events,
     commentFamilies: h.commentFamilies as GithubCommentFamily[],
     labelFilter: h.labelFilter,
@@ -503,6 +504,8 @@ export class PgHookRepo implements HookRepo {
       // re-target allowed); webhook kind never sends it, and these stay null/[].
       repoId: input.repoId ?? null,
       repoFullName: input.repoFullName ?? null,
+      // Immutable: an update never carries it, so omission must preserve the row's own.
+      ...(input.family !== undefined ? { family: input.family } : {}),
       events: input.events ?? [],
       commentFamilies: input.commentFamilies ?? [],
       labelFilter: input.labelFilter ?? [],
@@ -567,11 +570,28 @@ export class PgHookRepo implements HookRepo {
         }
         const nextReportingMode = input.reportingMode ?? existing?.reportingMode ?? 'off'
         const nextGateMode = input.gateMode ?? existing?.gateMode ?? 'informational'
+        // Sibling rows of one (agent, repo) answer the same threads: one session namespace, grandfathered prefix included.
+        // A moved binding (repo or agent) re-reads the destination's siblings, whose key wins over this row's own.
+        const bindingMoved = existing?.repoId !== input.repoId || existing?.agentId !== input.agentId
+        const siblingKeyRow =
+          input.kind === 'github' && input.repoId !== undefined && bindingMoved
+            ? await tx.hookDef.findFirst({
+                where: { id: { not: input.hookId }, agentId: input.agentId, kind: 'github', repoId: input.repoId },
+                select: { githubSessionKey: true, repoFullName: true },
+                orderBy: { createdAt: 'asc' }
+              })
+            : null
+        // Only a row still on this repo may keep its own key; a repo move mints fresh.
+        const ownSessionKey =
+          existing?.kind === 'github' && existing.repoId === input.repoId
+            ? (existing.githubSessionKey ?? existing.repoFullName)
+            : null
         const githubSessionKey =
           input.kind === 'github' && input.repoId !== undefined
-            ? existing?.kind === 'github' && existing.repoId === input.repoId
-              ? (existing.githubSessionKey ?? existing.repoFullName ?? `github:${input.repoId}`)
-              : `github:${input.repoId}`
+            ? (siblingKeyRow?.githubSessionKey ??
+              siblingKeyRow?.repoFullName ??
+              ownSessionKey ??
+              `github:${input.repoId}`)
             : null
         const lifecycleChanged =
           existing !== null &&
@@ -2057,23 +2077,51 @@ export class PgHookRepo implements HookRepo {
         })
       }
 
-      // A GitHub redelivery broadcasts to every hook that currently matches
-      // the GUID. It is safe only when that exact fanout already has one active,
-      // side-effect-free retry row per hook. A success, pause/no-agent verdict,
-      // newly-created hook, removed hook, or effect-bearing row blocks the whole
-      // POST because daemon dedup is local rather than cross-placement.
+      // Landed rows must be a SUBSET of the candidate fanout, each an active side-effect-free retry row: a success,
+      // verdict, effect-bearing row, or a landed row from outside the set blocks the POST (daemon dedup is local).
+      // An unlanded candidate is the relay's own precise filtering, which the payload reproduces, so it is tolerated.
       const landed = [...new Set(rows.map((row) => row.hookId))].sort()
-      if (
-        expected.length !== landed.length ||
-        expected.some((hookId, index) => hookId !== landed[index]) ||
-        active.length !== rows.length
-      ) {
+      const expectedSet = new Set<string>(expected)
+      if (rows.length === 0 || landed.some((hookId) => !expectedSet.has(hookId)) || active.length !== rows.length) {
         await settleActive()
         return false
       }
+      const landedSet = new Set<string>(landed)
+      const unlanded = expected.filter((hookId) => !landedSet.has(hookId))
+      if (unlanded.length > 0) {
+        // Tolerating an unlanded candidate needs proof its EFFECTIVE relay rule
+        // is the one that filtered the original delivery — the payload is
+        // immutable, the rule is not. A candidate on the same agent as a landed
+        // row carries that proof structurally: the landed run shows the agent
+        // was live and routing at ingestion, and family uniqueness plus the
+        // per-row shape gate keep a sibling family from ever matching this
+        // event. The two lastModifiedAt fences (hook and agent — every
+        // user-facing edit bumps them, creation/rename/pause included) stay as
+        // defense in depth. Anything else — cross-agent candidates above all,
+        // whose pause/rename history this claim cannot reconstruct — blocks,
+        // exactly as the pre-split exact-fanout claim did. A deleted candidate
+        // stays tolerated: the relay no longer holds a rule for it.
+        const deliveredAt = new Date(Math.min(...rows.map((row) => row.startedAt.getTime())))
+        const landedAgentIds = new Set(rows.map((row) => row.agentId).filter((id): id is string => id !== null))
+        const candidates = await tx.hookDef.findMany({
+          where: { id: { in: unlanded } },
+          select: { agentId: true, lastModifiedAt: true, agent: { select: { lastModifiedAt: true } } }
+        })
+        const unsafeCandidate = candidates.some(
+          (candidate) =>
+            candidate.agentId === null ||
+            !landedAgentIds.has(candidate.agentId) ||
+            candidate.lastModifiedAt > deliveredAt ||
+            (candidate.agent !== null && candidate.agent.lastModifiedAt > deliveredAt)
+        )
+        if (unsafeCandidate) {
+          await settleActive()
+          return false
+        }
+      }
 
       const currentHooks = await tx.hookDef.findMany({
-        where: { id: { in: expected }, enabled: true, kind: 'github' },
+        where: { id: { in: landed }, enabled: true, kind: 'github' },
         select: {
           id: true,
           agentId: true,
@@ -2099,7 +2147,7 @@ export class PgHookRepo implements HookRepo {
           return false
         return true
       })
-      if (currentHooks.length !== expected.length || !authoritySafe) {
+      if (currentHooks.length !== landed.length || !authoritySafe) {
         await settleActive()
         return false
       }

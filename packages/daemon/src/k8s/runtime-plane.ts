@@ -9,6 +9,7 @@ import { ShimDialer } from '../shim/dialer.js'
 import { ShimAutoMergeClient } from '../shim/auto-merge-client.js'
 import { ShimGitRunner } from '../shim/git-exec.js'
 import { ShimFileSink } from '../shim/channels.js'
+import { ClusterSkillClient } from '../shim/skill-client.js'
 import { ChannelLossWatcher } from './channel-loss-watcher.js'
 import { TunnelBinder } from './tunnel-binder.js'
 import { ShimWorkspaceFiles } from '../shim/workspace-files-channel.js'
@@ -164,6 +165,9 @@ export interface K8sRuntimePlane {
   /** Where the agent's bound pod mounts its workspace, as its shim reported; undefined before a
    *  bind or from a legacy shim (callers fall back to DEFAULT_SHIM_WORKSPACE_ROOT). */
   workspaceRootFor: (agentId: string) => string | undefined
+  skillClientFor?: (agentId: string) => ClusterSkillClient | undefined
+  workspaceIncarnationFor?: (agentId: string) => string | undefined
+  shimGenerationFor?: (agentId: string) => number | undefined
   /** Agents this daemon holds a Sandbox for, and since when — the idle sweep's candidates. Read from
    *  the driver, not inferred from live hosts: a launch outlives the host it was made for. */
   launchedAgents: () => Array<{ agentId: string; since: number }>
@@ -350,6 +354,12 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       return await new ShimFileSink(session).clear(root)
     },
     workspaceRootFor: (agentId) => driver.workspaceRootFor(agentId),
+    skillClientFor: (agentId) => {
+      if (!runsInSandbox(agentId) || !driver.sessionFor(agentId)?.hasCapability('skills')) return undefined
+      return new ClusterSkillClient(driver.sessionFor(agentId)!)
+    },
+    workspaceIncarnationFor: (agentId) => driver.currentLaunch(agentId)?.claimUid,
+    shimGenerationFor: (agentId) => driver.currentLaunch(agentId)?.generation,
     launchedAgents: () => driver.launchedAgents(),
     suspendIdle: (agentId) => driver.suspendIfIdle(agentId),
     adoptAgent: async (agentId) => {

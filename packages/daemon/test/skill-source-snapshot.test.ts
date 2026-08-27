@@ -46,31 +46,35 @@ afterEach(async () => {
 })
 
 describe('snapshotLocalSkillSource', () => {
-  it('copies a collection into a fresh private tree and returns a canonical manifest', async () => {
-    const source = await collection()
-    const destination = await freshDestination()
+  // Asserts copied-file mode bits, which Windows does not carry.
+  it.skipIf(process.platform === 'win32')(
+    'copies a collection into a fresh private tree and returns a canonical manifest',
+    async () => {
+      const source = await collection()
+      const destination = await freshDestination()
 
-    const result = await snapshotLocalSkillSource(source, destination)
+      const result = await snapshotLocalSkillSource(source, destination)
 
-    expect(DEFAULT_SKILL_SOURCE_SNAPSHOT_LIMITS).toMatchObject({
-      maxFiles: 64,
-      maxTotalBytes: 4 * 1024 * 1024,
-      maxFileBytes: 512 * 1024
-    })
-    expect(result.files.map((file) => file.path)).toEqual(['.hidden', 'bundle/SKILL.md', 'bundle/bin/run.sh'])
-    expect(result.files.map((file) => file.mode)).toEqual([0o644, 0o644, 0o755])
-    expect(result.fileCount).toBe(3)
-    expect(result.totalBytes).toBe(result.files.reduce((sum, file) => sum + file.size, 0))
-    expect(result.sha256).toMatch(/^sha256:[a-f0-9]{64}$/)
-    expect(result.files.every((file) => /^sha256:[a-f0-9]{64}$/.test(file.sha256))).toBe(true)
+      expect(DEFAULT_SKILL_SOURCE_SNAPSHOT_LIMITS).toMatchObject({
+        maxFiles: 64,
+        maxTotalBytes: 4 * 1024 * 1024,
+        maxFileBytes: 512 * 1024
+      })
+      expect(result.files.map((file) => file.path)).toEqual(['.hidden', 'bundle/SKILL.md', 'bundle/bin/run.sh'])
+      expect(result.files.map((file) => file.mode)).toEqual([0o644, 0o644, 0o755])
+      expect(result.fileCount).toBe(3)
+      expect(result.totalBytes).toBe(result.files.reduce((sum, file) => sum + file.size, 0))
+      expect(result.sha256).toMatch(/^sha256:[a-f0-9]{64}$/)
+      expect(result.files.every((file) => /^sha256:[a-f0-9]{64}$/.test(file.sha256))).toBe(true)
 
-    expect(await readFile(join(destination, 'bundle/bin/run.sh'), 'utf8')).toContain('echo run')
-    expect(existsSync(join(destination, 'bundle/empty'))).toBe(true)
-    expect((await lstat(destination)).mode & 0o777).toBe(0o700)
-    expect((await lstat(join(destination, 'bundle'))).mode & 0o777).toBe(0o700)
-    expect((await lstat(join(destination, '.hidden'))).mode & 0o777).toBe(0o644)
-    expect((await lstat(join(destination, 'bundle/bin/run.sh'))).mode & 0o777).toBe(0o755)
-  })
+      expect(await readFile(join(destination, 'bundle/bin/run.sh'), 'utf8')).toContain('echo run')
+      expect(existsSync(join(destination, 'bundle/empty'))).toBe(true)
+      expect((await lstat(destination)).mode & 0o777).toBe(0o700)
+      expect((await lstat(join(destination, 'bundle'))).mode & 0o777).toBe(0o700)
+      expect((await lstat(join(destination, '.hidden'))).mode & 0o777).toBe(0o644)
+      expect((await lstat(join(destination, 'bundle/bin/run.sh'))).mode & 0o777).toBe(0o755)
+    }
+  )
 
   it('produces the same digest across absolute roots, creation order, and mtimes', async () => {
     const first = await collection('forward')
@@ -174,18 +178,22 @@ describe('snapshotLocalSkillSource', () => {
     expect(existsSync(aggregate)).toBe(false)
   })
 
-  it('requires a fresh destination under a daemon-owned mode-0700 parent', async () => {
-    const source = await collection()
-    const publicParent = await temporary('ac-snapshot-public-')
-    await chmod(publicParent, 0o755)
-    await expect(snapshotLocalSkillSource(source, join(publicParent, 'snapshot'))).rejects.toThrow('mode 0700')
+  // The 0700-parent requirement cannot be expressed, let alone asserted, on Windows.
+  it.skipIf(process.platform === 'win32')(
+    'requires a fresh destination under a daemon-owned mode-0700 parent',
+    async () => {
+      const source = await collection()
+      const publicParent = await temporary('ac-snapshot-public-')
+      await chmod(publicParent, 0o755)
+      await expect(snapshotLocalSkillSource(source, join(publicParent, 'snapshot'))).rejects.toThrow('mode 0700')
 
-    const existing = await freshDestination()
-    await mkdir(existing)
-    await writeFile(join(existing, 'sentinel'), 'keep')
-    await expect(snapshotLocalSkillSource(source, existing)).rejects.toThrow('must be fresh')
-    expect(await readFile(join(existing, 'sentinel'), 'utf8')).toBe('keep')
-  })
+      const existing = await freshDestination()
+      await mkdir(existing)
+      await writeFile(join(existing, 'sentinel'), 'keep')
+      await expect(snapshotLocalSkillSource(source, existing)).rejects.toThrow('must be fresh')
+      expect(await readFile(join(existing, 'sentinel'), 'utf8')).toBe('keep')
+    }
+  )
 
   it('rejects a destination inside the source tree', async () => {
     const source = await collection()

@@ -156,6 +156,7 @@ async function writeIndex(root: string, records: AcceptedSkillRecord[]): Promise
 }
 
 async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === 'win32') return // no POSIX directory-fsync primitive; the handle open fails with EPERM
   const handle = await fsp.open(path, constants.O_RDONLY)
   try {
     await handle.sync()
@@ -202,9 +203,10 @@ export async function publishAcceptedDreamSkill(input: {
     await syncDirectory(bundles)
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
-    // Linux commonly reports ENOTEMPTY while Darwin reports EEXIST when an
-    // identical digest-addressed directory was already published.
-    if (code !== 'EEXIST' && code !== 'ENOTEMPTY') {
+    // An already-published identical digest reads as ENOTEMPTY on Linux, EEXIST on Darwin, EPERM on
+    // Windows. EPERM is broad there, so the digest re-read below is what actually proves a collision.
+    const collision = code === 'EEXIST' || code === 'ENOTEMPTY' || (code === 'EPERM' && process.platform === 'win32')
+    if (!collision) {
       await fsp.rm(temporary, { recursive: true, force: true }).catch(() => undefined)
       throw error
     }

@@ -14,6 +14,10 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { Agent } from '../src/agents/agent-schema.js'
 
+const { rename: realRename } = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+const renameMock = vi.fn(realRename)
+vi.mock('node:fs/promises', () => ({ rename: renameMock }))
+
 // Mock simple-git so clone/pull don't touch the network. The clone mock is
 // reassignable per test (success / failure / slow) via `cloneImpl`.
 let cloneImpl: (...args: any[]) => Promise<unknown>
@@ -104,6 +108,7 @@ function githubAppAgent(path: string): Agent {
 
 beforeEach(() => {
   cloneImpl = vi.fn().mockResolvedValue(undefined)
+  renameMock.mockReset().mockImplementation(realRename)
   lastGitEnv = undefined
   pullMock.mockClear()
   rawMock.mockReset().mockResolvedValue('')
@@ -704,6 +709,33 @@ describe('prepareWorkspaceForActivation', () => {
     expect(readdirSync(path)).toEqual([])
   })
 
+  it('retries transient Windows directory rename failures', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'ac-ws-convert-'))
+    const path = join(parent, 'workspace')
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    let failed = false
+    renameMock.mockImplementation(async (from, to) => {
+      if (!failed && from === path) {
+        failed = true
+        throw Object.assign(new Error('directory is busy'), { code: 'EPERM' })
+      }
+      await realRename(from, to)
+    })
+    cloneImpl = vi.fn().mockImplementation(async (_repo: string, target: string) => {
+      mkdirSync(join(target, '.git'), { recursive: true })
+    })
+
+    try {
+      await workspaces.prepareWorkspaceForActivation(gitRepoAgent(path))
+    } finally {
+      platform.mockRestore()
+    }
+
+    expect(failed).toBe(true)
+    expect(existsSync(join(path, '.git'))).toBe(true)
+    expect(readdirSync(parent).filter((entry) => entry.startsWith('workspace.old-'))).toEqual([])
+  })
+
   it('refuses a non-empty scratch directory without starting a clone', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-ws-convert-')), 'workspace')
     mkdirSync(path, { recursive: true })
@@ -1046,7 +1078,8 @@ describe('prepareWorkspace repo-local helper re-pin (github-app)', () => {
   })
 })
 
-describe('workspaces.clusterWorkspaceCwd(--k8s pod coordinates)', () => {
+// Pod coordinates are POSIX by construction — the sandbox pod is always Linux.
+describe.skipIf(process.platform === 'win32')('workspaces.clusterWorkspaceCwd(--k8s pod coordinates)', () => {
   it('hands a from-scratch agent the pod root, never the daemon-disk workspace path', () => {
     const agent = fromScratchAgent('/var/lib/agentconnect/agents/bot-a/workspace')
     expect(workspaces.clusterWorkspaceCwd(agent, '/agent')).toBe('/agent')

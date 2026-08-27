@@ -463,7 +463,7 @@ describe('Daemon in-conversation commands', () => {
     expect(await (daemon as any).store.isSessionMuted(muteKey)).toBe(false)
     blocked.release()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!queue buffers a message and dispatches it once the turn goes idle', async () => {
     const blocked = blockingHost()
@@ -494,7 +494,7 @@ describe('Daemon in-conversation commands', () => {
     await vi.waitFor(() => expect((daemon as any).serialQueue.has(SESSION_KEY)).toBe(false), WAIT)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!queue runs immediately when the agent is idle', async () => {
     const blocked = blockingHost()
@@ -514,7 +514,7 @@ describe('Daemon in-conversation commands', () => {
 
     blocked.release()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!queue rejects once the per-session cap (10) is reached', async () => {
     const blocked = blockingHost()
@@ -538,7 +538,7 @@ describe('Daemon in-conversation commands', () => {
     blocked.release()
     await turn
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!stop cancels the in-flight turn', async () => {
     const blocked = blockingHost()
@@ -560,7 +560,7 @@ describe('Daemon in-conversation commands', () => {
     blocked.release()
     await turn
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!stop latches mute for a cold head before its session row exists', async () => {
     let releaseSession!: () => void
@@ -601,7 +601,7 @@ describe('Daemon in-conversation commands', () => {
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!stop targets an exact cold thread instead of the channel latest session', async () => {
     let releaseSession!: () => void
@@ -652,7 +652,7 @@ describe('Daemon in-conversation commands', () => {
     await expect(turn).resolves.toBeNull()
     expect(host.prompt).not.toHaveBeenCalled()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!cancel interrupts the in-flight turn WITHOUT muting the thread', async () => {
     const blocked = blockingHost()
@@ -677,7 +677,7 @@ describe('Daemon in-conversation commands', () => {
     blocked.release()
     await turn
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!cancel with no in-flight turn just reports (no mute)', async () => {
     const blocked = blockingHost()
@@ -693,7 +693,7 @@ describe('Daemon in-conversation commands', () => {
     expect(conn.postMessage).toHaveBeenCalledWith('C1', 'Nothing is running to cancel.', 'T9')
     expect(await (daemon as any).store.isSessionMuted('slack:C1:T9:bot-a')).toBe(false)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!stop drops queued messages so they do not run after cancellation', async () => {
     const blocked = blockingHost()
@@ -721,7 +721,7 @@ describe('Daemon in-conversation commands', () => {
     expect(blocked.prompts[0]).toContain('hello')
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!stop mutes the thread: follow-ups are dropped (but transcribed) until an explicit @mention', async () => {
     const blocked = blockingHost()
@@ -764,7 +764,7 @@ describe('Daemon in-conversation commands', () => {
     await vi.waitFor(() => expect(blocked.prompts.length).toBe(3), WAIT)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a channel command in a thread it does not own is NOT answered via the channel-latest fallback', async () => {
     // Multi-agent channel leak: agent bot-a owns thread T1. A bare `!stop` (no @mention,
@@ -803,7 +803,7 @@ describe('Daemon in-conversation commands', () => {
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Nothing is running'), 'slack:C1:300')
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!stop with no in-flight turn still mutes an open thread; without a session it just reports', async () => {
     const host = quietHost()
@@ -834,7 +834,7 @@ describe('Daemon in-conversation commands', () => {
     expect(await store.isSessionMuted(SESSION_KEY)).toBe(true)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!status replies with the session status line; reports when no session exists', async () => {
     const daemon = new Daemon({
@@ -865,7 +865,7 @@ describe('Daemon in-conversation commands', () => {
     expect(conn.postMessage).toHaveBeenCalledWith('C2', expect.stringContaining('No active session'), 'T2')
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('!fast on|off records the sticky override; bare /fast prints usage', async () => {
     const daemon = new Daemon({
@@ -892,7 +892,7 @@ describe('Daemon in-conversation commands', () => {
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Usage:'), 'T1')
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('/models · /effort · /permission list the choices and apply a selection', async () => {
     const host = selectHost()
@@ -941,7 +941,7 @@ describe('Daemon in-conversation commands', () => {
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Model set to opus'), 'T9')
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('/permission shows Codex desktop-app labels and resolves a choice typed as its label', async () => {
     const host = {
@@ -1022,7 +1022,7 @@ describe('Daemon in-conversation commands', () => {
     }, WAIT)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a command from a non-routable thread is ignored (no dispatch, no crash)', async () => {
     const blocked = blockingHost()
@@ -1037,7 +1037,7 @@ describe('Daemon in-conversation commands', () => {
     await new Promise((r) => setTimeout(r, 20))
     expect(blocked.prompts).toEqual([])
     await daemon.stop()
-  }, 15_000)
+  })
 })
 
 /** A fake ACP host whose prompts complete immediately. */
@@ -1141,7 +1141,7 @@ describe('Daemon managed-agent bot ingress', () => {
     await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
 
     await daemon.stop()
-  }, 15_000)
+  })
 })
 
 describe('Daemon transcript recording (§8.5 unrouted)', () => {
@@ -1177,7 +1177,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     expect(rows.some((r: any) => r.text === 'beep from another bot' && r.sender === 'B999')).toBe(true)
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('backfill relabels the agent’s own bot frames to agentId and folds in attachment mentions', async () => {
     const daemon = new Daemon({
@@ -1211,7 +1211,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     ])
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('keeps a shared Slack image on its transcript row so the console can replay it', async () => {
     // Slack hands out an auth-gated file URL, so the row can only carry the image if the
@@ -1245,7 +1245,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     expect(conn.downloadFile).toHaveBeenCalledOnce() // one fetch serves transcript + prompt
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('backfill preserves a remote agent author carried by an HTTP Slack bot', async () => {
     const daemon = new Daemon({
@@ -1278,7 +1278,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     ])
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('backfill ignores AgentConnect metadata from an unrelated Slack app', async () => {
     const daemon = new Daemon({
@@ -1318,7 +1318,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     ])
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('records an unrouted message while a long turn is in flight even if the session looks idle-stale', async () => {
     const blocked = blockingHost()
@@ -1363,7 +1363,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     blocked.release()
     await turn
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('does not record an unrouted message when no session is open in its thread', async () => {
     const daemon = new Daemon({
@@ -1390,7 +1390,7 @@ describe('Daemon transcript recording (§8.5 unrouted)', () => {
     expect(await store.transcriptSince('C9', 'T9', null)).toEqual([])
 
     await daemon.stop()
-  }, 15_000)
+  })
 })
 
 describe('Slack interactive status bar', () => {
@@ -1495,7 +1495,7 @@ describe('Slack interactive status bar', () => {
     expect(section.text!.text).toContain(`<http://localhost:3000/sessions/${outward}?source=slack|View Session>`)
     expect(section.accessory.action_id).toBe('ac_more')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('removes the persisted session status line after the Agent disables it', async () => {
     // Exercise the hidden branch without starting the daemon's unrelated file watchers.
@@ -1533,7 +1533,7 @@ describe('Slack interactive status bar', () => {
     await unowned.signals.applyChain
     expect(conn.getThreadReplies).not.toHaveBeenCalled()
     expect(conn.deleteMessage).toHaveBeenCalledTimes(1)
-  }, 15_000)
+  })
 
   it('keeps the session status bar pinned above cards that need human input', async () => {
     const { host, release } = modelHost()
@@ -1578,7 +1578,7 @@ describe('Slack interactive status bar', () => {
     release()
     await t1
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('posts shareable channel status with agent identity and one compact overflow', async () => {
     const { host, release } = modelHost()
@@ -1635,7 +1635,7 @@ describe('Slack interactive status bar', () => {
     release()
     await turn
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('drops Switch agent for a non-shareable HTTP bot while keeping agent identity + relay routing', async () => {
     const { host, release } = modelHost()
@@ -1682,7 +1682,7 @@ describe('Slack interactive status bar', () => {
     release()
     await turn
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('§6.6: a platform_action envelope decodes per-platform and NAKs unsupported items', async () => {
     const daemon = new Daemon({
@@ -2020,7 +2020,7 @@ describe('Slack interactive status bar', () => {
     release()
     await turn
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('never adopts a status line another Slack app authored — posts its own instead', async () => {
     // A shared multi-agent thread: each agent runs its own Slack app, and Slack only
@@ -2056,7 +2056,7 @@ describe('Slack interactive status bar', () => {
     release()
     await turn
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('never adopts a sibling Agent status line when both share one Slack app', async () => {
     const { host, release } = modelHost()
@@ -2092,7 +2092,7 @@ describe('Slack interactive status bar', () => {
     release()
     await turn
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('drops a persisted status-bar ts when Slack rejects the update, and reposts', async () => {
     // Heals rows poisoned by the pre-provenance adoption path: a foreign ts persisted
@@ -2140,7 +2140,7 @@ describe('Slack interactive status bar', () => {
     second.release()
     await turn2
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('fetchThreadHistory skips daemon chrome (metadata-marked + status-bar text) but keeps conversation', async () => {
     const { host } = modelHost()
@@ -2173,7 +2173,7 @@ describe('Slack interactive status bar', () => {
     // the human message and the peer's real reply survive.
     expect(history.map((h: any) => h.text)).toEqual(['human msg', 'a peer reply'])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('posts the status bar at turn START even before the model is known (no modelOptions)', async () => {
     // blockingHost advertises no modelOptions → the model/usage is unknown at turn start.
@@ -2197,7 +2197,7 @@ describe('Slack interactive status bar', () => {
     blocked.release()
     await turn
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('the Configure modal (statusInfoForKey) carries the CP-provided View-session link', async () => {
     const { host, release } = modelHost()
@@ -2232,7 +2232,7 @@ describe('Slack interactive status bar', () => {
     await t1
     expect((await (daemon as any).statusInfoForKey(SESSION_KEY)).cancellable).toBe(false)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('uses the local Web App default when neither local nor CP configuration provides an origin', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
@@ -2296,7 +2296,7 @@ describe('Slack interactive status bar', () => {
     expect(info.model).toBe('opus[1m]')
     expect(info.models).toEqual(['default', 'opus[1m]', 'sonnet', 'haiku'])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('handleStatusAction routes set-model / cancel by session key', async () => {
     const { host, release } = modelHost()
@@ -2333,5 +2333,5 @@ describe('Slack interactive status bar', () => {
     release()
     await t1
     await daemon.stop()
-  }, 15_000)
+  })
 })

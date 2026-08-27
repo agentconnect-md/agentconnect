@@ -336,7 +336,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     })
     expect(prompts.join('')).toContain('run report')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('injects the memory MCP server even for a no-Slack agent (memory tools are universal)', async () => {
     const root = scaffold() // scaffolded agent has integrations: []
@@ -367,7 +367,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const mcpServers = fakeHost.newSession.mock.calls[0]![1] as unknown[]
     expect(mcpServers.length).toBe(1)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('does not inject the memory MCP server when persistent memory is disabled', async () => {
     const root = scaffold(undefined, 'none')
@@ -402,7 +402,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       expect.arrayContaining(['listMemory', 'readMemory', 'writeMemory'])
     )
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('emits session metadata snapshots on create and turn completion', async () => {
     const root = scaffold()
@@ -514,7 +514,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(final.model).toBeUndefined()
     expect(emitUsageReport.mock.calls.map(([report]) => report.observedModel)).toEqual(['claude-sonnet-4-5', null])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('persists pre-client lifecycle events and drains only the latest snapshot after restart', async () => {
     const root = scaffold()
@@ -593,7 +593,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       if (!firstStopped) await first.stop().catch(() => undefined)
       rmSync(root, { recursive: true, force: true })
     }
-  }, 15_000)
+  })
 
   it('preempts a deferred session metadata retry when work is ready sooner', async () => {
     const root = scaffold()
@@ -615,7 +615,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       await daemon.stop()
       rmSync(root, { recursive: true, force: true })
     }
-  }, 15_000)
+  })
 
   it('defers a poisoned session metadata snapshot and drains unrelated sessions', async () => {
     const root = scaffold()
@@ -676,7 +676,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       await daemon.stop()
       rmSync(root, { recursive: true, force: true })
     }
-  }, 15_000)
+  })
 
   it('re-emits session metadata when a runtime session title update arrives', async () => {
     const root = scaffold()
@@ -740,7 +740,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     })
     expect(setTitle).toHaveBeenCalledWith('C1', '200.1', 'Runtime summary')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('drops a runtime title that echoes the inlined standing context', async () => {
     const root = scaffold()
@@ -806,7 +806,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     })
     expect(setTitle).not.toHaveBeenCalled()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('fans out a model-authored title to the UI and Slack during the turn', async () => {
     const root = scaffold()
@@ -892,7 +892,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     ).toBe(true)
     expect(emitEventSession.mock.calls.map(([event]) => event.phase).slice(0, 3)).toEqual(['start', 'plan', 'plan'])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('applies a late runtime title to the UI and the exact Slack DM integration', async () => {
     const root = scaffold()
@@ -969,7 +969,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     })
     expect((daemon as any).sessionDeliveryBindings.size).toBe(0)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('keeps same-id ACP turns isolated by agent', async () => {
     const root = scaffold()
@@ -1044,7 +1044,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await expect(Promise.all([a, b])).resolves.toEqual(['shared-acp-id', 'shared-acp-id'])
     expect((daemon as any).pending.size).toBe(0)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it.each([
     { scenario: 'a non-DM thread', title: 'Channel summary', isDm: false },
@@ -1284,7 +1284,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       triggeredByName: 'Dana Reyes'
     })
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('pending map is cleaned up when host.prompt throws', async () => {
     const root = scaffold()
@@ -1316,7 +1316,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await expect((daemon as any).dispatch('bot-a', msg)).rejects.toThrow('prompt exploded')
     expect((daemon as any).pending.size).toBe(0)
     await daemon.stop()
-  }, 15_000)
+  })
 
   // codex-acp signals quota exhaustion by streaming the human-readable message as an
   // agent_message_chunk and then rejecting session/prompt with a bare "Internal error"
@@ -1394,7 +1394,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(agentRows).toHaveLength(1)
     expect(agentRows[0]!.text).toContain("You've hit your usage limit")
     await daemon.stop()
-  }, 15_000)
+  })
 
   // Same path, but the narrated error is a single line with no trailing paragraph break —
   // the idle flush would hold that back, so the terminal drain must not be the idle one.
@@ -1455,7 +1455,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(agentRows).toHaveLength(1)
     expect(agentRows[0]!.text).toBe(USAGE_LIMIT_MSG)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('surfaces the detailed data.message (not "Internal error") when nothing was streamed', async () => {
     const root = scaffold()
@@ -1504,7 +1504,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(agentRows).toHaveLength(1)
     expect(agentRows[0]!.text).toBe(`⚠️ Agent failed to respond: ${USAGE_LIMIT_MSG}`)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('C1 regression: single onInbound call dispatches exactly once (no double-dispatch)', async () => {
     const root = scaffold()
@@ -1537,7 +1537,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     // The key invariant: onInbound calls dispatch AT MOST ONCE per physical message event.
     expect(dispatchSpy.mock.calls.length).toBeLessThanOrEqual(1)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('preserves an explicit self-mention route as trusted prompt context', async () => {
     const root = scaffold()
@@ -1582,7 +1582,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(dispatchSpy.mock.calls[0]![1]).toEqual(expect.objectContaining({ trigger: 'mention', text: inbound.text }))
     expect(dispatchSpy.mock.calls[0]![2]).toBe('slack-int')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('stop() releases all resources even if one throws, and rejects with AggregateError', async () => {
     const root = scaffold()
@@ -1619,7 +1619,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(err).toBeInstanceOf(AggregateError)
     expect(stopSpy).toHaveBeenCalled()
     expect(storeSpy).toHaveBeenCalled()
-  }, 15_000)
+  })
 
   it('single-agent mode: --agent loads exactly that agent (zero-config) and dispatches', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-single-')) // no config.json on purpose
@@ -1675,7 +1675,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     })
     expect(prompts.join('')).toContain('go')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('low mode: cold agent gets "is starting up…" then "is thinking…"; warm agent goes straight to "is thinking…"', async () => {
     const root = scaffold()
@@ -1724,7 +1724,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     expect(statuses).not.toContain('is starting up…')
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('single-agent mode runs an inactive agent when selected by --agent', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-single-'))
@@ -1761,5 +1761,5 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await daemon.start()
     expect((daemon as any).agents.has('paused-bot')).toBe(true)
     await daemon.stop()
-  }, 15_000)
+  })
 })

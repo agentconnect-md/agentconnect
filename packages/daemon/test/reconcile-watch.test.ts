@@ -797,7 +797,7 @@ describe('Daemon.refreshObservedChannels (Telegram/Discord/Feishu discovery)', (
       authoritative: false
     })
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('folds observed Discord threads onto their enclosing channel (one row per channel)', async () => {
     const root = root1()

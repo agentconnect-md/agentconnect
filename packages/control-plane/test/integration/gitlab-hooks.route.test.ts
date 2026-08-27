@@ -229,15 +229,22 @@ function channel(features?: string[], answer?: RcHookRerunResult | (() => RcHook
   return { ch, sent, requests }
 }
 
+// One row per (agent, project, family): the default body is the MERGE_REQUEST
+// family, the only one that may carry the review and reporting axes.
 const glBody = (agentId: string, over: Record<string, unknown> = {}) => ({
   agentId,
   kind: 'gitlab',
   name: 'gl-hook',
   projectId: PROJECT.toString(),
-  events: ['issues:*', 'merge_request:opened'],
-  commentFamilies: ['issues', 'merge_request'],
+  family: 'merge_request',
+  events: ['merge_request:*'],
+  commentFamilies: ['merge_request'],
   ...over
 })
+
+/** The issues family on the same project — a sibling row, not an edit. */
+const glIssuesBody = (agentId: string, over: Record<string, unknown> = {}) =>
+  glBody(agentId, { name: 'gl-issues', family: 'issues', events: ['issues:*'], commentFamilies: ['issues'], ...over })
 
 describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.3)', () => {
   it('create compiles a rule for feature-advertising relays only, and installs the managed webhook', async () => {
@@ -256,20 +263,32 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     expect(res.statusCode).toBe(200)
     const dto = res.json() as { id: string; kind: string; url: string | null }
     expect(dto.kind).toBe('gitlab')
+    // A sibling family row on the same project: the webhook union spans both.
+    expect(
+      (await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glIssuesBody(h.agentId) })).statusCode
+    ).toBe(200)
 
-    // The converge kick installs the webhook (§11.1) with the hook's union…
+    // The converge kick installs the webhook (§11.1) with the hooks' union…
     await vi.waitFor(() => expect(h.fake.webhooks.size).toBe(1), { timeout: 20_000 })
     const webhook = [...h.fake.webhooks.values()][0]!
     expect(webhook.url).toBe(`${RELAY_URL}/webhooks/gitlab`)
-    expect(webhook.events['issues_events']).toBe(true)
-    expect(webhook.events['merge_requests_events']).toBe(true)
-    expect(webhook.events['note_events']).toBe(true)
-    expect(webhook.events['push_events']).toBeFalsy()
+    await vi.waitFor(
+      () => {
+        const current = [...h.fake.webhooks.values()][0]!
+        expect(current.events['issues_events']).toBe(true)
+        expect(current.events['merge_requests_events']).toBe(true)
+        expect(current.events['note_events']).toBe(true)
+        expect(current.events['push_events']).toBeFalsy()
+      },
+      { timeout: 20_000 }
+    )
 
     // …then re-broadcasts the now-complete rule, only to relays advertising the feature (§17.3).
     await vi.waitFor(
       () => {
-        const assigns = glab.sent.filter((frame) => frame.type === 'rc/hook-assign')
+        const assigns = glab.sent.filter(
+          (frame) => frame.type === 'rc/hook-assign' && (frame.payload as RcHookAssign).hookId === dto.id
+        )
         expect(assigns.length).toBeGreaterThan(0)
         const rule = assigns.at(-1)!.payload as RcHookAssign
         expect(rule.kind).toBe('gitlab')
@@ -281,7 +300,8 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
         // §12.1 veto set: every account bound to the project (§7.2).
         expect(rule.gitlab?.boundServiceAccountUserIds).toEqual([rule.gitlab!.serviceAccountUserId])
         expect(rule.gitlab?.signingToken).toBe(webhook.token)
-        expect(rule.gitlab?.events).toEqual(['issues:*', 'merge_request:opened'])
+        expect(rule.gitlab?.events).toEqual(['merge_request:*'])
+        expect(rule.gitlab?.commentFamilies).toEqual(['merge_request'])
         // The value never reaches the rule; the empty array only keeps an older relay decoding.
         expect(rule.gitlab?.labelFilter).toEqual([])
       },
@@ -498,7 +518,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     expect(moved.statusCode).toBe(409)
   })
 
-  it('create is fenced on a managed binding; a second hook on the same project+agent is a 409', async () => {
+  it('create is fenced on a managed binding; a second hook on the same project+agent+family is a 409', async () => {
     const h = await harness()
     const unbound = await h.a.app.inject({
       method: 'POST',
@@ -512,6 +532,11 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     )
     const dup = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glBody(h.agentId) })
     expect(dup.statusCode).toBe(409)
+    expect((dup.json() as { message: string }).message).toMatch(/already watches .* \(merge_request\)/)
+    // Another FAMILY on the same project is exactly what the split allows.
+    expect(
+      (await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: glIssuesBody(h.agentId) })).statusCode
+    ).toBe(200)
   })
 
   it('delete drops the rule and uninstalls the webhook once no hook wants events (§11.1 inverse)', async () => {
@@ -625,19 +650,35 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     })
     expect(retarget.statusCode).toBe(409)
 
+    // An in-family cadence edit lands (the family itself is immutable).
     const ok = await h.a.app.inject({
       method: 'PUT',
       url: `${ORG}/hooks/${hookId}`,
-      payload: glBody(h.agentId, { events: ['push:*'], commentFamilies: [] })
+      payload: glBody(h.agentId, { events: ['merge_request:opened'] })
     })
     expect(ok.statusCode).toBe(200)
     const row = (await h.hookRepo.get(OrgId(DEFAULT_ORG_ID), HookId(hookId)))!
-    expect(row.events).toEqual(['push:*'])
-    // The saga converges the webhook down to the new union.
+    expect(row.events).toEqual(['merge_request:opened'])
+
+    // A sibling push row widens the desired union; disabling it shrinks it back
+    // — the saga converges the managed webhook either way.
+    const pushRow = glBody(h.agentId, { name: 'gl-push', family: 'push', events: ['push:*'], commentFamilies: [] })
+    const pushes = await h.a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: pushRow })
+    expect(pushes.statusCode).toBe(200)
+    await vi.waitFor(() => expect([...h.fake.webhooks.values()][0]!.events['push_events']).toBe(true), {
+      timeout: 20_000
+    })
+    const disabled = await h.a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/hooks/${(pushes.json() as { id: string }).id}`,
+      payload: { ...pushRow, enabled: false }
+    })
+    expect(disabled.statusCode).toBe(200)
     await vi.waitFor(
       () => {
         const webhook = [...h.fake.webhooks.values()][0]!
-        expect(webhook.events['push_events']).toBe(true)
+        expect(webhook.events['merge_requests_events']).toBe(true)
+        expect(webhook.events['push_events']).toBeFalsy()
         expect(webhook.events['issues_events']).toBeFalsy()
       },
       { timeout: 20_000 }

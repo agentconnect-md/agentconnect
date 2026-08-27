@@ -197,7 +197,7 @@ describe('loop guard on a daemon pool acts only on what the member serves (#1038
     // These heads have no dispatch behind them, so release them before shutdown drains the gate.
     for (const member of [a, b]) member.inner.activeGateEntries.clear()
     await stop()
-  }, 15_000)
+  })
 
   it('a member that loses the structural trip still stops its own turns', async () => {
     const { a, b, shared, stop } = await bootPool()
@@ -215,7 +215,7 @@ describe('loop guard on a daemon pool acts only on what the member serves (#1038
     expect(turnA.cancelledReason).toBe('loop protection')
     for (const member of [a, b]) member.inner.activeGateEntries.clear()
     await stop()
-  }, 15_000)
+  })
 
   it('a single local daemon still purges the whole conversation backlog', async () => {
     const root = scaffold()
@@ -228,5 +228,5 @@ describe('loop guard on a daemon pool acts only on what the member serves (#1038
     expect(await inner.purgeLoopScopeInbox(SCOPE)).toBe(2)
     expect(await store.listInboxBySessionKeyFifo()).toEqual([])
     await daemon.stop()
-  }, 15_000)
+  })
 })

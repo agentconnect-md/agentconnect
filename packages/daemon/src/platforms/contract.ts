@@ -45,6 +45,17 @@ export interface InteractionActor {
   isBot?: boolean
 }
 
+/**
+ * What a reaction placed on an INBOUND message means.
+ *
+ * Core names the intent; the platform picks the glyph, because a reaction
+ * vocabulary is platform vocabulary — Slack takes a shortcode (`eyes`), Telegram
+ * a literal emoji from a fixed allowed set, Lark an `emoji_type` key (`GLANCE`).
+ * Naming the glyph in core would put a platform's alphabet where core can read
+ * it; naming the intent keeps the mapping inside the module that owns it.
+ */
+export type PlatformReactionIntent = 'seen'
+
 /** One conversation as the platform describes it. Members beyond `id` are
  *  optional because no platform reports all of them (`isMpim`/`user` are Slack's;
  *  `isIm` drives DM canonicalization and session classification on every
@@ -188,4 +199,13 @@ export interface PlatformConnection {
   leaveSpace?(space: string): Promise<void>
   /** Delete a message the daemon posted (chrome cleanup). */
   deleteMessage?(channel: string, ts: string): Promise<boolean>
+  /** React to an inbound message — the turn-start acknowledgement, placed before the
+   *  agent has anything to say. Best-effort chrome that never throws into dispatch: a
+   *  platform with no reactions omits the member, and an installation missing the
+   *  permission simply shows nothing.
+   *
+   *  `container` is the message's NATIVE container (`nativeMessageCoordinates`), not the
+   *  normalized `channel`: only the native pair addresses a Discord message inside a
+   *  thread, whose normalized channel is the parent. */
+  react?(container: string, messageId: string, intent: PlatformReactionIntent): Promise<void>
 }

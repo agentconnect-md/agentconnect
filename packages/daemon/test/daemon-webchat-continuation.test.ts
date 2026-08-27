@@ -154,7 +154,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
       expect(prompts.get(P2)).toHaveLength(1)
     }, WAIT)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a full alternating chain terminates at the hop cap with a recorded refusal', async () => {
     // Neither player ever declines — the loop protections are the only terminator,
@@ -211,7 +211,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     await settle()
     expect(prompts.get(P1)).toHaveLength(1)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('an agent post with no depth stamp stays transcript-only (pre-parity daemon, fail closed)', async () => {
     const { factory, prompts } = scriptedHosts({ [P1]: () => 'should never run' })
@@ -230,7 +230,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     // …but no activation.
     expect(prompts.get(P1)).toHaveLength(0)
     await daemon.stop()
-  }, 15_000)
+  })
 
   // The fan-out leg of the #912 regression: a user turn targeted at one participant
   // reaches the rest as a `context` post, and that copy wrote the author's DISPLAY NAME
@@ -258,7 +258,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     expect(rows[0]!.sender).toBe('user-1')
     expect((await (daemon as any).store.getDisplayNames(['user-1'])).get('user-1')).toBe('Ada Lovelace')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('the author never self-activates: a context frame mis-addressed to the author is dropped', async () => {
     const { factory, prompts } = scriptedHosts({ [P1]: () => 'should never run' })
@@ -273,7 +273,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     expect(prompts.get(P1)).toHaveLength(0)
     expect(await (daemon as any).store.getActivation(rendezvousKey(post.postId, P1))).toBeUndefined()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('the directional call policy gates the continuation edge', async () => {
     const { factory, prompts } = scriptedHosts({ [P1]: () => 'should never run' })
@@ -290,7 +290,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     ).map((row: { text: string }) => row.text)
     expect(rows).toEqual(['not allowed to wake you'])
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('streaming never activates: peers wake only on the committed post, not while the author is generating', async () => {
     let releaseP1!: () => void
@@ -325,5 +325,5 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     await vi.waitFor(() => expect(prompts.get(P2)).toHaveLength(1), WAIT)
     expect(posts.map((p) => p.post.text)).toEqual(['the committed answer'])
     await daemon.stop()
-  }, 15_000)
+  })
 })

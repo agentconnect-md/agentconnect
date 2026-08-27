@@ -21,6 +21,7 @@ import { buildHttpApp, TEST_API_KEY_PEPPER, type HttpApp } from '../fakes/build-
 import { GithubService } from '../../src/github/service.js'
 import { PgGithubInstallationRepo, PgGithubInstallStateStore } from '../../src/persistence/index.js'
 import { systemClock } from '../../src/domain/clock.js'
+import { AgentId } from '../../src/domain/ids.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
@@ -243,15 +244,29 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       return agentId
     }
 
+    // One row per (agent, repo, family): the default body is the ISSUES family,
+    // and a github issue_comment subscription must scope itself to it.
     const ghBody = (agentId: string, over: Record<string, unknown> = {}) => ({
       agentId,
       kind: 'github',
       name: 'issues-hook',
       repoFullName: 'acme/infra',
+      family: 'issues',
       events: ['issues:opened', 'issue_comment:created'],
+      commentFamilies: ['issues'],
       labelFilter: ['bug'],
       ...over
     })
+
+    /** The pull-request family — the only one that may carry review/reporting. */
+    const prBody = (agentId: string, over: Record<string, unknown> = {}) =>
+      ghBody(agentId, {
+        name: 'pr-hook',
+        family: 'pull_request',
+        events: ['pull_request:*'],
+        commentFamilies: [],
+        ...over
+      })
 
     async function seedInstallation(over: Record<string, unknown> = {}): Promise<void> {
       await prisma.githubInstallation.create({
@@ -329,6 +344,7 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
         sessionMode: 'perThread',
         repoId: String(REPO_ID),
         repoFullName: 'acme/infra',
+        family: 'issues',
         events: ['issues:opened', 'issue_comment:created'],
         commentFamilies: ['issues'],
         labelFilter: ['bug'],
@@ -341,6 +357,7 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       // and lands in the row as BigInt.
       const row = await prisma.hookDef.findUniqueOrThrow({ where: { id: dto.id as string } })
       expect(row.repoId).toBe(BigInt(REPO_ID))
+      expect(row.family).toBe('issues')
       expect(row.githubSessionKey).toBe(`github:${REPO_ID}`)
       expect(row.commentFamilies).toEqual(['issues'])
       expect(row.urlToken).toBeNull()
@@ -369,14 +386,14 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
         const rejected = await a.app.inject({
           method: 'POST',
           url: `${ORG}/hooks`,
-          payload: ghBody(agentId, { enabled: false, ...patch })
+          payload: prBody(agentId, { enabled: false, ...patch })
         })
         expect(rejected.statusCode).toBe(409)
         expect((rejected.json() as { message: string }).message).toMatch(message)
       }
       expect(await prisma.hookDef.count({ where: { agentId } })).toBe(0)
 
-      const created = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: ghBody(agentId) })
+      const created = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: prBody(agentId) })
       expect(created.statusCode).toBe(200)
       const hookId = (created.json() as { id: string }).id
 
@@ -384,7 +401,7 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
         const rejected = await a.app.inject({
           method: 'PUT',
           url: `${ORG}/hooks/${hookId}`,
-          payload: ghBody(agentId, { enabled: false, ...patch })
+          payload: prBody(agentId, { enabled: false, ...patch })
         })
         expect(rejected.statusCode).toBe(409)
         expect((rejected.json() as { message: string }).message).toMatch(message)
@@ -465,7 +482,7 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       await seedRelay()
       await seedInstallation()
       const a = ghApp()
-      const created = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: ghBody(agentId) })
+      const created = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: prBody(agentId) })
       expect(created.statusCode).toBe(200)
       const hookId = (created.json() as { id: string }).id
       await running!.close()
@@ -477,33 +494,40 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       const res = await b.app.inject({
         method: 'PUT',
         url: `${ORG}/hooks/${hookId}`,
-        payload: ghBody(agentId, { reviewPolicy: 'comment' })
+        payload: prBody(agentId, { reviewPolicy: 'comment' })
       })
       expect(res.statusCode).toBe(502)
       expect((res.json() as { message: string }).message).toMatch(/github/)
       expect(await prisma.hookDef.findUniqueOrThrow({ where: { id: hookId } })).toMatchObject({ reviewPolicy: 'off' })
     })
 
-    it('POST accepts push ("commits") subscriptions and 409s a duplicate repo for the same agent', async () => {
+    it('POST accepts push ("commits") subscriptions and 409s a duplicate FAMILY for the same repo', async () => {
       const agentId = await githubAgent()
       await seedRelay()
       await seedInstallation()
       const a = ghApp()
 
-      const first = await a.app.inject({
-        method: 'POST',
-        url: `${ORG}/hooks`,
-        payload: ghBody(agentId, { events: ['pull_request:*', 'push:*'], labelFilter: [] })
+      const pushBody = ghBody(agentId, {
+        name: 'push-hook',
+        family: 'push',
+        events: ['push:*'],
+        commentFamilies: [],
+        labelFilter: []
       })
+      const first = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: pushBody })
       expect(first.statusCode).toBe(200)
-      expect((first.json() as { events: string[] }).events).toEqual(['pull_request:*', 'push:*'])
+      expect((first.json() as { events: string[] }).events).toEqual(['push:*'])
       expect((first.json() as { commentFamilies: string[] }).commentFamilies).toEqual([])
 
-      // Same repo again for the same agent — one subscription per (agent, repo).
-      const dup = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: ghBody(agentId) })
+      // Same repo AND family again for the same agent — the database's rule.
+      const dup = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: pushBody })
       expect(dup.statusCode).toBe(409)
-      expect((dup.json() as { message: string }).message).toMatch(/already watches acme\/infra/)
+      expect((dup.json() as { message: string }).message).toMatch(/already watches acme\/infra \(push\)/)
       expect(await prisma.hookDef.count()).toBe(1)
+
+      // Another FAMILY on the same repo is the whole point of the split.
+      const issues = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: ghBody(agentId) })
+      expect(issues.statusCode).toBe(200)
 
       // A DIFFERENT agent may watch the same repo (its own workspace here).
       const otherAgent = randomUUID()
@@ -560,8 +584,8 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
         url: `${ORG}/hooks/${id}`,
         payload: ghBody(agentId, {
           name: 'renamed',
-          events: ['pull_request:*', 'issue_comment:created'],
-          commentFamilies: ['pull_request'],
+          events: ['issues:*', 'issue_comment:created'],
+          commentFamilies: ['issues'],
           labelFilter: [],
           mentionOnly: true
         })
@@ -570,8 +594,9 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       expect(put.json()).toMatchObject({
         name: 'renamed',
         sessionMode: 'perThread',
-        events: ['pull_request:*', 'issue_comment:created'],
-        commentFamilies: ['pull_request'],
+        family: 'issues',
+        events: ['issues:*', 'issue_comment:created'],
+        commentFamilies: ['issues'],
         mentionOnly: true
       })
 
@@ -580,10 +605,17 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       const echo = await a.app.inject({
         method: 'PUT',
         url: `${ORG}/hooks/${id}`,
-        payload: ghBody(agentId, { name: 'renamed', events: ['pull_request:*', 'issue_comment:created'] })
+        payload: {
+          agentId,
+          kind: 'github',
+          name: 'renamed',
+          repoFullName: 'acme/infra',
+          events: ['issues:*', 'issue_comment:created'],
+          labelFilter: []
+        }
       })
       expect(echo.statusCode).toBe(200)
-      expect(echo.json()).toMatchObject({ mentionOnly: true, commentFamilies: ['pull_request'] })
+      expect(echo.json()).toMatchObject({ mentionOnly: true, commentFamilies: ['issues'] })
 
       const flip = await a.app.inject({
         method: 'PUT',
@@ -605,8 +637,7 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
         where: { id: agentId },
         data: { installationId: installation.id, gitAccess: 'write' }
       })
-      const createPayload = ghBody(agentId, {
-        events: ['pull_request:*'],
+      const createPayload = prBody(agentId, {
         labelFilter: [],
         reviewPolicy: 'off',
         reportingMode: 'check',
@@ -724,8 +755,7 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
         data: { installationId: installation.id, gitAccess: 'write' }
       })
       const a = ghApp()
-      const payload = ghBody(firstAgent, {
-        events: ['pull_request:*'],
+      const payload = prBody(firstAgent, {
         labelFilter: [],
         reviewPolicy: 'off',
         reportingMode: 'check',
@@ -768,6 +798,119 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
         agentId: firstAgent,
         tombstonedAt: expect.any(Date)
       })
+    })
+
+    // The point of the split: one repository, two families, two cadences.
+    it('watches one repo per family, each with its own mention gate and compiled rule', async () => {
+      const agentId = await githubAgent()
+      await seedRelay()
+      await seedInstallation()
+      const a = ghApp()
+
+      // PRs fire on every update; issues only when the agent is summoned.
+      const pr = await a.app.inject({
+        method: 'POST',
+        url: `${ORG}/hooks`,
+        payload: prBody(agentId, {
+          events: ['pull_request:*', 'issue_comment:created'],
+          commentFamilies: ['pull_request'],
+          labelFilter: [],
+          mentionOnly: false
+        })
+      })
+      const issues = await a.app.inject({
+        method: 'POST',
+        url: `${ORG}/hooks`,
+        payload: ghBody(agentId, {
+          events: ['issues:*', 'issue_comment:created'],
+          commentFamilies: ['issues'],
+          labelFilter: [],
+          mentionOnly: true
+        })
+      })
+      expect([pr.statusCode, issues.statusCode]).toEqual([200, 200])
+      expect(pr.json()).toMatchObject({ family: 'pull_request', mentionOnly: false })
+      expect(issues.json()).toMatchObject({ family: 'issues', mentionOnly: true })
+
+      const rows = await prisma.hookDef.findMany({ where: { agentId }, orderBy: { family: 'asc' } })
+      expect(rows.map((r) => [r.family, r.mentionOnly, r.commentFamilies])).toEqual([
+        ['issues', true, ['issues']],
+        ['pull_request', false, ['pull_request']]
+      ])
+      // Sibling rows answer the same threads, so they share one session namespace.
+      expect(new Set(rows.map((r) => r.githubSessionKey))).toEqual(new Set([`github:${REPO_ID}`]))
+
+      // Two independent wire rules — the relay already fans one delivery out to
+      // every rule for the repository, so the per-rule gate is what differs.
+      const records = (await a.deps.repos.hook.listForAgent(AgentId(agentId))).sort((x, y) =>
+        (x.family ?? '').localeCompare(y.family ?? '')
+      )
+      const compiled = await Promise.all(records.map((record) => a.deps.hooks.compile(record)))
+      expect(
+        compiled.map((rule) => [rule?.github?.commentFamilies, rule?.github?.mentionOnly, rule?.github?.events])
+      ).toEqual([
+        [['issues'], true, ['issues:*', 'issue_comment:created']],
+        [['pull_request'], false, ['pull_request:*', 'issue_comment:created']]
+      ])
+    })
+
+    it('400s a subscription that strays outside the row’s own family', async () => {
+      const agentId = await githubAgent()
+      await seedRelay()
+      await seedInstallation()
+      const a = ghApp()
+      const cases: [Record<string, unknown>, RegExp][] = [
+        // A pattern belonging to another family — that family has its own row.
+        [{ family: 'pull_request', events: ['pull_request:*', 'issues:opened'] }, /"issues:opened"/],
+        [{ family: 'push', events: ['push:*', 'issue_comment:created'] }, /"issue_comment:created"/],
+        // An unscoped issue_comment is the legacy repo-wide meaning: it would
+        // double-fire against the sibling row that owns the other thread family.
+        [
+          { family: 'pull_request', events: ['pull_request:*', 'issue_comment:created'], commentFamilies: [] },
+          /must set commentFamilies/
+        ],
+        // commentFamilies may only narrow this row's own family.
+        [{ family: 'pull_request', events: ['pull_request:*'], commentFamilies: ['issues'] }, /not issues/],
+        // Reviews and run reporting belong to the change-proposal family.
+        [{ reviewPolicy: 'comment' }, /pull-request\/merge-request rows/],
+        [{ reportingMode: 'check' }, /pull-request\/merge-request rows/]
+      ]
+      for (const [over, message] of cases) {
+        const res = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: ghBody(agentId, over) })
+        expect(res.statusCode).toBe(400)
+        expect((res.json() as { message: string }).message).toMatch(message)
+      }
+      expect(await prisma.hookDef.count({ where: { agentId } })).toBe(0)
+
+      // The family is immutable, so an edit is re-shaped against the STORED one.
+      const created = await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: ghBody(agentId) })
+      expect(created.statusCode).toBe(200)
+      const strayEdit = await a.app.inject({
+        method: 'PUT',
+        url: `${ORG}/hooks/${(created.json() as { id: string }).id}`,
+        payload: ghBody(agentId, { events: ['pull_request:*'], commentFamilies: [] })
+      })
+      expect(strayEdit.statusCode).toBe(400)
+      expect((strayEdit.json() as { message: string }).message).toMatch(/issues family/)
+    })
+
+    it('409s a sibling family anchored somewhere else — one thread, one destination', async () => {
+      const agentId = await githubAgent()
+      await seedRelay()
+      await seedInstallation()
+      const a = ghApp()
+      expect((await a.app.inject({ method: 'POST', url: `${ORG}/hooks`, payload: ghBody(agentId) })).statusCode).toBe(
+        200
+      )
+
+      const diverging = await a.app.inject({
+        method: 'POST',
+        url: `${ORG}/hooks`,
+        payload: prBody(agentId, { targetChannel: 'C-elsewhere' })
+      })
+      expect(diverging.statusCode).toBe(409)
+      expect((diverging.json() as { message: string }).message).toMatch(/post somewhere else/)
+      expect(await prisma.hookDef.count({ where: { agentId } })).toBe(1)
     })
   })
 

@@ -94,6 +94,7 @@ import { useCommandAutocomplete } from '@/components/console/useCommandAutocompl
 import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
+  NOTICE_LANE,
   WORK_LANES,
   sessionTurnInFlight,
   toggleWorkPanel,
@@ -1359,22 +1360,17 @@ function SessionDetailFrame({ children, withDock = true }: { children: ReactNode
 }
 
 function sessionUnavailableReasons(providerName: string | undefined, profileLinked: boolean | undefined): string[] {
+  const base = ['The session doesn’t exist or has been removed.', 'You aren’t authorized to see this session.']
   if (!providerName) {
-    return ['The session doesn’t exist or has been removed.']
+    return base
   }
   if (profileLinked === false) {
-    return ['The session doesn’t exist or has been removed.', `Your ${providerName} profile isn’t linked.`]
+    return [...base, `Your ${providerName} profile isn’t linked.`]
   }
   if (profileLinked === true) {
-    return [
-      'The session doesn’t exist or has been removed.',
-      `Your linked ${providerName} profile belongs to a different workspace.`
-    ]
+    return [...base, `Your linked ${providerName} profile belongs to a different workspace.`]
   }
-  return [
-    'The session doesn’t exist or has been removed.',
-    `Your ${providerName} profile isn’t linked or belongs to a different workspace.`
-  ]
+  return [...base, `Your ${providerName} profile isn’t linked or belongs to a different workspace.`]
 }
 
 export default function SessionDetailView() {
@@ -3998,7 +3994,12 @@ export default function SessionDetailView() {
                           (() => {
                             // 2b: the spoken answer (MSG/DONE) is plain text; the agent's work
                             // (reasoning / plan / tool / edit) collapses behind a per-turn toggle.
-                            const textSteps = turn.steps.filter((s) => !WORK_LANES.has(s.lane))
+                            // A daemon notice (a sandbox pod coming up) is neither: it renders
+                            // as its own standalone line above the answer.
+                            const noticeSteps = turn.steps.filter((s) => s.lane === NOTICE_LANE)
+                            const textSteps = turn.steps.filter(
+                              (s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE
+                            )
                             const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
                             // Reasoning steps / tool commands / edited FILES (distinct paths across
                             // EDIT rows, since one EDIT row can touch several files).
@@ -4086,6 +4087,20 @@ export default function SessionDetailView() {
                                   <div className="mb-[5px] flex items-center gap-[7px]">
                                     <span className={AGENT_NAME}>{turn.agentName}</span>
                                   </div>
+                                  {noticeSteps.length > 0 && (
+                                    <div
+                                      className={`flex min-w-0 flex-col gap-[3px] ${textSteps.length > 0 || workSteps.length > 0 ? 'mb-2' : ''}`}
+                                    >
+                                      {noticeSteps.map((st, si) => (
+                                        <span
+                                          key={`n:${si}`}
+                                          className="min-w-0 truncate font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)"
+                                        >
+                                          {st.text}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
                                   {/* One bubble per text step: a turn that answers in two chunks
                             arrives as two delivered messages, so one wrapper around the set
                             would merge messages the platform kept apart. */}

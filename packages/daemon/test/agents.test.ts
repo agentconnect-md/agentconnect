@@ -99,7 +99,7 @@ describe('loadAgents', () => {
 
     expect(result.agents.map(({ agent }) => agent.id)).toEqual(['bot-a'])
     expect(result.failures).toHaveLength(1)
-    expect(result.failures[0]?.error.message).toMatch(/invalid agent\.json.*bad\/agent\.json/)
+    expect(result.failures[0]?.error.message).toMatch(/invalid agent\.json.*bad[/\\]agent\.json/)
   })
 
   it.skipIf(process.platform === 'win32')('repairs a legacy detached agent.json without discovering it', () => {

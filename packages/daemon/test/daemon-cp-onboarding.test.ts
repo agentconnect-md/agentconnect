@@ -59,7 +59,7 @@ describe('Daemon CP key onboarding (auth-frame daemonId)', () => {
     const opts = cpClientCtor.mock.calls[0]![0] as { daemonId?: string }
     expect(opts.daemonId).toBeUndefined()
     await daemon.stop()
-  }, 15_000)
+  })
 
   it("echoes an explicit --daemon-id (it must match the key's daemon)", async () => {
     const root = scaffoldOnboarding('stale-local-uuid')
@@ -68,5 +68,5 @@ describe('Daemon CP key onboarding (auth-frame daemonId)', () => {
     const opts = cpClientCtor.mock.calls[0]![0] as { daemonId?: string }
     expect(opts.daemonId).toBe('explicit-id')
     await daemon.stop()
-  }, 15_000)
+  })
 })

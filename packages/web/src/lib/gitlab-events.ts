@@ -3,17 +3,19 @@
  *
  * The console presents the same two axes GitHub does: SUBJECT families (issues
  * and merge requests — pushes are wire-supported but held back from the console,
- * see `GL_FAMILIES`) plus one TRIGGER MODE. The stored `events` patterns,
- * `commentFamilies` and the `mentionOnly` flag encode both:
+ * see `GL_FAMILIES`) plus one TRIGGER MODE. A stored row covers exactly ONE
+ * family and carries its own mode, so a project watched for both subjects is two
+ * rows and the family is immutable; the row's `events` patterns,
+ * `commentFamilies` and `mentionOnly` flag encode the mode:
  *
- *   created  → `family:opened` for the thread families and NO note family; the
+ *   opened   → `family:opened` for a thread family and NO note family; the
  *              relay additionally accepts a later explicit @mention in an
  *              `:opened`-cadence thread family. Pushes have no "first" — a push
  *              subscription is inherently per-push, so `push:*` rides along.
- *   updated  → `family:*` plus the selected thread families as note families,
+ *   any update → `family:*` plus the row's own thread family as its note family,
  *              so replies fire too. Close, reopen, merge and draft toggles stay
  *              inert; supported updates and replies run.
- *   mention only → the same subscriptions as updated, with `mentionOnly: true` —
+ *   @-mention → the same subscriptions as any update, with `mentionOnly: true` —
  *              an event fires ONLY when its text (issue/MR description, note
  *              body, commit message) @-mentions the agent or the project's
  *              service account. The agent handle targets one rule; the service
@@ -22,15 +24,15 @@
  *
  * One asymmetry with GitHub is deliberate: there, `commentFamilies` only
  * NARROWS a shared `issue_comment` subscription, so it may stay populated in
- * created mode. Here it is the note subscription itself, so created mode must
+ * opened mode. Here it is the note subscription itself, so opened mode must
  * clear it or every reply would fire.
  *
  * The wire accepts finer `family:action` patterns; these helpers never emit one.
  */
 
-import type { GitlabCommentFamily, HookCommentFamily } from './api'
+import type { GitlabCommentFamily, GitlabHookFamily, HookCommentFamily } from './api'
 
-export type GlFamily = 'issues' | 'merge_request' | 'push'
+export type GlFamily = GitlabHookFamily
 export type GlTriggerMode = 'first' | 'every' | 'mention'
 
 export interface GlFamilyTile {
@@ -38,24 +40,15 @@ export interface GlFamilyTile {
   pill: string
   icon: string
   label: string
-  desc: string
 }
 
-// `desc` is the Add-integration tile subtitle — keep it to a short fragment
-// naming signals the relay really forwards, on one or two 11.5px lines.
-// Every subject the wire knows, in display order. The event helpers read THIS
-// list, so an already-stored push subscription round-trips instead of being
-// silently dropped by an edit that never mentioned pushes.
+// Every subject the wire knows, in display order — a stored push row still
+// reads its own label from here even though the console never offers one. What
+// a subject listens to is stated by its cadence tiles, not a subtitle.
 const GL_ALL_FAMILIES: GlFamilyTile[] = [
-  { fam: 'issues', pill: 'Issues', icon: 'circle-dot', label: 'Issues', desc: 'opened, labels, replies' },
-  {
-    fam: 'merge_request',
-    pill: 'MRs',
-    icon: 'git-pull-request',
-    label: 'Merge requests',
-    desc: 'opened, new commits, replies'
-  },
-  { fam: 'push', pill: 'Pushes', icon: 'git-commit-horizontal', label: 'Pushes', desc: 'commits pushed to a branch' }
+  { fam: 'issues', pill: 'Issues', icon: 'circle-dot', label: 'Issues' },
+  { fam: 'merge_request', pill: 'MRs', icon: 'git-pull-request', label: 'Merge requests' },
+  { fam: 'push', pill: 'Pushes', icon: 'git-commit-horizontal', label: 'Pushes' }
 ]
 
 // The subjects the console OFFERS — the two GitHub offers too. The push tile is
@@ -63,19 +56,23 @@ const GL_ALL_FAMILIES: GlFamilyTile[] = [
 // re-add it here (and restore the 3-up grid) to bring the feature back.
 export const GL_FAMILIES: GlFamilyTile[] = GL_ALL_FAMILIES.filter((entry) => entry.fam !== 'push')
 
-/** The subject toggles ONE stored hook shows: the offered ones, plus pushes when
- *  it already listens to them so the stored rule stays legible and removable. */
-export function gitlabRowFamilies(events: readonly string[]): GlFamilyTile[] {
-  return GL_ALL_FAMILIES.filter((entry) => entry.fam !== 'push' || gitlabFamCovered(events, 'push'))
+/** The display metadata for one family, including the held-back push subject. */
+export function gitlabFamilyTile(fam: GlFamily): GlFamilyTile | undefined {
+  return GL_ALL_FAMILIES.find((entry) => entry.fam === fam)
+}
+
+/** Reviews and the run note exist only on the change-proposal subject (the CP 400s otherwise). */
+export function gitlabFamilyCarriesReviews(fam: GlFamily): boolean {
+  return fam === 'merge_request'
 }
 
 /** The trigger modes in display order — mention deliberately last. */
 export const GL_TRIGGER_MODES: readonly GlTriggerMode[] = ['first', 'every', 'mention']
-/** The Add-integration cadence tiles' vocabulary ("Trigger when …"). */
+/** The cadence vocabulary ("Trigger when …") the create surfaces spell out. */
 export const GL_TRIGGER_LABEL: Record<GlTriggerMode, string> = {
-  first: 'created',
-  every: 'updated',
-  mention: 'mention only'
+  first: 'opened',
+  every: 'any update',
+  mention: '@-mention'
 }
 /** The agent-detail trigger bar's segment vocabulary, worded like the IM bar. */
 export const GL_TRIGGER_PILL: Record<GlTriggerMode, string> = {
@@ -106,15 +103,16 @@ export function gitlabMentionUsage(agentName: string): string {
 /** The default create-form selection: merge requests only. */
 export const GL_DEFAULT_FAMILIES: readonly GlFamily[] = ['merge_request']
 
-/** The default create-form cadence: react to issue or merge-request updates. */
-export const GL_DEFAULT_TRIGGER_MODE: GlTriggerMode = 'every'
+/** The default cadence every create surface opens a new subject on: the opening
+ *  itself, exactly as the GitHub side does. */
+export const GL_DEFAULT_TRIGGER_MODE: GlTriggerMode = 'first'
 
 /** Narrow a stored cross-host comment scope to the GitLab families a gitlab hook may carry. */
 export function gitlabCommentFamilies(families: readonly HookCommentFamily[]): GitlabCommentFamily[] {
   return families.filter((family): family is GitlabCommentFamily => family === 'issues' || family === 'merge_request')
 }
 
-/** The note families replies may arrive on — empty in created mode, where a
+/** The note families replies may arrive on — empty in opened mode, where a
  *  reply fires only by summoning the agent in an already-opened thread. */
 export function commentFamiliesForGitlabFamilies(
   families: Iterable<GlFamily>,
@@ -176,29 +174,40 @@ export function gitlabHookNeedsNormalization(hook: {
   )
 }
 
-/** One edit-path write: the whole subscription block the row must PUT. */
-export interface GitlabSubscriptionEdit {
-  families: GlFamily[]
-  mode: GlTriggerMode
-}
-
 /** The stored subject families, in display order. */
 function gitlabFamiliesOf(events: readonly string[]): GlFamily[] {
   return GL_ALL_FAMILIES.map((entry) => entry.fam).filter((family) => gitlabFamCovered(events, family))
 }
 
-/** A subject toggle on an existing hook — null when it would leave the hook
- *  watching nothing. The stored cadence rides along unchanged; a rule the radio
- *  cannot express is normalized, because the toggle is an explicit edit. */
-export function gitlabFamilyToggle(
-  hook: { events: readonly string[]; mentionOnly: boolean },
-  fam: GlFamily
-): GitlabSubscriptionEdit | null {
-  const families = GL_ALL_FAMILIES.map((entry) => entry.fam).filter((family) =>
-    family === fam ? !gitlabFamCovered(hook.events, family) : gitlabFamCovered(hook.events, family)
-  )
-  if (families.length === 0) return null
-  return { families, mode: gitlabTriggerModeOf(hook) }
+/** The one subject family a stored row covers: its own `family`, or — for a
+ *  legacy row the split could not place — the first family its events cover. */
+export function gitlabHookFamily(hook: { family: string | null; events: readonly string[] }): GlFamily | null {
+  const declared = GL_ALL_FAMILIES.find((entry) => entry.fam === hook.family)
+  if (declared) return declared.fam
+  return gitlabFamiliesOf(hook.events)[0] ?? null
+}
+
+/** The subscription block ONE (family, mode) row writes — `family` itself is
+ *  create-only, so it is not part of this body. */
+export interface GitlabFamilySubscription {
+  events: string[]
+  commentFamilies: GitlabCommentFamily[]
+  mentionOnly: boolean
+}
+
+/** Compile one row's family+mode into the fields its create/update body carries. */
+export function gitlabFamilySubscription(fam: GlFamily, mode: GlTriggerMode): GitlabFamilySubscription {
+  return {
+    events: eventsForGitlabFamilies([fam], mode),
+    commentFamilies: commentFamiliesForGitlabFamilies([fam], mode),
+    mentionOnly: mode === 'mention'
+  }
+}
+
+/** One edit-path write: the row's immutable family plus the cadence to store. */
+export interface GitlabSubscriptionEdit {
+  family: GlFamily
+  mode: GlTriggerMode
 }
 
 /** A cadence pick on an existing hook — null when nothing would change, which
@@ -206,11 +215,18 @@ export function gitlabFamilyToggle(
  *  the mere act of displaying it. Re-picking the DISPLAYED cadence on such a
  *  rule does write: that is the explicit opt-in that normalizes it. */
 export function gitlabCadencePick(
-  hook: { events: readonly string[]; commentFamilies: readonly HookCommentFamily[]; mentionOnly: boolean },
+  hook: {
+    family: string | null
+    events: readonly string[]
+    commentFamilies: readonly HookCommentFamily[]
+    mentionOnly: boolean
+  },
   mode: GlTriggerMode
 ): GitlabSubscriptionEdit | null {
+  const family = gitlabHookFamily(hook)
+  if (!family) return null
   if (mode === gitlabTriggerModeOf(hook) && !gitlabHookNeedsNormalization(hook)) return null
-  return { families: gitlabFamiliesOf(hook.events), mode }
+  return { family, mode }
 }
 
 /**

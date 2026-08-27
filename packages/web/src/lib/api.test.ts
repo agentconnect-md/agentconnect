@@ -80,6 +80,9 @@ describe('fmtCountCompact', () => {
     [101_817, '102K'],
     [2_316_000, '2.32M'],
     [2_463_144, '2.46M'],
+    [1_234_567_890, '1.23B'],
+    [45_600_000_000, '46B'],
+    [2_500_000_000_000, '2,500B'],
     [undefined, '—']
   ])('formats %s as %s', (value, expected) => {
     expect(fmtCountCompact(value)).toBe(expected)
@@ -412,12 +415,15 @@ describe('GitHub hook review settings', () => {
       gateMode: 'informational' as const
     }
 
-    await createGithubHook(input)
+    // The family is create-only: it discriminates the row, and the update body
+    // must not carry it (the row's family is immutable).
+    await createGithubHook({ ...input, family: 'pull_request' })
     await updateGithubHook('hook-1', input)
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toMatchObject({
       kind: 'github',
+      family: 'pull_request',
       reviewPolicy: 'request_changes',
       reportingMode: 'check',
       gateMode: 'informational'

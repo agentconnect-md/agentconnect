@@ -86,14 +86,15 @@ function CommandBox({ tabs, placeholder }: { tabs: CommandTab[]; placeholder: Re
 
 // `onDone` (optional) replaces plain close on the connected path's Done button —
 // ModalProvider uses it to chain back into the Edit-agent dialog when this modal
-// was opened from an unplaced agent's "Add daemon" affordance. Cancel never chains.
+// was opened from an agent's "Add daemon" affordance, carrying the daemon just
+// connected so that dialog can preselect it. Cancel never chains.
 export default function AddDaemonModal({
   onClose,
   onDone,
   registerDismiss
 }: {
   onClose: () => void
-  onDone?: () => void
+  onDone?: (daemonId: string) => void
   registerDismiss: (handler: () => void) => () => void
 }) {
   const { provisionDaemon, daemons, refresh, deleteDaemon, renameDaemon, setDaemonSessionRetention, saveSharing } =
@@ -182,7 +183,8 @@ export default function AddDaemonModal({
       // operator already left. (`cancel` fences on `saving`, so this only catches a
       // dismissal that raced the flag; the guard makes the ordering irrelevant.)
       if (dismissed.current) return
-      ;(onDone ?? onClose)()
+      if (onDone) onDone(connect.daemonId)
+      else onClose()
     } catch (e) {
       if (dismissed.current) return
       setSaveErr(e instanceof Error ? e.message : String(e))

@@ -21,6 +21,11 @@ on:
         required: false
         type: boolean
         default: false
+      skip_windows:
+        description: 'Skip the Windows unit suite (PR runs always keep it)'
+        required: false
+        type: boolean
+        default: false
     outputs:
       build_test_summary:
         description: 'Unit test summary markdown'
@@ -187,6 +192,113 @@ jobs:
             cat "$CAPTURED_JOB_SUMMARY"
             echo '__AGENTCONNECT_UNIT_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
+
+  # Whether this PR can change what the Windows job tests at all. It runs ~15-23 min against ~3 for
+  # the slowest Linux job, so it sets the whole workflow's wall clock — and most PRs here never touch
+  # the daemon/CLI closure. Costs one ~30 s Linux job to spare the other PRs that wait. Non-PR events
+  # and any diff this cannot read answer yes, so the gate fails open, never silently off.
+  windows-scope:
+    name: Windows Scope
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_windows }}
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Does this diff reach the daemon/CLI closure?
+        id: filter
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          reaches() { echo 'changed=true' >> "$GITHUB_OUTPUT"; exit 0; }
+          [ "${{ github.event_name }}" = 'pull_request' ] || reaches
+          [ -n "$BASE" ] && [ -n "$HEAD" ] || reaches
+          files=$(git diff --name-only "$BASE...$HEAD") || reaches
+          # Listed by what CANNOT reach the job: the packages nothing in the daemon/CLI closure
+          # depends on, plus docs and the chart. Everything else runs it — a new root config, a new
+          # script, a new shared package are all in scope without anyone remembering to list them.
+          if grep -qvE '^(packages/(web|control-plane|relay|setup|memory-plugin-mem0|observability)/|charts/|docs/)' <<<"$files"; then
+            reaches
+          fi
+          echo 'changed=false' >> "$GITHUB_OUTPUT"
+
+  # The two packages with real Windows surface — the daemon (runtimes, skills, spawn driver, IPC
+  # paths) and the CLI (junction-based version pointers) — on a Windows runner. `windows-latest`
+  # rather than a win32-simulating unit test: the failures this catches are the ones only a real
+  # Win32 filesystem and process model produce.
+  #
+  # Release callers pass `skip_windows` for the same reason they pass `skip_sandbox`: the PR already
+  # ran it, and a 15-23 min Windows leg that can lose its own runner would strand a merged commit
+  # unpublished. `inputs` is empty on `pull_request`, so the unset input reads falsy and PRs run it.
+  #
+  # No `prisma:generate` step: neither package imports the generated client.
+  unit-windows:
+    name: Unit Test (Windows)
+    needs: windows-scope
+    if: ${{ needs.windows-scope.outputs.changed == 'true' }}
+    runs-on: windows-latest
+    # The daemon suite alone runs ~20 min here against ~3 on Linux — Windows filesystem and
+    # process-spawn cost, not extra work — so the cap is set well clear of it rather than near it.
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Before checkout: the runner's Git installs with `core.autocrlf=true`, which would rewrite
+      # every fixture's line endings and diverge golden files from the Linux jobs' bytes.
+      - name: Keep line endings as committed
+        run: git config --global core.autocrlf false
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # POSIX-only files self-skip via `it.skipIf(process.platform === 'win32')`, or — when every
+      # case in the file is POSIX-only — via `WINDOWS_EXCLUDED` in that package's vitest.config.ts.
+      #
+      # One step per package, the second running even after the first fails: a recursive `pnpm run`
+      # aborts its siblings on the first failure, which would hide one package behind the other.
+      - name: Daemon unit tests
+        env:
+          GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
+          pnpm_config_enable_pre_post_scripts: false
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+        run: pnpm --filter @agentconnect.md/daemon test:unit
+      - name: CLI unit tests
+        if: ${{ !cancelled() }}
+        env:
+          GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
+          pnpm_config_enable_pre_post_scripts: false
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+        run: pnpm --filter @agentconnect.md/cli test:unit
+      - name: Merge Windows unit test summaries
+        if: ${{ !cancelled() }}
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
+          VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+        run: |
+          GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" node scripts/merge-vitest-summaries.mjs \
+            'Windows unit test report' \
+            'daemon=@agentconnect.md/daemon' \
+            'cli=@agentconnect.md/cli'
+      - name: Publish Windows unit test summary
+        if: ${{ !cancelled() && !inputs.defer_summaries }}
+        env:
+          CAPTURED_JOB_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
+        run: cat "$CAPTURED_JOB_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
 
   # The evaluation gates, off the Unit Test job's critical path. They are ~48s of the ~3m27s that
   # job took, and it is the slowest in the workflow, so they buy back most of that on their own

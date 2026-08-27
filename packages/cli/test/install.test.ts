@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { repairDaemonBundleModes } from '../src/install.js'
 
 describe('repairDaemonBundleModes', () => {
-  it('restores executable mode on npm-normalized seccomp helpers', () => {
+  it.skipIf(process.platform === 'win32')('restores executable mode on npm-normalized seccomp helpers', () => {
     const root = mkdtempSync(join(tmpdir(), 'agentconnect-daemon-modes-'))
     for (const arch of ['x64', 'arm64']) {
       const dir = join(root, 'dist', 'vendor', 'seccomp', arch)

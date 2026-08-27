@@ -14,6 +14,7 @@
  * its own manifests, but wrong about what runs, still fails.
  */
 import { execFileSync } from 'node:child_process'
+import { builtinModules } from 'node:module'
 
 import { diffRuntimeTables } from './runtime-table-diff.mjs'
 
@@ -26,6 +27,7 @@ if (!image) {
 const failures = []
 const notes = []
 const warnings = []
+const nodeBuiltins = new Set(builtinModules.flatMap((spec) => [spec, `node:${spec}`]))
 
 function check(name, fn) {
   try {
@@ -59,6 +61,8 @@ const GH_WRAPPER_PATH = '/opt/agentconnect/pathbin/gh'
  *  path to the daemon, which copies it into the `mcpServers` spec — so a bundle missing here is a runtime
  *  retrying a module that is not there, which is how an agent silently lost its AgentConnect tools. */
 const MCP_BRIDGE_PATH = '/opt/agentconnect/shim/mcp-bridge.js'
+const SKILLS_CLI_PATH = '/opt/agentconnect/shim/skills/dist/cli.js'
+const SKILL_MUTATION_PATH = '/opt/agentconnect/shim/skills/workspace-mutation.js'
 const TABLE_PATH = '/opt/agentconnect/runtime/k8s-runtimes.json'
 
 // The runtime is the untrusted party in this image, so root would hand it the whole filesystem.
@@ -89,6 +93,26 @@ check('the shim is root-owned and not writable by the runtime user', () => {
   if (/[2367]$/.test(mode) || /^.[2367]/.test(mode)) throw new Error(`shim is group/other writable (${mode})`)
   const refused = inImage(`(echo x >> ${SHIM_PATH} && echo WRITABLE) || echo refused`)
   if (refused !== 'refused') throw new Error('the runtime user can modify the shim')
+  return owner
+})
+
+check('the pinned skills CLI is present, immutable and executable', () => {
+  const owner = inImage(`stat -c '%U:%G %a' ${SKILLS_CLI_PATH}`)
+  if (!owner.startsWith('root:root')) throw new Error(`skills CLI is not root-owned (${owner})`)
+  const version = inImage(`node ${SKILLS_CLI_PATH} --version`)
+  if (version !== '1.5.21') throw new Error(`skills CLI version is ${version}`)
+  return `${owner}, version ${version}`
+})
+
+check('the skill workspace mutation helper is present and immutable', () => {
+  const owner = inImage(`stat -c '%U:%G %a' ${SKILL_MUTATION_PATH}`)
+  if (!owner.startsWith('root:root')) throw new Error(`skill mutation helper is not root-owned (${owner})`)
+  const mode = owner.split(' ')[1]
+  if (/[2367]$/.test(mode) || /^.[2367]/.test(mode)) {
+    throw new Error(`skill mutation helper is group/other writable (${mode})`)
+  }
+  const refused = inImage(`(echo x >> ${SKILL_MUTATION_PATH} && echo WRITABLE) || echo refused`)
+  if (refused !== 'refused') throw new Error('the runtime user can modify the skill mutation helper')
   return owner
 })
 
@@ -173,23 +197,23 @@ check('the MCP bridge starts and fails loudly with no daemon socket', () => {
   return 'exits 1 with an actionable message'
 })
 
-// The bundles are built with everything inlined so this image installs no node_modules for them. A
-// require of anything but a node: builtin means a bundle is depending on a tree that is absent.
+// The bundles are built with everything inlined, so only Node builtins may remain as imports.
 check('the shim bundles are self-contained', () => {
   // Same specifier shapes the daemon package's own assert-self-contained step looks for, run
   // against the artifacts that actually shipped. The local build being clean says nothing about
   // the image: an earlier version of this Dockerfile ran tsdown without building the workspace
   // deps, and produced a bundle that imported them externally — which the image cannot resolve.
   const external = []
-  for (const path of [SHIM_PATH, MCP_BRIDGE_PATH]) {
-    const specs = inImage(
-      `grep -oE '\\b(from|import)[[:space:]]*\\(?[[:space:]]*"[^"]+"' ${path} | ` +
-        `grep -oE '"[^"]+"' | tr -d '"' | sort -u | grep -v '^node:' || true`
+  for (const path of [SHIM_PATH, MCP_BRIDGE_PATH, SKILL_MUTATION_PATH]) {
+    const bundle = inImage(`cat ${path}`)
+    const specs = [...bundle.matchAll(/\bfrom\s*"([^"]+)"/g), ...bundle.matchAll(/\bimport\(\s*"([^"]+)"\s*\)/g)].map(
+      (match) => match[1]
     )
-    if (specs) external.push(`${path}: ${specs.split('\n').join(', ')}`)
+    const leaked = [...new Set(specs.filter((spec) => !nodeBuiltins.has(spec)))].sort()
+    if (leaked.length > 0) external.push(`${path}: ${leaked.join(', ')}`)
   }
   if (external.length > 0) throw new Error(`bundles reference non-builtin modules — ${external.join('; ')}`)
-  return 'node: builtins only'
+  return 'Node builtins only'
 })
 
 // The pod template owns identity projection. An image carrying its own token would be an

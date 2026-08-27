@@ -52,6 +52,7 @@ function hook(overrides: Partial<HookRecord> = {}): HookRecord {
     repoId: 123n,
     repoFullName: 'acme/widgets',
     events: ['pull_request:*'],
+    family: 'pull_request',
     commentFamilies: [],
     labelFilter: [],
     mentionOnly: false,

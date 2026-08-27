@@ -77,20 +77,25 @@ describe('withVersionLock', () => {
     expect(existsSync(`${lockPath(r)}.stale`)).toBe(true)
   })
 
-  it('preempts a live PID whose start time no longer matches (PID reuse)', async () => {
-    const r = root()
-    writeFileSync(
-      lockPath(r),
-      JSON.stringify({
-        pid: process.pid,
-        op: 'reused',
-        startedAt: new Date().toISOString(),
-        procStart: 'Sat Jan  1 00:00:00 1900' // cannot match this process's real start
-      })
-    )
-    const result = await withVersionLock(r, 'mine', () => 'reclaimed')
-    expect(result).toBe('reclaimed')
-  })
+  // No PID-reuse detection on Windows: `procStartTime` shells out to `ps`, which does not exist
+  // there, so it returns '' and a live PID is never treated as reused.
+  it.skipIf(process.platform === 'win32')(
+    'preempts a live PID whose start time no longer matches (PID reuse)',
+    async () => {
+      const r = root()
+      writeFileSync(
+        lockPath(r),
+        JSON.stringify({
+          pid: process.pid,
+          op: 'reused',
+          startedAt: new Date().toISOString(),
+          procStart: 'Sat Jan  1 00:00:00 1900' // cannot match this process's real start
+        })
+      )
+      const result = await withVersionLock(r, 'mine', () => 'reclaimed')
+      expect(result).toBe('reclaimed')
+    }
+  )
 
   it('preempts a corrupt lock file', async () => {
     const r = root()

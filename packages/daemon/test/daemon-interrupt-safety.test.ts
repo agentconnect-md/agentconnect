@@ -146,7 +146,7 @@ describe('Daemon interrupt safety gates', () => {
       releaseOverride()
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   it('rejects an immediate webchat retry until the cancelled turn has fully unwound', async () => {
     let releaseFirst!: () => void
@@ -222,7 +222,7 @@ describe('Daemon interrupt safety gates', () => {
       releaseFirst()
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   it('keeps an unrelated active session MCP-capable and drains its queued work after T1 trips', async () => {
     let releaseT1!: () => void
@@ -303,7 +303,7 @@ describe('Daemon interrupt safety gates', () => {
       await Promise.allSettled([t1, ...(t2 ? [t2] : []), ...(t2Queued ? [t2Queued] : [])])
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   it('force-stops a host when a cancelled cold pre-Pending session/new never returns', async () => {
     const clock = new FakeClock()
@@ -359,7 +359,7 @@ describe('Daemon interrupt safety gates', () => {
       await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0)).catch(() => {})
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   it('bounds a cancelled cold non-host initialization await with the same backstop', async () => {
     const clock = new FakeClock()
@@ -415,7 +415,7 @@ describe('Daemon interrupt safety gates', () => {
     expect(host.prompt).not.toHaveBeenCalled()
 
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('keeps admission fail-closed when the cold force-stop itself fails', async () => {
     const clock = new FakeClock()
@@ -475,7 +475,7 @@ describe('Daemon interrupt safety gates', () => {
       await vi.waitFor(() => expect((daemon as any).inflight.size).toBe(0)).catch(() => {})
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   // The cold fence's 'initialized' site owns the created-session nulling: a session/new that
   // lands after the turn went terminal must not survive as revivable conversation state.
@@ -622,7 +622,7 @@ describe('Daemon interrupt safety gates', () => {
       ])
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   it('removes and gates an agent before awaiting its reconcile teardown', async () => {
     let releaseStop!: () => void
@@ -663,7 +663,7 @@ describe('Daemon interrupt safety gates', () => {
       await Promise.allSettled(reconciling ? [reconciling] : [])
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   it('releases the admission gate when a host-respawn teardown rejects (no permanent dark)', async () => {
     // Regression: a config PATCH that changed a hostSpawnSig field triggered a host
@@ -726,7 +726,7 @@ describe('Daemon interrupt safety gates', () => {
     } finally {
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   it('shares one Slack top-level loop circuit across agents and fresh message roots', async () => {
     const root = scaffold()
@@ -855,7 +855,7 @@ describe('Daemon interrupt safety gates', () => {
     } finally {
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   it('cancels a cold host-start backoff and settles the dispatch before closing the store', async () => {
     const clock = new FakeClock()
@@ -912,7 +912,7 @@ describe('Daemon interrupt safety gates', () => {
     } finally {
       if (!stopped) await daemon.stop().catch(() => {})
     }
-  }, 15_000)
+  })
 
   it('emits exactly one terminal webchat frame when shutdown aborts a cold turn', async () => {
     const host = {
@@ -946,5 +946,5 @@ describe('Daemon interrupt safety gates', () => {
       expect.objectContaining({ conversationId: CONV_1, turnId: ack.turnId, error: 'shutdown' })
     ])
     expect((daemon as any).activeDispatchesByAgent.size).toBe(0)
-  }, 15_000)
+  })
 })

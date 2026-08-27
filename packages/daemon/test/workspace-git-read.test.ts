@@ -193,17 +193,21 @@ describe('createWorkspaceGit.diff against a real repo', () => {
     expect(d.diff).toContain('+more')
   })
 
-  it('treats a pathspec-magic-looking path as a literal name, not a pattern', async () => {
-    // `:(literal)` is why a file literally called `*.ts` cannot widen the diff to
-    // every .ts file in the checkout.
-    writeFileSync(join(repo, '*.ts'), 'glob-named file\n')
-    writeFileSync(join(repo, 'real.ts'), 'a real typescript file\n')
-    git(repo, 'add', '--', ':(literal)*.ts', 'real.ts')
-    const d = await seam.diff({ agentId: AGENT, path: '*.ts', staged: true })
-    expect(d.exists).toBe(true)
-    expect(d.diff).toContain('+glob-named file')
-    expect(d.diff).not.toContain('real.ts') // the pattern would have swept this in
-  })
+  // Needs a file literally named `*.ts`, which Windows cannot create.
+  it.skipIf(process.platform === 'win32')(
+    'treats a pathspec-magic-looking path as a literal name, not a pattern',
+    async () => {
+      // `:(literal)` is why a file literally called `*.ts` cannot widen the diff to
+      // every .ts file in the checkout.
+      writeFileSync(join(repo, '*.ts'), 'glob-named file\n')
+      writeFileSync(join(repo, 'real.ts'), 'a real typescript file\n')
+      git(repo, 'add', '--', ':(literal)*.ts', 'real.ts')
+      const d = await seam.diff({ agentId: AGENT, path: '*.ts', staged: true })
+      expect(d.exists).toBe(true)
+      expect(d.diff).toContain('+glob-named file')
+      expect(d.diff).not.toContain('real.ts') // the pattern would have swept this in
+    }
+  )
 
   it('truncates a diff bigger than the frame budget and keeps the REP under the wire cap', async () => {
     // ~2 MB of added lines: far past the 256 KiB frame, so the head slice is what ships.
@@ -459,7 +463,8 @@ describe('createWorkspaceGit.log against a real repo', () => {
 // The cluster shape, reproduced without a cluster: the root names a path in the POD's coordinates —
 // nothing on this filesystem — while git runs in the real checkout through the runner seam. Every
 // answer must therefore come from git, because the daemon-local `realpath` has nothing to resolve.
-describe('createWorkspaceGit against a workspace this daemon cannot see', () => {
+// Pod coordinates are POSIX by construction — the sandbox pod is always Linux.
+describe.skipIf(process.platform === 'win32')('createWorkspaceGit against a workspace this daemon cannot see', () => {
   const POD_ROOT = '/agent/repo'
   let clusterSeam: ReturnType<typeof createWorkspaceGit>
 

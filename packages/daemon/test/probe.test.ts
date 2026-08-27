@@ -12,7 +12,8 @@ import {
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
 
-// These tests assume a POSIX host (X_OK semantics); the CI/dev targets are darwin/linux.
+// Cases that turn on X_OK skip on Windows, which has no execute bit — a plain file is spawnable
+// there if its extension says so, which is what `it.runIf(win32)` below covers instead.
 
 let binDir: string
 let home: string
@@ -29,7 +30,12 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'ac-home-'))
 })
 
-const env = (extra: NodeJS.ProcessEnv = {}) => ({ PATH: binDir, HOME: home, ...extra }) as NodeJS.ProcessEnv
+// `home()` in probe.ts reads USERPROFILE on Windows and HOME elsewhere, so every fake home has to
+// set both — including the per-case `env({ HOME: … })` overrides, which is why it mirrors after merge.
+const env = (extra: NodeJS.ProcessEnv = {}) => {
+  const merged = { PATH: binDir, HOME: home, ...extra }
+  return { ...merged, USERPROFILE: merged.HOME } as NodeJS.ProcessEnv
+}
 
 const npx = (): RuntimeDef => ({ command: 'npx', args: ['-y', 'pkg'], env: [] })
 
@@ -43,7 +49,7 @@ describe('isCommandAvailable', () => {
     expect(isCommandAvailable('npx', env())).toBe(false)
   })
 
-  it('does not count a non-executable file as available', () => {
+  it.skipIf(process.platform === 'win32')('does not count a non-executable file as available', () => {
     writeFileSync(join(binDir, 'uvx'), 'plain')
     expect(isCommandAvailable('uvx', env())).toBe(false)
   })
@@ -71,7 +77,7 @@ describe('resolveCommandPath', () => {
     expect(resolveCommandPath('claude', env())).toBeUndefined()
   })
 
-  it('ignores a non-executable file of the same name', () => {
+  it.skipIf(process.platform === 'win32')('ignores a non-executable file of the same name', () => {
     writeFileSync(join(binDir, 'claude'), 'plain')
     expect(resolveCommandPath('claude', env())).toBeUndefined()
   })

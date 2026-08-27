@@ -164,7 +164,7 @@ describe('webchat turn-final context refresh', () => {
     expect(rows.find((r) => r.text === 'peer answer 1')?.postId).toBe(peerPost(1, 0).postId)
     expect(rows.find((r) => r.text === 'fresh replacement')?.postId).toBe(posts[0]!.post.postId)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('a busy same-agent follow-up is visible to the running generation and coalesces into it', async () => {
     let onUpdate!: (sid: string, u: unknown) => void
@@ -242,7 +242,7 @@ describe('webchat turn-final context refresh', () => {
     expect(posts).toHaveLength(1)
     expect(posts[0]!.post.text).toBe('combined answer')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('coalesces a busy follow-up even when its canonical millisecond was collision-bumped', async () => {
     let onUpdate!: (sid: string, u: unknown) => void
@@ -326,7 +326,7 @@ describe('webchat turn-final context refresh', () => {
     expect(posts).toHaveLength(1)
     expect(posts[0]!.post.text).toBe('combined answer')
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('context-churn exhaustion closes the browser turn with stopReason context_churn and commits no post', async () => {
     let onUpdate!: (sid: string, u: unknown) => void
@@ -395,7 +395,7 @@ describe('webchat turn-final context refresh', () => {
     ).filter((row: { sender: string }) => row.sender === AGENT_ID)
     expect(replies).toEqual([])
     await daemon.stop()
-  }, 15_000)
+  })
   it('distinct canonical posts sharing millisecond, sender, and text occupy separate slots', async () => {
     // The C2 dedupe prerequisite: `at` minting is connection-local, so two
     // tabs can mint distinct posts on the same millisecond — and a same-user

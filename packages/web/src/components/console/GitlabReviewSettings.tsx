@@ -10,12 +10,14 @@ export function GitlabReviewSettings({
   onReviewPolicyChange,
   onReportingModeChange,
   projectBotReady = true,
+  layout = 'disclosure',
   defaultExpanded = false
 }: {
   value: CodeHostReviewSettingsValue
   onReviewPolicyChange: (policy: HookReviewPolicy) => void
   onReportingModeChange: (mode: HookReportingMode) => void
   projectBotReady?: boolean
+  layout?: 'disclosure' | 'format'
   defaultExpanded?: boolean
 }) {
   const botMissing = !projectBotReady && (value.reviewPolicy !== 'off' || value.reportingMode === 'check')
@@ -25,6 +27,7 @@ export function GitlabReviewSettings({
       value={value}
       onReviewPolicyChange={onReviewPolicyChange}
       onReportingModeChange={onReportingModeChange}
+      layout={layout}
       defaultExpanded={defaultExpanded}
       statusCheckLabel="Run note"
       help={{

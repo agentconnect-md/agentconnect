@@ -153,7 +153,7 @@ describe('daemon curated runtime admission', () => {
     } finally {
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   it('keeps a live-observed login-required mark through a successful probe sweep', async () => {
     const probe = vi.fn(async (runtimes: Record<string, unknown>) =>
@@ -201,7 +201,7 @@ describe('daemon curated runtime admission', () => {
     } finally {
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   // The sweep used to apply every result at one barrier, so a curated runtime whose
   // package launcher spends minutes building its install tree also held back the
@@ -257,7 +257,7 @@ describe('daemon curated runtime admission', () => {
     } finally {
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   // Admission freshness has to survive a slow co-probe: the next sweep is scheduled from
   // sweep completion, so a runtime stamped when it landed would go unlaunchable (and get
@@ -302,7 +302,7 @@ describe('daemon curated runtime admission', () => {
       const timer = (daemon as any).runtimeFacts.probeTimer
       if (timer !== undefined) clock.clearTimeout(timer)
     }
-  }, 15_000)
+  })
 
   it('refreshes curated admission after the TTL without requiring a CP reconnect', async () => {
     const clock = new FakeClock()
@@ -332,7 +332,7 @@ describe('daemon curated runtime admission', () => {
       const timer = (daemon as any).runtimeFacts.probeTimer
       if (timer !== undefined) clock.clearTimeout(timer)
     }
-  }, 15_000)
+  })
 
   it('does not arm a local probe timer when no curated source wins', () => {
     const daemon = new Daemon({ clock: new FakeClock(), sandboxMechanism: null })
@@ -370,5 +370,5 @@ describe('daemon curated runtime admission', () => {
     await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2), WAIT)
     expect(Object.keys(probe.mock.calls[0]![0])).toEqual(['hermes-agent'])
     expect(Object.keys(probe.mock.calls[1]![0])).toEqual(['explicit'])
-  }, 15_000)
+  })
 })

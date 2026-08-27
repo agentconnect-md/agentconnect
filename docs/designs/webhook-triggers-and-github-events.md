@@ -480,6 +480,25 @@ submission.
 
 ## GitHub Output Ownership
 
+### Turn-Start Acknowledgement
+
+A GitHub turn publishes one comment at the very end, so between the mention and
+the answer a reader sees nothing — and a review turn can hold that silence open
+for minutes. The daemon therefore reacts `eyes` on whatever fired the turn as
+soon as the turn starts: the conversation comment, the inline review comment, or
+the issue/pull request itself when the subject fired it. The trusted comment id
+comes off the signature-verified payload (`GithubHookMetadata.issueCommentId`,
+`reviewCommentId`); nothing is derived from the model-visible excerpt.
+
+The reaction is chrome, not output, and the single-writer rule above is
+unaffected: it carries no content, it uses the same purpose-bound comment token,
+and it is placed before the poster exists. It is best-effort and never awaited —
+a failed reaction is one warning and no change to the turn. It is never
+withdrawn either: it records that the turn was seen, which stays true even when
+the turn later dies with nothing to publish. A redelivery whose comment already
+published does not re-acknowledge, and both hosts treat an already-present
+reaction as success, so no state is kept for it.
+
 ### Ordinary Reply
 
 `GithubPoster` is always enabled for a numbered GitHub turn. It collects ACP
@@ -573,15 +592,47 @@ and redeliveries converge on one record. A reaper marks stale running rows as
 
 The Prisma schema is authoritative. The main records are:
 
-- `HookDef`: definition, repository identity, event filters, session policy,
-  immutable revision fences, review/reporting policy, optional anchor, and
-  owning agent.
+- `HookDef`: definition, repository identity, subject family, event filters,
+  session policy, immutable revision fences, review/reporting policy, optional
+  anchor, and owning agent.
 - `HookSecret`: the generic hook's HMAC secret, separated from normal hook
   reads and DTOs.
 - `HookRun`: body-free delivery, dispatch, revision, review, projection,
   session, and redelivery metadata.
 - `HookReviewProjection`: durable external Check or reporting state that can be
   cleaned up even if its owning hook is deleted.
+
+### One Row per Subject Family
+
+A code-host `HookDef` row covers exactly ONE subject family — `pull_request`,
+`issues` or `push` for GitHub, `merge_request`, `issues` or `push` for GitLab —
+recorded in `family` and unique per `(agentId, kind, repoId, family)`. Watching a
+repository for both pull requests and issues is therefore two rows, each with its
+own cadence, label filter and `mentionOnly` gate: pull requests can fire on every
+update while issues fire only on an explicit mention. `family` is immutable, so
+the update body carries none; changing it is a delete plus a create.
+
+Nothing on the wire changes. The relay already fans one delivery out to every
+rule matching the repository, and `commentFamilies` already isolates comment
+traffic per family — so each row compiles into an ordinary independent rule.
+Three constraints keep those rules from overlapping:
+
+- every stored pattern must belong to the row's family, with `issue_comment` and
+  `pull_request_review_comment` riding the thread family that owns them;
+- `commentFamilies` may only name the row's own family, and a GitHub row carrying
+  an `issue_comment` subscription must set it — left empty it would keep the
+  legacy repository-wide meaning and double-fire against its sibling; and
+- `reviewPolicy`, `reportingMode` and `gateMode` may leave their defaults only on
+  a pull-request or merge-request row.
+
+Sibling rows of one repository answer the same threads, so they must agree on the
+anchoring target and share one session-key prefix; a divergent anchor is refused.
+Either half of a row's binding moving — a repository re-target or a reassignment
+to another agent — re-reads the destination's siblings and adopts their prefix,
+so a moved row never opens a second namespace beside the family it joins.
+Legacy rows are split by migration, the review-capable family keeping the
+original row id so review projections, publication leases and run history stay
+attached to it.
 
 A hook belongs to one agent and has no independent visibility setting. Access
 inherits the owning agent's visibility. Agent deletion cascades to hook
@@ -660,6 +711,26 @@ Reconciliation does not retry an ambiguous dispatch, an agent/business
 rejection, or any row that may already have produced an effect. Partial
 `review_request_required` fanout is retried only when every observed sibling
 proves that no agent or external review effect occurred.
+
+A delivery summary names only the event, action and repository, so the candidate
+set for one GUID is deliberately coarse — an `issue_comment` delivery lists both
+comment-family sibling rows even though only one of them can own the thread. The
+retryable claim therefore requires the landed runs to be a _subset_ of that
+candidate set, each of them an active side-effect-free retry row; a landed run
+from outside the set still blocks the whole request. A candidate that landed
+nothing is the relay's own precise filtering — subject family, mention text,
+labels, none of which the summary carries — which the redelivered payload
+reproduces exactly, so it can be tolerated. That proof needs the candidate's
+EFFECTIVE rule to be the one that filtered the original delivery, and the rule
+is mutable even when the payload is not — an edit, a re-enable, an agent
+rename, or a pause/resume can all change what compiles for it. Tolerance is
+therefore restricted to candidates on the same agent as a landed run: the run
+shows the agent was live and routing at ingestion, and family uniqueness plus
+the per-row shape gate keep a sibling family from ever matching the event. Two
+`lastModifiedAt` fences (hook row and agent — every user-facing edit moves
+them) remain as defense in depth. Every other unlanded candidate — cross-agent
+ones above all, whose pause and rename history the claim cannot reconstruct —
+blocks the request, exactly as the pre-split exact-fanout rule did.
 
 An admitted turn ended by a handover (`agent_handover`) is deliberately outside
 that set, and the reason is a stage question rather than a wording one. Retry

@@ -8,9 +8,11 @@ import {
   commentFamiliesForGitlabFamilies,
   eventsForGitlabFamilies,
   gitlabCadencePick,
-  gitlabFamilyToggle,
+  gitlabFamilyCarriesReviews,
+  gitlabFamilySubscription,
+  gitlabFamilyTile,
+  gitlabHookFamily,
   gitlabHookNeedsNormalization,
-  gitlabRowFamilies,
   gitlabTriggerModeOf,
   gitlabTriggerTooltip,
   parseGitlabHookThread
@@ -18,14 +20,18 @@ import {
 
 describe('GL_TRIGGER_LABEL', () => {
   it('speaks the same vocabulary as the GitHub form', () => {
-    expect(GL_TRIGGER_LABEL.first).toBe('created')
-    expect(GL_TRIGGER_LABEL.every).toBe('updated')
-    expect(GL_TRIGGER_LABEL.mention).toBe('mention only')
+    expect(GL_TRIGGER_LABEL.first).toBe('opened')
+    expect(GL_TRIGGER_LABEL.every).toBe('any update')
+    expect(GL_TRIGGER_LABEL.mention).toBe('@-mention')
   })
 
-  it('defaults new subscriptions to updated mode', () => {
-    expect(GL_DEFAULT_TRIGGER_MODE).toBe('every')
-    expect(GL_TRIGGER_LABEL[GL_DEFAULT_TRIGGER_MODE]).toBe('updated')
+  it('opens every new subscription on the opening itself', () => {
+    expect(GL_DEFAULT_TRIGGER_MODE).toBe('first')
+    expect(GL_TRIGGER_LABEL[GL_DEFAULT_TRIGGER_MODE]).toBe('opened')
+  })
+
+  it('offers no label cadence — GitLab label events are not subscribed here', () => {
+    expect(GL_TRIGGER_MODES).toEqual(['first', 'every', 'mention'])
   })
 })
 
@@ -52,20 +58,75 @@ describe('GL_TRIGGER_PILL', () => {
 describe('GL_FAMILIES', () => {
   it('offers the same two subjects GitHub does — pushes stay held back', () => {
     expect(GL_FAMILIES.map(({ fam }) => fam)).toEqual(['issues', 'merge_request'])
-    expect(GL_FAMILIES.find(({ fam }) => fam === 'issues')?.desc).toBe('opened, labels, replies')
-    expect(GL_FAMILIES.find(({ fam }) => fam === 'merge_request')?.desc).toBe('opened, new commits, replies')
+    expect(GL_FAMILIES.map(({ label }) => label)).toEqual(['Issues', 'Merge requests'])
   })
 })
 
-describe('gitlabRowFamilies', () => {
-  it('shows only the offered subjects for a hook that never listened to pushes', () => {
-    expect(gitlabRowFamilies(['merge_request:*']).map(({ fam }) => fam)).toEqual(['issues', 'merge_request'])
+describe('gitlabFamilyTile', () => {
+  it('still labels a stored push row the console never offers', () => {
+    expect(gitlabFamilyTile('push')?.pill).toBe('Pushes')
+    expect(gitlabFamilyTile('push')?.label).toBe('Pushes')
+  })
+})
+
+describe('gitlabHookFamily', () => {
+  it('reads the row’s own family, whatever its stored events look like', () => {
+    expect(gitlabHookFamily({ family: 'issues', events: ['merge_request:*'] })).toBe('issues')
+    expect(gitlabHookFamily({ family: 'push', events: [] })).toBe('push')
   })
 
-  it('keeps the pushes toggle on a hook that already stores push events', () => {
-    const rows = gitlabRowFamilies(['merge_request:*', 'push:*'])
-    expect(rows.map(({ fam }) => fam)).toEqual(['issues', 'merge_request', 'push'])
-    expect(rows.find(({ fam }) => fam === 'push')?.desc).toBe('commits pushed to a branch')
+  it('falls back to the events for a legacy row the split could not place', () => {
+    expect(gitlabHookFamily({ family: null, events: ['merge_request:*'] })).toBe('merge_request')
+    // Display order decides which family a legacy both-subject row shows as.
+    expect(gitlabHookFamily({ family: null, events: ['merge_request:*', 'issues:*'] })).toBe('issues')
+  })
+
+  it('names no family for a note-only rule', () => {
+    expect(gitlabHookFamily({ family: null, events: ['note:*'] })).toBeNull()
+  })
+})
+
+describe('gitlabFamilySubscription', () => {
+  it('scopes the note subscription to the row’s own family', () => {
+    expect(gitlabFamilySubscription('merge_request', 'every')).toEqual({
+      events: ['merge_request:*'],
+      commentFamilies: ['merge_request'],
+      mentionOnly: false
+    })
+    expect(gitlabFamilySubscription('issues', 'mention')).toEqual({
+      events: ['issues:*'],
+      commentFamilies: ['issues'],
+      mentionOnly: true
+    })
+  })
+
+  it('clears the note family in created mode and on a push row', () => {
+    expect(gitlabFamilySubscription('merge_request', 'first')).toEqual({
+      events: ['merge_request:opened'],
+      commentFamilies: [],
+      mentionOnly: false
+    })
+    expect(gitlabFamilySubscription('push', 'every')).toEqual({
+      events: ['push:*'],
+      commentFamilies: [],
+      mentionOnly: false
+    })
+  })
+
+  it('never emits a pattern from another family', () => {
+    for (const fam of ['issues', 'merge_request', 'push'] as const) {
+      for (const mode of GL_TRIGGER_MODES) {
+        expect(gitlabFamilySubscription(fam, mode).events.every((event) => event.startsWith(`${fam}:`))).toBe(true)
+      }
+    }
+  })
+})
+
+describe('gitlabFamilyCarriesReviews', () => {
+  it('confines reviews and the run note to the change-proposal subject', () => {
+    expect(gitlabFamilyCarriesReviews('merge_request')).toBe(true)
+    expect(gitlabFamilyCarriesReviews('issues')).toBe(false)
+    expect(gitlabFamilyCarriesReviews('push')).toBe(false)
   })
 })
 
@@ -192,37 +253,17 @@ describe('parseGitlabHookThread', () => {
   })
 })
 
-describe('gitlabFamilyToggle', () => {
-  const updatedMr = { events: ['merge_request:*'], mentionOnly: false }
-
-  it('adds and removes a subject while carrying the stored cadence along', () => {
-    expect(gitlabFamilyToggle(updatedMr, 'issues')).toEqual({ families: ['issues', 'merge_request'], mode: 'every' })
-    expect(gitlabFamilyToggle({ events: ['issues:opened', 'push:*'], mentionOnly: false }, 'push')).toEqual({
-      families: ['issues'],
-      mode: 'first'
-    })
-  })
-
-  it('carries a stored push subscription through an edit that never mentioned it', () => {
-    expect(gitlabFamilyToggle({ events: ['merge_request:*', 'push:*'], mentionOnly: false }, 'issues')).toEqual({
-      families: ['issues', 'merge_request', 'push'],
-      mode: 'every'
-    })
-  })
-
-  it('refuses to unsubscribe the last remaining subject', () => {
-    expect(gitlabFamilyToggle(updatedMr, 'merge_request')).toBeNull()
-  })
-})
-
 describe('gitlabCadencePick', () => {
   const canonicalUpdated = {
+    family: 'merge_request',
     events: ['merge_request:*'],
     commentFamilies: ['merge_request'] as const,
     mentionOnly: false
   }
-  // Replies on issues but not merge requests: no radio state encodes it.
+  // A legacy row watching both subjects, with replies on issues only: no radio
+  // state encodes it, and its family was never placed.
   const nonCollapsing = {
+    family: null,
     events: ['issues:*', 'merge_request:*'],
     commentFamilies: ['issues'] as const,
     mentionOnly: false
@@ -232,26 +273,23 @@ describe('gitlabCadencePick', () => {
     expect(gitlabCadencePick(canonicalUpdated, 'every')).toBeNull()
   })
 
-  it('rewrites the whole block when a different cadence is picked', () => {
-    expect(gitlabCadencePick(canonicalUpdated, 'first')).toEqual({ families: ['merge_request'], mode: 'first' })
-    expect(gitlabCadencePick(canonicalUpdated, 'mention')).toEqual({ families: ['merge_request'], mode: 'mention' })
+  it('keeps the row’s immutable family and only moves the cadence', () => {
+    expect(gitlabCadencePick(canonicalUpdated, 'first')).toEqual({ family: 'merge_request', mode: 'first' })
+    expect(gitlabCadencePick(canonicalUpdated, 'mention')).toEqual({ family: 'merge_request', mode: 'mention' })
   })
 
   it('leaves a rule the trigger cannot express alone until a cadence is picked', () => {
     // Displaying it must not rewrite it — but the nearest state is still shown,
-    // and re-picking that same state is the explicit opt-in that normalizes.
+    // and re-picking that same state is the explicit opt-in that normalizes it
+    // down to the one family the row can keep.
     expect(gitlabTriggerModeOf(nonCollapsing)).toBe('every')
     expect(gitlabHookNeedsNormalization(nonCollapsing)).toBe(true)
-    expect(gitlabCadencePick(nonCollapsing, 'every')).toEqual({
-      families: ['issues', 'merge_request'],
-      mode: 'every'
-    })
+    expect(gitlabCadencePick(nonCollapsing, 'every')).toEqual({ family: 'issues', mode: 'every' })
   })
 
-  it('never invents a subject the stored rule did not watch', () => {
-    expect(gitlabCadencePick({ events: ['push:*'], commentFamilies: [], mentionOnly: false }, 'mention')).toEqual({
-      families: ['push'],
-      mode: 'mention'
-    })
+  it('writes no edit for a rule that names no subject at all', () => {
+    expect(
+      gitlabCadencePick({ family: null, events: ['note:*'], commentFamilies: [], mentionOnly: false }, 'mention')
+    ).toBeNull()
   })
 })

@@ -127,6 +127,21 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     expect(await readFile(join(cwd, '.claude/skills/audit/SKILL.md'), 'utf8')).toContain('# audit')
   })
 
+  // The real CLI decides the destination: dsh-acp's `universal` identity must land in the
+  // `<projectRoot>/.agents/skills` root the DeepSeek Harness skill provider scans.
+  it('publishes a DeepSeek Harness skill through the real CLI into .agents/skills', async () => {
+    const sourceDir = await writeSkill(sources, 'dsh-golden', 'dsh-golden')
+
+    const result = await installSkills({ id: 'a1', runtime: 'dsh-acp', skills: [] }, cwd, {
+      stateDir,
+      localSkills: [{ kind: 'dream', key: 'dream:dsh-golden', name: 'dsh-golden', sourceDir }]
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.installed).toEqual(['.agents/skills/dsh-golden'])
+    expect(await readFile(join(cwd, '.agents/skills/dsh-golden/SKILL.md'), 'utf8')).toContain('# dsh-golden')
+  }, 120_000)
+
   it('keeps an aliased skill root owned across a harness switch', async () => {
     const sourceDir = await writeSkill(sources, 'aliased', 'v1')
     const localSkills: LocalSkillSource[] = [{ kind: 'dream', key: 'dream:aliased', name: 'aliased', sourceDir }]

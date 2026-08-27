@@ -35,6 +35,7 @@ import {
   type RetryableHookDeliveryReason
 } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import type { HookCommentFamily } from '../../src/persistence/ports.js'
 
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const OTHER_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
@@ -80,7 +81,16 @@ async function seedHook(agentId: string): Promise<string> {
   return hookId
 }
 
-async function seedGithubHook(agentId: string): Promise<string> {
+async function seedGithubHook(
+  agentId: string,
+  over: {
+    family?: string
+    events?: string[]
+    commentFamilies?: HookCommentFamily[]
+    reviewPolicy?: 'off' | 'full'
+    reportingMode?: 'off' | 'check'
+  } = {}
+): Promise<string> {
   const hookId = randomUUID()
   await repo().upsert({
     hookId: HookId(hookId),
@@ -91,13 +101,47 @@ async function seedGithubHook(agentId: string): Promise<string> {
     sessionMode: 'perThread',
     repoId: 987654321n,
     repoFullName: 'acme/infra',
-    events: ['issues:*'],
-    reviewPolicy: 'full',
-    reportingMode: 'check',
+    ...(over.family !== undefined ? { family: over.family } : {}),
+    events: over.events ?? ['issues:*'],
+    ...(over.commentFamilies !== undefined ? { commentFamilies: over.commentFamilies } : {}),
+    reviewPolicy: over.reviewPolicy ?? 'full',
+    reportingMode: over.reportingMode ?? 'check',
     gateMode: 'informational',
     targetPlatform: 'slack'
   })
   return hookId
+}
+
+/** The motivating configuration of the family split: one repo watched for PR
+ *  comments and issue comments as two rows sharing one issue_comment cadence. */
+async function placedCommentFamilyPair(
+  createdAt: Date
+): Promise<{ agentId: string; pullHookId: string; issuesHookId: string }> {
+  // A test may build two pairs, so the shared daemon is seeded at most once.
+  if ((await prisma.daemon.count({ where: { id: DAEMON } })) === 0) await seedDaemon(prisma, DAEMON)
+  const agentId = randomUUID()
+  await seedAgent(prisma, agentId, { daemonId: DAEMON })
+  await prisma.agent.update({ where: { id: agentId }, data: { status: 'active' } })
+  const pullHookId = await seedGithubHook(agentId, {
+    family: 'pull_request',
+    events: ['pull_request:*', 'issue_comment:created'],
+    commentFamilies: ['pull_request']
+  })
+  const issuesHookId = await seedGithubHook(agentId, {
+    family: 'issues',
+    events: ['issues:*', 'issue_comment:created'],
+    commentFamilies: ['issues'],
+    reviewPolicy: 'off',
+    reportingMode: 'off'
+  })
+  // Both rows AND their agent predate the delivery unmodified: any later
+  // definition change (either lastModifiedAt) blocks the claim by design.
+  await prisma.hookDef.updateMany({
+    where: { id: { in: [pullHookId, issuesHookId] } },
+    data: { createdAt, lastModifiedAt: createdAt }
+  })
+  await prisma.agent.update({ where: { id: agentId }, data: { lastModifiedAt: createdAt } })
+  return { agentId, pullHookId, issuesHookId }
 }
 
 async function placedHook(daemonId = DAEMON): Promise<{ agentId: string; hookId: string }> {
@@ -121,13 +165,14 @@ async function recordGithubDeliveryFailure(
   deliveryKey: string,
   firedAt: Date,
   reason: RetryableHookDeliveryReason | typeof HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
-  daemonId = DAEMON
+  daemonId = DAEMON,
+  over: { event?: string; subjectKind?: string } = {}
 ) {
   const hook = (await repo().getUnscoped(HookId(hookId)))!
   await repo().recordDelivery(HookId(hookId), {
     deliveryKey,
     firedAt,
-    event: 'issues:opened',
+    event: over.event ?? 'issues:opened',
     status: 'failed',
     reason,
     agentId: AgentId(agentId),
@@ -139,7 +184,7 @@ async function recordGithubDeliveryFailure(
     gateModeSnapshot: hook.gateMode,
     repoId: hook.repoId ?? undefined,
     repoFullName: hook.repoFullName ?? undefined,
-    subjectKind: 'issue'
+    subjectKind: over.subjectKind ?? 'issue'
   })
   return hook
 }
@@ -274,7 +319,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     expect(rows.every((row) => row.redeliveryLastRequestedAt?.getTime() === firedAt.getTime())).toBe(true)
   })
 
-  it('blocks a GUID-wide redelivery when any current fanout sibling is nonretryable or missing', async () => {
+  it('blocks a GUID-wide redelivery when any landed fanout sibling is nonretryable', async () => {
     const { agentId, hookId } = await placedGithubHook()
     const siblingHookId = await seedGithubHook(agentId)
     const firedAt = new Date('2026-07-03T10:30:00.000Z')
@@ -301,23 +346,221 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
       )
     ).toBe(false)
     expect(await repo().getRun(HookId(hookId), 'mixed-guid')).toMatchObject({ redeliveryNextAttemptAt: null })
+  })
 
+  // The reconciler cannot tell an issue comment from a PR comment in a delivery
+  // summary, so both sibling family rows are always candidates for one GUID.
+  it('redelivers a comment failure that landed only on the subject family that matched', async () => {
+    const firedAt = new Date('2026-07-03T11:00:00.000Z')
+    const { agentId, pullHookId, issuesHookId } = await placedCommentFamilyPair(new Date(firedAt.getTime() - 60_000))
     await recordGithubDeliveryFailure(
-      hookId,
+      pullHookId,
       agentId,
-      'missing-sibling-guid',
+      'pull-comment-guid',
       firedAt,
-      HOOK_DELIVERY_REASON_DAEMON_OFFLINE
+      HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+      DAEMON,
+      { event: 'issue_comment:created', subjectKind: 'pull_request' }
     )
+
+    const expected = [HookId(pullHookId), HookId(issuesHookId)].sort()
+    expect(await repo().claimRetryableDeliveryRedelivery('pull-comment-guid', expected, firedAt, [30_000])).toBe(true)
+    expect(await repo().getRun(HookId(pullHookId), 'pull-comment-guid')).toMatchObject({
+      redeliveryAttempts: 1,
+      redeliveryLastRequestedAt: firedAt,
+      redeliveryNextAttemptAt: new Date(firedAt.getTime() + 30_000)
+    })
+    // The sibling family never landed a row and must not be invented.
+    expect(await repo().getRun(HookId(issuesHookId), 'pull-comment-guid')).toBeNull()
+  })
+
+  it('blocks the claim when an unlanded candidate hook was created after the delivery', async () => {
+    const firedAt = new Date('2026-07-03T11:05:00.000Z')
+    const { agentId, pullHookId, issuesHookId } = await placedCommentFamilyPair(new Date(firedAt.getTime() - 60_000))
+    await recordGithubDeliveryFailure(
+      pullHookId,
+      agentId,
+      'late-sibling-guid',
+      firedAt,
+      HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+      DAEMON,
+      { event: 'issue_comment:created', subjectKind: 'pull_request' }
+    )
+    // A hook created after the relay ingested this GUID would read the
+    // redelivery as a first run of a stale event.
+    await prisma.hookDef.update({
+      where: { id: issuesHookId },
+      data: { createdAt: new Date(firedAt.getTime() + 1_000), lastModifiedAt: new Date(firedAt.getTime() + 1_000) }
+    })
+
+    const expected = [HookId(pullHookId), HookId(issuesHookId)].sort()
+    expect(await repo().claimRetryableDeliveryRedelivery('late-sibling-guid', expected, firedAt, [30_000])).toBe(false)
+    expect(await repo().getRun(HookId(pullHookId), 'late-sibling-guid')).toMatchObject({
+      redeliveryAttempts: 0,
+      redeliveryNextAttemptAt: null
+    })
+  })
+
+  it('blocks the claim when an unlanded candidate belongs to another agent', async () => {
+    const firedAt = new Date('2026-07-03T11:07:00.000Z')
+    const backdated = new Date(firedAt.getTime() - 60_000)
+    const pairA = await placedCommentFamilyPair(backdated)
+    const pairB = await placedCommentFamilyPair(backdated)
+    await recordGithubDeliveryFailure(
+      pairA.pullHookId,
+      pairA.agentId,
+      'cross-agent-guid',
+      firedAt,
+      HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+      DAEMON,
+      { event: 'issue_comment:created', subjectKind: 'pull_request' }
+    )
+
+    // B's same-family rule was filtered at ingestion (say, mentionOnly); this
+    // claim cannot reconstruct B's pause/rename history, so B blocks even
+    // though both timestamps predate the delivery.
+    const expected = [HookId(pairA.pullHookId), HookId(pairB.pullHookId)].sort()
+    expect(await repo().claimRetryableDeliveryRedelivery('cross-agent-guid', expected, firedAt, [30_000])).toBe(false)
+    expect(await repo().getRun(HookId(pairA.pullHookId), 'cross-agent-guid')).toMatchObject({
+      redeliveryAttempts: 0,
+      redeliveryNextAttemptAt: null
+    })
+  })
+
+  it('blocks the claim when the shared agent was modified after the delivery', async () => {
+    const firedAt = new Date('2026-07-03T11:08:00.000Z')
+    const { agentId, pullHookId, issuesHookId } = await placedCommentFamilyPair(new Date(firedAt.getTime() - 60_000))
+    await recordGithubDeliveryFailure(
+      pullHookId,
+      agentId,
+      'renamed-agent-guid',
+      firedAt,
+      HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+      DAEMON,
+      { event: 'issue_comment:created', subjectKind: 'pull_request' }
+    )
+    // A rename can change what the sibling's mention gate matches, so an agent
+    // PATCH after ingestion blocks the tolerance.
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { lastModifiedAt: new Date(firedAt.getTime() + 1_000) }
+    })
+
+    const expected = [HookId(pullHookId), HookId(issuesHookId)].sort()
+    expect(await repo().claimRetryableDeliveryRedelivery('renamed-agent-guid', expected, firedAt, [30_000])).toBe(false)
+    expect(await repo().getRun(HookId(pullHookId), 'renamed-agent-guid')).toMatchObject({
+      redeliveryAttempts: 0,
+      redeliveryNextAttemptAt: null
+    })
+  })
+
+  it('blocks the claim when an unlanded candidate was modified after the delivery', async () => {
+    const firedAt = new Date('2026-07-03T11:06:00.000Z')
+    const { agentId, pullHookId, issuesHookId } = await placedCommentFamilyPair(new Date(firedAt.getTime() - 60_000))
+    // The sibling filtered the original event via mentionOnly, so it never landed a row.
+    await prisma.hookDef.update({
+      where: { id: issuesHookId },
+      data: { mentionOnly: true, lastModifiedAt: new Date(firedAt.getTime() - 60_000) }
+    })
+    await recordGithubDeliveryFailure(
+      pullHookId,
+      agentId,
+      'relaxed-sibling-guid',
+      firedAt,
+      HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+      DAEMON,
+      { event: 'issue_comment:created', subjectKind: 'pull_request' }
+    )
+    // Family isolation keeps this sibling from ever matching a PR comment, but
+    // the hook-level fence is defense in depth: ANY post-ingestion edit blocks.
+    await prisma.hookDef.update({
+      where: { id: issuesHookId },
+      data: { mentionOnly: false, lastModifiedAt: new Date(firedAt.getTime() + 1_000) }
+    })
+
+    const expected = [HookId(pullHookId), HookId(issuesHookId)].sort()
+    expect(await repo().claimRetryableDeliveryRedelivery('relaxed-sibling-guid', expected, firedAt, [30_000])).toBe(
+      false
+    )
+    expect(await repo().getRun(HookId(pullHookId), 'relaxed-sibling-guid')).toMatchObject({
+      redeliveryAttempts: 0,
+      redeliveryNextAttemptAt: null
+    })
+  })
+
+  it('blocks the claim when a landed row belongs to a hook outside the candidate fanout', async () => {
+    const firedAt = new Date('2026-07-03T11:10:00.000Z')
+    const { agentId, pullHookId, issuesHookId } = await placedCommentFamilyPair(new Date(firedAt.getTime() - 60_000))
+    for (const id of [pullHookId, issuesHookId]) {
+      await recordGithubDeliveryFailure(
+        id,
+        agentId,
+        'stray-guid',
+        firedAt,
+        HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+        DAEMON,
+        {
+          event: 'issue_comment:created'
+        }
+      )
+    }
+
+    expect(await repo().claimRetryableDeliveryRedelivery('stray-guid', [HookId(pullHookId)], firedAt, [30_000])).toBe(
+      false
+    )
+    for (const id of [pullHookId, issuesHookId]) {
+      expect(await repo().getRun(HookId(id), 'stray-guid')).toMatchObject({
+        redeliveryAttempts: 0,
+        redeliveryNextAttemptAt: null
+      })
+    }
+  })
+
+  it('tolerates a deleted unlanded candidate but not a deleted landed one', async () => {
+    const firedAt = new Date('2026-07-03T11:15:00.000Z')
+    const pair = await placedCommentFamilyPair(new Date(firedAt.getTime() - 60_000))
+    await recordGithubDeliveryFailure(
+      pair.pullHookId,
+      pair.agentId,
+      'gone-unlanded-guid',
+      firedAt,
+      HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+      DAEMON,
+      { event: 'issue_comment:created', subjectKind: 'pull_request' }
+    )
+    await prisma.hookDef.delete({ where: { id: pair.issuesHookId } })
+    // The relay has no rule left for the removed row, so it cannot fire again.
     expect(
       await repo().claimRetryableDeliveryRedelivery(
-        'missing-sibling-guid',
-        [HookId(hookId), HookId(siblingHookId)],
+        'gone-unlanded-guid',
+        [HookId(pair.pullHookId), HookId(pair.issuesHookId)].sort(),
+        firedAt,
+        [30_000]
+      )
+    ).toBe(true)
+
+    const second = await placedCommentFamilyPair(new Date(firedAt.getTime() - 60_000))
+    for (const id of [second.pullHookId, second.issuesHookId]) {
+      await recordGithubDeliveryFailure(
+        id,
+        second.agentId,
+        'gone-landed-guid',
+        firedAt,
+        HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+        DAEMON,
+        { event: 'issue_comment:created' }
+      )
+    }
+    await prisma.hookDef.delete({ where: { id: second.issuesHookId } })
+    expect(
+      await repo().claimRetryableDeliveryRedelivery(
+        'gone-landed-guid',
+        [HookId(second.pullHookId), HookId(second.issuesHookId)].sort(),
         firedAt,
         [30_000]
       )
     ).toBe(false)
-    expect(await repo().getRun(HookId(hookId), 'missing-sibling-guid')).toMatchObject({
+    expect(await repo().getRun(HookId(second.pullHookId), 'gone-landed-guid')).toMatchObject({
       redeliveryNextAttemptAt: null
     })
   })

@@ -17,6 +17,7 @@ import {
 function fakeHome(): string {
   const home = mkdtempSync(join(tmpdir(), 'ac-home-'))
   vi.stubEnv('HOME', home)
+  vi.stubEnv('USERPROFILE', home) // what `homedir()` reads on Windows
   vi.stubEnv('AGENTCONNECT_ROOT', undefined)
   return home
 }

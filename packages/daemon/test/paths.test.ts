@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { logsDir, daemonLogPath, daemonEntryForShims } from '../src/paths.js'
 
-describe('log paths', () => {
+// The root under test is a POSIX absolute path, which resolves onto a drive on Windows.
+describe.skipIf(process.platform === 'win32')('log paths', () => {
   it('logsDir is <root>/logs', () => {
     expect(logsDir('/tmp/ac')).toBe('/tmp/ac/logs')
   })

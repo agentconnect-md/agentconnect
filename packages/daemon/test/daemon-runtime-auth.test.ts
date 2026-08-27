@@ -149,7 +149,7 @@ describe('live-turn runtime auth signal', () => {
     } finally {
       await daemon.stop()
     }
-  }, 15_000)
+  })
 
   it('keeps the turn outcome intact when the facts emit throws (hot-path best-effort)', async () => {
     const root = scaffold()
@@ -189,5 +189,5 @@ describe('live-turn runtime auth signal', () => {
     } finally {
       await daemon.stop()
     }
-  }, 15_000)
+  })
 })

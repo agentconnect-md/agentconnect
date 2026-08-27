@@ -64,7 +64,8 @@ function helperPath(): string {
 /** Run one audited workspace mutation with kernel confinement when the host supports it. */
 export async function runSkillWorkspaceMutation<T extends object>(
   spec: T & { cwd: string },
-  readRoots: string[] = []
+  readRoots: string[] = [],
+  signal?: AbortSignal
 ): Promise<Record<string, unknown>> {
   const root = mkdtempSync(join(tmpdir(), 'agentconnect-skill-mutation-'))
   chmodSync(root, 0o700)
@@ -136,7 +137,8 @@ export async function runSkillWorkspaceMutation<T extends object>(
           TEMP: providerTmp,
           CI: '1',
           GIT_TERMINAL_PROMPT: '0'
-        }
+        },
+        signal
       })
       const value = JSON.parse(output) as unknown
       if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -154,7 +156,7 @@ export async function runSkillWorkspaceMutation<T extends object>(
 async function runConfinedHelper(
   command: string,
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv }
+  options: { cwd: string; env: NodeJS.ProcessEnv; signal?: AbortSignal }
 ): Promise<string> {
   const lease = currentSkillMutationHelperLease()
   if (!lease) throw new Error('confined skill workspace mutation requires the external workspace lock')
@@ -185,6 +187,12 @@ async function runConfinedHelper(
         if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure ??= error as Error
       }
     }
+    const abortHelper = (): void => {
+      failure ??= new Error('confined skill workspace mutation aborted')
+      killHelper()
+    }
+    if (options.signal?.aborted) abortHelper()
+    else options.signal?.addEventListener('abort', abortHelper, { once: true })
     const collect = (target: Buffer[], chunk: Buffer): void => {
       bytes += chunk.length
       if (bytes > MAX_MUTATION_OUTPUT) {
@@ -221,6 +229,7 @@ async function runConfinedHelper(
     }, MUTATION_TIMEOUT_MS)
     child.once('close', (code) => {
       void (async () => {
+        options.signal?.removeEventListener('abort', abortHelper)
         clearTimeout(timer)
         await registration
         if (helperAlive(helperId, grouped)) {

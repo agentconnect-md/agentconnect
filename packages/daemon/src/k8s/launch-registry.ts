@@ -10,6 +10,7 @@ export interface Launch {
   agentId: string
   sandboxName: string
   sandboxUid: string
+  claimUid: string
   generation: number
   /** When this member started holding the launch; the idle floor when no activity is recorded. */
   since: number
@@ -44,13 +45,13 @@ export class LaunchRegistry {
 
   // The allocation is a durable round trip, so a concurrent launch can resolve out of order — an
   // older generation never overwrites a newer one, keeping the recorded launch the highest.
-  async recordLaunch(agentId: string, sandboxName: string, sandboxUid: string): Promise<Launch> {
+  async recordLaunch(agentId: string, sandboxName: string, sandboxUid: string, claimUid = sandboxUid): Promise<Launch> {
     // Allocated from durable install-wide state, not from this process: the pod this launch is
     // about to dial may have been bound by a member that has since been rolled away.
     const generation = await this.deps.generations.nextSandboxGeneration(agentId)
     const current = this.launches.get(agentId)
     if (current && current.generation > generation) return current
-    const launch: Launch = { agentId, sandboxName, sandboxUid, generation, since: this.deps.clock.now() }
+    const launch: Launch = { agentId, sandboxName, sandboxUid, claimUid, generation, since: this.deps.clock.now() }
     this.launches.set(agentId, launch)
     return launch
   }

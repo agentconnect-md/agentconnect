@@ -52,6 +52,34 @@ export const REVIEW_PRESETS = [
 
 export type ReviewPresetId = (typeof REVIEW_PRESETS)[number]['id']
 
+/** The create surfaces' format row. `None` is not a tile there: turning every
+ *  Custom capability off IS the no-review state, and one fewer way to say the
+ *  same thing. Custom is a DISCLOSURE, not a value — it reveals the capability
+ *  checkboxes and leaves the current value alone until one is clicked. */
+export const REVIEW_FORMATS = [
+  { id: 'brief', label: 'Brief' },
+  { id: 'details', label: 'Details' },
+  { id: 'custom', label: 'Custom' }
+] as const satisfies ReadonlyArray<{ id: string; label: string }>
+
+export type ReviewFormatId = (typeof REVIEW_FORMATS)[number]['id']
+
+/** The format row's default: the full set — inline comments, request changes, approve, status check. */
+export const REVIEW_FORMAT_DEFAULT: CodeHostReviewSettingsValue = { reviewPolicy: 'full', reportingMode: 'check' }
+
+/** Which format tile a value reads as — anything but an exact Brief or Details is custom. */
+export function reviewFormatOf(value: CodeHostReviewSettingsValue): ReviewFormatId {
+  const exact = REVIEW_PRESETS.find(
+    (preset) => preset.value.reviewPolicy === value.reviewPolicy && preset.value.reportingMode === value.reportingMode
+  )
+  return exact?.id === 'brief' || exact?.id === 'details' ? exact.id : 'custom'
+}
+
+/** The value a format tile applies; `custom` applies none. */
+export function reviewFormatValue(id: ReviewFormatId): CodeHostReviewSettingsValue | null {
+  return REVIEW_PRESETS.find((preset) => preset.id === id)?.value ?? null
+}
+
 /** Which preset a stored value reads as; anything richer than "brief" is details. */
 export function reviewPresetOf(value: CodeHostReviewSettingsValue): ReviewPresetId {
   if (value.reviewPolicy === 'off' && value.reportingMode === 'off') return 'none'

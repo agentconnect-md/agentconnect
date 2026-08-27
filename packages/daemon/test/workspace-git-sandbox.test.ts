@@ -111,7 +111,8 @@ describe('the console git seam without a bound sandbox', () => {
   })
 })
 
-describe('a shim channel that goes away mid-request', () => {
+// Pod coordinates are POSIX by construction — the sandbox pod is always Linux.
+describe.skipIf(process.platform === 'win32')('a shim channel that goes away mid-request', () => {
   // The renewal is ROUTINE: the shim re-dials at half its credential TTL and `ShimSession.attach`
   // fails whatever was in flight. `isRepo` used to swallow that like any other git failure, so an
   // ordinary renewal settled as "not a git checkout" — the same misleading answer this seam was built

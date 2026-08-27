@@ -56,6 +56,7 @@ import type { PrepareSessionWorkspaceRequest } from '../workspace/workspace-mana
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './poster.js'
 import { GitlabFinalPoster } from '../gitlab/poster.js'
 import { GITLAB_HOST_MISMATCH_REASON } from '../gitlab/host-fence.js'
+import { acknowledgeCodeHostTrigger } from '../codehost/ack.js'
 import { GithubReviewClient, type GithubReviewEffect } from './review.js'
 
 /** Dispatch options this seam needs; a subset of the daemon's own. */
@@ -298,7 +299,12 @@ export class GithubReviewOrchestrator {
             hookId: msg.hookId,
             repo: msg.github.repoFullName,
             number: msg.github.pullNumber,
-            ...(msg.github.reviewCommentId ? { reviewCommentId: msg.github.reviewCommentId } : {}),
+            ...(msg.github.reviewCommentId
+              ? {
+                  reviewCommentId: msg.github.reviewCommentId,
+                  triggerComment: { kind: 'review_comment' as const, id: msg.github.reviewCommentId }
+                }
+              : {}),
             reviewThreadRootCommentId: msg.github.reviewThreadRootCommentId
           }
         : undefined
@@ -313,14 +319,22 @@ export class GithubReviewOrchestrator {
             provider: 'gitlab' as const,
             subjectKind: msg.gitlab.target.kind,
             repo: msg.gitlab.projectId,
-            number: msg.gitlab.target.iid
+            number: msg.gitlab.target.iid,
+            ...(msg.gitlab.noteId ? { triggerComment: { kind: 'note' as const, id: msg.gitlab.noteId } } : {})
           }
         : undefined
     const githubReply =
       trustedInlineTarget ??
       gitlabReply ??
       (c?.source === 'github' && c.repo && c.number !== undefined
-        ? { hookId: msg.hookId, repo: c.repo, number: c.number }
+        ? {
+            hookId: msg.hookId,
+            repo: c.repo,
+            number: c.number,
+            ...(msg.github?.issueCommentId
+              ? { triggerComment: { kind: 'issue_comment' as const, id: msg.github.issueCommentId } }
+              : {})
+          }
         : undefined)
     if (githubReply) hookContext.githubReply = githubReply
     const reviewLane = reviewSubjectLane(hookContext, hookCoordinates(msg.agentId, nmsg, msg.target?.integrationId))
@@ -947,6 +961,24 @@ export class GithubReviewOrchestrator {
     }
     return { replies: results }
   }
+
+  /** Light the code host's "seen it" reaction on whatever fired this turn, through the same
+   *  repo-targeted mint the turn's poster will use — reactions need no wider grant. Returns a
+   *  promise only so tests can settle it; dispatch never awaits one. */
+  acknowledgeTrigger(agentId: string, ref: GithubReplyTarget): Promise<void> {
+    return acknowledgeCodeHostTrigger(ref, {
+      token:
+        ref.provider === 'gitlab'
+          ? async () => (await this.host.getGitlabPostToken(agentId, ref.repo, ref.hookId)).token
+          : async () => (await this.host.getPostToken(agentId, ref.repo, ref.hookId)).token,
+      apiBaseUrl:
+        ref.provider === 'gitlab'
+          ? () => gitlabApiBaseUrl(this.agents.get(agentId)?.gitlabHost)
+          : () => 'https://api.github.com',
+      log: { warn: (message: string) => this.log.warn(message) }
+    })
+  }
+
   /** Build the per-turn GitHub final-answer selector and poster, tokened
    *  via the repo-targeted gitcred mint (issues/PR write, no contents — never
    *  enters agent env). Attribution is resolved at publish time so the completed

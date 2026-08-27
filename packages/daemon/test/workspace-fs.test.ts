@@ -151,7 +151,8 @@ for (const { name, fs, root } of subjects()) {
   })
 }
 
-describe('ShimWorkspaceFs (the pod side)', () => {
+// Pod coordinates are POSIX by construction — the sandbox pod is always Linux.
+describe.skipIf(process.platform === 'win32')('ShimWorkspaceFs (the pod side)', () => {
   it('refuses a path outside the mount before it reaches the wire', async () => {
     const mount = tempRoot()
     const requester = shimRequester(mount, pathExecutor())

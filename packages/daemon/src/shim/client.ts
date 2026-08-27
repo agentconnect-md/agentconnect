@@ -13,6 +13,7 @@ import {
   type ShimBound,
   type ShimCapability,
   type ShimEvent,
+  type ShimFeature,
   type ShimFrame
 } from './protocol.js'
 
@@ -39,13 +40,20 @@ export interface ShimClientDeps {
   readToken?: () => string
   /** Handles an authorized non-ACP request from the daemon (materialize / exec / read /
    *  tunnel). The ACP capability is served by the built-in runner instead. */
-  handle?: (capability: ShimCapability, payload: unknown, abort?: AbortSignal) => Promise<unknown>
+  handle?: (
+    capability: ShimCapability,
+    payload: unknown,
+    abort?: AbortSignal,
+    context?: { agentId: string; generation: number }
+  ) => Promise<unknown>
   /** Resolves executables in THIS filesystem for the ACP runner. */
   resolveCommand?: ResolveCommand
   /** Pod environment the ACP runner consults for provider fill-ins (SANDBOX_PROVIDER_ENV). */
   podEnv?: Record<string, string | undefined>
   /** This pod's workspace mount, reported in the hello so the daemon builds pod paths on it. */
   workspaceRoot?: string
+  /** Versioned optional surfaces this shim image can accept. */
+  features?: ShimFeature[]
   clock?: Clock
   backoff?: Backoff
   log?: { info: (m: string) => void; warn: (m: string) => void }
@@ -265,7 +273,8 @@ export class ShimClient {
             JSON.stringify({
               type: 'shim/identity',
               token,
-              ...(this.deps.workspaceRoot ? { workspaceRoot: this.deps.workspaceRoot } : {})
+              ...(this.deps.workspaceRoot ? { workspaceRoot: this.deps.workspaceRoot } : {}),
+              ...(this.deps.features?.length ? { features: this.deps.features } : {})
             } satisfies Extract<ShimFrame, { type: 'shim/identity' }>)
           )
           return
@@ -401,7 +410,10 @@ export class ShimClient {
       this.inFlight.set(request.id, { transport, controller })
       try {
         const handle = this.deps.handle ?? (async () => undefined)
-        const payload = await handle(request.capability, request.payload, controller.signal)
+        const payload = await handle(request.capability, request.payload, controller.signal, {
+          agentId: bound.agentId,
+          generation: bound.generation
+        })
         transport.send(JSON.stringify({ type: 'shim/response', id: request.id, ok: true, payload }))
       } finally {
         this.inFlight.delete(request.id)

@@ -217,6 +217,13 @@ function stampStep(step: UnstampedStep, observedAtMs = Date.now()): SessionStep 
   }
 }
 
+/** Drop this lane's live-only wait notice — streamed output IS the wait ending, so the line must go. */
+function dropWaitNotices(steps: SessionStep[], agentId: string | undefined, turnId: string): SessionStep[] {
+  const waiting = (s: SessionStep): boolean =>
+    s.kind === 'notice' && (s.agentId ?? undefined) === agentId && s.turnId === turnId
+  return steps.some(waiting) ? steps.filter((s) => !waiting(s)) : steps
+}
+
 const Ctx = createContext<PlaygroundData | null>(null)
 
 /** One live webchat socket per playground session. */
@@ -449,6 +456,13 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [mutateSteps]
   )
 
+  /** Retire a lane's wait notice on an event that is not folded into a step (a title, a clean end). */
+  const retireWaitNotice = useCallback(
+    (id: string, agentId: string | undefined, turnId: string): void =>
+      mutateSteps(id, (steps) => dropWaitNotices(steps, agentId, turnId)),
+    [mutateSteps]
+  )
+
   /** Apply the runtime's streamed session title so a live playground session renames
    *  in place — a synthetic 'pg_' session starts with a static "Playground · <agent>"
    *  label; the agent's auto-generated title arrives mid-turn (like a Slack session's).
@@ -488,7 +502,9 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       const who = participantName(id, agentId)
       const lane = (extra: Omit<SessionStep, 'text' | 'turnId'> & { text: string }): SessionStep =>
         stampStep({ ...extra, turnId, ...(agentId ? { agentId } : {}), ...(who ? { who } : {}) }, observedAtMs)
-      mutateSteps(id, (steps) => {
+      mutateSteps(id, (arrived) => {
+        // Any streamed event ends the wait a `notice` announced, so it retires before this event lands.
+        const steps = ev.kind === 'notice' ? arrived : dropWaitNotices(arrived, agentId, turnId)
         // Concurrent participant streams interleave: accumulate each chunk into
         // the most recent step OF THIS LANE (same agentId), not the array tail.
         // A user message is a hard turn boundary — never merge across it, or a
@@ -543,9 +559,10 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         }
         if (ev.kind === 'notice') {
           // Daemon chrome for a wait with nothing else to show (a sandbox pod coming up).
-          // Live-only, so it goes in the collapsible work lane; `boundary` keeps the reply
-          // chunks that follow from accumulating into it.
-          return [...steps, lane({ kind: 'plan', text: ev.text, boundary: true })]
+          // Its own lane, not the work lane: it is not something the agent thought or did,
+          // so it must not be counted or hidden as a reasoning step. `boundary` keeps the
+          // reply chunks that follow from accumulating into it.
+          return [...steps, lane({ kind: 'notice', text: ev.text, boundary: true })]
         }
         if (ev.kind === 'message') {
           if (last && last.kind === 'done' && last.who === who) {
@@ -761,8 +778,11 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             // Tool/supersession events are ordering fences: make preceding text
             // visible before applying the non-text event.
             deltaBuffer.flush(cursorKey)
-            if (event.kind === 'session_info') applyTitle(id, event.title, agentId)
-            else applyEvent(id, event, agentId, output.turnId)
+            if (event.kind === 'session_info') {
+              // Not a step, but still streamed by a live runtime — so it ends the wait too.
+              applyTitle(id, event.title, agentId)
+              retireWaitNotice(id, agentId, output.turnId)
+            } else applyEvent(id, event, agentId, output.turnId)
           }
         }
       }
@@ -786,6 +806,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         else finishedTurnLanes.current.set(id, { turnId: result.done.turnId, agents: new Set([agentId]) })
       }
       if (result.done.error) {
+        // The notice STAYS on a failure: a turn that died waiting for its pod is explained by it.
         const name = participantName(id, agentId)
         pushStep(id, {
           kind: 'done',
@@ -794,11 +815,26 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
           ...(name ? { who: name } : {}),
           text: `⚠️ ${result.done.error}`
         })
+      } else {
+        // A lane can end having streamed nothing at all — a silent AC_NO_RESPONSE decline holds
+        // every chunk back — so a clean end is the last chance to retire the wait it announced.
+        retireWaitNotice(id, agentId, result.done.turnId)
       }
       // The turn stays busy until every targeted participant's lane finished.
       if (lanesOf(id).length === 0) setBusy(id, false)
     },
-    [anchorColdTurn, applyEvent, applyStatus, applyTitle, deltaBuffer, failStream, participantName, pushStep, setBusy]
+    [
+      anchorColdTurn,
+      applyEvent,
+      applyStatus,
+      applyTitle,
+      deltaBuffer,
+      failStream,
+      participantName,
+      pushStep,
+      retireWaitNotice,
+      setBusy
+    ]
   )
 
   const receiveOutput = useCallback(

@@ -273,7 +273,7 @@ export function agentIsPlaced(agent: Pick<Agent, 'daemon' | 'runtime' | 'placeme
   return (isPoolPlacementKind(agent.placementKind) || agent.daemon !== '—') && agent.runtime !== ''
 }
 
-export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done'
+export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done' | 'notice'
 
 export interface LaneInfo {
   lane: string
@@ -317,6 +317,17 @@ const LANE_MAP: Record<LaneKind, LaneInfo> = {
     weight: 500,
     textColor: 'var(--text-secondary)',
     codeColor: 'var(--text-secondary)'
+  },
+  // Daemon chrome for a wait the agent has nothing else to show for (a sandbox pod coming
+  // up). Not the agent's work — it renders as its own standalone line, never inside the
+  // collapsible work panel (see WORK_LANES).
+  notice: {
+    lane: 'NOTICE',
+    laneColor: 'var(--text-tertiary)',
+    dot: 'var(--text-disabled)',
+    weight: 400,
+    textColor: 'var(--text-tertiary)',
+    codeColor: 'var(--text-tertiary)'
   },
   // An assistant's completed reply — rendered neutrally, identical to a real transcript
   // text row (see SessionDetailView.msgStep). Keeping this in sync means a live playground

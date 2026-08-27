@@ -661,7 +661,10 @@ describe('writeAgentSpec — create (no agent.json)', () => {
     writeAgentSpec(dir, 'bot-new', baseSpec({ name: '../outside' }), { ...deps, warn })
 
     const file = findAgentFileById(dir, 'bot-new')
-    expect(file).toMatch(new RegExp(`^${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/agent-[a-f0-9]{32}/agent\\.json$`))
+    const sep = process.platform === 'win32' ? '\\\\' : '/'
+    expect(file).toMatch(
+      new RegExp(`^${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${sep}agent-[a-f0-9]{32}${sep}agent\\.json$`)
+    )
     expect(readFileSync(join(outside, 'sentinel'), 'utf8')).toBe('keep')
     expect(warn).toHaveBeenCalledOnce()
   })

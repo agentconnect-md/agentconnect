@@ -43,6 +43,7 @@ import {
   FleetAgentsCard,
   FleetRuntimesCard,
   FleetStat,
+  FleetStatColumn,
   FleetUsageCard,
   ResourceDial,
   ResourceDials,
@@ -128,6 +129,21 @@ export default function ClusterDetailView() {
   const capabilitySource = serving[0]
   const models = runtimes.reduce((sum, rt) => sum + rt.models.length, 0)
 
+  // Cloud's tiles. They stack in a column beside the Credits card, and spread three-up where a
+  // deployment offers no billing and there is no card to stand beside.
+  const cloudTiles = (
+    <>
+      <FleetStat icon="bot" label="Agents" value={String(hosted.length)} />
+      <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
+      <FleetStat
+        icon="cpu"
+        label="Runtimes available"
+        value={String(runtimes.length)}
+        note={`${models} model${models === 1 ? '' : 's'}`}
+      />
+    </>
+  )
+
   return (
     <div className="wrap max-w-[1240px] px-4 pt-[14px] pb-1 desktop:p-0">
       {/* header — no credential action in either reading: pool credentials are minted where
@@ -190,27 +206,16 @@ export default function ClusterDetailView() {
         <div
           className={`mb-[18px] grid grid-cols-1 gap-[14px] ${billingOffered ? 'desktop:grid-cols-[300px_1fr]' : ''}`}
         >
-          <div
-            className={
-              billingOffered
-                ? 'grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col'
-                : 'grid grid-cols-2 gap-[14px] desktop:grid-cols-3'
-            }
-          >
-            <FleetStat icon="bot" label="Agents" value={String(hosted.length)} />
-            <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
-            <FleetStat
-              icon="cpu"
-              label="Runtimes available"
-              value={String(runtimes.length)}
-              note={`${models} model${models === 1 ? '' : 's'}`}
-            />
-          </div>
+          {billingOffered ? (
+            <FleetStatColumn>{cloudTiles}</FleetStatColumn>
+          ) : (
+            <div className="grid grid-cols-2 gap-[14px] desktop:grid-cols-3">{cloudTiles}</div>
+          )}
           {billingOffered && <CloudCreditsCard />}
         </div>
       ) : (
         <div className="mb-[18px] grid grid-cols-1 gap-[14px] desktop:grid-cols-[280px_120px_1fr]">
-          <div className="grid grid-cols-2 gap-[14px] desktop:flex desktop:flex-col">
+          <FleetStatColumn>
             {/* The heartbeat count against the ceiling, never the placed-agent list: a set
                 placement names the set rather than the member serving it, so the two are not
                 on one axis. This is the pair the CP's placement check compares. */}
@@ -222,7 +227,7 @@ export default function ClusterDetailView() {
             />
             <FleetStat icon="activity" label="Active sessions" value={String(sessions)} />
             <FleetStat icon="server" label="Nodes" value={`${serving.length} / ${members.length}`} note="serving" />
-          </div>
+          </FleetStatColumn>
           <ClusterResourcesCard {...{ online, cpu, mem }} />
           {/* The agents placed here, exactly as the daemon page reads it. A metering ingress
               cannot stand in for a fleet: a daemon reports its own usage by default, pool

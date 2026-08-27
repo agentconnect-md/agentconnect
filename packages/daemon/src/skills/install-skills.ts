@@ -627,14 +627,17 @@ async function prepareSnapshotDestination(destination: string): Promise<void> {
   await fsp.chmod(parent, 0o700)
 }
 
-function currentGitResolutions(entries: AgentSkillEntry[], resolutions: SkillGitResolution[]): SkillGitResolution[] {
+export function currentGitResolutions(
+  entries: AgentSkillEntry[],
+  resolutions: SkillGitResolution[]
+): SkillGitResolution[] {
   const desired = new Set(entries.map(gitResolutionDigest))
   return resolutions
     .filter((resolution) => desired.has(resolution.definitionDigest))
     .sort((a, b) => a.definitionDigest.localeCompare(b.definitionDigest))
 }
 
-function gitResolutionDigest(entry: AgentSkillEntry): string {
+export function gitResolutionDigest(entry: AgentSkillEntry): string {
   const source = resolveBoundedGitSkillSource(entry)
   return fingerprint({ githubRepoId: entry.githubRepoId, cloneUrl: source.cloneUrl, ref: source.ref ?? 'HEAD' })
 }

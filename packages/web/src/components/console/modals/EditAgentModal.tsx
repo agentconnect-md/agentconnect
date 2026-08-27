@@ -43,8 +43,9 @@ import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import { Spinner } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
+import { useModal } from '@/components/console/ModalProvider'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
-import { editAgentCapabilitySource, editAgentDaemonChoices } from './edit-agent-daemon-choice'
+import { editAgentCapabilitySource, editAgentDaemonChoices, preselectPlacementReset } from './edit-agent-daemon-choice'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
 import { AgentCallVisibility } from '@/components/console/AgentCallVisibility'
 import {
@@ -68,6 +69,10 @@ import { isOutputMode, type OutputMode } from '@/lib/output-mode'
 // edit surfaces stay identical. Workspace and Memory keep their own dedicated
 // editors (the Workspace card / the Memory tab), so they are NOT sections here.
 export type EditAgentSection = 'basics' | 'runtime' | 'access' | 'secrets'
+
+// A picker row that opens the join-command dialog instead of naming a placement. Never a
+// daemonId, so it can never be saved: the onChange below intercepts it.
+const ADD_DAEMON = '__add_daemon__'
 
 const SECTIONS: ReadonlyArray<{ id: EditAgentSection; label: string; icon: string }> = [
   { id: 'basics', label: 'Basics', icon: 'id-card' },
@@ -94,10 +99,14 @@ function normalizeSelected(subjectAgentId: string, ids: string[]): string[] {
 export default function EditAgentModal({
   agent,
   focusSection,
+  preselectDaemonId,
   onClose
 }: {
   agent: Agent
   focusSection?: EditAgentSection
+  /** A daemon to open the placement picker on — set when a chained Add-daemon dialog just
+   *  connected one, so Continue lands on a form already pointed at the new machine. */
+  preselectDaemonId?: string
   onClose: () => void
 }) {
   const acpRegistry = useAcpRegistry()
@@ -116,6 +125,7 @@ export default function EditAgentModal({
   // Organization settings from the read-only "From organization" group (§8.2);
   // other members see the group and its explanation alone.
   const { myRole, orgPath } = useOrgs()
+  const { openModal } = useModal()
   const [loaded, setLoaded] = useState(false)
   const [sharing, setSharing] = useState<SharingValue>({ visibility: agent.visibility, sharedWith: agent.sharedWith })
   const initialSharing = useRef<SharingValue>({ visibility: agent.visibility, sharedWith: agent.sharedWith })
@@ -224,7 +234,9 @@ export default function EditAgentModal({
         // Through the SAME mapping the list projection uses, so a pool agent reloads as the pool
         // rather than as unplaced — `daemonId` is null for it by design.
         const placement = placementValueOf(dto, orgSetIds) ?? ''
-        setDaemonId(placement)
+        // The ref stays the SAVED placement — a preselect is a pending change like any other,
+        // so the move flow and the Save button see it as one.
+        setDaemonId(preselectDaemonId || placement)
         initialDaemonId.current = placement
         setModel(dto.model ?? '')
         initialModel.current = dto.model ?? ''
@@ -255,6 +267,20 @@ export default function EditAgentModal({
         const fresh: SharingValue = { visibility: dto.visibility, sharedWith: dto.sharedWith }
         setSharing(fresh)
         initialSharing.current = fresh
+        // A chained Add-daemon lands the form on a brand-new machine — reset the runtime/model
+        // to what it actually reports rather than a pair it cannot run.
+        const target = preselectDaemonId ? daemons.find((d) => d.daemonId === preselectDaemonId) : undefined
+        const reset = preselectPlacementReset(target?.runtimeModels, dto.runtime ?? '', dto.model ?? '')
+        if (reset?.kind === 'runtime') {
+          setRuntime(reset.runtime)
+          setModel('')
+          setEffort('')
+          setPermissionMode(permissionModeDefault(reset.runtime))
+          setApprovalsReviewer(approvalsReviewerDefault(reset.runtime))
+        } else if (reset?.kind === 'model') {
+          setModel('')
+          setEffort('')
+        }
         setLoaded(true)
       },
       (e) => {
@@ -446,7 +472,9 @@ export default function EditAgentModal({
               : 'Uses the credentials on this machine.',
         disabled: !current && !eligible
       }
-    })
+    }),
+    // Last row: no machine to pick means the picker itself offers connecting one.
+    { value: ADD_DAEMON, label: 'Add daemon', title: 'Connect a new machine to this org.', icon: 'plus' }
   ]
   const sourceUnavailable = !!sourceDaemon && !moveReady(sourceDaemon)
   const sourceOffline = sourceDaemon?.status === 'offline'
@@ -779,6 +807,12 @@ export default function EditAgentModal({
                     options={daemonOptions}
                     placeholder="No daemon"
                     onChange={(nextDaemonId) => {
+                      // Chaining through ModalProvider replaces this dialog; Continue reopens it
+                      // with the fresh daemon listed (same path as the unplaced agent's chip).
+                      if (nextDaemonId === ADD_DAEMON) {
+                        openModal('daemon', agent, { focusSection: 'basics' })
+                        return
+                      }
                       setDaemonId(nextDaemonId)
                       setRepairPlacement(false)
                       setForceReassign(false)

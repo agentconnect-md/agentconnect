@@ -22,6 +22,7 @@ import { parse as parseYaml } from 'yaml'
 import { readSkillLedger, skillLedgerLocation } from './skill-install-ledger.js'
 import { readBoundedFile } from './skill-source-snapshot.js'
 import type { WorkspaceFiles } from '../workspace/workspace-files.js'
+import type { ClusterSkillLedger } from '../store/cluster-skill-ledger.js'
 
 export type LocalSkillOrigin = 'dream-accepted' | 'managed' | 'git-source' | 'repo'
 
@@ -252,15 +253,27 @@ function skillAccumulator(ownedOrigin: Map<string, LocalSkillOrigin>): SkillAccu
  * (realpath confinement, a final-component symlink refused, a bounded read), so the difference
  * stays traversal-shaped and does not reopen a safety question.
  *
- * Origins are always `repo`: the daemon installs no skills into a cluster agent's workspace, so
- * there is no ownership ledger for one and anything present came with the repository.
+ * Cluster origins come only from durable receipts that the shim verifies against the live tree.
  */
 export async function listSandboxSkills(
   files: WorkspaceFiles,
   root: string,
-  agentId: string
+  agentId: string,
+  ledger?: ClusterSkillLedger,
+  verifyRoots?: (roots: ClusterSkillLedger['roots']) => Promise<boolean[]>
 ): Promise<LocalSkillEntry[]> {
-  const acc = skillAccumulator(new Map())
+  const owned = new Map<string, LocalSkillOrigin>()
+  const roots = ledger?.roots ?? []
+  const verified = verifyRoots ? await verifyRoots(roots).catch(() => roots.map(() => false)) : roots.map(() => false)
+  for (const [index, entry] of roots.entries()) {
+    if (verified[index]) {
+      owned.set(
+        entry.path,
+        entry.sourceKind === 'managed' ? 'managed' : entry.sourceKind === 'dream' ? 'dream-accepted' : 'git-source'
+      )
+    }
+  }
+  const acc = skillAccumulator(owned)
   for (const skillRoot of SKILL_ROOTS) {
     let cursor: string | undefined
     do {

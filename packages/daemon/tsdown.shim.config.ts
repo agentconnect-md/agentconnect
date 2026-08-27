@@ -1,4 +1,12 @@
 import { defineConfig } from 'tsdown'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
+
+const require = createRequire(import.meta.url)
+const skillsPackageJson = require.resolve('skills/package.json')
+const skillsManifest = require(skillsPackageJson) as { version?: unknown }
+if (skillsManifest.version !== '1.5.21') throw new Error('shim build requires exact skills@1.5.21')
+const skillsCliEntry = join(dirname(skillsPackageJson), 'dist', 'cli.mjs')
 
 // The in-sandbox artifacts are built SEPARATELY from the daemon bundle, and that separation is
 // the point rather than a convenience. Adding them as entries of the main build makes rolldown
@@ -23,18 +31,13 @@ const shared = {
   clean: false
 }
 
-// FIVE builds rather than one build with five entries, and the difference is load-bearing: several
-// entries in a single build make rolldown hoist anything they share into a chunk, and the image
-// copies each artifact as a single file — so that chunk would be a further file nothing copies and
-// the helper would fail at startup on a missing module. Independent builds cannot share one. It
-// also keeps each graph honest: git spawns the credential helper once per operation, the gh
-// wrapper spawns the token entry once per `gh`, the agent's harness spawns the MCP bridge once
-// per session, and the shim spawns one merge watcher per armed pull request — none of the four has
-// any use for the channel's WebSocket client.
+// Independent builds prevent shared chunks the runtime image does not copy.
 export default defineConfig([
   { ...shared, entry: { index: 'src/shim/index.ts' } },
   { ...shared, entry: { 'git-credential': 'src/shim/git-credential.ts' } },
   { ...shared, entry: { 'gh-token': 'src/shim/gh-token.ts' } },
   { ...shared, entry: { 'mcp-bridge': 'src/shim/mcp-bridge.ts' } },
-  { ...shared, entry: { 'auto-merge': 'src/shim/auto-merge.ts' } }
+  { ...shared, entry: { 'auto-merge': 'src/shim/auto-merge.ts' } },
+  { ...shared, entry: { 'skills/workspace-mutation': 'src/skills/skill-workspace-mutation-cli.ts' } },
+  { ...shared, entry: { 'skills/dist/cli': skillsCliEntry } }
 ])

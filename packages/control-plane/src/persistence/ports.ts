@@ -2208,8 +2208,11 @@ export interface UpsertHookInput {
   /** GitHub numeric repo id — the relay match key (rename-immune, decision 6). */
   repoId?: bigint
   repoFullName?: string
+  /** The one subject family this row covers; absent on update leaves it as it is
+   *  (immutable), and absent on a create leaves a legacy family-less row. */
+  family?: string
   events?: string[]
-  /** Empty preserves the published API's legacy repo-wide issue_comment semantics. */
+  /** Scopes GitHub's shared issue_comment subscription to this row's family. */
   commentFamilies?: HookCommentFamily[]
   labelFilter?: string[]
   mentionOnly?: boolean
@@ -2244,6 +2247,9 @@ export interface HookRecord {
   /** Immutable relay session namespace. Existing rows retain their historical
    * owner/repo prefix; new rows use the numeric repository identity. */
   githubSessionKey?: string | null
+  /** The one subject family this row covers; null for webhook kind and for a
+   *  legacy row the family split could not place. */
+  family: string | null
   events: string[]
   /** Empty = legacy repo-wide comments; non-empty scopes comments to these subjects. */
   commentFamilies: HookCommentFamily[]

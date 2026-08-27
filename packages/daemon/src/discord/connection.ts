@@ -28,8 +28,12 @@ import type {
   InteractionActor,
   PlatformChannelHistoryOptions,
   PlatformChannelHistoryPage,
-  PlatformConnection
+  PlatformConnection,
+  PlatformReactionIntent
 } from '../platforms/contract.js'
+
+/** Core names the intent; Discord's alphabet is literal unicode emoji. */
+const DISCORD_REACTION_EMOJI: Record<PlatformReactionIntent, string> = { seen: '👀' }
 
 /**
  * §Discord edge unit. Mirrors slack/connection.ts + telegram/connection.ts but over
@@ -678,6 +682,22 @@ export class DiscordConnection implements PlatformConnection {
       this.deps.log?.debug(`discord: sendTyping failed (ch=${target}): ${(err as Error).message}`)
     }
     await this.postPermissionUpdateNotice(target, ch)
+  }
+
+  /** Turn-start acknowledgement on the message that fired the turn. Not queued, for the
+   *  same reason the typing hint is not. An install whose invite predates ADD_REACTIONS
+   *  degrades to nothing visible. */
+  async react(container: string, messageId: string, intent: PlatformReactionIntent): Promise<void> {
+    try {
+      // Fetched directly rather than through `sendableChannel`: reacting needs the message,
+      // not permission to post in the channel it lives in.
+      const ch = (await this.client.channels.fetch(container)) as Pick<Sendable, 'messages'> | null
+      const message = await ch?.messages?.fetch(messageId)
+      await message?.react(DISCORD_REACTION_EMOJI[intent])
+    } catch (err) {
+      this.rememberPermissionIssue(err, container)
+      this.deps.log?.debug(`discord: react failed (ch=${container} msg=${messageId}): ${(err as Error).message}`)
+    }
   }
 
   /**

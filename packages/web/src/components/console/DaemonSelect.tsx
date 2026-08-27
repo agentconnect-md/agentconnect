@@ -17,12 +17,14 @@ export interface DaemonSelectOption {
   title?: string
   kind?: PlacementOptionKind
   disabled?: boolean
+  /** Icon override — an action row ("Add daemon") names itself, not a placement kind. */
+  icon?: string
 }
 
 /** A set target is drawn as a target, never as the member that happens to answer for it. */
 const isSet = (option: Pick<DaemonSelectOption, 'kind'>): boolean => option.kind === 'pool' || option.kind === 'group'
 const iconFor = (option: DaemonSelectOption): string =>
-  option.kind || option.value ? placementIcon(option.kind ?? 'daemon') : 'server-off'
+  option.icon ?? (option.kind || option.value ? placementIcon(option.kind ?? 'daemon') : 'server-off')
 
 function enabledIndex(options: readonly DaemonSelectOption[], start: number, delta: 1 | -1): number {
   if (!options.length) return -1

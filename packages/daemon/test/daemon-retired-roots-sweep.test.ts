@@ -79,7 +79,7 @@ describe('retired workspace roots are swept only while the agent is quiescent (d
     await inner.sweepSessionRetention()
     expect(existsSync(subtree)).toBe(false)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('keeps a retired root while a durable inbox row is still open for the agent', async () => {
     const root = scaffold()
@@ -96,7 +96,7 @@ describe('retired workspace roots are swept only while the agent is quiescent (d
     await inner.sweepSessionRetention()
     expect(existsSync(subtree)).toBe(false)
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('leaves a subtree that carries no attestation, and one whose worktrees are not empty', async () => {
     const root = scaffold()
@@ -111,5 +111,5 @@ describe('retired workspace roots are swept only while the agent is quiescent (d
     expect(existsSync(attested)).toBe(true)
     expect(existsSync(unattested)).toBe(true)
     await daemon.stop()
-  }, 15_000)
+  })
 })
