@@ -14,6 +14,7 @@
  * its own manifests, but wrong about what runs, still fails.
  */
 import { execFileSync } from 'node:child_process'
+import { builtinModules } from 'node:module'
 
 import { diffRuntimeTables } from './runtime-table-diff.mjs'
 
@@ -26,6 +27,7 @@ if (!image) {
 const failures = []
 const notes = []
 const warnings = []
+const nodeBuiltins = new Set(builtinModules.flatMap((spec) => [spec, `node:${spec}`]))
 
 function check(name, fn) {
   try {
@@ -182,8 +184,7 @@ check('the MCP bridge starts and fails loudly with no daemon socket', () => {
   return 'exits 1 with an actionable message'
 })
 
-// The bundles are built with everything inlined so this image installs no node_modules for them. A
-// require of anything but a node: builtin means a bundle is depending on a tree that is absent.
+// The bundles are built with everything inlined, so only Node builtins may remain as imports.
 check('the shim bundles are self-contained', () => {
   // Same specifier shapes the daemon package's own assert-self-contained step looks for, run
   // against the artifacts that actually shipped. The local build being clean says nothing about
@@ -191,14 +192,15 @@ check('the shim bundles are self-contained', () => {
   // deps, and produced a bundle that imported them externally — which the image cannot resolve.
   const external = []
   for (const path of [SHIM_PATH, MCP_BRIDGE_PATH]) {
-    const specs = inImage(
-      `grep -oE '\\b(from|import)[[:space:]]*\\(?[[:space:]]*"[^"]+"' ${path} | ` +
-        `grep -oE '"[^"]+"' | tr -d '"' | sort -u | grep -v '^node:' || true`
+    const bundle = inImage(`cat ${path}`)
+    const specs = [...bundle.matchAll(/\bfrom\s*"([^"]+)"/g), ...bundle.matchAll(/\bimport\(\s*"([^"]+)"\s*\)/g)].map(
+      (match) => match[1]
     )
-    if (specs) external.push(`${path}: ${specs.split('\n').join(', ')}`)
+    const leaked = [...new Set(specs.filter((spec) => !nodeBuiltins.has(spec)))].sort()
+    if (leaked.length > 0) external.push(`${path}: ${leaked.join(', ')}`)
   }
   if (external.length > 0) throw new Error(`bundles reference non-builtin modules — ${external.join('; ')}`)
-  return 'node: builtins only'
+  return 'Node builtins only'
 })
 
 // The pod template owns identity projection. An image carrying its own token would be an
