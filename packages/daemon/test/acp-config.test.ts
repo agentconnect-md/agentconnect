@@ -10,6 +10,7 @@ import {
   planConfigSelection,
   SDK_LIFECYCLE_FILTERS
 } from '../src/acp/acp-host.js'
+import { CLAUDE_DISALLOWED_BUILTIN_TOOLS } from '../src/runtime-defs/claude-runtime.js'
 import {
   permissionPresetSettings,
   permissionPresetValues,
@@ -276,9 +277,17 @@ describe('claudeSessionMeta', () => {
   // transcript loses its reasoning rows.
   const THINKING = { type: 'adaptive', display: 'summarized' }
   // Every Claude session also opts into the filtered SDK-lifecycle feed (the
-  // background-task lease). `options` is the only per-call-varying part.
+  // background-task lease) and the #998 built-in messaging-tool suppression.
+  // `options` is the only per-call-varying part.
   const cc = (options: Record<string, unknown>) => ({
-    claudeCode: { options, emitRawSDKMessages: SDK_LIFECYCLE_FILTERS }
+    claudeCode: {
+      options: { disallowedTools: CLAUDE_DISALLOWED_BUILTIN_TOOLS, ...options },
+      emitRawSDKMessages: SDK_LIFECYCLE_FILTERS
+    }
+  })
+
+  it('always disallows the built-in agent-teams SendMessage (#800 collision / #998 exfiltration)', () => {
+    expect(claudeSessionMeta(undefined, true)?.claudeCode.options.disallowedTools).toEqual(['SendMessage'])
   })
 
   it('always requests summarized thinking on a Claude runtime', () => {

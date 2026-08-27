@@ -154,6 +154,14 @@ export function claudeInnerSandboxSettings(
   }
 }
 
+/** Claude Code built-in tools suppressed on every AgentConnect-managed session via
+ * `_meta.claudeCode.options.disallowedTools` (spread into SDK `query()` options).
+ * The agent-teams `SendMessage` collides with `mcp__agentconnect__sendMessage` (#800)
+ * and is a WORKING delivery channel to unrelated co-located sessions — a mis-picked
+ * call exfiltrates session-private content with no audit trail (#998). AgentConnect
+ * owns all inter-session messaging for its sessions, so the built-in is always wrong. */
+export const CLAUDE_DISALLOWED_BUILTIN_TOOLS = ['SendMessage'] as const
+
 /** A Claude Code runtime (its command/args reference `claude`) — these embed the
  *  @anthropic-ai/claude-agent-sdk, which needs a Claude Code executable. The ONE
  *  Claude predicate: AcpHost and the model-catalog path both delegate here, matching
