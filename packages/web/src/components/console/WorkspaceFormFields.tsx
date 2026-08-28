@@ -18,85 +18,77 @@ export const REPOSITORY_ACCESS_BADGE: Record<RepoAccess, string> = {
   write: 'badge flex-none bg-(--status-paused-soft) text-(--amber-500)'
 }
 
+// GitHub and GitLab ship as full-bleed marks, so they fill an 18px box next to the 16px lucide glyph.
+const workspaceModeMark = (child: ReactNode) => (
+  <span className="flex h-[18px] w-[18px] flex-none items-center justify-center">{child}</span>
+)
+
+// One short choice, so each tile carries its label alone and hands the one-line description to its tooltip.
+const WORKSPACE_MODE_OPTIONS: {
+  value: WorkspaceMode
+  label: string
+  hint: string
+  mark: (selected: boolean) => ReactNode
+}[] = [
+  {
+    value: 'scratch',
+    label: 'From scratch',
+    hint: 'Fresh empty directory.',
+    mark: (selected) =>
+      workspaceModeMark(<Icon name="sparkles" size={16} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />)
+  },
+  {
+    value: 'github',
+    label: 'From GitHub',
+    hint: 'Clone a repo on a branch.',
+    mark: () => workspaceModeMark(<GithubMark color="var(--text-primary)" fillPct={100} />)
+  },
+  {
+    value: 'gitlab',
+    label: 'From GitLab',
+    hint: 'Clone a project on a branch.',
+    mark: () => workspaceModeMark(<GitlabMark fillPct={100} />)
+  }
+]
+
 export function WorkspaceModeField({
   value,
   onChange,
   className,
-  // Add-agent renders this under a "Workspace" section heading, so it overrides
-  // the label to avoid saying "Workspace" twice.
+  // Add-agent renders this under a "Workspace" section heading, so it passes `null`
+  // to drop the label rather than say "Workspace" twice.
   label = 'Workspace'
 }: {
   value: WorkspaceMode
   onChange: (value: WorkspaceMode) => void
   className?: string
-  label?: string
+  label?: string | null
 }) {
   const fieldClassName = className ? `fld ${className}` : 'fld'
-  const radio = (selected: boolean) => (
-    <span
-      className={
-        selected
-          ? 'ml-auto flex h-4 w-4 flex-none items-center justify-center self-center rounded-full border-[1.5px] border-(--brand)'
-          : 'ml-auto flex h-4 w-4 flex-none items-center justify-center self-center rounded-full border-[1.5px] border-(--border-strong)'
-      }
-    >
-      {selected && <span className="h-2 w-2 rounded-full bg-(--brand)" />}
-    </span>
-  )
-  const tileIcon = (child: ReactNode) => (
-    <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] border border-(--border-default) bg-(--surface-card)">
-      {child}
-    </span>
-  )
 
   return (
     <div className={fieldClassName}>
-      <span className="fldlbl">{label}</span>
-      <div className="grid grid-cols-1 gap-[10px] desktop:grid-cols-3">
-        <button
-          type="button"
-          className={value === 'scratch' ? 'ptile on items-start text-left' : 'ptile items-start text-left'}
-          onClick={() => onChange('scratch')}
-        >
-          {tileIcon(
-            <Icon name="sparkles" size={16} color={value === 'scratch' ? 'var(--brand)' : 'var(--text-tertiary)'} />
-          )}
-          <span className="min-w-0 flex-1">
-            <span className="block font-sans text-[13px] font-semibold leading-normal">From scratch</span>
-            <span className="mt-[2px] block truncate font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-              Fresh empty directory.
-            </span>
-          </span>
-          {radio(value === 'scratch')}
-        </button>
-        <button
-          type="button"
-          className={value === 'github' ? 'ptile on items-start text-left' : 'ptile items-start text-left'}
-          onClick={() => onChange('github')}
-        >
-          {tileIcon(<GithubMark color="var(--text-primary)" />)}
-          <span className="min-w-0 flex-1">
-            <span className="block font-sans text-[13px] font-semibold leading-normal">From GitHub</span>
-            <span className="mt-[2px] block truncate font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-              Clone a repo on a branch.
-            </span>
-          </span>
-          {radio(value === 'github')}
-        </button>
-        <button
-          type="button"
-          className={value === 'gitlab' ? 'ptile on items-start text-left' : 'ptile items-start text-left'}
-          onClick={() => onChange('gitlab')}
-        >
-          {tileIcon(<GitlabMark />)}
-          <span className="min-w-0 flex-1">
-            <span className="block font-sans text-[13px] font-semibold leading-normal">From GitLab</span>
-            <span className="mt-[2px] block truncate font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-              Clone a project on a branch.
-            </span>
-          </span>
-          {radio(value === 'gitlab')}
-        </button>
+      {label !== null && <span className="fldlbl">{label}</span>}
+      <div className="flex flex-wrap gap-[10px]">
+        {WORKSPACE_MODE_OPTIONS.map((option) => {
+          const selected = value === option.value
+          return (
+            <button
+              key={option.value}
+              type="button"
+              title={option.hint}
+              aria-pressed={selected}
+              className={selected ? 'ptile on flex-none px-[13px] py-[9px]' : 'ptile flex-none px-[13px] py-[9px]'}
+              onClick={() => onChange(option.value)}
+            >
+              {option.mark(selected)}
+              <span className="font-sans text-[13px] font-semibold leading-normal whitespace-nowrap">
+                {option.label}
+              </span>
+              {selected && <Icon name="check" size={14} className="flex-none" color="var(--brand)" />}
+            </button>
+          )
+        })}
       </div>
     </div>
   )

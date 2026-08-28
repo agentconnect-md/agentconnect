@@ -1235,12 +1235,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
           <section ref={sectionRef('workspace')} className="mt-5 border-t border-(--border-subtle) pt-5">
             <div className="font-sans text-[13px] font-semibold leading-normal text-(--text-primary)">Workspace</div>
             <div className="mt-[13px] grid grid-cols-1 gap-[14px] desktop:grid-cols-2">
-              <WorkspaceModeField
-                className="desktop:col-span-2"
-                label="Where the agent works"
-                value={wsMode}
-                onChange={setWsMode}
-              />
+              <WorkspaceModeField className="desktop:col-span-2" label={null} value={wsMode} onChange={setWsMode} />
 
               {wsMode === 'github' && ghEnabled === true && ghInstalls.length === 0 && (
                 <GithubInstallPrompt onInstall={installGithubApp} />
