@@ -9467,6 +9467,17 @@ export class Daemon {
     const pendingWebchat = webchat
       ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
       : undefined
+    // Admission is the displacement point: a sibling session's turn is cancelled before this
+    // turn opens its (possibly cold) session, not after buildPending.
+    void this.cancelDisplacedSlackTurns({
+      conn: replyConn,
+      platform: msg.platform,
+      sessionKey: key,
+      channel: msg.channel,
+      statusThread: plan.statusThread,
+      msgId: msg.msgId,
+      statusOptions: plan.statusOptions
+    })
     this.showActivity(replyConn, msg.channel, plan.statusThread, plan.startupActivityLabel, plan.statusOptions)
     this.acknowledgeTrigger(run)
     if (plan.clusterPodBootstrap) this.announceSandboxBootstrap(run, pendingWebchat)
@@ -9924,34 +9935,42 @@ export class Daemon {
         : {})
     }
     this.pending.set(pendingTurnKey(agentId, sessionId), p)
-    void this.cancelDisplacedSlackTurns(p)
     return p
   }
 
   /** A shared bot's thread runs ONE agent at a time: a NEW message routed to another session
-   *  cancels the previous agent's in-flight turn. Sibling turns triggered by the SAME message
-   *  coexist — that is one fan-out with several recipients, not the human moving on. Once the
-   *  displaced turn's own status clear is enqueued (interruptTurn enqueues it before resolving),
-   *  the survivor's `processing` is re-asserted BEHIND it on the same serial send queue, so a
-   *  late clear cannot hide the native Stop control. */
-  private async cancelDisplacedSlackTurns(p: Pending): Promise<void> {
-    if (p.plan.platform !== 'slack' || !p.conn || !p.plan.statusThread) return
+   *  cancels the previous agent's in-flight turn AT ADMISSION, before the incoming turn opens
+   *  its session. Sibling turns triggered by the SAME message coexist — that is one fan-out
+   *  with several recipients, not the human moving on. Once the displaced turns' own status
+   *  clears are enqueued (interruptTurn enqueues each before resolving), the survivor's
+   *  `processing` is re-asserted BEHIND them on the same serial send queue, so a late clear
+   *  cannot hide the native Stop control. */
+  private async cancelDisplacedSlackTurns(incoming: {
+    conn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
+    platform: string
+    sessionKey: string
+    channel: string
+    statusThread?: string
+    msgId: string
+    statusOptions?: SlackStatusOptions
+  }): Promise<void> {
+    if (incoming.platform !== 'slack' || !incoming.conn || !incoming.statusThread) return
     const displaced: Pending[] = []
     for (const sibling of this.pending.values()) {
-      if (sibling === p || sibling.conn !== p.conn || sibling.plan.platform !== 'slack') continue
-      if (sibling.plan.sessionKey === p.plan.sessionKey) continue
-      if (sibling.plan.channel !== p.plan.channel || sibling.plan.statusThread !== p.plan.statusThread) continue
-      if (sibling.entry.msg.msgId === p.entry.msg.msgId) continue
+      if (sibling.conn !== incoming.conn || sibling.plan.platform !== 'slack') continue
+      if (sibling.plan.sessionKey === incoming.sessionKey) continue
+      if (sibling.plan.channel !== incoming.channel || sibling.plan.statusThread !== incoming.statusThread) continue
+      if (sibling.entry.msg.msgId === incoming.msgId) continue
       displaced.push(sibling)
     }
     for (const sibling of displaced) {
       this.log.info(
-        `slack: thread ${p.plan.channel}/${p.plan.statusThread} switched sessions — cancelling the previous turn (${sibling.plan.sessionKey})`
+        `slack: thread ${incoming.channel}/${incoming.statusThread} switched sessions — cancelling the previous turn (${sibling.plan.sessionKey})`
       )
       await this.commands.cancelSessionByKey(sibling.plan.sessionKey)
     }
     if (displaced.length > 0)
-      this.showActivity(p.conn, p.plan.channel, p.plan.statusThread, 'is thinking…', p.plan.statusOptions)
+      this.showActivity(incoming.conn, incoming.channel, incoming.statusThread, 'is thinking…', incoming.statusOptions)
   }
 
   /** Replay the metadata session/new|load emitted before Pending existed, then install the

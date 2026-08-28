@@ -2353,39 +2353,44 @@ describe('Slack interactive status bar', () => {
 })
 
 describe('Slack shared-bot thread displacement', () => {
-  // A shared bot's thread runs ONE agent at a time: a NEW message routed to another session
-  // cancels the sibling's in-flight turn, then re-asserts the survivor's `processing` behind
-  // the displaced turn's own clear. Same-message siblings (one fan-out, several recipients)
-  // coexist untouched.
+  // A shared bot's thread runs ONE agent at a time: admitting a turn for a NEW message routed
+  // to another session cancels the sibling's in-flight turn, then re-asserts the survivor's
+  // `processing` behind the displaced turn's own clear. Same-message siblings (one fan-out,
+  // several recipients) coexist untouched.
   const conn = () => ({ setStatus: vi.fn() })
-  const turn = (over: Record<string, unknown> = {}) => ({
+  const sibling = (over: Record<string, unknown> = {}) => ({
     conn: over.conn,
-    entry: { msg: { msgId: (over.msgId as string) ?? 'm2' } },
+    entry: { msg: { msgId: (over.msgId as string) ?? 'm1' } },
     plan: {
       platform: 'slack',
-      sessionKey: 'slack:C1:T1:bot-a',
+      sessionKey: 'slack:C1:T1:bot-b',
       channel: 'C1',
       statusThread: 'T1',
       ...(over.plan as Record<string, unknown>)
     }
   })
+  const incoming = (c: unknown, over: Record<string, unknown> = {}) => ({
+    conn: c,
+    platform: 'slack',
+    sessionKey: 'slack:C1:T1:bot-a',
+    channel: 'C1',
+    statusThread: 'T1',
+    msgId: 'm2',
+    ...over
+  })
 
-  const displaced = async (incoming: any, siblings: any[]) => {
+  const displaced = async (admitted: any, siblings: any[]) => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     const cancel = vi.fn(async () => true)
     ;(daemon as any).commands.cancelSessionByKey = cancel
-    for (const [i, sibling] of siblings.entries()) (daemon as any).pending.set(`sibling-${i}`, sibling)
-    ;(daemon as any).pending.set('incoming', incoming)
-    await (daemon as any).cancelDisplacedSlackTurns(incoming)
+    for (const [i, entry] of siblings.entries()) (daemon as any).pending.set(`sibling-${i}`, entry)
+    await (daemon as any).cancelDisplacedSlackTurns(admitted)
     return cancel
   }
 
   it('cancels the sibling a NEW message displaces, then re-asserts the survivor status', async () => {
     const c = conn()
-    const incoming = turn({ conn: c, msgId: 'm2' })
-    const cancel = await displaced(incoming, [
-      turn({ conn: c, msgId: 'm1', plan: { sessionKey: 'slack:C1:T1:bot-b' } })
-    ])
+    const cancel = await displaced(incoming(c), [sibling({ conn: c })])
     expect(cancel).toHaveBeenCalledExactlyOnceWith('slack:C1:T1:bot-b')
     // The clear the cancelled turn enqueues must not be the thread's last write.
     expect(c.setStatus).toHaveBeenCalledWith('C1', 'T1', 'is thinking…', undefined)
@@ -2393,20 +2398,18 @@ describe('Slack shared-bot thread displacement', () => {
 
   it('leaves same-message fan-out siblings alone (one delivery, several recipients)', async () => {
     const c = conn()
-    const cancel = await displaced(turn({ conn: c, msgId: 'm1' }), [
-      turn({ conn: c, msgId: 'm1', plan: { sessionKey: 'slack:C1:T1:bot-b' } })
-    ])
+    const cancel = await displaced(incoming(c, { msgId: 'm1' }), [sibling({ conn: c })])
     expect(cancel).not.toHaveBeenCalled()
     expect(c.setStatus).not.toHaveBeenCalled()
   })
 
   it('touches nothing across connections, conversations, platforms, or its own session', async () => {
     const c = conn()
-    const cancel = await displaced(turn({ conn: c }), [
-      turn({ conn: c }), // the same sessionKey — the queue already serializes it
-      turn({ conn: conn(), msgId: 'm1', plan: { sessionKey: 'slack:C1:T1:bot-b' } }), // another bot
-      turn({ conn: c, msgId: 'm1', plan: { sessionKey: 'slack:C1:T9:bot-b', statusThread: 'T9' } }), // another thread
-      turn({ conn: c, msgId: 'm1', plan: { sessionKey: 'webchat:C1:T1:bot-b', platform: 'webchat' } }) // another platform
+    const cancel = await displaced(incoming(c), [
+      sibling({ conn: c, msgId: 'm3', plan: { sessionKey: 'slack:C1:T1:bot-a' } }), // its own session
+      sibling({ conn: conn() }), // another bot
+      sibling({ conn: c, plan: { sessionKey: 'slack:C1:T9:bot-b', statusThread: 'T9' } }), // another thread
+      sibling({ conn: c, plan: { sessionKey: 'webchat:C1:T1:bot-b', platform: 'webchat' } }) // another platform
     ])
     expect(cancel).not.toHaveBeenCalled()
     expect(c.setStatus).not.toHaveBeenCalled()
