@@ -249,7 +249,14 @@ The mapping onto existing tables — the Slack shared-bot shape, not a new one:
   columns: `externalAppId` = the deployment app's client id (constant across
   rows), `externalTenantId` = the Linear `organizationId` — always complete,
   because the rows are created at the OAuth callback (§7.1), never before
-  the workspace is known. `transport` is always `http`.
+  the workspace is known. `transport` is always `http`, and the provider
+  stamps **`shareable: true` structurally** on every workspace bot —
+  `Bot.shareable` is the switch the shipped install validation gates
+  multi-integration membership on
+  ([shared-bot-relay.md §1](shared-bot-relay.md): a non-shareable bot caps
+  at one integration), and a connected workspace is definitionally
+  multi-agent, so this is not a caller flag the provider honors but a
+  constant it sets.
 - **`Integration`** = one **enabled agent** on that workspace
   (`Integration.botId` is deliberately non-unique — the shared-bot
   precedent). The workspace records a **default agent** among its members,
@@ -636,13 +643,15 @@ between):
 2. **Run the shared create tail unchanged**: `buildNewBotInstall` packs the
    Bot columns (D6 identity `externalAppId` = the deployment app's client
    id, `externalTenantId` = `organizationId`; display
-   `workspaceId`/`workspaceName`; `botUserId` = the app user id) and stamps
-   the deployment app credentials into the workspace bot's `BotSecret` row
-   (which is what the shipped assign machinery projects and
-   revision-fences); the D6 composite pre-check and the cross-org
-   `workspaceClaim` fence run; the Integration for the chosen default agent
-   (`active` from birth) is written; and the tail's normal `syncBot`
-   hand-off broadcasts `rc/bot-assign` + `integration/upsert`.
+   `workspaceId`/`workspaceName`; `botUserId` = the app user id;
+   **`shareable: true`** — structural, §4.3, so member additions pass the
+   shipped multi-integration gate) and stamps the deployment app credentials
+   into the workspace bot's `BotSecret` row (which is what the shipped
+   assign machinery projects and revision-fences); the D6 composite
+   pre-check and the cross-org `workspaceClaim` fence run; the Integration
+   for the chosen default agent (`active` from birth) is written; and the
+   tail's normal `syncBot` hand-off broadcasts `rc/bot-assign` +
+   `integration/upsert`.
    `projectIntegrationConfig` resolves the token by the bot's D6 identity —
    already durable from step 1, so the ordering is guaranteed by
    construction rather than by a transaction the tail does not offer.
@@ -817,8 +826,9 @@ tile.
     workspace (§7.1).
   - `buildNewBotInstall` — invoked from the OAuth callback's finalize (the
     Feishu one-click precedent), stamping the deployment credentials into
-    the workspace bot's secret row and declaring the D6 `externalIdentity`
-    `(clientId, organizationId)` + the `workspaceClaim`.
+    the workspace bot's secret row, setting `shareable: true` structurally
+    (§4.3 — the multi-integration gate), and declaring the D6
+    `externalIdentity` `(clientId, organizationId)` + the `workspaceClaim`.
   - `secretShape` (§7.2); `projectBotIdentity` (clientId / organizationId +
     workspace display metadata in `platformConfig`).
   - `installRoutes('org')` — connect-workspace funnel start (records the
@@ -1040,8 +1050,10 @@ tile.
   before the callback** and that the token upsert precedes the create tail
   (a tail refusal after step 1 leaves an inert row the next connect
   overwrites, and the sweeper's cross-org split never revokes a live
-  winner); D6 external-identity and workspace-claim 409s; member add/remove
-  recompiles keyword routes without touching the token; removing the default
+  winner); D6 external-identity and workspace-claim 409s; the workspace bot
+  is created `shareable: true` and a second member Integration is admitted;
+  member add/remove recompiles keyword routes without touching the token;
+  removing the default
   agent is blocked until a new default is named; reconnect replaces a dead
   token in place; broker scope denial for a foreign daemon; workspace
   disconnect (bot delete) revoke convergence.
