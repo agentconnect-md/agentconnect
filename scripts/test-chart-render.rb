@@ -434,11 +434,10 @@ abort('defaults must hold three warm spares') unless default_warm.dig('spec', 'r
 # `secrets.existingSecret` — a required-but-empty value would fail the default render outright.
 default_data_plane = default_pool.dig('spec', 'template', 'spec', 'volumes').find { |v| v['name'] == 'data-plane' }
 abort('defaults must reference the documented data-plane Secret name') unless default_data_plane.dig('secret', 'secretName') == 'agentconnect-data-plane'
-# The default-on third-party component must not ride upstream's mutable `latest`: the chart
-# pins a digest, moved deliberately by a chart release.
+# The default-on third-party component must not ride upstream's mutable `latest`: the chart pins a release tag, moved deliberately by chart releases.
 default_oc_container = default_oc.dig('spec', 'template', 'spec', 'containers').first
-abort('open-connector default must be a digest pin') unless default_oc_container['image'].include?('@sha256:')
-abort('a digest pin must not force re-pulls') unless default_oc_container['imagePullPolicy'] == 'IfNotPresent'
+abort('open-connector default must pin a release tag') unless default_oc_container['image'].match?(/:v\d+\.\d+\.\d+$/)
+abort('a pinned tag must not force re-pulls') unless default_oc_container['imagePullPolicy'] == 'IfNotPresent'
 # The relay is enabled by default but every public-host input is empty, so it must render
 # NOTHING — an origin like "https://" or "wss:///relays/…" is worse than absence — and the
 # CP must not then demand a RELAY_TOKEN nothing can dial with.

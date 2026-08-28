@@ -561,15 +561,10 @@ openConnector:
   enabled: true
   # Full image ref WITHOUT tag/digest; empty ⇒ the official ghcr.io/oomol-lab/open-connector.
   image: ''
-  # Immutable digest pin (sha256:…) — the DEFAULT for this third-party, credential-storing
-  # component: reproducible + supply-chain-safe (imagePullPolicy becomes IfNotPresent), so a
-  # default-on install never rides upstream's mutable `latest`. Moved deliberately, by a
-  # chart release. To run a tag instead, set this empty AND `tag` below — a non-empty
-  # digest always wins.
-  digest: 'sha256:455e7e843a392955186c59ff34f57fcf5477a281b669d10bcb330240ed02c492'
-  # Image tag used only when `digest` is empty; empty ⇒ `latest` (mutable — manual
-  # installs only). Prefer `digest` for real deploys.
-  tag: ''
+  # Optional immutable digest pin (sha256:…); wins over `tag` when set.
+  digest: ''
+  # Upstream release tag — the default pin, moved deliberately by chart releases; empty ⇒ mutable `latest` (manual installs only).
+  tag: 'v1.4.0'
   # Fixed at 1 (single sqlite writer, Recreate strategy) — the template does not read a
   # replicas value.
   port: 3000
