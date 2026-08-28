@@ -1183,7 +1183,8 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       })
       const expectedStatusIdentity = {
         username: 'Release Captain',
-        icon_url: 'https://console.example.test/icons/bot-a'
+        icon_url: 'https://console.example.test/icons/bot-a',
+        sessionKey: `slack:${channel}:202.1:bot-a`
       }
       expect(setStatus).toHaveBeenCalledWith(channel, '202.1', 'is thinking…', expectedStatusIdentity)
       expect(setStatus).toHaveBeenCalledWith(channel, '202.1', 'Searching…', expectedStatusIdentity)

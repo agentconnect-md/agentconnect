@@ -168,7 +168,7 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     clusterPodBootstrap: input.clusterPodBootstrap,
     turnSurface,
     turnCtx,
-    statusOptions: slackStatusOptions(msg.platform, agentName, iconUrl),
+    statusOptions: slackStatusOptions(msg.platform, agentName, iconUrl, input.sessionKey),
     protectedAddresses: input.protectedAddresses,
     stageAnswer:
       input.features.turnFinalContextRefresh && !webchat && !githubReply && originKindOf(msg.platform) === 'chat',

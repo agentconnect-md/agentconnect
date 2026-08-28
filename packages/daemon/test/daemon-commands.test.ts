@@ -683,7 +683,7 @@ describe('Daemon in-conversation commands', () => {
     await vi.waitFor(() => expect(host.newSession).toHaveBeenCalled(), WAIT)
     expect(await (daemon as any).store.getSession(SESSION_KEY)).toBeUndefined()
 
-    // Exactly what SlackConnection.agentSessionStopped runs for the tapped conversation.
+    // The fallback resolve a stop with no displayed owner uses (newest first; cold gate keys included).
     const keys = await (daemon as any).commands.slackThreadSessions({ channel: 'C1', thread: 'T1' }, ['int-a'])
     expect(keys).toEqual([SESSION_KEY])
     for (const key of keys)
@@ -2395,13 +2395,14 @@ describe('Slack interactive status bar', () => {
 
 describe('Slack shared-bot thread displacement', () => {
   // A shared bot's thread runs ONE agent at a time: admitting a turn for a NEW message routed
-  // to another session cancels the sibling's in-flight turn, then re-asserts the survivor's
-  // `processing` behind the displaced turn's own clear. Same-message siblings (one fan-out,
-  // several recipients) coexist untouched.
+  // to another session cancels the sibling's in-flight turn. Same-message siblings (one
+  // fan-out, several recipients) coexist untouched. The displaced turn is marked so its
+  // teardown leaves the status slot to its successor, whose admission-time `processing`
+  // is then the slot's last write — no detached re-assert exists to race it.
   const conn = () => ({ setStatus: vi.fn() })
   const sibling = (over: Record<string, unknown> = {}) => ({
     conn: over.conn,
-    entry: { msg: { msgId: (over.msgId as string) ?? 'm1' } },
+    entry: { msg: { msgId: (over.msgId as string) ?? 'm1' } } as Record<string, unknown>,
     plan: {
       platform: 'slack',
       sessionKey: 'slack:C1:T1:bot-b',
@@ -2429,30 +2430,108 @@ describe('Slack shared-bot thread displacement', () => {
     return cancel
   }
 
-  it('cancels the sibling a NEW message displaces, then re-asserts the survivor status', async () => {
+  it('cancels the sibling a NEW message displaces and hands it the status slot', async () => {
     const c = conn()
-    const cancel = await displaced(incoming(c), [sibling({ conn: c })])
+    const previous = sibling({ conn: c })
+    const cancel = await displaced(incoming(c), [previous])
     expect(cancel).toHaveBeenCalledExactlyOnceWith('slack:C1:T1:bot-b')
-    // The clear the cancelled turn enqueues must not be the thread's last write.
-    expect(c.setStatus).toHaveBeenCalledWith('C1', 'T1', 'is thinking…', undefined)
+    // Marked: the displaced turn's teardown must not settle the slot — the successor's
+    // admission `processing` is already the last write, so nothing re-asserts here.
+    expect(previous.entry.displacedByNewerTurn).toBe(true)
+    expect(c.setStatus).not.toHaveBeenCalled()
+  })
+
+  it('marks every displaced sibling before the first cancellation await', async () => {
+    const c = conn()
+    const first = sibling({ conn: c })
+    const second = sibling({ conn: c, plan: { sessionKey: 'slack:C1:T1:bot-c' } })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+    const marksAtFirstCancel: unknown[] = []
+    ;(daemon as any).commands.cancelSessionByKey = vi.fn(async () => {
+      // A sibling finishing inside this await must already see its mark, or its own
+      // settlement would write over the successor's admission-time processing.
+      if (marksAtFirstCancel.length === 0)
+        marksAtFirstCancel.push(first.entry.displacedByNewerTurn, second.entry.displacedByNewerTurn)
+      return true
+    })
+    ;(daemon as any).pending.set('s-1', first)
+    ;(daemon as any).pending.set('s-2', second)
+    await (daemon as any).cancelDisplacedSlackTurns(incoming(c))
+    expect(marksAtFirstCancel).toEqual([true, true])
   })
 
   it('leaves same-message fan-out siblings alone (one delivery, several recipients)', async () => {
     const c = conn()
-    const cancel = await displaced(incoming(c, { msgId: 'm1' }), [sibling({ conn: c })])
+    const peer = sibling({ conn: c })
+    const cancel = await displaced(incoming(c, { msgId: 'm1' }), [peer])
     expect(cancel).not.toHaveBeenCalled()
+    expect(peer.entry.displacedByNewerTurn).toBeUndefined()
     expect(c.setStatus).not.toHaveBeenCalled()
   })
 
   it('touches nothing across connections, conversations, platforms, or its own session', async () => {
     const c = conn()
-    const cancel = await displaced(incoming(c), [
+    const siblings = [
       sibling({ conn: c, msgId: 'm3', plan: { sessionKey: 'slack:C1:T1:bot-a' } }), // its own session
       sibling({ conn: conn() }), // another bot
       sibling({ conn: c, plan: { sessionKey: 'slack:C1:T9:bot-b', statusThread: 'T9' } }), // another thread
       sibling({ conn: c, plan: { sessionKey: 'webchat:C1:T1:bot-b', platform: 'webchat' } }) // another platform
-    ])
+    ]
+    const cancel = await displaced(incoming(c), siblings)
     expect(cancel).not.toHaveBeenCalled()
+    expect(siblings.some((sib) => sib.entry.displacedByNewerTurn)).toBe(false)
     expect(c.setStatus).not.toHaveBeenCalled()
+  })
+})
+
+describe('Slack status-slot settlement', () => {
+  // Slack keeps ONE agent-session status slot per (app, channel, thread) while fan-out runs
+  // several sibling turns against it. When a turn leaves the slot, settlement re-asserts the
+  // newest surviving sibling's `processing` (the row keeps naming who is still working, and a
+  // pending "Stopping…" resolves into it); only an empty thread transitions to `active`.
+  const settle = (pendings: any[], exclude?: string) => {
+    const c = { setStatus: vi.fn() }
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+    for (const [i, over] of pendings.entries())
+      (daemon as any).pending.set(`p-${i}`, {
+        conn: c,
+        outputSuppressed: over.outputSuppressed,
+        plan: {
+          platform: 'slack',
+          channel: 'C1',
+          statusThread: 'T1',
+          sessionKey: over.key,
+          statusOptions: { username: over.name, sessionKey: over.key },
+          ...(over.plan as Record<string, unknown>)
+        }
+      })
+    ;(daemon as any).settleSlackSlot(c, 'C1', 'T1', exclude)
+    return c.setStatus
+  }
+
+  it("re-asserts the newest surviving sibling's processing under its own identity", () => {
+    const setStatus = settle(
+      [
+        { key: 'k-a', name: 'Agent A' },
+        { key: 'k-b', name: 'Agent B' }
+      ],
+      'k-b'
+    )
+    expect(setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', 'is thinking…', {
+      username: 'Agent A',
+      sessionKey: 'k-a'
+    })
+  })
+
+  it('clears only when no live sibling remains — suppressed and excluded turns do not count', () => {
+    const setStatus = settle(
+      [
+        { key: 'k-a', outputSuppressed: 'cancel' },
+        { key: 'k-b' },
+        { key: 'k-c', plan: { statusThread: 'T9' } } // another thread
+      ],
+      'k-b'
+    )
+    expect(setStatus).toHaveBeenCalledExactlyOnceWith('C1', 'T1', '', undefined)
   })
 })

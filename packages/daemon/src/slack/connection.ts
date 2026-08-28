@@ -117,6 +117,9 @@ export interface SlackStatusOptions {
   username?: string
   /** Public https image URL for the working-indicator avatar. */
   icon_url?: string
+  /** Logical session this write acts for — recorded as the slot's displayed owner, so the
+   *  native Stop can target the turn the user is actually looking at. */
+  sessionKey?: string
 }
 
 /** Slack message `metadata.event_type` marking a message as daemon chrome (see
@@ -272,9 +275,12 @@ export interface SlackDeps {
   /** Resolve the exact local session owned by the selected Slack conversation, awaited
    *  before the one-shot shortcut trigger opens its modal. */
   onMessageShortcut?: (a: { channel: string; thread: string; userId: string }) => Promise<string | undefined>
-  /** Every local session in one Slack conversation, newest first — the native session-level
-   *  Stop interrupts ALL of the thread's in-flight turns, not just the newest one. */
+  /** Every local session in one Slack conversation, newest first — the stop's fallback
+   *  resolver when no displayed owner is recorded (e.g. right after a reconnect). */
   onThreadSessions?: (a: { channel: string; thread: string }) => Promise<string[]>
+  /** Settle the conversation's ONE status slot after a stop: re-assert a surviving sibling's
+   *  `processing`, or transition an empty thread to `active`. Owned by the daemon. */
+  onSlotSettle?: (a: { channel: string; thread: string; exclude?: string }) => void
   /** Fired when a user taps a button on an interactive permission card
    *  (render.buildPermissionCard). The decoded `requestId` ties the click back to the
    *  pending ACP `session/request_permission`; `optionId` is the chosen option. */
@@ -668,6 +674,9 @@ export class SlackConnection implements PlatformConnection {
   private assistantDmThreads = new Map<string, string>()
   /** Last agent-session lifecycle state per `channel:thread`, so an unchanged one refires nothing. */
   private sessionLifecycle = new Map<string, string>()
+  /** The slot's displayed owner per `channel:thread`: the sessionKey of the last `processing`
+   *  writer — the turn the native Stop control is showing, and therefore targets. */
+  private slotOwner = new Map<string, string>()
   /** Latched when the bot lacks chat:write.customize — the indicator keeps the app identity. */
   private statusIdentityUnsupported = false
   botUserId = ''
@@ -1811,14 +1820,31 @@ export class SlackConnection implements PlatformConnection {
     )
   }
 
-  /** The native Stop, from either transport: interrupt EVERY in-flight turn this conversation
-   *  owns locally, then transition the session — Slack leaves it in `processing` on its own. */
+  /** The native Stop. Socket arm — the daemon holding this socket owns every turn the bot runs,
+   *  so the stop targets the turn the user is looking at: the slot's displayed owner (the last
+   *  `processing` writer), falling back to the thread's newest addressable session. Settlement
+   *  is the daemon's: a surviving sibling's `processing` takes the row over (Slack resolves the
+   *  transient "Stopping…" into it), and only an empty thread transitions to `active` — Slack
+   *  leaves the session in `processing` on its own.
+   *  Relay-forwarded arm (send-only): the same event reaches EVERY participant daemon and
+   *  per-daemon survivor settlement could disagree — one daemon's `active` racing another's
+   *  `processing` re-assert for Slack's one global slot. Until displayed ownership has a
+   *  cross-daemon authority, this arm keeps the globally consistent all-stop: every local turn
+   *  cancels and every daemon's final write is `active`. */
   async agentSessionStopped(channel: string, threadTs: string, userId?: string): Promise<void> {
     this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
-    const sessionKeys = (await this.deps.onThreadSessions?.({ channel, thread: threadTs })) ?? []
-    for (const sessionKey of sessionKeys)
-      this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
-    await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))
+    if (this.deps.sendOnly) {
+      const sessionKeys = (await this.deps.onThreadSessions?.({ channel, thread: threadTs })) ?? []
+      for (const sessionKey of sessionKeys)
+        this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
+      await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))
+      return
+    }
+    const displayed = this.slotOwner.get(`${channel}:${threadTs}`)
+    const target = displayed ?? (await this.deps.onThreadSessions?.({ channel, thread: threadTs }))?.[0]
+    if (target)
+      this.deps.onStatusAction?.({ kind: 'cancel', sessionKey: target, ...(userId ? { actor: { userId } } : {}) })
+    this.deps.onSlotSettle?.({ channel, thread: threadTs, ...(target ? { exclude: target } : {}) })
   }
 
   // The lifecycle half of setStatus. Posting a message does NOT end the loading UX — only `active` does.
@@ -1833,7 +1859,9 @@ export class SlackConnection implements PlatformConnection {
     const key = `${channel}:${threadTs}`
     const username = status === 'processing' && !this.statusIdentityUnsupported ? options?.username?.trim() : undefined
     const iconUrl = status === 'processing' && !this.statusIdentityUnsupported ? options?.icon_url?.trim() : undefined
-    const signature = `${status}|${username ?? ''}|${iconUrl ?? ''}`
+    // The owner joins the dedupe key: an identity-identical handover between two turns must
+    // still refire, or the slot's displayed owner would keep pointing the Stop at the old one.
+    const signature = `${status}|${username ?? ''}|${iconUrl ?? ''}|${options?.sessionKey ?? ''}`
     if (this.sessionLifecycle.get(key) === signature) return
     try {
       await this.app.client.agents.sessions.setStatus({
@@ -1844,12 +1872,15 @@ export class SlackConnection implements PlatformConnection {
         ...(iconUrl ? { icon_url: iconUrl } : {})
       })
       this.sessionLifecycle.set(key, signature)
+      if (status === 'processing' && options?.sessionKey) this.slotOwner.set(key, options.sessionKey)
+      else if (status === 'active') this.slotOwner.delete(key)
     } catch (err) {
       // Identity needs chat:write.customize (the enum alone runs on chat:write). A manually
       // created bot without it keeps the working indicator under the app identity.
       if ((username || iconUrl) && missingScopesFrom(err).length > 0) {
         this.statusIdentityUnsupported = true
-        return this.setSessionLifecycle(channel, threadTs, status)
+        // Same options: the latch above already blanks the identity, and sessionKey must survive.
+        return this.setSessionLifecycle(channel, threadTs, status, options)
       }
       // Left unrecorded so the next status update retries instead of deduping a failure.
       this.deps.log?.debug(
