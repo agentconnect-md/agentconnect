@@ -96,5 +96,13 @@ export default defineConfig([
         }
       ]
     }
+  },
+  {
+    // `@iconify-icons/*` v2 points every icon subpath at one shared `data.d.ts`, so importing two
+    // icons from one pack resolves to the same file and reads as a duplicate import.
+    files: ['packages/web/src/components/marks.tsx'],
+    rules: {
+      'import-x/no-duplicates': ['off']
+    }
   }
 ])
