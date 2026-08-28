@@ -331,7 +331,56 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
     forwardSessionStop(internals.ingressHost, BOT_ID, { channelId: 'C123', threadTs: 'T1', interactionId: 'Ev123' })
 
     expect(sendMsg).not.toHaveBeenCalled()
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no owner for the agent-session stop'))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no participant for the agent-session stop'))
+  })
+
+  // A shared bot's thread retains participants beside the arbitrated owner, possibly on other
+  // daemons; the session-level Stop reaches each of their daemons exactly once.
+  it('fans the stop out to every remembered participant daemon through the live directory', () => {
+    const DAEMON_B = 'bbbbbbbb-2222-4222-8222-222222222222'
+    const AGENT_B = 'bbbbbbbb-3333-4333-8333-333333333333'
+    const INTEGRATION_B = 'bbbbbbbb-4444-4444-8444-444444444444'
+    const perDaemon = new Map<string, ReturnType<typeof vi.fn>>()
+    const manager = new RelayIngressManager(
+      deps({
+        getDaemon: (daemonId) => {
+          const sendMsg =
+            perDaemon.get(daemonId) ??
+            vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
+          perDaemon.set(daemonId, sendMsg)
+          return { sendMsg } as unknown as RelayDaemonConnection
+        }
+      })
+    )
+    const internals = internalsOf(manager)
+    const shared = assignment()
+    shared.members = [...shared.members, { daemonId: DAEMON_B, agentIds: [AGENT_B] }]
+    shared.agents = [...shared.agents, { agentId: AGENT_B, name: 'Agent B' }]
+    shared.routes = [
+      ...shared.routes,
+      { agentId: AGENT_B, daemonId: DAEMON_B, integrationId: INTEGRATION_B, match: { kind: 'keyword', value: 'b' } }
+    ]
+    internals.router.upsert(shared)
+    internals.router.setAffinity(BOT_ID, 'C123/T1', {
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      integrationId: INTEGRATION_ID
+    })
+    internals.router.setParticipant(BOT_ID, 'C123/T1', {
+      agentId: AGENT_B,
+      daemonId: DAEMON_B,
+      integrationId: INTEGRATION_B
+    })
+
+    forwardSessionStop(internals.ingressHost, BOT_ID, { channelId: 'C123', threadTs: 'T1', interactionId: 'Ev123' })
+
+    expect([...perDaemon.keys()].sort()).toEqual([DAEMON_ID, DAEMON_B].sort())
+    for (const [daemonId, sendMsg] of perDaemon) {
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+      const msg = sendMsg.mock.calls[0]![0] as RdMsgPlatformAction
+      expect(msg.payload).toEqual({ kind: 'agent-session-stopped', channelId: 'C123', threadTs: 'T1' })
+      expect(msg.agentId).toBe(daemonId === DAEMON_ID ? AGENT_ID : AGENT_B)
+    }
   })
 
   it('forwards the tapping user, and omits it entirely when the interaction named none', () => {

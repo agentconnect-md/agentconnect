@@ -202,6 +202,12 @@ export class RelayIngressManager {
         channelOwner: (botId, channelId) => this.router.channelOwner(botId, channelId),
         targetForAgentId: (botId, agentId) => this.router.targetForAgentId(botId, agentId),
         resolveTarget: (botId, coords) => this.resolveConversationTarget(botId, coords),
+        conversationParticipants: (botId, coords) =>
+          this.router.conversationParticipants(
+            botId,
+            sessionKeyOf({ channel: coords.channelId, thread: coords.threadTs }),
+            coords.channelId
+          ),
         targetForAgent: (botId, agentId, integrationId) => this.router.targetForAgent(botId, agentId, integrationId),
         integrationTarget: (botId, agentId, integrationId) =>
           this.router.integrationTarget(botId, agentId, integrationId),

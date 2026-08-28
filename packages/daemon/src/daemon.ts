@@ -1394,7 +1394,9 @@ export class Daemon {
       handleDiscordSelect: (a) => this.commands.handleDiscordSelect(a),
       handleTelegramCallback: (cb, conn) => this.commands.handleTelegramCallback(cb, conn),
       slackShortcutSession: (shortcut, srcIntegrationIds) =>
-        this.commands.slackShortcutSession(shortcut, srcIntegrationIds)
+        this.commands.slackShortcutSession(shortcut, srcIntegrationIds),
+      slackThreadSessions: (shortcut, srcIntegrationIds) =>
+        this.commands.slackThreadSessions(shortcut, srcIntegrationIds)
     }
   }
 

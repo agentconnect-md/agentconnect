@@ -356,6 +356,21 @@ export class BotArbitrationRouter {
     members.set(tgt.agentId, tgt)
   }
 
+  /** The remembered participant set of one conversation, re-resolved through the current
+   *  member directory so each target carries the daemon that holds the agent NOW, with the
+   *  mute and gating fences applied. The recipients of a conversation-addressed session
+   *  event that must reach every participant (the native Stop), not one arbitrated owner. */
+  conversationParticipants(botId: string, sessionKey: string, channelId: string): RouteTarget[] {
+    const remembered = this.participants.get(botId)?.get(sessionKey)
+    if (!remembered) return []
+    const targets: RouteTarget[] = []
+    for (const agentId of remembered.keys()) {
+      const target = this.agentTarget(botId, agentId, channelId)
+      if (target) targets.push(target)
+    }
+    return targets
+  }
+
   /** Read the current affinity for a thread WITHOUT resolving (the report leg's
    *  first-route / changed-target detection reads this before `route()` mutates it). */
   peekAffinity(botId: string, sessionKey: string): RouteTarget | undefined {

@@ -152,6 +152,11 @@ export interface RelayIngressHost {
      * answers the platform accordingly and forwards nothing).
      */
     resolveTarget(botId: string, coords: { channelId: string; threadTs: string }): RouteTarget | undefined
+    /** The conversation's remembered participant set, re-resolved through the member
+     *  directory with the mute/gate fences applied — the recipients of a session-level
+     *  event that must reach EVERY participant (Slack's native Stop), where the
+     *  single-owner ladder above would drop the siblings a shared bot fans out to. */
+    conversationParticipants(botId: string, coords: { channelId: string; threadTs: string }): RouteTarget[]
     /** Exact-pair validation for an interaction that CARRIES its rendered
      *  target AND must still hold a live routing rule (a Slack status-modal
      *  action): stale/tampered buttons reject instead of falling through to a

@@ -31,7 +31,7 @@ import {
 import { registerSlackHttpIngress } from './http-ingress.js'
 import { verifySlackSignature } from '../../hooks/signature.js'
 import { sessionKeyOf } from '../../bot-arbitration.js'
-import type { BotAssignment } from '../../bot-arbitration.js'
+import type { BotAssignment, RouteTarget } from '../../bot-arbitration.js'
 import type { DemuxHints, HandledDelivery, RelayIngressHost, RelayPlatformIngressPlugin } from '../contract.js'
 
 /** Stable daemon-side dedup id for one Slack interaction. The hash deliberately omits
@@ -188,36 +188,44 @@ export function forwardSessionShortcut(
   return true
 }
 
-/** Forward the native Stop over the same seam a message shortcut takes: the event names no
- *  session, so the conversation-ownership ladder picks the daemon and the daemon resolves the
- *  session itself — exactly what Socket Mode does with the same event. Nothing is returned to
- *  Slack, so an unroutable or offline target is bounded loss like any other forwarded event. */
+/** Forward the native Stop to EVERY conversation participant's daemon, not one arbitrated
+ *  owner: Slack's session-level Stop means "stop all in-progress work for this thread", and a
+ *  shared bot's participants may span daemons while Slack sees one calling agent. One frame
+ *  per daemon suffices — the receiving daemon interrupts all of ITS thread sessions. Nothing
+ *  is returned to Slack, so an unroutable or offline target is bounded loss like any other
+ *  forwarded event. */
 export function forwardSessionStop(host: RelayIngressHost, botId: string, stop: HttpSlackSessionStop): void {
-  const route = host.directory.resolveTarget(botId, { channelId: stop.channelId, threadTs: stop.threadTs })
-  if (!route) {
-    host.log.warn(`relay-ingress(${botId}): no owner for the agent-session stop in ${stop.channelId}`)
+  const coords = { channelId: stop.channelId, threadTs: stop.threadTs }
+  const primary = host.directory.resolveTarget(botId, coords)
+  const routes = new Map<string, RouteTarget>()
+  for (const route of [...(primary ? [primary] : []), ...host.directory.conversationParticipants(botId, coords)])
+    if (!routes.has(route.daemonId)) routes.set(route.daemonId, route)
+  if (routes.size === 0) {
+    host.log.warn(`relay-ingress(${botId}): no participant for the agent-session stop in ${stop.channelId}`)
     return
   }
-  const rd: RdMsgPlatformAction = {
-    source: 'platform_action',
-    platformId: 'slack',
-    agentId: route.agentId,
-    integrationId: route.integrationId,
-    sessionKey: sessionKeyOf({ channel: stop.channelId, thread: stop.threadTs }),
-    msgId: httpSlackStopMsgId(botId, stop),
-    botId,
-    ...(stop.userId ? { userId: stop.userId } : {}),
-    payload: { kind: 'agent-session-stopped', channelId: stop.channelId, threadTs: stop.threadTs }
+  for (const route of routes.values()) {
+    const rd: RdMsgPlatformAction = {
+      source: 'platform_action',
+      platformId: 'slack',
+      agentId: route.agentId,
+      integrationId: route.integrationId,
+      sessionKey: sessionKeyOf({ channel: stop.channelId, thread: stop.threadTs }),
+      msgId: httpSlackStopMsgId(botId, stop),
+      botId,
+      ...(stop.userId ? { userId: stop.userId } : {}),
+      payload: { kind: 'agent-session-stopped', channelId: stop.channelId, threadTs: stop.threadTs }
+    }
+    void host
+      .forwardAction(rd, route)
+      .then((ack) => {
+        if (!ack.accepted)
+          host.log.warn(`relay-ingress(${botId}): daemon rejected the agent-session stop (${ack.reason ?? 'unknown'})`)
+      })
+      .catch((err) =>
+        host.log.warn(`relay-ingress(${botId}): agent-session stop forward failed: ${(err as Error).message}`)
+      )
   }
-  void host
-    .forwardAction(rd, route)
-    .then((ack) => {
-      if (!ack.accepted)
-        host.log.warn(`relay-ingress(${botId}): daemon rejected the agent-session stop (${ack.reason ?? 'unknown'})`)
-    })
-    .catch((err) =>
-      host.log.warn(`relay-ingress(${botId}): agent-session stop forward failed: ${(err as Error).message}`)
-    )
 }
 
 /** The plugin's typed verified product: one authenticated Slack delivery, as

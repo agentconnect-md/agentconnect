@@ -267,8 +267,12 @@ export interface SlackDeps {
   onStatusInfo?: (
     sessionKey: string
   ) => Promise<{ info: StatusBarInfo; identity?: StatusModalIdentity; link?: string; cancellable: boolean } | undefined>
-  /** Resolve the local session a Slack conversation owns — for the shortcut modal, and for the stop button. */
-  onMessageShortcut?: (a: { channel: string; thread: string; userId?: string }) => Promise<string | undefined>
+  /** Resolve the exact local session owned by the selected Slack conversation, awaited
+   *  before the one-shot shortcut trigger opens its modal. */
+  onMessageShortcut?: (a: { channel: string; thread: string; userId: string }) => Promise<string | undefined>
+  /** Every local session in one Slack conversation, newest first — the native session-level
+   *  Stop interrupts ALL of the thread's in-flight turns, not just the newest one. */
+  onThreadSessions?: (a: { channel: string; thread: string }) => Promise<string[]>
   /** Fired when a user taps a button on an interactive permission card
    *  (render.buildPermissionCard). The decoded `requestId` ties the click back to the
    *  pending ACP `session/request_permission`; `optionId` is the chosen option. */
@@ -1832,12 +1836,13 @@ export class SlackConnection implements PlatformConnection {
     })
   }
 
-  /** The native Stop, from either transport: resolve the session this conversation owns, interrupt
-   *  its turn, then transition the session — Slack leaves it in `processing` on its own. */
+  /** The native Stop, from either transport: interrupt EVERY in-flight turn this conversation
+   *  owns locally, then transition the session — Slack leaves it in `processing` on its own. */
   async agentSessionStopped(channel: string, threadTs: string, userId?: string): Promise<void> {
     this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
-    const sessionKey = await this.deps.onMessageShortcut?.({ channel, thread: threadTs, ...(userId ? { userId } : {}) })
-    if (sessionKey) this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
+    const sessionKeys = (await this.deps.onThreadSessions?.({ channel, thread: threadTs })) ?? []
+    for (const sessionKey of sessionKeys)
+      this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
     await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))
   }
 
