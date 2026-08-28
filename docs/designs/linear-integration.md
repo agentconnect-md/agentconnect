@@ -125,13 +125,16 @@ transport and Feishu callbacks) and whose _egress_ is daemon-direct GraphQL
 (like every other platform's outbound path). The Control Plane stays off the
 message hot path.
 
-Adding it is the checklist-shaped task the plugin architecture exists for:
-implement the four host contracts in each host's `platforms/linear/`
-directory, add one registry line per host, and touch **no core switch, no
-protocol enum, and no Prisma platform migration** — `Platform` is an open
-string with tolerant readers (S1a), bot identity rides the generic D6 columns,
-and `IntegrationSpec` carries an opaque per-platform config (§6.3 of the
-parent design).
+Adding it is close to the checklist-shaped task the plugin architecture
+exists for: implement the four host contracts in each host's
+`platforms/linear/` directory, and touch **no core switch, no protocol enum,
+and no Prisma platform migration** — `Platform` is an open string with
+tolerant readers (S1a), bot identity rides the generic D6 columns, and
+`IntegrationSpec` carries an opaque per-platform config (§6.3 of the parent
+design). "Close to", honestly: relay, CP, and web are registry-only (one line
+each), but the daemon's connection lifecycle is not yet registry-driven end
+to end, so Linear also lands a small **enumerated** set of composition lines
+in `daemon.ts` — additive registrations, no branch grows — listed in §9.4.
 
 ```text
 Linear workspace
@@ -233,9 +236,10 @@ The mapping onto existing tables:
 
 - **`Bot`** (platform `linear`) = **one workspace install** of the OAuth app.
   D6 identity columns: `externalAppId` = the OAuth client id,
-  `externalTenantId` = the Linear `organizationId` (the workspace), with the
-  pre-connect sentinel rule below. `transport` is always `http`;
-  `shareable` is dropped by the provider (one app = one agent).
+  `externalTenantId` = the Linear `organizationId` (the workspace) — always
+  complete, because the rows are created at the OAuth callback (§7.1), never
+  before the workspace is known. `transport` is always `http`; `shareable` is
+  dropped by the provider (one app = one agent).
 - **`Integration`** = the bot's agent binding (1:1 for Linear).
 - Installing the same app into a **second workspace** is a second Bot row
   created from the same pasted app credentials (v1: run the wizard again;
@@ -265,10 +269,15 @@ Postgres (precedent: Slack config-token rotate-and-retry). The daemon never
 holds the client secret or refresh token. Instead:
 
 - The provider stores `{accessToken, refreshToken, expiresAt}` per
-  integration in its own `linear_token` table, encrypted through the existing
-  `SecretCipher` seam. (The CP provider contract's projectors are async for
+  **workspace install — 1:1 with the Bot row, not the Integration** — in its
+  own `linear_token` table, encrypted through the existing `SecretCipher`
+  seam. The token is the workspace's authorization of the app, so it belongs
+  to the install identity and survives the agent binding: deleting an
+  integration frees the bot **with** its token, which is what makes generic
+  bot reuse work (§7.4). (The CP provider contract's projectors are async for
   exactly this case — the provider loads from its own secret store inside
-  `projectIntegrationConfig`; core awaits uniformly.)
+  `projectIntegrationConfig`, resolving the integration's bot; core awaits
+  uniformly.)
 - `projectIntegrationConfig` embeds the **current access token + expiry** in
   the opaque `IntegrationSpec.config`, so `agent.json` always carries a ≤24 h
   token — the daemon can restart and keep posting activities while the CP is
@@ -283,7 +292,8 @@ Rejected alternative — daemon-side refresh: requires shipping the client
 secret to the edge, makes the daemon the writer of a rotating credential held
 only on its disk, and loses the token permanently if `agent.json` is wiped
 mid-rotation. The hot path does not need it: egress works from the cached
-token; only _renewal_ touches the CP, at most ~once a day per integration.
+token; only _renewal_ touches the CP, at most ~once a day per workspace
+install.
 
 ### 4.5 Session mapping and dedup keys
 
@@ -540,15 +550,20 @@ core, per the Slack precedent); enable webhooks with **Agent session events**
 checked; and paste the webhook URL `https://<relay>/linear/events` (from
 `relayCapability.publicUrl`).
 
-Submitting runs the common create tail: the provider's
-`credentialBodySchema` block, `validateConfig` (shape checks only — unlike
-Slack `auth.test` there is **no** pre-persistence probe; the client secret is
-unverifiable without an OAuth exchange, so the live check is the callback
-itself), and `buildNewBotInstall`, which packs the secret row and declares
-the D6 `externalIdentity` `(clientId, '-')` — the pre-capture sentinel, so at
-most one not-yet-connected install per app exists at a time (the 409 copy
-says "finish connecting the existing install"). Core's relay-availability
-409 applies. The bot + integration are created `pending`.
+Submitting starts the provider's **install funnel** — it deliberately does
+**not** run the common create tail. `IntegrationStatus` has no pending value,
+and `installNewBot` synchronizes an `http` bot immediately, which would drive
+`projectIntegrationConfig` before any `linear_token` exists — either failing
+after rows were written or publishing an assignment the daemon cannot use. So
+**no Bot or Integration row exists until the workspace is connected**: the
+org-scoped funnel-start route validates the pasted values (shape only —
+unlike Slack `auth.test` there is no pre-persistence probe; the client secret
+is unverifiable without an OAuth exchange, so the live check is the callback
+itself), stores them with a one-shot `state` nonce in `linear_install_state`
+(SecretCipher values, TTL-reaped via `pendingInstalls`), and returns the
+authorize + webhook URLs. Core's relay-availability 409 applies here. The
+funnel-creates-the-rows shape is the Feishu one-click and Slack platform-app
+precedent, not an invention.
 
 **Step 2 — connect the workspace.** The console offers **Connect to
 Linear**: an authorize URL
@@ -558,27 +573,29 @@ https://linear.app/oauth/authorize?client_id=…&redirect_uri=…&response_type=
   &scope=read,write,app:assignable,app:mentionable&actor=app&state=<nonce>
 ```
 
-with a one-shot `state` nonce persisted in the provider's
-`linear_install_state` funnel table (declared via `pendingInstalls`, swept by
-the shared TTL reaper). The public callback exchanges the code at
+The public callback exchanges the code at
 `https://api.linear.app/oauth/token`, queries
-`viewer { id organization { id name } }`, then in one transaction: persists
-the token row, stamps the bot's workspace identity
-(`externalTenantId` = `organizationId`, display `workspaceId`/`workspaceName`,
-`botUserId` = the app user id), runs the cross-org `workspaceClaim` fence,
-flips the integration `active`, and lets core broadcast the standard
-`rc/bot-assign` + `integration/upsert`.
+`viewer { id organization { id name } }`, and only now — with the workspace
+identity **and** a token in hand — runs the shared create tail in one
+transaction: Bot (D6 identity `externalAppId` = client id,
+`externalTenantId` = `organizationId`; display `workspaceId`/`workspaceName`;
+`botUserId` = the app user id) + the `BotSecret` row + the `linear_token` row
+
+- the Integration, `active` from birth. The D6 composite pre-check and the
+  cross-org `workspaceClaim` fence run here, and the tail's normal `syncBot`
+  hand-off broadcasts `rc/bot-assign` + `integration/upsert` — the projector
+  finds its token because the row order guarantees it.
 
 ### 7.2 Storage
 
-| Value                          | Where                                                                                    | Visibility                                                     |
-| ------------------------------ | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Client ID                      | `Bot.externalAppId` (D6 column)                                                          | console, authorize URL, relay ingress bag                      |
-| Workspace (organization) id    | `Bot.externalTenantId` + display `workspaceId`/`workspaceName`                           | console, relay ingress bag                                     |
-| Client Secret                  | `BotSecret.botToken` slot (`secretShape.slots` labels it)                                | CP only (code exchange + refresh)                              |
-| Webhook signing secret         | `BotSecret.signingSecret` slot; `httpAssignRequires: ['signingSecret']`                  | relay only, via the `rc/bot-assign` secrets bag                |
-| Access + refresh token, expiry | provider-owned `linear_token` table, 1:1 with Integration, values through `SecretCipher` | access token → daemon (spec + broker); refresh token → CP only |
-| OAuth `state` nonce            | provider-owned `linear_install_state` funnel table (TTL-reaped)                          | CP only                                                        |
+| Value                                           | Where                                                                                                                  | Visibility                                                     |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Client ID                                       | `Bot.externalAppId` (D6 column)                                                                                        | console, authorize URL, relay ingress bag                      |
+| Workspace (organization) id                     | `Bot.externalTenantId` + display `workspaceId`/`workspaceName`                                                         | console, relay ingress bag                                     |
+| Client Secret                                   | `BotSecret.botToken` slot (`secretShape.slots` labels it)                                                              | CP only (code exchange + refresh)                              |
+| Webhook signing secret                          | `BotSecret.signingSecret` slot; `httpAssignRequires: ['signingSecret']`                                                | relay only, via the `rc/bot-assign` secrets bag                |
+| Access + refresh token, expiry                  | provider-owned `linear_token` table, **1:1 with the Bot** (the workspace install, §4.4), values through `SecretCipher` | access token → daemon (spec + broker); refresh token → CP only |
+| Pasted credentials + `state` nonce, pre-connect | provider-owned `linear_install_state` funnel table (SecretCipher values, TTL-reaped)                                   | CP only                                                        |
 
 The opaque `IntegrationSpec.config` payload the provider projects (validated
 on the daemon by the linear module's schema in `CONFIG_SCHEMAS`):
@@ -613,14 +630,32 @@ provider's token service owns the work: single-flight refresh when the stored
 token is near expiry, durable persist of the rotated pair **before**
 replying, then a spec re-push so `agent.json` converges.
 
-### 7.4 Uninstall / revocation
+### 7.4 Unbind, reuse, uninstall, revocation
 
-`DELETE /integrations/:id` revokes the token at Linear
-(`POST /oauth/revoke`, best-effort), deletes the `linear_token` row, and
-rides the standard uninstall broadcast (bot unassign + `integration/remove`),
-freeing the bot for reuse. The `OAuthApp revoked` doorbell (§6.1) converges
-the same state when revocation originates on the Linear side — re-verified at
-the CP behind the `credentialRevision` fence, never trusted from the payload.
+Three distinct lifecycle edges, because the token rides the Bot (§4.4):
+
+- **Unbind the agent** — `DELETE /integrations/:id` rides the standard
+  uninstall broadcast (bot unassign + `integration/remove`) and **keeps** the
+  bot's `linear_token`: the workspace's authorization of the app is still
+  live at Linear, and the freed bot _is_ that still-authorized install.
+  Generic web reuse therefore composes as-is: `freeBotFilter` offers the
+  freed bot, `buildReuseInput` binds a new agent, and the projector/broker
+  find the token by bot id — no OAuth re-run, no modal detour.
+- **Uninstall** — deleting the **Bot** is the real teardown: best-effort
+  `POST /oauth/revoke` at Linear plus deletion of the `linear_token` row.
+  The shipped `CpPlatformProvider` has no bot-delete lifecycle member, so
+  this design adds the one contract extension it needs:
+  `sideEffects.onBotDelete?(bot, secrets)` — best-effort by contract like
+  `postCreate`, called from core's bot-delete path for any platform that
+  declares it.
+- **Dead token** (refresh rejected, app secret rotated, workspace revoked
+  upstream) — the integration flips `error` with a **Reconnect** CTA: an
+  org-scoped provider route restarts the OAuth funnel against the existing
+  bot, and the callback's update arm (matched by the D6 identity) replaces
+  the `linear_token` row in place. The `OAuthApp revoked` doorbell (§6.1)
+  converges the same state when revocation originates on the Linear side —
+  re-verified at the CP behind the `credentialRevision` fence, never trusted
+  from the payload.
 
 ## 8. Prompt assembly and trust boundary
 
@@ -652,12 +687,14 @@ by <actor>` + issue URL, with `sanitizeTitle` flattening.
 
 ## 9. Change inventory by host
 
-Adding Linear is implementing the four contracts plus one registry line per
-host — no core `switch`, no closed union, no platform enum migration. The
-capability chain that gates availability end to end: the daemon's
-`CONFIG_SCHEMAS` registry line → `capabilities.platforms` in the register
-handshake → the CP's daemon-platform-capability gate (plus the relay 409 for
-`http`) → the console tile.
+Adding Linear is implementing the four contracts, plus one registry line in
+relay, CP, and web, plus an **enumerated** composition set in the daemon
+(§9.4, whose connection lifecycle is not yet registry-driven end to end) — no
+core `switch`, no closed union, no platform enum migration. The capability
+chain that gates availability end to end: the daemon's `CONFIG_SCHEMAS`
+registry line → `capabilities.platforms` in the register handshake → the CP's
+daemon-platform-capability gate (plus the relay 409 for `http`) → the console
+tile.
 
 ### 9.1 `packages/protocol`
 
@@ -677,19 +714,27 @@ handshake → the CP's daemon-platform-capability gate (plus the relay 409 for
 
 - `src/platforms/linear/` implementing `CpPlatformProvider` + one
   `registry.ts` line:
-  - `credentialBodySchema` `{ clientId, clientSecret, signingSecret }`;
-    `validateConfig` shape-only (§7.1); `buildNewBotInstall` packing the
-    secret slots + the D6 `externalIdentity` pre-capture fence.
-  - `secretShape` (§7.2); `projectBotIdentity` (clientId / organizationId /
-    sentinel).
-  - `installRoutes('org')` — authorize-URL mint + connect status;
+  - `credentialBodySchema` `{ clientId, clientSecret, signingSecret }`,
+    consumed by the funnel-start route; `validateConfig` **refuses the
+    generic `POST /integrations` credential path** with a pointer at the
+    funnel — install is funnel-only, because an integration must never exist
+    without its workspace token (§7.1).
+  - `buildNewBotInstall` — invoked from the OAuth callback's finalize (the
+    Feishu one-click precedent), packing the secret slots and declaring the
+    D6 `externalIdentity` `(clientId, organizationId)` + the
+    `workspaceClaim`.
+  - `secretShape` (§7.2); `projectBotIdentity` (clientId / organizationId).
+  - `installRoutes('org')` — funnel start, connect status, reconnect (§7.4);
     `installRoutes('public-callback')` — the OAuth callback (§7.1). Repo
     OpenAPI conventions on every route.
   - `pendingInstalls` — `linear_install_state` + TTL reaper.
-  - `projectIntegrationConfig` (async, loads `linear_token`) and
-    `projectBotAssign` (§6.2).
+  - `projectIntegrationConfig` (async, loads `linear_token` by the
+    integration's bot) and `projectBotAssign` (§6.2).
   - `LinearTokenService` — exchange, single-flight rotate-and-retry refresh,
     revoke; surfaced to the WS `linearcred` handler (§7.3).
+  - **One contract extension** this design needs core to grow:
+    `sideEffects.onBotDelete?(bot, secrets)` for the uninstall revoke (§7.4),
+    best-effort like `postCreate`.
 - Prisma: new `linear_token` and `linear_install_state` tables only — Bot
   identity rides the existing D6 columns, and `platform` columns are already
   text.
@@ -725,8 +770,22 @@ handshake → the CP's daemon-platform-capability gate (plus the relay 409 for
     `platform_action` payload → `interruptTurn` + settling response.
   - The ≤10 s ack at `rd/msg` admission, after inbox dedup (§10.1).
 - `platforms/integration-config.ts` — the `linear` `CONFIG_SCHEMAS` line
-  (+ the schema in `agents/agent-schema.ts`). This single line is what flips
-  `capabilities.platforms`.
+  (+ the schema in `agents/agent-schema.ts`). This line flips
+  `capabilities.platforms` — the **advertisement**, not the wiring.
+- **Enumerated `daemon.ts` composition lines** — the daemon's connection
+  lifecycle is not yet registry-driven end to end (production connections
+  still live in per-platform typed maps behind `bindSlack`/`bindTelegram`/…
+  lambdas with explicit reconcile call sites, and the turn/action registries
+  are assembled inline), so Linear lands the same additive set its four
+  peers have, stated here so nobody mistakes `CONFIG_SCHEMAS` for the whole
+  seam: a `linear` connection map + bind lambda, `reconcileLinearConnections`
+  wiring at the shared reconcile call sites, one
+  `TurnOutputRegistry.register(linearSurface)` line, and one
+  `platformActionDecoders` entry for the stop decoder (without it the payload
+  answers `unsupported_action`). All registrations, no branches; folding
+  these maps into the §7.5 key-driven `ConnectionPool` registry is the parent
+  design's remaining daemon stage and deliberately **not** a prerequisite
+  here.
 - Session metadata: `channelName`/`threadUrl` from issue identifier/URL.
 - Tests: normalize (created/prompted/stop, mention-comment `text`
   extraction, no-issue created event → session-UUID channel + bounded
@@ -744,10 +803,11 @@ handshake → the CP's daemon-platform-capability gate (plus the relay 409 for
   - `Mark` — Linear brand SVG (60 % box, `fillPct` convention).
   - `wizard` — the two-step facet (§7.1); tile availability = daemon
     capability ∧ `relayCapability.available`; `freeBotFilter` /
-    `buildReuseInput` for freed bots.
-  - `apiBindings` — authorize-URL + connect-status calls.
-  - `settingsFragments` — workspace name, connect status, re-connect action
-    when `pending`/token-revoked.
+    `buildReuseInput` offer a freed bot as-is — its workspace token rides the
+    Bot row (§7.4), so reuse needs no OAuth detour.
+  - `apiBindings` — funnel-start, connect-status, and reconnect calls.
+  - `settingsFragments` — workspace name, connect status, reconnect action
+    when the token is dead (§7.4).
   - `channelList` — `roomNoun: 'issue'`, no leave affordance.
   - `messageIdentity` — agent-activity id, else `null` (never dedupes).
   - `transcriptOrdering` — default `'seq'`.
@@ -813,18 +873,20 @@ handshake → the CP's daemon-platform-capability gate (plus the relay 409 for
   header; delimiter neutralization.
 - Agent environment contains no Linear credentials; all writes go through
   the daemon-owned single writer (§4.6).
-- OAuth `state` one-shot nonces; callback exchanges bind to the pending
-  integration id; cross-org `workspaceClaim` fence at connect.
+- OAuth `state` one-shot nonces; callback exchanges bind to the funnel row
+  that minted them; cross-org `workspaceClaim` fence at connect; no
+  Bot/Integration row exists before the token does (§7.1).
 - Rate limits both directions (per-bot ingress bucket; egress send queue).
 
 ## 13. Phasing
 
-- **P1 — the core loop.** `linearcred` frames; CP provider (create,
-  OAuth funnel + callback, token service + broker, projectors) + registry
-  line; relay ingress plugin + registry line; daemon module (connection,
-  ack, converger `thought`/`action`/`response`/`error`, follow-ups, stop,
-  config schema) + registry line; web module (wizard, mark, settings,
-  session display) + registry line. Exit criteria: delegate an issue →
+- **P1 — the core loop.** `linearcred` frames; CP provider (install funnel +
+  callback, token service + broker, projectors, the `onBotDelete` contract
+  extension) + registry line; relay ingress plugin + registry line; daemon
+  module (connection, ack, converger `thought`/`action`/`response`/`error`,
+  follow-ups, stop, config schema) + the §9.4 composition lines; web module
+  (wizard, mark, settings, session display) + registry line. Exit criteria:
+  delegate an issue →
   acknowledged ≤10 s → streamed activities → response; reply and stop work;
   sessions render in the console.
 - **P2 — workflow polish.** Plan sync; `externalUrls` (PR + console links);
@@ -856,10 +918,12 @@ handshake → the CP's daemon-platform-capability gate (plus the relay 409 for
 - **CP unit:** provider schema guards; token service rotate-and-retry with a
   failing-then-succeeding fake token endpoint; single-flight refresh;
   projector output shapes.
-- **CP integration:** create → pending → callback → active lifecycle against
-  a stubbed Linear OAuth server; D6 external-identity and workspace-claim
-  409s; broker scope denial for a foreign daemon; uninstall/revocation
-  convergence.
+- **CP integration:** funnel start → callback → active lifecycle against a
+  stubbed Linear OAuth server, asserting **no Bot/Integration row exists
+  before the callback**; D6 external-identity and workspace-claim 409s;
+  unbind keeps the bot's token and generic reuse re-projects it; reconnect
+  replaces a dead token in place; broker scope denial for a foreign daemon;
+  bot-delete revoke convergence.
 - **Live checklist:** real OAuth app in a scratch Linear workspace —
   delegate, mention, follow-up, stop, redelivery replay (Linear's webhook
   console), token refresh across the 24 h boundary, workspace revoke.

@@ -743,8 +743,8 @@ Two decisions specific to this host:
   platform's app id (Feishu's `cli_…`) must stay unique because the relay
   demuxes callbacks by it. (Linear, whose earlier design minted a bot-scoped
   `urlToken @unique` here, is tenant-scoped in its revised design — OAuth
-  client id + workspace `organizationId` on the composite index — and uses
-  the sentinel only for a not-yet-connected install.)
+  client id + workspace `organizationId` on the composite index, with rows
+  created only once the workspace is known.)
   Rule: **NULL is reserved for legacy rows only** (pre-capture
   Slack rows keep today's NULLs-distinct behavior); every new row on a
   tenantless platform writes the sentinel `'-'` as `externalTenantId`, so
