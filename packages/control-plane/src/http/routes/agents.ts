@@ -2361,7 +2361,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Edit an agent workspace',
           description:
-            'Replace a workspace with scratch, a GitHub repository covered by an App installation, or one no installation covers — cloned anonymously, so read-only and public repositories only — or edit its repository, branch, working directory, and read/write access. Changing workspace type, repository, or branch discards daemon-local workspace files. The caller must hold the requested GitHub permission. Active work is drained and repository credentials are invalidated before success. Enabled GitHub review or Check actions reject edits that remove their required write authority.',
+            'Replace a workspace with scratch, a GitHub repository covered by an App installation, or one no installation covers — cloned anonymously, so read-only and public repositories only, and available with no App configured — or edit its repository, branch, working directory, and read/write access. A repository whose owner is covered but which the installation does not grant is refused, since an anonymous clone cannot serve it. Changing workspace type, repository, or branch discards daemon-local workspace files. The caller must hold the requested GitHub permission. Active work is drained and repository credentials are invalidated before success. Enabled GitHub review or Check actions reject edits that remove their required write authority.',
           operationId: 'setAgentWorkspace',
           params: IdParam,
           body: SetAgentWorkspaceBody,
@@ -2399,26 +2399,42 @@ export function agentRoutes(deps: HttpDeps) {
           let workspace: AgentWorkspace = { mode: 'scratch', isolation: 'shared' }
           let workspaceRepoId: bigint | undefined
           if (req.body.mode === 'github') {
-            if (!deps.github) return conflict('GitHub workspaces are not enabled for this deployment')
             const [owner, repo] = req.body.repoFullName.split('/')
             if (!owner || !repo) return conflict('repoFullName must be owner/repo')
-            const covering = await deps.repos.githubInstallation.liveByOrgAndAccount(existing.orgId, owner)
-            const installation = covering && !covering.suspendedAt ? covering : null
-            const ref = installation
-              ? await bindWorkspaceRepo(
-                  deps,
-                  existing.orgId,
-                  installation,
-                  owner,
-                  repo,
-                  req.body.gitAccess,
-                  req.principal!.userId
-                )
+            // The App is required to BIND an installation, not to accept a workspace:
+            // creation takes a credential-free one on a deployment with no App at all.
+            const covering = deps.github
+              ? await deps.repos.githubInstallation.liveByOrgAndAccount(existing.orgId, owner)
               : null
+            const installation = covering && !covering.suspendedAt ? covering : null
             const worktree =
               req.body.worktree ??
               (existing.workspace.mode === 'github' ? existing.workspace.isolation === 'session' : true)
-            if (!installation || !ref) {
+            if (installation) {
+              const ref = await bindWorkspaceRepo(
+                deps,
+                existing.orgId,
+                installation,
+                owner,
+                repo,
+                req.body.gitAccess,
+                req.principal!.userId
+              )
+              // An installation token reads any PUBLIC repository, so a miss here means
+              // private-and-ungranted (or absent) — an anonymous clone cannot serve it,
+              // and the actionable answer is to grant it rather than to degrade silently.
+              if (!ref) return conflict(`${owner}/${repo} is not granted to the GitHub installation`)
+              workspace = {
+                mode: 'github',
+                isolation: worktree ? 'session' : 'shared',
+                gitRepo: normalizeGitUrl(ref.fullName),
+                gitBranch: req.body.gitBranch ?? ref.defaultBranch,
+                ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
+                installationId: installation.id,
+                gitAccess: req.body.gitAccess
+              }
+              workspaceRepoId = ref.repoId
+            } else {
               // Granted by no installation ⇒ the anonymous checkout agent creation
               // accepts on the same terms: nothing is minted for it, so it is
               // read-only and carries no catalog repository identity.
@@ -2433,17 +2449,6 @@ export function agentRoutes(deps: HttpDeps) {
                 ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
                 gitAccess: 'read'
               }
-            } else {
-              workspace = {
-                mode: 'github',
-                isolation: worktree ? 'session' : 'shared',
-                gitRepo: normalizeGitUrl(ref.fullName),
-                gitBranch: req.body.gitBranch ?? ref.defaultBranch,
-                ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
-                installationId: installation.id,
-                gitAccess: req.body.gitAccess
-              }
-              workspaceRepoId = ref.repoId
             }
           }
           if (req.body.mode === 'gitlab') {

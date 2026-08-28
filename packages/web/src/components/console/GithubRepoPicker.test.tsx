@@ -232,6 +232,40 @@ describe('shared GitHub repository picker', () => {
     })
   })
 
+  it('edits an anonymous workspace on a deployment with no App installed', async () => {
+    // The fields used to be nested under "App enabled and at least one installation",
+    // so an anonymous workspace was uneditable exactly where it is the only kind.
+    mocks.fetchGithubInstallations.mockResolvedValue({ enabled: true, installations: [] })
+    await render(
+      <EditWorkspaceModal
+        agent={
+          {
+            ...agent,
+            workspace: { mode: 'github', repo: 'github/docs', branch: 'main', agentDir: '/', worktree: true }
+          } as unknown as Agent
+        }
+        authorized={[]}
+        onClose={() => undefined}
+        onChanged={() => undefined}
+      />
+    )
+
+    // The install prompt still offers the App; the repository fields render anyway.
+    expect(document.body.textContent).toContain('Install')
+    expect(document.body.textContent).toContain('Public repository — read-only clone.')
+    await fill(document.querySelector<HTMLInputElement>('input[aria-label="Working subdirectory"]')!, 'content')
+    await act(async () => buttonsNamed('Save')[0]?.click())
+
+    expect(mocks.setAgentWorkspace).toHaveBeenCalledWith('agent-a', {
+      mode: 'github',
+      worktree: true,
+      repoFullName: 'github/docs',
+      gitBranch: 'main',
+      agentDir: 'content',
+      gitAccess: 'read'
+    })
+  })
+
   it('keeps editing a workspace that already has no installation', async () => {
     // The uncovered-owner notice used to disable the save for these agents, so a
     // public-repo workspace could not even change its working subdirectory.

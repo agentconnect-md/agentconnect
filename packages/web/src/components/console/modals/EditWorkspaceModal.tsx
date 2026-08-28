@@ -187,7 +187,13 @@ export default function EditWorkspaceModal({
   }, [repositoryEditor])
 
   useEffect(() => {
-    if (repositoryEditor !== null || !gh?.enabled || gh.installations.length === 0) return
+    if (repositoryEditor !== null || !gh) return
+    // No App, or none installed: the roster is empty rather than pending, so the
+    // picker offers public GitHub instead of loading forever.
+    if (!gh.enabled || gh.installations.length === 0) {
+      setRepos([])
+      return
+    }
     let alive = true
     const ctrl = new AbortController()
     setPrivateReposHidden(false)
@@ -259,7 +265,10 @@ export default function EditWorkspaceModal({
     : (picked?.installationId ??
       (gh?.installations ?? []).find((i) => i.accountLogin.toLowerCase() === pickOwner.toLowerCase())?.id ??
       null)
-  const uncovered = !!pick && gh !== null && gh.enabled && !publicSelected && pickInstallationId === null
+  // Installations to bind against. None ⇒ every pick is an anonymous checkout, so
+  // the covered-owner notice would be noise and the public confirmation optional.
+  const appAvailable = gh?.enabled === true && gh.installations.length > 0
+  const uncovered = !!pick && appAvailable && !publicSelected && pickInstallationId === null
   // An anonymous clone carries no credential, so a public pick cannot push.
   const effectiveWrite = write && !publicSelected
 
@@ -333,7 +342,6 @@ export default function EditWorkspaceModal({
     agentDirError = error instanceof Error ? error.message : String(error)
   }
 
-  const noInstall = mode === 'github' && gh !== null && (!gh.enabled || gh.installations.length === 0)
   const noProjects = mode === 'gitlab' && gl.empty
   const glPicked = gl.choices.find((choice) => choice.projectId === glPick)
   const glMatches = matchGitlabProjects(gl.choices, glQ)
@@ -369,7 +377,11 @@ export default function EditWorkspaceModal({
     (mode === 'scratch' ||
       (mode === 'gitlab'
         ? !!glPick && agentDirError === null
-        : !!pick && !uncovered && !probeDenies && agentDirError === null && (!!pickInstallationId || publicSelected)))
+        : !!pick &&
+          !uncovered &&
+          !probeDenies &&
+          agentDirError === null &&
+          (!!pickInstallationId || publicSelected || !appAvailable)))
 
   const applyPick = (fullName: string, defaultBranch: string | undefined, asPublic: GithubRepoDto | null) => {
     setPick(fullName)
@@ -653,24 +665,30 @@ export default function EditWorkspaceModal({
                 <Icon name="loader" size={15} className="flex-none animate-spin" />
                 Checking your GitHub setup…
               </div>
-            ) : !gh.enabled ? (
-              <div className="mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                <Icon name="info" size={15} className="mt-[1px] flex-none" />
-                <span>
-                  The GitHub App isn&rsquo;t configured for this deployment. Configure it to enable GitHub workspaces.
-                </span>
-              </div>
-            ) : gh.installations.length === 0 ? (
-              <div className="mb-4">
-                <GithubInstallPrompt
-                  onInstall={() => void openGhInstall()}
-                  onSync={() => void syncGh()}
-                  syncing={ghSyncing}
-                />
-              </div>
             ) : (
+              // The fields render whatever the App state is: a public repository needs
+              // no installation, so an anonymous workspace stays editable on a
+              // deployment with no App and on an organization with none installed.
               <div className="mb-4 grid grid-cols-1 gap-[14px] desktop:grid-cols-2 desktop:gap-x-7">
-                <GithubConnectedBanner onManage={() => void openGhInstall()} />
+                {!gh.enabled ? (
+                  <div className="flex items-start gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-app) p-[14px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
+                    <Icon name="info" size={15} className="mt-[1px] flex-none" />
+                    <span>
+                      The GitHub App isn&rsquo;t configured for this deployment — only public repositories are
+                      available, cloned read-only.
+                    </span>
+                  </div>
+                ) : gh.installations.length === 0 ? (
+                  <div className="desktop:col-span-2">
+                    <GithubInstallPrompt
+                      onInstall={() => void openGhInstall()}
+                      onSync={() => void syncGh()}
+                      syncing={ghSyncing}
+                    />
+                  </div>
+                ) : (
+                  <GithubConnectedBanner onManage={() => void openGhInstall()} />
+                )}
                 <GithubRepositoryField
                   value={pick}
                   icon={publicSelected || (picked && !picked.private) ? 'book-marked' : 'lock'}
@@ -903,8 +921,8 @@ export default function EditWorkspaceModal({
           </Button>
           <Button
             onClick={() => void submit()}
-            disabled={!canSubmit || saving || noInstall || noProjects}
-            className={!canSubmit || saving || noInstall || noProjects ? 'pointer-events-none opacity-50' : undefined}
+            disabled={!canSubmit || saving || noProjects}
+            className={!canSubmit || saving || noProjects ? 'pointer-events-none opacity-50' : undefined}
           >
             {saving ? 'Saving…' : destructiveChange ? 'Replace workspace' : 'Save'}
           </Button>
