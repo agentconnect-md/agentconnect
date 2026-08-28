@@ -231,6 +231,27 @@ describe('GET /orgs/:orgId/github/installations/:id/repositories/:owner/:repo', 
     expect(res.json()).toMatchObject({ message: 'repository not found' })
   })
 
+  it('reads a repository on another account as absent, without asking GitHub', async () => {
+    // An installation token reads any PUBLIC repository, so resolving
+    // `/repos/{owner}/{repo}` blind reported a repo on an unrelated account as
+    // App-backed — the picker then offered a workspace the write path refuses.
+    const row = await seedInstallation()
+    const h = appAs({
+      githubFetch: async (url) => {
+        throw new Error(`unexpected github call: ${url}`)
+      }
+    })
+
+    const res = await h.app.app.inject({
+      method: 'GET',
+      url: `${ORG}/github/installations/${row.id}/repositories/other-account/public-repository`
+    })
+
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toMatchObject({ message: 'repository not found' })
+    expect(h.calls).toEqual([]) // no token minted, no upstream read
+  })
+
   it.each(['USER_NO_ACCESS', 'GITHUB_IDENTITY_REQUIRED'] as const)(
     'does not expose a covered private repository when the per-user gate returns %s',
     async (denial) => {

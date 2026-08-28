@@ -410,8 +410,8 @@ mismatch.
      Access-only or directory-only changes retain the checkout.
    - The repository picker is the one agent creation uses, so both offer the same
      candidates on the same credentials: the synced installation roster, one exact
-     `owner/repo` resolved through the installations past a truncated roster, and
-     public GitHub for anything no installation grants. A public pick is badged
+     `owner/repo` resolved through an installation on its own account (reaching past
+     a truncated roster), and public GitHub for anything no installation grants. A public pick is badged
      `public` and pins access to read, because its clone carries no credential.
      The anonymous GitHub reads behind it are UX only; nothing gates on them.
    - Because the editor now sits above the live browser, a replacement must

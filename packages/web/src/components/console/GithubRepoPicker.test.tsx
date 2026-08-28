@@ -148,7 +148,11 @@ beforeEach(() => {
     privateReposHidden: false,
     failed: false
   })
-  mocks.fetchGithubInstallationRepo.mockRejectedValue(new Error('404'))
+  // Mirrors the route: an installation resolves only its own account's repos.
+  mocks.fetchGithubInstallationRepo.mockImplementation(async (_id: string, owner: string, repo: string) => {
+    if (owner !== 'acme') throw new Error('404')
+    return { fullName: `${owner}/${repo}`, private: true, defaultBranch: 'main', description: null, updatedAt: null }
+  })
   mocks.fetchGithubBranches.mockResolvedValue(['main'])
   mocks.fetchGithubRepoAccess.mockResolvedValue({ gated: false, canRead: true, canWrite: true })
   vi.stubGlobal(
@@ -182,11 +186,23 @@ describe('shared GitHub repository picker', () => {
     expect(mocks.fetchGithubBranches).toHaveBeenCalledWith('ins-1', 'acme', 'infra')
     expect(document.body.textContent).not.toContain('Public repository — read-only clone.')
 
+    // An exact name on the installation's own account is resolved through it, so a
+    // private repo past the roster's pages keeps its App credentials.
     await openPicker()
+    await typeRepo('acme/hidden')
+    expect(mocks.fetchGithubInstallationRepo).toHaveBeenCalledWith('ins-1', 'acme', 'hidden', expect.anything())
+    expect(buttonsNamed('acme/hidden')[0]?.textContent).toContain('Available through the GitHub App')
+
     await typeRepo('github/docs')
-    // The installations answer first, so a private repo past the roster's pages
-    // never falls through to an anonymous read.
-    expect(mocks.fetchGithubInstallationRepo).toHaveBeenCalledWith('ins-1', 'github', 'docs', expect.anything())
+    // An installation token reads any PUBLIC repo, so probing an installation on
+    // another account reported one as App-backed and the create then failed the
+    // owner check. Only the owner's own installations may be asked.
+    expect(mocks.fetchGithubInstallationRepo).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'github',
+      'docs',
+      expect.anything()
+    )
     const option = buttonsNamed('github/docs')[0]
     expect(option?.textContent).toContain('Use public repository')
 

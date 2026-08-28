@@ -3,8 +3,9 @@
 // typed query — which repositories may be offered, and on what credentials:
 //
 //   1. the synced roster of every App installation (private repos included);
-//   2. one exact owner/repo the roster does not list, resolved through the
-//      installations — a repo past the roster's pages keeps its App credentials;
+//   2. one exact owner/repo the roster does not list, resolved through an
+//      installation ON ITS OWN ACCOUNT — a repo past the roster's pages keeps its
+//      App credentials;
 //   3. the same owner/repo read anonymously, offered as a credential-free public
 //      checkout when no installation grants it;
 //   4. public search hits, minus everything the rows above already offer.
@@ -95,10 +96,11 @@ export function useGithubRepoPicker({
     if (!owner || !repo) return
     let alive = true
     const ctrl = new AbortController()
-    // The installation whose account owns the repo answers first; with none, every
-    // installation is tried, since a grant may sit on an unrelated account.
-    const byOwner = installations.filter((i) => i.accountLogin.toLowerCase() === owner.toLowerCase())
-    const candidates = byOwner.length > 0 ? byOwner : installations
+    // Only the installations on this owner's own account: installations are
+    // per-account, so no other one can grant the repo — and its token would still
+    // read a PUBLIC one, reporting it as App-backed until the workspace write
+    // refused it on the owner check. No candidate ⇒ straight to the public read.
+    const candidates = installations.filter((i) => i.accountLogin.toLowerCase() === owner.toLowerCase())
     const timer = window.setTimeout(() => {
       setExactState('checking')
       void Promise.all(

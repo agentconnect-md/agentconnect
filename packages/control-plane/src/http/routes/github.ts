@@ -308,7 +308,7 @@ export function githubRoutes(deps: HttpDeps) {
           tags: [Tag.GitHub],
           summary: 'Resolve an installation repository',
           description:
-            'Resolve one owner/repository name through this GitHub App installation. This covers private repositories and repositories beyond the first page of the picker listing without exposing repositories outside the installation grant.',
+            'Resolve one owner/repository name through this GitHub App installation. This covers private repositories and repositories beyond the first page of the picker listing without exposing repositories outside the installation grant. The owner must be the installation account: an installation token reads any public repository, so a repository on another account is reported as absent rather than as App-backed.',
           operationId: 'getGithubInstallationRepository',
           params: GithubOwnerRepoParam,
           response: { 200: GithubRepoDto, 404: ErrorDto, 429: ErrorDto, 502: ErrorDto }
@@ -318,6 +318,13 @@ export function githubRoutes(deps: HttpDeps) {
         const ins = await deps.repos.githubInstallation.get(orgOf(req), req.params.id)
         if (!ins || ins.revokedAt) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'installation not found' })
+        }
+        // An installation token reads ANY public repository, so a bare
+        // `/repos/{owner}/{repo}` would report a repo on an unrelated account as
+        // App-backed — and the workspace routes then refuse it on the owner check.
+        // Installations are per-account: only this account's repos can be granted.
+        if (req.params.owner.toLowerCase() !== ins.accountLogin.toLowerCase()) {
+          return githubRepositoryNotFound(reply)
         }
         try {
           // Resolve with this installation's token before returning anything: a
