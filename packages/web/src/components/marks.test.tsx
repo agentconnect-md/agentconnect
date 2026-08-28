@@ -89,12 +89,17 @@ describe('GitlabMark', () => {
     const markup = renderToStaticMarkup(<GitlabMark />)
 
     expect(markup).toContain('<svg')
-    // The brand triad, straight from the official logo artwork.
-    expect(markup).toContain('#E24329')
-    expect(markup).toContain('#FC6D26')
-    expect(markup).toContain('#FCA326')
+    // The brand triad, straight from the official logo artwork; the artwork's hex case is upstream's.
+    const hex = markup.toUpperCase()
+    expect(hex).toContain('#E24329')
+    expect(hex).toContain('#FC6D26')
+    expect(hex).toContain('#FCA326')
     expect(markup).not.toContain('currentColor')
     expect(markup).toContain('width:60%')
+    // The logotype carries the triad too, so pin the SHAPE: a mark is roughly square, it is ~4.6:1.
+    const viewBox = /viewBox="0 0 ([\d.]+) ([\d.]+)"/.exec(markup)
+    expect(viewBox).not.toBeNull()
+    expect(Number(viewBox?.[1]) / Number(viewBox?.[2])).toBeLessThan(1.5)
   })
 
   it('applies a caller fill verbatim so it matches the GitHub mark beside it', () => {

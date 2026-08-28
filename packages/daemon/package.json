@@ -70,7 +70,7 @@
     "skills": "1.5.21",
     "systeminformation": "^5.33.1",
     "tar": "7.5.22",
-    "undici": "^7.29.0",
+    "undici": "^8.10.0",
     "unique-names-generator": "^4.7.1",
     "ws": "^8.21.1",
     "yaml": "^2.9.0",

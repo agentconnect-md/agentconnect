@@ -6,7 +6,8 @@
 import { useState } from 'react'
 import { Icon } from './ui'
 import { withIconUrl, type AgentIcon } from '@/lib/agent-icon'
-import gitlabIcon from '@iconify-icons/logos/gitlab'
+// `logos/gitlab` is the LOGOTYPE (tanuki + wordmark, ~4.6:1); `-icon` is the mark, like `slack-icon`.
+import gitlabIcon from '@iconify-icons/logos/gitlab-icon'
 import kubernetesIcon from '@iconify-icons/logos/kubernetes'
 import slackIcon from '@iconify-icons/logos/slack-icon'
 import webhooksLogoFillIcon from '@iconify-icons/ph/webhooks-logo-fill'
