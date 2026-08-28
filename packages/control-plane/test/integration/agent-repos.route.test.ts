@@ -707,6 +707,87 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     expect(await prisma.agentRepoAuthorization.count()).toBe(0) // nothing persisted anywhere
   })
 
+  it('replaces the workspace with a repository no installation covers, read-only', async () => {
+    // Agent creation has always accepted this anonymous checkout, so the editor
+    // must too — otherwise a public-repo agent cannot even move to another branch.
+    await seedDaemon(prisma, DAEMON, { capabilities: WORKSPACE_CAPS })
+    const agentId = await workspaceAgent()
+    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: 100n, gitAccess: 'write' } })
+    await seedInstallation()
+    const control = new WorkspaceControlSpy()
+    const a = workspaceApp(control)
+
+    const replaced = await a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'github', repoFullName: 'github/docs', gitBranch: 'main', gitAccess: 'read' }
+    })
+
+    expect(replaced.statusCode).toBe(200)
+    expect(replaced.json()).toMatchObject({
+      workspace: { mode: 'github', gitRepo: 'https://github.com/github/docs', gitBranch: 'main' },
+      workspaceRepoId: null
+    })
+    // Anonymous git: no installation, no credential tier, no `gitCredential` on the spec.
+    expect((replaced.json() as { workspace: Record<string, unknown> }).workspace).not.toHaveProperty('installationId')
+    expect(control.activations[0]?.spec.workspace).not.toHaveProperty('gitCredential')
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
+      gitRepo: 'https://github.com/github/docs',
+      installationId: null,
+      workspaceRepoId: null,
+      gitAccess: 'read'
+    })
+
+    // Push still requires an installation — an anonymous clone cannot push.
+    const write = await a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'github', repoFullName: 'github/docs', gitAccess: 'write' }
+    })
+    expect(write.statusCode).toBe(409)
+    expect(write.json()).toMatchObject({ message: expect.stringContaining('requires a GitHub App installation') })
+  })
+
+  it('keeps the ungranted-repository conflict, and needs no App for the anonymous arm', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: WORKSPACE_CAPS })
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const control = new WorkspaceControlSpy()
+    const a = workspaceApp(control)
+
+    // An installation token reads any PUBLIC repo, so a miss under a covered owner
+    // means private-and-ungranted: the answer is to grant it, not to degrade to an
+    // anonymous clone that cannot work.
+    const ungranted = await a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'github', repoFullName: 'acme/gone', gitAccess: 'read' }
+    })
+    expect(ungranted.statusCode).toBe(409)
+    expect(ungranted.json()).toMatchObject({ message: expect.stringContaining('is not granted') })
+
+    // The App is required to BIND an installation, not to accept a workspace —
+    // creation already takes a credential-free one with no App configured.
+    const bare = buildHttpApp(
+      prisma,
+      { PUBLIC_RELAY_URL: RELAY_URL },
+      { get: (id) => (id === DAEMON ? { state: 'READY', reachable: true, sessionEpoch: 1 } : undefined) },
+      new WorkspaceControlSpy() as unknown as ControlSender
+    )
+    opened.push(bare)
+    const noApp = await bare.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'github', repoFullName: 'github/docs', gitBranch: 'master', gitAccess: 'read' }
+    })
+    expect(noApp.statusCode).toBe(200)
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
+      gitRepo: 'https://github.com/github/docs',
+      installationId: null,
+      gitAccess: 'read'
+    })
+  })
+
   it('POST 409s the workspace repo and a duplicate grant (rename-immune numeric id, case-shifted name)', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await workspaceAgent()
