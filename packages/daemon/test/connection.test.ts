@@ -35,8 +35,7 @@ describe('consolidate', () => {
 })
 
 function fakeAppWith(
-  setStatus: (a: any) => Promise<unknown>,
-  setTitle: (a: any) => Promise<unknown> = async () => undefined,
+  sessions: { setStatus?: (a: any) => Promise<unknown>; rename?: (a: any) => Promise<unknown> } = {},
   postMessage: (a: any) => Promise<unknown> = async () => ({})
 ) {
   return {
@@ -47,7 +46,9 @@ function fakeAppWith(
     client: {
       auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
       chat: { postMessage, getPermalink: async () => ({ permalink: 'https://example.slack.com/thread' }) },
-      assistant: { threads: { setStatus, setTitle } }
+      agents: {
+        sessions: { setStatus: sessions.setStatus ?? (async () => ({})), rename: sessions.rename ?? (async () => ({})) }
+      }
     },
     start: async () => {},
     stop: async () => {}
@@ -102,7 +103,7 @@ describe('SlackConnection.downloadFile', () => {
   it('sends the bot token only to canonical Slack file URLs and disables redirects', async () => {
     const fetchMock = vi.fn(async () => new Response('file contents', { headers: { 'content-type': 'text/plain' } }))
     vi.stubGlobal('fetch', fetchMock)
-    const conn = new SlackConnection(deps() as any, () => fakeAppWith(async () => undefined) as any)
+    const conn = new SlackConnection(deps() as any, () => fakeAppWith() as any)
     const url = 'https://files.slack.com/files-pri/T0123-F0456/download/note.txt'
 
     await expect(conn.downloadFile(url)).resolves.toEqual(Buffer.from('file contents'))
@@ -116,7 +117,7 @@ describe('SlackConnection.downloadFile', () => {
   it('rejects URL confusion and off-origin destinations before making a request', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const conn = new SlackConnection(deps() as any, () => fakeAppWith(async () => undefined) as any)
+    const conn = new SlackConnection(deps() as any, () => fakeAppWith() as any)
 
     for (const url of [
       'not a URL',
@@ -930,99 +931,340 @@ describe('SlackConnection assistant DM threads', () => {
 })
 
 describe('SlackConnection.setStatus', () => {
-  it('maps args to assistant.threads.setStatus including loading messages and agent identity', async () => {
+  it('maps a working status to agents.sessions.setStatus with the acting agent identity', async () => {
     const calls: any[] = []
-    const conn = new SlackConnection(deps() as any, () => fakeAppWith(async (a) => void calls.push(a)) as any)
-    await conn.setStatus('C1', '123.45', 'is thinking…', ['Working on it…'], {
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => fakeAppWith({ setStatus: async (a) => void calls.push(a) }) as any
+    )
+    await conn.setStatus('C1', '123.45', 'is thinking…', {
       username: '  Release Captain  ',
       icon_url: '  https://console.example.test/icons/bot-a  '
     })
-    expect(calls[0]).toEqual({
-      channel_id: 'C1',
-      thread_ts: '123.45',
-      status: 'is thinking…',
-      loading_messages: ['Working on it…'],
-      username: 'Release Captain',
-      icon_url: 'https://console.example.test/icons/bot-a'
-    })
+    expect(calls).toEqual([
+      {
+        channel_id: 'C1',
+        thread_ts: '123.45',
+        status: 'processing',
+        username: 'Release Captain',
+        icon_url: 'https://console.example.test/icons/bot-a'
+      }
+    ])
   })
 
-  it('omits loading messages and identity when clearing', async () => {
+  it('omits identity when clearing', async () => {
     const calls: any[] = []
-    const conn = new SlackConnection(deps() as any, () => fakeAppWith(async (a) => void calls.push(a)) as any)
-    await conn.setStatus('C1', '123.45', '', undefined, {
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () => fakeAppWith({ setStatus: async (a) => void calls.push(a) }) as any
+    )
+    await conn.setStatus('C1', '123.45', '', {
       username: 'Release Captain',
       icon_url: 'https://console.example.test/icons/bot-a'
     })
-    expect(calls[0]).toEqual({ channel_id: 'C1', thread_ts: '123.45', status: '' })
+    expect(calls).toEqual([{ channel_id: 'C1', thread_ts: '123.45', status: 'active' }])
   })
 
-  it('swallows errors and never rejects (best-effort)', async () => {
-    const conn = new SlackConnection(
-      deps() as any,
+  const lifecycleConn = (record: (a: any) => void) =>
+    new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
       () =>
-        fakeAppWith(async () => {
-          throw new Error('not_an_assistant_thread')
+        fakeAppWith({
+          setStatus: async (a) => {
+            record(a)
+            return {}
+          }
+        }) as any
+    )
+
+  it('maps a non-empty status to processing and a clear to active', async () => {
+    const lifecycle: any[] = []
+    const conn = lifecycleConn((a) => lifecycle.push(a))
+
+    await conn.setStatus('C1', '123.45', 'is thinking…')
+    await conn.setStatus('C1', '123.45', '')
+
+    expect(lifecycle).toEqual([
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'active' }
+    ])
+  })
+
+  // Slack keeps username/icon STICKY on the session, so a same-state write from a different
+  // agent must refire — the dedupe key includes the identity, not just the enum.
+  it('refires a same-state write when the acting identity changes', async () => {
+    const lifecycle: any[] = []
+    const conn = lifecycleConn((a) => lifecycle.push(a))
+
+    await conn.setStatus('C1', '123.45', 'is thinking…', { username: 'Agent A' })
+    await conn.setStatus('C1', '123.45', 'Searching…', { username: 'Agent A' })
+    await conn.setStatus('C1', '123.45', 'is thinking…', { username: 'Agent B' })
+
+    expect(lifecycle).toEqual([
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing', username: 'Agent A' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing', username: 'Agent B' }
+    ])
+  })
+
+  // Identity needs chat:write.customize; the enum alone runs on chat:write. A manually
+  // created bot without the scope keeps the working indicator under the app identity.
+  it('drops identity after a missing_scope rejection and keeps the working indicator', async () => {
+    const calls: any[] = []
+    const missingScope = Object.assign(new Error('An API error occurred: missing_scope'), {
+      data: { error: 'missing_scope', needed: 'chat:write.customize', provided: 'chat:write' }
+    })
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        fakeAppWith({
+          setStatus: async (a) => {
+            calls.push(a)
+            if (a.username) throw missingScope
+            return {}
+          }
+        }) as any
+    )
+
+    await conn.setStatus('C1', '123.45', 'is thinking…', { username: 'Agent A' })
+    await conn.setStatus('C1', '123.45', '')
+    await conn.setStatus('C1', '123.45', 'Searching…', { username: 'Agent A' })
+
+    expect(calls).toEqual([
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing', username: 'Agent A' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'active' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing' }
+    ])
+  })
+
+  it('refires nothing for an unchanged lifecycle state, per channel and thread', async () => {
+    const lifecycle: any[] = []
+    const conn = lifecycleConn((a) => lifecycle.push(a))
+
+    await conn.setStatus('C1', '123.45', 'is thinking…')
+    await conn.setStatus('C1', '123.45', 'Searching…')
+    await conn.setStatus('C1', '999.99', 'is thinking…')
+    await conn.setStatus('C1', '123.45', '')
+    await conn.setStatus('C1', '123.45', '')
+
+    expect(lifecycle).toEqual([
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing' },
+      { channel_id: 'C1', thread_ts: '999.99', status: 'processing' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'active' }
+    ])
+  })
+
+  it('retries a lifecycle state the last call failed on rather than deduping the failure', async () => {
+    const lifecycle: any[] = []
+    let attempts = 0
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        fakeAppWith({
+          setStatus: async (a) => {
+            if (++attempts === 1) throw new Error('ratelimited')
+            lifecycle.push(a)
+            return {}
+          }
+        }) as any
+    )
+
+    await conn.setStatus('C1', '123.45', 'is thinking…')
+    await conn.setStatus('C1', '123.45', 'Searching…')
+
+    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '123.45', status: 'processing' }])
+  })
+
+  // The relay forwards the native stop to the owning daemon, so an HTTP bot can answer the
+  // Stop button too and both transports drive the same lifecycle enum.
+  it('drives the lifecycle enum on a send-only (HTTP) connection as well', async () => {
+    const lifecycle: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendOnly: true, sendIntervalMs: 0 } as any,
+      () =>
+        fakeAppWith({
+          setStatus: async (a) => {
+            lifecycle.push(a)
+            return {}
+          }
+        }) as any
+    )
+
+    await conn.setStatus('C1', '123.45', 'is thinking…')
+    await conn.setStatus('C1', '123.45', '')
+
+    expect(lifecycle).toEqual([
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'active' }
+    ])
+  })
+
+  it('keeps a failing lifecycle call out of dispatch', async () => {
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        fakeAppWith({
+          setStatus: async () => {
+            throw new Error('not_an_agent_session')
+          }
         }) as any
     )
     await expect(conn.setStatus('C1', '123.45', 'is thinking…')).resolves.toBeUndefined()
   })
+})
 
-  it('posts one permission-update card when Slack reports a missing scope', async () => {
-    const missingScope = Object.assign(new Error('An API error occurred: missing_scope'), {
-      data: { error: 'missing_scope', needed: 'assistant:write', provided: 'chat:write' }
-    })
-    const postMessage = vi.fn(async () => ({ ts: 'card-1' }))
+describe('SlackConnection agent_session_stopped', () => {
+  // The native stop button. Slack leaves the session in `processing` after it fires, so the
+  // app owes both halves: interrupt the running turn, then transition the session itself.
+  const stopApp = (
+    handlers: Map<string, (a: { event: unknown }) => unknown>,
+    sessionsSetStatus: (a: any) => Promise<unknown>
+  ) => ({
+    message() {},
+    event(type: string, h: (a: { event: unknown }) => unknown) {
+      handlers.set(type, h)
+    },
+    action() {},
+    shortcut() {},
+    client: {
+      auth: { test: async () => ({ user_id: 'UBOT' }) },
+      views: { open: async () => {}, update: async () => {} },
+      chat: { postMessage: async () => ({}), getPermalink: async () => ({ permalink: 'https://example.slack.com/t' }) },
+      agents: { sessions: { setStatus: sessionsSetStatus, rename: async () => ({}) } }
+    },
+    start: async () => {},
+    stop: async () => {}
+  })
+
+  const stopped = (over: Record<string, unknown> = {}) => ({
+    event: {
+      type: 'agent_session_stopped',
+      channel: 'C1',
+      thread_ts: '200.1',
+      streaming_message_ts: [],
+      user: 'U1',
+      event_ts: '200.9',
+      ...over
+    }
+  })
+
+  const started = async (sessionKeys: string[]) => {
+    const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+    const lifecycle: any[] = []
+    const actions: any[] = []
+    const resolved: any[] = []
     const conn = new SlackConnection(
-      { ...deps(), group: { ...deps().group, appId: 'A123' }, sendIntervalMs: 0 } as any,
+      {
+        ...deps(),
+        sendIntervalMs: 0,
+        onThreadSessions: async (a: unknown) => {
+          resolved.push(a)
+          return sessionKeys
+        },
+        onStatusAction: (a: unknown) => void actions.push(a)
+      } as any,
       () =>
-        fakeAppWith(
-          async () => {
-            throw missingScope
-          },
-          undefined,
-          postMessage
-        ) as any
+        stopApp(handlers, async (a) => {
+          lifecycle.push(a)
+          return {}
+        }) as any
     )
     await conn.start()
+    return { conn, handlers, lifecycle, actions, resolved }
+  }
 
-    await conn.setStatus('C1', '123.45', 'is thinking…')
-    await conn.setStatus('C1', '123.45', 'is still thinking…')
+  it('cancels the turn the stopped session owns and transitions the session itself', async () => {
+    const { handlers, lifecycle, actions, resolved } = await started(['slack:C1:200.1:bot-a'])
 
-    expect(postMessage).toHaveBeenCalledOnce()
-    expect(postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        channel: 'C1',
-        thread_ts: '123.45',
-        text: expect.stringContaining('Permissions update required'),
-        blocks: expect.arrayContaining([
-          expect.objectContaining({ type: 'section' }),
-          expect.objectContaining({
-            type: 'actions',
-            elements: [
-              expect.objectContaining({
-                style: 'primary',
-                url: 'https://app.slack.com/app-settings/T123/A123/oauth'
-              })
-            ]
-          })
-        ]),
-        metadata: { event_type: 'agentconnect_chrome', event_payload: {} }
-      })
+    await handlers.get('agent_session_stopped')!(stopped())
+
+    expect(resolved).toEqual([{ channel: 'C1', thread: '200.1' }])
+    expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-a', actor: { userId: 'U1' } }])
+    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
+  })
+
+  // Slack's session-level Stop means "stop all in-progress work for this thread" — a shared
+  // bot can be running several agents there, and every one of their turns is interrupted.
+  it('cancels EVERY session the thread owns, not just the newest', async () => {
+    const { handlers, lifecycle, actions } = await started(['slack:C1:200.1:bot-a', 'slack:C1:200.1:bot-b'])
+
+    await handlers.get('agent_session_stopped')!(stopped())
+
+    expect(actions).toEqual([
+      { kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-a', actor: { userId: 'U1' } },
+      { kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-b', actor: { userId: 'U1' } }
+    ])
+    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
+  })
+
+  it('still transitions the session when no local session owns the thread', async () => {
+    const { handlers, lifecycle, actions } = await started([])
+
+    await handlers.get('agent_session_stopped')!(stopped())
+
+    expect(actions).toEqual([])
+    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
+  })
+
+  it('makes the turn-end status clear that follows a stop a no-op', async () => {
+    const { conn, handlers, lifecycle } = await started(['slack:C1:200.1:bot-a'])
+
+    await handlers.get('agent_session_stopped')!(stopped())
+    await conn.setStatus('C1', '200.1', '')
+
+    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
+  })
+
+  it('ignores a payload without session coordinates', async () => {
+    const { handlers, lifecycle, actions } = await started(['slack:C1:200.1:bot-a'])
+
+    await handlers.get('agent_session_stopped')!(stopped({ thread_ts: undefined }))
+
+    expect(actions).toEqual([])
+    expect(lifecycle).toEqual([])
+  })
+
+  // The HTTP arm. A send-only connection registers no Bolt handler at all — the relay forwards
+  // the event and the daemon calls the same method, so both transports share one implementation.
+  it('runs the same resolve → cancel → transition when the relay forwards the stop', async () => {
+    const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+    const lifecycle: any[] = []
+    const actions: any[] = []
+    const resolved: any[] = []
+    const conn = new SlackConnection(
+      {
+        ...deps(),
+        sendOnly: true,
+        sendIntervalMs: 0,
+        onThreadSessions: async (a: unknown) => {
+          resolved.push(a)
+          return ['slack:C1:200.1:bot-a']
+        },
+        onStatusAction: (a: unknown) => void actions.push(a)
+      } as any,
+      () =>
+        stopApp(handlers, async (a) => {
+          lifecycle.push(a)
+          return {}
+        }) as any
     )
+    await conn.start()
+    expect(handlers.has('agent_session_stopped')).toBe(false)
+
+    await conn.agentSessionStopped('C1', '200.1', 'U1')
+
+    expect(resolved).toEqual([{ channel: 'C1', thread: '200.1' }])
+    expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-a', actor: { userId: 'U1' } }])
+    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
   })
 })
 
 describe('SlackConnection.setTitle', () => {
-  it('maps args to assistant.threads.setTitle', async () => {
+  it('maps args to agents.sessions.rename', async () => {
     const calls: any[] = []
     const conn = new SlackConnection(
       deps() as any,
-      () =>
-        fakeAppWith(
-          async () => undefined,
-          async (a) => void calls.push(a)
-        ) as any
+      () => fakeAppWith({ rename: async (a) => void calls.push(a) }) as any
     )
     await conn.setTitle('D1', '123.45', 'Runtime summary')
     expect(calls[0]).toEqual({ channel_id: 'D1', thread_ts: '123.45', title: 'Runtime summary' })
@@ -1032,12 +1274,11 @@ describe('SlackConnection.setTitle', () => {
     const conn = new SlackConnection(
       deps() as any,
       () =>
-        fakeAppWith(
-          async () => undefined,
-          async () => {
+        fakeAppWith({
+          rename: async () => {
             throw new Error('invalid_thread_ts')
           }
-        ) as any
+        }) as any
     )
     await expect(conn.setTitle('D1', '123.45', 'Runtime summary')).resolves.toBeUndefined()
   })
@@ -1053,18 +1294,18 @@ describe('SlackConnection.setTitle', () => {
           resolveCard = resolve
         })
     )
-    const setTitle = vi.fn(async () => {
+    const rename = vi.fn(async () => {
       throw missingScope
     })
     const conn = new SlackConnection(
       { ...deps(), group: { ...deps().group, appId: 'A123' }, sendIntervalMs: 0 } as any,
-      () => fakeAppWith(async () => undefined, setTitle, postMessage) as any
+      () => fakeAppWith({ rename }, postMessage) as any
     )
 
     const first = conn.setTitle('D1', '123.45', 'First title')
     await vi.waitFor(() => expect(postMessage).toHaveBeenCalledOnce())
     const second = conn.setTitle('D1', '123.45', 'Second title')
-    await vi.waitFor(() => expect(setTitle).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(rename).toHaveBeenCalledTimes(2))
     expect(postMessage).toHaveBeenCalledOnce()
 
     resolveCard({ ts: 'card-1' })

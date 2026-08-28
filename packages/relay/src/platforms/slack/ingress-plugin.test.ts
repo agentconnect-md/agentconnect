@@ -1,5 +1,6 @@
+import { createHmac } from 'node:crypto'
 import { describe, it, expect, vi } from 'vitest'
-import { forwardSessionShortcut, slackIngressPlugin } from './ingress-plugin.js'
+import { forwardSessionShortcut, forwardSessionStop, slackIngressPlugin } from './ingress-plugin.js'
 import type { RelayIngressHost } from '../contract.js'
 import type { BotAssignment, RouteTarget } from '../../bot-arbitration.js'
 
@@ -19,6 +20,7 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
     channelOwner: () => undefined,
     targetForAgentId: () => undefined,
     resolveTarget: () => ROUTE,
+    conversationParticipants: () => [],
     targetForAgent: () => ROUTE,
     integrationTarget: () => ROUTE,
     soleTarget: () => ROUTE
@@ -54,6 +56,111 @@ describe('slack ingress plugin — review-pinned regressions', () => {
     const h = host()
     expect(forwardSessionShortcut(h, 'bot-1', SHORTCUT)).toBe(true)
     expect(h.forwardAction).toHaveBeenCalledTimes(1)
+  })
+
+  // The whole plugin path for the native Stop: HMAC demux → handle → the daemon that owns the
+  // conversation, carrying the tapping user. A signature no assigned bot verifies stops at verify.
+  it('forwards a verified agent-session stop, and never an unverified one', async () => {
+    const h = host()
+    const assignment = {
+      botId: 'bot-1',
+      platform: 'slack',
+      secrets: { botToken: 'xoxb-1', signingSecret: 'sig' },
+      members: [],
+      agents: [],
+      routes: []
+    } as unknown as BotAssignment
+    const ingest = slackIngressPlugin.buildIngest(assignment, h)!
+    const envelope = {
+      type: 'event_callback',
+      api_app_id: 'A1',
+      team_id: 'T9',
+      event_id: 'Ev-stop',
+      event: { type: 'agent_session_stopped', channel: 'C1', thread_ts: 'T1', user: 'U-ALICE' }
+    }
+    const raw = Buffer.from(JSON.stringify(envelope))
+    const ts = '1720000000'
+    const now = 1_720_000_000_000
+    const sign = (secret: string) =>
+      `v0=${createHmac('sha256', secret)
+        .update(`v0:${ts}:${raw.toString('utf8')}`)
+        .digest('hex')}`
+    const headers = (signature: string) => ({
+      'x-slack-signature': signature,
+      'x-slack-request-timestamp': ts
+    })
+
+    expect(slackIngressPlugin.verify(ingest, raw, envelope, headers(sign('other-bots-secret')), now)).toBeUndefined()
+    expect(h.forwardAction).not.toHaveBeenCalled()
+
+    const verified = slackIngressPlugin.verify(ingest, raw, envelope, headers(sign('sig')), now)!
+    expect(verified).toMatchObject({ kind: 'event', eventId: 'Ev-stop' })
+    await slackIngressPlugin.handle(ingest, verified, h)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(h.forwardAction).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(h.forwardAction).mock.calls[0]![0]).toMatchObject({
+      source: 'platform_action',
+      platformId: 'slack',
+      agentId: ROUTE.agentId,
+      integrationId: ROUTE.integrationId,
+      botId: 'bot-1',
+      userId: 'U-ALICE',
+      payload: { kind: 'agent-session-stopped', channelId: 'C1', threadTs: 'T1' }
+    })
+  })
+
+  // A shared bot's participants can span daemons while Slack sees one calling agent, and the
+  // session-level Stop means "stop all in-progress work" — so it fans out, one frame per daemon.
+  it('fans the stop out to every participating daemon, once each', () => {
+    const other: RouteTarget = {
+      agentId: '55555555-5555-4555-8555-555555555555',
+      daemonId: '77777777-7777-4777-8777-777777777777',
+      integrationId: '88888888-8888-4888-8888-888888888888'
+    }
+    const sameDaemonSibling: RouteTarget = { ...ROUTE, agentId: '99999999-9999-4999-8999-999999999999' }
+    const h = host({
+      directory: {
+        agents: () => [],
+        channelOwner: () => undefined,
+        targetForAgentId: () => undefined,
+        resolveTarget: () => ROUTE,
+        conversationParticipants: () => [sameDaemonSibling, other],
+        targetForAgent: () => ROUTE,
+        integrationTarget: () => ROUTE,
+        soleTarget: () => ROUTE
+      }
+    })
+
+    forwardSessionStop(h, 'bot-1', { channelId: 'C1', threadTs: 'T1', interactionId: 'Ev-stop', userId: 'U-ALICE' })
+
+    const calls = vi.mocked(h.forwardAction).mock.calls
+    expect(calls).toHaveLength(2)
+    // The primary claims its daemon first; the sibling on the same daemon rides that one frame.
+    expect(calls.map(([msg]) => msg.agentId)).toEqual([ROUTE.agentId, other.agentId])
+    expect(calls.map(([, route]) => route.daemonId)).toEqual([ROUTE.daemonId, other.daemonId])
+    // One event id, one dedup identity — every daemon collapses a Slack redelivery the same way.
+    expect(new Set(calls.map(([msg]) => msg.msgId)).size).toBe(1)
+  })
+
+  it('still stops the remembered participants when the ownership ladder resolves nobody', () => {
+    const h = host({
+      directory: {
+        agents: () => [],
+        channelOwner: () => undefined,
+        targetForAgentId: () => undefined,
+        resolveTarget: () => undefined,
+        conversationParticipants: () => [ROUTE],
+        targetForAgent: () => undefined,
+        integrationTarget: () => undefined,
+        soleTarget: () => undefined
+      }
+    })
+
+    forwardSessionStop(h, 'bot-1', { channelId: 'C1', threadTs: 'T1', interactionId: 'Ev-stop' })
+
+    expect(h.forwardAction).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(h.forwardAction).mock.calls[0]![1]).toEqual(ROUTE)
   })
 
   it('revocation reports carry the OBSERVING assignment revision, not the current one', () => {

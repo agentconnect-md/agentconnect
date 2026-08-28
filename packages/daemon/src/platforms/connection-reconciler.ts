@@ -73,6 +73,10 @@ export interface PlatformActionSink {
     shortcut: { channel: string; thread: string },
     srcIntegrationIds: readonly string[]
   ): Promise<string | undefined>
+  slackThreadSessions(
+    shortcut: { channel: string; thread: string },
+    srcIntegrationIds: readonly string[]
+  ): Promise<string[]>
 }
 
 /** Exactly what the reconciler touches on the Daemon — nothing wider. */
@@ -182,6 +186,7 @@ export class ConnectionReconciler {
       },
       onChannelsChanged: () => void this.host.refreshChannels(conn()),
       onMessageShortcut: (shortcut) => this.host.slackShortcutSession(shortcut, this.host.srcIntegrationIds(conn())),
+      onThreadSessions: (a) => this.host.slackThreadSessions(a, this.host.srcIntegrationIds(conn())),
       onStatusAction: (a) => this.host.handleStatusAction(a),
       onStatusInfo: (key) => this.host.statusInfoForKey(key),
       onPermissionChoice: (a) => this.host.handlePermissionChoice(a),
@@ -448,12 +453,16 @@ export class ConnectionReconciler {
       let conn = this.slackSharedPool.find(slackSharedKey(group))
       let bound = false
       if (!conn) {
-        conn = new SlackConnection(
+        // `created` (not `conn`) so the shortcut resolver reads this exact connection's bindings.
+        const created: SlackConnection = new SlackConnection(
           {
             group,
             sendOnly: true,
             newTraceId: () => randomUUID(),
             onMessage: () => {}, // never called (relay owns inbound)
+            // Registered on this transport too: the relay forwards the native Stop, which resolves
+            // the conversation's sessions the same way a Socket Mode stop does.
+            onThreadSessions: (a) => this.host.slackThreadSessions(a, this.host.srcIntegrationIds(created)),
             onStatusAction: (a) => this.host.handleStatusAction(a),
             onStatusInfo: (key) => this.host.statusInfoForKey(key),
             onPermissionChoice: (a) => this.host.handlePermissionChoice(a),
@@ -462,6 +471,7 @@ export class ConnectionReconciler {
           },
           this.host.slackAppFactory()
         )
+        conn = created
         try {
           await conn.start()
           this.slackSharedPool.add(conn)

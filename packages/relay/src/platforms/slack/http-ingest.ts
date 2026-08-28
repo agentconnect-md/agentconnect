@@ -97,6 +97,14 @@ export interface HttpSlackSessionShortcut extends HttpSlackInteractionReceipt {
   userId?: string
 }
 
+/** Slack's native agent-session Stop, as the Events API delivers it. Conversation-addressed:
+ *  the event names no session, so the owning daemon resolves one from (channel, thread). */
+export interface HttpSlackSessionStop extends HttpSlackInteractionReceipt {
+  channelId: string
+  threadTs: string
+  userId?: string
+}
+
 type HttpSlackAgent = { agentId: string; name: string }
 
 function httpSlackAgentOption(agent: HttpSlackAgent) {
@@ -344,6 +352,8 @@ export interface SlackHttpIngestDeps {
   /** Resolve and forward the app-level message shortcut. False opens a local
    *  unavailable modal while the one-shot trigger id is still valid. */
   onSessionShortcut: (shortcut: HttpSlackSessionShortcut) => boolean
+  /** Forward the native agent-session Stop to the daemon owning that conversation. */
+  onSessionStopped: (stop: HttpSlackSessionStop) => void
   /** The workspace uninstalled the app / revoked its tokens — the bot's credential
    *  is dead; report upstream so the CP marks it revoked. */
   /** `eventAtMs` = Slack's envelope `event_time` (when the uninstall HAPPENED),
@@ -455,8 +465,11 @@ export class SlackHttpIngest {
 
   /** Handle one verified `/slack/events` envelope after demux + HMAC. Forwards
    *  top-level chat after removing this app's own echo. Never throws — HTTP 200 was
-   *  already sent; a forward miss is bounded loss at the forwarder. */
-  async handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number): Promise<void> {
+   *  already sent; a forward miss is bounded loss at the forwarder. `eventId` is the
+   *  envelope's `event_id`, the receipt a redelivery reuses. Every event this app
+   *  subscribes to but does not act on (agent-session title, assistant thread context)
+   *  falls through to the drop at the end. */
+  async handleEvent(event: SlackMessageEvent | undefined, eventAtMs?: number, eventId?: string): Promise<void> {
     try {
       // App lifecycle: the workspace pulled the app / revoked its tokens. Not a
       // chat event (no user/bot_id — isRoutableEvent would drop it), so branch
@@ -464,6 +477,20 @@ export class SlackHttpIngest {
       // the app has exactly one bot token, and Slack sends it when that dies.
       if (event?.type === 'app_uninstalled' || event?.type === 'tokens_revoked') {
         this.deps.onBotRevoked?.(event.type, eventAtMs)
+        return
+      }
+      // The native Stop button — not chat either, and the one non-chat event this transport
+      // forwards to a daemon, which cancels the turn its conversation owns.
+      if (event?.type === 'agent_session_stopped') {
+        if (event.channel && event.thread_ts)
+          this.deps.onSessionStopped({
+            channelId: event.channel,
+            threadTs: event.thread_ts,
+            // No event id ⇒ fall back to the thread + envelope time; a second stop within the
+            // same second then dedups, which is harmless — the turn is already cancelled.
+            interactionId: eventId ?? `${event.thread_ts}:${eventAtMs ?? ''}`,
+            ...(event.user ? { userId: event.user } : {})
+          })
         return
       }
       if (event && this.isOwnMembershipChange(event)) {

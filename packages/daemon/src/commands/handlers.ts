@@ -908,6 +908,17 @@ export class CommandHandlers {
     transportScope?: string,
     thread?: string
   ): Promise<SessionRecord | null> {
+    return (await this.admittedSessions(platform, channel, srcIntegrationIds, transportScope, thread))[0] ?? null
+  }
+
+  /** Every admitted session in the conversation, one per participating agent, newest first. */
+  private async admittedSessions(
+    platform: string,
+    channel: string,
+    srcIntegrationIds: readonly string[],
+    transportScope?: string,
+    thread?: string
+  ): Promise<SessionRecord[]> {
     const candidates: SessionRecord[] = []
     for (const [agentId, agent] of this.host.agents()) {
       for (const integration of agent.integrations) {
@@ -919,7 +930,7 @@ export class CommandHandlers {
       }
     }
     candidates.sort((a, b) => b.updatedAt - a.updatedAt || a.agentId.localeCompare(b.agentId))
-    return candidates[0] ?? null
+    return candidates
   }
 
   /** The channel's latest admitted session for a Telegram command/callback. */
@@ -942,5 +953,22 @@ export class CommandHandlers {
     return (
       await this.latestAdmittedSession('slack', shortcut.channel, srcIntegrationIds, transportScope, shortcut.thread)
     )?.key
+  }
+
+  /** Every addressable session in one Slack conversation, newest first — the native
+   *  session-level Stop must interrupt ALL of the thread's in-flight turns, not one. */
+  async slackThreadSessions(
+    shortcut: { channel: string; thread: string },
+    srcIntegrationIds: readonly string[]
+  ): Promise<string[]> {
+    const transportScope = this.host.transportScopeForIntegrationIds(srcIntegrationIds)
+    const sessions = await this.admittedSessions(
+      'slack',
+      shortcut.channel,
+      srcIntegrationIds,
+      transportScope,
+      shortcut.thread
+    )
+    return sessions.map((s) => s.key)
   }
 }

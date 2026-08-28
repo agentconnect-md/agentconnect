@@ -1757,7 +1757,8 @@ describe('Slack interactive status bar', () => {
       async () => {}
     )
     const updateBlocks = vi.fn(async () => true)
-    ;(daemon as any).connByIntegration.set('int-a', { openStatusModal, updateBlocks })
+    const agentSessionStopped = vi.fn(async () => {})
+    ;(daemon as any).connByIntegration.set('int-a', { openStatusModal, updateBlocks, agentSessionStopped })
     await (daemon as any).store.upsertSession({
       key: KEY,
       agentId: 'bot-a',
@@ -1822,6 +1823,21 @@ describe('Slack interactive status bar', () => {
       integrationId: 'int-a',
       sessionKey: KEY
     })
+
+    // The relay-forwarded native Stop is conversation-addressed like the shortcut above: the
+    // connection resolves the session itself, so the frame's sessionKey is not the target.
+    expect(
+      await (daemon as any).handleRelayMsg(
+        action({
+          sessionKey: 'C1/T1',
+          msgId: 'action-stop',
+          userId: 'U1',
+          payload: { kind: 'agent-session-stopped', channelId: 'C1', threadTs: 'T1' }
+        }),
+        () => {}
+      )
+    ).toEqual({ msgId: 'action-stop', accepted: true })
+    expect(agentSessionStopped).toHaveBeenCalledWith('C1', 'T1', 'U1')
 
     const permissionResolved = vi.fn()
     const permissionRequestId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -2333,5 +2349,69 @@ describe('Slack interactive status bar', () => {
     release()
     await t1
     await daemon.stop()
+  })
+})
+
+describe('Slack shared-bot thread displacement', () => {
+  // A shared bot's thread runs ONE agent at a time: admitting a turn for a NEW message routed
+  // to another session cancels the sibling's in-flight turn, then re-asserts the survivor's
+  // `processing` behind the displaced turn's own clear. Same-message siblings (one fan-out,
+  // several recipients) coexist untouched.
+  const conn = () => ({ setStatus: vi.fn() })
+  const sibling = (over: Record<string, unknown> = {}) => ({
+    conn: over.conn,
+    entry: { msg: { msgId: (over.msgId as string) ?? 'm1' } },
+    plan: {
+      platform: 'slack',
+      sessionKey: 'slack:C1:T1:bot-b',
+      channel: 'C1',
+      statusThread: 'T1',
+      ...(over.plan as Record<string, unknown>)
+    }
+  })
+  const incoming = (c: unknown, over: Record<string, unknown> = {}) => ({
+    conn: c,
+    platform: 'slack',
+    sessionKey: 'slack:C1:T1:bot-a',
+    channel: 'C1',
+    statusThread: 'T1',
+    msgId: 'm2',
+    ...over
+  })
+
+  const displaced = async (admitted: any, siblings: any[]) => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+    const cancel = vi.fn(async () => true)
+    ;(daemon as any).commands.cancelSessionByKey = cancel
+    for (const [i, entry] of siblings.entries()) (daemon as any).pending.set(`sibling-${i}`, entry)
+    await (daemon as any).cancelDisplacedSlackTurns(admitted)
+    return cancel
+  }
+
+  it('cancels the sibling a NEW message displaces, then re-asserts the survivor status', async () => {
+    const c = conn()
+    const cancel = await displaced(incoming(c), [sibling({ conn: c })])
+    expect(cancel).toHaveBeenCalledExactlyOnceWith('slack:C1:T1:bot-b')
+    // The clear the cancelled turn enqueues must not be the thread's last write.
+    expect(c.setStatus).toHaveBeenCalledWith('C1', 'T1', 'is thinking…', undefined)
+  })
+
+  it('leaves same-message fan-out siblings alone (one delivery, several recipients)', async () => {
+    const c = conn()
+    const cancel = await displaced(incoming(c, { msgId: 'm1' }), [sibling({ conn: c })])
+    expect(cancel).not.toHaveBeenCalled()
+    expect(c.setStatus).not.toHaveBeenCalled()
+  })
+
+  it('touches nothing across connections, conversations, platforms, or its own session', async () => {
+    const c = conn()
+    const cancel = await displaced(incoming(c), [
+      sibling({ conn: c, msgId: 'm3', plan: { sessionKey: 'slack:C1:T1:bot-a' } }), // its own session
+      sibling({ conn: conn() }), // another bot
+      sibling({ conn: c, plan: { sessionKey: 'slack:C1:T9:bot-b', statusThread: 'T9' } }), // another thread
+      sibling({ conn: c, plan: { sessionKey: 'webchat:C1:T1:bot-b', platform: 'webchat' } }) // another platform
+    ])
+    expect(cancel).not.toHaveBeenCalled()
+    expect(c.setStatus).not.toHaveBeenCalled()
   })
 })

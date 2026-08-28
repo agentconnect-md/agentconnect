@@ -109,11 +109,13 @@ export interface SlackResponseMetadata {
   agentCallDeliveryId?: string
 }
 
-/** Optional per-status identity overrides supported by assistant.threads.setStatus.
- * Unlike chat.postMessage customization, Slack accepts these with chat:write. */
+/** Per-agent identity for the working indicator (agents.sessions.setStatus). Slack keeps
+ *  these STICKY on the session until rewritten, so every `processing` write carries the
+ *  current agent's identity and the dedupe key includes it. Needs chat:write.customize;
+ *  a bot without it falls back to app identity (see setSessionLifecycle). */
 export interface SlackStatusOptions {
   username?: string
-  /** Public https image URL for the transient status avatar. */
+  /** Public https image URL for the working-indicator avatar. */
   icon_url?: string
 }
 
@@ -270,6 +272,9 @@ export interface SlackDeps {
   /** Resolve the exact local session owned by the selected Slack conversation, awaited
    *  before the one-shot shortcut trigger opens its modal. */
   onMessageShortcut?: (a: { channel: string; thread: string; userId: string }) => Promise<string | undefined>
+  /** Every local session in one Slack conversation, newest first — the native session-level
+   *  Stop interrupts ALL of the thread's in-flight turns, not just the newest one. */
+  onThreadSessions?: (a: { channel: string; thread: string }) => Promise<string[]>
   /** Fired when a user taps a button on an interactive permission card
    *  (render.buildPermissionCard). The decoded `requestId` ties the click back to the
    *  pending ACP `session/request_permission`; `optionId` is the chosen option. */
@@ -431,14 +436,14 @@ export type AppLike = {
         response_metadata?: { next_cursor?: string }
       }>
     }
-    assistant: {
-      threads: {
-        setStatus: (a: unknown) => Promise<unknown>
-        setTitle: (a: unknown) => Promise<unknown>
-      }
-    }
     reactions: {
       add: (a: unknown) => Promise<unknown>
+    }
+    agents: {
+      sessions: {
+        setStatus: (a: unknown) => Promise<unknown>
+        rename: (a: unknown) => Promise<unknown>
+      }
     }
   }
   init?: () => Promise<void>
@@ -661,6 +666,10 @@ export class SlackConnection implements PlatformConnection {
   // assistant_thread_started, while later message.im payloads may arrive without
   // thread_ts. Keep the active DM thread root so replies stay inside that thread.
   private assistantDmThreads = new Map<string, string>()
+  /** Last agent-session lifecycle state per `channel:thread`, so an unchanged one refires nothing. */
+  private sessionLifecycle = new Map<string, string>()
+  /** Latched when the bot lacks chat:write.customize — the indicator keeps the app identity. */
+  private statusIdentityUnsupported = false
   botUserId = ''
   /** The appToken this socket is keyed by (one socket per unique appToken). */
   readonly appToken: string
@@ -767,6 +776,12 @@ export class SlackConnection implements PlatformConnection {
     this.app.event('assistant_thread_started', async ({ event }) => {
       const thread = this.rememberAssistantThread(event as AssistantThreadStartedEvent)
       if (thread) log?.debug(`slack: assistant thread started ch=${thread.channel} thread=${thread.threadTs}`)
+    })
+    // Native stop button, Socket Mode arm. The HTTP arm reaches the same method through the relay.
+    this.app.event('agent_session_stopped', async ({ event }) => {
+      const ev = event as { channel?: string; thread_ts?: string; user?: string }
+      if (!ev.channel || !ev.thread_ts) return
+      await this.agentSessionStopped(ev.channel, ev.thread_ts, ev.user)
     })
     // Membership changes: the bot was invited to (member_joined_channel, filtered
     // to our own user id) or removed from (channel_left / group_left) a channel.
@@ -1786,50 +1801,68 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /**
-   * Best-effort assistant loading status (assistant.threads.setStatus).
-   * Works in channels/DMs/assistant panel under chat:write (post Mar 2026).
-   * Pass status='' to clear. Never throws into dispatch.
-   */
-  async setStatus(
-    channel: string,
-    threadTs: string,
-    status: string,
-    loadingMessages?: string[],
-    options?: SlackStatusOptions
-  ): Promise<void> {
-    await this.queue.enqueue(async () => {
-      try {
-        // A clear only needs the status coordinates. Keeping authorship off that request
-        // also makes the identity override specific to the visible loading state.
-        const username = status ? options?.username?.trim() : undefined
-        const iconUrl = status ? options?.icon_url?.trim() : undefined
-        await this.app.client.assistant.threads.setStatus({
-          channel_id: channel,
-          thread_ts: threadTs,
-          status,
-          ...(loadingMessages ? { loading_messages: loadingMessages } : {}),
-          ...(username ? { username } : {}),
-          ...(iconUrl ? { icon_url: iconUrl } : {})
-        })
-      } catch (err) {
-        this.rememberMissingScopes(err)
-        this.deps.log?.debug(`slack: setStatus failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`)
-      }
-      await this.postPermissionUpdateCard(channel, threadTs)
-    })
+  /** Best-effort working indicator: the agent-session lifecycle enum. A non-empty `status`
+   *  marks the session `processing` (Slack renders "is working…" + the Stop control in the
+   *  DM container) under the acting agent's identity; '' marks it `active`. The text itself
+   *  is never displayed — Slack's enum API takes no custom text. Never throws into dispatch. */
+  async setStatus(channel: string, threadTs: string, status: string, options?: SlackStatusOptions): Promise<void> {
+    await this.queue.enqueue(() =>
+      this.setSessionLifecycle(channel, threadTs, status ? 'processing' : 'active', options)
+    )
   }
 
-  /**
-   * Best-effort assistant thread title (assistant.threads.setTitle). This API is
-   * only valid for Slack app threads created by the Agents feature; the daemon
-   * gates calls to DM sessions before reaching this boundary. Never throws into
-   * dispatch, including when the shared send queue itself times out.
-   */
+  /** The native Stop, from either transport: interrupt EVERY in-flight turn this conversation
+   *  owns locally, then transition the session — Slack leaves it in `processing` on its own. */
+  async agentSessionStopped(channel: string, threadTs: string, userId?: string): Promise<void> {
+    this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
+    const sessionKeys = (await this.deps.onThreadSessions?.({ channel, thread: threadTs })) ?? []
+    for (const sessionKey of sessionKeys)
+      this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
+    await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))
+  }
+
+  // The lifecycle half of setStatus. Posting a message does NOT end the loading UX — only `active` does.
+  // Deduped per (channel, thread) INCLUDING the identity, so a same-state write from a different
+  // agent still refires — Slack keeps username/icon sticky on the session until rewritten.
+  private async setSessionLifecycle(
+    channel: string,
+    threadTs: string,
+    status: 'processing' | 'active',
+    options?: SlackStatusOptions
+  ): Promise<void> {
+    const key = `${channel}:${threadTs}`
+    const username = status === 'processing' && !this.statusIdentityUnsupported ? options?.username?.trim() : undefined
+    const iconUrl = status === 'processing' && !this.statusIdentityUnsupported ? options?.icon_url?.trim() : undefined
+    const signature = `${status}|${username ?? ''}|${iconUrl ?? ''}`
+    if (this.sessionLifecycle.get(key) === signature) return
+    try {
+      await this.app.client.agents.sessions.setStatus({
+        channel_id: channel,
+        thread_ts: threadTs,
+        status,
+        ...(username ? { username } : {}),
+        ...(iconUrl ? { icon_url: iconUrl } : {})
+      })
+      this.sessionLifecycle.set(key, signature)
+    } catch (err) {
+      // Identity needs chat:write.customize (the enum alone runs on chat:write). A manually
+      // created bot without it keeps the working indicator under the app identity.
+      if ((username || iconUrl) && missingScopesFrom(err).length > 0) {
+        this.statusIdentityUnsupported = true
+        return this.setSessionLifecycle(channel, threadTs, status)
+      }
+      // Left unrecorded so the next status update retries instead of deduping a failure.
+      this.deps.log?.debug(
+        `slack: session lifecycle ${status} failed (ch=${channel} thread=${threadTs}): ${(err as Error).message}`
+      )
+    }
+  }
+
+  /** Best-effort agent-session title; only valid for Agents-feature threads, so the daemon gates it to DMs. */
   async setTitle(channel: string, threadTs: string, title: string): Promise<void> {
     try {
       await this.queue.enqueue(() =>
-        this.app.client.assistant.threads.setTitle({
+        this.app.client.agents.sessions.rename({
           channel_id: channel,
           thread_ts: threadTs,
           title

@@ -25,7 +25,6 @@ describe('turn-start reactions', () => {
           client: {
             auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
             chat: { postMessage: async () => ({}) },
-            assistant: { threads: { setStatus: async () => undefined, setTitle: async () => undefined } },
             reactions: { add }
           },
           start: async () => {},
@@ -53,7 +52,6 @@ describe('turn-start reactions', () => {
           client: {
             auth: { test: async () => ({ user_id: 'U1', team_id: 'T123' }) },
             chat: { postMessage: async () => ({}) },
-            assistant: { threads: { setStatus: async () => undefined, setTitle: async () => undefined } },
             reactions: {
               add: async () => {
                 throw Object.assign(new Error('missing_scope'), { data: { needed: 'reactions:write' } })

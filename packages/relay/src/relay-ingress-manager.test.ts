@@ -20,14 +20,20 @@ import { RelayIngressManager, type RelayIngressManagerDeps } from './relay-ingre
 import {
   forwardSessionAction,
   forwardSessionShortcut,
+  forwardSessionStop,
   httpSlackActionMsgId,
-  httpSlackShortcutMsgId
+  httpSlackShortcutMsgId,
+  httpSlackStopMsgId
 } from './platforms/slack/ingress-plugin.js'
 import { forwardFeishuCardAction, httpFeishuActionMsgId } from './platforms/feishu/ingress-plugin.js'
 import { DemuxIndex, relayIngressPlugins } from './platforms/registry.js'
 import type { RelayBotIngress, RelayPlatformIngressPlugin } from './platforms/contract.js'
 import { BotArbitrationRouter, mapAgentDirectory, type BotAssignment } from './bot-arbitration.js'
-import type { HttpSlackSessionAction, HttpSlackSessionShortcut } from './platforms/slack/http-ingest.js'
+import type {
+  HttpSlackSessionAction,
+  HttpSlackSessionShortcut,
+  HttpSlackSessionStop
+} from './platforms/slack/http-ingest.js'
 import type { RelayDaemonConnection } from './relay-daemon-connection.js'
 import type { Logger } from './log.js'
 
@@ -266,6 +272,115 @@ describe('RelayIngressManager HTTP Slack session actions', () => {
         threadTs: 'T1'
       }
     })
+  })
+
+  // The native Stop travels the shortcut's seam: it names no session, so ownership picks the
+  // daemon and the daemon resolves the session — exactly what Socket Mode does with the event.
+  it('forwards the agent-session stop through the current thread affinity, with attribution', () => {
+    const sendMsg = vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
+    const daemon = { sendMsg } as unknown as RelayDaemonConnection
+    const manager = new RelayIngressManager(
+      deps({ getDaemon: (daemonId) => (daemonId === DAEMON_ID ? daemon : undefined) })
+    )
+    const internals = internalsOf(manager)
+    internals.router.upsert(assignment())
+    internals.router.setAffinity(BOT_ID, 'C123/T1', {
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      integrationId: INTEGRATION_ID
+    })
+    const stop: HttpSlackSessionStop = {
+      channelId: 'C123',
+      threadTs: 'T1',
+      interactionId: 'Ev123',
+      userId: 'U-ALICE'
+    }
+
+    forwardSessionStop(internals.ingressHost, BOT_ID, stop)
+    forwardSessionStop(internals.ingressHost, BOT_ID, stop) // Slack redelivery
+
+    expect(sendMsg).toHaveBeenCalledTimes(2)
+    const first = sendMsg.mock.calls[0]![0]
+    expect(first).toEqual({
+      source: 'platform_action',
+      platformId: 'slack',
+      agentId: AGENT_ID,
+      integrationId: INTEGRATION_ID,
+      sessionKey: 'C123/T1',
+      msgId: httpSlackStopMsgId(BOT_ID, stop),
+      botId: BOT_ID,
+      userId: 'U-ALICE',
+      payload: { kind: 'agent-session-stopped', channelId: 'C123', threadTs: 'T1' }
+    })
+    // A redelivery carries the same event id, so the daemon dedups it.
+    expect(sendMsg.mock.calls[1]![0].msgId).toBe(first.msgId)
+    // …and a stop the shortcut seam would have hashed identically stays distinct.
+    expect(first.msgId).not.toBe(
+      httpSlackShortcutMsgId(BOT_ID, { channelId: 'C123', threadTs: 'T1', triggerId: 't', interactionId: 'Ev123' })
+    )
+  })
+
+  it('forwards no stop for a conversation this bot owns nowhere', () => {
+    const sendMsg = vi.fn()
+    const warn = vi.fn()
+    const manager = new RelayIngressManager(
+      deps({ getDaemon: () => ({ sendMsg }) as unknown as RelayDaemonConnection, log: { ...silentLog, warn } })
+    )
+    const internals = internalsOf(manager)
+
+    forwardSessionStop(internals.ingressHost, BOT_ID, { channelId: 'C123', threadTs: 'T1', interactionId: 'Ev123' })
+
+    expect(sendMsg).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no participant for the agent-session stop'))
+  })
+
+  // A shared bot's thread retains participants beside the arbitrated owner, possibly on other
+  // daemons; the session-level Stop reaches each of their daemons exactly once.
+  it('fans the stop out to every remembered participant daemon through the live directory', () => {
+    const DAEMON_B = 'bbbbbbbb-2222-4222-8222-222222222222'
+    const AGENT_B = 'bbbbbbbb-3333-4333-8333-333333333333'
+    const INTEGRATION_B = 'bbbbbbbb-4444-4444-8444-444444444444'
+    const perDaemon = new Map<string, ReturnType<typeof vi.fn>>()
+    const manager = new RelayIngressManager(
+      deps({
+        getDaemon: (daemonId) => {
+          const sendMsg =
+            perDaemon.get(daemonId) ??
+            vi.fn(async (msg: RdMsgPlatformAction): Promise<RdAck> => ({ msgId: msg.msgId, accepted: true }))
+          perDaemon.set(daemonId, sendMsg)
+          return { sendMsg } as unknown as RelayDaemonConnection
+        }
+      })
+    )
+    const internals = internalsOf(manager)
+    const shared = assignment()
+    shared.members = [...shared.members, { daemonId: DAEMON_B, agentIds: [AGENT_B] }]
+    shared.agents = [...shared.agents, { agentId: AGENT_B, name: 'Agent B' }]
+    shared.routes = [
+      ...shared.routes,
+      { agentId: AGENT_B, daemonId: DAEMON_B, integrationId: INTEGRATION_B, match: { kind: 'keyword', value: 'b' } }
+    ]
+    internals.router.upsert(shared)
+    internals.router.setAffinity(BOT_ID, 'C123/T1', {
+      agentId: AGENT_ID,
+      daemonId: DAEMON_ID,
+      integrationId: INTEGRATION_ID
+    })
+    internals.router.setParticipant(BOT_ID, 'C123/T1', {
+      agentId: AGENT_B,
+      daemonId: DAEMON_B,
+      integrationId: INTEGRATION_B
+    })
+
+    forwardSessionStop(internals.ingressHost, BOT_ID, { channelId: 'C123', threadTs: 'T1', interactionId: 'Ev123' })
+
+    expect([...perDaemon.keys()].sort()).toEqual([DAEMON_ID, DAEMON_B].sort())
+    for (const [daemonId, sendMsg] of perDaemon) {
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+      const msg = sendMsg.mock.calls[0]![0] as RdMsgPlatformAction
+      expect(msg.payload).toEqual({ kind: 'agent-session-stopped', channelId: 'C123', threadTs: 'T1' })
+      expect(msg.agentId).toBe(daemonId === DAEMON_ID ? AGENT_ID : AGENT_B)
+    }
   })
 
   it('forwards the tapping user, and omits it entirely when the interaction named none', () => {

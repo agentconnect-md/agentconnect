@@ -38,9 +38,12 @@ describe('manifest parity with the Control Plane', () => {
 
   it('pins the exact bot events (drift guard)', () => {
     expect([...SLACK_BOT_EVENTS]).toEqual([
+      'agent_session_stopped',
+      'agent_session_title_changed',
       'app_mention',
       'app_uninstalled',
       'assistant_thread_started',
+      'assistant_thread_context_changed',
       'message.channels',
       'message.groups',
       'message.im',
@@ -60,6 +63,26 @@ describe('buildSlackManifest', () => {
     // A color (from the owning agent's icon) ⇒ display_information.background_color.
     const branded = buildSlackManifest({ name: 'acme' }, { backgroundColor: '#c62a78' })
     expect(branded.display_information.background_color).toBe('#c62a78')
+  })
+
+  // One event list for both transports: Socket Mode receives the stop directly, and the relay
+  // forwards it to the daemon that owns the conversation, so neither variant withholds it.
+  it('advertises the same bot events on socket and over http', () => {
+    const socket = buildSlackManifest({ name: 'acme' })
+    const http = buildSlackManifest({ name: 'acme' }, { mode: 'http', relayUrl: 'https://relay.example' })
+
+    expect(socket.settings.socket_mode_enabled).toBe(true)
+    expect(socket.settings.event_subscriptions.bot_events).toEqual([...SLACK_BOT_EVENTS])
+    expect(http.settings.socket_mode_enabled).toBe(false)
+    expect(http.settings.event_subscriptions.bot_events).toEqual([...SLACK_BOT_EVENTS])
+    for (const manifest of [socket, http])
+      expect(manifest.settings.event_subscriptions.bot_events).toEqual(
+        expect.arrayContaining([
+          'agent_session_stopped',
+          'agent_session_title_changed',
+          'assistant_thread_context_changed'
+        ])
+      )
   })
 
   it('uses the generic public app description', () => {

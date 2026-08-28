@@ -24,13 +24,14 @@ import {
   SlackHttpIngest,
   type HttpSlackSessionAction,
   type HttpSlackSessionShortcut,
+  type HttpSlackSessionStop,
   type SlackInteractiveBody,
   type SlackMessageEvent
 } from './http-ingest.js'
 import { registerSlackHttpIngress } from './http-ingress.js'
 import { verifySlackSignature } from '../../hooks/signature.js'
 import { sessionKeyOf } from '../../bot-arbitration.js'
-import type { BotAssignment } from '../../bot-arbitration.js'
+import type { BotAssignment, RouteTarget } from '../../bot-arbitration.js'
 import type { DemuxHints, HandledDelivery, RelayIngressHost, RelayPlatformIngressPlugin } from '../contract.js'
 
 /** Stable daemon-side dedup id for one Slack interaction. The hash deliberately omits
@@ -89,6 +90,24 @@ export function httpSlackShortcutMsgId(botId: string, shortcut: HttpSlackSession
         channelId: shortcut.channelId,
         threadTs: shortcut.threadTs,
         interactionId: shortcut.interactionId
+      })
+    )
+    .digest('hex')
+  return `slack-action:${digest}`
+}
+
+/** Stable daemon-side dedup id for one native agent-session Stop. `kind` keeps it distinct
+ *  from a shortcut that happened to reuse the same conversation + receipt. */
+export function httpSlackStopMsgId(botId: string, stop: HttpSlackSessionStop): string {
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify({
+        v: 1,
+        botId,
+        kind: 'agent-session-stopped',
+        channelId: stop.channelId,
+        threadTs: stop.threadTs,
+        interactionId: stop.interactionId
       })
     )
     .digest('hex')
@@ -169,10 +188,50 @@ export function forwardSessionShortcut(
   return true
 }
 
+/** Forward the native Stop to EVERY conversation participant's daemon, not one arbitrated
+ *  owner: Slack's session-level Stop means "stop all in-progress work for this thread", and a
+ *  shared bot's participants may span daemons while Slack sees one calling agent. One frame
+ *  per daemon suffices — the receiving daemon interrupts all of ITS thread sessions. Nothing
+ *  is returned to Slack, so an unroutable or offline target is bounded loss like any other
+ *  forwarded event. */
+export function forwardSessionStop(host: RelayIngressHost, botId: string, stop: HttpSlackSessionStop): void {
+  const coords = { channelId: stop.channelId, threadTs: stop.threadTs }
+  const primary = host.directory.resolveTarget(botId, coords)
+  const routes = new Map<string, RouteTarget>()
+  for (const route of [...(primary ? [primary] : []), ...host.directory.conversationParticipants(botId, coords)])
+    if (!routes.has(route.daemonId)) routes.set(route.daemonId, route)
+  if (routes.size === 0) {
+    host.log.warn(`relay-ingress(${botId}): no participant for the agent-session stop in ${stop.channelId}`)
+    return
+  }
+  for (const route of routes.values()) {
+    const rd: RdMsgPlatformAction = {
+      source: 'platform_action',
+      platformId: 'slack',
+      agentId: route.agentId,
+      integrationId: route.integrationId,
+      sessionKey: sessionKeyOf({ channel: stop.channelId, thread: stop.threadTs }),
+      msgId: httpSlackStopMsgId(botId, stop),
+      botId,
+      ...(stop.userId ? { userId: stop.userId } : {}),
+      payload: { kind: 'agent-session-stopped', channelId: stop.channelId, threadTs: stop.threadTs }
+    }
+    void host
+      .forwardAction(rd, route)
+      .then((ack) => {
+        if (!ack.accepted)
+          host.log.warn(`relay-ingress(${botId}): daemon rejected the agent-session stop (${ack.reason ?? 'unknown'})`)
+      })
+      .catch((err) =>
+        host.log.warn(`relay-ingress(${botId}): agent-session stop forward failed: ${(err as Error).message}`)
+      )
+  }
+}
+
 /** The plugin's typed verified product: one authenticated Slack delivery, as
  *  the two HTTP routes parse it. Opaque to core (§8). */
 export type SlackVerifiedDelivery =
-  | { kind: 'event'; event?: SlackMessageEvent; eventAtMs?: number; dedupKey?: string }
+  | { kind: 'event'; event?: SlackMessageEvent; eventAtMs?: number; dedupKey?: string; eventId?: string }
   | { kind: 'interaction'; body: SlackInteractiveBody }
 
 function headerString(v: string | string[] | undefined): string | undefined {
@@ -206,6 +265,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
           host.selectThreadAgent(botId, channelId, threadTs, agentId),
         onSessionAction: (action) => forwardSessionAction(host, botId, action),
         onSessionShortcut: (shortcut) => forwardSessionShortcut(host, botId, shortcut),
+        onSessionStopped: (stop) => forwardSessionStop(host, botId, stop),
         onBotRevoked: (reason, eventAtMs) => {
           host.log.warn(`relay-ingress(${botId}): workspace revoked the app (${reason})`)
           // Fence with the generation THIS ingest was built from — assignments
@@ -252,7 +312,10 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
       kind: 'event',
       ...(env?.event ? { event: env.event } : {}),
       ...(env?.event_time ? { eventAtMs: env.event_time * 1000 } : {}),
-      ...(dedupKey ? { dedupKey } : {})
+      ...(dedupKey ? { dedupKey } : {}),
+      // The per-delivery receipt a redelivery reuses — the daemon-side dedup id of a
+      // forwarded non-chat event is minted from it.
+      ...(env?.event_id ? { eventId: env.event_id } : {})
     }
   },
 
@@ -269,7 +332,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
     // and a forward miss is bounded loss. Failures log exactly as the live
     // route logs them today.
     void ingest
-      .handleEvent(verified.event, verified.eventAtMs)
+      .handleEvent(verified.event, verified.eventAtMs, verified.eventId)
       .catch((err) => host.log.warn(`slack ingress: event handler error: ${(err as Error).message}`))
     return {}
   }

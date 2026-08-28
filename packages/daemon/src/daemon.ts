@@ -1394,7 +1394,9 @@ export class Daemon {
       handleDiscordSelect: (a) => this.commands.handleDiscordSelect(a),
       handleTelegramCallback: (cb, conn) => this.commands.handleTelegramCallback(cb, conn),
       slackShortcutSession: (shortcut, srcIntegrationIds) =>
-        this.commands.slackShortcutSession(shortcut, srcIntegrationIds)
+        this.commands.slackShortcutSession(shortcut, srcIntegrationIds),
+      slackThreadSessions: (shortcut, srcIntegrationIds) =>
+        this.commands.slackThreadSessions(shortcut, srcIntegrationIds)
     }
   }
 
@@ -6469,6 +6471,12 @@ export class Daemon {
       void conn.openStatusModal(payload.triggerId, rec.key, privateMetadata)
       return { msgId: msg.msgId, accepted: true }
     }
+    // Conversation-addressed like the shortcut above: the Slack event names no session, so the
+    // connection resolves the one this thread owns and runs the same cancel + transition.
+    if (payload.kind === 'agent-session-stopped') {
+      await conn.agentSessionStopped(payload.channelId, payload.threadTs, msg.userId)
+      return { msgId: msg.msgId, accepted: true }
+    }
 
     const rec = await this.store.getSession(msg.sessionKey)
     if (!rec || rec.agentId !== msg.agentId || rec.platform !== 'slack') {
@@ -9459,6 +9467,17 @@ export class Daemon {
     const pendingWebchat = webchat
       ? Object.assign(webchat, { index: 0, replyText: '', heldText: '', messageEmitted: false })
       : undefined
+    // Admission is the displacement point: a sibling session's turn is cancelled before this
+    // turn opens its (possibly cold) session, not after buildPending.
+    void this.cancelDisplacedSlackTurns({
+      conn: replyConn,
+      platform: msg.platform,
+      sessionKey: key,
+      channel: msg.channel,
+      statusThread: plan.statusThread,
+      msgId: msg.msgId,
+      statusOptions: plan.statusOptions
+    })
     this.showActivity(replyConn, msg.channel, plan.statusThread, plan.startupActivityLabel, plan.statusOptions)
     this.acknowledgeTrigger(run)
     if (plan.clusterPodBootstrap) this.announceSandboxBootstrap(run, pendingWebchat)
@@ -9917,6 +9936,41 @@ export class Daemon {
     }
     this.pending.set(pendingTurnKey(agentId, sessionId), p)
     return p
+  }
+
+  /** A shared bot's thread runs ONE agent at a time: a NEW message routed to another session
+   *  cancels the previous agent's in-flight turn AT ADMISSION, before the incoming turn opens
+   *  its session. Sibling turns triggered by the SAME message coexist — that is one fan-out
+   *  with several recipients, not the human moving on. Once the displaced turns' own status
+   *  clears are enqueued (interruptTurn enqueues each before resolving), the survivor's
+   *  `processing` is re-asserted BEHIND them on the same serial send queue, so a late clear
+   *  cannot hide the native Stop control. */
+  private async cancelDisplacedSlackTurns(incoming: {
+    conn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
+    platform: string
+    sessionKey: string
+    channel: string
+    statusThread?: string
+    msgId: string
+    statusOptions?: SlackStatusOptions
+  }): Promise<void> {
+    if (incoming.platform !== 'slack' || !incoming.conn || !incoming.statusThread) return
+    const displaced: Pending[] = []
+    for (const sibling of this.pending.values()) {
+      if (sibling.conn !== incoming.conn || sibling.plan.platform !== 'slack') continue
+      if (sibling.plan.sessionKey === incoming.sessionKey) continue
+      if (sibling.plan.channel !== incoming.channel || sibling.plan.statusThread !== incoming.statusThread) continue
+      if (sibling.entry.msg.msgId === incoming.msgId) continue
+      displaced.push(sibling)
+    }
+    for (const sibling of displaced) {
+      this.log.info(
+        `slack: thread ${incoming.channel}/${incoming.statusThread} switched sessions — cancelling the previous turn (${sibling.plan.sessionKey})`
+      )
+      await this.commands.cancelSessionByKey(sibling.plan.sessionKey)
+    }
+    if (displaced.length > 0)
+      this.showActivity(incoming.conn, incoming.channel, incoming.statusThread, 'is thinking…', incoming.statusOptions)
   }
 
   /** Replay the metadata session/new|load emitted before Pending existed, then install the
@@ -11803,8 +11857,8 @@ export class Daemon {
     }
   }
 
-  /** Show the transient "working" indicator: Slack's assistant status bar (text; ''
-   *  clears) or Telegram's typing chat-action (self-expiring, so a clear is a no-op). */
+  /** Show the transient "working" indicator: Slack's agent-session working state (non-empty
+   *  text; '' clears) or Telegram's typing chat-action (self-expiring, so a clear is a no-op). */
   private showActivity(
     conn: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined,
     channel: string,
@@ -11813,13 +11867,11 @@ export class Daemon {
     slackStatusOptions?: SlackStatusOptions
   ): void {
     if (!conn) return
-    // Duck-type by method (so test fakes work): Slack has setStatus ('' clears the bar);
+    // Duck-type by method (so test fakes work): Slack has setStatus ('' clears the indicator);
     // Telegram/Discord have sendChatAction (a self-expiring "typing…", so a clear is a no-op).
     const slack = conn as Partial<SlackConnection>
-    if (typeof slack.setStatus === 'function') {
-      if (text && slackStatusOptions) void slack.setStatus(channel, thread, text, undefined, slackStatusOptions)
-      else void slack.setStatus(channel, thread, text)
-    } else if (text && typeof (conn as Partial<TelegramConnection>).sendChatAction === 'function')
+    if (typeof slack.setStatus === 'function') void slack.setStatus(channel, thread, text, slackStatusOptions)
+    else if (text && typeof (conn as Partial<TelegramConnection>).sendChatAction === 'function')
       void (conn as TelegramConnection).sendChatAction(channel)
   }
 
