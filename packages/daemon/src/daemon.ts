@@ -9924,7 +9924,24 @@ export class Daemon {
         : {})
     }
     this.pending.set(pendingTurnKey(agentId, sessionId), p)
+    this.cancelDisplacedSlackTurns(p)
     return p
+  }
+
+  /** A shared bot's thread runs ONE agent at a time: switching the thread to another session
+   *  cancels the previous agent's in-flight turn instead of letting two turns fight over the
+   *  thread's single Slack agent-session status (and its native Stop control). */
+  private cancelDisplacedSlackTurns(p: Pending): void {
+    if (p.plan.platform !== 'slack' || !p.conn || !p.plan.statusThread) return
+    for (const sibling of this.pending.values()) {
+      if (sibling === p || sibling.conn !== p.conn || sibling.plan.platform !== 'slack') continue
+      if (sibling.plan.sessionKey === p.plan.sessionKey) continue
+      if (sibling.plan.channel !== p.plan.channel || sibling.plan.statusThread !== p.plan.statusThread) continue
+      this.log.info(
+        `slack: thread ${p.plan.channel}/${p.plan.statusThread} switched sessions — cancelling the previous turn (${sibling.plan.sessionKey})`
+      )
+      void this.commands.cancelSessionByKey(sibling.plan.sessionKey)
+    }
   }
 
   /** Replay the metadata session/new|load emitted before Pending existed, then install the

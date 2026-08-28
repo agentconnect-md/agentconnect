@@ -2351,3 +2351,44 @@ describe('Slack interactive status bar', () => {
     await daemon.stop()
   })
 })
+
+describe('Slack shared-bot thread displacement', () => {
+  // A shared bot's thread runs ONE agent at a time: admitting a turn for another session on
+  // the same connection + conversation cancels the sibling's in-flight turn outright, so two
+  // turns never fight over the thread's single agent-session status (or its Stop control).
+  const turn = (over: Record<string, unknown> = {}) => ({
+    conn: over.conn ?? 'CONN-A',
+    plan: {
+      platform: 'slack',
+      sessionKey: 'slack:C1:T1:bot-a',
+      channel: 'C1',
+      statusThread: 'T1',
+      ...(over.plan as Record<string, unknown>)
+    }
+  })
+
+  const displaced = (incoming: any, siblings: any[]) => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+    const cancel = vi.fn(async () => true)
+    ;(daemon as any).commands.cancelSessionByKey = cancel
+    for (const [i, sibling] of siblings.entries()) (daemon as any).pending.set(`sibling-${i}`, sibling)
+    ;(daemon as any).pending.set('incoming', incoming)
+    ;(daemon as any).cancelDisplacedSlackTurns(incoming)
+    return cancel
+  }
+
+  it('cancels the sibling turn another session holds on the same connection and thread', () => {
+    const cancel = displaced(turn(), [turn({ plan: { sessionKey: 'slack:C1:T1:bot-b' } })])
+    expect(cancel).toHaveBeenCalledExactlyOnceWith('slack:C1:T1:bot-b')
+  })
+
+  it('touches nothing across connections, conversations, platforms, or its own session', () => {
+    const cancel = displaced(turn(), [
+      turn(), // the same sessionKey — the queue already serializes it
+      turn({ conn: 'CONN-B', plan: { sessionKey: 'slack:C1:T1:bot-b' } }), // another bot
+      turn({ plan: { sessionKey: 'slack:C1:T9:bot-b', statusThread: 'T9' } }), // another thread
+      turn({ plan: { sessionKey: 'webchat:C1:T1:bot-b', platform: 'webchat' } }) // another platform
+    ])
+    expect(cancel).not.toHaveBeenCalled()
+  })
+})
