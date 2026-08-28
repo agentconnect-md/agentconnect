@@ -92,4 +92,4 @@ fi
 # is NOT rebuilt with dependencies now stripped (which would re-break the
 # bundle).
 cd "$REPO_ROOT/packages/daemon"
-pnpm publish --no-git-checks --ignore-scripts --tag "$VALUE"
+sh "$REPO_ROOT/scripts/npm-publish-with-retry.sh" "$VALUE"

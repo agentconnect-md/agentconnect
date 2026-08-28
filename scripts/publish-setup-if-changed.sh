@@ -63,4 +63,4 @@ if [ "$MODE" = prepare ]; then
 fi
 
 cd "$REPO_ROOT/packages/setup"
-pnpm publish --no-git-checks --ignore-scripts --tag "$VALUE"
+sh "$REPO_ROOT/scripts/npm-publish-with-retry.sh" "$VALUE"
