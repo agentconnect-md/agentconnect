@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useMemo, useState, type ReactNode } from 'react'
 import {
+  agentCapabilitySource,
   agentDaemonLabel,
   agentLabel,
   agentModelDisplay,
@@ -399,6 +400,9 @@ export default function AgentsView() {
             </div>
             {filtered.map((a, i) => {
               const owning = daemons.find((d) => d.daemonId === a.daemon)
+              // The model comes from whoever reports the catalog for this PLACEMENT — a set names no
+              // member, so `owning` finds nothing there and the cell fell back to an em-dash.
+              const capabilitySource = agentCapabilitySource(a, daemons, memberSets)
               const runtimeMeta = acpRuntime(acpRegistry, a.runtime)
               const s = status(effectiveAgentStatus(a, owning))
               const agentInts = integrations.filter((int) => int.agentId === a.id)
@@ -434,7 +438,8 @@ export default function AgentsView() {
                       />
                     </span>
                     <span className="truncate font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      {runtimeLabel(a.runtime, runtimeMeta?.name)} · {agentModelDisplay(owning, a.runtime, a.model)}
+                      {runtimeLabel(a.runtime, runtimeMeta?.name)} ·{' '}
+                      {agentModelDisplay(capabilitySource, a.runtime, a.model)}
                     </span>
                   </span>
                   {/* Trailing cluster. */}
@@ -558,6 +563,7 @@ export default function AgentsView() {
         ) : (
           visible.map((a) => {
             const owning = daemons.find((d) => d.daemonId === a.daemon)
+            const capabilitySource = agentCapabilitySource(a, daemons, memberSets)
             const runtimeMeta = acpRuntime(acpRegistry, a.runtime)
             const s = status(effectiveAgentStatus(a, owning))
             const sessionCount = sessions24h(a.id)
@@ -621,7 +627,7 @@ export default function AgentsView() {
                         {runtimeLabel(a.runtime, runtimeMeta?.name)}
                       </span>
                       <span className="text-(--border-strong)">·</span>
-                      <span className="mono truncate">{agentModelDisplay(owning, a.runtime, a.model)}</span>
+                      <span className="mono truncate">{agentModelDisplay(capabilitySource, a.runtime, a.model)}</span>
                     </div>
                   </div>
                 </div>

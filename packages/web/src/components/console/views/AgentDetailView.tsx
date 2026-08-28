@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import {
+  agentCapabilitySource,
   agentDaemonLabel,
   agentEffortDisplay,
   agentLabel,
@@ -588,12 +589,17 @@ export default function AgentDetailView() {
   // The owning daemon (if placed in the live fleet). Gates the agent's "online" —
   // an agent can't be online when its daemon is offline — and names the daemon.
   const owningDaemon = daemons.find((d) => d.daemonId === da.daemon)
+  // Whose reported catalog the config rows read — resolved through the PLACEMENT, so a pool or
+  // group agent reads its set's real catalog via one serving member instead of the static tables.
+  // `owningDaemon` cannot answer that: a set placement names no member, and the nothing it found
+  // is what showed every such agent an em-dash model even when one was explicitly saved.
+  const capabilitySource = agentCapabilitySource(da, daemons, memberSets)
   const runtimeMeta = acpRuntime(acpRegistry, da.runtime)
   // Config rows read the daemon-advertised runtime-model catalog so a placed
   // agent shows the SAME effective model / effort / permission the Edit modal
   // does (else a blank model reads "Default" here but its resolved default in the
   // editor). Falls back to the static labels when the daemon reports no catalog.
-  const modelText = agentModelDisplay(owningDaemon, da.runtime, da.model)
+  const modelText = agentModelDisplay(capabilitySource, da.runtime, da.model)
   const ds = status(effectiveAgentStatus(da, owningDaemon))
   const ws = da.workspace
   // Demo agents have no daemon to read git state from, so the workspace card's
@@ -1111,7 +1117,7 @@ export default function AgentDetailView() {
                         Permission mode
                       </span>
                       <span className="badge bg-(--surface-active) text-(--text-secondary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]">
-                        {agentPermissionDisplay(owningDaemon, da.runtime, da.permissionMode, da.approvalsReviewer)}
+                        {agentPermissionDisplay(capabilitySource, da.runtime, da.permissionMode, da.approvalsReviewer)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">
@@ -1119,7 +1125,7 @@ export default function AgentDetailView() {
                         {effortField(da.runtime).label}
                       </span>
                       <span className="badge bg-(--surface-active) text-(--text-secondary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]">
-                        {agentEffortDisplay(owningDaemon, da.runtime, da.model, da.reasoning)}
+                        {agentEffortDisplay(capabilitySource, da.runtime, da.model, da.reasoning)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">

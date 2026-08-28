@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Agent, AgentCallPolicy, DaemonRow, MemberSetRow } from '@/lib/data'
-import { agentDaemonLabel, agentLabel, agentModelDisplay } from '@/lib/data'
+import { agentCapabilitySource, agentDaemonLabel, agentLabel, agentModelDisplay } from '@/lib/data'
 import { AgentIconView } from '@/components/marks'
 import { Icon } from '@/components/ui'
 
@@ -347,11 +347,7 @@ export function AgentCallVisibility({
                         {agentLabel(peer)}
                       </span>
                       <span className="truncate font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                        {agentModelDisplay(
-                          daemons.find((d) => d.daemonId === peer.daemon),
-                          peer.runtime,
-                          peer.model
-                        )}
+                        {agentModelDisplay(agentCapabilitySource(peer, daemons, groups), peer.runtime, peer.model)}
                       </span>
                     </span>
                     <span className="max-w-[90px] flex-none truncate font-mono text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
