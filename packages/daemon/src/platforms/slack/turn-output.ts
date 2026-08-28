@@ -199,10 +199,16 @@ export function slackAgentPostOptions(
 export function slackStatusOptions(
   platform: string,
   agentName: string,
-  iconUrl?: string
+  iconUrl?: string,
+  /** Recorded by the connection as the slot's displayed owner — the turn a native Stop targets. */
+  sessionKey?: string
 ): SlackStatusOptions | undefined {
   if (platform !== 'slack') return undefined
-  return { username: agentName, ...(iconUrl ? { icon_url: iconUrl } : {}) }
+  return {
+    username: agentName,
+    ...(iconUrl ? { icon_url: iconUrl } : {}),
+    ...(sessionKey ? { sessionKey } : {})
+  }
 }
 
 /**
@@ -438,7 +444,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
           p.plan.channel,
           p.plan.statusThread,
           action.text,
-          slackStatusOptions(p.plan.platform, p.plan.agentName, p.plan.iconUrl)
+          slackStatusOptions(p.plan.platform, p.plan.agentName, p.plan.iconUrl, p.plan.sessionKey)
         )
       return
     case 'set-title':

@@ -1148,11 +1148,12 @@ describe('SlackConnection agent_session_stopped', () => {
     }
   })
 
-  const started = async (sessionKeys: string[]) => {
+  const started = async (sessionKeys: string[], over: Record<string, unknown> = {}) => {
     const handlers = new Map<string, (a: { event: unknown }) => unknown>()
     const lifecycle: any[] = []
     const actions: any[] = []
     const resolved: any[] = []
+    const settles: any[] = []
     const conn = new SlackConnection(
       {
         ...deps(),
@@ -1161,7 +1162,9 @@ describe('SlackConnection agent_session_stopped', () => {
           resolved.push(a)
           return sessionKeys
         },
-        onStatusAction: (a: unknown) => void actions.push(a)
+        onSlotSettle: (a: unknown) => void settles.push(a),
+        onStatusAction: (a: unknown) => void actions.push(a),
+        ...over
       } as any,
       () =>
         stopApp(handlers, async (a) => {
@@ -1170,49 +1173,55 @@ describe('SlackConnection agent_session_stopped', () => {
         }) as any
     )
     await conn.start()
-    return { conn, handlers, lifecycle, actions, resolved }
+    return { conn, handlers, lifecycle, actions, resolved, settles }
   }
 
-  it('cancels the turn the stopped session owns and transitions the session itself', async () => {
-    const { handlers, lifecycle, actions, resolved } = await started(['slack:C1:200.1:bot-a'])
+  // The Stop control shows ONE turn's identity; stopping cancels that turn and hands the
+  // slot to the daemon's settlement (a surviving sibling re-asserts, an empty thread clears).
+  // The connection itself no longer writes `active` — that would hide a survivor's Stop.
+  it('cancels the newest session and delegates the slot settlement', async () => {
+    const { handlers, lifecycle, actions, resolved, settles } = await started(['slack:C1:200.1:bot-a'])
 
     await handlers.get('agent_session_stopped')!(stopped())
 
     expect(resolved).toEqual([{ channel: 'C1', thread: '200.1' }])
     expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-a', actor: { userId: 'U1' } }])
-    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
+    expect(settles).toEqual([{ channel: 'C1', thread: '200.1', exclude: 'slack:C1:200.1:bot-a' }])
+    expect(lifecycle).toEqual([])
   })
 
-  // Slack's session-level Stop means "stop all in-progress work for this thread" — a shared
-  // bot can be running several agents there, and every one of their turns is interrupted.
-  it('cancels EVERY session the thread owns, not just the newest', async () => {
-    const { handlers, lifecycle, actions } = await started(['slack:C1:200.1:bot-a', 'slack:C1:200.1:bot-b'])
+  // A shared bot can run several agents in one thread, but the user is stopping the turn the
+  // row is naming — the displayed owner (the last `processing` writer) — not everyone's work.
+  it('targets the displayed owner recorded by the last processing write', async () => {
+    const { conn, handlers, actions, resolved } = await started(['slack:C1:200.1:bot-a'])
 
+    await conn.setStatus('C1', '200.1', 'working', { username: 'A', sessionKey: 'slack:C1:200.1:bot-a' })
+    await conn.setStatus('C1', '200.1', 'working', { username: 'B', sessionKey: 'slack:C1:200.1:bot-b' })
     await handlers.get('agent_session_stopped')!(stopped())
 
-    expect(actions).toEqual([
-      { kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-a', actor: { userId: 'U1' } },
-      { kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-b', actor: { userId: 'U1' } }
-    ])
-    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
+    expect(resolved).toEqual([]) // owner known — the store resolver is not consulted
+    expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-b', actor: { userId: 'U1' } }])
   })
 
-  it('still transitions the session when no local session owns the thread', async () => {
-    const { handlers, lifecycle, actions } = await started([])
+  it('an active write clears the displayed owner, so the next stop falls back to the resolver', async () => {
+    const { conn, handlers, actions, resolved } = await started(['slack:C1:200.1:bot-a'])
+
+    await conn.setStatus('C1', '200.1', 'working', { username: 'B', sessionKey: 'slack:C1:200.1:bot-b' })
+    await conn.setStatus('C1', '200.1', '')
+    await handlers.get('agent_session_stopped')!(stopped())
+
+    expect(resolved).toEqual([{ channel: 'C1', thread: '200.1' }])
+    expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-a', actor: { userId: 'U1' } }])
+  })
+
+  it('cancels nothing on an empty thread but still settles, so a stale row clears', async () => {
+    const { handlers, lifecycle, actions, settles } = await started([])
 
     await handlers.get('agent_session_stopped')!(stopped())
 
     expect(actions).toEqual([])
-    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
-  })
-
-  it('makes the turn-end status clear that follows a stop a no-op', async () => {
-    const { conn, handlers, lifecycle } = await started(['slack:C1:200.1:bot-a'])
-
-    await handlers.get('agent_session_stopped')!(stopped())
-    await conn.setStatus('C1', '200.1', '')
-
-    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
+    expect(settles).toEqual([{ channel: 'C1', thread: '200.1' }])
+    expect(lifecycle).toEqual([])
   })
 
   it('ignores a payload without session coordinates', async () => {
@@ -1226,36 +1235,18 @@ describe('SlackConnection agent_session_stopped', () => {
 
   // The HTTP arm. A send-only connection registers no Bolt handler at all — the relay forwards
   // the event and the daemon calls the same method, so both transports share one implementation.
-  it('runs the same resolve → cancel → transition when the relay forwards the stop', async () => {
-    const handlers = new Map<string, (a: { event: unknown }) => unknown>()
-    const lifecycle: any[] = []
-    const actions: any[] = []
-    const resolved: any[] = []
-    const conn = new SlackConnection(
-      {
-        ...deps(),
-        sendOnly: true,
-        sendIntervalMs: 0,
-        onThreadSessions: async (a: unknown) => {
-          resolved.push(a)
-          return ['slack:C1:200.1:bot-a']
-        },
-        onStatusAction: (a: unknown) => void actions.push(a)
-      } as any,
-      () =>
-        stopApp(handlers, async (a) => {
-          lifecycle.push(a)
-          return {}
-        }) as any
-    )
-    await conn.start()
+  it('runs the same resolve → cancel → settle when the relay forwards the stop', async () => {
+    const { conn, handlers, lifecycle, actions, resolved, settles } = await started(['slack:C1:200.1:bot-a'], {
+      sendOnly: true
+    })
     expect(handlers.has('agent_session_stopped')).toBe(false)
 
     await conn.agentSessionStopped('C1', '200.1', 'U1')
 
     expect(resolved).toEqual([{ channel: 'C1', thread: '200.1' }])
     expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-a', actor: { userId: 'U1' } }])
-    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
+    expect(settles).toEqual([{ channel: 'C1', thread: '200.1', exclude: 'slack:C1:200.1:bot-a' }])
+    expect(lifecycle).toEqual([])
   })
 })
 

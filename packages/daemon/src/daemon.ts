@@ -1396,7 +1396,8 @@ export class Daemon {
       slackShortcutSession: (shortcut, srcIntegrationIds) =>
         this.commands.slackShortcutSession(shortcut, srcIntegrationIds),
       slackThreadSessions: (shortcut, srcIntegrationIds) =>
-        this.commands.slackThreadSessions(shortcut, srcIntegrationIds)
+        this.commands.slackThreadSessions(shortcut, srcIntegrationIds),
+      settleSlackSlot: (conn, a) => this.settleSlackSlot(conn as SlackConnection, a.channel, a.thread, a.exclude)
     }
   }
 
@@ -8017,6 +8018,7 @@ export class Daemon {
       webchat?: WebchatTurnContext
       replyConn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
       channel: string
+      sessionKey: string
       transcriptChannel: string
       thread?: string
       statusThread?: string
@@ -8039,9 +8041,8 @@ export class Daemon {
     if (ctx.replyConn) {
       // Clear the Slack "is thinking…" status (Telegram's typing hint expires on its own).
       // Duck-typed so test fakes work.
-      const slack = ctx.replyConn as Partial<SlackConnection>
-      if (ctx.statusThread && typeof slack.setStatus === 'function')
-        void slack.setStatus(ctx.channel, ctx.statusThread, '')
+      // Settle the Slack slot (a sibling may still be working); Telegram's typing hint expires on its own.
+      this.settleSlackSlot(ctx.replyConn, ctx.channel, ctx.statusThread, ctx.sessionKey)
       if (turnChromeFor(ctx.platform).chromeMarkedNotices)
         void (ctx.replyConn as SlackConnection).postMessage(ctx.channel, notice, ctx.thread, {
           ...(slackPostOptions(ctx) ?? {}),
@@ -9475,8 +9476,7 @@ export class Daemon {
       sessionKey: key,
       channel: msg.channel,
       statusThread: plan.statusThread,
-      msgId: msg.msgId,
-      statusOptions: plan.statusOptions
+      msgId: msg.msgId
     })
     this.showActivity(replyConn, msg.channel, plan.statusThread, plan.startupActivityLabel, plan.statusOptions)
     this.acknowledgeTrigger(run)
@@ -9572,9 +9572,12 @@ export class Daemon {
 
   // ── dispatchOne phases, in execution order ──────────────────────────────────
 
-  /** Clear this turn's transient platform activity indicator ("is thinking…"). */
+  /** This turn is done with the activity indicator: hand the Slack slot to a surviving
+   *  sibling or clear it (settleSlackSlot); other platforms' transient hints just clear.
+   *  A turn displaced by a newer one leaves the slot alone — it belongs to its successor. */
   private clearTurnActivity(run: TurnRun): void {
-    this.showActivity(run.replyConn, run.plan.channel, run.plan.statusThread, '')
+    if (run.entry.displacedByNewerTurn) return
+    this.settleSlackSlot(run.replyConn, run.plan.channel, run.plan.statusThread, run.plan.sessionKey)
   }
 
   /** Say that this turn is waiting on a cluster Sandbox pod, before the wait starts.
@@ -9769,6 +9772,7 @@ export class Daemon {
             webchat,
             replyConn,
             channel: msg.channel,
+            sessionKey: plan.sessionKey,
             transcriptChannel: plan.transcriptChannel,
             thread: msg.thread,
             statusThread: plan.statusThread
@@ -9941,10 +9945,9 @@ export class Daemon {
   /** A shared bot's thread runs ONE agent at a time: a NEW message routed to another session
    *  cancels the previous agent's in-flight turn AT ADMISSION, before the incoming turn opens
    *  its session. Sibling turns triggered by the SAME message coexist — that is one fan-out
-   *  with several recipients, not the human moving on. Once the displaced turns' own status
-   *  clears are enqueued (interruptTurn enqueues each before resolving), the survivor's
-   *  `processing` is re-asserted BEHIND them on the same serial send queue, so a late clear
-   *  cannot hide the native Stop control. */
+   *  with several recipients, not the human moving on. The displaced turn is marked so its
+   *  teardown leaves the status slot alone: the successor's own `processing` (written at
+   *  admission, before any cancellation await) is the slot's last write. */
   private async cancelDisplacedSlackTurns(incoming: {
     conn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
     platform: string
@@ -9952,7 +9955,6 @@ export class Daemon {
     channel: string
     statusThread?: string
     msgId: string
-    statusOptions?: SlackStatusOptions
   }): Promise<void> {
     if (incoming.platform !== 'slack' || !incoming.conn || !incoming.statusThread) return
     const displaced: Pending[] = []
@@ -9967,10 +9969,32 @@ export class Daemon {
       this.log.info(
         `slack: thread ${incoming.channel}/${incoming.statusThread} switched sessions — cancelling the previous turn (${sibling.plan.sessionKey})`
       )
+      sibling.entry.displacedByNewerTurn = true
       await this.commands.cancelSessionByKey(sibling.plan.sessionKey)
     }
-    if (displaced.length > 0)
-      this.showActivity(incoming.conn, incoming.channel, incoming.statusThread, 'is thinking…', incoming.statusOptions)
+  }
+
+  /** Settle the conversation's ONE Slack status slot when a turn leaves it (finishes, fails,
+   *  is cancelled, or is the one a native Stop targeted): re-assert the newest surviving
+   *  sibling's `processing` so the row keeps naming who is actually still working — Slack
+   *  resolves a pending "Stopping…" into it — and transition to `active` only when the
+   *  thread is empty. Stateless: reads `pending`, so there is no ownership to leak. */
+  private settleSlackSlot(
+    conn: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined,
+    channel: string,
+    statusThread: string | undefined,
+    exclude?: string
+  ): void {
+    if (!conn || !statusThread) return
+    let survivor: Pending | undefined
+    for (const p of this.pending.values()) {
+      if (p.conn !== conn || p.plan.platform !== 'slack') continue
+      if (p.plan.channel !== channel || p.plan.statusThread !== statusThread) continue
+      if (p.outputSuppressed || p.plan.sessionKey === exclude) continue
+      survivor = p // insertion order: the last match is the newest admitted turn
+    }
+    if (survivor) this.showActivity(conn, channel, statusThread, 'is thinking…', survivor.plan.statusOptions)
+    else this.showActivity(conn, channel, statusThread, '')
   }
 
   /** Replay the metadata session/new|load emitted before Pending existed, then install the
@@ -10848,6 +10872,7 @@ export class Daemon {
         webchat,
         replyConn,
         channel: msg.channel,
+        sessionKey: plan.sessionKey,
         transcriptChannel: plan.transcriptChannel,
         thread: msg.thread,
         statusThread: plan.statusThread
@@ -11220,7 +11245,8 @@ export class Daemon {
       // Platform suppression teardown (§7.3): Feishu stops its stream timer and
       // cancels the CardKit entity. Exact lookup — no core fallback.
       this.turnSurfaces.exact(live.plan.platform)?.onSuppress?.(live)
-      this.showActivity(live.conn, live.plan.channel, live.plan.statusThread, '')
+      if (!live.entry.displacedByNewerTurn)
+        this.settleSlackSlot(live.conn, live.plan.channel, live.plan.statusThread, live.plan.sessionKey)
       if (live.webchat && !live.webchat.doneSent) {
         live.webchat.doneSent = true
         live.webchat.sink.done({
@@ -11233,11 +11259,11 @@ export class Daemon {
       // Cold pre-Pending webchat: there is no Pending sink yet, but the accepted
       // browser turn still needs an immediate terminal frame.
       this.terminateQueuedSink(activeEntry, reason)
-      this.showActivity(
+      this.settleSlackSlot(
         this.replyConnFor(activeEntry.agentId, activeEntry.integrationId),
         activeEntry.msg.channel,
         activeEntry.msg.thread ?? activeEntry.msg.msgId,
-        ''
+        key
       )
     }
     this.log.info(`command: ${reason} → agent "${agentId}" session ${key}${liveSessionId ? ` (${liveSessionId})` : ''}`)
@@ -11914,6 +11940,12 @@ export class Daemon {
       // Check again at execution time: actions queued before an interrupt must not
       // publish later after a backed-up transport queue drains.
       if (p.outputSuppressed && !opts.allowWhenSuppressed) return
+      // The turn-final status clear settles the ONE shared Slack slot instead: a surviving
+      // sibling's `processing` takes the row over; only an empty thread clears.
+      if (action.kind === 'set-status' && action.text === '' && p.plan.platform === 'slack') {
+        this.settleSlackSlot(p.conn, p.plan.channel, p.plan.statusThread, p.plan.sessionKey)
+        return
+      }
       return this.turnSurfaces
         .for(p.plan.platform)
         .apply(p, action)

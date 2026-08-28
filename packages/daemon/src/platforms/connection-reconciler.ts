@@ -77,6 +77,7 @@ export interface PlatformActionSink {
     shortcut: { channel: string; thread: string },
     srcIntegrationIds: readonly string[]
   ): Promise<string[]>
+  settleSlackSlot(conn: unknown, a: { channel: string; thread: string; exclude?: string }): void
 }
 
 /** Exactly what the reconciler touches on the Daemon — nothing wider. */
@@ -187,6 +188,7 @@ export class ConnectionReconciler {
       onChannelsChanged: () => void this.host.refreshChannels(conn()),
       onMessageShortcut: (shortcut) => this.host.slackShortcutSession(shortcut, this.host.srcIntegrationIds(conn())),
       onThreadSessions: (a) => this.host.slackThreadSessions(a, this.host.srcIntegrationIds(conn())),
+      onSlotSettle: (a) => this.host.settleSlackSlot(conn(), a),
       onStatusAction: (a) => this.host.handleStatusAction(a),
       onStatusInfo: (key) => this.host.statusInfoForKey(key),
       onPermissionChoice: (a) => this.host.handlePermissionChoice(a),
@@ -463,6 +465,7 @@ export class ConnectionReconciler {
             // Registered on this transport too: the relay forwards the native Stop, which resolves
             // the conversation's sessions the same way a Socket Mode stop does.
             onThreadSessions: (a) => this.host.slackThreadSessions(a, this.host.srcIntegrationIds(created)),
+            onSlotSettle: (a) => this.host.settleSlackSlot(created, a),
             onStatusAction: (a) => this.host.handleStatusAction(a),
             onStatusInfo: (key) => this.host.statusInfoForKey(key),
             onPermissionChoice: (a) => this.host.handlePermissionChoice(a),
