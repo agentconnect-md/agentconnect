@@ -13,9 +13,14 @@ import {
 import {
   ClusterSkillRequestSchema,
   ClusterSkillReconcileReplySchema,
+  MAX_CLUSTER_SKILL_FILES,
+  MAX_CLUSTER_SKILL_SOURCES,
+  MAX_CLUSTER_SKILL_TOTAL_BYTES,
   type ClusterSkillBegin,
   type ClusterSkillBeginReply,
   type ClusterSkillFile,
+  type ClusterSkillManifest,
+  type ClusterSkillManifestReply,
   type ClusterSkillReconcile,
   type ClusterSkillReconcileReply,
   type ClusterSkillUpload,
@@ -27,6 +32,9 @@ interface Operation {
   handle: string
   operationId: string
   files: Map<string, ClusterSkillFile & { received: number; complete: boolean }>
+  /** Set until the last manifest page lands; uploads and reconcile refuse a partial declaration. */
+  pendingManifest: boolean
+  declaredBytes: number
   skillsAgentId: string
   authority: ClusterSkillBegin['authority']
   abort: AbortController
@@ -63,13 +71,20 @@ export class ClusterSkillHandler {
     payload: unknown,
     abort?: AbortSignal,
     context?: ClusterSkillRequestContext
-  ): Promise<ClusterSkillBeginReply | ClusterSkillUploadReply | ClusterSkillReconcileReply | ClusterSkillVerifyReply> {
+  ): Promise<
+    | ClusterSkillBeginReply
+    | ClusterSkillManifestReply
+    | ClusterSkillUploadReply
+    | ClusterSkillReconcileReply
+    | ClusterSkillVerifyReply
+  > {
     const parsed = ClusterSkillRequestSchema.parse(payload)
     if (abort?.aborted) {
       if (parsed.op === 'upload') await this.discard(parsed.handle)
       throw new Error('cluster skill operation aborted')
     }
     if (parsed.op === 'begin') return await this.begin(parsed, context)
+    if (parsed.op === 'manifest') return this.manifest(parsed)
     if (parsed.op === 'upload') return await this.upload(parsed, abort)
     if (parsed.op === 'verify') {
       if (!this.deps.workspaceRoot) throw new Error('cluster skill verification is unavailable')
@@ -132,17 +147,49 @@ export class ClusterSkillHandler {
     await mkdir(this.deps.stagingRoot, { recursive: true, mode: 0o700 })
     const handle = randomBytes(24).toString('hex')
     await mkdir(join(this.deps.stagingRoot, handle), { mode: 0o700 })
-    this.operations.set(handle, {
+    const operation: Operation = {
       handle,
       operationId: input.operationId,
       authority: input.authority,
       skillsAgentId: input.skillsAgentId,
       abort: new AbortController(),
-      files: new Map(
-        input.files.map((file) => [fileKey(file.sourceId, file.path), { ...file, received: 0, complete: false }])
-      )
-    })
+      files: new Map(),
+      pendingManifest: input.moreFiles === true,
+      declaredBytes: 0
+    }
+    this.operations.set(handle, operation)
+    this.declare(operation, input.files)
     return { handle }
+  }
+
+  /** Append one manifest page. Splitting it is what lets a whole collection repo be declared:
+   *  every page is its own frame, and only the assembled set is bounded by the wire totals. */
+  private manifest(input: ClusterSkillManifest): ClusterSkillManifestReply {
+    const operation = this.operations.get(input.handle)
+    if (!operation || operation.operationId !== input.operationId) {
+      throw new Error('unknown cluster skill staging handle')
+    }
+    if (!operation.pendingManifest) throw new Error('cluster skill manifest is already complete')
+    this.declare(operation, input.files)
+    operation.pendingManifest = input.moreFiles
+    return { declared: operation.files.size }
+  }
+
+  /** Enforce the totals no single page can see — count, bytes, sources, and duplicate paths. */
+  private declare(operation: Operation, files: ClusterSkillFile[]): void {
+    for (const file of files) {
+      const key = fileKey(file.sourceId, file.path)
+      if (operation.files.has(key)) throw new Error('duplicate cluster skill manifest file')
+      operation.files.set(key, { ...file, received: 0, complete: false })
+      operation.declaredBytes += file.size
+    }
+    if (operation.files.size > MAX_CLUSTER_SKILL_FILES) throw new Error('cluster skill manifest has too many files')
+    if (operation.declaredBytes > MAX_CLUSTER_SKILL_TOTAL_BYTES) {
+      throw new Error('cluster skill manifest exceeds its byte limit')
+    }
+    if (new Set([...operation.files.values()].map((file) => file.sourceId)).size > MAX_CLUSTER_SKILL_SOURCES) {
+      throw new Error('cluster skill manifest has too many sources')
+    }
   }
 
   private async reconcile(
@@ -162,6 +209,7 @@ export class ClusterSkillHandler {
       throw new Error('cluster skill reconciliation lost duty authority')
     }
     if (!this.deps.workspaceRoot || !this.deps.stateRoot) throw new Error('cluster skill publication is unavailable')
+    if (operation.pendingManifest) throw new Error('cluster skill manifest is incomplete')
     if ([...operation.files.values()].some((file) => !file.complete))
       throw new Error('cluster skill snapshot is incomplete')
     if (abort?.aborted) return await this.fail(operation, 'cluster skill operation aborted')

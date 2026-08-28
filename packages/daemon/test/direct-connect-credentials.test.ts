@@ -76,7 +76,16 @@ describe('provider credentials in the direct-connect stage', () => {
 
   it('grants the runtime exactly the channels it needs and nothing else', () => {
     // The closed set admits only runtime channels that the daemon explicitly owns.
-    expect([...RUNTIME_GRANTS].sort()).toEqual(['acp', 'automerge', 'exec', 'materialize', 'read', 'skills', 'tunnel'])
+    expect([...RUNTIME_GRANTS].sort()).toEqual([
+      'acp',
+      'automerge',
+      'exec',
+      'materialize',
+      'read',
+      'skills',
+      'skills-wide',
+      'tunnel'
+    ])
   })
 
   it('classifies a provider auth rejection by the type the provider itself sends', () => {

@@ -203,6 +203,24 @@ describe('shim feature negotiation', () => {
     )
     expect(connection.binding.grants).toEqual(['materialize', 'skills'])
   })
+
+  it('withholds the widened skills grant until the shim advertises cluster-skills-v2', async () => {
+    const grantsFor = async (features: string[]): Promise<string[]> => {
+      const clock = new VirtualClock()
+      const { dialer } = scriptedDialer({
+        answer: presents('projected-token', features),
+        verifier: verifier({ authenticated: true, podName: 'runtime-abc', podUid: 'pod-uid-1' }),
+        clock
+      })
+      const connection = await runVirtual(
+        clock,
+        dialer.connect(SCRIPTED_ENDPOINT, record({ grants: ['skills', 'skills-wide'] as never }), 500)
+      )
+      return connection.binding.grants
+    }
+    expect(await grantsFor(['cluster-skills-v1'])).toEqual(['skills'])
+    expect(await grantsFor(['cluster-skills-v1', 'cluster-skills-v2'])).toEqual(['skills', 'skills-wide'])
+  })
 })
 
 describe('handshake operability counters', () => {

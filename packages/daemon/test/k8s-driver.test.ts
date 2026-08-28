@@ -201,7 +201,7 @@ describe('cluster spawn driver', () => {
         agentId: 'agent-a',
         sandboxUid: 'sandbox-uid-1',
         generation: 1,
-        grants: ['acp', 'materialize', 'exec', 'read', 'tunnel', 'automerge', 'skills'],
+        grants: ['acp', 'materialize', 'exec', 'read', 'tunnel', 'automerge', 'skills', 'skills-wide'],
         podName: 'sb-1'
       }
     ])

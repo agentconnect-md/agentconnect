@@ -32,7 +32,7 @@ import {
 } from './skill-install-ledger.js'
 import { resolveSkillSelections } from './skill-cli-selection.js'
 import { acquireGitSkillSource, resolveBoundedGitSkillSource } from './skill-git-source.js'
-import { snapshotLocalSkillSource } from './skill-source-snapshot.js'
+import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, snapshotLocalSkillSource } from './skill-source-snapshot.js'
 import { PINNED_SKILLS_CLI_VERSION, stageSkillsCliCell, type SkillsCliCellResult } from './skills-cli-cell.js'
 
 export const SKILLS_CLI_SPEC = `skills@${PINNED_SKILLS_CLI_VERSION}`
@@ -44,13 +44,6 @@ const INSTALLER_SCHEMA = 3
 const LEGACY_MARKER_BYTES = 64 * 1024
 const LEGACY_MARKERS = ['skills-install.json', 'dream-skills-install.json'] as const
 const LEGACY_OWNED = /^(?:\.claude\/skills|\.agents\/skills)\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-const GIT_SOURCE_SNAPSHOT_LIMITS = {
-  maxFiles: 4_096,
-  maxEntries: 8_192,
-  maxTotalBytes: 64 * 1024 * 1024,
-  maxFileBytes: 4 * 1024 * 1024,
-  maxDepth: 64
-} as const
 const MAX_GIT_SKILL_SOURCES = 64
 const MAX_LOCAL_SKILL_SOURCES = 64
 const MAX_CLI_INVOCATIONS = 128
@@ -328,10 +321,7 @@ async function installSkillsLocked(
       const destination = join(scratch, 'inputs', `git-${index}`)
       await prepareSnapshotDestination(destination)
       const snapshot = await snapshotLocalSkillSource(acquired.sourceDir, destination, {
-        // A Git source is a collection which may contain many independent
-        // skills; individual installed bundles remain subject to the much
-        // smaller CLI-cell and local-bundle limits.
-        limits: GIT_SOURCE_SNAPSHOT_LIMITS
+        limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
       })
       accountInput(snapshot.fileCount, snapshot.totalBytes)
       // The CLI matches `-s` values against SKILL.md frontmatter names but the

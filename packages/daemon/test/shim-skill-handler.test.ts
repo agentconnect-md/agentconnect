@@ -34,6 +34,74 @@ async function fixture(content = Buffer.from('hello')) {
 }
 
 describe('cluster skill shim staging', () => {
+  it('assembles a paged manifest and enforces the totals no single page can see', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-shim-paged-'))
+    const handler = new ClusterSkillHandler({ stagingRoot: join(root, 'staging'), inactiveMs: 1_000 })
+    const operationId = randomUUID()
+    const authority = {
+      groupId: 'g',
+      term: '1',
+      daemonId: 'd',
+      agentId: 'a',
+      workspaceIncarnation: 'claim-1',
+      shimGeneration: 1
+    }
+    const body = Buffer.from('12345678')
+    const files = Array.from({ length: 1_500 }, (_unused, index) => ({
+      sourceId: 'agent:0',
+      path: `docs/note-${index}.md`,
+      size: body.length,
+      sha256: sha256(body)
+    }))
+    const requester: ShimRequester = { request: (_capability, payload) => handler.handle(payload) }
+    const reply = await new ClusterSkillClient(requester, true).begin({
+      operationId,
+      authority,
+      skillsAgentId: 'universal',
+      files
+    })
+
+    // Every file arrived across pages, and the assembled set — not any one page — is what upload sees.
+    await expect(
+      handler.handle({
+        op: 'upload',
+        operationId,
+        handle: reply.handle,
+        sourceId: 'agent:0',
+        path: 'docs/note-1499.md',
+        offset: 0,
+        data: body.toString('base64'),
+        final: true
+      })
+    ).resolves.toEqual({ received: 8, complete: true })
+
+    // A page after the client declared the last one is refused.
+    await expect(
+      handler.handle({ op: 'manifest', operationId, handle: reply.handle, files: [files[0]!], moreFiles: false })
+    ).rejects.toThrow(/manifest is already complete/)
+
+    // A page repeating an EARLIER page's file, while the manifest is still open: only the
+    // receiver holds the assembled set, so no per-page check could catch this one.
+    const openId = randomUUID()
+    const open = (await handler.handle({
+      op: 'begin',
+      operationId: openId,
+      authority: { ...authority, term: '2' },
+      skillsAgentId: 'universal',
+      files: [files[0]!],
+      moreFiles: true
+    })) as { handle: string }
+    await expect(
+      handler.handle({
+        op: 'manifest',
+        operationId: openId,
+        handle: open.handle,
+        files: [files[0]!],
+        moreFiles: false
+      })
+    ).rejects.toThrow(/duplicate cluster skill manifest file/)
+  })
+
   it('mints a handle and accepts only ordered chunks through verified finalization', async () => {
     const f = await fixture()
     await expect(

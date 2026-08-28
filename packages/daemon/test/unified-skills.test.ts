@@ -542,17 +542,24 @@ describe.skipIf(!hasBwrap)('unified isolated skill installation', () => {
     await mkdir(join(cwd, '.runtime/skills/recreated'), { recursive: true })
     await writeFile(join(cwd, '.runtime/skills/recreated/SKILL.md'), 'manual replacement')
 
-    await expect(
-      installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
-        stateDir,
-        localSkills,
-        runCli: cli.run
-      })
-      // A recreated workspace path is rejected fail-closed. The exact guard that
-      // fires first is platform-dependent (ownership vs the inode-bound restore
-      // check on Linux); both refuse and, crucially, leave the manual content
-      // untouched — which is the security property this test pins.
-    ).rejects.toThrow(/not owned by this daemon ledger|prior executable set could not be restored/)
+    // A recreated workspace path is refused fail-closed. WHICH guard fires depends on whether the
+    // recreated directory reused the ledger's recorded inode, so both shapes are legal: an
+    // unowned destination is skipped (a conflict, by design — one foreign bundle must not stop
+    // every other skill), while a surviving prior entry fails the inode-bound restore and throws.
+    // Neither installs, and neither touches the manual content — the property this test pins.
+    const outcome = await installSkills({ id: 'a1', runtime: 'claude', skills: [] }, cwd, {
+      stateDir,
+      localSkills,
+      runCli: cli.run
+    }).catch((error: unknown) => error as Error)
+    if (outcome instanceof Error) {
+      expect(outcome.message).toMatch(/not owned by this daemon ledger|prior executable set could not be restored/)
+    } else {
+      expect(outcome.installed).toEqual([])
+      expect(outcome.errors).toEqual([
+        { source: '.runtime/skills/recreated', error: expect.stringMatching(/not owned by this daemon ledger/) }
+      ])
+    }
     expect(await readFile(join(cwd, '.runtime/skills/recreated/SKILL.md'), 'utf8')).toBe('manual replacement')
   })
 

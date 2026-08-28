@@ -26,7 +26,8 @@ export const SHIM_WORKSPACE_ROOT_ENV = 'AC_SHIM_WORKSPACE_ROOT'
  *  predates workspace-root reporting — every such image mounted the volume here. */
 export const DEFAULT_SHIM_WORKSPACE_ROOT = '/agent'
 
-export const ShimFeatureSchema = z.enum(['cluster-skills-v1'])
+/** `cluster-skills-v2` admits the widened skill manifest; a v1-only shim still gets the narrow one. */
+export const ShimFeatureSchema = z.enum(['cluster-skills-v1', 'cluster-skills-v2'])
 export type ShimFeature = z.infer<typeof ShimFeatureSchema>
 
 /** Operations the daemon may ask a bound shim to perform. Every one is authorized
@@ -51,6 +52,8 @@ export const ShimCapabilitySchema = z.enum([
   'automerge',
   /** Install daemon-acquired immutable skills into this pod's workspace. */
   'skills',
+  /** The same channel at the widened manifest limits — all the daemon learns from `cluster-skills-v2`. */
+  'skills-wide',
   /** Report which runtimes this image actually provides, by asking them. The daemon cannot learn
    *  this any other way: `--k8s` runs no local runtime, and anything it states from its own
    *  configuration is a claim about an image it never opened. */
