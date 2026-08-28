@@ -280,8 +280,10 @@ with several agents bound to it:
   workspace's enabled members, exactly as a GitHub comment addresses one
   agent by name inside a thread the App owns. The name is plain text (agents
   are not Linear entities; only the app is mentionable), matched by
-  per-member name routes in the relay's existing ladder (compiled through
-  the §9.2 routing seams) with `defaultAgentId` as the fallback.
+  the per-member keyword routes the HTTP-bot orchestrator's compile
+  **already emits** — one unscoped `{ kind: 'keyword', value: agent.name }`
+  rule per placed non-gated member (§6.2) — with `defaultAgentId` as the
+  fallback.
 - **One AgentSession binds to one agent at creation** and never changes
   hands: follow-ups and stop go to that agent. Addressing a _different_
   agent is a new mention on the issue → a new session → another thread in
@@ -518,9 +520,9 @@ idle window).
     `host.forward(botId, msg)`. Relay-core arbitration resolves the target
     with the ladder it already runs for shared bots: `prompted` follows the
     session's thread affinity (the session's bound agent); a `created` from
-    a mention matches the per-member **name routes** the CP compiles from
-    the enabled agents' names (`@<agent-name>` in the text, §4.3; sourced
-    via `projectMemberRoutes`, §9.2); anything
+    a mention matches the per-member **name routes** the shipped HTTP-bot
+    compile already emits for every placed non-gated member
+    (`@<agent-name>` in the text, §4.3/§6.2); anything
     else — bare delegation, automation delegation, no name matched — falls
     to `defaultAgentId`. Every event is explicitly addressed by
     construction.
@@ -565,14 +567,15 @@ core-assembled as for every platform — and for Linear the shared-bot members
 are doing real work: `members`/`agents` list the workspace's enabled agents,
 `routes` carries the per-member name rules (§6.1), `defaultAgentId` the
 workspace default, and `credentialRevision` fences signing-secret rotation
-(§10.6). Two of those inputs need seams the shipped compiler lacks,
-inventoried in §9.2, because `projectBotAssign` deliberately carries **no
-routing** (only the two opaque bags — members, routes, and the default are
-assembled by the HTTP-bot orchestrator's core compile): the compiler today
-derives `defaultAgentId` as the earliest non-gated member, so the bot row
-gains a generic **persisted preferred default** it prefers when set and
-still routable; and it has no source for member-name rules, so the provider
-contributes them through the `projectMemberRoutes` contract extension. The
+(§10.6). Routing is assembled by the HTTP-bot orchestrator's core compile —
+`projectBotAssign` deliberately carries **no routing**, only the two opaque
+bags — and that compile **already emits the member-name rules Linear
+needs**: one unscoped `{ kind: 'keyword', value: agent.name }` route per
+placed non-gated member (its keyword-disambiguation loop), which is exactly
+the `@<agent-name>` path, reused with zero new code. The one input the
+compiler lacks is the default: it derives `defaultAgentId` as the earliest
+non-gated member, so the bot row gains a generic **persisted preferred
+default** it prefers when set and still routable (§9.2). The
 earlier revision's `RcLinearAssign` / `RcLinearRemove` frames and the
 relay-local Linear rule table are gone — replay-on-register, placement
 re-broadcast, and lifecycle edges are the shared machinery.
@@ -673,8 +676,8 @@ member Integration on the workspace bot (the generic existing-bot path — no
 reuse fence exists or is needed under this model); the workspace card also
 moves the default among members (persisted, §9.2 — the compiler's
 earliest-member fallback alone cannot honor a choice). Every enabled agent's
-name compiles into a member route (`projectMemberRoutes`, §9.2), which is
-what makes `@<agent-name>` addressing work.
+name already compiles into a member keyword route (the shipped compile,
+§6.2), which is what makes `@<agent-name>` addressing work.
 
 If the tail refuses after step 1 (identity taken, workspace claimed), the
 orphaned token row is inert: no bot references it, and the next connect
@@ -862,22 +865,22 @@ tile.
   - `pendingInstalls` — `linear_install_state` + TTL reaper.
   - `projectIntegrationConfig` (async, loads `linear_token` by the bot's D6
     identity — write-before-create ordering per §7.1) and `projectBotAssign`
-    (§6.2, including the per-member keyword routes and `defaultAgentId`).
+    (§6.2, strictly the two opaque bags — routing, including the per-member
+    keyword rules, is the core compile's, which already emits them).
   - `LinearTokenService` — exchange, single-flight rotate-and-retry refresh,
     revoke; surfaced to the WS `linearcred` handler (§7.3).
   - `backgroundLoops` — the orphan-token sweeper (§7.1): org-scoped
     selection, local delete always, upstream revoke only for globally
     unowned identities, behind a grace window.
-  - **Two contract extensions** this design needs core to grow, each
-    consulted only for platforms that declare it:
+  - **One contract extension** this design needs core to grow, consulted
+    only for platforms that declare it:
     `sideEffects.onBotDelete?(bot, secrets)` for the disconnect revoke
-    (§7.4), best-effort like `postCreate`; and
-    `projectMemberRoutes?(bot, members)` — the member-name keyword rules the
-    HTTP-bot orchestrator's compile folds into the assign's `routes` (§6.2),
-    which is what makes `@<agent-name>` addressing routable without a
-    Linear-named branch in the compiler. (The earlier revision's
-    `validateBotReuse` reuse fence died with the per-agent-app model —
-    adding a member agent is an ordinary, unfenced operation now.)
+    (§7.4), best-effort like `postCreate`. (The earlier revision's
+    `validateBotReuse` reuse fence died with the per-agent-app model, and a
+    `projectMemberRoutes` extension briefly sketched here died on
+    inspection: the shipped compile's keyword-disambiguation loop already
+    emits exactly the member-name routes §4.3 needs, so member addressing
+    costs no contract change at all.)
   - **One generic core change**: a persisted bot-level **preferred default
     agent** (nullable), preferred by the orchestrator's compile over its
     earliest-non-gated fallback and settable from the workspace card —
@@ -1038,8 +1041,9 @@ tile.
 
 - **P1 — the core loop.** `linearcred` frames; deployment-app configuration
   (Setup Server document + `envSchema` slice); CP provider (connect funnel +
-  callback, member/default management, token service + broker, projectors
-  with keyword routes, the `onBotDelete` contract extension) + registry
+  callback, member/default management, token service + broker, projectors,
+  the persisted preferred default, the `onBotDelete` contract extension) +
+  registry
   line; relay ingress plugin + registry line; daemon module (connection,
   ack with agent attribution, converger
   `thought`/`action`/`response`/`error`, follow-ups, stop, config schema) +
@@ -1085,9 +1089,9 @@ tile.
   winner); D6 external-identity and workspace-claim 409s; the workspace bot
   is created `shareable: true` and a second member Integration is admitted
   (the manifest's `multiAgentShareable` row, §9.1); member add/remove
-  recompiles member routes without touching the token; the compile prefers
-  the persisted default over the earliest member and `projectMemberRoutes`
-  output reaches the assign's `routes`; removing the default
+  recompiles the compile's existing member-name keyword routes without
+  touching the token; the compile prefers the persisted default over the
+  earliest member; removing the default
   agent is blocked until a new default is named; reconnect replaces a dead
   token in place; broker scope denial for a foreign daemon; workspace
   disconnect (bot delete) revoke convergence.
