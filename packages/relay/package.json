@@ -37,7 +37,7 @@
     "@agentconnect.md/message": "workspace:*",
     "@agentconnect.md/observability": "workspace:*",
     "@agentconnect.md/protocol": "workspace:*",
-    "@slack/web-api": "^8.0.0",
+    "@slack/web-api": "^8.1.0",
     "fastify": "^5.10.0",
     "undici": "^7.29.0",
     "ws": "^8.21.1",

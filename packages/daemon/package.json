@@ -58,7 +58,7 @@
     "@opentelemetry/sdk-node": "^0.221.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",
     "@slack/bolt": "^5.0.0",
-    "@slack/web-api": "^8.0.0",
+    "@slack/web-api": "^8.1.0",
     "chokidar": "^5.0.0",
     "commander": "^15.0.0",
     "croner": "^10.0.1",
