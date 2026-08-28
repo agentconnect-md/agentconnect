@@ -623,17 +623,12 @@ export default function AgentDetailView() {
   const agentInts = integrations.filter((i) => i.agentId === da.id)
   // Peer agents for the read-only Access card's agent-call summary (self excluded).
   const agentPeers = agents.filter((peer) => peer.id !== da.id)
-  // The empty Integrations tab renders the SAME platform grid as the
-  // Add-integration modal — same list, order, tile size and disabled treatment.
-  // A bot platform the owning daemon doesn't advertise is greyed out rather than
-  // clickable (the modal applies this identical gate), so a tile can never open a
-  // pane other than the one it names. webhook/github are relay/CP-backed
-  // triggers: always available.
-  // An UNPLACED agent keeps bot platforms selectable — the platform "Add to
-  // Slack" card / the funnel mint CP-side rows whose delivery converges at
-  // placement; the modal + server gate what genuinely needs a daemon.
+  // The empty Integrations tab renders the SAME grid as the Add-integration modal, under this identical gate.
+  // A bot platform the PLACEMENT does not advertise is greyed out, so a tile never opens a pane it cannot honour.
+  // webhook/github are relay/CP-backed triggers: never gated. No caps source (unplaced, or a set whose members
+  // this viewer cannot see) keeps every platform selectable — the modal and the server gate what needs a daemon.
   const integrationPlatformAvailable = (key: Platform) =>
-    isCoreTriggerKind(key) || daemonsLoading || !owningDaemon || owningDaemon.caps.platforms.includes(key)
+    isCoreTriggerKind(key) || daemonsLoading || !capabilitySource || capabilitySource.caps.platforms.includes(key)
   // Effective (intersection) peer sets for the read-only Access summary.
   const inboundEffectiveIds = agentReach.incomingByAgentId.get(da.id) ?? []
   const outboundEffectiveIds = agentReach.outgoingByAgentId.get(da.id) ?? []

@@ -41,7 +41,7 @@ import {
 } from '@/components/console/platforms/publish'
 import { platformRegistry, platformSupportsSharing } from '@/components/console/platforms/registry'
 import { BOT_PLATFORMS, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
-import { agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
+import { agentCapabilitySource, agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
@@ -403,6 +403,7 @@ export default function AddIntegrationModal({
     createGitlabHook,
     daemons,
     daemonsLoading,
+    memberSets,
     refresh,
     updateAgent
   } = useConsoleData()
@@ -594,17 +595,15 @@ export default function AddIntegrationModal({
   const [regionLocked, setRegionLocked] = useState(false)
   const setError = useCallback((message: string | null) => setErr(message), [])
 
-  // A bot integration is runnable only when the owning daemon has reported its
-  // adapter on register. Do not substitute `maxAgents`: it is a concurrency
-  // ceiling, while `caps.platforms` is the adapter-capability declaration.
-  // An UNPLACED agent (no daemon yet — the preset before placement) keeps the
-  // bot platforms selectable: the platform "Add to Slack" card and the funnel
-  // both create CP-side rows whose delivery converges at placement, and the
-  // server backstops the paths that genuinely require a daemon.
-  const daemon = daemons.find((d) => d.daemonId === agent.daemon)
-  const unplaced = !daemon
+  // A bot integration is runnable only where the PLACEMENT reported that adapter on register — resolved as a
+  // placement, since a set names no member and an id lookup found none, offering a pool agent every platform.
+  // Not `maxAgents`: that is a concurrency ceiling, while `caps.platforms` is the adapter-capability declaration.
+  // No caps source at all keeps the bot platforms selectable — the platform "Add to Slack" card and the funnel
+  // mint CP-side rows whose delivery converges at placement, and the server backstops what needs a daemon.
+  const daemon = agentCapabilitySource(agent, daemons, memberSets)
+  const capsUnknown = !daemon
   const supportedBotPlatforms =
-    daemonsLoading || unplaced ? BOT_PLATFORMS : BOT_PLATFORMS.filter((p) => daemon.caps.platforms.includes(p.key))
+    daemonsLoading || capsUnknown ? BOT_PLATFORMS : BOT_PLATFORMS.filter((p) => daemon.caps.platforms.includes(p.key))
   const firstSupportedBotPlatform = supportedBotPlatforms[0]?.key
   // webhook + github are relay/CP-backed triggers — always available, never
   // gated by the daemon's adapter capabilities.

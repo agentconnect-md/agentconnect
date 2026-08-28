@@ -16,12 +16,13 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const mocks = vi.hoisted(() => ({
   agent: {} as unknown,
   daemons: [] as unknown[],
-  memberSets: [] as unknown[]
+  memberSets: [] as unknown[],
+  tab: 'tab=config'
 }))
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'agent-1' }),
-  useSearchParams: () => new URLSearchParams('tab=config'),
+  useSearchParams: () => new URLSearchParams(mocks.tab),
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() })
 }))
 vi.mock('next/link', () => ({ default: ({ children }: { children?: ReactNode }) => <span>{children}</span> }))
@@ -150,6 +151,14 @@ async function render(): Promise<string> {
   return host.textContent ?? ''
 }
 
+/** The Integrations grid's tiles by label, with the greyed-out treatment each carries. */
+function tileStates(): Record<string, boolean> {
+  const tiles = host!.querySelectorAll('[aria-disabled]')
+  return Object.fromEntries(
+    [...tiles].map((tile) => [(tile.textContent ?? '').trim(), tile.getAttribute('aria-disabled') === 'true'])
+  )
+}
+
 afterEach(async () => {
   if (root) await act(async () => root!.unmount())
   host?.remove()
@@ -157,6 +166,7 @@ afterEach(async () => {
   host = undefined
   mocks.daemons = []
   mocks.memberSets = []
+  mocks.tab = 'tab=config'
 })
 
 describe('AgentDetailView, model row by placement', () => {
@@ -195,5 +205,40 @@ describe('AgentDetailView, model row by placement', () => {
     const text = await render()
     expect(text).not.toContain('opus')
     expect(text).toContain('—')
+  })
+})
+
+describe('AgentDetailView, platform grid by placement', () => {
+  it("greys out a bot platform the POOL's members do not advertise", async () => {
+    mocks.tab = ''
+    mocks.agent = agentOn({ daemon: 'pool', placementKind: 'set', setId: null })
+    mocks.daemons = [
+      daemon({
+        daemonId: 'pod-1',
+        pool: true,
+        caps: { platforms: ['slack'], runtimes: ['claude'], acp: true, features: [] }
+      })
+    ]
+    await render()
+    const tiles = tileStates()
+    expect(tiles['Slack']).toBe(false)
+    expect(tiles['Telegram']).toBe(true)
+    // Relay/CP-backed triggers ride no daemon adapter, so they stay selectable.
+    expect(tiles['Webhook']).toBe(false)
+    expect(tiles['GitHub']).toBe(false)
+  })
+
+  it('keeps every platform selectable for an UNPLACED agent', async () => {
+    mocks.tab = ''
+    mocks.agent = agentOn({
+      daemon: '—',
+      placementKind: 'daemon',
+      setId: null,
+      status: 'offline',
+      placementReady: false
+    })
+    mocks.daemons = []
+    await render()
+    expect(Object.values(tileStates()).every((disabled) => !disabled)).toBe(true)
   })
 })
