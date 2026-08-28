@@ -259,8 +259,11 @@ The mapping onto existing tables — the Slack shared-bot shape, not a new one:
   constant it sets.
 - **`Integration`** = one **enabled agent** on that workspace
   (`Integration.botId` is deliberately non-unique — the shared-bot
-  precedent). The workspace records a **default agent** among its members,
-  compiled into `rc/bot-assign.defaultAgentId` like any shared bot's.
+  precedent). The workspace records a **default agent** among its members —
+  a durable choice, which is why it rides the generic persisted preferred
+  default of §9.2 (the orchestrator's compile today has no such input and
+  falls back to the earliest non-gated member) rather than anything the
+  provider could smuggle through its opaque assign bags.
 - The cross-org `workspaceClaim` fence refuses a workspace another
   organization already holds — every workspace's events verify against the
   same deployment signing secret, so the tenant composite is the only thing
