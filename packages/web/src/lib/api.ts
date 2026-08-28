@@ -983,7 +983,9 @@ export type SetAgentWorkspaceInput =
       /** Absent lets the server use GitHub's current default branch. */
       gitBranch?: string
       agentDir?: string
-      gitAccess: 'read' | 'write'
+      /** Absent takes the highest tier the target carries: write when an App
+       *  installation grants it, read for an anonymous public checkout. */
+      gitAccess?: 'read' | 'write'
     }
   | {
       mode: 'gitlab'
@@ -993,7 +995,8 @@ export type SetAgentWorkspaceInput =
       /** Absent lets the server use the project's current default branch. */
       gitBranch?: string
       agentDir?: string
-      gitAccess: 'read' | 'write'
+      /** Absent is write: a managed binding always mints credentials. */
+      gitAccess?: 'read' | 'write'
     }
 
 export interface DaemonCapabilitiesDto {

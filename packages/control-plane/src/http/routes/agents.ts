@@ -2361,7 +2361,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Edit an agent workspace',
           description:
-            'Replace a workspace with scratch, a GitHub repository covered by an App installation, or one no installation covers — cloned anonymously, so read-only and public repositories only, and available with no App configured — or edit its repository, branch, working directory, and read/write access. A repository whose owner is covered but which the installation does not grant is refused, since an anonymous clone cannot serve it. Changing workspace type, repository, or branch discards daemon-local workspace files. The caller must hold the requested GitHub permission. Active work is drained and repository credentials are invalidated before success. Enabled GitHub review or Check actions reject edits that remove their required write authority.',
+            'Replace a workspace with scratch, a GitHub repository covered by an App installation, or one no installation covers — cloned anonymously, so read-only and public repositories only, and available with no App configured — or edit its repository, branch, working directory, and read/write access. A repository whose owner is covered but which the installation does not grant is refused, since an anonymous clone cannot serve it. An unstated access tier takes the highest the target can carry: write where credentials are minted for it, read for an anonymous checkout. Changing workspace type, repository, or branch discards daemon-local workspace files. The caller must hold the requested GitHub permission. Active work is drained and repository credentials are invalidated before success. Enabled GitHub review or Check actions reject edits that remove their required write authority.',
           operationId: 'setAgentWorkspace',
           params: IdParam,
           body: SetAgentWorkspaceBody,
@@ -2411,13 +2411,16 @@ export function agentRoutes(deps: HttpDeps) {
               req.body.worktree ??
               (existing.workspace.mode === 'github' ? existing.workspace.isolation === 'session' : true)
             if (installation) {
+              // Credentials are minted here, so an unstated tier takes the higher
+              // one — the identity gate then holds the caller to it.
+              const access = req.body.gitAccess ?? 'write'
               const ref = await bindWorkspaceRepo(
                 deps,
                 existing.orgId,
                 installation,
                 owner,
                 repo,
-                req.body.gitAccess,
+                access,
                 req.principal!.userId
               )
               // An installation token reads any PUBLIC repository, so a miss here means
@@ -2431,7 +2434,7 @@ export function agentRoutes(deps: HttpDeps) {
                 gitBranch: req.body.gitBranch ?? ref.defaultBranch,
                 ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
                 installationId: installation.id,
-                gitAccess: req.body.gitAccess
+                gitAccess: access
               }
               workspaceRepoId = ref.repoId
             } else {
@@ -2481,7 +2484,8 @@ export function agentRoutes(deps: HttpDeps) {
               gitRepo: catalogRow.cloneUrl,
               gitBranch: req.body.gitBranch ?? binding.defaultBranch ?? 'main',
               ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
-              gitAccess: req.body.gitAccess
+              // A managed binding always mints, so an unstated tier is write, as at creation.
+              gitAccess: req.body.gitAccess ?? 'write'
             }
             workspaceRepoId = projectId
           }

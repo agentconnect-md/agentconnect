@@ -788,6 +788,35 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     })
   })
 
+  it('takes the highest access tier the target carries when none is stated', async () => {
+    await seedDaemon(prisma, DAEMON, { capabilities: WORKSPACE_CAPS })
+    const agentId = await workspaceAgent()
+    await seedInstallation()
+    const a = workspaceApp(new WorkspaceControlSpy())
+
+    // Credentials are minted for an App-backed repo, so the unstated tier is write.
+    const granted = await a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'github', repoFullName: 'acme/tools' }
+    })
+    expect(granted.statusCode).toBe(200)
+    expect(granted.json()).toMatchObject({ workspace: { gitAccess: 'write' } })
+
+    // An anonymous checkout has nothing to push with, so it stays read.
+    const anonymous = await a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'github', repoFullName: 'github/docs', gitBranch: 'master' }
+    })
+    expect(anonymous.statusCode).toBe(200)
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
+      gitRepo: 'https://github.com/github/docs',
+      installationId: null,
+      gitAccess: 'read'
+    })
+  })
+
   it('POST 409s the workspace repo and a duplicate grant (rename-immune numeric id, case-shifted name)', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await workspaceAgent()
