@@ -1824,7 +1824,9 @@ export class SlackConnection implements PlatformConnection {
    *  slot's displayed owner (the last `processing` writer), falling back to the thread's newest
    *  addressable session. Settlement is the daemon's: a surviving sibling's `processing` takes
    *  the row over (Slack resolves the transient "Stopping…" into it), and only an empty thread
-   *  transitions to `active` — Slack leaves the session in `processing` on its own. */
+   *  transitions to `active` — Slack leaves the session in `processing` on its own.
+   *  Cross-daemon shared-bot fan-out degrades to per-daemon local semantics: each participant
+   *  daemon resolves its own displayed owner, out of scope with concurrent multiplexing itself. */
   async agentSessionStopped(channel: string, threadTs: string, userId?: string): Promise<void> {
     this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
     const displayed = this.slotOwner.get(`${channel}:${threadTs}`)

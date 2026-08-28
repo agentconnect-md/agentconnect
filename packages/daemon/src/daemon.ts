@@ -9965,11 +9965,13 @@ export class Daemon {
       if (sibling.entry.msg.msgId === incoming.msgId) continue
       displaced.push(sibling)
     }
+    // Mark EVERY sibling before the first cancellation await: a still-unmarked sibling could
+    // finish inside that await and settle the slot over the successor's admission `processing`.
+    for (const sibling of displaced) sibling.entry.displacedByNewerTurn = true
     for (const sibling of displaced) {
       this.log.info(
         `slack: thread ${incoming.channel}/${incoming.statusThread} switched sessions — cancelling the previous turn (${sibling.plan.sessionKey})`
       )
-      sibling.entry.displacedByNewerTurn = true
       await this.commands.cancelSessionByKey(sibling.plan.sessionKey)
     }
   }

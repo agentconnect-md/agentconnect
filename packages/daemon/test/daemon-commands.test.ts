@@ -2441,6 +2441,25 @@ describe('Slack shared-bot thread displacement', () => {
     expect(c.setStatus).not.toHaveBeenCalled()
   })
 
+  it('marks every displaced sibling before the first cancellation await', async () => {
+    const c = conn()
+    const first = sibling({ conn: c })
+    const second = sibling({ conn: c, plan: { sessionKey: 'slack:C1:T1:bot-c' } })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
+    const marksAtFirstCancel: unknown[] = []
+    ;(daemon as any).commands.cancelSessionByKey = vi.fn(async () => {
+      // A sibling finishing inside this await must already see its mark, or its own
+      // settlement would write over the successor's admission-time processing.
+      if (marksAtFirstCancel.length === 0)
+        marksAtFirstCancel.push(first.entry.displacedByNewerTurn, second.entry.displacedByNewerTurn)
+      return true
+    })
+    ;(daemon as any).pending.set('s-1', first)
+    ;(daemon as any).pending.set('s-2', second)
+    await (daemon as any).cancelDisplacedSlackTurns(incoming(c))
+    expect(marksAtFirstCancel).toEqual([true, true])
+  })
+
   it('leaves same-message fan-out siblings alone (one delivery, several recipients)', async () => {
     const c = conn()
     const peer = sibling({ conn: c })
