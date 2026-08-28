@@ -48,11 +48,14 @@ describe('WorkspaceFormFields', () => {
     // Both code hosts are always offered; a deployment that configures neither
     // says so in the pane the tile opens, never by dropping the tile.
     const buttons = Array.from(container?.querySelectorAll('button') ?? [])
-    expect(buttons.map((button) => button.textContent)).toEqual([
-      'From scratchFresh empty directory.',
-      'From GitHubClone a repo on a branch.',
-      'From GitLabClone a project on a branch.'
+    expect(buttons.map((button) => button.textContent)).toEqual(['From scratch', 'From GitHub', 'From GitLab'])
+    // The tiles are compact chips, so each one's one-line description is its tooltip.
+    expect(buttons.map((button) => button.getAttribute('title'))).toEqual([
+      'Fresh empty directory.',
+      'Clone a repo on a branch.',
+      'Clone a project on a branch.'
     ])
+    expect(buttons.map((button) => button.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false'])
 
     await act(async () => buttons[1]?.click())
     expect(onChange).toHaveBeenCalledWith('github')
