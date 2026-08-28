@@ -20,6 +20,11 @@
 > Credential-degradation telemetry and the corresponding web warnings remain
 > planned; the rest of this document states the current security contract.
 >
+> The workspace _shape_ this document assumes (a per-host `github` mode) is
+> being re-modeled into a host-neutral `git` mode with a credential union —
+> see [git-workspace-model.md](git-workspace-model.md). The credential track
+> here (installations, minting, gitcred) is unchanged by that design.
+>
 > This design solves two problems: (1) when selecting git mode for a workspace,
 > choose a repository directly in the console through the GitHub App instead of
 > manually entering a URL; and (2) when the daemon—and the coding agent running

@@ -10,6 +10,11 @@
 > Scope: **GitLab.com Free and Premium**. GitLab Self-Managed, GitLab
 > Dedicated, and Ultimate-only capabilities are outside the v1 support
 > contract.
+>
+> The workspace _shape_ this document assumes (a per-host `gitlab` mode) is
+> being re-modeled into a host-neutral `git` mode with a credential union —
+> see [git-workspace-model.md](git-workspace-model.md). The credential track
+> here (bindings, per-agent accounts, gitcred v2) is unchanged by that design.
 
 This design adds GitLab.com as a first-class code-host provider with semantic
 parity to AgentConnect's current GitHub integration. The user experience is a
