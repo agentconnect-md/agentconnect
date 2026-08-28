@@ -39,16 +39,31 @@
  * option builders are what make that safe: a non-Slack origin gets `undefined`
  * options and posts without Slack identity decoration.
  */
-import type { SlackConnection, SlackPostOptions, SlackStatusOptions } from '../../slack/connection.js'
+import type { SlackConnection, SlackPostOptions, SlackStatusOptions, SlackTurnStream } from '../../slack/connection.js'
 import { splitIntoSections } from '../../slack/formatter.js'
 import type { SlackAction } from '../../slack/render.js'
 
-/** Slack's opaque per-turn state (§7.3) — the footer edits still owed. */
+/** Slack's opaque per-turn state (§7.3) — the footer edits still owed, plus the turn's
+ *  native tool-call chrome stream (slack-streaming-turn-output.md §3). */
 export interface SlackTurnState {
   /** Older reply sections whose footer-removal update failed. Retried on the next
    *  body section and once more at finalization, so a transient Slack error cannot
    *  leave two footers standing. */
   staleReplyFooters?: { ts: string; text: string }[]
+  /** The turn's chrome stream, until Slack confirms it is settled. Retired only on a definite
+   *  answer, so a transient stop failure still has a handle for the settlement retry. */
+  stream?: SlackTurnStream
+  /** Coalescing timer for stream appends (§3.5), the Slack analogue of Feishu's. */
+  streamTimer?: NodeJS.Timeout
+  /** The stream never opened, so this turn's chrome renders as today's in-place `progress`
+   *  message instead. One-way for the turn — no replacement stream is ever attempted. */
+  streamDegraded?: boolean
+  /** The stream is settled, by our stop or by the person's. Nothing more is appended to it,
+   *  no second stop is issued, and no replacement message is ever posted for chrome. */
+  streamDead?: boolean
+  /** The human this turn's cards are addressed to (`recipient_user_id`, required outside a
+   *  DM). Absent on a cron / hook / dream / agent-to-agent turn, where the bot names itself. */
+  recipient?: string
 }
 
 /** The core turn, as Slack's applier sees it. `Pending` satisfies it structurally.
@@ -193,6 +208,21 @@ export function slackAgentPostOptions(
         }
       : {})
   }
+}
+
+/**
+ * The human this turn's chrome cards are addressed to (`recipient_user_id`, which Slack
+ * requires outside a DM). A cron fire, a webhook, a dream, or an agent→agent delivery has no
+ * human initiator, so the connection names the bot itself instead — no structural carve-out.
+ *
+ * Structural in its parameter so this module stays free of core message types.
+ */
+export function slackStreamRecipient(msg: {
+  source: string
+  headless?: boolean
+  sender: { id: string; isBot?: boolean }
+}): string | undefined {
+  return msg.source === 'user' && !msg.headless && !msg.sender.isBot ? msg.sender.id : undefined
 }
 
 /** Keep the working indicator visually owned by the same agent as its reply. */
@@ -361,6 +391,22 @@ async function postSlackReply<TTurn extends SlackTurn>(
   return ts
 }
 
+/** The single in-place tool-activity message: post once, then edit. Shared by the legacy
+ *  `progress` action and by a streaming turn whose stream never opened. If the first post
+ *  rejects or returns no ts, mark it attempted and skip later edits rather than duplicating. */
+async function applySlackProgress(
+  conn: SlackConnection,
+  p: SlackTurn,
+  chromeOptions: SlackPostOptions,
+  text: string
+): Promise<void> {
+  if (p.chrome.progressTs) await conn.updateMessage(p.plan.channel, p.chrome.progressTs, text, true)
+  else if (!p.chrome.progressAttempted) {
+    p.chrome.progressAttempted = true
+    p.chrome.progressTs = await conn.postMessage(p.plan.channel, text, p.plan.thread, chromeOptions)
+  }
+}
+
 /** Update minimal mode's live body without dropping its born-in footer. Only record a
  *  footer-key transition after Slack accepts the edit so finalization can retry a failed
  *  metadata refresh. */
@@ -496,15 +542,51 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       }
       return
     case 'progress':
-      // Post the single progress message exactly once; thereafter edit it in
-      // place. If the first post rejects or returns no ts, we mark it attempted
-      // and skip subsequent edits rather than posting a duplicate message.
-      if (p.chrome.progressTs) await conn.updateMessage(p.plan.channel, p.chrome.progressTs, action.text, true)
-      else if (!p.chrome.progressAttempted) {
-        p.chrome.progressAttempted = true
-        p.chrome.progressTs = await conn.postMessage(p.plan.channel, action.text, p.plan.thread, chromeOptions)
-      }
+      await applySlackProgress(conn, p, chromeOptions, action.text)
       return
+    case 'stream-start': {
+      if (state.stream || state.streamDead || state.streamDegraded) return
+      if (p.plan.thread) {
+        // Exactly the identity today's `progress` message carries: the agent's name and icon
+        // in a channel, nothing in a DM, under the connection's customize cooldown.
+        state.stream = await conn.startTurnStream(p.plan.channel, p.plan.thread, {
+          isDm: p.plan.isDm,
+          ...(state.recipient ? { recipientUserId: state.recipient } : {}),
+          ...(postOptions ? { identity: postOptions } : {})
+        })
+        if (state.stream) return
+      }
+      // The stream could not open, so this turn's chrome falls back to today's in-place
+      // message. Chrome degrades ALONE — the body never rode the stream, so nothing moves.
+      state.streamDegraded = true
+      return
+    }
+    case 'stream-append': {
+      if (state.streamDead || action.chunks.length === 0) return
+      if (state.streamDegraded || !state.stream) {
+        // Task chunks are never rendered as prose: only the legacy rendering this batch
+        // carries reaches the channel, and a thinking-only batch carries none.
+        if (action.progressText) await applySlackProgress(conn, p, chromeOptions, action.progressText)
+        return
+      }
+      const outcome = await conn.appendTurnStream(state.stream, action.chunks)
+      // `refused` drops this card update and keeps the handle — chrome is lossy-tolerant, and
+      // the settling stop still has a message to land on.
+      if (outcome !== 'stopped') return
+      state.streamDead = true
+      state.stream = undefined
+      return
+    }
+    case 'stream-stop': {
+      if (state.streamDead || !state.stream) return
+      const settled = await conn.stopTurnStream(state.stream, { chromeOwnerAgentId: p.plan.agentId })
+      // Unresolved means the message may still be streaming: keep the handle so the settlement
+      // backstop reissues the same stop rather than stranding it open.
+      if (!settled) return
+      state.stream = undefined
+      state.streamDead = true
+      return
+    }
     case 'plan':
       if (p.chrome.planTs) await conn.updateMessage(p.plan.channel, p.chrome.planTs, action.text, true)
       else if (!p.chrome.planAttempted) {

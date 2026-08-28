@@ -41,6 +41,9 @@ export const IDLE_FLUSH_MS = 2000
 /** CardKit updates are cumulative and rate-limited. Sampling the converger at this
  * cadence streams visibly without queuing one HTTP request per model token. */
 export const FEISHU_STREAM_FLUSH_MS = 350
+/** Slack's analogue for tool-call chrome. chat.appendStream is Tier 4, so the timer only has
+ * to absorb a burst of tool updates — one append carries the newest state of every card. */
+export const SLACK_STREAM_FLUSH_MS = 750
 
 /** Local Web App console origin used for session deep links when neither a local
  *  `webAppUrl` config nor a CP-provided one is set. */
