@@ -698,6 +698,9 @@ export const SetAgentDaemonBody = z
   )
 
 /** Full desired workspace definition for the acknowledged cold edit path. */
+// `gitAccess` absent takes the highest tier the target can actually carry, the
+// way agent creation does: write wherever credentials are minted for it, and read
+// for an anonymous checkout, which has none to push with.
 export const SetAgentWorkspaceBody = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('scratch') }).strict(),
   z
@@ -707,7 +710,7 @@ export const SetAgentWorkspaceBody = z.discriminatedUnion('mode', [
       repoFullName: z.string().regex(/^[^/\s]+\/[^/\s]+$/, 'repoFullName must be owner/repo'),
       gitBranch: z.string().min(1).optional(),
       agentDir: AgentDirCreateInput.optional(),
-      gitAccess: z.enum(['read', 'write']).default('read')
+      gitAccess: z.enum(['read', 'write']).optional()
     })
     .strict(),
   z
@@ -717,7 +720,7 @@ export const SetAgentWorkspaceBody = z.discriminatedUnion('mode', [
       projectId: z.string().regex(/^[1-9]\d*$/),
       gitBranch: z.string().min(1).optional(),
       agentDir: AgentDirCreateInput.optional(),
-      gitAccess: z.enum(['read', 'write']).default('read')
+      gitAccess: z.enum(['read', 'write']).optional()
     })
     .strict()
 ])
