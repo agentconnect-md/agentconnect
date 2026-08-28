@@ -830,11 +830,7 @@ export default function HomeView() {
                       </span>
                       <span className="mono block truncate text-[11px] text-(--text-tertiary)">
                         {runtimeLabel(a.runtime)} ·{' '}
-                        {agentModelDisplay(
-                          daemons.find((d) => d.daemonId === a.daemon),
-                          a.runtime,
-                          a.model
-                        )}
+                        {agentModelDisplay(agentCapabilitySource(a, daemons, memberSets), a.runtime, a.model)}
                       </span>
                     </span>
                     <span className="mono whitespace-nowrap text-[12px] text-(--text-secondary)">
