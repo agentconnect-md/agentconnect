@@ -40,6 +40,7 @@ const EXEMPT: Record<string, string> = {
   closeStream: 'private streaming handle bookkeeping, behind the startTurnStream trio',
   openStream: 'private chat.startStream call, behind startTurnStream',
   abandonStream: 'private teardown for a stream no turn owns, behind startTurnStream',
+  runSettleAndStop: 'private single settle+stop attempt, behind settleAndStop',
   scheduleOwedStop: 'private owed-stop backoff, behind settleAndStop',
   forgetOwedStop: 'private owed-stop bookkeeping, behind settleAndStop',
   agentSessionStopped: 'native stop button (Bolt event / relay-forwarded), no arena equivalent',

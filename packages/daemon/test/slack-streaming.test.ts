@@ -878,6 +878,39 @@ describe('SlackConnection chrome streaming', () => {
     }
   })
 
+  it('advances the backoff across consecutive failures instead of looping at its shortest delay', async () => {
+    // The retry deletes its own owed-stop record before running, so reading the attempt count
+    // back from the map saw none and re-armed at 5s forever — an unbounded loop against the
+    // shared send queue for a refusal that is never going to resolve.
+    const stopStream = vi.fn(async () => {
+      throw slackError('ratelimited')
+    })
+    const { conn } = await connect({ chat: { stopStream } })
+    const stream = (await conn.startTurnStream('C1', 'T1'))!
+    vi.useFakeTimers()
+    try {
+      await conn.settleAndStop(stream, [], { chromeOwnerAgentId: 'bot-a' })
+      expect(stopStream).toHaveBeenCalledOnce()
+      // 5s → attempt 2.
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(stopStream).toHaveBeenCalledTimes(2)
+      // The second re-arm must be 15s, not another 5s: nothing fires in the next 5s…
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(stopStream).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(stopStream).toHaveBeenCalledTimes(3)
+      // …then 45s and 120s, and the ladder ENDS — a permanent refusal is finite.
+      await vi.advanceTimersByTimeAsync(45_000)
+      expect(stopStream).toHaveBeenCalledTimes(4)
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(stopStream).toHaveBeenCalledTimes(5)
+      await vi.advanceTimersByTimeAsync(600_000)
+      expect(stopStream).toHaveBeenCalledTimes(5)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('stops retrying a stream the person already ended', async () => {
     const stopStream = vi.fn(async () => {
       throw slackError('stopped_by_user')

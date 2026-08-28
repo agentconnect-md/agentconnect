@@ -754,7 +754,7 @@ export class SlackConnection implements PlatformConnection {
   private openStreams = new Set<string>()
   /** Settle+stop pairs Slack has not resolved, retried on a backoff after the owning turn is
    *  gone. Without an owner here a transient double failure leaves the row working forever. */
-  private owedStops = new Map<string, { attempts: number; timer: NodeJS.Timeout }>()
+  private owedStops = new Map<string, { timer: NodeJS.Timeout }>()
   botUserId = ''
   /** The appToken this socket is keyed by (one socket per unique appToken). */
   readonly appToken: string
@@ -1495,40 +1495,58 @@ export class SlackConnection implements PlatformConnection {
     settle: SlackStreamChunk[],
     options: { chromeOwnerAgentId?: string }
   ): Promise<void> {
+    await this.runSettleAndStop(stream, settle, options, 0)
+  }
+
+  /** One settle+stop attempt. `attempts` is how many have ALREADY been made, so the backoff
+   *  advances across the whole chain rather than restarting on each one. */
+  private async runSettleAndStop(
+    stream: SlackTurnStream,
+    settle: SlackStreamChunk[],
+    options: { chromeOwnerAgentId?: string },
+    attempts: number
+  ): Promise<void> {
     const key = streamKey(stream.channel, stream.ts)
     if (!this.openStreams.has(key)) return this.forgetOwedStop(key)
     if (settle.length > 0) {
       const outcome = await this.appendTurnStream(stream, settle)
       // The person ended it: the message is settled and nothing more is owed.
       if (outcome === 'stopped') return this.forgetOwedStop(key)
-      if (outcome === 'refused') return this.scheduleOwedStop(stream, settle, options)
+      if (outcome === 'refused') return this.scheduleOwedStop(stream, settle, options, attempts)
     }
     if (await this.stopTurnStream(stream, options)) return this.forgetOwedStop(key)
     // Slack left it unresolved: the settle already landed, so only the stop is still owed.
-    this.scheduleOwedStop(stream, [], options)
+    this.scheduleOwedStop(stream, [], options, attempts)
   }
 
-  /** Re-arm the owed settle+stop on a bounded backoff. A handful of attempts over a few
-   *  minutes: past that the row is stuck for a reason retrying cannot fix. */
+  /**
+   * Re-arm the owed settle+stop on a bounded backoff. A handful of attempts over a few minutes:
+   * past that the row is stuck for a reason retrying cannot fix.
+   *
+   * The attempt count is CARRIED, never read back from `owedStops`: the fired entry is deleted
+   * before its retry runs, so recomputing the count from the map would see none and re-arm at
+   * the ladder's shortest delay every time — an unbounded 5-second loop against the shared send
+   * queue for a refusal that is never going to resolve.
+   */
   private scheduleOwedStop(
     stream: SlackTurnStream,
     settle: SlackStreamChunk[],
-    options: { chromeOwnerAgentId?: string }
+    options: { chromeOwnerAgentId?: string },
+    attempts: number
   ): void {
     const key = streamKey(stream.channel, stream.ts)
-    const attempts = (this.owedStops.get(key)?.attempts ?? 0) + 1
     this.forgetOwedStop(key)
-    const delay = OWED_STOP_BACKOFF_MS[attempts - 1]
+    const delay = OWED_STOP_BACKOFF_MS[attempts]
     if (delay === undefined) {
       this.deps.log?.debug(`slack: giving up on an unresolved stream stop (ch=${stream.channel} ts=${stream.ts})`)
       return
     }
     const timer = setTimeout(() => {
       this.owedStops.delete(key)
-      void this.settleAndStop(stream, settle, options)
+      void this.runSettleAndStop(stream, settle, options, attempts + 1)
     }, delay)
     timer.unref?.()
-    this.owedStops.set(key, { attempts, timer })
+    this.owedStops.set(key, { timer })
   }
 
   private forgetOwedStop(key: string): void {
