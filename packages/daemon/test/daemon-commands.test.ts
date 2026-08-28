@@ -654,6 +654,47 @@ describe('Daemon in-conversation commands', () => {
     await daemon.stop()
   })
 
+  // Slack renders the native Stop from the moment the turn sets `processing`, which is BEFORE
+  // session/new answers and the row is written. connection.test.ts covers the event wiring; this
+  // is the resolve → cancel half it drives, in that cold window.
+  it('the native Slack Stop cancels a cold turn whose session row does not exist yet', async () => {
+    let releaseSession!: () => void
+    const sessionBlocked = new Promise<void>((resolve) => (releaseSession = resolve))
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => {
+        await sessionBlocked
+        return 'acp-cold'
+      }),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async () => 'end_turn'),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(host.newSession).toHaveBeenCalled(), WAIT)
+    expect(await (daemon as any).store.getSession(SESSION_KEY)).toBeUndefined()
+
+    // Exactly what SlackConnection.agentSessionStopped runs for the tapped conversation.
+    const keys = await (daemon as any).commands.slackThreadSessions({ channel: 'C1', thread: 'T1' }, ['int-a'])
+    expect(keys).toEqual([SESSION_KEY])
+    for (const key of keys)
+      await (daemon as any).commands.handleStatusAction({ kind: 'cancel', sessionKey: key, actor: { userId: 'U1' } })
+
+    releaseSession()
+    await expect(turn).resolves.toBeNull()
+    expect(host.prompt).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
   it('!cancel interrupts the in-flight turn WITHOUT muting the thread', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({
