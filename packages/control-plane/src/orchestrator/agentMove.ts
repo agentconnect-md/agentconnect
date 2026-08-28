@@ -356,7 +356,10 @@ export class AgentMoveService {
     workspaceRepoId?: bigint,
     editor?: string
   ): Promise<AgentRecord> {
-    if (workspace.mode === 'github' && workspaceRepoId === undefined) {
+    // A credential-minting GitHub workspace needs its resolved repository; an
+    // anonymous public checkout mints none and has no managed identity (the
+    // agent's `workspaceRepoId` is nullable for exactly that arm).
+    if (workspace.mode === 'github' && workspace.installationId !== undefined && workspaceRepoId === undefined) {
       throw new AgentMoveConflict('a GitHub workspace requires a resolved repository')
     }
     // The member to fence and re-activate: placement when it names a machine, otherwise whichever

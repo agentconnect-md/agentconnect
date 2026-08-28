@@ -707,6 +707,47 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     expect(await prisma.agentRepoAuthorization.count()).toBe(0) // nothing persisted anywhere
   })
 
+  it('replaces the workspace with a repository no installation covers, read-only', async () => {
+    // Agent creation has always accepted this anonymous checkout, so the editor
+    // must too — otherwise a public-repo agent cannot even move to another branch.
+    await seedDaemon(prisma, DAEMON, { capabilities: WORKSPACE_CAPS })
+    const agentId = await workspaceAgent()
+    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: 100n, gitAccess: 'write' } })
+    await seedInstallation()
+    const control = new WorkspaceControlSpy()
+    const a = workspaceApp(control)
+
+    const replaced = await a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'github', repoFullName: 'github/docs', gitBranch: 'main', gitAccess: 'read' }
+    })
+
+    expect(replaced.statusCode).toBe(200)
+    expect(replaced.json()).toMatchObject({
+      workspace: { mode: 'github', gitRepo: 'https://github.com/github/docs', gitBranch: 'main' },
+      workspaceRepoId: null
+    })
+    // Anonymous git: no installation, no credential tier, no `gitCredential` on the spec.
+    expect((replaced.json() as { workspace: Record<string, unknown> }).workspace).not.toHaveProperty('installationId')
+    expect(control.activations[0]?.spec.workspace).not.toHaveProperty('gitCredential')
+    expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
+      gitRepo: 'https://github.com/github/docs',
+      installationId: null,
+      workspaceRepoId: null,
+      gitAccess: 'read'
+    })
+
+    // Push still requires an installation — an anonymous clone cannot push.
+    const write = await a.app.inject({
+      method: 'PUT',
+      url: `${ORG}/agents/${agentId}/workspace`,
+      payload: { mode: 'github', repoFullName: 'github/docs', gitAccess: 'write' }
+    })
+    expect(write.statusCode).toBe(409)
+    expect(write.json()).toMatchObject({ message: expect.stringContaining('requires a GitHub App installation') })
+  })
+
   it('POST 409s the workspace repo and a duplicate grant (rename-immune numeric id, case-shifted name)', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = await workspaceAgent()

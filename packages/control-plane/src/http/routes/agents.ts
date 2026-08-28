@@ -61,6 +61,7 @@ import {
   type AgentSkillSourceFence,
   type AgentWorkspace,
   type AssignedOrganizationMetadata,
+  type GithubInstallationRecord,
   type McpProviderRecord,
   isSyntheticEmail
 } from '../../persistence/ports.js'
@@ -212,6 +213,33 @@ import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { syncAgentBotIcons } from '../agent-bot-icon-sync.js'
 
 /** Public bases for resolving an agent's `image` icon URL (cp/store). */
+// Both workspace surfaces bind an App-backed repo the same way: resolve it
+// through the installation, converge the catalog row readers-first
+// (gitlab-com-integration.md §8.1), and hold the acting human to the access the
+// agent will run with. Null ⇒ the installation does not grant it.
+async function bindWorkspaceRepo(
+  deps: HttpDeps,
+  orgId: string,
+  ins: GithubInstallationRecord,
+  owner: string,
+  repo: string,
+  access: 'read' | 'write',
+  userId: string
+): Promise<{ repoId: bigint; fullName: string; defaultBranch: string } | null> {
+  const ref = await deps.github!.repoRefFor(ins, owner, repo)
+  if (!ref) return null
+  await deps.repos.codeHostRepository.upsert({
+    orgId,
+    provider: 'github',
+    externalId: ref.repoId,
+    displayPath: ref.fullName,
+    cloneUrl: `https://github.com/${ref.fullName}`,
+    defaultBranch: ref.defaultBranch
+  })
+  if (deps.githubUserAuthz) await deps.githubUserAuthz.assertAccess(userId, ins, owner, repo, access)
+  return ref
+}
+
 function iconBasesOf(deps: HttpDeps): IconUrlBases {
   return {
     ...(deps.config.PUBLIC_CP_URL ? { cp: deps.config.PUBLIC_CP_URL } : {}),
@@ -1581,20 +1609,13 @@ export function agentRoutes(deps: HttpDeps) {
             return conflict(`repo owner ${owner} does not match the installation account ${ins.accountLogin}`)
           }
           try {
-            const ref = await deps.github.repoRefFor(ins, owner, repo)
+            // The identity gate inside is the SECURITY check; the picker's preflight is UX only.
+            const access = ws.gitAccess === 'read' ? 'read' : 'write'
+            const ref = await bindWorkspaceRepo(deps, orgOf(req), ins, owner, repo, access, req.principal!.userId)
             if (!ref) {
               return conflict(`${owner}/${repo} is not granted to the installation — re-select it on GitHub`)
             }
             workspaceRepoId = ref.repoId
-            // Readers-first catalog convergence (gitlab-com-integration.md §8.1).
-            await deps.repos.codeHostRepository.upsert({
-              orgId: orgOf(req),
-              provider: 'github',
-              externalId: ref.repoId,
-              displayPath: ref.fullName,
-              cloneUrl: `https://github.com/${ref.fullName}`,
-              defaultBranch: ref.defaultBranch
-            })
             // The installation lookup, not the caller's clone host/path, is the
             // authority for an App-backed workspace.
             workspace = {
@@ -1605,19 +1626,6 @@ export function agentRoutes(deps: HttpDeps) {
               ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {}),
               installationId: ws.installationId,
               ...(ws.gitAccess !== undefined ? { gitAccess: ws.gitAccess } : {})
-            }
-            // Per-user gate (identity assertion, open question #7) — the SECURITY check;
-            // the picker's preflight is UX only. The creator must hold the
-            // access level the agent will run with: gitAccess=write (the
-            // default) demands their own push permission on GitHub.
-            if (deps.githubUserAuthz) {
-              await deps.githubUserAuthz.assertAccess(
-                req.principal!.userId,
-                ins,
-                owner,
-                repo,
-                ws.gitAccess === 'read' ? 'read' : 'write'
-              )
             }
           } catch (e) {
             if (e instanceof UserAuthzDeniedError) {
@@ -2353,7 +2361,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Edit an agent workspace',
           description:
-            'Replace a workspace with scratch or a covered GitHub repository, or edit its repository, branch, working directory, and read/write access. Changing workspace type, repository, or branch discards daemon-local workspace files. The caller must hold the requested GitHub permission. Active work is drained and repository credentials are invalidated before success. Enabled GitHub review or Check actions reject edits that remove their required write authority.',
+            'Replace a workspace with scratch, a GitHub repository covered by an App installation, or one no installation covers — cloned anonymously, so read-only and public repositories only — or edit its repository, branch, working directory, and read/write access. Changing workspace type, repository, or branch discards daemon-local workspace files. The caller must hold the requested GitHub permission. Active work is drained and repository credentials are invalidated before success. Enabled GitHub review or Check actions reject edits that remove their required write authority.',
           operationId: 'setAgentWorkspace',
           params: IdParam,
           body: SetAgentWorkspaceBody,
@@ -2394,43 +2402,49 @@ export function agentRoutes(deps: HttpDeps) {
             if (!deps.github) return conflict('GitHub workspaces are not enabled for this deployment')
             const [owner, repo] = req.body.repoFullName.split('/')
             if (!owner || !repo) return conflict('repoFullName must be owner/repo')
-            const installation = await deps.repos.githubInstallation.liveByOrgAndAccount(existing.orgId, owner)
-            if (!installation || installation.suspendedAt) {
-              return conflict(`no live GitHub installation covers ${owner}`)
-            }
-            const ref = await deps.github.repoRefFor(installation, owner, repo)
-            if (!ref) return conflict(`${owner}/${repo} is not granted to the GitHub installation`)
-            // Readers-first catalog convergence (gitlab-com-integration.md §8.1).
-            await deps.repos.codeHostRepository.upsert({
-              orgId: existing.orgId,
-              provider: 'github',
-              externalId: ref.repoId,
-              displayPath: ref.fullName,
-              cloneUrl: `https://github.com/${ref.fullName}`,
-              defaultBranch: ref.defaultBranch
-            })
-            if (deps.githubUserAuthz) {
-              await deps.githubUserAuthz.assertAccess(
-                req.principal!.userId,
-                installation,
-                owner,
-                repo,
-                req.body.gitAccess
-              )
-            }
+            const covering = await deps.repos.githubInstallation.liveByOrgAndAccount(existing.orgId, owner)
+            const installation = covering && !covering.suspendedAt ? covering : null
+            const ref = installation
+              ? await bindWorkspaceRepo(
+                  deps,
+                  existing.orgId,
+                  installation,
+                  owner,
+                  repo,
+                  req.body.gitAccess,
+                  req.principal!.userId
+                )
+              : null
             const worktree =
               req.body.worktree ??
               (existing.workspace.mode === 'github' ? existing.workspace.isolation === 'session' : true)
-            workspace = {
-              mode: 'github',
-              isolation: worktree ? 'session' : 'shared',
-              gitRepo: normalizeGitUrl(ref.fullName),
-              gitBranch: req.body.gitBranch ?? ref.defaultBranch,
-              ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
-              installationId: installation.id,
-              gitAccess: req.body.gitAccess
+            if (!installation || !ref) {
+              // Granted by no installation ⇒ the anonymous checkout agent creation
+              // accepts on the same terms: nothing is minted for it, so it is
+              // read-only and carries no catalog repository identity.
+              if (req.body.gitAccess === 'write') {
+                return conflict('github write access requires a GitHub App installation')
+              }
+              workspace = {
+                mode: 'github',
+                isolation: worktree ? 'session' : 'shared',
+                gitRepo: normalizeGitUrl(req.body.repoFullName),
+                ...(req.body.gitBranch ? { gitBranch: req.body.gitBranch } : {}),
+                ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
+                gitAccess: 'read'
+              }
+            } else {
+              workspace = {
+                mode: 'github',
+                isolation: worktree ? 'session' : 'shared',
+                gitRepo: normalizeGitUrl(ref.fullName),
+                gitBranch: req.body.gitBranch ?? ref.defaultBranch,
+                ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
+                installationId: installation.id,
+                gitAccess: req.body.gitAccess
+              }
+              workspaceRepoId = ref.repoId
             }
-            workspaceRepoId = ref.repoId
           }
           if (req.body.mode === 'gitlab') {
             if (!deps.gitlab) return conflict('gitlab workspaces are not enabled on this control plane')

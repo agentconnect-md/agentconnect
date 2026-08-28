@@ -31,13 +31,15 @@ import {
   type GithubRepoDto,
   type RepoAccess
 } from '@/lib/api'
+import { fetchPublicGithubBranches } from '@/lib/github-public-repos'
+import { useGithubRepoPicker, type InstalledRepo } from '@/lib/use-github-repo-picker'
+import { GithubRepoPickerOptions } from '@/components/console/GithubRepoPickerOptions'
 import { agentDirInputValue, normalizeAgentDir } from '@/lib/repo-subdir'
 import {
   GithubConnectedBanner,
   GithubInstallPrompt,
   GithubPrivateReposNotice,
   GithubRepositoryField,
-  GithubRepositoryOption,
   GitlabNoProjectsNotice,
   GitlabProjectField,
   GitlabProjectOption,
@@ -50,6 +52,9 @@ import {
   type WorkspaceMode
 } from '@/components/console/WorkspaceFormFields'
 import AddAgentRepoModal from '@/components/console/modals/AddAgentRepoModal'
+
+/** Stable empty roster: a fresh literal would re-run the picker's lookups. */
+const NO_INSTALLATIONS: GithubInstallationDto[] = []
 
 export interface InitialRepositoryAuthorization {
   repo?: string
@@ -102,6 +107,20 @@ export default function EditWorkspaceModal({
   const [privateReposHidden, setPrivateReposHidden] = useState(false)
   const [reposNonce, setReposNonce] = useState(0)
   const [pick, setPick] = useState(githubWorkspace?.repo ?? authorized[0]?.repoFullName ?? '')
+  // A repository no installation covers, verified public by an anonymous GitHub
+  // read: cloned without credentials, so read-only. A workspace that already has
+  // no installation is one of these, and stays editable without re-verifying it.
+  const [publicPick, setPublicPick] = useState<GithubRepoDto | null>(() =>
+    githubWorkspace && !githubWorkspace.installationId
+      ? {
+          fullName: githubWorkspace.repo,
+          private: false,
+          defaultBranch: githubWorkspace.branch,
+          description: null,
+          updatedAt: null
+        }
+      : null
+  )
   const [pickOpen, setPickOpen] = useState(false)
   const [accessOpen, setAccessOpen] = useState(false)
   const [q, setQ] = useState('')
@@ -230,14 +249,19 @@ export default function EditWorkspaceModal({
     githubWorkspace && !githubWorkspace.installationId ? grantOf(githubWorkspace.repo) : undefined
 
   const picked = repos?.find((r) => r.fullName.toLowerCase() === pick.toLowerCase())
+  const publicSelected =
+    mode === 'github' && !picked && !!publicPick && publicPick.fullName.toLowerCase() === pick.toLowerCase()
   const pickOwner = pick.split('/')[0] ?? ''
   // Installation covering the pick: the picked row's own, else match the owner
   // to an installation account — mirrors the CP's liveByOrgAndAccount lookup.
-  const pickInstallationId =
-    picked?.installationId ??
-    (gh?.installations ?? []).find((i) => i.accountLogin.toLowerCase() === pickOwner.toLowerCase())?.id ??
-    null
-  const uncovered = !!pick && gh !== null && gh.enabled && pickInstallationId === null
+  const pickInstallationId = publicSelected
+    ? null
+    : (picked?.installationId ??
+      (gh?.installations ?? []).find((i) => i.accountLogin.toLowerCase() === pickOwner.toLowerCase())?.id ??
+      null)
+  const uncovered = !!pick && gh !== null && gh.enabled && !publicSelected && pickInstallationId === null
+  // An anonymous clone carries no credential, so a public pick cannot push.
+  const effectiveWrite = write && !publicSelected
 
   // Preflight the caller's OWN GitHub access to the picked repo (identity-
   // assertion deployments): read access needs ≥read, push access ≥write.
@@ -258,33 +282,48 @@ export default function EditWorkspaceModal({
   useEffect(() => {
     setBranches(null)
     setBranchOpen(false)
-    if (repositoryEditor !== null || mode !== 'github' || !pick || !pickInstallationId) return
+    if (repositoryEditor !== null || mode !== 'github' || !pick) return
     const [owner, repo] = pick.split('/')
     if (!owner || !repo) return
     let alive = true
+    if (publicSelected) {
+      // Anonymous listing is a convenience only; a failure degrades to free text.
+      const ctrl = new AbortController()
+      void fetchPublicGithubBranches(pick, ctrl.signal)
+        .then((names) => alive && names?.length && setBranches(names))
+        .catch(() => undefined)
+      return () => {
+        alive = false
+        ctrl.abort()
+      }
+    }
+    if (!pickInstallationId) return
     fetchGithubBranches(pickInstallationId, owner, repo)
       .then((names) => alive && setBranches(names))
       .catch(() => alive && setBranches(null))
     return () => {
       alive = false
     }
-  }, [mode, pick, pickInstallationId, repositoryEditor])
+  }, [mode, pick, pickInstallationId, publicSelected, repositoryEditor])
 
-  const probeDenies = !!probe?.gated && (write ? !probe.canWrite : !probe.canRead)
+  const probeDenies = !!probe?.gated && (effectiveWrite ? !probe.canWrite : !probe.canRead)
   const probeNote = probeDenies
     ? probe?.identityRequired || probe?.denied === 'GITHUB_IDENTITY_REQUIRED'
       ? 'Link your GitHub profile to verify repository access, then retry.'
-      : write && probe?.canRead
+      : effectiveWrite && probe?.canRead
         ? 'You need write access to this repository on GitHub to enable push access.'
         : 'You don’t have access to this repository on GitHub.'
     : null
 
-  const q1 = q.trim().toLowerCase()
-  const matches = (repos ?? []).filter((r) => !q1 || r.fullName.toLowerCase().includes(q1))
-  // A typed owner/repo missing from a failed or stale roster refresh — the CP
-  // re-validates it against the installations either way.
-  const typedRepo = /^[^/\s]+\/[^/\s]+$/.test(q.trim()) ? q.trim() : null
-  const typedIsListed = !!typedRepo && matches.some((r) => r.fullName.toLowerCase() === typedRepo.toLowerCase())
+  // Which repositories the picker may offer, and on what credentials (shared
+  // with agent creation): the synced roster, one exact owner/repo past it, and
+  // public GitHub for anything no installation grants.
+  const lookup = useGithubRepoPicker({
+    enabled: repositoryEditor === null && mode === 'github' && pickOpen,
+    query: q,
+    installations: gh?.installations ?? NO_INSTALLATIONS,
+    repos
+  })
 
   let normalizedAgentDir: string | undefined
   let agentDirError: string | null = null
@@ -301,7 +340,7 @@ export default function EditWorkspaceModal({
   // Falls back to the stored path so the current project reads correctly before the list lands.
   const glPickLabel =
     glPicked?.projectPath ?? (glPick && glPick === gitlabWorkspace?.projectId ? gitlabWorkspace.repo : '')
-  const accessChanged = gitWorkspace !== null && write !== currentWrite
+  const accessChanged = gitWorkspace !== null && effectiveWrite !== currentWrite
   const installationChanged =
     githubWorkspace !== null && pickInstallationId !== null && githubWorkspace.installationId !== pickInstallationId
   const repoChanged =
@@ -330,20 +369,36 @@ export default function EditWorkspaceModal({
     (mode === 'scratch' ||
       (mode === 'gitlab'
         ? !!glPick && agentDirError === null
-        : !!pick && !uncovered && !probeDenies && agentDirError === null && !!pickInstallationId))
+        : !!pick && !uncovered && !probeDenies && agentDirError === null && (!!pickInstallationId || publicSelected)))
 
-  const selectRepo = (fullName: string) => {
-    const selected = repos?.find((repo) => repo.fullName.toLowerCase() === fullName.toLowerCase())
+  const applyPick = (fullName: string, defaultBranch: string | undefined, asPublic: GithubRepoDto | null) => {
     setPick(fullName)
+    setPublicPick(asPublic)
     setPickOpen(false)
     setAccessOpen(false)
     setBranchOpen(false)
-    setBranch(selected?.defaultBranch ?? '')
+    setBranch(defaultBranch ?? '')
     setAgentDir('')
     const grant = grantOf(fullName)
-    setWrite(grant ? grant.access === 'write' : true)
+    setWrite(asPublic ? false : grant ? grant.access === 'write' : true)
     setErr(null)
   }
+
+  // An exact lookup may reach past the roster: keep the row locally so the pick
+  // retains its installation once the popover closes.
+  const selectInstalledRepo = (repo: InstalledRepo) => {
+    setRepos((rows) =>
+      (rows ?? []).some(
+        (row) =>
+          row.installationId === repo.installationId && row.fullName.toLowerCase() === repo.fullName.toLowerCase()
+      )
+        ? rows
+        : [...(rows ?? []), repo]
+    )
+    applyPick(repo.fullName, repo.defaultBranch, null)
+  }
+
+  const selectPublicRepo = (repo: GithubRepoDto) => applyPick(repo.fullName, repo.defaultBranch, repo)
 
   // Picking an unadded project provisions it first; a failed setup picks nothing.
   const selectProject = async (choice: GitlabProjectChoice) => {
@@ -382,7 +437,7 @@ export default function EditWorkspaceModal({
                 repoFullName: pick,
                 ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
                 ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-                gitAccess: write ? 'write' : 'read'
+                gitAccess: effectiveWrite ? 'write' : 'read'
               }
       )
       onChanged()
@@ -618,7 +673,8 @@ export default function EditWorkspaceModal({
                 <GithubConnectedBanner onManage={() => void openGhInstall()} />
                 <GithubRepositoryField
                   value={pick}
-                  icon={picked && !picked.private ? 'book-marked' : 'lock'}
+                  icon={publicSelected || (picked && !picked.private) ? 'book-marked' : 'lock'}
+                  badge={publicSelected ? 'public' : undefined}
                   loading={repos === null}
                   open={pickOpen}
                   query={q}
@@ -630,6 +686,12 @@ export default function EditWorkspaceModal({
                   }}
                   onClose={() => setPickOpen(false)}
                   onQueryChange={setQ}
+                  onSearchKeyDown={(event) => {
+                    if (event.key !== 'Enter' || !lookup.exactChoice) return
+                    event.preventDefault()
+                    if (lookup.exactChoice.kind === 'installed') selectInstalledRepo(lookup.exactChoice.repo)
+                    else selectPublicRepo(lookup.exactChoice.repo)
+                  }}
                   error={
                     reposError === 'failed'
                       ? 'Couldn’t load repositories from GitHub — the list may be incomplete.'
@@ -648,45 +710,39 @@ export default function EditWorkspaceModal({
                     ) : undefined
                   }
                 >
-                  {matches.map((repo) => {
-                    const grant = grantOf(repo.fullName)
-                    return (
-                      <GithubRepositoryOption
-                        key={repo.fullName}
-                        fullName={repo.fullName}
-                        icon={repo.private ? 'lock' : 'book-marked'}
-                        description={
-                          grant ? 'Already authorized for this agent' : (repo.description ?? 'No description')
-                        }
-                        badge={grant ? 'authorized' : undefined}
-                        selected={pick.toLowerCase() === repo.fullName.toLowerCase()}
-                        onSelect={() => selectRepo(repo.fullName)}
-                      />
-                    )
-                  })}
-                  {typedRepo && !typedIsListed && (
-                    <GithubRepositoryOption
-                      key={`typed:${typedRepo}`}
-                      fullName={typedRepo}
-                      icon="book-marked"
-                      description="Use this repository — must be covered by an installation"
-                      onSelect={() => selectRepo(typedRepo)}
-                    />
-                  )}
-                  {repos !== null && matches.length === 0 && !typedRepo && !reposError && (
-                    <div className="fnohit">No repositories match &ldquo;{q}&rdquo;</div>
-                  )}
-                  {repos === null && (
-                    <div className="px-2 py-[7px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-                      Loading repositories…
-                    </div>
-                  )}
+                  <GithubRepoPickerOptions
+                    lookup={lookup}
+                    query={q}
+                    loading={repos === null}
+                    failed={reposError === 'failed'}
+                    selected={pick}
+                    describeRosterRow={(repo) => {
+                      const grant = grantOf(repo.fullName)
+                      return {
+                        description: grant
+                          ? 'Already authorized for this agent'
+                          : (repo.description ?? 'No description'),
+                        ...(grant ? { badge: 'authorized' } : {})
+                      }
+                    }}
+                    onPickInstalled={selectInstalledRepo}
+                    onPickPublic={selectPublicRepo}
+                  />
                 </GithubRepositoryField>
 
                 <RepositoryAccessField
                   repositorySelected={!!pick}
-                  value={write ? 'write' : 'read'}
+                  value={effectiveWrite ? 'write' : 'read'}
                   open={accessOpen}
+                  readOnly={publicSelected}
+                  readOnlyNote={
+                    publicSelected ? (
+                      <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                        <Icon name="info" size={13} className="mt-[1px] flex-none" />
+                        Public repository — read-only clone.
+                      </span>
+                    ) : undefined
+                  }
                   onToggle={() => {
                     setPickOpen(false)
                     setBranchOpen(false)
@@ -705,7 +761,7 @@ export default function EditWorkspaceModal({
                     repositorySelected={!!pick}
                     value={branch}
                     branches={branches}
-                    defaultBranch={picked?.defaultBranch}
+                    defaultBranch={publicSelected ? publicPick?.defaultBranch : picked?.defaultBranch}
                     open={branchOpen}
                     query={branchQ}
                     onToggle={() => {
