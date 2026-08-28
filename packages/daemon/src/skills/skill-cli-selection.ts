@@ -31,10 +31,10 @@ import { promises as fsp } from 'node:fs'
 import { basename, join, posix } from 'node:path'
 import { parseSkillManifest } from './local-skill-inventory.js'
 
-// Aligned with Git snapshot per-file admission (GIT_SOURCE_SNAPSHOT_LIMITS
+// Aligned with Git snapshot per-file admission (GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
 // .maxFileBytes) so every SKILL.md the snapshot admitted — and the CLI's own
 // full-file parser will read — is parsed in full here too.
-const MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+const MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 const MAX_LOCK_BYTES = 1024 * 1024
 const MAX_LISTED_AVAILABLE = 32
 // Matches the wire-level cap on explicit selections per source.

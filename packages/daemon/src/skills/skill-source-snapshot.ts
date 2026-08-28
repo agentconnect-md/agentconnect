@@ -22,6 +22,16 @@ export const DEFAULT_SKILL_SOURCE_SNAPSHOT_LIMITS: Readonly<SkillSourceSnapshotL
   maxPathBytes: 1024
 }
 
+/** A Git source is a whole collection repo — skills plus docs, tests and tooling — not one bundle. */
+export const GIT_SKILL_SOURCE_SNAPSHOT_LIMITS: Readonly<SkillSourceSnapshotLimits> = {
+  maxFiles: 16_384,
+  maxTotalBytes: 1024 * 1024 * 1024,
+  maxFileBytes: 16 * 1024 * 1024,
+  maxEntries: 65_536,
+  maxDepth: 64,
+  maxPathBytes: 1024
+}
+
 export interface SkillSourceSnapshotOptions {
   limits?: Partial<SkillSourceSnapshotLimits>
 }
@@ -53,7 +63,8 @@ export class SkillSourceSnapshotError extends Error {
 
 interface CapturedFile {
   manifest: SkillSourceSnapshotFile
-  body: Buffer
+  /** Absent when the caller only wants descriptors — see {@link inspectLocalSkillSource}. */
+  body?: Buffer
 }
 
 interface CapturedTree {
@@ -246,7 +257,11 @@ async function readDirectoryNames(path: string): Promise<string[]> {
     .sort((left, right) => pathCompare(left.normalize('NFC'), right.normalize('NFC')) || pathCompare(left, right))
 }
 
-async function captureSource(sourceDir: string, limits: SkillSourceSnapshotLimits): Promise<CapturedTree> {
+async function captureSource(
+  sourceDir: string,
+  limits: SkillSourceSnapshotLimits,
+  retainBodies = true
+): Promise<CapturedTree> {
   const source = resolve(sourceDir)
   let rootBefore: Stats
   try {
@@ -312,7 +327,7 @@ async function captureSource(sourceDir: string, limits: SkillSourceSnapshotLimit
       if (outputName === 'SKILL.md') hasSkillManifest = true
 
       files.push({
-        body,
+        ...(retainBodies ? { body } : {}),
         manifest: {
           path: outputPath,
           size: body.length,
@@ -393,7 +408,7 @@ export async function inspectLocalSkillSource(
   sourceDir: string,
   options: SkillSourceSnapshotOptions = {}
 ): Promise<SkillSourceSnapshot> {
-  const tree = await captureSource(resolve(sourceDir), mergeLimits(options.limits))
+  const tree = await captureSource(resolve(sourceDir), mergeLimits(options.limits), false)
   const files = tree.files.map(({ manifest }) => ({ ...manifest }))
   return {
     files,
@@ -423,6 +438,7 @@ async function writeCapturedTree(tree: CapturedTree, destination: string): Promi
         file.manifest.mode
       )
       try {
+        if (!file.body) throw new SkillSourceSnapshotError('skill source snapshot captured no body to write')
         await handle.writeFile(file.body)
         await handle.chmod(file.manifest.mode)
         await handle.sync()

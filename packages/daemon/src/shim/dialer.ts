@@ -423,9 +423,12 @@ export class ShimDialer {
 
   private negotiate(record: SpawnRecord, identity: ShimIdentity): SpawnRecord {
     const supportsSkills = identity.features?.includes('cluster-skills-v1') === true
+    const supportsWideSkills = supportsSkills && identity.features?.includes('cluster-skills-v2') === true
     return {
       ...record,
-      grants: record.grants.filter((grant) => grant !== 'skills' || supportsSkills)
+      grants: record.grants.filter((grant) =>
+        grant === 'skills' ? supportsSkills : grant === 'skills-wide' ? supportsWideSkills : true
+      )
     }
   }
 

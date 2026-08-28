@@ -355,8 +355,9 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     },
     workspaceRootFor: (agentId) => driver.workspaceRootFor(agentId),
     skillClientFor: (agentId) => {
-      if (!runsInSandbox(agentId) || !driver.sessionFor(agentId)?.hasCapability('skills')) return undefined
-      return new ClusterSkillClient(driver.sessionFor(agentId)!)
+      const session = driver.sessionFor(agentId)
+      if (!runsInSandbox(agentId) || !session?.hasCapability('skills')) return undefined
+      return new ClusterSkillClient(session, session.hasCapability('skills-wide'))
     },
     workspaceIncarnationFor: (agentId) => driver.currentLaunch(agentId)?.claimUid,
     shimGenerationFor: (agentId) => driver.currentLaunch(agentId)?.generation,

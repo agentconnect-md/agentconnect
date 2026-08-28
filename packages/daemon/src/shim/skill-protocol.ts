@@ -2,12 +2,20 @@ import { z } from 'zod'
 import { createHash } from 'node:crypto'
 
 export const MAX_CLUSTER_SKILL_SOURCES = 64
-export const MAX_CLUSTER_SKILL_FILES = 256
-export const MAX_CLUSTER_SKILL_FILE_BYTES = 4 * 1024 * 1024
-export const MAX_CLUSTER_SKILL_TOTAL_BYTES = 32 * 1024 * 1024
-export const MAX_CLUSTER_SKILL_CHUNK_BYTES = 48 * 1024
+// A Git source is a whole collection repo; these mirror GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, and the
+// manifest reaches the pod in `manifest` pages so the count is no longer bound to one frame.
+export const MAX_CLUSTER_SKILL_FILES = 16_384
+export const MAX_CLUSTER_SKILL_FILE_BYTES = 16 * 1024 * 1024
+export const MAX_CLUSTER_SKILL_TOTAL_BYTES = 1024 * 1024 * 1024
+export const MAX_CLUSTER_SKILL_MANIFEST_PAGE = 512
+export const MAX_CLUSTER_SKILL_CHUNK_BYTES = 128 * 1024
 export const MAX_CLUSTER_SKILL_SELECTIONS = 256
 export const MAX_CLUSTER_SKILL_CONTROL_BYTES = 220 * 1024
+
+/** What `cluster-skills-v1` admits — a daemon takes over a running pod, so it may be older than us.
+ *  That image has no `manifest` op, so its whole file list must still fit one `begin` frame. */
+export const LEGACY_MAX_CLUSTER_SKILL_FILES = 256
+export const LEGACY_MAX_CLUSTER_SKILL_TOTAL_BYTES = 32 * 1024 * 1024
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/)
 const DecimalTermSchema = z
@@ -50,26 +58,42 @@ export const ClusterSkillBeginSchema = z
     operationId: z.string().uuid(),
     authority: ClusterSkillAuthoritySchema,
     skillsAgentId: z.string().min(1).max(80),
-    files: z.array(ClusterSkillFileSchema).max(MAX_CLUSTER_SKILL_FILES)
+    files: z.array(ClusterSkillFileSchema).max(MAX_CLUSTER_SKILL_MANIFEST_PAGE),
+    /** More `manifest` pages follow before upload. Absent ⇒ a legacy single-frame manifest. */
+    moreFiles: z.boolean().optional()
   })
   .strict()
-  .superRefine((value, ctx) => {
-    const sources = new Set<string>()
-    const files = new Set<string>()
-    let total = 0
-    for (const file of value.files) {
-      sources.add(file.sourceId)
-      const identity = `${file.sourceId}\0${file.path}`
-      if (files.has(identity)) ctx.addIssue({ code: 'custom', message: 'duplicate snapshot file' })
-      files.add(identity)
-      total += file.size
-    }
-    if (sources.size > MAX_CLUSTER_SKILL_SOURCES) ctx.addIssue({ code: 'custom', message: 'too many sources' })
-    if (total > MAX_CLUSTER_SKILL_TOTAL_BYTES) ctx.addIssue({ code: 'custom', message: 'snapshot bytes exceed limit' })
-    if (Buffer.byteLength(JSON.stringify(value)) > MAX_CLUSTER_SKILL_CONTROL_BYTES) {
-      ctx.addIssue({ code: 'custom', message: 'begin manifest exceeds frame-safe limit' })
-    }
+  .superRefine((value, ctx) => assertManifestPage(value, value.files, ctx, 'begin manifest'))
+
+export const ClusterSkillManifestSchema = z
+  .object({
+    op: z.literal('manifest'),
+    operationId: z.string().uuid(),
+    handle: z.string().min(16).max(128),
+    files: z.array(ClusterSkillFileSchema).min(1).max(MAX_CLUSTER_SKILL_MANIFEST_PAGE),
+    moreFiles: z.boolean()
   })
+  .strict()
+  .superRefine((value, ctx) => assertManifestPage(value, value.files, ctx, 'manifest page'))
+
+/** One page's own admission. The cross-page totals — file count, byte sum, source count and
+ *  duplicate paths — are the receiver's to enforce, since no single page can see them. */
+function assertManifestPage(
+  value: unknown,
+  files: Array<z.infer<typeof ClusterSkillFileSchema>>,
+  ctx: z.RefinementCtx,
+  label: string
+): void {
+  const seen = new Set<string>()
+  for (const file of files) {
+    const identity = `${file.sourceId}\0${file.path}`
+    if (seen.has(identity)) ctx.addIssue({ code: 'custom', message: 'duplicate snapshot file' })
+    seen.add(identity)
+  }
+  if (Buffer.byteLength(JSON.stringify(value)) > MAX_CLUSTER_SKILL_CONTROL_BYTES) {
+    ctx.addIssue({ code: 'custom', message: `${label} exceeds frame-safe limit` })
+  }
+}
 
 export const ClusterSkillUploadSchema = z
   .object({
@@ -153,12 +177,16 @@ export const ClusterSkillVerifySchema = z
 
 export const ClusterSkillRequestSchema = z.discriminatedUnion('op', [
   ClusterSkillBeginSchema,
+  ClusterSkillManifestSchema,
   ClusterSkillUploadSchema,
   ClusterSkillReconcileSchema,
   ClusterSkillVerifySchema
 ])
 
 export const ClusterSkillBeginReplySchema = z.object({ handle: z.string().min(16).max(128) }).strict()
+export const ClusterSkillManifestReplySchema = z
+  .object({ declared: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_FILES) })
+  .strict()
 export const ClusterSkillUploadReplySchema = z
   .object({ received: z.number().int().nonnegative().max(MAX_CLUSTER_SKILL_FILE_BYTES), complete: z.boolean() })
   .strict()
@@ -210,6 +238,8 @@ export const ClusterSkillReconcileReplySchema = z
 export const ClusterSkillVerifyReplySchema = z.object({ intact: z.array(z.boolean()).max(512) }).strict()
 
 export type ClusterSkillBegin = z.infer<typeof ClusterSkillBeginSchema>
+export type ClusterSkillManifest = z.infer<typeof ClusterSkillManifestSchema>
+export type ClusterSkillManifestReply = z.infer<typeof ClusterSkillManifestReplySchema>
 export type ClusterSkillFile = z.infer<typeof ClusterSkillFileSchema>
 export type ClusterSkillUpload = z.infer<typeof ClusterSkillUploadSchema>
 export type ClusterSkillReconcile = z.infer<typeof ClusterSkillReconcileSchema>

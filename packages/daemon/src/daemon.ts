@@ -168,7 +168,7 @@ import {
 import { ManagedSkillCache } from './skills/managed-skill-cache.js'
 import { acceptedDreamSkillSources } from './skills/dream-skills.js'
 import { acquireGitSkillSource } from './skills/skill-git-source.js'
-import { inspectLocalSkillSource } from './skills/skill-source-snapshot.js'
+import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS, inspectLocalSkillSource } from './skills/skill-source-snapshot.js'
 import { resolveSkillSelections } from './skills/skill-cli-selection.js'
 import { currentGitResolutions, gitResolutionDigest } from './skills/install-skills.js'
 import {
@@ -3400,7 +3400,14 @@ export class Daemon {
             throw new Error(`Git source "${currentEntry.name}" did not resolve to its retained commit`)
           }
           resolutionsByDefinition.set(definitionDigest, resolvedCommit)
-          const inspected = await inspectLocalSkillSource(acquired.sourceDir)
+          const inspected = await inspectLocalSkillSource(acquired.sourceDir, {
+            limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
+          })
+          // One manifest has to reach the pod in one frame; drop the source that cannot, not the launch.
+          const admits = client.manifestLimits
+          if (inspected.fileCount > admits.maxFiles || inspected.totalBytes > admits.maxTotalBytes) {
+            throw new Error(`it is larger than one skill manifest carries (${inspected.fileCount} files)`)
+          }
           const selected = await resolveSkillSelections(
             currentEntry.name,
             acquired.sourceDir,
@@ -3412,7 +3419,8 @@ export class Daemon {
             sourceKind: 'agent',
             sourceDir: acquired.sourceDir,
             selections: selected.cliSelections,
-            expectedLeaves: selected.expectedLeaves
+            expectedLeaves: selected.expectedLeaves,
+            limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
           })
         } catch (error) {
           this.log.warn(

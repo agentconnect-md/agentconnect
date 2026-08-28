@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import type { ClusterSkillReconcileAuthority, ClusterSkillLedger } from '../store/cluster-skill-ledger.js'
 import type { ClusterSkillClient } from '../shim/skill-client.js'
 import { ClusterSkillReconcileReplySchema, type ClusterSkillFile } from '../shim/skill-protocol.js'
-import { inspectLocalSkillSource } from './skill-source-snapshot.js'
+import { inspectLocalSkillSource, type SkillSourceSnapshotLimits } from './skill-source-snapshot.js'
 
 export interface ClusterSkillSnapshotSource {
   sourceId: string
@@ -12,6 +12,8 @@ export interface ClusterSkillSnapshotSource {
   sourceDir: string
   selections: string[]
   expectedLeaves: string[]
+  /** Admission for THIS source — a Git collection needs the wide profile, a lone bundle the default. */
+  limits?: Partial<SkillSourceSnapshotLimits>
 }
 
 export function clusterSkillSupportRequired(input: {
@@ -68,7 +70,7 @@ export class ClusterSkillCoordinator {
     const files: ClusterSkillFile[] = []
     const contents = new Map<string, Buffer>()
     for (const source of sources) {
-      const inspected = await inspectLocalSkillSource(source.sourceDir)
+      const inspected = await inspectLocalSkillSource(source.sourceDir, { limits: source.limits })
       for (const file of inspected.files) {
         const path = file.path.replaceAll('\\', '/')
         const content = await readFile(join(source.sourceDir, ...path.split('/')))
@@ -83,7 +85,12 @@ export class ClusterSkillCoordinator {
       }
     }
     const desiredHash = createHash('sha256')
-      .update(JSON.stringify({ sources: sources.map(({ sourceDir: _sourceDir, ...source }) => source), files }))
+      .update(
+        JSON.stringify({
+          sources: sources.map(({ sourceDir: _sourceDir, limits: _limits, ...source }) => source),
+          files
+        })
+      )
       .digest('hex')
     const begun = await this.store.beginClusterSkillReconcile({
       ...input.authority,

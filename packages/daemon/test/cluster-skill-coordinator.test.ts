@@ -9,6 +9,7 @@ import {
   type ClusterSkillJournalStore
 } from '../src/skills/cluster-skill-coordinator.js'
 import { ClusterSkillClient } from '../src/shim/skill-client.js'
+import { GIT_SKILL_SOURCE_SNAPSHOT_LIMITS } from '../src/skills/skill-source-snapshot.js'
 
 describe('cluster skill coordinator', () => {
   it('requires a capable image for accepted Dream state and durable cleanup, but not an empty agent', () => {
@@ -95,6 +96,91 @@ describe('cluster skill coordinator', () => {
     expect(events[0]).toBe('begin-journal')
     expect(events.at(-1)).toBe('commit:3')
     expect(reconciledSourceIds).toEqual(sources.map((source) => source.sourceId))
+  })
+
+  it('uploads a whole Git collection, which the single-bundle default profile would truncate', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ac-cluster-collection-'))
+    const sourceDir = join(root, 'collection')
+    await mkdir(join(sourceDir, 'skills', 'brainstorming'), { recursive: true })
+    await writeFile(
+      join(sourceDir, 'skills', 'brainstorming', 'SKILL.md'),
+      '---\nname: brainstorming\ndescription: fixture\n---\n# brainstorming\n'
+    )
+    // Over DEFAULT_SKILL_SOURCE_SNAPSHOT_LIMITS.maxFiles (64), as a real collection repo is.
+    await mkdir(join(sourceDir, 'docs'))
+    for (let index = 0; index < 128; index += 1) {
+      await writeFile(join(sourceDir, 'docs', `note-${index}.md`), `note ${index}\n`)
+    }
+    const store: ClusterSkillJournalStore = {
+      beginClusterSkillReconcile: async () => ({
+        ok: true,
+        operationId: '11111111-1111-4111-8111-111111111111',
+        replayKey: 'a'.repeat(64),
+        priorRevision: 0,
+        priorLedger: { roots: [] },
+        resumed: false
+      }),
+      authorizeClusterSkillMutation: async () => true,
+      commitClusterSkillReconcile: async () => ({ ok: true, revision: 1 })
+    }
+    let manifest: Array<{ path: string }> = []
+    const client = new ClusterSkillClient({
+      async request(_capability, payload) {
+        const request = payload as Record<string, unknown>
+        if (request.op === 'begin') {
+          manifest = request.files as Array<{ path: string }>
+          return { handle: 'opaque-handle-1234' }
+        }
+        if (request.op === 'upload') {
+          const data = Buffer.from(String(request.data), 'base64')
+          return { received: Number(request.offset) + data.length, complete: request.final }
+        }
+        return {
+          roots: [
+            {
+              path: '.agents/skills/brainstorming',
+              sourceId: 'agent:0',
+              sourceKind: 'agent',
+              digest: createHash('sha256').update(JSON.stringify([])).digest('hex'),
+              files: []
+            }
+          ],
+          conflicts: []
+        }
+      }
+    })
+    const ledger = await new ClusterSkillCoordinator(store).reconcile({
+      authority: { groupId: 'g', term: '1', daemonId: 'd', agentId: 'a', workspaceIncarnation: 'claim' },
+      skillsAgentId: 'universal',
+      shimGeneration: 1,
+      sources: [
+        {
+          sourceId: 'agent:0',
+          sourceKind: 'agent',
+          sourceDir,
+          selections: ['brainstorming'],
+          expectedLeaves: ['brainstorming'],
+          limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
+        }
+      ],
+      client
+    })
+    expect(manifest).toHaveLength(129)
+    expect(manifest.map((file) => file.path)).toContain('skills/brainstorming/SKILL.md')
+    expect(ledger.roots).toHaveLength(1)
+
+    // The same source on the default profile is what shipped an empty set instead.
+    await expect(
+      new ClusterSkillCoordinator(store).reconcile({
+        authority: { groupId: 'g', term: '1', daemonId: 'd', agentId: 'a', workspaceIncarnation: 'claim' },
+        skillsAgentId: 'universal',
+        shimGeneration: 1,
+        sources: [
+          { sourceId: 'agent:0', sourceKind: 'agent', sourceDir, selections: ['brainstorming'], expectedLeaves: [] }
+        ],
+        client
+      })
+    ).rejects.toThrow(/too many files/)
   })
 
   it('fails closed when duty is lost before publication', async () => {
