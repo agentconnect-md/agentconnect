@@ -413,6 +413,30 @@ export class VirtualSlackConnection implements PlatformConnection {
 
   async setTitle(): Promise<void> {}
 
+  /**
+   * Native tool-call chrome is UNSUPPORTED here, deliberately and deterministically. The arena
+   * has no Slack API to stream into, and a half-modelled stream would change what the arena
+   * counts; answering "cannot stream" sends every arena turn down the legacy `progress` path,
+   * which is the path every existing baseline was recorded against.
+   */
+  async startTurnStream(): Promise<undefined> {
+    return undefined
+  }
+
+  async appendTurnStream(): Promise<'ok' | 'refused' | 'stopped'> {
+    return 'refused'
+  }
+
+  async stopTurnStream(): Promise<boolean> {
+    return true
+  }
+
+  async settleAndStop(): Promise<void> {}
+
+  streamingLikely(): boolean {
+    return false
+  }
+
   async openDirectMessage(user: string): Promise<string> {
     return `D-${user}`
   }

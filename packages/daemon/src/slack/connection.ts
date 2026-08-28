@@ -24,6 +24,7 @@ import {
   buildStatusModal,
   buildStatusUnavailableModal,
   decodePermValue,
+  type SlackStreamChunk,
   type StatusBarInfo,
   type StatusModalIdentity
 } from './render.js'
@@ -108,6 +109,23 @@ export interface SlackResponseMetadata {
    *  this post with the internal wake that carries the authoritative call envelope. */
   agentCallDeliveryId?: string
 }
+
+/** A handle to ONE open Slack streaming message (`chat.startStream` → `chat.appendStream` →
+ *  `chat.stopStream`). Carries the conversation as well as the message, because the stream is
+ *  bookkept per conversation. */
+export interface SlackTurnStream {
+  readonly channel: string
+  readonly threadTs: string
+  readonly ts: string
+}
+
+/**
+ * What Slack did with an append. `refused` means this card update did not land and the handle
+ * is still good — chrome is lossy-tolerant, so it is simply dropped. `stopped` means the
+ * message is definitively no longer streaming, so the handle is retired and nothing more is
+ * appended to it or stopped against it.
+ */
+export type SlackStreamAppendOutcome = 'ok' | 'refused' | 'stopped'
 
 /** Per-agent identity for the working indicator (agents.sessions.setStatus). Slack keeps
  *  these STICKY on the session until rewritten, so every `processing` write carries the
@@ -371,6 +389,12 @@ export type AppLike = {
       getPermalink: (a: unknown) => Promise<{ permalink?: string }>
       update: (a: unknown) => Promise<{ ts?: string }>
       delete: (a: unknown) => Promise<unknown>
+      // Native tool-call chrome (slack-streaming-turn-output.md §3). Optional because
+      // absence IS one of the capability refusals §7 latches on — which is also what keeps
+      // every inert test app on the legacy path without edits.
+      startStream?: (a: unknown) => Promise<{ ts?: string }>
+      appendStream?: (a: unknown) => Promise<unknown>
+      stopStream?: (a: unknown) => Promise<unknown>
     }
     // The external upload flow (`files:write`). chat.postMessage cannot carry bytes at all,
     // so this is the ONLY way to put a file in a conversation.
@@ -490,6 +514,9 @@ function isRoutableMessageEvent(ev: SlackMessageEvent): boolean {
     Boolean(ev.user || ev.bot_id) &&
     !ev.hidden &&
     ev.message === undefined &&
+    // A streaming chrome message is not conversation: its body is Slack's fixed placeholder,
+    // and ingesting that as a message would put it in a peer agent's context.
+    !isSlackStreamChromeMessage(ev) &&
     (isRoutableMessageSubtype(ev.subtype) || ev.subtype === 'bot_message')
   )
 }
@@ -542,6 +569,56 @@ function slackApiErrorCode(err: unknown): string | undefined {
 // takes effect without requiring a daemon restart, while avoiding one rejected API
 // call per message for installations that have not been upgraded yet.
 const CUSTOM_USERNAME_REPROBE_MS = 5 * 60_000
+
+/** Streaming re-probes on the same cadence: a workspace can GAIN the capability (plan
+ *  change, app upgrade), so a permanent latch would be wrong. */
+const STREAM_REPROBE_MS = CUSTOM_USERNAME_REPROBE_MS
+
+/** Refusals that say this INSTALLATION cannot stream at all — latch and re-probe (§7). */
+const STREAM_CAPABILITY_REFUSALS = new Set([
+  'unknown_method',
+  'missing_scope',
+  'channel_type_not_supported',
+  'messages_tab_disabled'
+])
+
+/** Not failures: the message is already settled, by our own stop or by the person's Stop.
+ *  A stopped stream is unrecoverable, so there is nothing to retry or report. */
+const STREAM_ALREADY_STOPPED = new Set(['message_not_in_streaming_state', 'stopped_by_user'])
+
+/** Backoff for a settle+stop Slack has not resolved, after the owning turn is gone. */
+const OWED_STOP_BACKOFF_MS = [5_000, 15_000, 45_000, 120_000]
+
+/** The container label for a stream the daemon opened but no turn ever owned. */
+const STREAM_ABANDONED_TITLE = 'Stopped'
+
+/** Streams are bookkept per MESSAGE. One connection can host sibling turns in the same
+ *  (channel, thread) — same-message multi-agent fan-out — and a conversation key would let the
+ *  second open orphan the first, leaving it streaming forever. */
+function streamKey(channel: string, ts: string): string {
+  return `${channel}:${ts}`
+}
+
+/** Does this error PROVE the message is no longer streaming? Only a definite answer retires a
+ *  handle — a rate limit or a dropped connection leaves the message live and stays retryable. */
+function isStreamAlreadyStopped(err: unknown): boolean {
+  const code = slackApiErrorCode(err)
+  return code !== undefined && STREAM_ALREADY_STOPPED.has(code)
+}
+
+/** The text Slack gives a cards-only streaming message, and the marker it carries while it is
+ *  still open (verified live 2026-08-28). Neither is conversation, so ingress and thread
+ *  backfill must never read one back as a message body. */
+export const SLACK_STREAM_PLACEHOLDER_TEXT = 'This message contains interactive elements.'
+
+/** A message that is (or was) one of our streaming chrome messages rather than a body.
+ *  `streaming_state` is read structurally — the SDK's message type does not declare it. */
+export function isSlackStreamChromeMessage(m: { text?: string; bot_id?: string; app_id?: string }): boolean {
+  if ((m as { streaming_state?: unknown }).streaming_state !== undefined) return true
+  // The placeholder alone is evidence only from an app: a person typing that sentence is
+  // ordinary conversation and must not disappear.
+  return Boolean(m.bot_id || m.app_id) && m.text?.trim() === SLACK_STREAM_PLACEHOLDER_TEXT
+}
 
 /** Per-request bound on every Slack egress call. Shared with the byte upload, which rides the
  *  same serial queue and would otherwise block all delivery on undici's 300 s defaults. */
@@ -679,6 +756,14 @@ export class SlackConnection implements PlatformConnection {
   private slotOwner = new Map<string, string>()
   /** Latched when the bot lacks chat:write.customize — the indicator keeps the app identity. */
   private statusIdentityUnsupported = false
+  /** Cooldown after Slack proves this installation cannot stream (§7 capability refusal). */
+  private streamingUnavailableUntil = 0
+  /** Chrome streams still open, keyed by MESSAGE (see `streamKey`). An entry disappears the
+   *  moment the stream settles — by our stop, or by Slack proving it already stopped. */
+  private openStreams = new Set<string>()
+  /** Settle+stop pairs Slack has not resolved, retried on a backoff after the owning turn is
+   *  gone. Without an owner here a transient double failure leaves the row working forever. */
+  private owedStops = new Map<string, { timer: NodeJS.Timeout }>()
   botUserId = ''
   /** The appToken this socket is keyed by (one socket per unique appToken). */
   readonly appToken: string
@@ -1224,6 +1309,282 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
+  // ── Native tool-call chrome (slack-streaming-turn-output.md §3) ─────────────
+  // One cards-only stream per turn, opened at the turn's first task and settled at its end.
+  // All three calls ride the same send queue as every other write, one enqueue each, and
+  // none of them calls another from inside a queued task.
+
+  /** Cheap synchronous capability read the daemon builds a turn's converger from (§3.1).
+   *  Optimistic by design — `chat.startStream` itself is the authoritative answer. */
+  streamingLikely(): boolean {
+    return typeof this.app.client.chat.startStream === 'function' && Date.now() >= this.streamingUnavailableUntil
+  }
+
+  /**
+   * Open this turn's chrome stream. `undefined` means "render chrome the legacy way": the
+   * SDK, the workspace, or this channel cannot stream, and §7 has already decided whether
+   * that latches the capability off or degrades only this turn.
+   *
+   * `thread_ts` is REQUIRED — omitting it fails `invalid_thread_ts`, in DMs too (verified
+   * live 2026-08-28; the documented "omit for a top-level message" does not hold).
+   */
+  async startTurnStream(
+    channel: string,
+    threadTs: string,
+    options: { isDm?: boolean; recipientUserId?: string; identity?: SlackPostOptions } = {}
+  ): Promise<SlackTurnStream | undefined> {
+    const start = this.app.client.chat.startStream
+    if (typeof start !== 'function') {
+      this.streamingUnavailableUntil = Date.now() + STREAM_REPROBE_MS
+      return undefined
+    }
+    // A DM passes no recipient. Outside one Slack requires a pair, and a turn with no human
+    // initiator (agent-to-agent, cron, hook, dream) names the bot itself — accepted live, and
+    // it keeps every such turn on the same code path instead of carving it out (§7).
+    const recipient = options.isDm ? undefined : options.recipientUserId || this.botUserId
+    // The send queue's 30 s timeout rejects while the queued task KEEPS RUNNING, so a rejection
+    // here is indeterminate: the open may still land. `opened` carries the task's real answer,
+    // so a stream the degraded turn no longer owns is settled instead of working forever.
+    let publish: (stream: SlackTurnStream | undefined) => void = () => {}
+    const opened = new Promise<SlackTurnStream | undefined>((resolve) => {
+      publish = resolve
+    })
+    return this.queue
+      .enqueue(async () => {
+        let result: SlackTurnStream | undefined
+        try {
+          result = await this.openStream(start, channel, threadTs, recipient, options.identity)
+          return result
+        } finally {
+          publish(result)
+        }
+      })
+      .catch(() => {
+        void opened.then((late) => {
+          if (late) void this.abandonStream(late)
+        })
+        return undefined
+      })
+  }
+
+  /** The `chat.startStream` call itself. Runs inside the send queue's task, so it never
+   *  enqueues again; the caller owns the timeout semantics. */
+  private async openStream(
+    start: (a: unknown) => Promise<{ ts?: string }>,
+    channel: string,
+    threadTs: string,
+    recipient: string | undefined,
+    identity?: SlackPostOptions
+  ): Promise<SlackTurnStream | undefined> {
+    // `plan` folds every task card into ONE collapsed-by-default container labelled by the
+    // `plan_update` title. `timeline` — the default — renders each card flat and separate.
+    const payload: Record<string, unknown> = {
+      channel,
+      thread_ts: threadTs,
+      task_display_mode: 'plan',
+      ...(recipient ? { recipient_user_id: recipient } : {}),
+      ...(recipient && this.teamId ? { recipient_team_id: this.teamId } : {})
+    }
+    const decorate = Date.now() >= this.customUsernameRetryAt
+    const username = decorate ? identity?.username?.trim() : undefined
+    const iconUrl = decorate ? identity?.icon_url?.trim() : undefined
+    const customize = { ...(username ? { username } : {}), ...(iconUrl ? { icon_url: iconUrl } : {}) }
+    try {
+      let res: { ts?: string } | undefined
+      try {
+        res = await start({ ...payload, ...customize })
+        if (Object.keys(customize).length > 0) this.customUsernameRetryAt = 0
+      } catch (err) {
+        // Same cooldown the post boundary uses: retry undecorated, re-probe in 5 minutes.
+        if (Object.keys(customize).length === 0 || !isMissingCustomizeScope(err)) throw err
+        this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
+        this.deps.log?.debug('slack: chat:write.customize missing — streaming with the app default identity')
+        res = await start(payload)
+      }
+      const ts = res?.ts
+      if (!ts) {
+        this.deps.log?.debug(`slack: chat.startStream returned no ts (ch=${channel} thread=${threadTs})`)
+        return undefined
+      }
+      this.streamingUnavailableUntil = 0
+      // Keyed by MESSAGE, not by conversation: same-(channel, thread) sibling turns coexist on
+      // one connection, and a conversation key would let the second open orphan the first.
+      this.openStreams.add(streamKey(channel, ts))
+      return { channel, threadTs, ts }
+    } catch (err) {
+      this.rememberMissingScopes(err)
+      this.noteStreamFailure(err, 'chat.startStream', channel)
+      return undefined
+    }
+  }
+
+  /** Settle and stop a stream no turn owns: the queue timed out on the open, the caller
+   *  degraded, and the open landed anyway. Nothing was ever appended, so a bare label is the
+   *  whole settle. Best-effort, and an unresolved stop joins the owed-stop sweep. */
+  private async abandonStream(stream: SlackTurnStream): Promise<void> {
+    this.deps.log?.debug(`slack: settling an unowned stream (ch=${stream.channel} ts=${stream.ts})`)
+    await this.settleAndStop(stream, [{ type: 'plan_update', title: STREAM_ABANDONED_TITLE }], {})
+  }
+
+  /** Append card chunks to an open stream. A `refused` update is simply lost — chrome is
+   *  lossy-tolerant — while `stopped` retires the handle for good. */
+  async appendTurnStream(stream: SlackTurnStream, chunks: SlackStreamChunk[]): Promise<SlackStreamAppendOutcome> {
+    const append = this.app.client.chat.appendStream
+    if (chunks.length === 0) return 'ok'
+    if (typeof append !== 'function') return 'refused'
+    // The handle is retired, so the message is settled and this append is stale.
+    if (!this.openStreams.has(streamKey(stream.channel, stream.ts))) return 'refused'
+    try {
+      return await this.queue.enqueue(async () => {
+        await append({ channel: stream.channel, ts: stream.ts, chunks })
+        return 'ok' as const
+      })
+    } catch (err) {
+      this.rememberMissingScopes(err)
+      this.noteStreamFailure(err, 'chat.appendStream', stream.channel)
+      // Only a DEFINITE already-stopped answer proves the message is settled — in practice
+      // the person's Stop. A transient failure leaves it streaming, so the handle stays and
+      // the settling stop still has a target.
+      if (!isStreamAlreadyStopped(err)) return 'refused'
+      this.closeStream(stream)
+      return 'stopped'
+    }
+  }
+
+  /**
+   * Settle a stream. Answers whether the message is now DEFINITELY not streaming: true on
+   * success, and true when it was already settled. `false` means Slack left it unresolved,
+   * which is the caller's cue to keep the handle and let the settlement backstop retry;
+   * dropping it there would strand the message streaming.
+   *
+   * `session_status` is deliberately never passed: its default is already `active`, and the
+   * agent-session lifecycle path stays the enum's single writer.
+   */
+  async stopTurnStream(stream: SlackTurnStream, options: { chromeOwnerAgentId?: string } = {}): Promise<boolean> {
+    const stop = this.app.client.chat.stopStream
+    // Nothing left to settle: no such method (so no stream was ever opened here) or the handle
+    // is already retired. Idempotent by construction — a stopped stream is unrecoverable.
+    if (typeof stop !== 'function' || !this.openStreams.has(streamKey(stream.channel, stream.ts))) return true
+    try {
+      return await this.queue.enqueue(async () => {
+        await stop({
+          channel: stream.channel,
+          ts: stream.ts,
+          // chat.startStream carries no metadata, so the chrome marker is stamped here —
+          // otherwise a peer's thread backfill would read the finalized card as conversation.
+          ...slackMessageMetadata({
+            chrome: true,
+            ...(options.chromeOwnerAgentId ? { chromeOwnerAgentId: options.chromeOwnerAgentId } : {})
+          })
+        })
+        // Retired only now that Slack has accepted it.
+        this.closeStream(stream)
+        return true
+      })
+    } catch (err) {
+      this.rememberMissingScopes(err)
+      this.noteStreamFailure(err, 'chat.stopStream', stream.channel)
+      if (!isStreamAlreadyStopped(err)) return false
+      this.closeStream(stream)
+      return true
+    }
+  }
+
+  /**
+   * Settle a stream and stop it, as ONE unit, retried until Slack gives a definite answer.
+   *
+   * The two halves cannot be split: stopping while cards are still `in_progress` makes Slack
+   * render the container as "Something went wrong" (§4 fact 3), so a refused settle must hold
+   * the stop back. And the turn that owned the stream is gone long before a retry is due —
+   * `Pending` is dropped at turn settlement — so the connection owns the retry, on a bounded
+   * backoff, keeping the settle content verbatim.
+   */
+  async settleAndStop(
+    stream: SlackTurnStream,
+    settle: SlackStreamChunk[],
+    options: { chromeOwnerAgentId?: string }
+  ): Promise<void> {
+    await this.runSettleAndStop(stream, settle, options, 0)
+  }
+
+  /** One settle+stop attempt. `attempts` is how many have ALREADY been made, so the backoff
+   *  advances across the whole chain rather than restarting on each one. */
+  private async runSettleAndStop(
+    stream: SlackTurnStream,
+    settle: SlackStreamChunk[],
+    options: { chromeOwnerAgentId?: string },
+    attempts: number
+  ): Promise<void> {
+    const key = streamKey(stream.channel, stream.ts)
+    if (!this.openStreams.has(key)) return this.forgetOwedStop(key)
+    if (settle.length > 0) {
+      const outcome = await this.appendTurnStream(stream, settle)
+      // The person ended it: the message is settled and nothing more is owed.
+      if (outcome === 'stopped') return this.forgetOwedStop(key)
+      if (outcome === 'refused') return this.scheduleOwedStop(stream, settle, options, attempts)
+    }
+    if (await this.stopTurnStream(stream, options)) return this.forgetOwedStop(key)
+    // Slack left it unresolved: the settle already landed, so only the stop is still owed.
+    this.scheduleOwedStop(stream, [], options, attempts)
+  }
+
+  /**
+   * Re-arm the owed settle+stop on a bounded backoff. A handful of attempts over a few minutes:
+   * past that the row is stuck for a reason retrying cannot fix.
+   *
+   * The attempt count is CARRIED, never read back from `owedStops`: the fired entry is deleted
+   * before its retry runs, so recomputing the count from the map would see none and re-arm at
+   * the ladder's shortest delay every time — an unbounded 5-second loop against the shared send
+   * queue for a refusal that is never going to resolve.
+   */
+  private scheduleOwedStop(
+    stream: SlackTurnStream,
+    settle: SlackStreamChunk[],
+    options: { chromeOwnerAgentId?: string },
+    attempts: number
+  ): void {
+    const key = streamKey(stream.channel, stream.ts)
+    this.forgetOwedStop(key)
+    const delay = OWED_STOP_BACKOFF_MS[attempts]
+    if (delay === undefined) {
+      this.deps.log?.debug(`slack: giving up on an unresolved stream stop (ch=${stream.channel} ts=${stream.ts})`)
+      return
+    }
+    const timer = setTimeout(() => {
+      this.owedStops.delete(key)
+      void this.runSettleAndStop(stream, settle, options, attempts + 1)
+    }, delay)
+    timer.unref?.()
+    this.owedStops.set(key, { timer })
+  }
+
+  private forgetOwedStop(key: string): void {
+    const owed = this.owedStops.get(key)
+    if (!owed) return
+    clearTimeout(owed.timer)
+    this.owedStops.delete(key)
+  }
+
+  /** A stopped stream is unrecoverable: drop the handle so nothing appends to it and no
+   *  second stop is attempted, whoever ended it. */
+  private closeStream(stream: SlackTurnStream): void {
+    this.openStreams.delete(streamKey(stream.channel, stream.ts))
+  }
+
+  /** §7's two error classes. A capability refusal latches streaming off for a re-probe window;
+   *  everything else — a bad channel, a rate limit, a queue timeout — degrades only the turn
+   *  that hit it, because a per-channel error must never kill streaming workspace-wide. */
+  private noteStreamFailure(err: unknown, method: string, channel: string): void {
+    if (isStreamAlreadyStopped(err)) return
+    const code = slackApiErrorCode(err)
+    if (code && STREAM_CAPABILITY_REFUSALS.has(code)) {
+      this.streamingUnavailableUntil = Date.now() + STREAM_REPROBE_MS
+      this.deps.log?.info(`slack: streaming unavailable (${code}) — using the legacy chrome, re-probing in 5m`)
+      return
+    }
+    this.deps.log?.debug(`slack: ${method} failed (ch=${channel}): ${(err as Error).message}`)
+  }
+
   /** Turn-start acknowledgement (`reactions.add`) on the message that fired the turn.
    *  Best-effort: an `already_reacted` repeat and a workspace whose grant predates
    *  `reactions:write` both degrade to nothing visible. */
@@ -1340,7 +1701,9 @@ export class SlackConnection implements PlatformConnection {
             ts: m.ts,
             text: extractSlackMessageText(m),
             isBot: Boolean(m.bot_id || appId),
-            chrome: m.metadata?.event_type === SLACK_CHROME_EVENT_TYPE,
+            // A settled chrome stream carries the marker its stop stamped; one still open
+            // carries none, so its `streaming_state` / placeholder body answers for it.
+            chrome: m.metadata?.event_type === SLACK_CHROME_EVENT_TYPE || isSlackStreamChromeMessage(m),
             attachments: (m.files ?? [])
               .map(toAttachment)
               .filter((attachment): attachment is NonNullable<typeof attachment> => attachment !== null)
@@ -1907,6 +2270,7 @@ export class SlackConnection implements PlatformConnection {
   }
 
   async stop(): Promise<void> {
+    for (const key of [...this.owedStops.keys()]) this.forgetOwedStop(key)
     await this.app.stop()
   }
 }

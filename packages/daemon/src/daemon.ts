@@ -156,6 +156,7 @@ import {
   isSlackStatusBarText,
   slackAgentPostOptions,
   slackPostOptions,
+  slackStreamRecipient,
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
@@ -491,6 +492,7 @@ import {
   type TurnInterruptDisposition,
   type TurnInterruptReason,
   type TurnLifecycleCleanupOutcome,
+  type ReplyConnection,
   type TurnPromptOutcome,
   type TurnRun,
   type TurnSettlement
@@ -516,6 +518,7 @@ import {
   CANCEL_FORCE_MS,
   DEFAULT_WEB_APP_URL,
   FEISHU_STREAM_FLUSH_MS,
+  SLACK_STREAM_FLUSH_MS,
   IDLE_FLUSH_MS,
   MAX_BG_TASK_WAKE_REARMS,
   MAX_BG_TASK_WAKES_PER_SESSION,
@@ -800,13 +803,32 @@ export class Daemon {
       const registry = new TurnOutputRegistry<Pending, DaemonRenderAction, DaemonConverger, NormalizedMessage>({
         platform: 'slack',
         createConverger: (ctx) => new OutputConverger(ctx.mode as never, ctx.protectedAddresses ?? []),
-        initialTurnState: (): SlackTurnState => ({}),
+        initialTurnState: (ctx): SlackTurnState => {
+          const recipient = slackStreamRecipient(ctx.message)
+          return recipient ? { recipient } : {}
+        },
         apply: (p, action) => this.applySlackAction(p, action as SlackAction),
         // §5.5: re-stamp the delivered answer as this response's one `final` event.
         closeResponse: (p) => this.closeSlackResponse(p),
-        // Terminal settlement: retry stale footer removals the final attribution
-        // action may have bypassed on failure/suppression.
+        // Suppression teardown: stop the append timer and settle the chrome stream mid-flight
+        // (native Stop, status-bar Cancel, displacement, loop protection, shutdown). Slack
+        // does NOT end the stream itself on a Stop click, so this is what closes it.
+        onSuppress: (p) => {
+          this.clearSlackStream(p)
+          if (p.conv instanceof OutputConverger)
+            for (const action of p.conv.settleStream('stopped'))
+              this.enqueueApply(p, action, { allowWhenSuppressed: true })
+        },
+        // Terminal settlement: a chrome stream must never be left open (§5), and stale footer
+        // removals the final attribution action may have bypassed still need retrying.
         onSettle: async (p) => {
+          // A turn that died before its own settle still owes the stream one. An unresolved
+          // stop is NOT retried here — the connection owns that, because it outlives Pending.
+          if (p.conn && turnState<SlackTurnState>(p).stream) {
+            if (p.conv instanceof OutputConverger)
+              for (const action of p.conv.settleStream('completed')) await this.applySlackAction(p, action)
+            if (turnState<SlackTurnState>(p).stream) await this.applySlackAction(p, { kind: 'stream-stop', settle: [] })
+          }
           if (p.conn && turnState<SlackTurnState>(p).staleReplyFooters?.length) {
             await clearStaleSlackReplyFootersExternal(
               { debug: (message) => this.log.debug(message) },
@@ -9460,6 +9482,11 @@ export class Daemon {
     // applies from the next turn on, not mid-turn (see `mode`, resolved inside the plan).
     const conv = plan.turnSurface.createConverger(plan.turnCtx)
     const replyConn = plan.suppressReplyConn ? undefined : this.replyConnFor(agentId, integrationId)
+    // slack-streaming-turn-output.md §3.1: the axis is decided here, from a synchronous
+    // capability read, because the converger is built before chat.startStream can be tried.
+    // The call itself is deferred to the turn's first task — a turn that runs no tools never
+    // opens a stream and is byte-identical to today.
+    if (conv instanceof OutputConverger && this.slackStreamingEligible(plan, replyConn)) conv.enableStreaming()
     const run: TurnRun = { entry, key, plan, agent, replyConn, evaluation }
     // Add the streaming fields onto the SAME webchat object held by QueueEntry. Sharing
     // `doneSent` closes a Pending-vs-gate race where cancel could otherwise terminally signal
@@ -9578,6 +9605,20 @@ export class Daemon {
   private clearTurnActivity(run: TurnRun): void {
     if (run.entry.displacedByNewerTurn) return
     this.settleSlackSlot(run.replyConn, run.plan.channel, run.plan.statusThread, run.plan.sessionKey)
+  }
+
+  /**
+   * May this Slack turn render its tool-call chrome as a native card stream? The two facts
+   * that can be known before the call is attempted: a streamed message must be a thread reply
+   * (`chat.startStream` requires `thread_ts`, in DMs too), and this connection must not be
+   * inside a capability-refusal cooldown. Output mode is the converger's own gate — only
+   * `medium` and `high` have tool chrome at all. Everything else is Slack's answer to
+   * `chat.startStream`, and a refusal degrades this turn's chrome alone.
+   */
+  private slackStreamingEligible(plan: TurnPlan, conn: ReplyConnection | undefined): boolean {
+    if (plan.platform !== 'slack' || !plan.thread) return false
+    const likely = (conn as Partial<SlackConnection> | undefined)?.streamingLikely
+    return typeof likely === 'function' && likely.call(conn)
   }
 
   /** Say that this turn is waiting on a cluster Sandbox pod, before the wait starts.
@@ -10619,6 +10660,7 @@ export class Daemon {
     // the relay reply sink — and closes that `rd/chat` stream with a done event.
     this.clearIdle(p)
     this.clearFeishuStream(p)
+    this.clearSlackStream(p)
   }
 
   /** Commit a webchat turn's reply: record it as a transcript row, fan it out as the canonical
@@ -10833,6 +10875,7 @@ export class Daemon {
     const { agentId, msg, webchat, hookContext } = entry
     this.clearIdle(p)
     this.clearFeishuStream(p)
+    this.clearSlackStream(p)
     // A live turn can reveal a login problem the probe sweep can't see
     // (claude-agent-acp initializes and opens sessions fine while logged out):
     // ACP -32000 = fresh logged-out credential; a provider_auth_required
@@ -10999,6 +11042,7 @@ export class Daemon {
     releaseReplyConn()
     this.clearIdle(p)
     this.clearFeishuStream(p)
+    this.clearSlackStream(p)
     // Backstop: settle any permission / elicitation card still awaiting a tap.
     await this.permissions.releaseElicits(agentId, sessionId)
     await this.permissions.releaseChatPermissions(agentId, sessionId)
@@ -11990,6 +12034,30 @@ export class Daemon {
     state.streamTimer = undefined
   }
 
+  /** Coalesce Slack chrome-card appends (slack-streaming-turn-output.md §3.5).
+   * `chat.appendStream` is Tier 4 against Tier 2 for start/stop, so ONE timer absorbs a burst
+   * of tool updates and the append that fires carries the newest state of every dirty card. */
+  private armSlackStream(p: Pending): void {
+    // Only a streaming Slack turn carries an OutputConverger with the axis set, so the
+    // instanceof plus the axis IS the platform gate.
+    if (
+      turnState<SlackTurnState>(p).streamTimer ||
+      !(p.conv instanceof OutputConverger) ||
+      !p.conv.hasStreamingUpdate()
+    )
+      return
+    turnState<SlackTurnState>(p).streamTimer = setTimeout(() => {
+      turnState<SlackTurnState>(p).streamTimer = undefined
+      if (p.conv instanceof OutputConverger) for (const action of p.conv.streamUpdate()) this.enqueueApply(p, action)
+    }, SLACK_STREAM_FLUSH_MS)
+  }
+
+  private clearSlackStream(p: Pending): void {
+    const state = turnState<SlackTurnState>(p)
+    if (state.streamTimer) clearTimeout(state.streamTimer)
+    state.streamTimer = undefined
+  }
+
   private clearIdle(p: Pending): void {
     if (p.signals.idleTimer) clearTimeout(p.signals.idleTimer)
     p.signals.idleTimer = undefined
@@ -12472,6 +12540,7 @@ export class Daemon {
       for (const action of p.conv.onUpdate(update)) this.enqueueApply(p, action)
       this.armIdle(p)
       this.armFeishuStream(p)
+      this.armSlackStream(p)
     }
     // Full activity log (tool/reasoning), recorded regardless of output mode.
     for (const ev of p.rec.onUpdate(update))

@@ -84,6 +84,40 @@ export type SlackAction =
   // final metadata that changed during the prompt. Not transcript content.
   // `standalone` (minimal mode only): finalize the footer kept on the live reply.
   | { kind: 'attribution'; text: string; blocks: unknown[]; standalone?: boolean }
+  // ── Native tool-call chrome (slack-streaming-turn-output.md §3) ──────────────
+  // On a medium/high turn the in-place `progress` message becomes ONE cards-only
+  // `chat.startStream` stream. The BODY never rides it: posts, live replies, the
+  // footer, the transcript and the status calls are all unchanged.
+  | { kind: 'stream-start' }
+  // `progressText` is the same in-place `progress` rendering this batch would have
+  // produced, so a turn whose stream never opened degrades to today's message.
+  | { kind: 'stream-append'; chunks: SlackStreamChunk[]; progressText?: string }
+  // The terminal settle rides the STOP rather than a preceding append, because the two
+  // cannot be split: stopping while cards are still `in_progress` makes Slack render
+  // "Something went wrong", so a refused settle has to hold its own stop back.
+  | { kind: 'stream-stop'; settle: SlackStreamChunk[]; progressText?: string }
+
+/**
+ * The chunk vocabulary `chat.appendStream` accepts, as `@slack/types` declares it. No
+ * `markdown_text` is ever sent — this stream carries chrome only.
+ *
+ * The FIELD SEMANTICS are not uniform, and that is the load-bearing fact here: `title` and
+ * `status` REPLACE per id, but `details` APPENDS server-side. Refreshing an appending field
+ * per update concatenates on Slack's side rather than replacing — which is how repeated
+ * `**bold**` fragments ran together into literal `****`. Write-once fields only: `output` at
+ * completion, and `details` never at all.
+ */
+export type SlackStreamChunk =
+  | {
+      type: 'task_update'
+      id: string
+      title: string
+      status: 'in_progress' | 'complete' | 'error'
+      output?: string
+    }
+  // The collapsed container's own label. `plan` display mode renders every task card inside
+  // one collapsed-by-default block, and this is the line the reader sees on it (§4).
+  | { type: 'plan_update'; title: string }
 
 /** Dynamic identity shown under the last reply section. All Slack integration modes use
  *  the same compact `context` footer so shared-bot attribution never looks like body text
@@ -99,10 +133,28 @@ const MAX_STATUS = 50
 // newest tail and mark a drop with a leading ellipsis. The raw buffer is soft-capped at
 // 2× so it can't grow unbounded across a long turn.
 const MAX_REASONING = 2800
+// Every streaming card field caps at 256 characters ON THE WIRE, per chunk. Because nothing
+// appending is ever re-sent, a clamped field is also the card's final size.
+const MAX_STREAM_TASK = 256
+/** The collapsed container's label while the turn is still working (§4). */
+const STREAM_PLAN_WORKING = 'Working…'
+/** …and after a cancel, a user Stop, or suppression — the in-flight cards settle as errors. */
+const STREAM_PLAN_STOPPED = 'Stopped'
 
 function clampTo(s: string, max: number): string {
   const t = s.trim()
   return t.length > max ? `${t.slice(0, max - 1)}…` : t
+}
+
+/** Flatten markdown emphasis for a card field. Task titles and plan labels render as PLAIN
+ *  text, so `**bold**` would arrive as literal punctuation rather than styling. */
+function plainCardText(s: string): string {
+  return s
+    .replace(/```[\s\S]*?```|`([^`]*)`/g, '$1')
+    .replace(/[*_~]{1,3}(?=\S)([\s\S]*?\S)[*_~]{1,3}/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function clampLabel(s: string): string {
@@ -831,6 +883,29 @@ export class OutputConverger {
   // isn't re-pushed to chat.update every idle window).
   private segmentReset = false
   private recordDirty = false
+  // ── Native tool-call chrome (slack-streaming-turn-output.md §3) ──────────────
+  // The axis, plus the one stream's card bookkeeping. Nothing here touches the body.
+  private streaming = false
+  private streamOpened = false
+  private streamClosed = false
+  // Cards awaiting the next append, keyed by ACP tool call id so a burst of updates for one
+  // call collapses to its newest state; `emittedTasks` suppresses an unchanged repeat.
+  private pendingTasks = new Map<string, Extract<SlackStreamChunk, { type: 'task_update' }>>()
+  private emittedTasks = new Map<string, string>()
+  private taskTitles = new Map<string, string>()
+  private openTasks = new Set<string>()
+  /** Cards whose write-once `output` has been sent, so a later update cannot append a second. */
+  private outputWritten = new Set<string>()
+  /** Cards that ended in error — the closing label counts these, never the model. */
+  private failedTasks = new Set<string>()
+  // The current thinking run: whether one is open, and a counter so each gets its own card.
+  private thinkingActive = false
+  private thinkingRun = 0
+  /** The container's label, so an unchanged one is never re-sent, plus the one awaiting the
+   *  next append and the legacy `progress` text that append would degrade to. */
+  private planTitle = ''
+  private pendingPlanTitle = ''
+  private pendingProgress = ''
 
   /**
    * `protectedAddresses` are the COMPOUND mention addresses in this conversation — a
@@ -858,6 +933,145 @@ export class OutputConverger {
     return this.buf.trim().length > 0 || this.reasoningDirty
   }
 
+  /**
+   * Take the native chrome pipeline for this turn (§3.1). Decided once at turn start from a
+   * synchronous capability read; only `medium` and `high` render tool chrome at all, so the
+   * other rungs stay byte-identical to today whatever the workspace supports.
+   */
+  enableStreaming(): void {
+    if (this.mode === 'medium' || this.mode === 'high') this.streaming = true
+  }
+
+  isStreaming(): boolean {
+    return this.streaming
+  }
+
+  /** Whether a newer card snapshot is ready for the append timer (§3.5). */
+  hasStreamingUpdate(): boolean {
+    return this.streaming && !this.streamClosed && (this.pendingTasks.size > 0 || this.pendingPlanTitle !== '')
+  }
+
+  /**
+   * Drain the dirty cards into ONE append, opening the stream lazily on the first batch that
+   * has something to show. A turn that runs no tools therefore never opens a stream and is
+   * byte-identical to today.
+   */
+  streamUpdate(): SlackAction[] {
+    if (!this.streaming || this.streamClosed) return []
+    const progressText = this.pendingProgress
+    const chunks = this.drainStreamChunks()
+    if (chunks.length === 0) return []
+    this.pendingProgress = ''
+    const out: SlackAction[] = []
+    if (!this.streamOpened) {
+      this.streamOpened = true
+      out.push({ kind: 'stream-start' })
+    }
+    out.push({ kind: 'stream-append', chunks, ...(progressText ? { progressText } : {}) })
+    return out
+  }
+
+  /**
+   * Settle every card to a real terminal status and relabel the container, then stop.
+   *
+   * Stopping a stream that still has `in_progress` cards makes Slack render the container as
+   * "Something went wrong" and flip those cards to `error` (verified live 2026-08-28), so the
+   * settle append is not cosmetic — it is what every stop is owed. Idempotent: the second
+   * caller of a turn's settle gets nothing.
+   */
+  settleStream(outcome: 'completed' | 'stopped'): SlackAction[] {
+    if (!this.streaming || this.streamClosed) return []
+    this.streamClosed = true
+    // A tool that started AND finished inside one coalescing window leaves cards pending with
+    // no stream open yet. Opening it here is what keeps such a turn from ending with no tool
+    // chrome at all; only a genuinely tool-free turn stays silent.
+    if (!this.streamOpened && this.emittedTasks.size === 0) return []
+    const terminal = outcome === 'stopped' ? 'error' : 'complete'
+    this.closeThinkingRun(terminal)
+    for (const id of [...this.openTasks]) this.queueTask(id, this.taskTitles.get(id) ?? 'tool', terminal)
+    // Forced rather than queued: the container must always carry its closing label, even when
+    // the working one happens to read the same.
+    this.planTitle = outcome === 'stopped' ? STREAM_PLAN_STOPPED : this.planSummary()
+    this.pendingPlanTitle = this.planTitle
+    const progressText = this.pendingProgress
+    this.pendingProgress = ''
+    const settle = this.drainStreamChunks()
+    const out: SlackAction[] = []
+    if (!this.streamOpened) {
+      this.streamOpened = true
+      out.push({ kind: 'stream-start' })
+    }
+    out.push({ kind: 'stream-stop', settle, ...(progressText ? { progressText } : {}) })
+    return out
+  }
+
+  private drainStreamChunks(): SlackStreamChunk[] {
+    const chunks: SlackStreamChunk[] = [...this.pendingTasks.values()]
+    this.pendingTasks.clear()
+    if (this.pendingPlanTitle) {
+      chunks.push({ type: 'plan_update', title: this.pendingPlanTitle })
+      this.pendingPlanTitle = ''
+    }
+    return chunks
+  }
+
+  /**
+   * Queue one task card, keyed by id so streamed updates edit the same card and an unchanged
+   * repeat emits nothing. `title` and `status` may be re-sent freely — Slack REPLACES them per
+   * id. `output` may not: it is written exactly once, at completion.
+   */
+  private queueTask(id: string, title: string, status: 'in_progress' | 'complete' | 'error', output = ''): void {
+    const clamped = clampTo(plainCardText(title), MAX_STREAM_TASK) || 'tool'
+    const writeOutput = output && !this.outputWritten.has(id) ? clampTo(plainCardText(output), MAX_STREAM_TASK) : ''
+    const chunk: Extract<SlackStreamChunk, { type: 'task_update' }> = {
+      type: 'task_update',
+      id,
+      title: clamped,
+      status,
+      ...(writeOutput ? { output: writeOutput } : {})
+    }
+    const signature = `${chunk.title} ${chunk.status}`
+    if (!writeOutput && this.emittedTasks.get(id) === signature) return
+    if (writeOutput) this.outputWritten.add(id)
+    this.emittedTasks.set(id, signature)
+    this.taskTitles.set(id, clamped)
+    if (status === 'error') this.failedTasks.add(id)
+    else this.failedTasks.delete(id)
+    if (status === 'in_progress') this.openTasks.add(id)
+    else this.openTasks.delete(id)
+    this.pendingTasks.set(id, chunk)
+    // The container earns its working label the moment it has a card to hold.
+    this.queuePlanTitle(STREAM_PLAN_WORKING)
+  }
+
+  /** Relabel the container, skipping an unchanged label (§4). */
+  private queuePlanTitle(title: string): void {
+    const clamped = clampTo(plainCardText(title), MAX_STREAM_TASK)
+    if (!clamped || clamped === this.planTitle) return
+    this.planTitle = clamped
+    this.pendingPlanTitle = clamped
+  }
+
+  /** What the container says once the turn is over. Counted, not narrated: no model call, and
+   *  a failed step is named rather than folded into a success. */
+  private planSummary(): string {
+    const total = this.emittedTasks.size
+    if (total === 0) return 'Done'
+    const steps = `${total} step${total === 1 ? '' : 's'}`
+    const failed = this.failedTasks.size
+    return failed === 0 ? `Completed ${steps}` : `Completed ${steps} · ${failed} failed`
+  }
+
+  /** A thinking run ends at the next tool call or at turn end — settle its card rather than
+   *  leaving a spinner behind. Title and status only: the thought text would have to ride
+   *  `details`, which appends server-side. */
+  private closeThinkingRun(status: 'complete' | 'error' = 'complete'): void {
+    if (!this.thinkingActive) return
+    this.queueTask(`thinking-${this.thinkingRun}`, 'Thinking', status)
+    this.thinkingActive = false
+    this.thinkingRun += 1
+  }
+
   /** Flush pending output for the idle timer: in high mode one in-place `reasoning` update
    *  carrying the reasoning accumulated since the last flush, THEN the buffered body
    *  (verbatim markdown split into ≤block-limit `post` sections — each a Block Kit
@@ -878,7 +1092,9 @@ export class OutputConverger {
    *  dropped and replaced by the generic failure notice. */
   flushTerminal(): SlackAction[] {
     if (this.mode === 'minimal') return this.liveRefresh()
-    return [...this.drainReasoning(), ...this.flush()]
+    // A failed turn settles its cards like a finished one: the tool calls did not necessarily
+    // fail, the turn did, and the ⚠️ notice the caller appends carries that in the body.
+    return [...this.drainReasoning(), ...this.flush(), ...this.settleStream('completed')]
   }
 
   /** minimal: refresh the single in-place `live-reply` with the current segment (display only;
@@ -991,6 +1207,17 @@ export class OutputConverger {
     return (id && this.toolTitles.get(id)) ?? id ?? 'tool'
   }
 
+  /** Refresh the newest output for one tool call. content/rawOutput are a whole replacement
+   *  when present, so only touch the cache when this update actually carries them: set the
+   *  newest text, or clear a stale entry if the replacement is empty / a non-text block. */
+  private noteToolOutput(update: { toolCallId?: string; content?: unknown; rawOutput?: unknown }): void {
+    const id = update.toolCallId
+    if (!id || (update.content === undefined && update.rawOutput === undefined)) return
+    const out = extractToolOutput(update)
+    if (out) this.toolOutputs.set(id, out)
+    else this.toolOutputs.delete(id)
+  }
+
   /** high mode: surface a finished tool's output as a code-block `tool-output` action.
    *  Tracks the latest output across streamed updates and emits it exactly once, when the
    *  call reaches a terminal status (completed/failed) — so partial output isn't posted
@@ -1003,14 +1230,7 @@ export class OutputConverger {
   }): SlackAction[] {
     const id = update.toolCallId
     if (!id) return []
-    // content/rawOutput are a whole replacement when present, so only touch the cache when
-    // this update actually carries them: set the newest text, or clear a stale entry if the
-    // replacement is empty / a non-text block (so we don't post output that was overwritten).
-    if (update.content !== undefined || update.rawOutput !== undefined) {
-      const out = extractToolOutput(update)
-      if (out) this.toolOutputs.set(id, out)
-      else this.toolOutputs.delete(id)
-    }
+    this.noteToolOutput(update)
     const terminal = update.status === 'completed' || update.status === 'failed'
     if (!terminal || this.emittedOutput.has(id)) return []
     const text = this.toolOutputs.get(id)
@@ -1043,17 +1263,22 @@ export class OutputConverger {
         // dirty; the actual in-place `reasoning` update is deferred to flushBuffered()
         // (idle timer) / onFinal so a token-by-token stream doesn't flood chat.update.
         // low + medium keep only the transient status — no reasoning in the channel.
-        if (this.mode === 'high') {
-          const text = (update as { content?: { text?: string } }).content?.text ?? ''
-          if (text) {
-            this.reasoningBuf += text
-            // Soft-cap the raw buffer so a very long turn can't grow it unbounded;
-            // renderReasoning tail-clamps again for the message body.
-            if (this.reasoningBuf.length > MAX_REASONING * 2) {
-              this.reasoningBuf = this.reasoningBuf.slice(-MAX_REASONING * 2)
-            }
-            this.reasoningDirty = true
+        const thought = (update as { content?: { text?: string } }).content?.text ?? ''
+        if (this.mode === 'high' && thought) {
+          this.reasoningBuf += thought
+          // Soft-cap the raw buffer so a very long turn can't grow it unbounded;
+          // renderReasoning tail-clamps again for the message body.
+          if (this.reasoningBuf.length > MAX_REASONING * 2) {
+            this.reasoningBuf = this.reasoningBuf.slice(-MAX_REASONING * 2)
           }
+          this.reasoningDirty = true
+        }
+        // streaming: ONE card per thinking run, opened once and settled once — title and
+        // status only. high keeps its full in-place Thinking message, which is where 2,800
+        // characters belong anyway (§4).
+        if (this.streaming && thought && !this.thinkingActive) {
+          this.thinkingActive = true
+          this.queueTask(`thinking-${this.thinkingRun}`, 'Thinking', 'in_progress')
         }
         // minimal: keep the streamed reply intact (thinking mid-reply doesn't close a
         // segment) — only surface the transient status.
@@ -1084,11 +1309,28 @@ export class OutputConverger {
         // medium/high: reflect the current tool on the in-place progress message. The
         // label (a command line / tool title) is wrapped in a code span so it renders
         // verbatim in the `markdown` block instead of being parsed as emphasis.
-        const actions: SlackAction[] = [
-          ...this.flush(),
-          ...status,
-          { kind: 'progress', text: `:hammer_and_wrench: ${codeSpan(label)}` }
-        ]
+        const progressText = `:hammer_and_wrench: ${codeSpan(label)}`
+        const actions: SlackAction[] = [...this.flush(), ...status]
+        // streaming: that in-place message becomes one task card on the stream, keyed by
+        // toolCallId so streamed updates edit a card instead of stacking (§4). The append
+        // still carries the legacy text, so a stream that never opened degrades to it.
+        if (this.streaming && u.toolCallId) {
+          this.closeThinkingRun()
+          const terminal = u.status === 'completed' || u.status === 'failed'
+          // The tool's own result is HIGH only — medium keeps the card's title and status,
+          // matching the legacy pipeline where tool output is a high-mode rung.
+          if (terminal && this.mode === 'high') this.noteToolOutput(u)
+          const result = terminal && this.mode === 'high' ? (this.toolOutputs.get(u.toolCallId) ?? '') : ''
+          this.queueTask(
+            u.toolCallId,
+            label,
+            u.status === 'completed' ? 'complete' : u.status === 'failed' ? 'error' : 'in_progress',
+            result
+          )
+          this.pendingProgress = progressText
+        } else {
+          actions.push({ kind: 'progress', text: progressText })
+        }
         // high only: once the tool finishes, post its output as a code block.
         if (this.mode === 'high') actions.push(...this.drainToolOutput(u))
         return actions
@@ -1120,7 +1362,9 @@ export class OutputConverger {
     if (isNoResponseBody(this.buf.trim())) {
       this.buf = ''
       this.recordDirty = false
-      return [clear]
+      // The stream is chrome, not the answer: a silent turn that ran tools still owes its
+      // cards a terminal status and its container a closing label.
+      return [clear, ...this.settleStream('completed')]
     }
     // none: settle the final body into the transcript (recordOnly via flush) and stop — no
     // status clear, no attribution footer; nothing is delivered to the channel this turn.
@@ -1141,6 +1385,6 @@ export class OutputConverger {
     // block posts above the reply — thinking precedes the answer (§9.1), so it must sit
     // above it, not below (only high mode ever has reasoning to drain).
     const reasoning = this.drainReasoning()
-    return [...reasoning, ...this.flush(), clear, ...attribution]
+    return [...reasoning, ...this.flush(), clear, ...attribution, ...this.settleStream('completed')]
   }
 }
