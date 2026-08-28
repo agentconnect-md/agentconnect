@@ -67,21 +67,19 @@ export class ClusterSkillCoordinator {
     if (new Set(sources.map((source) => source.sourceId)).size !== sources.length) {
       throw new Error('cluster skill sources contain duplicate identities')
     }
+    // Descriptors only. Buffering every body here would hold a whole widened source — up to the
+    // aggregate envelope — in a 2 GiB pool daemon; each is re-read just before its own upload.
     const files: ClusterSkillFile[] = []
-    const contents = new Map<string, Buffer>()
+    const sourceDirs = new Map(sources.map((source) => [source.sourceId, source.sourceDir]))
     for (const source of sources) {
       const inspected = await inspectLocalSkillSource(source.sourceDir, { limits: source.limits })
       for (const file of inspected.files) {
-        const path = file.path.replaceAll('\\', '/')
-        const content = await readFile(join(source.sourceDir, ...path.split('/')))
-        const descriptor = {
+        files.push({
           sourceId: source.sourceId,
-          path,
-          size: content.length,
+          path: file.path.replaceAll('\\', '/'),
+          size: file.size,
           sha256: file.sha256.replace(/^sha256:/, '')
-        }
-        files.push(descriptor)
-        contents.set(`${source.sourceId}\0${path}`, content)
+        })
       }
     }
     const desiredHash = createHash('sha256')
@@ -106,8 +104,12 @@ export class ClusterSkillCoordinator {
       skillsAgentId: input.skillsAgentId,
       files
     })
-    for (const file of files)
-      await input.client.upload(authority.operationId, handle, file, contents.get(`${file.sourceId}\0${file.path}`)!)
+    // Re-read at upload time. A body that changed since inspection fails the shim's own digest
+    // check against this descriptor, so streaming costs no safety.
+    for (const file of files) {
+      const body = await readFile(join(sourceDirs.get(file.sourceId)!, ...file.path.split('/')))
+      await input.client.upload(authority.operationId, handle, file, body)
+    }
     if (!(await this.store.authorizeClusterSkillMutation({ ...authority, priorRevision: begun.priorRevision }))) {
       throw new Error('cluster skill reconciliation lost duty authority')
     }

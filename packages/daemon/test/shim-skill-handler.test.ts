@@ -75,16 +75,31 @@ describe('cluster skill shim staging', () => {
       })
     ).resolves.toEqual({ received: 8, complete: true })
 
-    // A page repeating an earlier page's file is refused, which no per-page check could catch.
+    // A page after the client declared the last one is refused.
+    await expect(
+      handler.handle({ op: 'manifest', operationId, handle: reply.handle, files: [files[0]!], moreFiles: false })
+    ).rejects.toThrow(/manifest is already complete/)
+
+    // A page repeating an EARLIER page's file, while the manifest is still open: only the
+    // receiver holds the assembled set, so no per-page check could catch this one.
+    const openId = randomUUID()
+    const open = (await handler.handle({
+      op: 'begin',
+      operationId: openId,
+      authority: { ...authority, term: '2' },
+      skillsAgentId: 'universal',
+      files: [files[0]!],
+      moreFiles: true
+    })) as { handle: string }
     await expect(
       handler.handle({
         op: 'manifest',
-        operationId,
-        handle: reply.handle,
+        operationId: openId,
+        handle: open.handle,
         files: [files[0]!],
         moreFiles: false
       })
-    ).rejects.toThrow(/manifest is already complete/)
+    ).rejects.toThrow(/duplicate cluster skill manifest file/)
   })
 
   it('mints a handle and accepts only ordered chunks through verified finalization', async () => {

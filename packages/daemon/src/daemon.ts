@@ -3363,6 +3363,18 @@ export class Daemon {
     }
     const scratch = await mkdtemp(join(tmpdir(), 'agentconnect-cluster-skills-'))
     try {
+      // ONE budget for the whole manifest, spent in source order. Per-source allowances would each
+      // pass and only their sum be refused — inside `begin`, past every warn-and-skip boundary.
+      const admits = client.manifestLimits
+      let admittedFiles = 0
+      let admittedBytes = 0
+      const admit = (fileCount: number, totalBytes: number): void => {
+        if (admittedFiles + fileCount > admits.maxFiles || admittedBytes + totalBytes > admits.maxTotalBytes) {
+          throw new Error(`it does not fit the remaining skill manifest budget (${fileCount} files)`)
+        }
+        admittedFiles += fileCount
+        admittedBytes += totalBytes
+      }
       const gitSources: ClusterSkillSnapshotSource[] = []
       const managed = this.managedSkillCache
         ? await this.managedSkillCache.resolve(agent).catch((error: unknown) => {
@@ -3403,11 +3415,7 @@ export class Daemon {
           const inspected = await inspectLocalSkillSource(acquired.sourceDir, {
             limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
           })
-          // One manifest has to reach the pod in one frame; drop the source that cannot, not the launch.
-          const admits = client.manifestLimits
-          if (inspected.fileCount > admits.maxFiles || inspected.totalBytes > admits.maxTotalBytes) {
-            throw new Error(`it is larger than one skill manifest carries (${inspected.fileCount} files)`)
-          }
+          admit(inspected.fileCount, inspected.totalBytes)
           const selected = await resolveSkillSelections(
             currentEntry.name,
             acquired.sourceDir,
@@ -3428,20 +3436,34 @@ export class Daemon {
           )
         }
       }
-      const localSource = (
+      const localSource = async (
         source: (typeof managed)[number] | (typeof dreamed)[number]
-      ): ClusterSkillSnapshotSource => ({
-        sourceId: source.key,
-        sourceKind: source.kind,
-        sourceDir: source.sourceDir,
-        selections: [source.name],
-        expectedLeaves: [source.name]
-      })
-      const sources = [
-        ...gitSources,
-        ...[...managed].sort((a, b) => a.key.localeCompare(b.key)).map(localSource),
-        ...[...dreamed].sort((a, b) => a.key.localeCompare(b.key)).map(localSource)
-      ]
+      ): Promise<ClusterSkillSnapshotSource[]> => {
+        try {
+          const inspected = await inspectLocalSkillSource(source.sourceDir)
+          admit(inspected.fileCount, inspected.totalBytes)
+        } catch (error) {
+          this.log.warn(`skills: ${source.kind} source ${source.name} unavailable for ${agent.id} (${error})`)
+          return []
+        }
+        return [
+          {
+            sourceId: source.key,
+            sourceKind: source.kind,
+            sourceDir: source.sourceDir,
+            selections: [source.name],
+            expectedLeaves: [source.name]
+          }
+        ]
+      }
+      // Managed then Dream, each sorted within its group: the seam applies later-source precedence.
+      const localSources: ClusterSkillSnapshotSource[] = []
+      for (const group of [managed, dreamed]) {
+        for (const source of [...group].sort((a, b) => a.key.localeCompare(b.key))) {
+          localSources.push(...(await localSource(source)))
+        }
+      }
+      const sources = [...gitSources, ...localSources]
       const gitResolutions = currentGitResolutions(
         configuredGitSources.map(({ entry }) => entry),
         [...resolutionsByDefinition].map(([definitionDigest, resolvedCommit]) => ({ definitionDigest, resolvedCommit }))

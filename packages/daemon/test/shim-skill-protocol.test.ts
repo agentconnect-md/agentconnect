@@ -154,6 +154,18 @@ describe('cluster skill protocol', () => {
     }
   })
 
+  it("reports the bound image's budget, so a caller can spend it across sources", () => {
+    const requester = { request: async () => ({ handle: 'opaque-handle-1234' }) }
+    // Two sources of 200 files each fit `begin` on a v2 image and must NOT each be measured
+    // against a fresh legacy allowance — the pair is what the manifest carries.
+    const wide = new ClusterSkillClient(requester, true).manifestLimits
+    const legacy = new ClusterSkillClient(requester).manifestLimits
+    expect(200 + 200).toBeLessThanOrEqual(wide.maxFiles)
+    expect(200 + 200).toBeGreaterThan(legacy.maxFiles)
+    expect(legacy.maxFiles).toBe(LEGACY_MAX_CLUSTER_SKILL_FILES)
+    expect(wide.maxFiles).toBe(MAX_CLUSTER_SKILL_FILES)
+  })
+
   it('splits a page on bytes, not just row count, when paths are long', () => {
     const files = Array.from({ length: MAX_CLUSTER_SKILL_MANIFEST_PAGE }, (_unused, index) => ({
       sourceId: 'agent:0',
