@@ -104,20 +104,53 @@ replacement:
   host is written as a full https/ssh URL; a dotted two-segment input is not
   reinterpreted as a bare host.
 
+### The read shape
+
+The agent DTO's workspace mirrors **persisted** state — the provenance fixed at
+the last workspace write (§9), never a live re-derivation:
+
+```ts
+{ mode: 'scratch' }
+{ mode: 'git', gitRepo, gitBranch, agentDir?, worktree,
+  credential?: { provider: 'github', access: 'read' | 'write' }
+             | { provider: 'gitlab', access: 'read' | 'write', projectId } }
+```
+
+The console renders an existing workspace from this shape alone. Rendering
+through the live resolver instead would silently re-badge an anonymous
+workspace the moment its owner installs the App — exactly the auto-upgrade §9
+rules out. The resolve endpoint below exists for **picking**, i.e. previewing a
+prospective write; it is never consulted to display a stored workspace.
+
 ### The resolve endpoint
 
 `GET /orgs/:orgId/git/resolve?gitRepo=…` runs the same derivation the write
-paths run and returns the outcome — provider, access ceiling, canonical
-address, default branch — for the console's badges and branch defaults. Because
-the routes and the UI preview call one function, the picker can no longer
-disagree with the write path about what a pick means. It also replaces the
-console's browser-direct `api.github.com` reads (rate-limited, unauthenticated,
-and a second implementation of the server's rules) over time.
+paths run — for the **authenticated caller**, since eligibility is per-user
+(§6) — and returns the outcome: provider, that caller's access ceiling,
+canonical address, default branch. The picker's badges and branch defaults come
+from it, so the picker can no longer disagree with the write path about what a
+pick means. It also replaces the console's browser-direct `api.github.com`
+reads (rate-limited, unauthenticated, and a second implementation of the
+server's rules) over time.
 
 ## 6. Credential derivation — one function, three callers
 
-`deriveWorkspaceCredential(orgId, gitRepo)`, called by the create route, the
-replace route, and the resolve endpoint. No other code decides provenance.
+`deriveWorkspaceCredential(orgId, actorUserId, gitRepo, requestedAccess?)`,
+called by the create route, the replace route, and the resolve endpoint. No
+other code decides provenance.
+
+The two inputs answer different questions and both are required. **Provenance**
+depends only on `(orgId, gitRepo)` — which installation or binding vouches.
+**Eligibility and tier** depend on the actor: where identity attestation is
+configured, the GitHub outcome runs `githubUserAuthz.assertAccess(actorUserId,
+installation, owner, repo, access)` inside the derivation, so two members of
+one organization can legitimately receive different ceilings — or a refusal —
+for the same address. The write paths pass the requested tier (unstated ⇒ the
+target's highest, §5) and are refused when the actor does not hold it; the
+resolve endpoint passes the authenticated caller and returns that caller's
+ceiling instead of enforcing one. Keeping the gate inside the one function is
+the point: an implementation that hoisted it back into a route would
+re-introduce exactly the route-local divergence this design removes.
 
 | Target                                                            | Outcome                                                                                                                                                                                                          |
 | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -169,7 +202,11 @@ provision-on-pick):
    routes on the unified input, the resolve endpoint. Spec assembly
    dual-encodes: the `git` arm to daemons advertising `workspace-git-v1`, the
    legacy arms to everyone else — an old daemon must never receive a frame it
-   fatals on.
+   fatals on. Before dual encoding begins, every gate that branches on
+   `workspace.mode === 'gitlab'` today (the `requiredGitlabFeatures` checks at
+   direct placement and on the serving daemon, §17.3/§24.4 of the GitLab
+   design) re-keys onto `credential.provider === 'gitlab'`, or a `git`-mode
+   workspace would slip past the daemon-capability fence.
 4. **web**: the four tiles over the resolve endpoint; delete the browser-direct
    GitHub reads.
 5. **cleanup** once the fleet advertises the feature: drop the legacy arms and
