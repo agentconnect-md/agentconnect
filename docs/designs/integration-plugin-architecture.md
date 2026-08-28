@@ -149,7 +149,8 @@ reason.
   _output surface_: renderer lifecycle over a converger/applier pair) is
   implemented by chat platforms **and** by the GitHub poster/collector, so
   the generalized turn record stops carrying a permanent `github` special
-  case. Linear (per its design) lands as Layer 2 + hook-style ingress;
+  case. Linear (per its revised design) lands as Layer 2 plus relay-plugin
+  ingress with only a minimal send-side Layer 1 (no socket);
   Teams/Mattermost-class platforms take the full contract.
 - **D6 — Bot demux identity stays in real columns.** `Bot.slackAppId +
 teamId` is a load-bearing composite-unique demux key (admission and
@@ -191,8 +192,8 @@ interface PlatformManifest {
 
   // ---- CP-facing axes (read at install/config time, still pre-dispatch) ----
   credentialShape: 'token' | 'token+appToken' | 'appId+appSecret' | 'appId+appSecret+signing'
-  // Demux identity shape: tenant-scoped (Slack app+team) or app/token-scoped
-  // (Linear urlToken). Drives how core persists Bot identity columns (§11).
+  // Demux identity shape: tenant-scoped (Slack app+team, Linear app+workspace)
+  // or app-scoped (Feishu app id). Drives how core persists Bot identity columns (§11).
   // NOT a per-platform constant — amended in §5.1 below.
   identityScope: 'tenant' | 'app'
   multiAgentShareable: boolean
@@ -510,12 +511,12 @@ registry.
 
 ### 7.6 Contract layering summary
 
-| Implementer                   | Layer 1 (connect + ingress + read port) | Layer 2 (turn output surface) |
-| ----------------------------- | --------------------------------------- | ----------------------------- |
-| Slack/Telegram/Discord/Feishu | yes                                     | yes                           |
-| GitHub poster                 | no                                      | yes                           |
-| Linear (per its design)       | no (hook-style ingress)                 | yes                           |
-| webchat                       | core-owned                              | core-owned                    |
+| Implementer                   | Layer 1 (connect + ingress + read port)   | Layer 2 (turn output surface) |
+| ----------------------------- | ----------------------------------------- | ----------------------------- |
+| Slack/Telegram/Discord/Feishu | yes                                       | yes                           |
+| GitHub poster                 | no                                        | yes                           |
+| Linear (per its design)       | minimal (relay-plugin ingress; no socket) | yes                           |
+| webchat                       | core-owned                                | core-owned                    |
 
 ## 8. Relay Slot
 
@@ -729,7 +730,7 @@ Two decisions specific to this host:
   ```prisma
   model Bot {
     platform          String
-    externalAppId     String?   // Slack A… app id; Linear urlToken; …
+    externalAppId     String?   // Slack A… app id; Linear OAuth client id; …
     externalTenantId  String?   // Slack T… team id; '-' sentinel where tenantless
     platformConfig    Json?     // display ids, region, portal hints
     @@unique([platform, externalAppId, externalTenantId])
@@ -738,10 +739,13 @@ Two decisions specific to this host:
 
   **Tenantless identities need a sentinel, not NULL.** Postgres treats
   NULLs as distinct in unique indexes, so a NULL `externalTenantId` would
-  not enforce uniqueness for tenant-free identities — and Linear's
-  bot-scoped `urlToken` (this table's replacement for the Linear design's
-  `linearUrlToken @unique`) must stay unique because the relay selects the
-  bot by it. Rule: **NULL is reserved for legacy rows only** (pre-capture
+  not enforce uniqueness for tenant-free identities — and a tenantless
+  platform's app id (Feishu's `cli_…`) must stay unique because the relay
+  demuxes callbacks by it. (Linear, whose earlier design minted a bot-scoped
+  `urlToken @unique` here, is tenant-scoped in its revised design — OAuth
+  client id + workspace `organizationId` on the composite index — and uses
+  the sentinel only for a not-yet-connected install.)
+  Rule: **NULL is reserved for legacy rows only** (pre-capture
   Slack rows keep today's NULLs-distinct behavior); every new row on a
   tenantless platform writes the sentinel `'-'` as `externalTenantId`, so
   the composite unique index enforces `(platform, externalAppId)`
