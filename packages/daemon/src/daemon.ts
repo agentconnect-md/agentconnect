@@ -822,13 +822,12 @@ export class Daemon {
         // Terminal settlement: a chrome stream must never be left open (§5), and stale footer
         // removals the final attribution action may have bypassed still need retrying.
         onSettle: async (p) => {
-          const streamState = turnState<SlackTurnState>(p)
-          if (p.conn && streamState.stream) {
+          // A turn that died before its own settle still owes the stream one. An unresolved
+          // stop is NOT retried here — the connection owns that, because it outlives Pending.
+          if (p.conn && turnState<SlackTurnState>(p).stream) {
             if (p.conv instanceof OutputConverger)
               for (const action of p.conv.settleStream('completed')) await this.applySlackAction(p, action)
-            // Reissue the same stop Slack left unresolved; the settle append above already ran
-            // on the first attempt, so a retried stop owes only itself.
-            if (streamState.stream) await this.applySlackAction(p, { kind: 'stream-stop' })
+            if (turnState<SlackTurnState>(p).stream) await this.applySlackAction(p, { kind: 'stream-stop', settle: [] })
           }
           if (p.conn && turnState<SlackTurnState>(p).staleReplyFooters?.length) {
             await clearStaleSlackReplyFootersExternal(

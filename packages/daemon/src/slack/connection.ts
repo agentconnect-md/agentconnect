@@ -580,6 +580,19 @@ const STREAM_CAPABILITY_REFUSALS = new Set([
  *  A stopped stream is unrecoverable, so there is nothing to retry or report. */
 const STREAM_ALREADY_STOPPED = new Set(['message_not_in_streaming_state', 'stopped_by_user'])
 
+/** Backoff for a settle+stop Slack has not resolved, after the owning turn is gone. */
+const OWED_STOP_BACKOFF_MS = [5_000, 15_000, 45_000, 120_000]
+
+/** The container label for a stream the daemon opened but no turn ever owned. */
+const STREAM_ABANDONED_TITLE = 'Stopped'
+
+/** Streams are bookkept per MESSAGE. One connection can host sibling turns in the same
+ *  (channel, thread) — same-message multi-agent fan-out — and a conversation key would let the
+ *  second open orphan the first, leaving it streaming forever. */
+function streamKey(channel: string, ts: string): string {
+  return `${channel}:${ts}`
+}
+
 /** Does this error PROVE the message is no longer streaming? Only a definite answer retires a
  *  handle — a rate limit or a dropped connection leaves the message live and stays retryable. */
 function isStreamAlreadyStopped(err: unknown): boolean {
@@ -736,9 +749,12 @@ export class SlackConnection implements PlatformConnection {
   private statusIdentityUnsupported = false
   /** Cooldown after Slack proves this installation cannot stream (§7 capability refusal). */
   private streamingUnavailableUntil = 0
-  /** Chrome streams still open, `channel:thread` → message ts. An entry disappears the moment
-   *  the stream settles — by our stop, or by Slack proving it already stopped. */
-  private openStreams = new Map<string, string>()
+  /** Chrome streams still open, keyed by MESSAGE (see `streamKey`). An entry disappears the
+   *  moment the stream settles — by our stop, or by Slack proving it already stopped. */
+  private openStreams = new Set<string>()
+  /** Settle+stop pairs Slack has not resolved, retried on a backoff after the owning turn is
+   *  gone. Without an owner here a transient double failure leaves the row working forever. */
+  private owedStops = new Map<string, { attempts: number; timer: NodeJS.Timeout }>()
   botUserId = ''
   /** The appToken this socket is keyed by (one socket per unique appToken). */
   readonly appToken: string
@@ -1317,50 +1333,88 @@ export class SlackConnection implements PlatformConnection {
     // initiator (agent-to-agent, cron, hook, dream) names the bot itself — accepted live, and
     // it keeps every such turn on the same code path instead of carving it out (§7).
     const recipient = options.isDm ? undefined : options.recipientUserId || this.botUserId
+    // The send queue's 30 s timeout rejects while the queued task KEEPS RUNNING, so a rejection
+    // here is indeterminate: the open may still land. `opened` carries the task's real answer,
+    // so a stream the degraded turn no longer owns is settled instead of working forever.
+    let publish: (stream: SlackTurnStream | undefined) => void = () => {}
+    const opened = new Promise<SlackTurnStream | undefined>((resolve) => {
+      publish = resolve
+    })
     return this.queue
       .enqueue(async () => {
-        // `plan` folds every task card into ONE collapsed-by-default container labelled by the
-        // `plan_update` title. `timeline` — the default — renders each card flat and separate.
-        const payload: Record<string, unknown> = {
-          channel,
-          thread_ts: threadTs,
-          task_display_mode: 'plan',
-          ...(recipient ? { recipient_user_id: recipient } : {}),
-          ...(recipient && this.teamId ? { recipient_team_id: this.teamId } : {})
-        }
-        const decorate = Date.now() >= this.customUsernameRetryAt
-        const username = decorate ? options.identity?.username?.trim() : undefined
-        const iconUrl = decorate ? options.identity?.icon_url?.trim() : undefined
-        const customize = { ...(username ? { username } : {}), ...(iconUrl ? { icon_url: iconUrl } : {}) }
+        let result: SlackTurnStream | undefined
         try {
-          let res: { ts?: string } | undefined
-          try {
-            res = await start({ ...payload, ...customize })
-            if (Object.keys(customize).length > 0) this.customUsernameRetryAt = 0
-          } catch (err) {
-            // Same cooldown the post boundary uses: retry undecorated, re-probe in 5 minutes.
-            if (Object.keys(customize).length === 0 || !isMissingCustomizeScope(err)) throw err
-            this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
-            this.deps.log?.debug('slack: chat:write.customize missing — streaming with the app default identity')
-            res = await start(payload)
-          }
-          const ts = res?.ts
-          if (!ts) {
-            this.deps.log?.debug(`slack: chat.startStream returned no ts (ch=${channel} thread=${threadTs})`)
-            return undefined
-          }
-          this.streamingUnavailableUntil = 0
-          this.openStreams.set(`${channel}:${threadTs}`, ts)
-          return { channel, threadTs, ts }
-        } catch (err) {
-          this.rememberMissingScopes(err)
-          this.noteStreamFailure(err, 'chat.startStream', channel)
-          return undefined
+          result = await this.openStream(start, channel, threadTs, recipient, options.identity)
+          return result
+        } finally {
+          publish(result)
         }
-        // The send queue's own timeout rejects outside the task; a turn that cannot open a
-        // stream degrades, it does not throw into dispatch.
       })
-      .catch(() => undefined)
+      .catch(() => {
+        void opened.then((late) => {
+          if (late) void this.abandonStream(late)
+        })
+        return undefined
+      })
+  }
+
+  /** The `chat.startStream` call itself. Runs inside the send queue's task, so it never
+   *  enqueues again; the caller owns the timeout semantics. */
+  private async openStream(
+    start: (a: unknown) => Promise<{ ts?: string }>,
+    channel: string,
+    threadTs: string,
+    recipient: string | undefined,
+    identity?: SlackPostOptions
+  ): Promise<SlackTurnStream | undefined> {
+    // `plan` folds every task card into ONE collapsed-by-default container labelled by the
+    // `plan_update` title. `timeline` — the default — renders each card flat and separate.
+    const payload: Record<string, unknown> = {
+      channel,
+      thread_ts: threadTs,
+      task_display_mode: 'plan',
+      ...(recipient ? { recipient_user_id: recipient } : {}),
+      ...(recipient && this.teamId ? { recipient_team_id: this.teamId } : {})
+    }
+    const decorate = Date.now() >= this.customUsernameRetryAt
+    const username = decorate ? identity?.username?.trim() : undefined
+    const iconUrl = decorate ? identity?.icon_url?.trim() : undefined
+    const customize = { ...(username ? { username } : {}), ...(iconUrl ? { icon_url: iconUrl } : {}) }
+    try {
+      let res: { ts?: string } | undefined
+      try {
+        res = await start({ ...payload, ...customize })
+        if (Object.keys(customize).length > 0) this.customUsernameRetryAt = 0
+      } catch (err) {
+        // Same cooldown the post boundary uses: retry undecorated, re-probe in 5 minutes.
+        if (Object.keys(customize).length === 0 || !isMissingCustomizeScope(err)) throw err
+        this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
+        this.deps.log?.debug('slack: chat:write.customize missing — streaming with the app default identity')
+        res = await start(payload)
+      }
+      const ts = res?.ts
+      if (!ts) {
+        this.deps.log?.debug(`slack: chat.startStream returned no ts (ch=${channel} thread=${threadTs})`)
+        return undefined
+      }
+      this.streamingUnavailableUntil = 0
+      // Keyed by MESSAGE, not by conversation: same-(channel, thread) sibling turns coexist on
+      // one connection, and a conversation key would let the second open orphan the first.
+      this.openStreams.add(streamKey(channel, ts))
+      return { channel, threadTs, ts }
+    } catch (err) {
+      this.rememberMissingScopes(err)
+      this.noteStreamFailure(err, 'chat.startStream', channel)
+      return undefined
+    }
+  }
+
+  /** Settle and stop a stream no turn owns: the queue timed out on the open, the caller
+   *  degraded, and the open landed anyway. Nothing was ever appended, so a bare label is the
+   *  whole settle. Best-effort, and an unresolved stop joins the owed-stop sweep. */
+  private async abandonStream(stream: SlackTurnStream): Promise<void> {
+    this.deps.log?.debug(`slack: settling an unowned stream (ch=${stream.channel} ts=${stream.ts})`)
+    await this.settleAndStop(stream, [{ type: 'plan_update', title: STREAM_ABANDONED_TITLE }], {})
   }
 
   /** Append card chunks to an open stream. A `refused` update is simply lost — chrome is
@@ -1370,7 +1424,7 @@ export class SlackConnection implements PlatformConnection {
     if (chunks.length === 0) return 'ok'
     if (typeof append !== 'function') return 'refused'
     // The handle is retired, so the message is settled and this append is stale.
-    if (this.openStreams.get(`${stream.channel}:${stream.threadTs}`) !== stream.ts) return 'refused'
+    if (!this.openStreams.has(streamKey(stream.channel, stream.ts))) return 'refused'
     try {
       return await this.queue.enqueue(async () => {
         await append({ channel: stream.channel, ts: stream.ts, chunks })
@@ -1383,7 +1437,7 @@ export class SlackConnection implements PlatformConnection {
       // the person's Stop. A transient failure leaves it streaming, so the handle stays and
       // the settling stop still has a target.
       if (!isStreamAlreadyStopped(err)) return 'refused'
-      this.closeStream(stream.channel, stream.threadTs)
+      this.closeStream(stream)
       return 'stopped'
     }
   }
@@ -1401,8 +1455,7 @@ export class SlackConnection implements PlatformConnection {
     const stop = this.app.client.chat.stopStream
     // Nothing left to settle: no such method (so no stream was ever opened here) or the handle
     // is already retired. Idempotent by construction — a stopped stream is unrecoverable.
-    if (typeof stop !== 'function' || this.openStreams.get(`${stream.channel}:${stream.threadTs}`) !== stream.ts)
-      return true
+    if (typeof stop !== 'function' || !this.openStreams.has(streamKey(stream.channel, stream.ts))) return true
     try {
       return await this.queue.enqueue(async () => {
         await stop({
@@ -1416,22 +1469,79 @@ export class SlackConnection implements PlatformConnection {
           })
         })
         // Retired only now that Slack has accepted it.
-        this.closeStream(stream.channel, stream.threadTs)
+        this.closeStream(stream)
         return true
       })
     } catch (err) {
       this.rememberMissingScopes(err)
       this.noteStreamFailure(err, 'chat.stopStream', stream.channel)
       if (!isStreamAlreadyStopped(err)) return false
-      this.closeStream(stream.channel, stream.threadTs)
+      this.closeStream(stream)
       return true
     }
   }
 
+  /**
+   * Settle a stream and stop it, as ONE unit, retried until Slack gives a definite answer.
+   *
+   * The two halves cannot be split: stopping while cards are still `in_progress` makes Slack
+   * render the container as "Something went wrong" (§4 fact 3), so a refused settle must hold
+   * the stop back. And the turn that owned the stream is gone long before a retry is due —
+   * `Pending` is dropped at turn settlement — so the connection owns the retry, on a bounded
+   * backoff, keeping the settle content verbatim.
+   */
+  async settleAndStop(
+    stream: SlackTurnStream,
+    settle: SlackStreamChunk[],
+    options: { chromeOwnerAgentId?: string }
+  ): Promise<void> {
+    const key = streamKey(stream.channel, stream.ts)
+    if (!this.openStreams.has(key)) return this.forgetOwedStop(key)
+    if (settle.length > 0) {
+      const outcome = await this.appendTurnStream(stream, settle)
+      // The person ended it: the message is settled and nothing more is owed.
+      if (outcome === 'stopped') return this.forgetOwedStop(key)
+      if (outcome === 'refused') return this.scheduleOwedStop(stream, settle, options)
+    }
+    if (await this.stopTurnStream(stream, options)) return this.forgetOwedStop(key)
+    // Slack left it unresolved: the settle already landed, so only the stop is still owed.
+    this.scheduleOwedStop(stream, [], options)
+  }
+
+  /** Re-arm the owed settle+stop on a bounded backoff. A handful of attempts over a few
+   *  minutes: past that the row is stuck for a reason retrying cannot fix. */
+  private scheduleOwedStop(
+    stream: SlackTurnStream,
+    settle: SlackStreamChunk[],
+    options: { chromeOwnerAgentId?: string }
+  ): void {
+    const key = streamKey(stream.channel, stream.ts)
+    const attempts = (this.owedStops.get(key)?.attempts ?? 0) + 1
+    this.forgetOwedStop(key)
+    const delay = OWED_STOP_BACKOFF_MS[attempts - 1]
+    if (delay === undefined) {
+      this.deps.log?.debug(`slack: giving up on an unresolved stream stop (ch=${stream.channel} ts=${stream.ts})`)
+      return
+    }
+    const timer = setTimeout(() => {
+      this.owedStops.delete(key)
+      void this.settleAndStop(stream, settle, options)
+    }, delay)
+    timer.unref?.()
+    this.owedStops.set(key, { attempts, timer })
+  }
+
+  private forgetOwedStop(key: string): void {
+    const owed = this.owedStops.get(key)
+    if (!owed) return
+    clearTimeout(owed.timer)
+    this.owedStops.delete(key)
+  }
+
   /** A stopped stream is unrecoverable: drop the handle so nothing appends to it and no
    *  second stop is attempted, whoever ended it. */
-  private closeStream(channel: string, threadTs: string): void {
-    this.openStreams.delete(`${channel}:${threadTs}`)
+  private closeStream(stream: SlackTurnStream): void {
+    this.openStreams.delete(streamKey(stream.channel, stream.ts))
   }
 
   /** §7's two error classes. A capability refusal latches streaming off for a re-probe window;
@@ -2111,6 +2221,7 @@ export class SlackConnection implements PlatformConnection {
   }
 
   async stop(): Promise<void> {
+    for (const key of [...this.owedStops.keys()]) this.forgetOwedStop(key)
     await this.app.stop()
   }
 }

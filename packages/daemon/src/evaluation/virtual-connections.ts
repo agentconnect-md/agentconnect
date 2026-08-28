@@ -431,6 +431,8 @@ export class VirtualSlackConnection implements PlatformConnection {
     return true
   }
 
+  async settleAndStop(): Promise<void> {}
+
   streamingLikely(): boolean {
     return false
   }

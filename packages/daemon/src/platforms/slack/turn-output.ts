@@ -578,13 +578,20 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       return
     }
     case 'stream-stop': {
-      if (state.streamDead || !state.stream) return
-      const settled = await conn.stopTurnStream(state.stream, { chromeOwnerAgentId: p.plan.agentId })
-      // Unresolved means the message may still be streaming: keep the handle so the settlement
-      // backstop reissues the same stop rather than stranding it open.
-      if (!settled) return
+      if (state.streamDead) return
+      if (!state.stream) {
+        // Degraded before the stream ever opened: the terminal batch still owes the channel
+        // its legacy rendering, exactly as a non-streaming turn's last `progress` edit would.
+        if (state.streamDegraded && action.progressText)
+          await applySlackProgress(conn, p, chromeOptions, action.progressText)
+        return
+      }
+      const stream = state.stream
+      // The handle is retired HERE, whatever Slack answers: the connection owns the settle+stop
+      // from this point (it retries after the turn is gone), and the turn must not race it.
       state.stream = undefined
       state.streamDead = true
+      await conn.settleAndStop(stream, action.settle, { chromeOwnerAgentId: p.plan.agentId })
       return
     }
     case 'plan':

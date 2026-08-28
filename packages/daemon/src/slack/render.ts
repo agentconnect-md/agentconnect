@@ -92,7 +92,10 @@ export type SlackAction =
   // `progressText` is the same in-place `progress` rendering this batch would have
   // produced, so a turn whose stream never opened degrades to today's message.
   | { kind: 'stream-append'; chunks: SlackStreamChunk[]; progressText?: string }
-  | { kind: 'stream-stop' }
+  // The terminal settle rides the STOP rather than a preceding append, because the two
+  // cannot be split: stopping while cards are still `in_progress` makes Slack render
+  // "Something went wrong", so a refused settle has to hold its own stop back.
+  | { kind: 'stream-stop'; settle: SlackStreamChunk[]; progressText?: string }
 
 /**
  * The chunk vocabulary `chat.appendStream` accepts, as `@slack/types` declares it. No
@@ -979,7 +982,10 @@ export class OutputConverger {
   settleStream(outcome: 'completed' | 'stopped'): SlackAction[] {
     if (!this.streaming || this.streamClosed) return []
     this.streamClosed = true
-    if (!this.streamOpened) return []
+    // A tool that started AND finished inside one coalescing window leaves cards pending with
+    // no stream open yet. Opening it here is what keeps such a turn from ending with no tool
+    // chrome at all; only a genuinely tool-free turn stays silent.
+    if (!this.streamOpened && this.emittedTasks.size === 0) return []
     const terminal = outcome === 'stopped' ? 'error' : 'complete'
     this.closeThinkingRun(terminal)
     for (const id of [...this.openTasks]) this.queueTask(id, this.taskTitles.get(id) ?? 'tool', terminal)
@@ -987,8 +993,16 @@ export class OutputConverger {
     // the working one happens to read the same.
     this.planTitle = outcome === 'stopped' ? STREAM_PLAN_STOPPED : this.planSummary()
     this.pendingPlanTitle = this.planTitle
-    const chunks = this.drainStreamChunks()
-    return [...(chunks.length > 0 ? [{ kind: 'stream-append' as const, chunks }] : []), { kind: 'stream-stop' }]
+    const progressText = this.pendingProgress
+    this.pendingProgress = ''
+    const settle = this.drainStreamChunks()
+    const out: SlackAction[] = []
+    if (!this.streamOpened) {
+      this.streamOpened = true
+      out.push({ kind: 'stream-start' })
+    }
+    out.push({ kind: 'stream-stop', settle, ...(progressText ? { progressText } : {}) })
+    return out
   }
 
   private drainStreamChunks(): SlackStreamChunk[] {

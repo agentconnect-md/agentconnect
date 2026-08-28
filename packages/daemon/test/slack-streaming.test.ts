@@ -45,8 +45,12 @@ function streaming(mode: 'none' | 'minimal' | 'low' | 'medium' | 'high', address
   return converger
 }
 
+// Card chunks reach Slack two ways: a coalesced mid-turn append, and the terminal settle that
+// rides the stop itself (it may not be split from it — see the settle-before-stop tests).
 const appends = (actions: SlackAction[]): SlackStreamChunk[] =>
-  actions.flatMap((action) => (action.kind === 'stream-append' ? action.chunks : []))
+  actions.flatMap((action) =>
+    action.kind === 'stream-append' ? action.chunks : action.kind === 'stream-stop' ? action.settle : []
+  )
 
 const cards = (actions: SlackAction[]): SlackStreamChunk[] => appends(actions).filter((c) => c.type === 'task_update')
 
@@ -156,22 +160,23 @@ describe('OutputConverger streaming axis', () => {
     ])
   })
 
-  it('settles every open card BEFORE the stop, because a stop with live cards is destructive', () => {
+  it('rides the terminal settle ON the stop, so the two can never be split', () => {
+    // Emitting the settle as its own append lets a refused settle fall through to a stop that
+    // still has `in_progress` cards, which is what makes Slack render "Something went wrong".
     const converger = streaming('medium')
     converger.onUpdate(tool('t1', 'Read file'))
     converger.onUpdate(tool('t2', 'Run tests'))
     converger.streamUpdate()
     const finals = converger.onFinal(attribution())
-    const settle = finals.findIndex((a) => a.kind === 'stream-append')
-    const stop = finals.findIndex((a) => a.kind === 'stream-stop')
-    expect(settle).toBeGreaterThanOrEqual(0)
-    expect(stop).toBe(finals.length - 1)
-    expect(settle).toBeLessThan(stop)
-    expect(appends(finals)).toEqual([
-      { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' },
-      { type: 'task_update', id: 't2', title: 'Run tests', status: 'complete' },
-      { type: 'plan_update', title: 'Completed 2 steps' }
-    ])
+    expect(finals.filter((a) => a.kind === 'stream-append')).toEqual([])
+    expect(finals.at(-1)).toEqual({
+      kind: 'stream-stop',
+      settle: [
+        { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' },
+        { type: 'task_update', id: 't2', title: 'Run tests', status: 'complete' },
+        { type: 'plan_update', title: 'Completed 2 steps' }
+      ]
+    })
   })
 
   it('settles a cancelled turn as errors under a Stopped label', () => {
@@ -181,11 +186,38 @@ describe('OutputConverger streaming axis', () => {
     converger.streamUpdate()
     const settled = converger.settleStream('stopped')
     // Only the IN-FLIGHT card flips; a step that really finished keeps its status.
-    expect(appends(settled)).toEqual([
-      { type: 'task_update', id: 't2', title: 'Run tests', status: 'error' },
-      { type: 'plan_update', title: 'Stopped' }
+    expect(settled).toEqual([
+      {
+        kind: 'stream-stop',
+        settle: [
+          { type: 'task_update', id: 't2', title: 'Run tests', status: 'error' },
+          { type: 'plan_update', title: 'Stopped' }
+        ]
+      }
     ])
-    expect(settled.at(-1)).toEqual({ kind: 'stream-stop' })
+  })
+
+  it('opens and settles a tool turn whose whole tool ran inside one coalescing window', () => {
+    // The 750ms timer never fired, so nothing was appended and no stream is open yet. Returning
+    // "nothing to settle" here is what left a medium/high tool turn with no chrome at all.
+    const converger = streaming('medium')
+    converger.onUpdate(toolDone('t1', 'Read file', 'read 42 lines'))
+    expect(converger.streamUpdate().length).toBeGreaterThan(0) // sanity: it WOULD have opened
+    const later = streaming('medium')
+    later.onUpdate(toolDone('t1', 'Read file', 'read 42 lines'))
+    const finals = later.onFinal(attribution())
+    const streamActions = finals.filter((a) => a.kind.startsWith('stream-'))
+    expect(streamActions).toEqual([
+      { kind: 'stream-start' },
+      {
+        kind: 'stream-stop',
+        settle: [
+          { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' },
+          { type: 'plan_update', title: 'Completed 1 step' }
+        ],
+        progressText: ':hammer_and_wrench: `Read file`'
+      }
+    ])
   })
 
   it('settles exactly once per turn, whichever seam gets there first', () => {
@@ -213,11 +245,13 @@ describe('OutputConverger streaming axis', () => {
     converger.streamUpdate()
     const terminal = converger.flushTerminal()
     // The tool calls did not fail; the turn did, and the ⚠️ notice carries that in the body.
-    expect(appends(terminal)).toEqual([
-      { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' },
-      { type: 'plan_update', title: 'Completed 1 step' }
-    ])
-    expect(terminal.at(-1)).toEqual({ kind: 'stream-stop' })
+    expect(terminal.at(-1)).toEqual({
+      kind: 'stream-stop',
+      settle: [
+        { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' },
+        { type: 'plan_update', title: 'Completed 1 step' }
+      ]
+    })
   })
 
   it('settles a silent turn that still ran tools', () => {
@@ -226,7 +260,7 @@ describe('OutputConverger streaming axis', () => {
     converger.streamUpdate()
     converger.onUpdate(chunk('AC_NO_RESPONSE'))
     const finals = converger.onFinal(attribution())
-    expect(finals.at(-1)).toEqual({ kind: 'stream-stop' })
+    expect(finals.at(-1)).toMatchObject({ kind: 'stream-stop' })
     expect(appends(finals)).toContainEqual({ type: 'plan_update', title: 'Completed 1 step' })
   })
 
@@ -349,6 +383,10 @@ describe('applySlackAction — chrome stream actions', () => {
         async (_stream: SlackTurnStream, _chunks: SlackStreamChunk[]) => 'ok' as SlackStreamAppendOutcome
       ),
       stopTurnStream: vi.fn(async (_stream: SlackTurnStream, _options?: Record<string, unknown>) => true),
+      // The real connection owns settle-then-stop as one unit; the fake records the pair.
+      settleAndStop: vi.fn(
+        async (_stream: SlackTurnStream, _settle: SlackStreamChunk[], _options: Record<string, unknown>) => {}
+      ),
       updateMessage: vi.fn(async (_c: string, _ts: string, _text: string, _chrome?: boolean) => true),
       postMessage: vi.fn(async (_channel: string, _text: string, _thread?: string, _options?: unknown) => 'p1'),
       setStatus: vi.fn(async () => {}),
@@ -470,8 +508,8 @@ describe('applySlackAction — chrome stream actions', () => {
     expect(conn.postMessage).not.toHaveBeenCalled()
     expect(state.streamDegraded).toBeUndefined()
     expect(state.stream).toEqual({ channel: 'C1', threadTs: 'T1', ts: '900.1' })
-    await apply({ kind: 'stream-stop' })
-    expect(conn.stopTurnStream).toHaveBeenCalledOnce()
+    await apply({ kind: 'stream-stop', settle: [card('t1', 'complete')] })
+    expect(conn.settleAndStop).toHaveBeenCalledOnce()
   })
 
   it('kills the stream for good once an append reports it stopped', async () => {
@@ -489,39 +527,40 @@ describe('applySlackAction — chrome stream actions', () => {
     // message of any kind — not even the legacy progress one.
     await apply({ kind: 'stream-append', chunks: [card('t2', 'complete')], progressText: ':x: `Run tests`' })
     await apply({ kind: 'stream-start' })
-    await apply({ kind: 'stream-stop' })
+    await apply({ kind: 'stream-stop', settle: [card('t2', 'complete')] })
     expect(conn.appendTurnStream).toHaveBeenCalledOnce()
     expect(conn.startTurnStream).toHaveBeenCalledOnce()
-    expect(conn.stopTurnStream).not.toHaveBeenCalled()
+    expect(conn.settleAndStop).not.toHaveBeenCalled()
     expect(conn.postMessage).not.toHaveBeenCalled()
   })
 
-  it('stamps the chrome marker on the stop so a peer backfill skips the finalized card', async () => {
+  it('hands the settle and the stop to the connection as one unit, with the chrome owner', async () => {
     const { apply, conn, state } = fixture()
     await apply({ kind: 'stream-start' })
-    await apply({ kind: 'stream-stop' })
-    expect(conn.stopTurnStream).toHaveBeenCalledWith(
-      { channel: 'C1', threadTs: 'T1', ts: '900.1' },
-      { chromeOwnerAgentId: 'bot-a' }
-    )
+    const settle = [card('t1', 'complete'), { type: 'plan_update', title: 'Completed 1 step' } as SlackStreamChunk]
+    await apply({ kind: 'stream-stop', settle })
+    expect(conn.settleAndStop).toHaveBeenCalledWith({ channel: 'C1', threadTs: 'T1', ts: '900.1' }, settle, {
+      chromeOwnerAgentId: 'bot-a'
+    })
+    // The handle is retired here whatever Slack answers — the connection owns the retry now,
+    // and the turn's Pending is dropped long before one is due.
     expect(state.stream).toBeUndefined()
     expect(state.streamDead).toBe(true)
   })
 
-  it('keeps the handle when Slack leaves the message streaming, so settlement can retry', async () => {
-    let settled = false
-    const { apply, conn, state } = fixture({
-      stopTurnStream: vi.fn(async (_s: SlackTurnStream, _o?: Record<string, unknown>) => settled)
-    })
+  it('still shows the legacy progress line when a degraded turn settles', async () => {
+    // The sub-flush-window tool turn that could not open a stream: its terminal stop carries the
+    // only legacy rendering the turn ever produced.
+    const { apply, conn } = fixture({ startTurnStream: vi.fn(async () => undefined) })
     await apply({ kind: 'stream-start' })
-    await apply({ kind: 'stream-stop' })
-    expect(state.stream).toEqual({ channel: 'C1', threadTs: 'T1', ts: '900.1' })
-    expect(state.streamDead).toBeUndefined()
-
-    settled = true
-    await apply({ kind: 'stream-stop' })
-    expect(state.stream).toBeUndefined()
-    expect(conn.stopTurnStream).toHaveBeenCalledTimes(2)
+    await apply({ kind: 'stream-stop', settle: [card('t1', 'complete')], progressText: ':x: `Read file`' })
+    expect(conn.settleAndStop).not.toHaveBeenCalled()
+    expect(conn.postMessage).toHaveBeenCalledWith(
+      'C1',
+      ':x: `Read file`',
+      'T1',
+      expect.objectContaining({ chrome: true })
+    )
   })
 
   it('leaves the transient status alone — the two do not share a slot here', async () => {
@@ -738,6 +777,121 @@ describe('SlackConnection chrome streaming', () => {
     expect(await conn.appendTurnStream(stream, [readFile])).toBe('refused')
     expect(await conn.stopTurnStream(stream)).toBe(true)
     expect(app.client.chat.stopStream).toHaveBeenCalledOnce()
+  })
+
+  it('keeps sibling streams in one thread apart, so neither is orphaned', async () => {
+    // Same-message multi-agent fan-out puts two turns on one connection in the same (channel,
+    // thread); displacement deliberately lets them coexist. A conversation-keyed handle let the
+    // second open clobber the first, leaving message one streaming forever.
+    let next = 0
+    const { conn, app } = await connect({ chat: { startStream: vi.fn(async () => ({ ts: `900.${++next}` })) } })
+    const first = (await conn.startTurnStream('C1', 'T1'))!
+    const second = (await conn.startTurnStream('C1', 'T1'))!
+    expect(first.ts).not.toBe(second.ts)
+    // Both are still live: each turn appends to and stops its OWN message.
+    expect(await conn.appendTurnStream(first, [readFile])).toBe('ok')
+    expect(await conn.stopTurnStream(second)).toBe(true)
+    expect(await conn.appendTurnStream(first, [readFile])).toBe('ok')
+    expect(await conn.stopTurnStream(first)).toBe(true)
+    const stopped = app.client.chat.stopStream.mock.calls.map((call) => (call[0] as { ts: string }).ts)
+    expect(stopped).toEqual([second.ts, first.ts])
+  })
+
+  it('settles a stream the caller abandoned after the send queue timed out on the open', async () => {
+    // The queue's 30s timeout REJECTS while the task keeps running. Treating that as a definite
+    // refusal is what let a later-resolving open register a stream no turn owned.
+    let release: (v: { ts: string }) => void = () => {}
+    const startStream = vi.fn(
+      async () =>
+        await new Promise<{ ts: string }>((resolve) => {
+          release = resolve
+        })
+    )
+    const { conn, app } = await connect({ chat: { startStream } })
+    vi.useFakeTimers()
+    try {
+      const pending = conn.startTurnStream('C1', 'T1')
+      await vi.advanceTimersByTimeAsync(31_000)
+      expect(await pending).toBeUndefined()
+      // …and only THEN does Slack answer.
+      release({ ts: '900.9' })
+      await vi.advanceTimersByTimeAsync(1_000)
+      // The unowned stream is settled under an explicit label, never left working.
+      expect(app.client.chat.appendStream).toHaveBeenCalledWith(
+        expect.objectContaining({ ts: '900.9', chunks: [{ type: 'plan_update', title: 'Stopped' }] })
+      )
+      expect(app.client.chat.stopStream).toHaveBeenCalledWith(expect.objectContaining({ ts: '900.9' }))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('holds the stop back when the terminal settle is refused, then retries the pair', async () => {
+    // Stopping with cards still in_progress makes Slack render "Something went wrong", so a
+    // refused settle must NOT fall through to the stop.
+    let acceptAppend = false
+    const appendStream = vi.fn(async (_a: Record<string, unknown>) => {
+      if (!acceptAppend) throw slackError('ratelimited')
+      return {}
+    })
+    const { conn, app } = await connect({ chat: { appendStream } })
+    const stream = (await conn.startTurnStream('C1', 'T1'))!
+    vi.useFakeTimers()
+    try {
+      await conn.settleAndStop(stream, [readFile], { chromeOwnerAgentId: 'bot-a' })
+      expect(app.client.chat.stopStream).not.toHaveBeenCalled()
+
+      acceptAppend = true
+      await vi.advanceTimersByTimeAsync(6_000)
+      // The retry replays the SAME settle content, then stops.
+      expect(appendStream).toHaveBeenCalledTimes(2)
+      expect(appendStream.mock.calls[1]![0]).toMatchObject({ chunks: [readFile] })
+      expect(app.client.chat.stopStream).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('retries an unresolved stop after the owning turn is gone, then stops rearming', async () => {
+    let acceptStop = false
+    const stopStream = vi.fn(async () => {
+      if (!acceptStop) throw slackError('ratelimited')
+      return {}
+    })
+    const { conn } = await connect({ chat: { stopStream } })
+    const stream = (await conn.startTurnStream('C1', 'T1'))!
+    vi.useFakeTimers()
+    try {
+      await conn.settleAndStop(stream, [], { chromeOwnerAgentId: 'bot-a' })
+      expect(stopStream).toHaveBeenCalledOnce()
+      // Nothing outside the connection holds this stream any more — Pending is long gone.
+      await vi.advanceTimersByTimeAsync(6_000)
+      expect(stopStream).toHaveBeenCalledTimes(2)
+      acceptStop = true
+      await vi.advanceTimersByTimeAsync(16_000)
+      expect(stopStream).toHaveBeenCalledTimes(3)
+      // Accepted — the sweep disarms.
+      await vi.advanceTimersByTimeAsync(200_000)
+      expect(stopStream).toHaveBeenCalledTimes(3)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops retrying a stream the person already ended', async () => {
+    const stopStream = vi.fn(async () => {
+      throw slackError('stopped_by_user')
+    })
+    const { conn } = await connect({ chat: { stopStream } })
+    const stream = (await conn.startTurnStream('C1', 'T1'))!
+    vi.useFakeTimers()
+    try {
+      await conn.settleAndStop(stream, [], { chromeOwnerAgentId: 'bot-a' })
+      await vi.advanceTimersByTimeAsync(200_000)
+      expect(stopStream).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('never ingests a streaming chrome message as conversation', async () => {
