@@ -3415,13 +3415,14 @@ export class Daemon {
           const inspected = await inspectLocalSkillSource(acquired.sourceDir, {
             limits: GIT_SKILL_SOURCE_SNAPSHOT_LIMITS
           })
-          admit(inspected.fileCount, inspected.totalBytes)
           const selected = await resolveSkillSelections(
             currentEntry.name,
             acquired.sourceDir,
             inspected.files,
             currentEntry.skills
           )
+          // Charged last, so a source this `try` goes on to reject never spends budget later ones need.
+          admit(inspected.fileCount, inspected.totalBytes)
           gitSources.push({
             sourceId: `agent:${index}:${definitionDigest}:${resolvedCommit}`,
             sourceKind: 'agent',
