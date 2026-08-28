@@ -1820,15 +1820,26 @@ export class SlackConnection implements PlatformConnection {
     )
   }
 
-  /** The native Stop, from either transport: interrupt the turn the user is looking at — the
-   *  slot's displayed owner (the last `processing` writer), falling back to the thread's newest
-   *  addressable session. Settlement is the daemon's: a surviving sibling's `processing` takes
-   *  the row over (Slack resolves the transient "Stopping…" into it), and only an empty thread
-   *  transitions to `active` — Slack leaves the session in `processing` on its own.
-   *  Cross-daemon shared-bot fan-out degrades to per-daemon local semantics: each participant
-   *  daemon resolves its own displayed owner, out of scope with concurrent multiplexing itself. */
+  /** The native Stop. Socket arm — the daemon holding this socket owns every turn the bot runs,
+   *  so the stop targets the turn the user is looking at: the slot's displayed owner (the last
+   *  `processing` writer), falling back to the thread's newest addressable session. Settlement
+   *  is the daemon's: a surviving sibling's `processing` takes the row over (Slack resolves the
+   *  transient "Stopping…" into it), and only an empty thread transitions to `active` — Slack
+   *  leaves the session in `processing` on its own.
+   *  Relay-forwarded arm (send-only): the same event reaches EVERY participant daemon and
+   *  per-daemon survivor settlement could disagree — one daemon's `active` racing another's
+   *  `processing` re-assert for Slack's one global slot. Until displayed ownership has a
+   *  cross-daemon authority, this arm keeps the globally consistent all-stop: every local turn
+   *  cancels and every daemon's final write is `active`. */
   async agentSessionStopped(channel: string, threadTs: string, userId?: string): Promise<void> {
     this.deps.log?.debug(`slack: agent session stopped ch=${channel} thread=${threadTs} user=${userId ?? '?'}`)
+    if (this.deps.sendOnly) {
+      const sessionKeys = (await this.deps.onThreadSessions?.({ channel, thread: threadTs })) ?? []
+      for (const sessionKey of sessionKeys)
+        this.deps.onStatusAction?.({ kind: 'cancel', sessionKey, ...(userId ? { actor: { userId } } : {}) })
+      await this.queue.enqueue(() => this.setSessionLifecycle(channel, threadTs, 'active'))
+      return
+    }
     const displayed = this.slotOwner.get(`${channel}:${threadTs}`)
     const target = displayed ?? (await this.deps.onThreadSessions?.({ channel, thread: threadTs }))?.[0]
     if (target)

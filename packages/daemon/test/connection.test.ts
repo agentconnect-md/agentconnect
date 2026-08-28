@@ -1233,20 +1233,26 @@ describe('SlackConnection agent_session_stopped', () => {
     expect(lifecycle).toEqual([])
   })
 
-  // The HTTP arm. A send-only connection registers no Bolt handler at all — the relay forwards
-  // the event and the daemon calls the same method, so both transports share one implementation.
-  it('runs the same resolve → cancel → settle when the relay forwards the stop', async () => {
-    const { conn, handlers, lifecycle, actions, resolved, settles } = await started(['slack:C1:200.1:bot-a'], {
-      sendOnly: true
-    })
+  // The relay-forwarded arm. The same event reaches EVERY participant daemon, and per-daemon
+  // survivor settlement could disagree (one daemon's `active` racing another's re-assert for
+  // Slack's one global slot), so until displayed ownership has a cross-daemon authority this
+  // arm keeps the globally consistent all-stop: cancel every local turn, final write `active`.
+  it('the forwarded stop cancels every local session and transitions to active', async () => {
+    const { conn, handlers, lifecycle, actions, resolved, settles } = await started(
+      ['slack:C1:200.1:bot-a', 'slack:C1:200.1:bot-b'],
+      { sendOnly: true }
+    )
     expect(handlers.has('agent_session_stopped')).toBe(false)
 
     await conn.agentSessionStopped('C1', '200.1', 'U1')
 
     expect(resolved).toEqual([{ channel: 'C1', thread: '200.1' }])
-    expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-a', actor: { userId: 'U1' } }])
-    expect(settles).toEqual([{ channel: 'C1', thread: '200.1', exclude: 'slack:C1:200.1:bot-a' }])
-    expect(lifecycle).toEqual([])
+    expect(actions).toEqual([
+      { kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-a', actor: { userId: 'U1' } },
+      { kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-b', actor: { userId: 'U1' } }
+    ])
+    expect(settles).toEqual([])
+    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
   })
 })
 
