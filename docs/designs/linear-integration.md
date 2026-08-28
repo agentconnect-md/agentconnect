@@ -2,8 +2,9 @@
 
 > **Status:** Proposed. Revised 2026-08 against the shipped
 > [integration-plugin-architecture.md](integration-plugin-architecture.md): Linear
-> now lands as a standard platform module — the four host contracts plus one
-> registry line per host — and this doc's earlier bespoke machinery
+> now lands as a standard platform module — the four host contracts, registry
+> lines, and the enumerated daemon composition set of §9.4 — and this doc's
+> earlier bespoke machinery
 > (`RcLinearAssign` / `RdMsgLinear` frames, a capability-URL webhook, hook-table
 > borrowings, per-enum change checklists) is superseded by the generalized seams
 > that shipped since: `rc/bot-assign` opaque bags, `rd/msg` `im` +
