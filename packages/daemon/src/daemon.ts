@@ -11811,8 +11811,8 @@ export class Daemon {
     }
   }
 
-  /** Show the transient "working" indicator: Slack's assistant status bar (text; ''
-   *  clears) or Telegram's typing chat-action (self-expiring, so a clear is a no-op). */
+  /** Show the transient "working" indicator: Slack's agent-session working state (non-empty
+   *  text; '' clears) or Telegram's typing chat-action (self-expiring, so a clear is a no-op). */
   private showActivity(
     conn: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined,
     channel: string,
@@ -11821,13 +11821,11 @@ export class Daemon {
     slackStatusOptions?: SlackStatusOptions
   ): void {
     if (!conn) return
-    // Duck-type by method (so test fakes work): Slack has setStatus ('' clears the bar);
+    // Duck-type by method (so test fakes work): Slack has setStatus ('' clears the indicator);
     // Telegram/Discord have sendChatAction (a self-expiring "typing…", so a clear is a no-op).
     const slack = conn as Partial<SlackConnection>
-    if (typeof slack.setStatus === 'function') {
-      if (text && slackStatusOptions) void slack.setStatus(channel, thread, text, undefined, slackStatusOptions)
-      else void slack.setStatus(channel, thread, text)
-    } else if (text && typeof (conn as Partial<TelegramConnection>).sendChatAction === 'function')
+    if (typeof slack.setStatus === 'function') void slack.setStatus(channel, thread, text, slackStatusOptions)
+    else if (text && typeof (conn as Partial<TelegramConnection>).sendChatAction === 'function')
       void (conn as TelegramConnection).sendChatAction(channel)
   }
 

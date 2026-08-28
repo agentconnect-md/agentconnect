@@ -25,7 +25,7 @@ import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
  * applyAction resolves these against a live SlackConnection:
  *  - `post`        a finalized body/result section → chat.postMessage in the thread.
  *  - `notice`      a system line (e.g. the done footer) posted to the thread but not recorded.
- *  - `set-status`  the transient assistant status bar (assistant.threads.setStatus).
+ *  - `set-status`  the transient working indicator (agents.sessions.setStatus; text = on/off only).
  *  - `set-title`   the native Slack app-thread title (agents.sessions.rename).
  *  - `progress`    the SINGLE in-place "main progress" message (medium/high) — posted
  *                  once then chat.update-ed in place as tool activity changes (in-place update).
@@ -60,7 +60,7 @@ export type SlackAction =
   // `notice` is a system line the daemon posts but must NOT record — recording it would
   // replay daemon chrome back to agents as thread context.
   | { kind: 'notice'; text: string }
-  | { kind: 'set-status'; text: string; loadingMessages?: string[] }
+  | { kind: 'set-status'; text: string }
   | { kind: 'set-title'; text: string }
   | { kind: 'progress'; text: string }
   | { kind: 'reasoning'; text: string }
@@ -92,11 +92,6 @@ export type SlackAttributionInfo = ReplyAttributionInfo
 
 const THINKING = 'is thinking…'
 const WORKING = 'is working…'
-// Bound the rolling activity window fed to Slack `loading_messages` and clamp each
-// label — assistant.threads.setStatus caps loading_messages at 10 entries and
-// rejects any entry ≥ 51 chars ("must be less than 51 characters"), so status
-// labels get a tighter clamp than body text.
-const MAX_ACTIVITY = 10
 const MAX_LABEL = 100
 const MAX_STATUS = 50
 // A deliberately compact cap for the reasoning block (well under Slack's markdown-block
@@ -816,9 +811,9 @@ export class OutputConverger {
   // of flooding chat.update through the 350ms send-queue.
   private reasoningBuf = ''
   private reasoningDirty = false
-  // Rolling window of recent activity labels (tool titles / "is thinking…"). Fed to
-  // Slack `loading_messages` (which Slack rotates); the status text is the latest entry.
-  private activity: string[] = []
+  // Last activity label (tool title / "is thinking…") — only for consecutive-collapse:
+  // the label is never displayed, a non-empty set-status just keeps the session `processing`.
+  private lastActivity = ''
   // Remember each tool's last known title so a title-less tool_call_update reuses it
   // (and is collapsed by consecutive-dedup) instead of surfacing the raw toolCallId.
   private toolTitles = new Map<string, string>()
@@ -973,18 +968,17 @@ export class OutputConverger {
   }
 
   /**
-   * Record an activity label and build the loading-status action carrying the rolling
-   * window as `loading_messages`. Consecutive repeats collapse to nothing (returns []),
-   * which throttles streamed thought chunks down to one status update per thinking run.
+   * Record an activity label and build the working-status action. Consecutive repeats
+   * collapse to nothing (returns []), which throttles streamed thought chunks down to one
+   * status update per thinking run; the connection dedupes the rest at the lifecycle level.
    */
   private pushActivity(raw: string): SlackAction[] {
-    // none: nothing reaches the channel, not even the transient loading status.
+    // none: nothing reaches the channel, not even the transient working status.
     if (this.mode === 'none') return []
     const label = clampTo(raw, MAX_STATUS)
-    if (this.activity[this.activity.length - 1] === label) return []
-    this.activity.push(label)
-    if (this.activity.length > MAX_ACTIVITY) this.activity.shift()
-    return [{ kind: 'set-status', text: label, loadingMessages: [...this.activity] }]
+    if (this.lastActivity === label) return []
+    this.lastActivity = label
+    return [{ kind: 'set-status', text: label }]
   }
 
   /** Resolve a tool call's display label, reusing a known title when an update omits it. */

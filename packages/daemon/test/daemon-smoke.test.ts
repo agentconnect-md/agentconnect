@@ -1185,8 +1185,8 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         username: 'Release Captain',
         icon_url: 'https://console.example.test/icons/bot-a'
       }
-      expect(setStatus).toHaveBeenCalledWith(channel, '202.1', 'is thinking…', undefined, expectedStatusIdentity)
-      expect(setStatus).toHaveBeenCalledWith(channel, '202.1', 'Searching…', ['Searching…'], expectedStatusIdentity)
+      expect(setStatus).toHaveBeenCalledWith(channel, '202.1', 'is thinking…', expectedStatusIdentity)
+      expect(setStatus).toHaveBeenCalledWith(channel, '202.1', 'Searching…', expectedStatusIdentity)
       await daemon.stop()
     },
     15_000
@@ -1387,7 +1387,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     // The streamed message posted exactly once, verbatim — and no ⚠️ notice on top.
     expect(posts.filter((t) => t.includes("You've hit your usage limit"))).toHaveLength(1)
     expect(posts.some((t) => t.includes('⚠️'))).toBe(false)
-    expect(setStatus).toHaveBeenCalledWith('C1', '400.1', '') // "is thinking…" cleared
+    expect(setStatus).toHaveBeenCalledWith('C1', '400.1', '', undefined) // "is thinking…" cleared
     // …and it landed in the transcript, so the console session view shows it.
     const { rows } = await (daemon as any).store.transcriptPage('C1', '400.1', null, 10)
     const agentRows = rows.filter((r: any) => r.sender === 'bot-a' && r.kind === 'text')

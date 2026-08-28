@@ -195,7 +195,7 @@ export function slackAgentPostOptions(
   }
 }
 
-/** Keep Slack's transient loading state visually owned by the same agent as its reply. */
+/** Keep the working indicator visually owned by the same agent as its reply. */
 export function slackStatusOptions(
   platform: string,
   agentName: string,
@@ -438,7 +438,6 @@ export async function applySlackAction<TTurn extends SlackTurn>(
           p.plan.channel,
           p.plan.statusThread,
           action.text,
-          action.loadingMessages,
           slackStatusOptions(p.plan.platform, p.plan.agentName, p.plan.iconUrl)
         )
       return

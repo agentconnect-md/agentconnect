@@ -65,7 +65,6 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           info: async () => ({}),
           conversations: async () => ({ channels: [] })
         },
-        assistant: { threads: { setStatus: ok } },
         reactions: { add: ok },
         agents: { sessions: { setStatus: ok, rename: ok } }
       },

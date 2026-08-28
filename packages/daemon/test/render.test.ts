@@ -75,7 +75,7 @@ describe('OutputConverger', () => {
     expect(actions.some((a) => a.kind === 'progress')).toBe(true)
   })
 
-  it('low mode: tool_call flushes buffered text then emits set-status with the title + loading_messages', () => {
+  it('low mode: tool_call flushes buffered text then emits a working set-status', () => {
     const c = new OutputConverger('low')
     c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial' } } as any)
     const actions = c.onUpdate({
@@ -86,20 +86,20 @@ describe('OutputConverger', () => {
     } as any)
     expect(actions).toEqual([
       { kind: 'post', text: 'partial' },
-      { kind: 'set-status', text: 'Read file', loadingMessages: ['Read file'] }
+      { kind: 'set-status', text: 'Read file' }
     ])
   })
 
   it('low mode: tool_call with no title falls back to the toolCallId', () => {
     const c = new OutputConverger('low')
     const actions = c.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't9', status: 'pending' } as any)
-    expect(actions).toEqual([{ kind: 'set-status', text: 't9', loadingMessages: ['t9'] }])
+    expect(actions).toEqual([{ kind: 'set-status', text: 't9' }])
   })
 
   it('low mode: agent_thought_chunk emits a thinking set-status', () => {
     const c = new OutputConverger('low')
     expect(c.onUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'hmm' } } as any)).toEqual(
-      [{ kind: 'set-status', text: 'is thinking…', loadingMessages: ['is thinking…'] }]
+      [{ kind: 'set-status', text: 'is thinking…' }]
     )
   })
 
@@ -109,7 +109,7 @@ describe('OutputConverger', () => {
     const actions = c.onUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'hmm' } } as any)
     expect(actions).toEqual([
       { kind: 'post', text: 'partial' },
-      { kind: 'set-status', text: 'is thinking…', loadingMessages: ['is thinking…'] }
+      { kind: 'set-status', text: 'is thinking…' }
     ])
   })
 
@@ -121,10 +121,10 @@ describe('OutputConverger', () => {
       title: 'Edit file',
       status: 'in_progress'
     } as any)
-    expect(actions).toEqual([{ kind: 'set-status', text: 'Edit file', loadingMessages: ['Edit file'] }])
+    expect(actions).toEqual([{ kind: 'set-status', text: 'Edit file' }])
   })
 
-  it('rolling window: tool + thinking activity accumulates into loading_messages (status = latest)', () => {
+  it('a changed activity label refires the working status (the connection dedupes the rest)', () => {
     const c = new OutputConverger('low')
     c.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Reading the thread', status: 'pending' } as any)
     c.onUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'hmm' } } as any)
@@ -134,20 +134,14 @@ describe('OutputConverger', () => {
       title: 'Querying metrics',
       status: 'pending'
     } as any)
-    expect(actions).toEqual([
-      {
-        kind: 'set-status',
-        text: 'Querying metrics',
-        loadingMessages: ['Reading the thread', 'is thinking…', 'Querying metrics']
-      }
-    ])
+    expect(actions).toEqual([{ kind: 'set-status', text: 'Querying metrics' }])
   })
 
   it('collapses consecutive thought chunks to a single status update', () => {
     const c = new OutputConverger('medium')
     const first = c.onUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'a' } } as any)
     const second = c.onUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'b' } } as any)
-    expect(first).toEqual([{ kind: 'set-status', text: 'is thinking…', loadingMessages: ['is thinking…'] }])
+    expect(first).toEqual([{ kind: 'set-status', text: 'is thinking…' }])
     expect(second).toEqual([])
   })
 
@@ -192,63 +186,13 @@ describe('OutputConverger', () => {
     expect(c.onFinal()).toEqual([{ kind: 'set-status', text: '' }])
   })
 
-  it('bounds the loading_messages window to the 10 most recent entries (Slack cap)', () => {
-    const c = new OutputConverger('low')
-    let last: SlackAction[] = []
-    for (let i = 0; i < 14; i++) {
-      last = c.onUpdate({
-        sessionUpdate: 'tool_call',
-        toolCallId: `t${i}`,
-        title: `tool ${i}`,
-        status: 'pending'
-      } as any)
-    }
-    const status = setStatuses(last)[0] as { loadingMessages: string[] }
-    expect(status.loadingMessages.length).toBe(10)
-    expect(status.loadingMessages).toEqual([
-      'tool 4',
-      'tool 5',
-      'tool 6',
-      'tool 7',
-      'tool 8',
-      'tool 9',
-      'tool 10',
-      'tool 11',
-      'tool 12',
-      'tool 13'
-    ])
-  })
-
-  it('clamps an over-long label so setStatus is not rejected', () => {
+  it('clamps an over-long activity label (the text only ever signals working)', () => {
     const c = new OutputConverger('low')
     const long = 'x'.repeat(250)
     const actions = c.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't1', title: long, status: 'pending' } as any)
-    const status = setStatuses(actions)[0] as { text: string; loadingMessages: string[] }
-    // Slack rejects loading_messages entries ≥ 51 chars ("must be less than 51 characters")
+    const status = setStatuses(actions)[0] as { text: string }
     expect(status.text.length).toBeLessThanOrEqual(50)
     expect(status.text.endsWith('…')).toBe(true)
-    for (const m of status.loadingMessages) expect(m.length).toBeLessThanOrEqual(50)
-  })
-
-  it('clamps every entry in the rolling loading_messages window to 50 chars', () => {
-    const c = new OutputConverger('low')
-    for (let i = 0; i < 3; i++) {
-      c.onUpdate({
-        sessionUpdate: 'tool_call',
-        toolCallId: `t${i}`,
-        title: `tool ${i} ${'y'.repeat(80)}`,
-        status: 'pending'
-      } as any)
-    }
-    const actions = c.onUpdate({
-      sessionUpdate: 'tool_call',
-      toolCallId: 't9',
-      title: 'short',
-      status: 'pending'
-    } as any)
-    const status = setStatuses(actions)[0] as { loadingMessages: string[] }
-    expect(status.loadingMessages.length).toBe(4)
-    for (const m of status.loadingMessages) expect(m.length).toBeLessThanOrEqual(50)
   })
 
   it('medium mode wraps the progress tool label in a code span so it renders verbatim', () => {
@@ -280,7 +224,7 @@ describe('OutputConverger', () => {
   it('medium mode surfaces a thinking status (ephemeral) but posts nothing to the channel', () => {
     const med = new OutputConverger('medium')
     const actions = med.onUpdate({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'x' } } as any)
-    expect(actions).toEqual([{ kind: 'set-status', text: 'is thinking…', loadingMessages: ['is thinking…'] }])
+    expect(actions).toEqual([{ kind: 'set-status', text: 'is thinking…' }])
     // no durable/in-place channel message — a thought is status-only in medium.
     const channelKinds = ['post', 'progress', 'reasoning', 'plan', 'notice']
     expect(actions.some((a) => channelKinds.includes(a.kind))).toBe(false)
@@ -293,7 +237,7 @@ describe('OutputConverger', () => {
       content: { type: 'text', text: 'weighing options' }
     } as any)
     // nothing hits the channel yet — just the ephemeral status; no per-chunk progress edit.
-    expect(actions).toEqual([{ kind: 'set-status', text: 'is thinking…', loadingMessages: ['is thinking…'] }])
+    expect(actions).toEqual([{ kind: 'set-status', text: 'is thinking…' }])
     expect(actions.some((a) => a.kind === 'progress' || a.kind === 'reasoning')).toBe(false)
     // the idle flush emits the in-place reasoning block carrying the accumulated thought.
     expect(hi.hasBuffered()).toBe(true)
@@ -793,7 +737,7 @@ describe('OutputConverger minimal mode', () => {
     // record-only transcript row (NOT a visible channel post). The concrete tool title stays
     // out of minimal-mode channel chrome.
     expect(c.onUpdate(tool('t1', 'sleep 20; gh run list'))).toEqual([
-      { kind: 'set-status', text: 'is working…', loadingMessages: ['is working…'] },
+      { kind: 'set-status', text: 'is working…' },
       { kind: 'live-reply', text: 'step one ' },
       { kind: 'post', text: 'step one ', recordOnly: true }
     ])
@@ -850,11 +794,9 @@ describe('OutputConverger minimal mode', () => {
   it('keeps the reply intact across thinking/plan — status only, no post/flush', () => {
     const c = new OutputConverger('minimal')
     c.onUpdate(chunk('working'))
-    expect(c.onUpdate(think('hmm'))).toEqual([
-      { kind: 'set-status', text: 'is thinking…', loadingMessages: ['is thinking…'] }
-    ])
+    expect(c.onUpdate(think('hmm'))).toEqual([{ kind: 'set-status', text: 'is thinking…' }])
     expect(c.onUpdate({ sessionUpdate: 'plan', entries: [{ content: 'x', status: 'pending' }] } as any)).toEqual([
-      { kind: 'set-status', text: 'planning…', loadingMessages: ['is thinking…', 'planning…'] }
+      { kind: 'set-status', text: 'planning…' }
     ])
     // The whole reply is still one segment, emitted once at the end.
     expect(c.onFinal()).toEqual([

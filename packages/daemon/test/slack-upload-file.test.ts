@@ -45,8 +45,7 @@ function connWith(files: Record<string, unknown>) {
         uploadV2: async () => ({ ok: true, files: [{ ok: true, files: [{ id: 'F1' }] }] }),
         info: sharedAt('1700000000.000100'),
         ...files
-      },
-      assistant: { threads: { setStatus: async () => undefined, setTitle: async () => undefined } }
+      }
     },
     start: async () => {},
     stop: async () => {}

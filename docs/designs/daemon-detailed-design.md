@@ -975,7 +975,7 @@ Goal: **channel contains only start / plan / problem / finish + link**, while de
 | `usage_update`                   | Do not render; send usage telemetry.                                                                                                                                                                  |
 | `stopReason`                     | Completion message + Web App session link.                                                                                                                                                            |
 
-**`low` default:** Keep only agent body text and final result as channel messages. All activity signals use transient [`assistant.threads.setStatus`](https://docs.slack.dev/reference/methods/assistant.threads.setStatus), not chat messages.
+**`low` default:** Keep only agent body text and final result as channel messages. All activity signals use the transient agent-session working state ([`agents.sessions.setStatus`](https://docs.slack.dev/reference/methods/agents.sessions.setStatus)), not chat messages. The enum carries no custom text: a non-empty status maps to `processing` (Slack renders "is working…" plus the native Stop control in the DM container), a clear maps to `active`.
 
 | ACP update                       | Low-mode action                                                                      |
 | -------------------------------- | ------------------------------------------------------------------------------------ |
@@ -985,12 +985,11 @@ Goal: **channel contains only start / plan / problem / finish + link**, while de
 | `usage_update`                   | Ignore for rendering.                                                                |
 | `onFinal`                        | Flush remaining body as result post, clear status with `''`; no done/details footer. |
 
-- Status sequence: cold start `"is starting up…"`, prompting/thinking `"is thinking…"`, tool title, then `''`. `dispatch()` checks cold state before `sessions.handle()` boots host. `loading_messages` is a small constant such as `['Working on it…','Crunching through it…','Hang tight…']`.
+- Status sequence: any non-empty label (cold start, thinking, tool title) keeps the session `processing`; `''` transitions it to `active`. The connection dedupes writes per (channel, thread, identity), so a turn produces one `processing` and one `active` regardless of how many labels stream through. `dispatch()` checks cold state before `sessions.handle()` boots host.
 - **Best effort:** Wrap `setStatus` in try/catch with debug logging.
-  `chat:write` suffices for channel/DM/assistant rendering; failures do not
-  interrupt dispatch and have no fallback message. `status:''` clears the
-  indicator.
-- **Slack identity/title:** Agent/assistant DM session title uses `assistant.threads.setTitle`. Agent body messages in DM/channel use `chat.postMessage.username`, preferring trimmed `displayName` then `name`, requiring `chat:write.customize`. System chrome—status, permission/elicitation cards, failures/notices—keeps Slack App identity. For an old install with exact `missing_scope(chat:write.customize)`, retry without username, cool down to app identity, and periodically probe authorization.
+  `chat:write` suffices for the enum; failures do not interrupt dispatch and
+  have no fallback message. `status:''` clears the indicator.
+- **Slack identity/title:** Agent/assistant DM session title uses `agents.sessions.rename`. The working indicator and agent body messages carry `username`/`icon_url`, preferring trimmed `displayName` then `name`, requiring `chat:write.customize`; Slack keeps the session-status identity sticky until rewritten, so the dedupe key includes it. System chrome—permission/elicitation cards, failures/notices—keeps Slack App identity. For an old install with exact `missing_scope(chat:write.customize)`, retry without identity, cool down to app identity, and periodically probe authorization.
 
 **`none` mode:** Full body still records in session transcript through a `recordOnly` post handled before checking platform connection, but send nothing to IM. Reuse headless/webchat's `replyConn = undefined`; activity/status/typing/reply/footer are all no-op. Background completion notifications gated at `≥ medium` do not fire.
 
