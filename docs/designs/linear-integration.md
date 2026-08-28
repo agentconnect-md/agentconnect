@@ -611,10 +611,16 @@ between):
    construction rather than by a transaction the tail does not offer.
 
 If the tail refuses after step 1 (identity taken, workspace claimed), the
-orphaned token row is inert: no bot references it, the next connect attempt
-for the same workspace overwrites it, and the flows that own the identity
-delete it (§7.4). The funnel row's TTL reaper separately bounds how long the
-funnel-held pasted secrets linger.
+orphaned token row is inert: no bot references it, and the next connect
+attempt for the same workspace overwrites it. Inert is not unbounded — the
+row holds an encrypted refresh token and has no Bot FK for §7.4's delete
+flow to find, so the provider registers an **orphan-token sweeper** via the
+contract's `backgroundLoops`: any `linear_token` row whose identity matches
+no Bot and whose last write is older than a grace window (long enough to
+never race a callback between steps 1 and 2, e.g. 1 h) is revoked
+best-effort at Linear and deleted. The same sweep is the backstop for a
+failed best-effort `onBotDelete` (§7.4). The funnel row's TTL reaper
+separately bounds how long the funnel-held pasted secrets linger.
 
 ### 7.2 Storage
 
@@ -771,6 +777,14 @@ tile.
     (§6.2).
   - `LinearTokenService` — exchange, single-flight rotate-and-retry refresh,
     revoke; surfaced to the WS `linearcred` handler (§7.3).
+  - `backgroundLoops` — the orphan-token sweeper (§7.1): revoke-and-delete
+    for token identities with no matching Bot, behind a grace window.
+  - `BotDto` projection — the shipped `/bots` DTO does not expose
+    `platformConfig`, so the inventory includes a generic, validated
+    **public-metadata projection** of that bag (public by construction — D6
+    reserves it for display metadata, never secret material), which is what
+    lets the web module's `freeBotFilter` read `brandedAgentId`. Until it
+    lands, the wizard leans on the authoritative `validateBotReuse` 409.
   - **Two contract extensions** this design needs core to grow, both
     consulted only for platforms that declare them:
     `sideEffects.onBotDelete?(bot, secrets)` for the uninstall revoke (§7.4),
@@ -845,10 +859,11 @@ tile.
   - `Mark` — Linear brand SVG (60 % box, `fillPct` convention).
   - `wizard` — the two-step facet (§7.1); tile availability = daemon
     capability ∧ `relayCapability.available`; `freeBotFilter` /
-    `buildReuseInput` offer a freed bot **only to its branded agent**
-    (`platformConfig.brandedAgentId`, §4.3/§7.4) — its workspace token rides
-    the install identity, so same-agent reuse needs no OAuth detour, and the
-    CP's `validateBotReuse` fence backs the client-side filter.
+    `buildReuseInput` offer a freed bot **only to its branded agent**,
+    reading `brandedAgentId` from the `BotDto` public-metadata projection
+    (§9.2 inventory item) — its workspace token rides the install identity,
+    so same-agent reuse needs no OAuth detour. The filter is convenience;
+    the CP's `validateBotReuse` 409 is the authoritative fence either way.
   - `apiBindings` — funnel-start, connect-status, and reconnect calls.
   - `settingsFragments` — workspace name, connect status, reconnect action
     when the token is dead (§7.4).
