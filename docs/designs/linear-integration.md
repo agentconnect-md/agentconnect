@@ -276,9 +276,9 @@ with several agents bound to it:
   names — `@<agent-name>` anywhere in the instruction, matched against the
   workspace's enabled members, exactly as a GitHub comment addresses one
   agent by name inside a thread the App owns. The name is plain text (agents
-  are not Linear entities; only the app is mentionable), matched by the
-  relay's compiled per-member keyword routes with `defaultAgentId` as the
-  fallback — the Slack shared-bot ladder, unchanged.
+  are not Linear entities; only the app is mentionable), matched by
+  per-member name routes in the relay's existing ladder (compiled through
+  the §9.2 routing seams) with `defaultAgentId` as the fallback.
 - **One AgentSession binds to one agent at creation** and never changes
   hands: follow-ups and stop go to that agent. Addressing a _different_
   agent is a new mention on the issue → a new session → another thread in
@@ -515,8 +515,9 @@ idle window).
     `host.forward(botId, msg)`. Relay-core arbitration resolves the target
     with the ladder it already runs for shared bots: `prompted` follows the
     session's thread affinity (the session's bound agent); a `created` from
-    a mention matches the per-member **keyword routes** the CP compiles from
-    the enabled agents' names (`@<agent-name>` in the text, §4.3); anything
+    a mention matches the per-member **name routes** the CP compiles from
+    the enabled agents' names (`@<agent-name>` in the text, §4.3; sourced
+    via `projectMemberRoutes`, §9.2); anything
     else — bare delegation, automation delegation, no name matched — falls
     to `defaultAgentId`. Every event is explicitly addressed by
     construction.
@@ -559,11 +560,19 @@ workspace bot's secret row at connect; the client secret and the refresh
 token never reach the relay. Everything else on the frame stays
 core-assembled as for every platform — and for Linear the shared-bot members
 are doing real work: `members`/`agents` list the workspace's enabled agents,
-`routes` carries the per-member keyword rules (§6.1), `defaultAgentId` the
+`routes` carries the per-member name rules (§6.1), `defaultAgentId` the
 workspace default, and `credentialRevision` fences signing-secret rotation
-(§10.6). The earlier revision's `RcLinearAssign` / `RcLinearRemove` frames
-and the relay-local Linear rule table are gone — replay-on-register,
-placement re-broadcast, and lifecycle edges are the shared machinery.
+(§10.6). Two of those inputs need seams the shipped compiler lacks,
+inventoried in §9.2, because `projectBotAssign` deliberately carries **no
+routing** (only the two opaque bags — members, routes, and the default are
+assembled by the HTTP-bot orchestrator's core compile): the compiler today
+derives `defaultAgentId` as the earliest non-gated member, so the bot row
+gains a generic **persisted preferred default** it prefers when set and
+still routable; and it has no source for member-name rules, so the provider
+contributes them through the `projectMemberRoutes` contract extension. The
+earlier revision's `RcLinearAssign` / `RcLinearRemove` frames and the
+relay-local Linear rule table are gone — replay-on-register, placement
+re-broadcast, and lifecycle edges are the shared machinery.
 
 ### 6.3 Relay → daemon frames: `im` + `platform_action`
 
@@ -659,8 +668,10 @@ between):
 **Per agent — enable it on the workspace.** Adding an agent is one more
 member Integration on the workspace bot (the generic existing-bot path — no
 reuse fence exists or is needed under this model); the workspace card also
-moves the default among members. Every enabled agent's name compiles into a
-keyword route (§6.1), which is what makes `@<agent-name>` addressing work.
+moves the default among members (persisted, §9.2 — the compiler's
+earliest-member fallback alone cannot honor a choice). Every enabled agent's
+name compiles into a member route (`projectMemberRoutes`, §9.2), which is
+what makes `@<agent-name>` addressing work.
 
 If the tail refuses after step 1 (identity taken, workspace claimed), the
 orphaned token row is inert: no bot references it, and the next connect
@@ -804,10 +815,19 @@ tile.
   only new frames.** `Platform` is already an open string with tolerant
   readers (`platform-tolerance.test.ts`); `rd/msg` and `rc/bot-assign` carry
   Linear without change.
-- `platform-manifest.ts` — no entry needed: `DEFAULT_MANIFEST`'s fail-closed
-  arms are exactly Linear's truth (observed membership, no bot-sender
-  routing, conversation-granularity leave). Per the manifest's own rule, a
-  row lands only with a justified pre-dispatch field.
+- `platform-manifest.ts` — Linear becomes a manifest row, and it is
+  **earned**: multi-agent sharing is gated today by a core interim predicate
+  (`control-plane/src/platforms/sharing.ts#supportsMultiAgentBots`,
+  Slack-only — without a change here, `validateShareableInstall` refuses a
+  second Linear member before `addBotMembership` runs), and that module's
+  own doc names the §5 `multiAgentShareable` manifest field as its
+  replacement once a second platform needs it. Linear is that second
+  platform, so the field lands with the rows it needs (`slack: true`,
+  `linear: true`; `DEFAULT_MANIFEST` stays `false`) and retires the
+  predicate at its two call sites — an install-time, pre-dispatch read, per
+  the manifest's own rule. Every other axis keeps the fail-closed defaults
+  (observed membership, no bot-sender routing, conversation-granularity
+  leave).
 - The opaque integration-config payload shape (§7.2) is documented beside its
   peers in `frames/integration.ts`.
 - `frames/cron.ts` — **not** extended in v1 (no cron target).
@@ -845,12 +865,21 @@ tile.
   - `backgroundLoops` — the orphan-token sweeper (§7.1): org-scoped
     selection, local delete always, upstream revoke only for globally
     unowned identities, behind a grace window.
-  - **One contract extension** this design needs core to grow, consulted
-    only for platforms that declare it:
+  - **Two contract extensions** this design needs core to grow, each
+    consulted only for platforms that declare it:
     `sideEffects.onBotDelete?(bot, secrets)` for the disconnect revoke
-    (§7.4), best-effort like `postCreate`. (The earlier revision's
+    (§7.4), best-effort like `postCreate`; and
+    `projectMemberRoutes?(bot, members)` — the member-name keyword rules the
+    HTTP-bot orchestrator's compile folds into the assign's `routes` (§6.2),
+    which is what makes `@<agent-name>` addressing routable without a
+    Linear-named branch in the compiler. (The earlier revision's
     `validateBotReuse` reuse fence died with the per-agent-app model —
     adding a member agent is an ordinary, unfenced operation now.)
+  - **One generic core change**: a persisted bot-level **preferred default
+    agent** (nullable), preferred by the orchestrator's compile over its
+    earliest-non-gated fallback and settable from the workspace card —
+    platform-free (Slack shared bots gain the same knob), and the only way
+    "move the default" can actually move bare delegations (§6.2).
 - Prisma: new `linear_token` and `linear_install_state` tables only — Bot
   identity rides the existing D6 columns, and `platform` columns are already
   text.
@@ -1051,9 +1080,11 @@ tile.
   (a tail refusal after step 1 leaves an inert row the next connect
   overwrites, and the sweeper's cross-org split never revokes a live
   winner); D6 external-identity and workspace-claim 409s; the workspace bot
-  is created `shareable: true` and a second member Integration is admitted;
-  member add/remove recompiles keyword routes without touching the token;
-  removing the default
+  is created `shareable: true` and a second member Integration is admitted
+  (the manifest's `multiAgentShareable` row, §9.1); member add/remove
+  recompiles member routes without touching the token; the compile prefers
+  the persisted default over the earliest member and `projectMemberRoutes`
+  output reaches the assign's `routes`; removing the default
   agent is blocked until a new default is named; reconnect replaces a dead
   token in place; broker scope denial for a foreign daemon; workspace
   disconnect (bot delete) revoke convergence.
