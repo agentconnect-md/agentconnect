@@ -1041,17 +1041,17 @@ describe('SlackConnection.setStatus', () => {
     expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '123.45', status: 'processing' }])
   })
 
-  // HTTP bots take inbound from the relay, which does not forward the stop event. Setting
-  // `processing` there would render a Stop button this side could never answer.
-  it('makes no lifecycle call on a send-only (HTTP) connection', async () => {
-    const calls: any[] = []
+  // The relay forwards the native stop to the owning daemon, so an HTTP bot can answer the
+  // Stop button too and both transports drive the same lifecycle enum.
+  it('drives the lifecycle enum on a send-only (HTTP) connection as well', async () => {
+    const lifecycle: any[] = []
     const legacy: any[] = []
     const conn = new SlackConnection(
       { ...deps(), sendOnly: true, sendIntervalMs: 0 } as any,
       () =>
         fakeAppWith(async (a) => void legacy.push(a), {
           setStatus: async (a) => {
-            calls.push(a)
+            lifecycle.push(a)
             return {}
           }
         }) as any
@@ -1060,9 +1060,11 @@ describe('SlackConnection.setStatus', () => {
     await conn.setStatus('C1', '123.45', 'is thinking…')
     await conn.setStatus('C1', '123.45', '')
 
-    // The legacy free-text status still runs — only the lifecycle enum is withheld.
     expect(legacy).toHaveLength(2)
-    expect(calls).toEqual([])
+    expect(lifecycle).toEqual([
+      { channel_id: 'C1', thread_ts: '123.45', status: 'processing' },
+      { channel_id: 'C1', thread_ts: '123.45', status: 'active' }
+    ])
   })
 
   it('keeps a failing lifecycle call out of dispatch', async () => {
@@ -1219,6 +1221,40 @@ describe('SlackConnection agent_session_stopped', () => {
 
     expect(actions).toEqual([])
     expect(lifecycle).toEqual([])
+  })
+
+  // The HTTP arm. A send-only connection registers no Bolt handler at all — the relay forwards
+  // the event and the daemon calls the same method, so both transports share one implementation.
+  it('runs the same resolve → cancel → transition when the relay forwards the stop', async () => {
+    const handlers = new Map<string, (a: { event: unknown }) => unknown>()
+    const lifecycle: any[] = []
+    const actions: any[] = []
+    const resolved: any[] = []
+    const conn = new SlackConnection(
+      {
+        ...deps(),
+        sendOnly: true,
+        sendIntervalMs: 0,
+        onMessageShortcut: async (a: unknown) => {
+          resolved.push(a)
+          return 'slack:C1:200.1:bot-a'
+        },
+        onStatusAction: (a: unknown) => void actions.push(a)
+      } as any,
+      () =>
+        stopApp(handlers, async (a) => {
+          lifecycle.push(a)
+          return {}
+        }) as any
+    )
+    await conn.start()
+    expect(handlers.has('agent_session_stopped')).toBe(false)
+
+    await conn.agentSessionStopped('C1', '200.1', 'U1')
+
+    expect(resolved).toEqual([{ channel: 'C1', thread: '200.1', userId: 'U1' }])
+    expect(actions).toEqual([{ kind: 'cancel', sessionKey: 'slack:C1:200.1:bot-a', actor: { userId: 'U1' } }])
+    expect(lifecycle).toEqual([{ channel_id: 'C1', thread_ts: '200.1', status: 'active' }])
   })
 })
 

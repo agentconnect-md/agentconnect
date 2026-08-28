@@ -32,7 +32,6 @@ import {
   SLACK_BOT_EVENTS,
   SLACK_BOT_SCOPES,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
-  SLACK_SOCKET_ONLY_BOT_EVENTS,
   type SlackAppManifest
 } from '@agentconnect.md/protocol/slack-app-manifest'
 
@@ -42,7 +41,6 @@ export {
   SLACK_BOT_EVENTS,
   SLACK_BOT_SCOPES,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
-  SLACK_SOCKET_ONLY_BOT_EVENTS,
   type SlackAppManifest
 }
 

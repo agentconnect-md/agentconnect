@@ -32,12 +32,18 @@ export const SLACK_BOT_SCOPES = [
   'users:read'
 ] as const
 
+// Both transports advertise the same events: Socket Mode receives them directly, and the relay's
+// HTTP ingress forwards the ones this app acts on to the daemon that owns the conversation.
 export const SLACK_BOT_EVENTS = [
   // The native stop button on an agent session; without the subscription Slack never shows it.
   'agent_session_stopped',
+  // Subscribed but not handled yet, so title sync can land without a second manifest refresh.
+  'agent_session_title_changed',
   'app_mention',
   'app_uninstalled',
   'assistant_thread_started',
+  // Same: the shipping context signal for an assistant thread, pre-provisioned and inert today.
+  'assistant_thread_context_changed',
   'message.channels',
   'message.groups',
   'message.im',
@@ -47,15 +53,6 @@ export const SLACK_BOT_EVENTS = [
   'group_left',
   'tokens_revoked'
 ] as const
-
-// Bot events only a Socket Mode app can act on. The relay's HTTP ingress forwards chat and
-// finalization events only, so advertising one over HTTP renders a control that goes nowhere.
-export const SLACK_SOCKET_ONLY_BOT_EVENTS: readonly string[] = ['agent_session_stopped']
-
-/** The bot events one transport's manifest advertises: the full list, minus what only a socket can serve. */
-export function slackBotEvents(http: boolean): string[] {
-  return SLACK_BOT_EVENTS.filter((event) => !http || !SLACK_SOCKET_ONLY_BOT_EVENTS.includes(event))
-}
 
 export const DEFAULT_SLACK_APP_NAME = 'agentconnect'
 
@@ -138,7 +135,7 @@ export function buildSlackAppManifest(name: string, options: SlackAppManifestOpt
     },
     settings: {
       event_subscriptions: {
-        bot_events: slackBotEvents(http),
+        bot_events: [...SLACK_BOT_EVENTS],
         ...(relayUrl ? { request_url: slackEventsRequestUrl(relayUrl) } : {})
       },
       interactivity: {
