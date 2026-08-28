@@ -9924,24 +9924,34 @@ export class Daemon {
         : {})
     }
     this.pending.set(pendingTurnKey(agentId, sessionId), p)
-    this.cancelDisplacedSlackTurns(p)
+    void this.cancelDisplacedSlackTurns(p)
     return p
   }
 
-  /** A shared bot's thread runs ONE agent at a time: switching the thread to another session
-   *  cancels the previous agent's in-flight turn instead of letting two turns fight over the
-   *  thread's single Slack agent-session status (and its native Stop control). */
-  private cancelDisplacedSlackTurns(p: Pending): void {
+  /** A shared bot's thread runs ONE agent at a time: a NEW message routed to another session
+   *  cancels the previous agent's in-flight turn. Sibling turns triggered by the SAME message
+   *  coexist — that is one fan-out with several recipients, not the human moving on. Once the
+   *  displaced turn's own status clear is enqueued (interruptTurn enqueues it before resolving),
+   *  the survivor's `processing` is re-asserted BEHIND it on the same serial send queue, so a
+   *  late clear cannot hide the native Stop control. */
+  private async cancelDisplacedSlackTurns(p: Pending): Promise<void> {
     if (p.plan.platform !== 'slack' || !p.conn || !p.plan.statusThread) return
+    const displaced: Pending[] = []
     for (const sibling of this.pending.values()) {
       if (sibling === p || sibling.conn !== p.conn || sibling.plan.platform !== 'slack') continue
       if (sibling.plan.sessionKey === p.plan.sessionKey) continue
       if (sibling.plan.channel !== p.plan.channel || sibling.plan.statusThread !== p.plan.statusThread) continue
+      if (sibling.entry.msg.msgId === p.entry.msg.msgId) continue
+      displaced.push(sibling)
+    }
+    for (const sibling of displaced) {
       this.log.info(
         `slack: thread ${p.plan.channel}/${p.plan.statusThread} switched sessions — cancelling the previous turn (${sibling.plan.sessionKey})`
       )
-      void this.commands.cancelSessionByKey(sibling.plan.sessionKey)
+      await this.commands.cancelSessionByKey(sibling.plan.sessionKey)
     }
+    if (displaced.length > 0)
+      this.showActivity(p.conn, p.plan.channel, p.plan.statusThread, 'is thinking…', p.plan.statusOptions)
   }
 
   /** Replay the metadata session/new|load emitted before Pending existed, then install the

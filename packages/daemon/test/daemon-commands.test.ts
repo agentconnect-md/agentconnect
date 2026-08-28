@@ -2353,11 +2353,14 @@ describe('Slack interactive status bar', () => {
 })
 
 describe('Slack shared-bot thread displacement', () => {
-  // A shared bot's thread runs ONE agent at a time: admitting a turn for another session on
-  // the same connection + conversation cancels the sibling's in-flight turn outright, so two
-  // turns never fight over the thread's single agent-session status (or its Stop control).
+  // A shared bot's thread runs ONE agent at a time: a NEW message routed to another session
+  // cancels the sibling's in-flight turn, then re-asserts the survivor's `processing` behind
+  // the displaced turn's own clear. Same-message siblings (one fan-out, several recipients)
+  // coexist untouched.
+  const conn = () => ({ setStatus: vi.fn() })
   const turn = (over: Record<string, unknown> = {}) => ({
-    conn: over.conn ?? 'CONN-A',
+    conn: over.conn,
+    entry: { msg: { msgId: (over.msgId as string) ?? 'm2' } },
     plan: {
       platform: 'slack',
       sessionKey: 'slack:C1:T1:bot-a',
@@ -2367,28 +2370,45 @@ describe('Slack shared-bot thread displacement', () => {
     }
   })
 
-  const displaced = (incoming: any, siblings: any[]) => {
+  const displaced = async (incoming: any, siblings: any[]) => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold() })
     const cancel = vi.fn(async () => true)
     ;(daemon as any).commands.cancelSessionByKey = cancel
     for (const [i, sibling] of siblings.entries()) (daemon as any).pending.set(`sibling-${i}`, sibling)
     ;(daemon as any).pending.set('incoming', incoming)
-    ;(daemon as any).cancelDisplacedSlackTurns(incoming)
+    await (daemon as any).cancelDisplacedSlackTurns(incoming)
     return cancel
   }
 
-  it('cancels the sibling turn another session holds on the same connection and thread', () => {
-    const cancel = displaced(turn(), [turn({ plan: { sessionKey: 'slack:C1:T1:bot-b' } })])
+  it('cancels the sibling a NEW message displaces, then re-asserts the survivor status', async () => {
+    const c = conn()
+    const incoming = turn({ conn: c, msgId: 'm2' })
+    const cancel = await displaced(incoming, [
+      turn({ conn: c, msgId: 'm1', plan: { sessionKey: 'slack:C1:T1:bot-b' } })
+    ])
     expect(cancel).toHaveBeenCalledExactlyOnceWith('slack:C1:T1:bot-b')
+    // The clear the cancelled turn enqueues must not be the thread's last write.
+    expect(c.setStatus).toHaveBeenCalledWith('C1', 'T1', 'is thinking…', undefined)
   })
 
-  it('touches nothing across connections, conversations, platforms, or its own session', () => {
-    const cancel = displaced(turn(), [
-      turn(), // the same sessionKey — the queue already serializes it
-      turn({ conn: 'CONN-B', plan: { sessionKey: 'slack:C1:T1:bot-b' } }), // another bot
-      turn({ plan: { sessionKey: 'slack:C1:T9:bot-b', statusThread: 'T9' } }), // another thread
-      turn({ plan: { sessionKey: 'webchat:C1:T1:bot-b', platform: 'webchat' } }) // another platform
+  it('leaves same-message fan-out siblings alone (one delivery, several recipients)', async () => {
+    const c = conn()
+    const cancel = await displaced(turn({ conn: c, msgId: 'm1' }), [
+      turn({ conn: c, msgId: 'm1', plan: { sessionKey: 'slack:C1:T1:bot-b' } })
     ])
     expect(cancel).not.toHaveBeenCalled()
+    expect(c.setStatus).not.toHaveBeenCalled()
+  })
+
+  it('touches nothing across connections, conversations, platforms, or its own session', async () => {
+    const c = conn()
+    const cancel = await displaced(turn({ conn: c }), [
+      turn({ conn: c }), // the same sessionKey — the queue already serializes it
+      turn({ conn: conn(), msgId: 'm1', plan: { sessionKey: 'slack:C1:T1:bot-b' } }), // another bot
+      turn({ conn: c, msgId: 'm1', plan: { sessionKey: 'slack:C1:T9:bot-b', statusThread: 'T9' } }), // another thread
+      turn({ conn: c, msgId: 'm1', plan: { sessionKey: 'webchat:C1:T1:bot-b', platform: 'webchat' } }) // another platform
+    ])
+    expect(cancel).not.toHaveBeenCalled()
+    expect(c.setStatus).not.toHaveBeenCalled()
   })
 })
