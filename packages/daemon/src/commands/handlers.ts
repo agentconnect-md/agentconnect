@@ -178,7 +178,9 @@ export class CommandHandlers {
     // Cancel a gate-owned/queued session even if it has no live ACP turn yet (§6.9 #390):
     // interruptTurn drains the queue by key and cancels the ACP turn only if one exists.
     if (!this.host.inflight().has(key)) return false
-    const agentId = rec?.agentId ?? this.host.serialQueue().get(key)?.[0]?.agentId
+    // The cold head owns the key from the gate alone — no row, and not queued behind itself.
+    const agentId =
+      rec?.agentId ?? this.host.activeGateEntries().get(key)?.agentId ?? this.host.serialQueue().get(key)?.[0]?.agentId
     if (!agentId) return false
     await this.host.interruptTurn(agentId, key, 'cancel', rec?.acpSessionId ?? undefined)
     return true // reports whether a turn was actually interrupted (nothing else reads it)
@@ -523,16 +525,14 @@ export class CommandHandlers {
     // a `!stop` sent in the cold thread can mute/cancel an older thread and leave the
     // actual turn running. Check all gate representations because commands can race the
     // short hand-offs between them.
-    const gateActiveFor = (candidateKey: string): boolean =>
-      this.host.activeGateEntries().has(candidateKey) || (this.host.serialQueue().get(candidateKey)?.length ?? 0) > 0
-    let directGateActive = gateActiveFor(key)
+    let directGateActive = this.gateActiveFor(key)
     if (!rec && !directGateActive) {
       const latest = await this.host.store().latestSessionForTransport(target.agentId, msg.channel, msg.transportScope)
       if (latest) {
         rec = latest
         key = latest.key
         thread = latest.thread
-        directGateActive = gateActiveFor(key)
+        directGateActive = this.gateActiveFor(key)
       }
     }
     const acpSessionId = rec?.acpSessionId
@@ -911,6 +911,27 @@ export class CommandHandlers {
     return (await this.admittedSessions(platform, channel, srcIntegrationIds, transportScope, thread))[0] ?? null
   }
 
+  /** A turn currently owns this logical key — the gate's admitted head, or the queue behind
+   *  it. True through the cold window too, where no session row exists yet. */
+  private gateActiveFor(key: string): boolean {
+    return this.host.activeGateEntries().has(key) || (this.host.serialQueue().get(key)?.length ?? 0) > 0
+  }
+
+  /** The agents whose own-platform integrations admit this conversation — one entry each,
+   *  whichever of its integrations qualified. */
+  private admittedAgentIds(platform: string, channel: string, srcIntegrationIds: readonly string[]): string[] {
+    const agentIds: string[] = []
+    for (const [agentId, agent] of this.host.agents()) {
+      for (const integration of agent.integrations) {
+        if (integration.platform !== platform || !srcIntegrationIds.includes(integration.id)) continue
+        if (!conversationAdmitted(integrationRouting(integration), channel)) continue
+        agentIds.push(agentId)
+        break
+      }
+    }
+    return agentIds
+  }
+
   /** Every admitted session in the conversation, one per participating agent, newest first. */
   private async admittedSessions(
     platform: string,
@@ -920,14 +941,9 @@ export class CommandHandlers {
     thread?: string
   ): Promise<SessionRecord[]> {
     const candidates: SessionRecord[] = []
-    for (const [agentId, agent] of this.host.agents()) {
-      for (const integration of agent.integrations) {
-        if (integration.platform !== platform || !srcIntegrationIds.includes(integration.id)) continue
-        const routing = integrationRouting(integration)
-        if (!conversationAdmitted(routing, channel)) continue
-        const session = await this.host.store().latestSessionForTransport(agentId, channel, transportScope, thread)
-        if (session) candidates.push(session)
-      }
+    for (const agentId of this.admittedAgentIds(platform, channel, srcIntegrationIds)) {
+      const session = await this.host.store().latestSessionForTransport(agentId, channel, transportScope, thread)
+      if (session) candidates.push(session)
     }
     candidates.sort((a, b) => b.updatedAt - a.updatedAt || a.agentId.localeCompare(b.agentId))
     return candidates
@@ -956,7 +972,10 @@ export class CommandHandlers {
   }
 
   /** Every addressable session in one Slack conversation, newest first — the native
-   *  session-level Stop must interrupt ALL of the thread's in-flight turns, not one. */
+   *  session-level Stop must interrupt ALL of the thread's in-flight turns, not one.
+   *  A turn owns its logical key from admission, but its row is written only once the
+   *  runtime answers `session/new`; the Stop control renders over that whole cold window,
+   *  so the gate is read alongside the store or the first click cancels nothing. */
   async slackThreadSessions(
     shortcut: { channel: string; thread: string },
     srcIntegrationIds: readonly string[]
@@ -969,6 +988,11 @@ export class CommandHandlers {
       transportScope,
       shortcut.thread
     )
-    return sessions.map((s) => s.key)
+    const keys = sessions.map((s) => s.key)
+    for (const agentId of this.admittedAgentIds('slack', shortcut.channel, srcIntegrationIds)) {
+      const cold = sessionKey('slack', shortcut.channel, shortcut.thread, agentId, transportScope)
+      if (!keys.includes(cold) && this.gateActiveFor(cold)) keys.push(cold)
+    }
+    return keys
   }
 }
