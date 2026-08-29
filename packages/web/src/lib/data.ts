@@ -2,7 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
-import { gitRepoHostname } from './git-url-tile'
+import { gitRepoHostname, managedGitlabHost } from './git-url-tile'
 import { isCodeHostHookKind, type HookKind } from '@agentconnect.md/protocol/code-host'
 import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -427,7 +427,7 @@ export function workspaceSourceOf(
   if (ws.provider === 'github' || ws.provider === 'gitlab') return ws.provider
   const host = ws.gitRepo !== undefined ? gitRepoHostname(ws.gitRepo) : undefined
   if (host === 'github.com') return 'github'
-  if (host === 'gitlab.com') return 'gitlab'
+  if (host === 'gitlab.com' || (host !== undefined && host === managedGitlabHost())) return 'gitlab'
   // Bare `owner/repo` shorthand (legacy rows) is GitHub-only sugar.
   if (host === undefined && ws.gitRepo !== undefined && /^[^/\s]+\/[^/\s]+$/.test(ws.gitRepo.trim())) return 'github'
   return 'giturl'

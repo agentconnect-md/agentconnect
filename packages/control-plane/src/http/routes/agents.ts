@@ -212,6 +212,7 @@ import { provisionDaemonConnect } from '../onboarding.js'
 import { Tag } from '../plugins/openapi.js'
 import { buildAgentMoves } from '../agent-moves.js'
 import { GithubApiError } from '../../github/api.js'
+import { GitlabApiError } from '../../gitlab/api.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { syncAgentBotIcons } from '../agent-bot-icon-sync.js'
@@ -1542,6 +1543,14 @@ export function agentRoutes(deps: HttpDeps) {
                 message: `github: ${e.message}`
               })
             }
+            if (e instanceof GitlabApiError) {
+              const status = e.code === 'RATE_LIMITED' ? 429 : 502
+              return reply.code(status).send({
+                error: status === 429 ? 'Too Many Requests' : 'Bad Gateway',
+                statusCode: status,
+                message: `gitlab: ${e.message}`
+              })
+            }
             throw e
           }
           // §17.3/§24.4: a DIRECT placement must advertise the features NOW — the
@@ -2468,6 +2477,14 @@ export function agentRoutes(deps: HttpDeps) {
               error: status === 429 ? 'Too Many Requests' : 'Bad Gateway',
               statusCode: status,
               message: `github: ${err.message}`
+            })
+          }
+          if (err instanceof GitlabApiError) {
+            const status = err.code === 'RATE_LIMITED' ? 429 : 502
+            return reply.code(status).send({
+              error: status === 429 ? 'Too Many Requests' : 'Bad Gateway',
+              statusCode: status,
+              message: `gitlab: ${err.message}`
             })
           }
           throw err

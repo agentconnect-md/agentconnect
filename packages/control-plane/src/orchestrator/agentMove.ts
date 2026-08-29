@@ -17,7 +17,9 @@
  */
 import { randomUUID } from 'node:crypto'
 import {
+  gitRepoLabel,
   normalizeGitUrl,
+  workspaceGitOriginOf,
   type Ack,
   type AgentActivate,
   type DutyAgentBundle,
@@ -41,6 +43,7 @@ import type {
   IntegrationRepo
 } from '../persistence/ports.js'
 import { AgentWorkspaceIntegrationConflict } from '../persistence/errors.js'
+import { isCanonicalGithubAddress } from '../domain/git-host.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import {
   claimScopeOf,
@@ -189,14 +192,30 @@ function sameWorkspaceCredential(
   )
 }
 
+// Full address, not the path label: with the mode host-neutral, only the address
+// separates two hosts sharing an owner/repo path. Origins canonicalize (scheme/
+// host/port, case-insensitive); the PATH keeps its case except on github.com,
+// which resolves paths case-insensitively — an arbitrary Git host may not.
+function sameGitAddress(left: string, right: string): boolean {
+  try {
+    if (workspaceGitOriginOf(left) !== workspaceGitOriginOf(right)) return false
+  } catch {
+    // A historical value the codec refuses compares exactly, never loosely.
+    return normalizeGitUrl(left) === normalizeGitUrl(right)
+  }
+  const leftLabel = gitRepoLabel(left)
+  const rightLabel = gitRepoLabel(right)
+  return isCanonicalGithubAddress(left)
+    ? leftLabel.toLowerCase() === rightLabel.toLowerCase()
+    : leftLabel === rightLabel
+}
+
 function sameWorkspaceDefinition(left: AgentWorkspace, right: AgentWorkspace): boolean {
   if (left.mode !== right.mode) return false
   if (left.mode === 'scratch' || right.mode === 'scratch') return true
   return (
     (left.isolation ?? 'shared') === (right.isolation ?? 'shared') &&
-    // Full address, not the path label: with the mode host-neutral, only the
-    // address separates two hosts sharing an owner/repo path.
-    normalizeGitUrl(left.gitRepo).toLowerCase() === normalizeGitUrl(right.gitRepo).toLowerCase() &&
+    sameGitAddress(left.gitRepo, right.gitRepo) &&
     (left.gitBranch ?? 'main') === (right.gitBranch ?? 'main') &&
     (left.agentDir ?? '') === (right.agentDir ?? '') &&
     sameWorkspaceCredential(left.credential, right.credential)

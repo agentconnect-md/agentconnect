@@ -5,6 +5,25 @@
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i
 const SCP_RE = /^[\w.-]+@[\w.-]+:.+$/
 
+/** The deployment's GitLab instance, published via runtime config (window.__AC_ENV);
+ *  gitlab.com when unset. Lives in this leaf so both tile guards share one answer. */
+export function managedGitlabInstanceUrl(): string {
+  if (typeof window !== 'undefined') {
+    const configured = window.__AC_ENV?.GITLAB_URL
+    if (configured) return configured
+  }
+  return 'https://gitlab.com'
+}
+
+/** host[:port] of the managed instance, the unit `gitRepoHostname` answers in. */
+export function managedGitlabHost(): string {
+  try {
+    return new URL(managedGitlabInstanceUrl()).host.toLowerCase()
+  } catch {
+    return 'gitlab.com'
+  }
+}
+
 /** Hostname of a git address (scheme URL or scp-style ssh); shared with the tile derivation. */
 export function gitRepoHostname(input: string): string | undefined {
   const s = input.trim()
@@ -21,6 +40,8 @@ export function gitRepoUrlTileHint(input: string): string | null {
   }
   const host = gitRepoHostname(s)
   if (host === 'github.com') return 'Use the “GitHub” tile for github.com repositories.'
-  if (host === 'gitlab.com') return 'Use the “GitLab” tile for gitlab.com projects.'
+  if (host === 'gitlab.com' || host === managedGitlabHost()) {
+    return 'Use the “GitLab” tile for GitLab projects.'
+  }
   return null
 }

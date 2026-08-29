@@ -665,6 +665,18 @@ describe('agent config display helpers (card ↔ editor parity)', () => {
 // The display tile is DERIVED from host + credential, never stored (§7): a stored
 // `source` would go stale the moment the credential behind a checkout changes.
 describe('workspaceSourceOf', () => {
+  it('maps an anonymous checkout on the configured self-managed instance to the gitlab tile', () => {
+    // These lib tests run in node — publish the browser global the getter reads.
+    const g = globalThis as unknown as { window?: { __AC_ENV?: Record<string, string> } }
+    g.window = { __AC_ENV: { GITLAB_URL: 'https://gitlab.example.test' } }
+    try {
+      expect(workspaceSourceOf({ mode: 'git', gitRepo: 'https://gitlab.example.test/team/repo' })).toBe('gitlab')
+      expect(workspaceSourceOf({ mode: 'git', gitRepo: 'https://git.example.test/team/repo' })).toBe('giturl')
+    } finally {
+      delete g.window
+    }
+  })
+
   const git = (over: Record<string, unknown>) =>
     workspaceSourceOf({ mode: 'git', ...over } as Parameters<typeof workspaceSourceOf>[0])
 

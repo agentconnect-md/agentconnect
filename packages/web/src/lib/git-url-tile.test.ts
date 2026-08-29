@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { gitRepoUrlTileHint } from './git-url-tile'
 
 // The Git URL tile takes FULL addresses on unmanaged hosts only, so tile ↔ stored
@@ -26,5 +26,22 @@ describe('gitRepoUrlTileHint', () => {
   it('stays quiet on an empty box — emptiness is canSubmit’s business', () => {
     expect(gitRepoUrlTileHint('')).toBeNull()
     expect(gitRepoUrlTileHint('   ')).toBeNull()
+  })
+})
+
+describe('managed self-hosted instance (runtime config)', () => {
+  // These lib tests run in node — publish the browser global the getter reads.
+  const g = globalThis as unknown as { window?: { __AC_ENV?: Record<string, string> } }
+  afterEach(() => {
+    delete g.window
+  })
+
+  it('refuses the configured GitLab host with the switch-tile hint', () => {
+    g.window = { __AC_ENV: { GITLAB_URL: 'https://gitlab.example.test' } }
+    expect(gitRepoUrlTileHint('https://gitlab.example.test/team/repo')).toBe(
+      'Use the “GitLab” tile for GitLab projects.'
+    )
+    // An unrelated self-hosted server stays on this tile.
+    expect(gitRepoUrlTileHint('https://git.example.test/team/repo')).toBeNull()
   })
 })

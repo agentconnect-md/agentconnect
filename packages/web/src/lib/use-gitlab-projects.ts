@@ -23,7 +23,8 @@ import {
   type GitlabProjectBindingDto,
   type GitlabProjectDto
 } from './api'
-import { GITLAB_DEFAULT_INSTANCE_URL, mergeGitlabProjectChoices, type GitlabProjectChoice } from './gitlab-projects'
+import { mergeGitlabProjectChoices, type GitlabProjectChoice } from './gitlab-projects'
+import { managedGitlabInstanceUrl } from './git-url-tile'
 
 const SEARCH_DEBOUNCE_MS = 300
 
@@ -77,7 +78,7 @@ export function useGitlabProjects(active: boolean, query: string): GitlabProject
   const [bindings, setBindings] = useState<GitlabProjectBindingDto[] | null>(null)
   const [enabled, setEnabled] = useState(true)
   const [connectionId, setConnectionId] = useState<string | null>(null)
-  const [instanceUrl, setInstanceUrl] = useState(GITLAB_DEFAULT_INSTANCE_URL)
+  const [instanceUrl, setInstanceUrl] = useState(managedGitlabInstanceUrl)
   const [candidates, setCandidates] = useState<GitlabProjectDto[]>([])
   const [error, setError] = useState<string | null>(null)
   const [provisioning, setProvisioning] = useState<string | null>(null)
