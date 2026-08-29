@@ -166,8 +166,10 @@ Delivery follows these rules:
 
 The message is daemon-authored system output, not an agent reply, so it has no
 agent-attribution footer. On platforms that mark notices it is posted as
-chrome with the agent's visual identity (name and icon), so thread backfill
-skips it instead of re-ingesting it as something the agent said.
+chrome with the agent's visual identity (name and icon) in channels — a DM
+keeps the bot's own identity, per the conversational-authorship rule — so
+thread backfill skips it instead of re-ingesting it as something the agent
+said.
 
 The runtime's own unsolicited follow-up narration is not routed when no
 foreground turn is pending. This is not a stylistic choice — `onAcpUpdate`
