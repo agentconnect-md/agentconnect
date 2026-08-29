@@ -56,6 +56,7 @@ This repository is a pnpm workspace. Product packages live under `packages/`:
 ## Explore further
 
 - [Public documentation](https://docs.agentconnect.md)
+- [Documentation index](docs/README.md) — every guide and design document, grouped by area
 - [Architecture and detailed designs](docs/designs/)
 - [CLI and daemon lifecycle](docs/designs/cli-daemon-split.md)
 - [Setup Server](packages/setup/README.md)
