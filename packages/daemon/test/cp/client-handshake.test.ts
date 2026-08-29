@@ -628,9 +628,11 @@ describe('CpClient handshake', () => {
     const client = new CpClient(makeDeps(t))
     client.start()
     await tick()
+    expect(client.terminallyClosed()).toBe(false)
     await client.stop()
     expect(t.closed?.code).toBe(1000)
     expect(client.state).toBe('CLOSED')
+    expect(client.terminallyClosed()).toBe(true)
   })
 
   it('token-only (no daemonId): omits daemonId from auth, adopts the id from auth/ok', async () => {
@@ -703,6 +705,8 @@ describe('CpClient handshake', () => {
     t.pushInbound(JSON.stringify(buildEnvelope('ack', { ok: true }, { corr: result.id })))
     await tick()
     expect(restart).toHaveBeenCalledOnce()
+    // Terminal BEFORE restart() runs its drain: shutdown retry loops must give up, not spin.
+    expect(client.terminallyClosed()).toBe(true)
     expect(t.closed).toEqual({ code: 1000, reason: 'bootstrap upgrade installed' })
     expect(t.sent.map((text) => JSON.parse(text).type)).not.toContain('register')
   })

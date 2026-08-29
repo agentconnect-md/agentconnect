@@ -78,6 +78,8 @@ describe('CpClient reconnect', () => {
     const t1 = (await connect.mock.results[0]!.value) as FakeTransport
     t1.simulateClose(1012, 'restarting')
     expect(client.state).toBe('DEGRADED')
+    // A redial is coming, so shutdown retry loops may still hope for delivery.
+    expect(client.terminallyClosed()).toBe(false)
     // A reconnect timer is armed (~1000ms with jitter()=0).
     expect(clock.pending()).toContain(1000)
 
@@ -153,6 +155,7 @@ describe('CpClient reconnect', () => {
     await tick()
     const t1 = (await connect.mock.results[0]!.value) as FakeTransport
     t1.simulateClose(4401, 'AUTH_FAILED')
+    expect(client.terminallyClosed()).toBe(true)
     expect(clock.pending()).not.toContain(1000)
     clock.advance(60000)
     await tick()
