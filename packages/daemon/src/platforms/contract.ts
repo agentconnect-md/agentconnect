@@ -43,6 +43,8 @@ export interface InteractionActor {
   /** Only set where the platform reports it on the interaction (Discord does; a Slack
    *  `block_actions` payload carries no bot flag on its `user`). */
   isBot?: boolean
+  /** Provider-observed display label. Presentation only — never an identity or auth input. */
+  name?: string
 }
 
 /**

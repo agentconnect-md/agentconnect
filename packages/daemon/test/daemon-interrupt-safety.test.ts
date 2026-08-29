@@ -851,7 +851,9 @@ describe('Daemon interrupt safety gates', () => {
         { agentId: AGENT_ID, integrationId: 'int-a', via: 'mention' }
       )
       expect(await (daemon as any).store.isLoopGuardOpen('slack:C-loop:top-level')).toBe(false)
-      expect(conn.postMessage).toHaveBeenCalledWith('C-loop', expect.stringContaining('Resumed'), '9')
+      expect(conn.postMessage).toHaveBeenCalledWith('C-loop', expect.stringContaining('Resumed'), '9', {
+        chrome: true
+      })
     } finally {
       await daemon.stop()
     }

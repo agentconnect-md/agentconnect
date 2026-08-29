@@ -119,6 +119,9 @@ function makeRoutable(daemon: Daemon) {
   return conn
 }
 
+/** Every command reply is chrome-marked, so thread backfill skips it. */
+const CHROME_REPLY = { chrome: true }
+
 const dm = (ts: string, text: string) => ({
   msgId: `slack:C1:${ts}`,
   traceId: ts,
@@ -153,7 +156,7 @@ describe('Daemon in-conversation commands', () => {
 
     await (daemon as any).onInboundOutcome(dm('200', '!resume'))
     expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Resumed'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Resumed'), 'T1', CHROME_REPLY)
     expect(blocked.prompts).toHaveLength(0) // the control command never becomes a prompt
     await daemon.stop()
   })
@@ -191,7 +194,7 @@ describe('Daemon in-conversation commands', () => {
 
     await (daemon as any).onInboundOutcome(resume('U1'))
     expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
-    expect(conn.postMessage).toHaveBeenCalledWith('C-top', expect.stringContaining('Resumed'), '9')
+    expect(conn.postMessage).toHaveBeenCalledWith('C-top', expect.stringContaining('Resumed'), '9', CHROME_REPLY)
     expect(blocked.prompts).toHaveLength(0)
     await daemon.stop()
   })
@@ -236,7 +239,7 @@ describe('Daemon in-conversation commands', () => {
       accepted: true
     })
     expect(await (daemon as any).store.isLoopGuardOpen(scope)).toBe(false)
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Resumed'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Resumed'), 'T1', CHROME_REPLY)
     expect(blocked.prompts).toHaveLength(0)
     await daemon.stop()
   })
@@ -482,7 +485,7 @@ describe('Daemon in-conversation commands', () => {
     // queue a follow-up while the turn is in flight
     await (daemon as any).onInboundOutcome(dm('200', '!queue do it'))
     await vi.waitFor(() => expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(1), WAIT)
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Queued'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Queued'), 'T1', CHROME_REPLY)
     expect(blocked.prompts).toHaveLength(1) // the 2nd message is queued, not dispatched yet
     expect(blocked.prompts[0]).toContain('hello') // (prefixed by the injected memory block)
 
@@ -533,7 +536,7 @@ describe('Daemon in-conversation commands', () => {
     await vi.waitFor(() => expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(10), WAIT)
     await (daemon as any).onInboundOutcome(dm('999', '!queue overflow')) // 11th → rejected
     await vi.waitFor(() => expect((daemon as any).serialQueue.get(SESSION_KEY)).toHaveLength(10), WAIT)
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('full'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('full'), 'T1', CHROME_REPLY)
 
     blocked.release()
     await turn
@@ -555,7 +558,7 @@ describe('Daemon in-conversation commands', () => {
 
     await (daemon as any).onInboundOutcome(dm('200', '!stop'))
     expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Stopped'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Stopped'), 'T1', CHROME_REPLY)
 
     blocked.release()
     await turn
@@ -710,10 +713,40 @@ describe('Daemon in-conversation commands', () => {
 
     await (daemon as any).onInboundOutcome(dm('200', '!cancel'))
     expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Cancelled'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Cancelled'), 'T1', CHROME_REPLY)
     // unlike !stop, the session is NOT muted — follow-ups keep dispatching.
     const store = (daemon as any).store
     expect(await store.isSessionMuted(SESSION_KEY)).toBe(false)
+    // The interrupt is recorded ONCE, naming who raised it — the chrome-marked reply above
+    // never reaches the transcript, so the console's only row is this one.
+    const rows = await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+    expect(rows.filter((row: any) => row.text.includes('Turn cancelled')).map((row: any) => row.text)).toEqual([
+      '🛑 Turn cancelled by U1.'
+    ])
+
+    blocked.release()
+    await turn
+    await daemon.stop()
+  })
+
+  it('cancels the turn even when the audit row cannot be written', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
+    // The row is presentation: a store that refuses it must not leave the runtime running
+    // after someone pressed Stop, with output already suppressed and the drain begun.
+    vi.spyOn((daemon as any).store, 'appendTranscript').mockRejectedValue(new Error('disk full'))
+
+    await (daemon as any).onInboundOutcome(dm('200', '!cancel'))
+    expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
 
     blocked.release()
     await turn
@@ -731,7 +764,7 @@ describe('Daemon in-conversation commands', () => {
     const conn = makeRoutable(daemon)
 
     await (daemon as any).onInboundOutcome({ ...dm('400', '!cancel'), thread: 'T9' })
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'Nothing is running to cancel.', 'T9')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', 'Nothing is running to cancel.', 'T9', CHROME_REPLY)
     expect(await (daemon as any).store.isSessionMuted('slack:C1:T9:bot-a')).toBe(false)
     await daemon.stop()
   })
@@ -841,7 +874,12 @@ describe('Daemon in-conversation commands', () => {
 
     // A top-level channel command (no thread) still reaches the channel's active session.
     await (daemon as any).onInboundOutcome({ ...channelStop, msgId: 'slack:C1:300', thread: undefined })
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Nothing is running'), 'slack:C1:300')
+    expect(conn.postMessage).toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('Nothing is running'),
+      'slack:C1:300',
+      CHROME_REPLY
+    )
 
     await daemon.stop()
   })
@@ -861,7 +899,7 @@ describe('Daemon in-conversation commands', () => {
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
     await (daemon as any).onInboundOutcome(dm('200', '!stop'))
     expect(await store.isSessionMuted(SESSION_KEY)).toBe(true)
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Muted'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Muted'), 'T1', CHROME_REPLY)
 
     // follow-up in the muted thread does not start a turn
     await (daemon as any).onInboundOutcome(dm('300', 'follow up'))
@@ -871,7 +909,12 @@ describe('Daemon in-conversation commands', () => {
     // a bare !stop from a thread with no session of its own now targets the channel's
     // latest session (T1): reports it's idle + (re)mutes T1, but still replies in T9.
     await (daemon as any).onInboundOutcome({ ...dm('400', '!stop'), thread: 'T9' })
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Nothing is running'), 'T9')
+    expect(conn.postMessage).toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('Nothing is running'),
+      'T9',
+      CHROME_REPLY
+    )
     expect(await store.isSessionMuted(SESSION_KEY)).toBe(true)
 
     await daemon.stop()
@@ -889,12 +932,12 @@ describe('Daemon in-conversation commands', () => {
     // open a session in T1, then query it
     await (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
     await (daemon as any).onInboundOutcome(dm('200', '!status'))
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining(':bar_chart:'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining(':bar_chart:'), 'T1', CHROME_REPLY)
 
     // another thread in the SAME channel with no session of its own → falls back to the
     // channel's latest session (still reports the status line, not "nothing here")
     await (daemon as any).onInboundOutcome({ ...dm('400', '!status'), thread: 'T9' })
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining(':bar_chart:'), 'T9')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining(':bar_chart:'), 'T9', CHROME_REPLY)
 
     // a channel with no session at all → a "nothing here" note
     await (daemon as any).onInboundOutcome({
@@ -903,7 +946,12 @@ describe('Daemon in-conversation commands', () => {
       thread: 'T2',
       msgId: 'slack:C2:500'
     })
-    expect(conn.postMessage).toHaveBeenCalledWith('C2', expect.stringContaining('No active session'), 'T2')
+    expect(conn.postMessage).toHaveBeenCalledWith(
+      'C2',
+      expect.stringContaining('No active session'),
+      'T2',
+      CHROME_REPLY
+    )
 
     await daemon.stop()
   })
@@ -924,13 +972,13 @@ describe('Daemon in-conversation commands', () => {
 
     await (daemon as any).onInboundOutcome(dm('200', '!fast on'))
     expect(await store.getFastModeOverride(key)).toBe(true)
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Fast mode on'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Fast mode on'), 'T1', CHROME_REPLY)
 
     await (daemon as any).onInboundOutcome(dm('300', '!fast off'))
     expect(await store.getFastModeOverride(key)).toBe(false)
 
     await (daemon as any).onInboundOutcome(dm('400', '!fast'))
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Usage:'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Usage:'), 'T1', CHROME_REPLY)
 
     await daemon.stop()
   })
@@ -961,7 +1009,12 @@ describe('Daemon in-conversation commands', () => {
     await (daemon as any).onInboundOutcome(dm('210', '/models 2'))
     expect(await store.getModelOverride(key)).toBe('sonnet')
     expect(host.setSessionModel).toHaveBeenCalledWith('acp-1', 'sonnet')
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Model set to sonnet'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('Model set to sonnet'),
+      'T1',
+      CHROME_REPLY
+    )
 
     // select by name (case-insensitive substring)
     await (daemon as any).onInboundOutcome(dm('220', '/effort HIGH'))
@@ -972,14 +1025,19 @@ describe('Daemon in-conversation commands', () => {
 
     // an unknown value is rejected with the option list, no override written
     await (daemon as any).onInboundOutcome(dm('240', '/models haiku'))
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Unknown model'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Unknown model'), 'T1', CHROME_REPLY)
     expect(await store.getModelOverride(key)).toBe('sonnet')
 
     // a bare command from a DIFFERENT thread still targets the channel's latest session
     // (T1) — the override lands on T1's key, and the reply goes to the sender's thread.
     await (daemon as any).onInboundOutcome({ ...dm('250', '/models 1'), thread: 'T9' })
     expect(await store.getModelOverride(key)).toBe('opus')
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Model set to opus'), 'T9')
+    expect(conn.postMessage).toHaveBeenCalledWith(
+      'C1',
+      expect.stringContaining('Model set to opus'),
+      'T9',
+      CHROME_REPLY
+    )
 
     await daemon.stop()
   })
@@ -1041,7 +1099,8 @@ describe('Daemon in-conversation commands', () => {
     expect(conn.postMessage).toHaveBeenCalledWith(
       'C1',
       expect.stringContaining('Permission mode set to Full Access'),
-      'T1'
+      'T1',
+      CHROME_REPLY
     )
 
     // the default preset resolves from its Codex label too ("ask for approval" → agent)
@@ -2355,6 +2414,31 @@ describe('Slack interactive status bar', () => {
     await daemon.stop()
   })
 
+  it('leaves no transcript row for an unattributed stop (host respawn / agent removal)', async () => {
+    const { host, release } = modelHost()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => host as any
+    })
+    await daemon.start()
+    routableWithBlocks(daemon)
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hi'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
+    // `stop` is also the lifecycle reason for a respawn or a removal — no person raised it,
+    // so it must not narrate itself into the conversation.
+    await (daemon as any).interruptTurn('bot-a', SESSION_KEY, 'stop', 'acp-1')
+
+    const store = (daemon as any).store
+    const rows = await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+    expect(rows.filter((row: any) => row.text.includes('Turn stopped'))).toEqual([])
+
+    release()
+    await turn
+    await daemon.stop()
+  })
+
   it('handleStatusAction routes set-model / cancel by session key', async () => {
     const { host, release } = modelHost()
     const daemon = new Daemon({
@@ -2376,10 +2460,19 @@ describe('Slack interactive status bar', () => {
     expect(await store.getModelOverride(key)).toBe('sonnet-5')
     expect(host.setSessionModel).toHaveBeenCalledWith('acp-1', 'sonnet-5')
 
-    // cancel: interrupts the in-flight turn WITHOUT muting.
-    await (daemon as any).commands.handleStatusAction({ kind: 'cancel', sessionKey: key })
+    // cancel: interrupts the in-flight turn WITHOUT muting, and records WHO — this is the
+    // native Stop's path (agentSessionStopped raises the same action with the clicker).
+    await (daemon as any).commands.handleStatusAction({
+      kind: 'cancel',
+      sessionKey: key,
+      actor: { userId: 'U7', name: 'Ada' }
+    })
     expect(host.cancel).toHaveBeenCalledWith('acp-1')
     expect(await store.isSessionMuted(key)).toBe(false)
+    const rows = await store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+    expect(rows.filter((row: any) => row.text.includes('Turn cancelled')).map((row: any) => row.text)).toEqual([
+      '🛑 Turn cancelled by Ada.'
+    ])
 
     release()
     await t1

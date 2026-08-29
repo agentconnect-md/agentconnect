@@ -17,7 +17,9 @@ export const slackCommandChrome: CommandChromeSurface<unknown, StatusBarInfo> = 
     // Cast rather than instanceof so duck-typed fakes (and the non-Slack origins
     // that render through this core surface) keep working — their postMessage is
     // structurally compatible.
-    void (conn as SlackConnection).postMessage(ctx.channel, text, ctx.replyThread)
+    // Chrome-marked: a control reply is not conversation, so thread backfill skips it and
+    // the transcript's one record of an interrupt is the row the daemon writes itself.
+    void (conn as SlackConnection).postMessage(ctx.channel, text, ctx.replyThread, { chrome: true })
   },
 
   status(conn: unknown, msg: unknown, ctx: CommandChromeContext, info: StatusBarInfo, link?: string): void {
