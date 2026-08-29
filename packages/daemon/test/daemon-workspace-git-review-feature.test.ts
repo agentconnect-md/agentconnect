@@ -85,5 +85,5 @@ describe('registrationFeatures — the host-neutral workspace arm', () => {
     const features = (daemon as never as Record<string, any>).registrationFeatures() as string[]
     await daemon.stop().catch(() => {})
     expect(features).toContain(WORKSPACE_GIT_V1_FEATURE)
-  }, 20_000)
+  })
 })
