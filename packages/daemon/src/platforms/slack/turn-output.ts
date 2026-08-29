@@ -592,11 +592,12 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     case 'stream-start': {
       if (state.stream || state.streamDead || state.streamDegraded) return
       if (p.plan.thread) {
-        // The agent's name and icon in DMs TOO, unlike the `progress` message this replaces:
-        // an undecorated postMessage falls back to the app's own profile, but an undecorated
-        // STREAM renders a placeholder avatar instead (verified live 2026-08-29) — so the DM
-        // stream is the one chrome row that must always carry the identity, under the
-        // connection's customize cooldown like every other decorated send.
+        // The AGENT identity (the body rows' source), not the chrome policy: `slackPostOptions`
+        // exempts DMs, which is survivable for chrome postMessages (undecorated falls back to
+        // the app profile) but not for a stream — undecorated `chat.startStream` renders a
+        // placeholder avatar, no fallback (verified live 2026-08-29). So the DM plan card sat
+        // as a grey silhouette beside body rows carrying the agent's own icon. Same customize
+        // cooldown as every other decorated send.
         state.stream = await conn.startTurnStream(p.plan.channel, p.plan.thread, {
           isDm: p.plan.isDm,
           ...(state.recipient ? { recipientUserId: state.recipient } : {}),
