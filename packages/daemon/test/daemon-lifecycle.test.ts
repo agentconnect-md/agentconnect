@@ -1570,10 +1570,9 @@ describe('Daemon idle sweep — background-task lease', () => {
     expect(thread).toBe('T1')
     expect(text).toContain('Sleep for 15 seconds')
     expect(text).toContain('completed')
-    // Chrome-marked so thread backfill never re-ingests the notice as agent speech;
-    // a DM keeps the bot's own identity (no username/icon override), per slackPostOptions.
-    expect(options).toMatchObject({ chrome: true })
-    expect(options.username).toBeUndefined()
+    // Chrome-marked so thread backfill never re-ingests the notice as agent speech, and
+    // carrying the ONE identity policy — the agent's name on every surface, DMs included.
+    expect(options).toMatchObject({ chrome: true, username: 'bot-a' })
 
     // The near-simultaneous task_notification for the same task must NOT double-post.
     await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))

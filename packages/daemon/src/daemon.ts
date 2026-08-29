@@ -155,8 +155,8 @@ import {
   clearStaleSlackReplyFooters as clearStaleSlackReplyFootersExternal,
   finalizeSlackResponse,
   isSlackStatusBarText,
+  slackAgentIdentityOptions,
   slackAgentPostOptions,
-  slackPostOptions,
   slackStreamRecipient,
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
@@ -8072,7 +8072,7 @@ export class Daemon {
       this.settleSlackSlot(ctx.replyConn, ctx.channel, ctx.statusThread, ctx.sessionKey)
       if (turnChromeFor(ctx.platform).chromeMarkedNotices)
         void (ctx.replyConn as SlackConnection).postMessage(ctx.channel, notice, ctx.thread, {
-          ...(slackPostOptions(ctx) ?? {}),
+          ...(slackAgentIdentityOptions(ctx) ?? {}),
           chrome: true
         })
       else void ctx.replyConn.postMessage(ctx.channel, notice, ctx.thread)
@@ -13973,9 +13973,8 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     const post = turnChromeFor(rec.platform).chromeMarkedNotices
       ? (conn as SlackConnection).postMessage(rec.channel, text, rec.thread || undefined, {
-          ...(slackPostOptions({
+          ...(slackAgentIdentityOptions({
             platform: rec.platform,
-            isDm: rec.conversationKind === 'dm',
             agentName: agent?.displayName?.trim() || agent?.name || agentId,
             ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})
           }) ?? {}),

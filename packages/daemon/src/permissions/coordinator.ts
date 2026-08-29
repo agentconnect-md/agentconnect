@@ -24,7 +24,7 @@ import {
   buildPermissionResolvedCard,
   elicitTarget
 } from '../slack/render.js'
-import { slackPostOptions } from '../platforms/slack/turn-output.js'
+import { slackAgentIdentityOptions } from '../platforms/slack/turn-output.js'
 import { turnChromeFor } from '../platforms/turn-chrome.js'
 import { formatErr } from '../daemon/text.js'
 import {
@@ -326,7 +326,7 @@ export class PermissionCoordinator {
     const fallback = `Permission requested: ${params.toolCall?.title ?? 'a tool call'}`
     const ts = await this.host.postCardSerialized(p, (slack) =>
       slack.postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
-        ...(slackPostOptions(p.plan) ?? {}),
+        ...(slackAgentIdentityOptions(p.plan) ?? {}),
         chrome: true
       })
     )
@@ -776,7 +776,7 @@ export class PermissionCoordinator {
     }
     const ts = await this.host.postCardSerialized(p, (sc) =>
       sc.postBlocks(p.plan.channel, blocks, fallback, p.plan.statusThread, {
-        ...(slackPostOptions(p.plan) ?? {}),
+        ...(slackAgentIdentityOptions(p.plan) ?? {}),
         chrome: true
       })
     )
