@@ -80,6 +80,20 @@ describe('flattenUnsafeLinks', () => {
     expect(flattenUnsafeLinks(text)).toBe(['````', '```', '[a](/t/a.md)', '````', 'b (`b.md`)'].join('\n'))
   })
 
+  it('flattens an image link as one link — the outer target must not survive the inner rewrite', () => {
+    expect(flattenUnsafeLinks('[![chart](chart.png)](/home/a/report.html)')).toBe('`chart.png` (`report.html`)')
+  })
+
+  it('flattens a nested target even when the outer link is kept', () => {
+    expect(flattenUnsafeLinks('[![chart](/home/a/c.png)](https://example.test)')).toBe(
+      '[`c.png`](https://example.test)'
+    )
+  })
+
+  it('matches a label carrying brackets, which used to leave its target live', () => {
+    expect(flattenUnsafeLinks('see [[wiki]](/a/b.md)')).toBe('see [wiki] (`b.md`)')
+  })
+
   it('leaves an inline code span verbatim while rewriting the prose around it', () => {
     expect(flattenUnsafeLinks('run `[x](/a/b.md)` then [y](/a/c.md)')).toBe('run `[x](/a/b.md)` then y (`c.md`)')
   })

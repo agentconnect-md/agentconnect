@@ -8,8 +8,11 @@ const WEB_SCHEME = /^(?:https?|mailto):/i
 const FRAGMENT = /^#/
 // Host-absolute in both shapes the daemon runs on, plus the `file://` form of the POSIX one.
 const HOST_ABSOLUTE = /^(?:\/|[A-Za-z]:[\\/]|file:\/\/)/
+// A label carries one level of balanced brackets so an image link — `[![alt](img)](target)`, the
+// shape a runtime uses to link the chart it just wrote — matches as ONE link, target included.
+const LABEL = String.raw`(?:[^\[\]]|\[[^\[\]]*\])*`
 // `[label](dest)` / `![alt](src)`, with the optional CommonMark title and `<dest>` bracket form.
-const LINK = /(!?)\[([^\[\]]*)\]\(\s*(<[^<>]*>|[^()\s]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^()]*\)))?\s*\)/g
+const LINK = String.raw`(!?)\[(${LABEL})\]\(\s*(<[^<>]*>|[^()\s]+)(?:\s+(?:"[^"]*"|'[^']*'|\([^()]*\)))?\s*\)`
 // A fence opens or closes on a line whose first non-space run is >= 3 backticks or tildes.
 const FENCE = /^[ \t]*(`{3,}|~{3,})/
 
@@ -21,14 +24,21 @@ export interface FlattenOptions {
 /** Rewrite every link outside code so a target the reader cannot follow survives as text. */
 export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): string {
   if (!text.includes('](')) return text
+  // Built per call, not shared: the label pass below recurses, and a nested `replace` on one
+  // global regex would move the `lastIndex` the outer iteration is still walking.
+  const link = new RegExp(LINK, 'g')
   return mapOutsideCode(text, (segment) =>
-    segment.replace(LINK, (whole, bang: string, label: string, rawDest: string) => {
+    segment.replace(link, (whole, bang: string, label: string, rawDest: string) => {
+      // A label may itself hold a link, whose target is no safer for sitting inside another's.
+      const flatLabel = flattenUnsafeLinks(label, opts)
+      // A kept link keeps its own syntax; only its label changes, and `[label]` opens the match.
+      const kept = (): string => (flatLabel === label ? whole : whole.replace(`[${label}]`, `[${flatLabel}]`))
       const dest = rawDest.startsWith('<') ? rawDest.slice(1, -1).trim() : rawDest
-      if (WEB_SCHEME.test(dest)) return whole
-      if (opts.resolvesRelativeTargets && !HOST_ABSOLUTE.test(dest)) return whole
+      if (WEB_SCHEME.test(dest)) return kept()
+      if (opts.resolvesRelativeTargets && !HOST_ABSOLUTE.test(dest)) return kept()
       const display = FRAGMENT.test(dest) ? '' : HOST_ABSOLUTE.test(dest) ? basename(dest) : dest
       // An image's alt text describes a picture nobody will see, so only its target survives.
-      const visible = bang ? '' : label
+      const visible = bang ? '' : flatLabel
       if (!display || visible.includes(display)) return visible || `\`${display}\``
       return visible ? `${visible} (\`${display}\`)` : `\`${display}\``
     })
