@@ -213,6 +213,122 @@ describe('TurnOutputWorkflow', () => {
     await daemon.stop()
   })
 
+  it('commits a staged segment at a tool boundary, as its own message, while the turn is still running', async () => {
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    let releasePrompt!: () => void
+    const blocked = new Promise<void>((resolve) => (releasePrompt = resolve))
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sessionId: string) => {
+        onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } })
+        onUpdate(sessionId, {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'tc-1',
+          title: 'sleep 5',
+          status: 'in_progress'
+        })
+        await blocked // the boundary has arrived; the turn itself is far from over
+        onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi again' } })
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      }
+    })
+    await daemon.start()
+    const conn = connect(daemon)
+
+    const turn = (daemon as any).dispatch('bot-a', msg('100.1', 'say hi twice'), 'int-a')
+    // The first segment posts when the tool boundary arrives — mid-turn, not at commit.
+    await vi.waitFor(() => {
+      expect(conn.postMessage.mock.calls.map((call) => String(call[1]))).toContain('hi')
+    }, WAIT)
+    releasePrompt()
+    await turn
+
+    const bodies = conn.postMessage.mock.calls.map((call) => String(call[1]))
+    expect(bodies.filter((body) => body === 'hi')).toHaveLength(1)
+    expect(bodies).toContain('hi again') // the closing segment commits at the fence
+    await daemon.stop()
+  })
+
+  it('keeps a committed segment through regeneration and replaces only the closing segment', async () => {
+    let onUpdate!: (sessionId: string, update: unknown) => void
+    let releaseFirst!: () => void
+    const firstBlocked = new Promise<void>((resolve) => (releaseFirst = resolve))
+    const prompts: string[] = []
+    const host = {
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      hasSession: vi.fn(() => true),
+      prompt: vi.fn(async (sessionId: string, blocks: { text?: string }[]) => {
+        prompts.push(blocks.map((block) => block.text ?? '').join('\n'))
+        if (prompts.length === 1) {
+          onUpdate(sessionId, {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'committed lead' }
+          })
+          onUpdate(sessionId, {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'tc-1',
+            title: 'check',
+            status: 'in_progress'
+          })
+          onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'stale tail' } })
+          await firstBlocked
+        } else {
+          onUpdate(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'fresh tail' } })
+        }
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(async () => {}),
+      stop: vi.fn(async () => {})
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return host as any
+      }
+    })
+    await daemon.start()
+    const conn = connect(daemon)
+
+    const firstMessage = msg('100.1', 'original request')
+    const first = (daemon as any).dispatch('bot-a', firstMessage, 'int-a')
+    await vi.waitFor(() => {
+      expect(conn.postMessage.mock.calls.map((call) => String(call[1]))).toContain('committed lead')
+    }, WAIT)
+
+    const clarification = (daemon as any).dispatch('bot-a', msg('100.2', 'important clarification'), 'int-a')
+    const key = sessionKey('slack', 'C1', 'T1', 'bot-a', firstMessage.transportScope)
+    await vi.waitFor(() => expect((daemon as any).serialQueue.get(key)).toHaveLength(1))
+    releaseFirst()
+
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
+    await expect(first).resolves.toBe('acp-1')
+    await expect(clarification).resolves.toBe('acp-1')
+
+    // The replacement prompt admits the delivered prefix instead of claiming nothing landed.
+    expect(prompts[1]).toContain('already delivered and stand')
+    expect(prompts[1]).not.toContain('Your previous candidate answer was not delivered')
+    const bodies = conn.postMessage.mock.calls.map((call) => String(call[1]))
+    expect(bodies.filter((body) => body === 'committed lead')).toHaveLength(1) // stands, never re-posted
+    expect(bodies).toContain('fresh tail')
+    expect(bodies.join('\n')).not.toContain('stale tail') // only the closing segment was regenerable
+    await daemon.stop()
+  })
+
   it('coalesces a clarification represented in the first prompt before initiating it', async () => {
     let onUpdate!: (sessionId: string, update: unknown) => void
     let release!: () => void

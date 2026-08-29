@@ -531,6 +531,7 @@ import {
   MAX_TURN_CONTEXT_REGENERATIONS,
   PROBE_ROOT_SWEEP_INTERVAL_MS,
   SANDBOX_BOOTSTRAP_NOTICE,
+  SEGMENT_BOUNDARY_UPDATES,
   SESSION_RETENTION_SWEEP_INTERVAL_MS
 } from './daemon/constants.js'
 import type {
@@ -7700,11 +7701,17 @@ export class Daemon {
     }
   }
 
-  /** Move only the accepted generation through the existing renderer. This call and
-   * the first enqueue performed by the caller form the local answer commit point. */
-  private acceptStagedAttempt(pending: Pending): void {
-    pending.reply.text = pending.reply.attemptText
-    for (const update of pending.reply.attemptAnswerUpdates) {
+  /** Commit the staged segment through the existing renderer: append it to the turn's
+   * canonical text, replay its chunks in order, and clear the stage. Called at each
+   * tool/thought/plan boundary (mid-turn segment) and by the final context fence (the
+   * closing tail) — this call and the first enqueue performed by the caller form the
+   * local answer commit point for the segment. */
+  private commitStagedSegment(pending: Pending): void {
+    pending.reply.text += pending.reply.attemptText
+    const updates = pending.reply.attemptAnswerUpdates
+    pending.reply.attemptText = ''
+    pending.reply.attemptAnswerUpdates = []
+    for (const update of updates) {
       for (const action of pending.conv.onUpdate(update)) this.enqueueApply(pending, action)
     }
   }
@@ -10517,7 +10524,7 @@ export class Daemon {
       )
 
       if (invalidatingEvents.length === 0) {
-        if (p.plan.stageAnswer) this.acceptStagedAttempt(p)
+        if (p.plan.stageAnswer) this.commitStagedSegment(p)
         if (generation > 0) defaultTurnOutputMetrics.regeneration(p.plan.platform, 'accepted')
         defaultTurnOutputMetrics.generations(generation + 1)
         baseRevision = finalRevision
@@ -10623,7 +10630,11 @@ export class Daemon {
       promptBlocks = [
         {
           type: 'text',
-          text: contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents))
+          // Segments already committed at a boundary were delivered and stand; the model
+          // must be told so, or it regenerates (and re-says) the whole answer.
+          text: contextUpdateText(invalidatingEvents, (event) => this.observedQuoteBlock(event, invalidatingEvents), {
+            deliveredPrefix: p.plan.stageAnswer && p.reply.text.length > 0
+          })
         }
       ]
       finalCaptureInput = recallQueryFromBlocks([{ type: 'text', text: finalCaptureInput }, ...promptBlocks])
@@ -12629,6 +12640,13 @@ export class Daemon {
     // A continuation turn drives BOTH: the browser sink and the platform renderer (§5.2).
     if (p.webchat) webchatTurnOutput.emitWebchatUpdate(p.webchat, update)
     if ((!p.webchat || p.webchat.continuation) && !isHeadlessGithubFinal && !(p.plan.stageAnswer && isAnswerChunk)) {
+      // Segment commit: a boundary the live renderer flushes on delivers the staged text
+      // ahead of it, so "say → work → say more" reaches the channel as it happens (the
+      // renderer still applies its own mode semantics to the replayed chunks). Turn-end
+      // housekeeping (usage, titles) is NOT a boundary — the closing segment stays staged
+      // for the final context fence, which is what regeneration can still replace.
+      if (p.plan.stageAnswer && SEGMENT_BOUNDARY_UPDATES.has(String(update?.sessionUpdate)) && p.reply.attemptText)
+        this.commitStagedSegment(p)
       for (const action of p.conv.onUpdate(update)) this.enqueueApply(p, action)
       this.armIdle(p)
       this.armFeishuStream(p)

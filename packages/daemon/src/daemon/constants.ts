@@ -4,6 +4,11 @@ import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 // grow `queued` without bound. Past the cap we reject with a clear message.
 export const MAX_QUEUED_PER_SESSION = 10
 export const MAX_TURN_CONTEXT_REGENERATIONS = 3
+/** Updates the live renderer flushes buffered text on. A staged turn commits its current
+ *  segment ahead of one of these, so interleaved "say → work → say more" posts as it
+ *  happens; turn-end housekeeping (usage, titles) is deliberately absent so the closing
+ *  segment stays staged for the final context fence. */
+export const SEGMENT_BOUNDARY_UPDATES = new Set(['tool_call', 'tool_call_update', 'agent_thought_chunk', 'plan'])
 /** How many absorbed transcript `ts` values one session key remembers — enough to cover every
  *  activation still travelling to the gate while a turn folds context, and no more. */
 export const ABSORBED_CONTEXT_TS_MEMORY = 64
