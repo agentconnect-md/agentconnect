@@ -2255,7 +2255,10 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /** Best-effort agent-session title; only valid for Agents-feature threads, so the daemon gates it to DMs. */
+  /** Best-effort agent-session title, DMs and channels alike: Slack renders it as the thread
+   *  panel's header once the thread is a registered agent session — which every turn's
+   *  lifecycle `setStatus` (and any card stream) makes it. Unregistered threads answer
+   *  `not_authorized` and degrade here. */
   async setTitle(channel: string, threadTs: string, title: string): Promise<void> {
     try {
       await this.queue.enqueue(() =>

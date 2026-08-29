@@ -12335,8 +12335,8 @@ export class Daemon {
     })
   }
 
-  /** Rename a Slack app-DM through the exact integration that delivered this
-   *  session. The connection lease prevents reconcile from closing it mid-call. */
+  /** Rename a Slack thread via the exact integration that delivered this session; the
+   *  connection lease prevents reconcile from closing it mid-call. */
   private async setSlackTitleForBinding(
     rec: SessionRecord,
     binding: SessionDeliveryBinding,
@@ -12346,7 +12346,6 @@ export class Daemon {
       binding.agentId !== rec.agentId ||
       binding.platform !== 'slack' ||
       rec.platform !== 'slack' ||
-      !binding.isDm ||
       !binding.integrationId ||
       !title
     )
@@ -12391,7 +12390,7 @@ export class Daemon {
       if (p.webchat) {
         webchatTurnOutput.emitWebchatUpdate(p.webchat, { sessionUpdate: 'session_info_update', title: req.title })
       }
-      if (turnChromeFor(p.plan.platform).dmSessionTitle && p.plan.isDm && p.conn) {
+      if (turnChromeFor(p.plan.platform).sessionTitle && p.conn) {
         this.enqueueApply(p, { kind: 'set-title', text: req.title })
         await p.signals.applyChain
         return
@@ -12571,11 +12570,9 @@ export class Daemon {
       // both before touching another logical session if two adapters reuse an id.
       if (rec?.agentId === agentId && rec.acpSessionId === sessionId) {
         await this.persistSessionTitle(rec, update.title)
-        // Slack's Agents feature renders native titles only for app-DM threads. Reuse
-        // the runtime's title verbatim (apart from surrounding whitespace); do not
-        // invent one from the first-message fallback used by the console session list.
+        // Runtime title verbatim (trimmed) — never the console's first-message fallback.
         const slackTitle = typeof update.title === 'string' ? update.title.trim() : ''
-        if (p && turnChromeFor(p.plan.platform).dmSessionTitle && p.plan.isDm && slackTitle) {
+        if (p && turnChromeFor(p.plan.platform).sessionTitle && slackTitle) {
           this.enqueueApply(p, { kind: 'set-title', text: slackTitle })
         } else if (!p && slackTitle) {
           const binding = this.sessionDeliveryBindings.get(rec.key)

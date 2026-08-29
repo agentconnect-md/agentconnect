@@ -6,7 +6,7 @@ describe('turn chrome facet', () => {
     expect(turnChromeFor('slack')).toEqual({
       statusSurface: 'turn-bar',
       attributionFooter: true,
-      dmSessionTitle: true,
+      sessionTitle: true,
       chatInputCards: true,
       chromeMarkedNotices: true
     })

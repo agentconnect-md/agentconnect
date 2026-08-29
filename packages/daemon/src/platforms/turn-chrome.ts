@@ -31,9 +31,10 @@ export interface TurnChrome {
   /** Attribution footer lifecycle: blocks pre-built at prompt start so reply
    *  sections are born with them, refreshed once more at final. */
   readonly attributionFooter?: boolean
-  /** Live session titles pushed onto DM threads (Slack's Agents feature
-   *  renders native titles only for app-DM threads). */
-  readonly dmSessionTitle?: boolean
+  /** Live session titles pushed onto the platform's threads. Slack renders them as the
+   *  thread panel's header in DMs AND channels — a thread becomes eligible once any
+   *  agents.sessions call or a card stream registers it (verified live 2026-08-29). */
+  readonly sessionTitle?: boolean
   /** In-chat human-input cards: permission approvals, MCP-approval
    *  elicitations, and the generic elicitation card. */
   readonly chatInputCards?: boolean
@@ -48,7 +49,7 @@ const CHROME = new Map<string, TurnChrome>([
     {
       statusSurface: 'turn-bar',
       attributionFooter: true,
-      dmSessionTitle: true,
+      sessionTitle: true,
       chatInputCards: true,
       chromeMarkedNotices: true
     }
