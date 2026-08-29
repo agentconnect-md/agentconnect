@@ -255,13 +255,13 @@ describe('HomeView run-selectors (catalog-aware)', () => {
     expect(menu('Permission')).toBeUndefined()
   })
 
-  it('shows and stages Auto as one Codex permission preset', async () => {
+  it('shows and stages the Codex permission mode the runtime reports', async () => {
     const codexCatalog = {
       models: [{ id: 'gpt-5.6-sol' }],
       permissionModes: [
-        { value: 'read-only', name: 'Read-only' },
-        { value: 'agent', name: 'Agent' },
-        { value: 'agent-full-access', name: 'Agent (full access)' }
+        { value: 'read-only', name: 'Ask for approval' },
+        { value: 'agent', name: 'Approve for me' },
+        { value: 'agent-full-access', name: 'Full access' }
       ],
       defaultModel: 'gpt-5.6-sol',
       defaultPermissionMode: 'agent',
@@ -272,8 +272,7 @@ describe('HomeView run-selectors (catalog-aware)', () => {
       agent({
         runtime: 'codex',
         model: 'gpt-5.6-sol',
-        permissionMode: 'agent',
-        approvalsReviewer: 'auto_review'
+        permissionMode: 'agent'
       })
     ]
     mocks.daemons = [
@@ -283,8 +282,8 @@ describe('HomeView run-selectors (catalog-aware)', () => {
     ]
     await render()
     expect(menu('Permission')).toMatchObject({
-      value: 'agent:auto-review',
-      options: ['read-only', 'agent', 'agent:auto-review', 'agent-full-access']
+      value: 'agent',
+      options: ['read-only', 'agent', 'agent-full-access']
     })
 
     const ta = host.querySelector('textarea')!
@@ -297,7 +296,7 @@ describe('HomeView run-selectors (catalog-aware)', () => {
       host.querySelector<HTMLButtonElement>('button.sendbtn')!.click()
       await new Promise((r) => setTimeout(r, 0))
     })
-    expect(mocks.pgSetPermissionPreset).toHaveBeenCalledWith('pg_1', 'a1', 'agent:auto-review')
+    expect(mocks.pgSetPermissionPreset).toHaveBeenCalledWith('pg_1', 'a1', 'agent')
   })
 })
 

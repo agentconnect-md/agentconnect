@@ -23,7 +23,6 @@ import type {
   BindRule,
   AgentIcon,
   AgentMemoryBinding,
-  ApprovalsReviewer,
   DecimalAmount,
   CodeHostNoteState,
   GithubPublishedComment,
@@ -638,7 +637,6 @@ export interface CreateAgentInput {
   showStatusBar?: boolean // render Slack's persistent session status row (default false)
   fastMode?: boolean // runtime fast mode toggle
   permissionMode?: string // runtime permission/approval mode
-  approvalsReviewer?: ApprovalsReviewer // who reviews eligible Codex approval requests
   allowRuntimeChangesInChat?: boolean // explicit opt-in; default false
   pause?: boolean // operational message-processing toggle (#288); true ⇒ daemon skips all turns
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join (absent ⇒ DB default false)
@@ -689,7 +687,6 @@ export interface UpdateAgentInput {
   showStatusBar?: boolean
   fastMode?: boolean | null
   permissionMode?: string | null
-  approvalsReviewer?: ApprovalsReviewer | null
   allowRuntimeChangesInChat?: boolean
   pause?: boolean | null // operational message-processing toggle (#288); null clears
   introduceOnJoin?: boolean // #536: self-introduce to peers on a genuine channel join
@@ -738,7 +735,6 @@ export interface AgentRecord {
   showStatusBar: boolean // from runtimeOverrides.showStatusBar (default false)
   fastMode: boolean | null // from runtimeOverrides.fastMode (null ⇒ runtime default)
   permissionMode: string | null // from runtimeOverrides.permissionMode (null ⇒ runtime default)
-  approvalsReviewer: ApprovalsReviewer | null // from runtimeOverrides.approvalsReviewer
   allowRuntimeChangesInChat: boolean // from runtimeOverrides (default false)
   pause: boolean | null // from runtimeOverrides.pause (null ⇒ not paused) (#288)
   env: Record<string, string> // from runtimeOverrides.env ({} when unset)

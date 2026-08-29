@@ -180,13 +180,13 @@ describe('EvaluationRunner', () => {
         },
         configOptions: [
           {
-            id: 'approvals_reviewer',
-            category: '_approvals_reviewer',
+            id: 'mode',
+            category: 'mode',
             type: 'select',
-            currentValue: 'user',
+            currentValue: 'read-only',
             options: [
-              { value: 'user', name: 'User' },
-              { value: 'auto_review', name: 'Auto-review' }
+              { value: 'read-only', name: 'Read Only' },
+              { value: 'agent', name: 'Approve for me' }
             ]
           }
         ]
@@ -218,7 +218,7 @@ describe('EvaluationRunner', () => {
         workspace: { mode: 'from-scratch', path: join(agentDir, 'workspace') },
         integrations: [],
         output: { mode: 'medium' },
-        approvalsReviewer: 'auto_review'
+        permissionMode: 'agent'
       })
     )
     const runner = new RawAcpEvaluationRunner({
@@ -237,14 +237,14 @@ describe('EvaluationRunner', () => {
       return
     }
     expect(result.status).toBe('passed')
-    expect(result.output).toContain('"category":"_approvals_reviewer"')
-    expect(result.output).toContain('"currentValue":"auto_review"')
+    expect(result.output).toContain('"category":"mode"')
+    expect(result.output).toContain('"currentValue":"agent"')
     expect(result.output).toContain('perm:{"outcome":"selected","optionId":"allow"}')
     expect(result.output).toContain('echo:hello')
     const manifest = EvaluationRunManifestSchema.parse(JSON.parse(readFileSync(result.manifestPath, 'utf8')))
     expect(manifest).toMatchObject({
       treatment: { name: 'raw-acp', memory: 'off' },
-      subject: { settings: { execution: 'raw-acp', approvalsReviewer: 'auto_review' } }
+      subject: { settings: { execution: 'raw-acp', permissionMode: 'agent' } }
     })
     const events = readFileSync(result.eventsPath, 'utf8')
       .trim()

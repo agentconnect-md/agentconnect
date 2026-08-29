@@ -76,7 +76,6 @@ describe('diffAgents', () => {
       // must evict the host (unlike output.mode, which is read live per dispatch).
       { fastMode: true },
       { permissionMode: 'agent-full-access' },
-      { approvalsReviewer: 'auto_review' },
       { runtimeOverrides: { model: undefined as any, env: [{ name: 'FOO', value: 'bar' }], secrets: [] } },
       // Secrets are baked into the child env (and materialized as config files)
       // at spawn — a value rotation must evict the host or the child keeps the

@@ -139,10 +139,6 @@ export const AgentSchema = z.object({
   // runtime-owned strings: claude-acp uses default/acceptEdits/auto/dontAsk/plan,
   // codex-acp uses read-only/agent/agent-full-access.
   permissionMode: z.string().default('default'),
-  // Who reviews eligible Codex approval requests. This stays independent from
-  // permissionMode: Auto-review does not widen the active sandbox or policy.
-  // Absent leaves the runtime's own default (`user`) untouched.
-  approvalsReviewer: z.enum(['user', 'auto_review']).optional(),
   // Conversation participants are not authorization principals by default.
   // Editors may explicitly opt this agent back into chat-side runtime setting
   // changes (model, effort, permission mode, fast mode) and approval controls.

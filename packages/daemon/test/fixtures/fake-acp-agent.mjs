@@ -26,8 +26,6 @@ const permissionModeList = (process.env.AC_PERMISSION_MODES ?? '')
   .map((s) => s.trim())
   .filter(Boolean)
 const sessionPermissionModes = new Map()
-const reviewerEnabled = process.env.AC_APPROVALS_REVIEWER === '1'
-const sessionReviewers = new Map()
 const additionalDirectoriesEnabled = process.env.AC_ADDITIONAL_DIRECTORIES === '1'
 const deleteSessionEnabled = process.env.AC_DELETE_SESSION === '1'
 const expectedAdditionalDirectories = process.env.AC_EXPECT_ADDITIONAL_DIRECTORIES
@@ -92,18 +90,6 @@ const configOptions = (sessionId) => {
       options: permissionModeList.map((value) => ({ value, name: value }))
     })
   }
-  if (reviewerEnabled) {
-    options.push({
-      id: 'approvals_reviewer',
-      category: '_approvals_reviewer',
-      type: 'select',
-      currentValue: sessionReviewers.get(sessionId) ?? 'user',
-      options: [
-        { value: 'user', name: 'User' },
-        { value: 'auto_review', name: 'Auto-review' }
-      ]
-    })
-  }
   return options.length ? options : undefined
 }
 
@@ -118,31 +104,17 @@ rl.on('line', async (line) => {
     const sessionId = `s${++sessionCounter}`
     sessionModels.set(sessionId, modelList[0])
     sessionPermissionModes.set(sessionId, permissionModeList[0])
-    sessionReviewers.set(sessionId, 'user')
     send({ jsonrpc: '2.0', id, result: { sessionId, configOptions: configOptions(sessionId) } })
   } else if (method === 'session/set_config_option') {
-    if (
-      process.env.AC_REJECT_AUTO_FULL_ACCESS === '1' &&
-      params.configId === 'mode' &&
-      params.value === 'agent-full-access' &&
-      sessionReviewers.get(params.sessionId) === 'auto_review'
-    ) {
-      send({ jsonrpc: '2.0', id, error: { code: -32000, message: 'Auto-review must be disabled first' } })
-      return
-    }
     if (params.configId === 'model' && modelList.includes(params.value))
       sessionModels.set(params.sessionId, params.value)
     if (params.configId === 'mode' && permissionModeList.includes(params.value))
       sessionPermissionModes.set(params.sessionId, params.value)
-    if (params.configId === 'approvals_reviewer' && ['user', 'auto_review'].includes(params.value))
-      sessionReviewers.set(params.sessionId, params.value)
     send({ jsonrpc: '2.0', id, result: { configOptions: configOptions(params.sessionId) } })
   } else if (method === 'session/load') {
     if (!acceptsAdditionalDirectories(id, params)) return
     if (process.env.AC_LOAD_PERMISSION_MODE)
       sessionPermissionModes.set(params.sessionId, process.env.AC_LOAD_PERMISSION_MODE)
-    if (process.env.AC_LOAD_APPROVALS_REVIEWER)
-      sessionReviewers.set(params.sessionId, process.env.AC_LOAD_APPROVALS_REVIEWER)
     if (process.env.AC_LOAD_UPDATES) {
       send({
         jsonrpc: '2.0',
@@ -165,7 +137,6 @@ rl.on('line', async (line) => {
   } else if (method === 'session/delete') {
     sessionModels.delete(params.sessionId)
     sessionPermissionModes.delete(params.sessionId)
-    sessionReviewers.delete(params.sessionId)
     send({ jsonrpc: '2.0', id, result: {} })
   } else if (method === 'session/prompt') {
     const text = (params.prompt ?? []).map((b) => b.text ?? '').join('')

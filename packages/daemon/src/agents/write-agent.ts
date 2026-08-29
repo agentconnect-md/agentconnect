@@ -748,7 +748,7 @@ export function applySpecFields(
   // runtime is CP-owned — a PATCH may switch it (e.g. claude → codex). Apply it on
   // merge too, not only on create; absent ⇒ leave the on-disk runtime as-is.
   if (spec.runtime !== undefined) raw.runtime = spec.runtime
-  // model/reasoningEffort/permissionMode/approvalsReviewer are per-runtime override vocabularies:
+  // model/reasoningEffort/permissionMode are per-runtime override vocabularies:
   // null ⇒ clear (revert to runtime default), a value ⇒ set, absent ⇒ leave alone.
   // Clearing must delete the key so a runtime switch drops the old runtime's override
   // instead of leaving it stale (model handled below, inside runtimeOverrides).
@@ -761,10 +761,6 @@ export function applySpecFields(
   if (spec.permissionMode !== undefined) {
     if (spec.permissionMode === null) delete raw.permissionMode
     else raw.permissionMode = spec.permissionMode
-  }
-  if (spec.approvalsReviewer !== undefined) {
-    if (spec.approvalsReviewer === null) delete raw.approvalsReviewer
-    else raw.approvalsReviewer = spec.approvalsReviewer
   }
   if (spec.allowRuntimeChangesInChat !== undefined) {
     raw.allowRuntimeChangesInChat = spec.allowRuntimeChangesInChat

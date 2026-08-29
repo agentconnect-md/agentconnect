@@ -1042,18 +1042,14 @@ describe('Daemon in-conversation commands', () => {
     await daemon.stop()
   })
 
-  it('/permission shows Codex desktop-app labels and resolves a choice typed as its label', async () => {
+  it('/permission shows the Codex mode labels and resolves a choice typed as its label', async () => {
     const host = {
       ...selectHost(),
       permissionModeOptions: vi.fn(() => ({
         current: 'agent',
         modes: ['read-only', 'agent', 'agent-full-access']
       })),
-      approvalsReviewerOptions: vi.fn(() => ({
-        current: 'user',
-        reviewers: ['user', 'auto_review']
-      })),
-      setSessionApprovalsReviewer: vi.fn(async () => true)
+      setSessionPermissionMode: vi.fn(async () => true)
     }
     const daemon = new Daemon({
       slackAppFactory: fakeSlackAppFactory(),
@@ -1080,13 +1076,11 @@ describe('Daemon in-conversation commands', () => {
 
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
 
-    // bare /permission lists Codex's own preset names (not the raw wire ids); the
-    // default `agent` reads as "Ask for approval", matching Codex's own UI.
+    // bare /permission lists Codex's own mode names, not the raw wire ids.
     await (daemon as any).onInboundOutcome(dm('200', '/permission'))
     const listed = conn.postMessage.mock.calls.at(-1)![1] as string
     expect(listed).toContain('Read Only')
-    expect(listed).toContain('Ask for approval')
-    expect(listed).toContain('Auto')
+    expect(listed).toContain('Approve for me')
     expect(listed).toContain('Full Access')
     expect(listed).not.toContain('agent-full-access')
 
@@ -1103,22 +1097,11 @@ describe('Daemon in-conversation commands', () => {
       CHROME_REPLY
     )
 
-    // the default preset resolves from its Codex label too ("ask for approval" → agent)
-    await (daemon as any).onInboundOutcome(dm('220', '/permission ask for approval'))
+    // the default mode resolves from its Codex label too ("approve for me" → agent)
+    await (daemon as any).onInboundOutcome(dm('220', '/permission approve for me'))
     expect(await store.getPermissionModeOverride(key)).toBe('agent')
     await vi.waitFor(() => {
       expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')
-    }, WAIT)
-    host.setSessionPermissionMode.mockClear()
-    host.setSessionApprovalsReviewer.mockClear()
-
-    // Auto is one session preset in every chat surface, but reaches ACP as two
-    // independent config selections.
-    await (daemon as any).onInboundOutcome(dm('230', '/permission auto'))
-    expect(await store.getPermissionModeOverride(key)).toBe('agent:auto-review')
-    await vi.waitFor(() => {
-      expect(host.setSessionPermissionMode).toHaveBeenCalledWith('acp-1', 'agent')
-      expect(host.setSessionApprovalsReviewer).toHaveBeenCalledWith('acp-1', 'auto_review')
     }, WAIT)
 
     await daemon.stop()

@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { SessionConfigOption } from '@agentclientprotocol/sdk'
 import {
-  approvalsReviewerOptionsFrom,
   claudeSessionMeta,
   effortOptionsFrom,
   fastOptionFrom,
@@ -11,11 +10,6 @@ import {
   SDK_LIFECYCLE_FILTERS
 } from '../src/acp/acp-host.js'
 import { CLAUDE_DISALLOWED_BUILTIN_TOOLS } from '../src/runtime-defs/claude-runtime.js'
-import {
-  permissionPresetSettings,
-  permissionPresetValues,
-  selectedPermissionPreset
-} from '../src/acp/permission-modes.js'
 
 /** configOptions as claude-acp advertises them: mode + model + effort selects.
  *  The effort values are the runtime's real `thought_level` enum, verified against
@@ -174,47 +168,6 @@ describe('permissionModeOptionsFrom', () => {
     expect(permissionModeOptionsFrom([])).toBeNull()
     expect(permissionModeOptionsFrom(null)).toBeNull()
     expect(permissionModeOptionsFrom(undefined)).toBeNull()
-  })
-})
-
-describe('Auto-review permission presets', () => {
-  const reviewerSelect: SessionConfigOption[] = [
-    {
-      id: 'approvals_reviewer',
-      name: 'Approval reviewer',
-      category: '_approvals_reviewer',
-      type: 'select',
-      currentValue: 'auto_review',
-      options: [
-        { value: 'user', name: 'User' },
-        { value: 'auto_review', name: 'Auto-review' }
-      ]
-    }
-  ]
-
-  it('extracts the independent reviewer selector', () => {
-    expect(approvalsReviewerOptionsFrom(reviewerSelect)).toEqual({
-      current: 'auto_review',
-      reviewers: ['user', 'auto_review']
-    })
-  })
-
-  it('round-trips Auto while keeping raw ACP modes unchanged', () => {
-    expect(permissionPresetValues(['read-only', 'agent', 'agent-full-access'], ['user', 'auto_review'])).toEqual([
-      'read-only',
-      'agent',
-      'agent:auto-review',
-      'agent-full-access'
-    ])
-    expect(selectedPermissionPreset('agent', 'auto_review')).toBe('agent:auto-review')
-    expect(permissionPresetSettings('agent:auto-review')).toEqual({
-      permissionMode: 'agent',
-      approvalsReviewer: 'auto_review'
-    })
-    expect(permissionPresetSettings('agent-full-access')).toEqual({
-      permissionMode: 'agent-full-access',
-      approvalsReviewer: 'user'
-    })
   })
 })
 

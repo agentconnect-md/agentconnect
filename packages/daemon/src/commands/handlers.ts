@@ -13,7 +13,6 @@
  * ingress paths (and the tests) that already call these by name.
  */
 import type { AcpHost } from '../acp/acp-host.js'
-import { permissionPresetSettings } from '../acp/permission-modes.js'
 import { applySelect, selectCardText, selectDisplay, selectLabel, selectOptions } from './select-projection.js'
 import type { SelectSetters } from './select-projection.js'
 import type { AgentCommand } from './commands.js'
@@ -224,40 +223,24 @@ export class CommandHandlers {
     return true
   }
 
-  /** Apply one composite session permission value to a warm host. Older injected host
-   * fakes retain the two-setter fallback; real AcpHosts own the validation/decomposition. */
-  async applySessionPermissionPreset(host: AcpHost, sessionId: string, preset: string): Promise<void> {
-    if (typeof host.setSessionPermissionPreset === 'function') {
-      await host.setSessionPermissionPreset(sessionId, preset)
-      return
-    }
-    const settings = permissionPresetSettings(preset)
-    if (settings.approvalsReviewer === 'user' && typeof host.setSessionApprovalsReviewer === 'function') {
-      await host.setSessionApprovalsReviewer(sessionId, 'user')
-    }
-    await host.setSessionPermissionMode(sessionId, settings.permissionMode)
-    if (settings.approvalsReviewer === 'auto_review' && typeof host.setSessionApprovalsReviewer === 'function') {
-      await host.setSessionApprovalsReviewer(sessionId, 'auto_review')
-    }
-  }
-
-  /** Every chat-side permission-preset change funnels through the same Agent-level
+  /** Every chat-side permission-mode change funnels through the same Agent-level
    * guard before a sticky override can be written, including stale callbacks and
    * relay frames. */
-  async setPermissionModeByKey(key: string, permissionPreset: string): Promise<boolean> {
+  async setPermissionModeByKey(key: string, permissionMode: string): Promise<boolean> {
     const rec = await this.chatRuntimeSession(key)
     if (!rec) return false
-    await this.host.store().setPermissionModeOverride(key, permissionPreset)
-    this.host.log().info(`session ${key} permission preset override → "${permissionPreset}"`)
+    await this.host.store().setPermissionModeOverride(key, permissionMode)
+    this.host.log().info(`session ${key} permission mode override → "${permissionMode}"`)
     const acpSessionId = rec.acpSessionId
     const host = acpSessionId ? await this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) {
       await this.refreshStatusBarForKey(key)
       return true
     }
-    void this.applySessionPermissionPreset(host, acpSessionId, permissionPreset)
+    void host
+      .setSessionPermissionMode(acpSessionId, permissionMode)
       .then(() => this.refreshStatusBarForKey(key))
-      .catch((err) => this.host.log().warn(`set-permission-preset failed: ${(err as Error).message}`))
+      .catch((err) => this.host.log().warn(`set-permission-mode failed: ${(err as Error).message}`))
     return true
   }
 

@@ -53,33 +53,22 @@ describe('AcpHost (against a fake ACP agent)', () => {
     await host.stop()
   })
 
-  it('applies and switches the composite Auto permission preset through independent selectors', async () => {
+  it('applies the configured permission mode at session/new and switches it live', async () => {
     const host = new AcpHost(
       { command: process.execPath, args: [fakeAgent], env: [] },
       {
         onUpdate: () => {},
-        env: {
-          AC_APPROVALS_REVIEWER: '1',
-          AC_PERMISSION_MODES: 'read-only,agent,agent-full-access'
-        },
-        configPrefs: { permissionMode: 'agent', approvalsReviewer: 'auto_review' }
+        env: { AC_PERMISSION_MODES: 'read-only,agent,agent-full-access' },
+        configPrefs: { permissionMode: 'agent' }
       }
     )
     await host.start()
     const sessionId = await host.newSession('/tmp')
     const mode = () => host.sessionConfigOptions(sessionId)?.find((option) => option.category === 'mode')
-    const reviewer = () =>
-      host.sessionConfigOptions(sessionId)?.find((option) => option.category === '_approvals_reviewer')
     expect(mode()?.currentValue).toBe('agent')
-    expect(reviewer()?.currentValue).toBe('auto_review')
 
-    await host.setSessionPermissionPreset(sessionId, 'agent-full-access')
+    await host.setSessionPermissionMode(sessionId, 'agent-full-access')
     expect(mode()?.currentValue).toBe('agent-full-access')
-    expect(reviewer()?.currentValue).toBe('user')
-
-    await host.setSessionPermissionPreset(sessionId, 'agent:auto-review')
-    expect(mode()?.currentValue).toBe('agent')
-    expect(reviewer()?.currentValue).toBe('auto_review')
     await host.stop()
   })
 })
@@ -169,27 +158,23 @@ describe('AcpHost session/load update filtering', () => {
     await host.stop()
   })
 
-  it('disables Auto-review before widening permissions on a restored session', async () => {
+  it('reconciles a restored session whose persisted permission mode differs', async () => {
     const host = new AcpHost(
       { command: process.execPath, args: [fakeAgent], env: [] },
       {
         onUpdate: () => {},
         env: {
-          AC_APPROVALS_REVIEWER: '1',
-          AC_LOAD_APPROVALS_REVIEWER: 'auto_review',
           AC_LOAD_PERMISSION_MODE: 'agent',
           AC_LOAD_UPDATES: '1',
-          AC_PERMISSION_MODES: 'read-only,agent,agent-full-access',
-          AC_REJECT_AUTO_FULL_ACCESS: '1'
+          AC_PERMISSION_MODES: 'read-only,agent,agent-full-access'
         },
-        configPrefs: { permissionMode: 'agent-full-access', approvalsReviewer: 'user' }
+        configPrefs: { permissionMode: 'agent-full-access' }
       }
     )
     await host.start()
-    await host.loadSession('persisted-auto-session', '/tmp')
-    const options = host.sessionConfigOptions('persisted-auto-session')
+    await host.loadSession('persisted-session-mode', '/tmp')
+    const options = host.sessionConfigOptions('persisted-session-mode')
     expect(options?.find((option) => option.category === 'mode')?.currentValue).toBe('agent-full-access')
-    expect(options?.find((option) => option.category === '_approvals_reviewer')?.currentValue).toBe('user')
     await host.stop()
   })
 

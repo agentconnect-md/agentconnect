@@ -72,7 +72,6 @@ function agent(daemonId: string | null): AgentRecord {
     showStatusBar: false,
     fastMode: null,
     permissionMode: null,
-    approvalsReviewer: null,
     allowRuntimeChangesInChat: false,
     pause: null,
     env: {},

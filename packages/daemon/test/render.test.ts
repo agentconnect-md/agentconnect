@@ -1097,26 +1097,13 @@ describe('buildStatusModal (Configure controls modal)', () => {
     // Underlying values are the runtime-owned ids sent over the wire, unchanged.
     expect(select.options.map((o: any) => o.value)).toEqual(['read-only', 'agent', 'agent-full-access'])
     expect(select.initial_option.value).toBe('agent-full-access')
-    // Display text is Codex's own name for each preset (agent = "Ask for approval").
+    // Display text is Codex's own name for each mode (agent = "Approve for me").
     expect(select.options.map((o: any) => o.text.text)).toEqual([
       'Permission · Read Only',
-      'Permission · Ask for approval',
+      'Permission · Approve for me',
       'Permission · Full Access'
     ])
     expect(select.initial_option.text.text).toBe('Permission · Full Access')
-  })
-
-  it('renders Auto as one Slack session permission option', () => {
-    const view = buildStatusModal(
-      {
-        permissionMode: 'agent:auto-review',
-        permissionModes: ['read-only', 'agent', 'agent:auto-review', 'agent-full-access']
-      },
-      KEY
-    )
-    const select = accessoryById(view, 'ac_set_permission_mode')
-    expect(select.initial_option).toMatchObject({ value: 'agent:auto-review', text: { text: 'Permission · Auto' } })
-    expect(select.options.map((o: any) => o.text.text)).toContain('Permission · Auto')
   })
 
   it('prepends a current effort the advertised list omits (e.g. a pending ultracode override)', () => {

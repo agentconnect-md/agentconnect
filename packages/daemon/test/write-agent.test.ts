@@ -385,7 +385,6 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
       runtimeOverrides: { model: 'opus', env: [{ name: 'FOO', value: 'bar' }] },
       reasoningEffort: 'high',
       permissionMode: 'plan',
-      approvalsReviewer: 'auto_review',
       workspace: { mode: 'from-scratch', path: './workspace' }
     })
 
@@ -399,7 +398,6 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
         model: null,
         reasoningEffort: null,
         permissionMode: null,
-        approvalsReviewer: null,
         env: { FOO: 'bar' }
       }),
       deps
@@ -412,7 +410,6 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
     expect((raw.runtimeOverrides as { env?: unknown }).env).toEqual([{ name: 'FOO', value: 'bar' }])
     expect(raw.reasoningEffort).toBeUndefined()
     expect(raw.permissionMode).toBeUndefined()
-    expect(raw.approvalsReviewer).toBeUndefined()
   })
 
   it('leaves runtimeOverrides.model alone when the spec omits model (absent ≠ clear)', () => {

@@ -27,7 +27,6 @@ const AGENT: AgentRecord = {
   showStatusBar: false,
   fastMode: null,
   permissionMode: null,
-  approvalsReviewer: null,
   allowRuntimeChangesInChat: false,
   pause: null,
   env: {},

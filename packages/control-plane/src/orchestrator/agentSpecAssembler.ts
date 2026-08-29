@@ -325,7 +325,6 @@ export function agentRecordToSpec(
     model: a.model,
     reasoningEffort: a.reasoningEffort,
     permissionMode: a.permissionMode,
-    approvalsReviewer: a.approvalsReviewer ?? null,
     showFooter: a.showFooter,
     showStatusBar: a.showStatusBar,
     allowRuntimeChangesInChat: a.allowRuntimeChangesInChat,

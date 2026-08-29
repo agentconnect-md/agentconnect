@@ -12,7 +12,6 @@ import {
   poolLabel,
   poolTagline,
   groupPlacementValue,
-  approvalsReviewerDefault,
   loginRequiredRuntimeIds,
   agentSlugFinalize,
   agentSlugSanitize,
@@ -28,11 +27,7 @@ import {
   resolveEffortForModel,
   permissionModeChoicesFor,
   permissionModeDefault,
-  permissionModePresets,
-  permissionPresetSettings,
-  selectedPermissionPreset,
   type AgentCallPolicy,
-  type ApprovalsReviewer,
   supportsModes
 } from '@/lib/data'
 import { addAgentDaemonChoice } from './add-agent-daemon-choice'
@@ -140,7 +135,6 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [memoryProvider, setMemoryProvider] = useState<MemoryProviderChoice>('managed')
   const [externalMemory, setExternalMemory] = useState<ExternalMemoryBindingDraft>(DEFAULT_EXTERNAL_MEMORY_BINDING)
   const [permissionMode, setPermissionMode] = useState(permissionModeDefault(FALLBACK_RUNTIME_IDS[0]!))
-  const [approvalsReviewer, setApprovalsReviewer] = useState<ApprovalsReviewer | ''>('')
   const [allowRuntimeChangesInChat, setAllowRuntimeChangesInChat] = useState(false)
   const [description, setDescription] = useState('')
   const [daemonId, setDaemonId] = useState('')
@@ -368,16 +362,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // currentValue), else the first offered mode. No "(unavailable)" here: unlike
   // Edit, nothing in this modal is stored yet.
   const selectedPermissionMode = resolvedPermissionMode(permissionMode, permissionChoices, modelCatalog)
-  const defaultApprovalsReviewer = approvalsReviewerDefault(effectiveRuntime)
-  const selectedApprovalsReviewer = defaultApprovalsReviewer
-    ? approvalsReviewer || defaultApprovalsReviewer
-    : defaultApprovalsReviewer
-  const permissionOptions = permissionModePresets(effectiveRuntime, permissionChoices)
-  const selectedPermissionModePreset = selectedPermissionPreset(
-    effectiveRuntime,
-    selectedPermissionMode,
-    selectedApprovalsReviewer
-  )
+  const permissionOptions = permissionChoices
 
   // A daemon selection defines the product default: optional means off; required
   // means on and immutable. Capability refreshes converge the same way.
@@ -733,7 +718,6 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
         ...(Object.keys(envRecord).length ? { env: envRecord } : {}),
         ...(Object.keys(secretsRecord).length ? { secrets: secretsRecord } : {}),
         permissionMode: selectedPermissionMode,
-        ...(selectedApprovalsReviewer ? { approvalsReviewer: selectedApprovalsReviewer } : {}),
         allowRuntimeChangesInChat,
         workspace,
         // Atomic restricted-create: the CP intersects sharedWith with org members.
@@ -893,7 +877,6 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                       setRuntime(nextRuntime)
                       setEffort('')
                       setPermissionMode(permissionModeDefault(nextRuntime))
-                      setApprovalsReviewer(approvalsReviewerDefault(nextRuntime))
                     }}
                   />
                 </div>
@@ -1006,15 +989,11 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                               type="button"
                               title={o.description}
                               className={
-                                selectedPermissionModePreset === o.v
+                                selectedPermissionMode === o.v
                                   ? 'pill on whitespace-nowrap px-[10px] py-1 text-[12px]'
                                   : 'pill whitespace-nowrap px-[10px] py-1 text-[12px]'
                               }
-                              onClick={() => {
-                                const next = permissionPresetSettings(effectiveRuntime, o.v)
-                                setPermissionMode(next.permissionMode)
-                                setApprovalsReviewer(next.approvalsReviewer)
-                              }}
+                              onClick={() => setPermissionMode(o.v)}
                             >
                               {o.l}
                             </button>
