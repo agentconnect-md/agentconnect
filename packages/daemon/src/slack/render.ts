@@ -636,14 +636,14 @@ export function buildStatusUnavailableModal(): Record<string, unknown> {
  * stream). `private_metadata` carries either the direct session key or a shared-bot
  * routing target so the modal's `block_actions` resolve the session. The modal stays
  * compact: identity + View-session share one line, related selectors render two per
- * row, and usage uses label-over-value fields. Cancel appears only while the turn is active.
+ * row, and usage uses label-over-value fields. Interrupting a turn is Slack's own Stop
+ * control — the modal carries no cancel button.
  */
 export function buildStatusModal(
   info: StatusBarInfo,
   sessionKey: string,
   link?: string,
   privateMetadata = sessionKey,
-  cancellable = false,
   identity?: StatusModalIdentity
 ): Record<string, unknown> {
   const blocks: unknown[] = []
@@ -823,21 +823,6 @@ export function buildStatusModal(
     if (blocks.length) blocks.push({ type: 'divider' })
     if (summaryFields.length) blocks.push({ type: 'section', fields: summaryFields })
     if (breakdownFields.length) blocks.push({ type: 'section', fields: breakdownFields })
-  }
-
-  if (cancellable) {
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          action_id: STATUS_ACTION.cancel,
-          text: { type: 'plain_text', text: 'Cancel turn' },
-          style: 'danger',
-          value: sessionKey
-        }
-      ]
-    })
   }
 
   return {

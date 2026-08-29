@@ -2286,10 +2286,8 @@ describe('Slack interactive status bar', () => {
     expect(data.identity.sessionTitle).toBeUndefined()
     await (daemon as any).store.setSessionTitle(SESSION_KEY, 'Fix login flow')
     expect((await (daemon as any).statusInfoForKey(SESSION_KEY)).identity.sessionTitle).toBe('Fix login flow')
-    expect(data.cancellable).toBe(true)
     release()
     await t1
-    expect((await (daemon as any).statusInfoForKey(SESSION_KEY)).cancellable).toBe(false)
     await daemon.stop()
   })
 

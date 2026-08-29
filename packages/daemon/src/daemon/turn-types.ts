@@ -438,10 +438,6 @@ export interface TurnChromeCursors {
   /** Dedup key for the last status snapshot emitted this turn, so a `usage_update` that
    *  changes nothing observable skips a redundant edit. */
   lastStatusBar?: string
-  /** Whether the Slack status controls may still interrupt this turn — gates Cancel turn in
-   *  the Session options modal. Cleared as soon as cancellation starts or terminal cleanup
-   *  begins, so a modal opened afterwards offers nothing stale. */
-  statusCancellable: boolean
 }
 
 /** What one turn has said so far: the raw stream, the generation-local attempt held behind

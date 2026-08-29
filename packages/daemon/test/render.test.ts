@@ -976,7 +976,6 @@ describe('buildStatusModal (Configure controls modal)', () => {
       KEY,
       'https://app/sessions/acp-1',
       KEY,
-      true,
       {
         name: 'Review Bot',
         agentUrl: 'https://app/agents/review-bot',
@@ -1031,11 +1030,13 @@ describe('buildStatusModal (Configure controls modal)', () => {
       '*Cache read* · *Cache write*\n1.2M · 800'
     ])
 
-    const cancel = (view.blocks as any[])
-      .filter((b) => b.type === 'actions')
-      .flatMap((b) => b.elements)
-      .find((element) => element.action_id === 'ac_cancel')
-    expect(cancel).toMatchObject({ type: 'button', action_id: 'ac_cancel', value: KEY, style: 'danger' })
+    // Interrupting a turn is Slack's own Stop control — the modal offers no cancel button.
+    expect(
+      (view.blocks as any[])
+        .filter((b) => b.type === 'actions')
+        .flatMap((b) => b.elements)
+        .map((element: any) => element.action_id)
+    ).not.toContain('ac_cancel')
   })
 
   it('keeps both cache columns when the runtime omits cache-write usage', () => {
@@ -1047,7 +1048,7 @@ describe('buildStatusModal (Configure controls modal)', () => {
     expect(cache.text).toBe('*Cache read* · *Cache write*\n15K · —')
   })
 
-  it('omits the select and terminal actions when the session is idle with no link', () => {
+  it('omits the selects when the session is idle with no link', () => {
     const view = buildStatusModal({ model: 'sonnet-5', totalTokens: 10 }, KEY)
     expect(
       (view.blocks as Block[]).some(

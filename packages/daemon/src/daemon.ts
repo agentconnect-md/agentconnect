@@ -9944,7 +9944,7 @@ export class Daemon {
       entry,
       conv,
       rec,
-      chrome: { statusCancellable: true },
+      chrome: {},
       reply: {
         text: '',
         attemptText: '',
@@ -11829,7 +11829,7 @@ export class Daemon {
    *  controls modal on click. Undefined on unknown key. */
   private async statusInfoForKey(
     sessionKey: string
-  ): Promise<{ info: StatusBarInfo; identity: StatusModalIdentity; link?: string; cancellable: boolean } | undefined> {
+  ): Promise<{ info: StatusBarInfo; identity: StatusModalIdentity; link?: string } | undefined> {
     const rec = await this.store.getSession(sessionKey)
     if (!rec) return undefined
     const info = await this.statusInfoFrom(rec.agentId, sessionKey, rec.acpSessionId ?? undefined, { breakdown: true })
@@ -11845,17 +11845,13 @@ export class Daemon {
     }
     const outward = rec.sessionId ?? rec.acpSessionId
     const link = outward ? this.sessionLink(outward, 'slack') : undefined
-    const pending = [...this.pending.values()].find((turn) => turn.plan.sessionKey === sessionKey)
-    const cancellable = pending?.chrome.statusCancellable ?? this.inflight.has(sessionKey)
-    return { info, identity, ...(link ? { link } : {}), cancellable }
+    return { info, identity, ...(link ? { link } : {}) }
   }
 
-  /** Close the turn out on the persistent Slack status row — the final usage snapshot, and
-   *  the flag that keeps Session options' Cancel turn out of a modal opened afterwards —
+  /** Close the turn out on the persistent Slack status row — the final usage snapshot —
    *  without reviving suppressed turn output. */
   private async settleStatusBar(p: Pending): Promise<void> {
     const emitted = p.chrome.lastStatusBar !== undefined
-    p.chrome.statusCancellable = false
     if (turnChromeFor(p.plan.platform).statusSurface === 'turn-bar' && emitted) await this.emitStatusBar(p, true, true)
   }
 
