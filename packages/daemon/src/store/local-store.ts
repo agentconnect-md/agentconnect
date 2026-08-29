@@ -1075,7 +1075,7 @@ export class LocalStore {
       ((await this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'").get()) as { n: number })
         .n === 0
     await this.upgradeSchema(freshDatabase)
-    await this.db.exec(`
+    const schema = `
       CREATE TABLE IF NOT EXISTS sessions (
         key TEXT PRIMARY KEY, agentId TEXT, platform TEXT, channel TEXT, thread TEXT,
         transportScope TEXT, acpSessionId TEXT, sessionId TEXT, state TEXT, lastDeliveredTs TEXT, updatedAt INTEGER,
@@ -1609,10 +1609,13 @@ export class LocalStore {
       );
       CREATE INDEX IF NOT EXISTS code_host_review_intent_pending
         ON code_host_review_intent (daemonId, updatedAt);
-    `)
-    // Stamped only once the CREATE block above has actually emitted that schema, so
-    // a store that failed halfway through creation is not left claiming to be current.
-    if (freshDatabase) await this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+    `
+    // One transaction, not 58: a multi-statement script commits — and so flushes — each statement.
+    // The stamp joins it, so a creation that fails halfway leaves no schema to claim it is current.
+    await this.transaction(async (tx) => {
+      await tx.exec(schema)
+      if (freshDatabase) await tx.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+    })
     // The revision counter is in-memory but the rows it numbers are durable, so it
     // must resume from the database on every open — starting a restarted daemon back
     // at 0 would hand already-issued revisions to new rows. Deliberately unfenced: it
