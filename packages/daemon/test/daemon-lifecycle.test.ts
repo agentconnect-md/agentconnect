@@ -1544,40 +1544,28 @@ describe('Daemon idle sweep — background-task lease', () => {
     await daemon.stop()
   })
 
-  it('announces a completed background task to the thread when output mode ≥ medium', async () => {
+  // A settle posts NOTHING of its own: the human-visible signal is the drain narration
+  // (§5.2) or the wake turn's reply, so a settle edge must not touch the channel directly.
+  it('a post-turn settle posts nothing to the channel by itself', async () => {
     const clock = new FakeClock()
     const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
-    await (daemon as any).store.setOutputModeOverride(KEY, 'medium')
-
+    await (daemon as any).store.setOutputModeOverride(KEY, 'high')
     await (daemon as any).onSdkLifecycle(
       'bot-a',
       'acp-1',
       evt('task_started', { task_id: 't1', description: 'Sleep for 15 seconds' })
     )
-    expect(conn.postMessage).not.toHaveBeenCalled() // nothing on start
     await (daemon as any).onSdkLifecycle(
       'bot-a',
       'acp-1',
       evt('task_updated', { task_id: 't1', patch: { status: 'completed' } })
     )
-
-    expect(conn.postMessage).toHaveBeenCalledTimes(1)
-    const [channel, text, thread, options] = (conn.postMessage as any).mock.calls[0]
-    expect(channel).toBe('C1')
-    expect(thread).toBe('T1')
-    expect(text).toContain('Sleep for 15 seconds')
-    expect(text).toContain('completed')
-    // Chrome-marked so thread backfill never re-ingests the notice as agent speech, and
-    // carrying the ONE identity policy — the agent's name on every surface, DMs included.
-    expect(options).toMatchObject({ chrome: true, username: 'bot-a' })
-
-    // The near-simultaneous task_notification for the same task must NOT double-post.
-    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
-    expect(conn.postMessage).toHaveBeenCalledTimes(1)
+    expect(conn.postMessage).not.toHaveBeenCalled()
+    expect((daemon as any).sdkLease.get(LEASE_KEY)?.armedWakes).toBe(1) // the wake carries it instead
     await daemon.stop()
   })
 
-  it('neither announces nor wakes a task that settles inside a live foreground turn', async () => {
+  it('does not wake a task that settles inside a live foreground turn', async () => {
     const clock = new FakeClock()
     const { host, release } = blockingHost()
     const daemon = new Daemon({
@@ -1605,10 +1593,10 @@ describe('Daemon idle sweep — background-task lease', () => {
       evt('task_updated', { task_id: 't1', patch: { status: 'completed' } })
     )
 
-    expect(JSON.stringify((conn.postMessage as any).mock.calls)).not.toContain('Background task finished')
+    expect(conn.postMessage).not.toHaveBeenCalled()
     expect((daemon as any).sdkLease.get(LEASE_KEY)?.armedWakes).toBe(0)
     expect((daemon as any).bgWakeTimers.size).toBe(0)
-    // Still retained for the tasks panel — only the delivery is skipped.
+    // Still retained for the tasks panel — only the wake is skipped.
     expect((daemon as any).sdkLease.get(LEASE_KEY)?.settled?.length).toBe(1)
 
     await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
@@ -1617,36 +1605,6 @@ describe('Daemon idle sweep — background-task lease', () => {
     clock.advance(10_000)
     await new Promise((r) => setImmediate(r))
     expect(host.prompt).toHaveBeenCalledTimes(1) // no wake turn either
-    await daemon.stop()
-  })
-
-  it('does not announce when output mode is below medium', async () => {
-    const clock = new FakeClock()
-    const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
-    await (daemon as any).store.setOutputModeOverride(KEY, 'low')
-
-    await (daemon as any).onSdkLifecycle(
-      'bot-a',
-      'acp-1',
-      evt('task_started', { task_id: 't1', description: 'Sleep for 15 seconds' })
-    )
-    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
-    expect(conn.postMessage).not.toHaveBeenCalled()
-    await daemon.stop()
-  })
-
-  it('does not announce an internal subagent task', async () => {
-    const clock = new FakeClock()
-    const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
-    await (daemon as any).store.setOutputModeOverride(KEY, 'high')
-
-    await (daemon as any).onSdkLifecycle(
-      'bot-a',
-      'acp-1',
-      evt('task_started', { task_id: 's1', subagent_type: 'general', description: 'a subagent' })
-    )
-    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 's1' }))
-    expect(conn.postMessage).not.toHaveBeenCalled() // subagents are internal — not announced
     await daemon.stop()
   })
 
@@ -1947,12 +1905,38 @@ describe('Daemon idle sweep — background-task lease', () => {
       // Recorded like a reply row, so the console reads it back.
       const rows = await (daemon as any).store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
       expect(rows.some((row: any) => row.sender === 'bot-a' && row.text === 'first sleep done')).toBe(true)
-      // The wake still fires, but now says the narration WAS delivered instead of re-asking.
+      // The narration covered this settle, so the wake stands down entirely — no extra turn,
+      // and the fence slot is released so the session can quiesce.
       clock.advance(4000)
+      await vi.waitFor(() => expect((daemon as any).sdkLease.get(LEASE_KEY)?.armedWakes ?? 0).toBe(0), WAIT)
+      expect(host.prompt).toHaveBeenCalledTimes(1)
+      await daemon.stop()
+    })
+
+    it('a settle AFTER the drain delivery still wakes — per-settle precision, not a latch', async () => {
+      const clock = new FakeClock()
+      const { daemon, host, conn } = await bootWithTurn(clock, {
+        agentIdleTimeoutMs: 10_000_000,
+        idleSweepMs: 10_000_000
+      })
+      await (daemon as any).store.setOutputModeOverride(KEY, 'low')
+      // t1 settles and its drain narrates — covered, no wake.
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onAcpUpdate('bot-a', 'acp-1', chunk('t1 result said here'))
+      clock.advance(10)
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      await vi.waitFor(() => expect(conn.postMessage).toHaveBeenCalledTimes(1), WAIT)
+      // t2 settles later and its drain narrates NOTHING — the old delivery must not cover it.
+      clock.advance(2000)
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't2' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't2' }))
+      clock.advance(8000)
       await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
       const woken = JSON.stringify((host.prompt as any).mock.calls[1])
-      expect(woken).toContain('WAS delivered')
-      expect(woken).not.toContain('nothing you said')
+      expect(woken).toContain('nothing you said')
+      expect(woken).toContain('t2')
       await daemon.stop()
     })
 
@@ -2082,8 +2066,8 @@ describe('Daemon idle sweep — background-task lease', () => {
 
   // `task/list` needs settled tasks to exist at all, and the ONLY safe place to keep them is
   // outside `lease.tasks`: every reclaim decision reads that map as the liveness set. These four
-  // cases pin that the retained record is inert — it neither announces, nor wakes, nor spends the
-  // wake budget, nor keeps a session or a host or a workspace mutation fenced.
+  // cases pin that the retained record is inert — it neither wakes, nor spends the wake budget,
+  // nor keeps a session or a host or a workspace mutation fenced.
   it('retains a settled task for the panel while keeping it out of every liveness read', async () => {
     const clock = new FakeClock()
     const { daemon, host, conn } = await bootWithTurn(clock, {
@@ -2093,8 +2077,6 @@ describe('Daemon idle sweep — background-task lease', () => {
     })
     await (daemon as any).store.setOutputModeOverride(KEY, 'medium')
     const lease = () => (daemon as any).sdkLease.get(LEASE_KEY)
-    const announces = () =>
-      (conn.postMessage as any).mock.calls.filter((call: any[]) => String(call[1]).includes('Sleep 15')).length
 
     await (daemon as any).onSdkLifecycle(
       'bot-a',
@@ -2108,7 +2090,7 @@ describe('Daemon idle sweep — background-task lease', () => {
     await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
     expect(lease().tasks.size).toBe(0)
     expect(lease().settled.map((t: any) => t.id)).toEqual(['t1'])
-    expect(announces()).toBe(1)
+    expect(conn.postMessage).not.toHaveBeenCalled() // a settle posts nothing of its own
 
     // Its wake delivers once; the fence clears with the retained record still in place.
     clock.advance(4000)
@@ -2116,11 +2098,11 @@ describe('Daemon idle sweep — background-task lease', () => {
     expect(lease().bgWakes).toBe(1)
 
     // The next authoritative snapshot no longer lists it. Re-settling a retained record is what
-    // would re-announce, re-wake, and burn the 20-wake budget on EVERY subsequent snapshot.
+    // would re-wake and burn the 20-wake budget on EVERY subsequent snapshot.
     await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('background_tasks_changed', { tasks: [] }))
     expect(lease().bgWakes).toBe(1)
     expect(wakeFenceHeld(daemon)).toBe(false)
-    expect(announces()).toBe(1)
+    expect(conn.postMessage).not.toHaveBeenCalled()
     expect(lease().settled).toHaveLength(1)
 
     // Quiescent WITH the record retained, so the session TTL-closes and the host is reclaimed.
@@ -2204,7 +2186,7 @@ describe('Daemon idle sweep — background-task lease', () => {
     const clock = new FakeClock()
     const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
     const list = async () => await (daemon as any).listBackgroundTasks({ agentId: 'bot-a', sessionId: 'acp-1' })
-    // Subagent tasks, so the sweep of settles below neither announces nor wakes — they are retained
+    // Subagent tasks, so the sweep of settles below never wakes — they are retained
     // and counted as live exactly like any other task, which is the point.
     const ids = Array.from({ length: MAX_TASK_LIST_TASKS + 1 }, (_unused, i) => `t${i}`)
     for (const id of ids) {

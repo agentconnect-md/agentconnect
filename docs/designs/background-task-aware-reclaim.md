@@ -137,46 +137,34 @@ The same pending-turn and live-lease checks protect idle removal of materialized
 config-file secrets. Once the agent is quiet, those files may be removed after
 `configFilesIdleMs` and are materialized again before the next turn.
 
-## 5. Completion Notifications
+## 5. Completion Delivery
 
-When a tracked non-subagent task settles, the daemon may post:
+A settle edge posts nothing to the channel by itself. The completion reaches
+the human through the model's own words — the drain-cycle narration (§5.2)
+when the runtime produced one, or the wake turn's reply (§5.1) when it did
+not. An earlier daemon-authored "🔔 Background task finished" notice was
+retired once both paths existed: every post-turn settle is covered by them,
+and the notice had become a worse restatement of the narration that followed
+it seconds later. A wake-turn model that stays silent is the model judging
+that nothing is owed — the same judgment the no-response sentinel already
+trusts.
 
-```text
-🔔 Background task finished: <description> (<status>)
-```
+One rule gates both paths at the settle edge: a task that settles inside the
+session's own live foreground loop — a `running` SDK cycle with a pending
+dispatch — arms no wake. The runtime hands the result to the model in that
+loop and the turn's own chrome already shows the step; auto-backgrounded
+commands (sleeps, watchers) settle this way every time. Both conditions are
+required: `running` without a pending dispatch is a self-drain cycle (§5.2),
+and a pending dispatch past `idle` is finalization the model has already left.
 
-Delivery follows these rules:
-
-- The effective output mode must be `medium` or `high`.
-- The session must still exist and must not be closed.
-- A usable integration connection must be available.
-- Internal subagents never produce this notification.
-- `task_updated` can supply a terminal status; a completion edge without a
-  status uses the description alone.
-- A task that settles inside the session's own live foreground loop — a
-  `running` SDK cycle with a pending dispatch — is neither announced nor woken
-  (§5.1): the runtime hands the result to the model in that loop, and the
-  turn's own chrome already shows the step. Auto-backgrounded commands
-  (sleeps, watchers) settle this way every time. Both conditions are required:
-  `running` without a pending dispatch is a self-drain cycle (§5.2), and a
-  pending dispatch past `idle` is finalization the model has already left.
-
-The message is daemon-authored system output, not an agent reply, so it has no
-agent-attribution footer. On platforms that mark notices it is posted as
-chrome with the agent's visual identity (name and icon) in channels — a DM
-keeps the bot's own identity, per the conversational-authorship rule — so
-thread backfill skips it instead of re-ingesting it as something the agent
-said.
-
-The runtime's own drain-cycle narration is captured and delivered — §5.2. Its
-non-text updates (tool renders, the webchat sink) are still not routed, and
-its MCP tool calls still land: that socket is not `Pending`-gated, so side
-effects a self-drain performs — including a `sendMessage` report — do land.
-§5.1 and §5.2 depend on these halves.
+A drain cycle's non-text updates (tool renders, the webchat sink) are still
+not routed, and its MCP tool calls still land: that socket is not
+`Pending`-gated, so side effects a self-drain performs — including a
+`sendMessage` report — do land. §5.1 and §5.2 depend on these halves.
 
 ### 5.1 Waking the session
 
-The notification above tells the human. The model needs the completion too.
+The model needs the completion delivered into a turn it can act from.
 
 `run_in_background` promises the model that it "will be notified when the task
 completes" — a **harness** guarantee, not an SDK one. Interactive Claude Code
@@ -191,11 +179,10 @@ The daemon therefore delivers it, as a new turn into the same session:
 - The turn is `source: "agent"` with sender `background-task:<task_id>`. Its text
   states plainly that it is a daemon notification rather than a message from
   anyone, names the task id to read output from, carries the runtime's own
-  completion summary when `task_notification` supplied one, and permits silence
-  when the result needs no action. When no drain narration was delivered (§5.2)
-  it says THIS turn is the one actually delivered and asks for the report; when
-  one was, it says that narration WAS delivered and asks only for what is still
-  owed — without that split the model re-says the whole thing or loses half of it.
+  completion summary when `task_notification` supplied one, says THIS turn is
+  the one actually delivered, and permits silence when the result needs no
+  action. A completion the drain narration already covered never reaches this
+  text — its wake is skipped at fire time (§5.2).
 - It carries **no** `CallMeta`. It is not an agent call and must not look like
   one. A child woken this way still reaches its parent, because
   `replyToSession` authorizes against the origin persisted on the session
@@ -217,6 +204,7 @@ is re-checked when it fires, never captured when it is armed:
 | Another timer still armed   | Several tasks settled on one edge; the last one delivers for all. Skip.                   |
 | `sdkState == "running"`     | The runtime's self-drain cycle is in flight. **Re-arm**, up to `MAX_BG_TASK_WAKE_REARMS`. |
 | `tasks.size > 0`            | Another task is still live; its completion carries the session forward. Skip.             |
+| Drain covered this settle   | `drainDeliveredAt` ≥ this task's settle: the narration already said it (§5.2). Skip.      |
 | Budget exhausted            | Warn and skip (see below).                                                                |
 | A turn is in flight         | **Defer** — retry this attempt once the active dispatch settles.                          |
 | Session missing or not idle | Closed. Skip.                                                                             |
@@ -286,8 +274,7 @@ start further background tasks. `MAX_BG_TASK_WAKES_PER_SESSION` (20, counted ove
 the lease's life) is therefore the only backstop against a self-feeding loop;
 exhausting it logs a warning and leaves the completion undelivered.
 
-A wake is **not** gated on output mode. The channel notification in §5 is for the
-human and stays gated at `medium`; the wake is for the model and must happen at
+A wake is **not** gated on output mode. It is for the model and must happen at
 every output mode, including `low` and `none`.
 
 ### 5.2 Delivering the drain narration
@@ -321,7 +308,10 @@ for the session, whichever comes first — delivers it:
   report.
 
 The wake stays armed either way (§5.1) — a drain may narrate nothing — and reads
-`drainDeliveredAt` at fire time to pick its wording.
+`drainDeliveredAt` at fire time: a wake whose settle the narration already
+covered (delivered at-or-after that settle) is skipped, saving the model round
+trip and the extra turn chrome; a drain that narrated nothing leaves the wake
+to deliver as before.
 
 ## 6. Fallback and Runtime Limits
 
