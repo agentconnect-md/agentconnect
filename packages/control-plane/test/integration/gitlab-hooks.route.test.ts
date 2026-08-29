@@ -34,7 +34,7 @@ import {
   PgHookRepo
 } from '../../src/persistence/index.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
-import { systemClock } from '../../src/domain/clock.js'
+import { trackedTestClock } from '../fakes/tracked-clock.js'
 import { AgentId, HookId, OrgId } from '../../src/domain/ids.js'
 import {
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
@@ -54,6 +54,8 @@ import type { RelayChannel } from '../../src/ws/relay-registry.js'
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const PROJECT = 4455667n
 const RELAY_URL = 'https://relay.example.test'
+// Real-time clock whose pending timers die with the test — see fakes/tracked-clock.ts.
+const clock = trackedTestClock()
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 
 let running: HttpApp | undefined
@@ -78,7 +80,7 @@ async function harness(options: FakeGitlabOptions = {}, agentDelivery?: AgentDel
     states: new PgGitlabOauthStateStore(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
-    clock: systemClock,
+    clock,
     publicCpUrl: 'https://api.example.test',
     api: fake.api
   })
@@ -91,7 +93,7 @@ async function harness(options: FakeGitlabOptions = {}, agentDelivery?: AgentDel
     agents: new PgAgentRepo(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
-    clock: systemClock,
+    clock,
     api: fake.api
   })
   const provisioner = new GitlabProvisioner({
@@ -101,7 +103,7 @@ async function harness(options: FakeGitlabOptions = {}, agentDelivery?: AgentDel
     webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
     catalog: new PgCodeHostRepositoryRepo(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
-    clock: systemClock,
+    clock,
     publicRelayUrl: RELAY_URL,
     // The production union + rebroadcast (container wiring): the enabled
     // gitlab hook set, recompiled through the app's HookService after runs.
@@ -797,7 +799,7 @@ describe('rc/codehost-membership-authz (§12.2)', () => {
       accounts: h.accounts,
       credentials: new PgGitlabProjectCredentialRepo(prisma),
       credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
-      clock: systemClock,
+      clock,
       api: h.fake.api
     })
     const base = {
@@ -1157,7 +1159,7 @@ describe('gitlab run projection — the fence follows the agent account (§7.2/�
       agents: new PgAgentRepo(prisma),
       bindings: new PgGitlabProjectBindingRepo(prisma),
       accounts: new PgGitlabAgentAccountRepo(prisma),
-      clock: systemClock,
+      clock,
       sender: {
         daemonFeatures: () => [CODEHOST_NOTE_PROJECTION_V1_FEATURE],
         send: (_daemonId: string, desired: CodeHostNoteDesired) => sent.push(desired)

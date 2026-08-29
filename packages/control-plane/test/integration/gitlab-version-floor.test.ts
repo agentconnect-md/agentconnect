@@ -30,7 +30,7 @@ import {
   PgGitlabWebhookSecretStore
 } from '../../src/persistence/index.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
-import { systemClock } from '../../src/domain/clock.js'
+import { trackedTestClock } from '../fakes/tracked-clock.js'
 import { OrgId } from '../../src/domain/ids.js'
 import { INSTANCE_VERSION_UNSUPPORTED_REASON } from '../../src/gitlab/version.js'
 
@@ -42,6 +42,8 @@ const PROJECT = 4455667n
 const OTHER_PROJECT = 4455668n
 const AT_FLOOR = '18.11.0-ee'
 const BELOW_FLOOR = '18.10.9-ee'
+// Real-time clock whose pending timers die with the test — see fakes/tracked-clock.ts.
+const clock = trackedTestClock()
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 
 let running: HttpApp | undefined
@@ -77,7 +79,7 @@ function app(version: string): HttpApp & {
     states: new PgGitlabOauthStateStore(prisma),
     instanceState,
     cipher,
-    clock: systemClock,
+    clock,
     publicCpUrl: PUBLIC_CP,
     webAppUrl: 'https://console.example.test',
     api: fake.api
@@ -90,7 +92,7 @@ function app(version: string): HttpApp & {
     agents: new PgAgentRepo(prisma),
     instanceState,
     cipher,
-    clock: systemClock,
+    clock,
     api: fake.api
   })
   const provisioner = new GitlabProvisioner({
@@ -100,7 +102,7 @@ function app(version: string): HttpApp & {
     webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
     catalog: new PgCodeHostRepositoryRepo(prisma),
     instanceState,
-    clock: systemClock,
+    clock,
     publicRelayUrl: 'https://relay.example.test',
     desiredWebhookEvents: async () => null,
     syncWorkspacePaths: async (orgId, projectId, projectPath, cloneUrl) => {

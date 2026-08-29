@@ -28,8 +28,10 @@ import {
 } from '../../src/persistence/repositories/gitlab.repo.js'
 import { PgCodeHostRepositoryRepo } from '../../src/persistence/repositories/code-host-repository.repo.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
-import { systemClock } from '../../src/domain/clock.js'
+import { trackedTestClock } from '../fakes/tracked-clock.js'
 
+// Real-time clock whose pending timers die with the test — see fakes/tracked-clock.ts.
+const clock = trackedTestClock()
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 const PROJECT = 4455667n
 /** A second project under the SAME top-level group — the retarget's other half. */
@@ -73,7 +75,7 @@ async function harness(
     states: new PgGitlabOauthStateStore(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
-    clock: systemClock,
+    clock,
     publicCpUrl: 'https://api.example.test',
     api: fake.api
   })
@@ -85,7 +87,7 @@ async function harness(
     agents: new PgAgentRepo(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
-    clock: systemClock,
+    clock,
     avatarPng: async (agent) => {
       avatarRenders.push(agent.id)
       return AVATAR_PNG
@@ -101,7 +103,7 @@ async function harness(
       webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
       catalog: new PgCodeHostRepositoryRepo(prisma),
       instanceState: new PgGitlabInstanceStateStore(prisma),
-      clock: systemClock,
+      clock,
       publicRelayUrl: 'https://relay.example.test',
       desiredWebhookEvents: async () => webhookEvents,
       api: fake.api
@@ -655,7 +657,7 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
       agents: new PgAgentRepo(prisma),
       instanceState: new PgGitlabInstanceStateStore(prisma),
       cipher,
-      clock: systemClock,
+      clock,
       api: new GitlabApiClient(h.fake.opts.baseUrl, async () => {
         throw new Error('connect ECONNREFUSED')
       })

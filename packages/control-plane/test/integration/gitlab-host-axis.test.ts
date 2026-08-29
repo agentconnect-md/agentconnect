@@ -35,7 +35,7 @@ import {
   type DeploymentConfigValuesV1
 } from '../../src/persistence/deployment-config.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
-import { systemClock } from '../../src/domain/clock.js'
+import { trackedTestClock } from '../fakes/tracked-clock.js'
 import { AgentId, HookId, OrgId } from '../../src/domain/ids.js'
 import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
 
@@ -44,6 +44,8 @@ const PUBLIC_CP = 'https://api.example.test'
 const PROJECT = 4455667n
 /** A relative URL root on a non-default port — the shape prefix loss shows up in. */
 const PREFIXED = 'https://gitlab.example.test:8443/gitlab'
+// Real-time clock whose pending timers die with the test — see fakes/tracked-clock.ts.
+const clock = trackedTestClock()
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 
 let running: HttpApp | undefined
@@ -67,7 +69,7 @@ function app(baseUrl: string): HttpApp & { fake: FakeGitlab; settled: () => Prom
     states: new PgGitlabOauthStateStore(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
-    clock: systemClock,
+    clock,
     publicCpUrl: PUBLIC_CP,
     webAppUrl: 'https://console.example.test',
     api: fake.api
@@ -80,7 +82,7 @@ function app(baseUrl: string): HttpApp & { fake: FakeGitlab; settled: () => Prom
     agents: new PgAgentRepo(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
-    clock: systemClock,
+    clock,
     api: fake.api
   })
   const provisioner = new GitlabProvisioner({
@@ -90,7 +92,7 @@ function app(baseUrl: string): HttpApp & { fake: FakeGitlab; settled: () => Prom
     webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
     catalog: new PgCodeHostRepositoryRepo(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
-    clock: systemClock,
+    clock,
     publicRelayUrl: 'https://relay.example.test',
     desiredWebhookEvents: async () => null,
     syncWorkspacePaths: async (orgId, projectId, projectPath, cloneUrl) => {
