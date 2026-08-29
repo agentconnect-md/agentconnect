@@ -2321,9 +2321,17 @@ describe('Slack interactive status bar', () => {
       agentUrl: 'https://console.example.com/agents/bot-a',
       iconUrl: AGENT_IDENTITY.iconUrl
     })
-    expect(data.identity.sessionTitle).toBeUndefined()
+    // Born with the first-message fallback; a runtime title then replaces it.
+    expect(data.identity.sessionTitle).toBe('hi')
     await (daemon as any).store.setSessionTitle(SESSION_KEY, 'Fix login flow')
     expect((await (daemon as any).statusInfoForKey(SESSION_KEY)).identity.sessionTitle).toBe('Fix login flow')
+    // A stored title can carry raw `<@U…>` mentions (the first-message fallback does whenever
+    // the message opens with a mention) — the DISPLAYED title rewrites them to `@name`.
+    await (daemon as any).store.setDisplayName('U7', 'Fuyao', Date.now())
+    await (daemon as any).store.setSessionTitle(SESSION_KEY, '<@U7> please review the auth change')
+    expect((await (daemon as any).statusInfoForKey(SESSION_KEY)).identity.sessionTitle).toBe(
+      '@Fuyao please review the auth change'
+    )
     release()
     await t1
     await daemon.stop()

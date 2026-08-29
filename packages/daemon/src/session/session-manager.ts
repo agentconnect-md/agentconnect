@@ -23,6 +23,7 @@ import { openRuntimeSession } from './turn/runtime-session.js'
 import { ingestInboundTranscript } from './turn/transcript-ingest.js'
 import { matchSkillInvocation, renderSkillInvocation } from './skill-invocation.js'
 import type { RuntimeCommand } from '@agentconnect.md/protocol'
+import { deriveTitle } from './derive-title.js'
 
 // The recall lifecycle contract lives with the collaborator that emits it; re-exported
 // here because SessionManagerDeps is the seam production wires its observer through.
@@ -569,6 +570,9 @@ export class SessionManager {
           usesMeta
         }))())
 
+    // Born titled: the ingress title when the platform minted one (GitHub/GitLab hooks), else
+    // the console's first-message rule — a later runtime title stays authoritative.
+    const fallbackTitle = msg.initialSessionTitle?.trim() || deriveTitle(msg.text)
     // Create or re-attach the runtime session (turn/runtime-session.ts). `created` drives the
     // daemon's one-shot `event/session` start emit; the additional-MCP outcome is reported back
     // rather than written into a shared mutable.
@@ -589,9 +593,7 @@ export class SessionManager {
         workspaceIsolation,
         ...(effectiveOriginSessionId ? { originSessionId: effectiveOriginSessionId } : {}),
         ...(needsReplyToParent ? { needsParentReply: true } : {}),
-        ...(isNewLogicalSession && msg.initialSessionTitle?.trim()
-          ? { initialTitle: msg.initialSessionTitle.trim() }
-          : {})
+        ...(isNewLogicalSession && fallbackTitle ? { initialTitle: fallbackTitle } : {})
       },
       store: this.deps.store,
       ...(this.deps.prepareOutwardBinding

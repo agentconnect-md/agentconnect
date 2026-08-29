@@ -743,6 +743,9 @@ export class SlackConnection implements PlatformConnection {
   private queue: PlatformSendQueue
   /** Cooldown after Slack proves this installation lacks chat:write.customize. */
   private customUsernameRetryAt = 0
+  /** Last title written per `channel:thread` — every turn re-pushes the stored title, so
+   *  unchanged repeats must not spend an API call. Grows like sessionLifecycle: unevicted. */
+  private lastTitles = new Map<string, string>()
   /** Slack app/workspace ids are public metadata used only for the OAuth settings link. */
   private appId = ''
   private teamId = ''
@@ -2260,6 +2263,7 @@ export class SlackConnection implements PlatformConnection {
    *  lifecycle `setStatus` (and any card stream) makes it. Unregistered threads answer
    *  `not_authorized` and degrade here. */
   async setTitle(channel: string, threadTs: string, title: string): Promise<void> {
+    if (this.lastTitles.get(`${channel}:${threadTs}`) === title) return
     try {
       await this.queue.enqueue(() =>
         this.app.client.agents.sessions.rename({
@@ -2268,6 +2272,7 @@ export class SlackConnection implements PlatformConnection {
           title
         })
       )
+      this.lastTitles.set(`${channel}:${threadTs}`, title)
     } catch (err) {
       this.rememberMissingScopes(err)
       await this.postPermissionUpdateCard(channel, threadTs)
