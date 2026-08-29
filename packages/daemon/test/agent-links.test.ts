@@ -104,6 +104,11 @@ describe('flattenUnsafeLinks', () => {
     expect(flattenUnsafeLinks('see [[wiki]](/a/b.md)')).toBe('see [wiki] (`b.md`)')
   })
 
+  it('rewrites a link whose LABEL is inline code — the span is part of the link, not a sample', () => {
+    expect(flattenUnsafeLinks('wrote [`out.md`](/home/agent/out.md)')).toBe('wrote `out.md`')
+    expect(flattenUnsafeLinks('see [`the report`](/home/agent/r.html)')).toBe('see `the report` (`r.html`)')
+  })
+
   it('leaves an inline code span verbatim while rewriting the prose around it', () => {
     expect(flattenUnsafeLinks('run `[x](/a/b.md)` then [y](/a/c.md)')).toBe('run `[x](/a/b.md)` then y (`c.md`)')
   })

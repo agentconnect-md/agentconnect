@@ -27,8 +27,12 @@ export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): str
   // Built per call, not shared: the label pass below recurses, and a nested `replace` on one
   // global regex would move the `lastIndex` the outer iteration is still walking.
   const link = new RegExp(LINK, 'g')
-  return mapOutsideCode(text, (segment) =>
-    segment.replace(link, (whole, bang: string, label: string, rawDest: string) => {
+  return mapOutsideCode(text, (segment) => {
+    const spans = codeSpanRanges(segment)
+    return segment.replace(link, (whole, bang: string, label: string, rawDest: string, offset: number) => {
+      // A code span is skipped only when the link OPENS inside it — that is a sample of this syntax.
+      // A span the link merely contains is its LABEL, and a label never shields its own target.
+      if (spans.some(([start, end]) => offset >= start && offset < end)) return whole
       // A label may itself hold a link, whose target is no safer for sitting inside another's.
       const flatLabel = flattenUnsafeLinks(label, opts)
       // A kept link keeps its own syntax; only its label changes, and `[label]` opens the match. The
@@ -44,7 +48,18 @@ export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): str
       if (!display || visible.includes(display)) return visible || `\`${display}\``
       return visible ? `${visible} (\`${display}\`)` : `\`${display}\``
     })
-  )
+  })
+}
+
+/** Where each inline code span sits in one prose run, as [start, end) offsets. */
+function codeSpanRanges(prose: string): Array<[number, number]> {
+  if (!prose.includes('`')) return []
+  const ranges: Array<[number, number]> = []
+  const span = /`+[^`]*`+/g
+  for (let match = span.exec(prose); match; match = span.exec(prose)) {
+    ranges.push([match.index, match.index + match[0].length])
+  }
+  return ranges
 }
 
 /** Last path segment of a host path, in either separator, ignoring trailing slashes. */
@@ -60,7 +75,7 @@ function mapOutsideCode(text: string, fn: (segment: string) => string): string {
   let fence = ''
   const flushProse = (): void => {
     if (prose.length === 0) return
-    out.push(mapOutsideInlineCode(prose.join('\n'), fn))
+    out.push(fn(prose.join('\n')))
     prose = []
   }
   for (const line of text.split('\n')) {
@@ -81,14 +96,4 @@ function mapOutsideCode(text: string, fn: (segment: string) => string): string {
   }
   flushProse()
   return out.join('\n')
-}
-
-/** Apply `fn` to the parts of one prose run that sit outside inline code spans. */
-function mapOutsideInlineCode(prose: string, fn: (segment: string) => string): string {
-  if (!prose.includes('`')) return fn(prose)
-  // Odd indices are the captured spans, which pass through untouched.
-  return prose
-    .split(/(`+[^`]*`+)/g)
-    .map((part, index) => (index % 2 === 1 ? part : fn(part)))
-    .join('')
 }
