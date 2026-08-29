@@ -207,14 +207,25 @@ function capOutput(s: string): string {
   return t.length > MAX_TOOL_OUTPUT ? `${t.slice(0, MAX_TOOL_OUTPUT - 1)}…` : t
 }
 
-/** A tool call's `rawInput` field, when the runtime sent one as a string. MCP-shaped calls nest
- *  the tool's own arguments one level down, so read both. */
+/**
+ * A tool call's own TOP-LEVEL `rawInput` string, when the runtime sent one — the envelope a
+ * runtime writes about its call, never the call's payload.
+ *
+ * A nested `arguments` object is deliberately NOT read: those keys belong to the tool, and a
+ * tool is free to mean something else entirely by them. `createCodeHostMergeRequest` takes a
+ * whole merge-request body as `arguments.description`, which is a document, not a step label.
+ */
 function rawInputField(update: { rawInput?: unknown }, key: 'command' | 'description'): string {
   const raw = update.rawInput as Record<string, unknown> | undefined
   if (!raw || typeof raw !== 'object') return ''
-  const args = raw.arguments as Record<string, unknown> | undefined
-  const value = typeof raw[key] === 'string' ? raw[key] : args && typeof args[key] === 'string' ? args[key] : ''
-  return typeof value === 'string' ? value.trim() : ''
+  return typeof raw[key] === 'string' ? raw[key].trim() : ''
+}
+
+/** Whether a runtime's description can stand as a card's one-line label. Even at the top level
+ *  this is a string we did not author, so it has to LOOK like a label — one line, and short
+ *  enough that clamping it would not be hiding most of it. */
+function isStepLabel(s: string): boolean {
+  return s.length > 0 && s.length <= MAX_CARD_TITLE * 2 && !s.includes('\n')
 }
 
 /** Escape interpolated labels before embedding them in Slack mrkdwn. `|` is a link-label
@@ -1275,7 +1286,7 @@ export class OutputConverger {
     if (!id || update.rawInput === undefined) return
     const description = rawInputField(update, 'description')
     const command = rawInputField(update, 'command')
-    if (description && !this.toolDescriptions.has(id)) this.toolDescriptions.set(id, description)
+    if (isStepLabel(description) && !this.toolDescriptions.has(id)) this.toolDescriptions.set(id, description)
     if (command && !this.toolCommands.has(id)) this.toolCommands.set(id, command)
   }
 
@@ -1414,7 +1425,12 @@ export class OutputConverger {
           // The card's BODY is HIGH only — medium keeps one line per step, matching the legacy
           // pipeline where tool output is a high-mode rung. The body cannot start collapsed
           // (Slack has no such field), so on medium a step stays a step.
-          if (terminal && this.mode === 'high') this.noteToolOutput(u)
+          //
+          // Tracked on EVERY update, not just the terminal one: ACP output arrives as deltas, so
+          // the text can land while the call is still `in_progress` and the update that finishes
+          // it carry nothing but the status. Reading only the last one writes a blank body — and
+          // on a streaming turn nothing else would carry that output.
+          if (this.mode === 'high') this.noteToolOutput(u)
           const body =
             terminal && this.mode === 'high'
               ? { command: this.cardCommand(u.toolCallId, label), output: this.toolOutputs.get(u.toolCallId) ?? '' }

@@ -321,6 +321,49 @@ describe('OutputConverger streaming axis', () => {
     ])
   })
 
+  it('never titles a card from a tool payload — a nested `description` is the TOOL’s field', () => {
+    // createCodeHostMergeRequest takes a whole merge-request body as `arguments.description`.
+    const converger = streaming('medium')
+    converger.onUpdate({
+      sessionUpdate: 'tool_call',
+      toolCallId: 't1',
+      title: 'createCodeHostMergeRequest',
+      status: 'pending',
+      rawInput: {
+        server: 'agentconnect',
+        tool: 'createCodeHostMergeRequest',
+        arguments: { title: 'Fix the thing', description: '## Summary\n\nA whole merge-request body.' }
+      }
+    } as never)
+    expect(cards(converger.streamUpdate())).toEqual([
+      { type: 'task_update', id: 't1', title: 'createCodeHostMergeRequest', status: 'in_progress' }
+    ])
+  })
+
+  it('ignores a top-level description that is prose rather than a label', () => {
+    const converger = streaming('medium')
+    converger.onUpdate(bash('t1', 'ls -la', 'A description that runs on\nover several lines and is really a document'))
+    expect(cards(converger.streamUpdate())).toEqual([
+      { type: 'task_update', id: 't1', title: 'ls -la', status: 'in_progress' }
+    ])
+  })
+
+  it('keeps output that arrived before the terminal update — ACP sends deltas', () => {
+    // The finishing update can carry nothing but a status, so the body has to be tracked all
+    // along: reading only the last one writes a blank card, and no other message carries it.
+    const converger = streaming('high')
+    converger.onUpdate(toolDone('t1', 'Read file', 'read 42 lines', 'in_progress'))
+    converger.streamUpdate()
+    converger.onUpdate({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't1',
+      status: 'completed'
+    } as never)
+    expect(cards(converger.streamUpdate())).toEqual([
+      { type: 'task_update', id: 't1', title: 'Read file', status: 'complete', output: 'read 42 lines' }
+    ])
+  })
+
   it('falls back to the tool title, clamped to one line, when the runtime described nothing', () => {
     const converger = streaming('medium')
     const command = `git log --since='2026-08-28' --pretty=format:'%h%x09%ad%x09%an%x09%s' --decorate --all -n 80`
