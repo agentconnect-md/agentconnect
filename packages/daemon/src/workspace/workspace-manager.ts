@@ -2630,9 +2630,12 @@ export type SessionWorktreeRemoval = (
  * `rmSync`. Sharing the body would mean a conditional at each of those, and the local path — the one
  * every self-hosted daemon runs — is the one that must not acquire new ways to be wrong.
  *
- * Skills are NOT installed here. Their acquisition, ledger and executable-content removal are all
- * local-filesystem work, and pointing them at a pod path would write them onto this daemon's disk;
- * that migration is its own change, so a cluster agent runs with none.
+ * Skills are not installed here, but a cluster agent still gets them. What cannot be reused is the
+ * LOCAL installer: its acquisition, ledger and executable-content removal are local-filesystem work,
+ * and pointing them at a pod path would write onto this daemon's disk. So the daemon acquires and pins
+ * the sources itself, then uploads immutable snapshots over the shim's `skills` capability, which
+ * publishes them on the pod with the workspace mount as cwd and records ownership in the daemon's
+ * `cluster_skill_ledger`. `reconcileClusterSkills` drives that immediately after this function returns.
  */
 
 /** Cluster preparation's marker write: best-effort, because the volume IS prepared and failing a
