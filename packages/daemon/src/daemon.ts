@@ -50,6 +50,7 @@ import { maskableSecrets, maskSecretsDeep } from './session/secret-mask.js'
 import { monotonicTs } from './store/monotonic-ts.js'
 import { StoreRetentionSweeper, resolveStoreRetentionSettings } from './store/retention.js'
 import { TranscriptRecorder, type TranscriptEvent } from './session/transcript-recorder.js'
+import { TerminalOutputFolder } from './session/terminal-output-folder.js'
 import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
@@ -9949,6 +9950,7 @@ export class Daemon {
       entry,
       conv,
       rec,
+      termOut: new TerminalOutputFolder(),
       chrome: {},
       reply: {
         text: '',
@@ -12604,6 +12606,11 @@ export class Daemon {
     // drop the whole burst before any platform renderer, live webchat stream, GitHub
     // collector, or persisted transcript sees it. The tool callback independently
     // persists and streams the resulting session_info_update.
+    // codex-acp streams a shell command's output as `_meta.terminal_output_delta` chunks and
+    // completes the call with an empty `formatted_output` — fold the buffered text back into
+    // the terminal update HERE, before any consumer, so the transcript (web console), the
+    // GitHub collector and every platform renderer see the same repaired call.
+    update = p.termOut.fold(update)
     const toolCallId = typeof update?.toolCallId === 'string' ? update.toolCallId : ''
     if (toolCallId && isBuiltinSystemToolCall(update)) p.builtinSystemToolCallIds.add(toolCallId)
     if (isSessionTitleToolCall(update)) {

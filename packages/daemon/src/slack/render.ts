@@ -171,6 +171,13 @@ function clampTo(s: string, max: number): string {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t
 }
 
+/** Drop paired bold markers, keeping every other kind of markdown. Card bodies parse markdown,
+ *  and runtimes write each thought heading as `**heading**` — content worth keeping, shouting
+ *  not. Bounded to a line so a stray `**` cannot swallow text across paragraphs. */
+function stripBoldMarks(s: string): string {
+  return s.replace(/\*\*([^\n]+?)\*\*/g, '$1').replace(/__([^\n]+?)__/g, '$1')
+}
+
 /** Flatten markdown emphasis for a card field. Task titles and plan labels render as PLAIN
  *  text, so `**bold**` would arrive as literal punctuation rather than styling. */
 function plainCardText(s: string): string {
@@ -296,9 +303,16 @@ export function buildAttributionBlocks(info: SlackAttributionInfo): { text: stri
   }
 }
 
-/** Pull human-readable output text out of an ACP tool_call/_update. Prefers the `content[]`
- *  text blocks (the tool's reported output); falls back to a string `rawOutput`. diff /
- *  terminal blocks and non-string rawOutput are skipped — they have no compact inline text. */
+/**
+ * Pull human-readable output text out of an ACP tool_call/_update. Prefers the `content[]`
+ * text blocks (the tool's reported output); diff / terminal blocks are skipped — they have no
+ * compact inline text.
+ *
+ * `rawOutput` is the fallback, and it is not one shape: codex-acp sends NO content for a
+ * finished shell command — the output rides `rawOutput.formatted_output` — and wraps an MCP
+ * tool's result as `rawOutput.result.content[]` text blocks. Both are read here, or a Codex
+ * turn's cards and tool-output blocks carry commands with no results at all.
+ */
 function extractToolOutput(update: { content?: unknown; rawOutput?: unknown }): string {
   const content = update.content
   if (Array.isArray(content)) {
@@ -311,7 +325,23 @@ function extractToolOutput(update: { content?: unknown; rawOutput?: unknown }): 
     }
     if (parts.length) return parts.join('\n').trim()
   }
-  return typeof update.rawOutput === 'string' ? update.rawOutput.trim() : ''
+  const raw = update.rawOutput
+  if (typeof raw === 'string') return raw.trim()
+  if (raw && typeof raw === 'object') {
+    const r = raw as { formatted_output?: unknown; result?: { content?: unknown } }
+    if (typeof r.formatted_output === 'string') return r.formatted_output.trim()
+    const nested = r.result?.content
+    if (Array.isArray(nested)) {
+      const parts = nested
+        .filter((b): b is { type: string; text: string } => {
+          const x = b as { type?: unknown; text?: unknown } | null
+          return !!x && x.type === 'text' && typeof x.text === 'string'
+        })
+        .map((b) => b.text)
+      if (parts.length) return parts.join('\n').trim()
+    }
+  }
+  return ''
 }
 
 type PlanEntry = { content?: string; status?: 'pending' | 'in_progress' | 'completed' }
@@ -1171,19 +1201,30 @@ export class OutputConverger {
   }
 
   /**
-   * What a settled thinking card shows under its title on `high`: the WHOLE run, exactly as the
-   * web console's work rows do — the title is a clamped first line, so expanding must show it in
-   * full rather than a headless remainder.
+   * What a settled thinking card shows under its title on `high`: the run, as the web console's
+   * work rows show it — de-bolded, and without re-saying a title that was shown whole.
    *
    * The body is dropped only when the TITLE already shows the run whole. "Has no newline" is not
    * that test: a single unbroken line longer than the title clamp would then survive only as its
    * own first 72 characters, and with the reasoning message gone there is nothing else holding
-   * the rest.
+   * the rest. When the title DID show the first line whole, that line is dropped from the body
+   * instead — repeating it directly under itself says nothing.
+   *
+   * Bold markers are stripped: runtimes emit every thought heading as `**heading**`, so a
+   * heading-only run rendered as a slab of bold. The headings are the content; the shouting is
+   * not. Other markdown is left alone.
    */
   private thinkingRunBody(title: string): string {
     if (this.mode !== 'high') return ''
-    const body = this.thinkingBody.trim()
+    let body = stripBoldMarks(this.thinkingBody.trim())
     if (!body || plainCardText(body) === title) return ''
+    // Unclamped comparison on purpose: a truncated title differs from its full first line, and
+    // a body under a truncated title must keep that line — it is what the title could not show.
+    const nl = body.indexOf('\n')
+    if (nl >= 0 && plainCardText(body.slice(0, nl)) === title) {
+      body = body.slice(nl + 1).trim()
+      if (!body) return ''
+    }
     return this.thinkingBodyTruncated ? `${body}…` : body
   }
 

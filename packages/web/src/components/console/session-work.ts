@@ -64,6 +64,14 @@ export function toggleWorkPanel(
   return next
 }
 
+/** Drop paired bold markers from reasoning text, keeping every other kind of markdown.
+ *  Runtimes write each thought heading as `**heading**`, so a heading-only run renders as a
+ *  slab of bold — the headings are the content, the shouting is not. Bounded to a line so a
+ *  stray `**` cannot swallow text across paragraphs. The Slack plan card does the same. */
+export function stripBoldMarks(s: string): string {
+  return s.replace(/\*\*([^\n]+?)\*\*/g, '$1').replace(/__([^\n]+?)__/g, '$1')
+}
+
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 /** One-line label for the collapsed work: reasoning steps, tool commands, and file

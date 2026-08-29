@@ -9,6 +9,7 @@ import type { ApprovalWait } from '../permissions/coordinator.js'
 import type { GithubTurnState } from '../platforms/github/turn-output.js'
 import type { ModelProviderTarget } from '../runtimes/model-provider-config.js'
 import type { TranscriptRecorder } from '../session/transcript-recorder.js'
+import type { TerminalOutputFolder } from '../session/terminal-output-folder.js'
 import type { OutputConverger, SlackAction } from '../slack/render.js'
 import type { TelegramAction, TelegramConverger } from '../telegram/render.js'
 import type { DiscordAction, DiscordConverger } from '../discord/render.js'
@@ -523,6 +524,9 @@ export interface Pending {
   /** Captures the full activity log (tool/reasoning) from the raw ACP stream,
    *  independent of output mode. Text/result rows are recorded at send time. */
   rec: TranscriptRecorder
+  /** Folds codex-acp's out-of-band `_meta.terminal_output*` stream back into the owning tool
+   *  call at ingress, so every consumer sees the command's real output. */
+  termOut: TerminalOutputFolder
   /** Tool-call ids structurally identified as this daemon's own MCP tools. Approval
    *  requests may carry only this opaque id, regardless of which ACP path is used. */
   builtinSystemToolCallIds: Set<string>

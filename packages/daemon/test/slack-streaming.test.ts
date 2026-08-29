@@ -192,6 +192,53 @@ describe('OutputConverger streaming axis', () => {
     expect(all).toContainEqual({ type: 'plan_update', title: 'Completed 2 steps · 1 failed' })
   })
 
+  it('reads codex-shaped rawOutput — formatted_output and nested MCP result content', () => {
+    // codex-acp sends no content[] text: a shell command's output rides rawOutput.formatted_output
+    // and an MCP tool's rides rawOutput.result.content[]. Without both, a Codex turn's cards
+    // carry commands with no results.
+    const shell = streaming('high')
+    shell.onUpdate({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't1',
+      title: 'git log --oneline -1',
+      status: 'completed',
+      rawOutput: { formatted_output: 'fc380b458 docs(design): …', exit_code: 0 }
+    } as never)
+    expect(cards(shell.streamUpdate())[0]).toMatchObject({ output: 'fc380b458 docs(design): …' })
+
+    const mcp = streaming('high')
+    mcp.onUpdate({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't2',
+      title: 'getCurrentChannel',
+      status: 'failed',
+      rawOutput: { result: { content: [{ type: 'text', text: 'no live platform connection' }] }, error: null }
+    } as never)
+    expect(cards(mcp.streamUpdate())[0]).toMatchObject({ output: 'no live platform connection' })
+  })
+
+  it('de-bolds a thinking body and drops a first line its title already shows whole', () => {
+    const converger = streaming('high')
+    converger.onUpdate(think('**Weighing the options**\n\n**Charting the next step**'))
+    converger.onUpdate(tool('t1', 'Read file'))
+    expect(cards(converger.streamUpdate())).toContainEqual({
+      type: 'task_update',
+      id: 'thinking-0',
+      title: 'Weighing the options',
+      status: 'complete',
+      // No bold markers, and no repeat of the title line the reader can already see.
+      details: 'Charting the next step'
+    })
+
+    // A truncated title keeps its first line — that line is what the title could not show.
+    const clamped = streaming('high')
+    const long = `Weighing whether the ${'very '.repeat(20)}long branch settles`
+    clamped.onUpdate(think(`**${long}**\nbody`))
+    clamped.onUpdate(tool('t1', 'Read file'))
+    const card = cards(clamped.streamUpdate()).find((c) => c.type === 'task_update' && c.id === 'thinking-0')
+    expect(card?.type === 'task_update' && card.details?.startsWith(long)).toBe(true)
+  })
+
   it('keeps the (failed) prefix through the title clamp, and the body on high', () => {
     const converger = streaming('high')
     const long = `Weighing whether the ${'very '.repeat(20)}long command settles`
@@ -511,7 +558,7 @@ describe('OutputConverger streaming axis', () => {
     expect(legacy.flushBuffered().some((a) => a.kind === 'reasoning')).toBe(true)
   })
 
-  it('gives a high thinking card the whole run as its body, as the console’s work rows do', () => {
+  it('gives a high thinking card the run as its body, as the console’s work rows do', () => {
     const high = streaming('high')
     high.onUpdate(think('**Weighing the options**\n\nboth branches settle the same way.'))
     high.onUpdate(tool('t1', 'Read file'))
@@ -520,8 +567,8 @@ describe('OutputConverger streaming axis', () => {
       id: 'thinking-0',
       title: 'Weighing the options',
       status: 'complete',
-      // The title is a clamped first line, so expanding shows the run in full, not a remainder.
-      details: '**Weighing the options**\n\nboth branches settle the same way.'
+      // De-bolded, and without the first line — the title already shows it whole.
+      details: 'both branches settle the same way.'
     })
 
     // A single-line run has nothing beyond its title, and medium has no body at all.
