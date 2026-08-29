@@ -70,7 +70,8 @@ export default defineConfig({
     // Keep process-heavy, integration-shaped unit files from oversubscribing available test-worker
     // resources. Four on Windows too: the halving there bought time for inline per-test budgets that
     // no longer exist, and the polls those budgets never governed now scale in `test/wait-support.ts`.
-    maxWorkers: 4,
+    // MEASUREMENT ONLY — not for merge.
+    maxWorkers: Number(process.env.AGENTCONNECT_MEASURE_WORKERS ?? 4),
     // The async store pays a microtask hop per statement; on a loaded CI box the IO-heavy store files
     // drift past vitest's 5 s default without being hung. Windows I/O is slower again by enough that
     // the same files need double the budget.

@@ -238,10 +238,18 @@ jobs:
   #
   # No `prisma:generate` step: neither package imports the generated client.
   unit-windows:
-    name: Unit Test (Windows)
+    # MEASUREMENT ONLY — not for merge. Four samples per arm: the question is not the mean, which
+    # already looked like -19%, but whether six workers on four vCPUs reproduce the one failure the
+    # last matrix saw — 1590 s of summed test time against a 873 s baseline, contention losing control.
+    name: Unit Test (Windows) w${{ matrix.workers }}-${{ matrix.sample }}
     needs: windows-scope
     if: ${{ needs.windows-scope.outputs.changed == 'true' }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workers: [4, 6]
+        sample: [1, 2, 3, 4]
     # The daemon suite alone runs ~20 min here against ~3 on Linux — Windows filesystem and
     # process-spawn cost, not extra work — so the cap is set well clear of it rather than near it.
     timeout-minutes: 45
@@ -310,6 +318,7 @@ jobs:
           GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+          AGENTCONNECT_MEASURE_WORKERS: ${{ matrix.workers }}
         run: pnpm --filter @agentconnect.md/daemon test:unit
       - name: CLI unit tests
         if: ${{ !cancelled() }}
