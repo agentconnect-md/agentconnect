@@ -712,17 +712,20 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     const emitEventSession = vi.fn()
     ;(daemon as any).cpClient = { emitEventSession, emitUsageReport: vi.fn(), stop: vi.fn() }
 
+    // A CHANNEL thread on purpose: the native title is no longer DM-gated — every turn's
+    // lifecycle setStatus registers the thread as an agent session, and Slack renders the
+    // title as the thread panel's header in channels too (verified live 2026-08-29).
     await (daemon as any).dispatch('bot-a', {
       msgId: 'slack:C1:200.1',
       traceId: 'title',
-      source: 'user',
+      source: 'cron',
       platform: 'slack',
       channel: 'C1',
       thread: '200.1',
       sender: { id: 'U1', isBot: false },
       text: 'first fallback',
       mentionedBots: [],
-      isDm: true
+      isDm: false
     })
 
     expect(emitEventSession.mock.calls.map(([payload]) => payload.phase)).toEqual(['start', 'plan', 'end'])
@@ -1046,10 +1049,12 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await daemon.stop()
   })
 
+  // No non-DM row here any more: the title gate no longer branches on the surface (channels
+  // are eligible — every turn's lifecycle setStatus registers the thread as an agent session,
+  // and the positive channel case is pinned above), so blank/cleared cover the whole gate.
   it.each([
-    { scenario: 'a non-DM thread', title: 'Channel summary', isDm: false },
-    { scenario: 'a blank DM title', title: '   ', isDm: true },
-    { scenario: 'a cleared DM title', title: null, isDm: true }
+    { scenario: 'a blank title', title: '   ', isDm: true },
+    { scenario: 'a cleared title', title: null, isDm: true }
   ])(
     'does not set a native Slack title for $scenario',
     async ({ title, isDm }) => {
