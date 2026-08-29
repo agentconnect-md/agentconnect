@@ -28,6 +28,7 @@ afterEach(async () => {
   container?.remove()
   root = undefined
   container = undefined
+  delete window.__AC_ENV
 })
 
 describe('WorkspaceFormFields', () => {
@@ -42,6 +43,7 @@ describe('WorkspaceFormFields', () => {
   })
 
   it('uses one workspace source picker for create and edit flows', async () => {
+    window.__AC_ENV = { FEATURE_FLAGS: 'git-url' }
     const onChange = vi.fn()
     await render(<WorkspaceModeField value="scratch" onChange={onChange} />)
 
@@ -68,6 +70,23 @@ describe('WorkspaceFormFields', () => {
     expect(onChange).toHaveBeenCalledWith('gitlab')
     await act(async () => buttons[3]?.click())
     expect(onChange).toHaveBeenCalledWith('giturl')
+  })
+
+  it('offers the Git URL tile only where the git-url flag is on', async () => {
+    window.__AC_ENV = {}
+    await render(<WorkspaceModeField value="scratch" onChange={vi.fn()} />)
+
+    const labels = Array.from(container?.querySelectorAll('button') ?? []).map((button) => button.textContent)
+    expect(labels).toEqual(['Scratch', 'GitHub', 'GitLab'])
+  })
+
+  it('keeps the Git URL tile for a workspace already on one, flag or not', async () => {
+    window.__AC_ENV = {}
+    await render(<WorkspaceModeField value="giturl" onChange={vi.fn()} />)
+
+    const buttons = Array.from(container?.querySelectorAll('button') ?? [])
+    expect(buttons.map((button) => button.textContent)).toEqual(['Scratch', 'GitHub', 'GitLab', 'Git URL'])
+    expect(buttons[3]?.getAttribute('aria-pressed')).toBe('true')
   })
 
   it('returns the shared repository access vocabulary', async () => {
