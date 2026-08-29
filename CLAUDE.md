@@ -11,7 +11,8 @@ how AgentConnect presents or delivers messages to users.
 AgentConnect is a multi-agent platform that bridges IM platforms (Slack /
 Telegram / Discord) to AI coding agents (Claude, Codex) over ACP. The
 authoritative design lives in [`docs/designs/`](docs/designs/) — start with
-[architecture.md](docs/designs/architecture.md). Design documentation and every
+[architecture.md](docs/designs/architecture.md), and use the grouped index at
+[docs/README.md](docs/README.md) to find the rest. Design documentation and every
 visual asset embedded in public documentation are maintained in English. Before
 adding or reusing a diagram or screenshot, inspect its visible text and verify
 that it still matches the current architecture. Prefer diffable SVG or Mermaid
