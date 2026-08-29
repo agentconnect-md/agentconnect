@@ -184,7 +184,7 @@ describe('Git skill source policy boundary', () => {
       'https://github.com:8443/acme/skills.git',
       'ssh://git@github.com:2222/acme/skills.git'
     ]) {
-      expect(() => parseGitSkillSource(entry(source)), source).toThrow(/origin is not allowed/i)
+      expect(() => parseGitSkillSource(entry(source)), source).toThrow(/is not allowed by this daemon/i)
     }
   })
 
@@ -211,7 +211,7 @@ describe('Git skill source policy boundary', () => {
           agentId: 'agent-1',
           useGitCredential: true
         })
-      ).rejects.toThrow(/origin is not allowed/i)
+      ).rejects.toThrow(/is not allowed by this daemon/i)
       expect(existsSync(destination)).toBe(false)
       // A default-allowed gitlab origin still refuses the CREDENTIALED path,
       // which remains canonical-GitHub-only, before any directory or Git work.
