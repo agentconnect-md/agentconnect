@@ -617,8 +617,8 @@ export interface SharedStatusActions {
 
 /** Build the compact in-thread status message. Both dedicated and shared bots use one
  *  overflow accessory so the status stays on a single row; a SHAREABLE (multi-agent) bot
- *  also exposes Switch agent. Interrupting a turn is Slack's own Stop control or Session
- *  options' Cancel turn — the overflow carries no cancel item. */
+ *  also exposes Switch agent. Interrupting a turn is Slack's own Stop control — the
+ *  overflow carries no cancel item. */
 export function buildStatusBlocks(
   info: StatusBarInfo,
   sessionKey: string,
