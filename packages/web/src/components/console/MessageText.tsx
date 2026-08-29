@@ -32,6 +32,12 @@ import { slackToMarkdown } from './slack-mrkdwn'
 // large strings, so above this cap we skip parsing and render cheap pre-wrapped text.
 const MAX_PARSE = 100_000
 
+// The only targets that reach a reader as a working link; anything else renders as its label.
+// A leading slash passes react-markdown's sanitizer as a same-origin relative URL, so a host path a
+// runtime linked used to render an anchor opening this console on a path it does not serve. The
+// daemon flattens those before delivery now; this keeps rows recorded before that from 404ing.
+const WEB_HREF = /^(?:https?:|mailto:)/i
+
 /**
  * The core default renderer: Slack mrkdwn semantics over a CommonMark
  * pipeline. The daemon records the agent's verbatim markdown (posted to Slack
@@ -62,11 +68,14 @@ export const SlackMrkdwnText: ComponentType<{ text: string }> = function SlackMr
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
         components={{
-          a: ({ children, node: _node, ...props }) => (
-            <a {...props} target="_blank" rel="noopener noreferrer">
-              {children}
-            </a>
-          )
+          a: ({ children, node: _node, ...props }) =>
+            WEB_HREF.test(props.href ?? '') ? (
+              <a {...props} target="_blank" rel="noopener noreferrer">
+                {children}
+              </a>
+            ) : (
+              <>{children}</>
+            )
         }}
       >
         {slackToMarkdown(text)}

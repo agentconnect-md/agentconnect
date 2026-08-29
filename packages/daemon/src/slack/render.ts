@@ -15,6 +15,7 @@ export {
   encodePermValue
 } from '@agentconnect.md/protocol'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
+import { flattenUnsafeLinks } from '../messages/agent-links.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
 import { splitIntoSections } from './formatter.js'
@@ -1228,7 +1229,7 @@ export class OutputConverger {
     // Hold the live reply while the body could still be the bare response-control marker, so a
     // suppressed turn never flashes a partial reply in-place (onFinal drops it entirely).
     if (!trimmed || isNoResponsePrefix(trimmed)) return []
-    return [{ kind: 'live-reply', text: this.liveDisplay(this.buf) }]
+    return [{ kind: 'live-reply', text: this.liveDisplay(flattenUnsafeLinks(this.buf)) }]
   }
 
   /** minimal: the single live message can hold one Block Kit `markdown` block (≤12000
@@ -1250,7 +1251,7 @@ export class OutputConverger {
     // Hold while the body may still be / is the bare sentinel — a suppressed reply must not be
     // recorded or shown; onFinal makes the final drop. Non-sentinel bodies close normally.
     if (isNoResponsePrefix(this.buf.trim())) return []
-    const text = this.buf
+    const text = flattenUnsafeLinks(this.buf)
     this.recordDirty = false
     return [
       final ? { kind: 'final-live-reply', text } : { kind: 'live-reply', text: this.liveDisplay(text) },
@@ -1268,7 +1269,7 @@ export class OutputConverger {
     // line of it under the container that already holds them.
     if (this.streaming || !this.reasoningDirty) return []
     this.reasoningDirty = false
-    return [{ kind: 'reasoning', text: renderReasoning(this.reasoningBuf) }]
+    return [{ kind: 'reasoning', text: renderReasoning(flattenUnsafeLinks(this.reasoningBuf)) }]
   }
 
   private flush(): SlackAction[] {
@@ -1300,7 +1301,8 @@ export class OutputConverger {
     return this.emitBody(ready)
   }
 
-  private emitBody(text: string): SlackAction[] {
+  private emitBody(raw: string): SlackAction[] {
+    const text = flattenUnsafeLinks(raw)
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` is handled
     // before the connection check on every platform, so it lands even though replyConn is unset.
     const recordOnly = this.mode === 'none'

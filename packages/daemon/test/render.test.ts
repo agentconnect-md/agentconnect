@@ -90,6 +90,28 @@ describe('OutputConverger', () => {
     ])
   })
 
+  // A runtime links the file it wrote by its absolute path, which is clickable in its own UI and
+  // nowhere else. Slack turns the destination into a real `<target|label>` link, so the daemon's
+  // filesystem layout becomes the link target of a message in a shared channel.
+  it('flattens a host path a runtime linked, even when the link straddles chunk boundaries', () => {
+    const c = new OutputConverger('low')
+    // The split is the point: ACP delivers a reply as token deltas, so a per-chunk rewrite misses.
+    for (const chunk of ['Created [today’s dig', 'est](/home/sentio/agents/x/workspace/o', 'ut.md).']) {
+      c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: chunk } } as any)
+    }
+    expect(c.onFinal()).toEqual([
+      { kind: 'post', text: 'Created today’s digest (`out.md`).', terminal: true },
+      { kind: 'set-status', text: '' }
+    ])
+  })
+
+  it('leaves a web link a runtime wrote exactly as it wrote it', () => {
+    const c = new OutputConverger('low')
+    const text = 'see [the PR](https://github.com/acme/repo/pull/1)'
+    c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } as any)
+    expect(c.onFinal().find((a) => a.kind === 'post')?.text).toBe(text)
+  })
+
   it('low mode: tool_call with no title falls back to the toolCallId', () => {
     const c = new OutputConverger('low')
     const actions = c.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't9', status: 'pending' } as any)

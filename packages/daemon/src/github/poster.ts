@@ -21,6 +21,7 @@
  */
 
 import type { GithubPublishedComment } from '@agentconnect.md/protocol'
+import { flattenUnsafeLinks } from '../messages/agent-links.js'
 import { renderAttributionMessage } from '../messages/attribution.js'
 import { isNoResponseBody } from '../session/no-response.js'
 
@@ -83,7 +84,10 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function publicReplyText(text: string | undefined): string | undefined {
   const trimmed = text?.trim()
-  return trimmed && !isNoResponseBody(trimmed) ? text : undefined
+  if (!text || !trimmed || isNoResponseBody(trimmed)) return undefined
+  // A code host resolves a relative target against the repository, so only the host-absolute
+  // one is both broken and a disclosure of the daemon's filesystem layout.
+  return flattenUnsafeLinks(text, { resolvesRelativeTargets: true })
 }
 
 /**

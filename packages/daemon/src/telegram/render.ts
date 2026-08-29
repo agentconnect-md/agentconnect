@@ -1,5 +1,6 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { splitIntoSections } from '../messages/split-sections.js'
+import { flattenUnsafeLinks } from '../messages/agent-links.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 import { extractToolOutput } from '../session/tool-output.js'
@@ -231,7 +232,7 @@ export class TelegramConverger {
     // Hold the live reply while the body could still be the bare response-control marker, so a
     // suppressed turn never flashes a partial reply in-place (onFinal drops it entirely).
     if (!trimmed || isNoResponsePrefix(trimmed)) return []
-    return [{ kind: 'live-reply', text: this.liveDisplay(this.buf) }]
+    return [{ kind: 'live-reply', text: this.liveDisplay(flattenUnsafeLinks(this.buf)) }]
   }
 
   /** minimal: a Telegram message caps at 4096 chars; head-clamp the live view when longer
@@ -250,7 +251,7 @@ export class TelegramConverger {
     // Hold while the body may still be / is the bare sentinel — a suppressed reply must not be
     // recorded or shown; onFinal makes the final drop. Non-sentinel bodies close normally.
     if (isNoResponsePrefix(this.buf.trim())) return []
-    const text = this.buf
+    const text = flattenUnsafeLinks(this.buf)
     this.recordDirty = false
     return [
       { kind: 'live-reply', text: this.liveDisplay(text) },
@@ -263,7 +264,7 @@ export class TelegramConverger {
   private drainReasoning(): TelegramAction[] {
     if (!this.reasoningDirty) return []
     this.reasoningDirty = false
-    return [{ kind: 'reasoning', text: renderReasoning(this.reasoningBuf), parseMode: 'HTML' }]
+    return [{ kind: 'reasoning', text: renderReasoning(flattenUnsafeLinks(this.reasoningBuf)), parseMode: 'HTML' }]
   }
 
   /** `final` marks the turn-closing flush: its LAST post carries the continue hint (so a
@@ -296,7 +297,8 @@ export class TelegramConverger {
     return this.emitBody(ready, false)
   }
 
-  private emitBody(text: string, final: boolean): TelegramAction[] {
+  private emitBody(raw: string, final: boolean): TelegramAction[] {
+    const text = flattenUnsafeLinks(raw)
     // none: record the reply into the transcript WITHOUT sending it — `recordOnly` runs before
     // the connection check, so it lands even though replyConn is unset for this mode.
     const recordOnly = this.mode === 'none'
