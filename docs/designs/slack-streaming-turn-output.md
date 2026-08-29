@@ -232,8 +232,10 @@ The two said the same thing: every line of that message is a card title in the c
 directly above it, and a runtime that emits headings without prose made it a verbatim copy of
 the step list. So the card takes the console's shape for a reasoning row — the clamped first
 line as the title, the WHOLE run as the body, including that first line, because the title is a
-truncation and expanding must show what was truncated. A single-line run has nothing beyond its
-title and gets no body, which is the console's own test for an expandable row. `medium` keeps
+truncation and expanding must show what was truncated. The body is dropped only when the TITLE
+shows the run whole — "it has no newline" is not that test, or an unbroken thought longer than
+the clamp would survive as its own first 72 characters and nothing else. A run that outgrows the
+body cap keeps its truncation mark, so a card never presents a cut-off run as a complete one. `medium` keeps
 neither, as it keeps no other body.
 
 A turn off the axis is untouched — it still posts the in-place Thinking message it always did.

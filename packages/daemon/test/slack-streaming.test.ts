@@ -505,6 +505,27 @@ describe('OutputConverger streaming axis', () => {
     })
   })
 
+  it('keeps a single-line run that its title had to clamp', () => {
+    // "Has no newline" is not the same as "the title shows it whole": a long unbroken thought
+    // would otherwise survive only as its own first 72 characters.
+    const converger = streaming('high')
+    const run = `Weighing whether the ${'very '.repeat(20)}long branch settles the same way`
+    converger.onUpdate(think(run))
+    converger.onUpdate(tool('t1', 'Read file'))
+    const card = cards(converger.streamUpdate()).find((c) => c.type === 'task_update' && c.id === 'thinking-0')
+    expect(card?.type === 'task_update' && card.title.endsWith('…')).toBe(true)
+    expect(card?.type === 'task_update' && card.details).toBe(run)
+  })
+
+  it('marks a run that outgrew the body cap instead of presenting it as whole', () => {
+    const converger = streaming('high')
+    converger.onUpdate(think('**A long think**\n'))
+    converger.onUpdate(think('x'.repeat(4000)))
+    converger.onUpdate(tool('t1', 'Read file'))
+    const card = cards(converger.streamUpdate()).find((c) => c.type === 'task_update' && c.id === 'thinking-0')
+    expect(card?.type === 'task_update' && card.details?.endsWith('…')).toBe(true)
+  })
+
   it('keeps the ACP plan on its own message — a checklist is not a container label', () => {
     const converger = streaming('medium')
     const actions = converger.onUpdate({

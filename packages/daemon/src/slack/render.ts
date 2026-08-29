@@ -928,6 +928,7 @@ export class OutputConverger {
   private thinkingHead = ''
   private thinkingTitle = ''
   private thinkingBody = ''
+  private thinkingBodyTruncated = false
   /** The container's label, so an unchanged one is never re-sent, plus the one awaiting the
    *  next append and the legacy `progress` text that append would degrade to. */
   private planTitle = ''
@@ -1105,6 +1106,15 @@ export class OutputConverger {
     return `thinking-${this.thinkingRun}`
   }
 
+  /** Accumulate a run's body under the card-body cap, REMEMBERING that the cap was reached.
+   *  Silently slicing to the cap hands `capOutput` a value that already looks whole, so the
+   *  card would present a run missing its ending as if that were the ending. */
+  private appendThinkingBody(thought: string): void {
+    const room = MAX_TOOL_OUTPUT - this.thinkingBody.length
+    if (room <= 0 || thought.length > room) this.thinkingBodyTruncated = true
+    if (room > 0) this.thinkingBody += thought.slice(0, room)
+  }
+
   /**
    * Title a thinking run from its FIRST LINE. Runtimes open a thought with a short
    * `**heading**` — the same line the web console shows as the step's title — so the card can
@@ -1140,24 +1150,31 @@ export class OutputConverger {
    *  high mode's in-place Thinking message, which is where 2,800 characters fit. */
   private closeThinkingRun(status: 'complete' | 'error' = 'complete'): void {
     if (!this.thinkingActive) return
-    this.queueTask(this.thinkingId(), this.thinkingTitleFrom(true) || THINKING_CARD, status, {
-      details: this.thinkingRunBody()
-    })
+    const title = this.thinkingTitleFrom(true) || THINKING_CARD
+    this.queueTask(this.thinkingId(), title, status, { details: this.thinkingRunBody(title) })
     this.thinkingActive = false
     this.thinkingRun += 1
     this.thinkingHead = ''
     this.thinkingTitle = ''
     this.thinkingBody = ''
+    this.thinkingBodyTruncated = false
   }
 
-  /** What a settled thinking card shows under its title on `high`: the WHOLE run, exactly as
-   *  the web console's work rows do — the title is a clamped first line, so expanding must show
-   *  it in full rather than a headless remainder. A single-line run has nothing beyond its
-   *  title and gets no body, which is the console's own test for an expandable row. */
-  private thinkingRunBody(): string {
+  /**
+   * What a settled thinking card shows under its title on `high`: the WHOLE run, exactly as the
+   * web console's work rows do — the title is a clamped first line, so expanding must show it in
+   * full rather than a headless remainder.
+   *
+   * The body is dropped only when the TITLE already shows the run whole. "Has no newline" is not
+   * that test: a single unbroken line longer than the title clamp would then survive only as its
+   * own first 72 characters, and with the reasoning message gone there is nothing else holding
+   * the rest.
+   */
+  private thinkingRunBody(title: string): string {
     if (this.mode !== 'high') return ''
     const body = this.thinkingBody.trim()
-    return body.includes('\n') ? body : ''
+    if (!body || plainCardText(body) === title) return ''
+    return this.thinkingBodyTruncated ? `${body}…` : body
   }
 
   /** Flush pending output for the idle timer: in high mode one in-place `reasoning` update
@@ -1401,7 +1418,7 @@ export class OutputConverger {
             this.queueTask(this.thinkingId(), THINKING_CARD, 'in_progress')
           }
           this.noteThinkingTitle(thought)
-          if (this.mode === 'high') this.thinkingBody = (this.thinkingBody + thought).slice(0, MAX_REASONING)
+          if (this.mode === 'high') this.appendThinkingBody(thought)
         }
         // minimal: keep the streamed reply intact (thinking mid-reply doesn't close a
         // segment) — only surface the transient status.
