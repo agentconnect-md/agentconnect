@@ -32,8 +32,8 @@ in order to move an answer between transports is gone with it (§9).
 **Goals.** Replace the in-place `progress` message with a native collapsed plan card on
 medium/high turns; change **nothing** about the body (post / live-reply / final-live-reply,
 response finalization by edit, the attribution footer, the transcript, the status bar, the
-transient status text, permission and elicitation cards, attachments, the ACP plan message, the
-high-mode Thinking message); degrade to today's `progress` message
+transient status text, permission and elicitation cards, attachments, the ACP plan message);
+degrade to today's `progress` message
 wherever streaming is unavailable, from Slack's own errors, with no config knob and no environment
 kill switch; and leave Layer 0's stop seam, `setSessionLifecycle`, the manifest, the relay, the
 control plane, the protocol, and every other platform alone.
@@ -179,14 +179,14 @@ that an oversized field comes back `ok: true` with the field SILENTLY EMPTY. Car
 therefore take the same 2,800-character cap as the legacy tool-output block, and titles a much
 tighter one (below).
 
-| ACP `session/update`             | today                                              | with the chrome stream                                                                                                                                                                           |
-| -------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `agent_message_chunk`            | buffered → `post` / `live-reply`                   | **unchanged**                                                                                                                                                                                    |
-| `tool_call` / `tool_call_update` | in-place `progress` message + rotating status text | `task_update` keyed by `toolCallId`; ACP `pending`/`in_progress` → `in_progress`, `completed` → `complete`, `failed` → `error`. The status text is unchanged; the `progress` message is replaced |
-| `agent_thought_chunk`            | `high`: in-place Thinking message; status text     | plus ONE `task_update` per thinking run, titled by the run's FIRST LINE, status only. `high` keeps its full in-place Thinking message, which is where 2,800 characters belong                    |
-| `plan`                           | in-place `plan` message                            | **unchanged** — an ACP plan is a full entry list with per-entry statuses, i.e. a checklist, not a one-line container label                                                                       |
-| tool output, terminal (`high`)   | separate code-block message                        | the command and its result become the card's body (`details` + `output`, high only); the separate code-block message is **dropped on a streaming turn**, which would otherwise say it twice      |
-| `usage_update`                   | dropped                                            | dropped                                                                                                                                                                                          |
+| ACP `session/update`             | today                                              | with the chrome stream                                                                                                                                                                                 |
+| -------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `agent_message_chunk`            | buffered → `post` / `live-reply`                   | **unchanged**                                                                                                                                                                                          |
+| `tool_call` / `tool_call_update` | in-place `progress` message + rotating status text | `task_update` keyed by `toolCallId`; ACP `pending`/`in_progress` → `in_progress`, `completed` → `complete`, `failed` → `error`. The status text is unchanged; the `progress` message is replaced       |
+| `agent_thought_chunk`            | `high`: in-place Thinking message; status text     | ONE `task_update` per thinking run, titled by the run's FIRST LINE, carrying the run itself as its body on `high`. The separate Thinking message is **dropped on a streaming turn** — the cards are it |
+| `plan`                           | in-place `plan` message                            | **unchanged** — an ACP plan is a full entry list with per-entry statuses, i.e. a checklist, not a one-line container label                                                                             |
+| tool output, terminal (`high`)   | separate code-block message                        | the command and its result become the card's body (`details` + `output`, high only); the separate code-block message is **dropped on a streaming turn**, which would otherwise say it twice            |
+| `usage_update`                   | dropped                                            | dropped                                                                                                                                                                                                |
 
 **`task_display_mode: 'plan'`, fixed, never configurable.** Every task card is collected into
 ONE collapsed-by-default container, and `{ type: 'plan_update', title }` is the line printed on
@@ -226,6 +226,23 @@ and on a streaming turn there is no separate code-block message left to carry it
 the agent is thinking about rather than the bare word "Thinking". The card is opened before
 that line has arrived and renamed once it has, which is free: `title` REPLACES per id. A run
 whose head yields nothing keeps the placeholder.
+
+**On `high` the card carries the run itself, and the separate Thinking message is dropped.**
+The two said the same thing: every line of that message is a card title in the container
+directly above it, and a runtime that emits headings without prose made it a verbatim copy of
+the step list. So the card takes the console's shape for a reasoning row — the clamped first
+line as the title, the WHOLE run as the body, including that first line, because the title is a
+truncation and expanding must show what was truncated. The body is dropped only when the TITLE
+shows the run whole — "it has no newline" is not that test, or an unbroken thought longer than
+the clamp would survive as its own first 72 characters and nothing else. A run that outgrows the
+body cap keeps its truncation mark, so a card never presents a cut-off run as a complete one. `medium` keeps
+neither, as it keeps no other body.
+
+A turn off the axis is untouched — it still posts the in-place Thinking message it always did.
+A turn that took the axis and then DEGRADED does not, because the converger never learns that
+it degraded (§7: the applier owns the whole degrade), so it loses the reasoning message exactly
+as it loses the tool-output block. Both are chrome, and this design accepts chrome as lossy;
+the reasoning still reaches the transcript either way.
 
 **Output modes.** `none`, `minimal` and `low` have no tool chrome today and gain none: they
 never take the axis. `medium` gets card titles and statuses — one line per step; `high` adds
