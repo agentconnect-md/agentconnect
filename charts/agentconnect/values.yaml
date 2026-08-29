@@ -203,18 +203,18 @@ daemonPool:
     successThreshold: 1
     failureThreshold: 3
   # Clone origins this pool's members will serve a workspace from — the OPERATOR's policy, which
-  # is why a tenant cannot widen it and why an install that runs a self-managed code host has to
-  # state it here. Empty ⇒ the daemon's own default, which is GitHub and GitLab.com only, and a
-  # self-managed GitLab is then refused with `git clone origin … is not allowed by this daemon`.
-  # Exact scheme + host + port, no path, no credentials:
+  # is why a tenant cannot widen it. Empty ⇒ the daemon's own default, which admits ANY valid
+  # https/ssh origin ('*'). State exact scheme + host + port entries (no path, no credentials) to
+  # tighten it — a repository elsewhere is then refused with
+  # `git clone origin … is not allowed by this daemon`:
   #
   #   workspaceGitAllowedOrigins:
   #     - https://github.com
   #     - ssh://github.com
   #     - https://gitlab.example.test
   #
-  # Stating any origin REPLACES the default list rather than adding to it, so an install that also
-  # uses the public hosts names them here too. A malformed entry fails the member at startup.
+  # Stating any origin REPLACES the default rather than adding to it. A malformed entry fails the
+  # member at startup.
   workspaceGitAllowedOrigins: []
   # Install-wide model credentials, referenced BY NAME like every other secret here — the chart
   # never holds the value. Create the Secret with one entry per variable the daemon reads:

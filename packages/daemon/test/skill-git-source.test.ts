@@ -177,7 +177,8 @@ describe('Git skill source policy boundary', () => {
     )
   })
 
-  it('rejects disallowed hosts, private addresses, and custom ports', () => {
+  it('rejects disallowed hosts, private addresses, and custom ports under an exact list', () => {
+    configureWorkspaceGitOrigins(['https://github.com', 'ssh://github.com', 'https://gitlab.com'])
     for (const source of [
       'https://code.example.test/acme/skills.git',
       'https://127.0.0.1/acme/skills.git',
@@ -189,11 +190,11 @@ describe('Git skill source policy boundary', () => {
   })
 
   it('honors an operator-authorized exact non-default origin', () => {
-    configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS, 'https://git.example.test'])
+    configureWorkspaceGitOrigins(['https://github.com', 'https://git.example.test'])
     expect(parseGitSkillSource(entry('https://git.example.test/acme/skills.git')).cloneUrl).toBe(
       'https://git.example.test/acme/skills.git'
     )
-    // §13.2: gitlab.com is a DEFAULT origin now — skill sources may name it
+    // The wildcard default admits any origin — skill sources may name gitlab.com
     // without operator opt-in (credentialed acquisition stays GitHub-only).
     configureWorkspaceGitOrigins([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS])
     expect(parseGitSkillSource(entry('https://gitlab.com/acme/skills.git')).cloneUrl).toBe(
@@ -202,6 +203,7 @@ describe('Git skill source policy boundary', () => {
   })
 
   it('rejects a disallowed acquisition before creating its destination or invoking Git', async () => {
+    configureWorkspaceGitOrigins(['https://github.com', 'ssh://github.com', 'https://gitlab.com'])
     const root = await mkdtemp(join(tmpdir(), 'ac-skill-git-policy-'))
     const destination = join(root, 'acquired')
     try {

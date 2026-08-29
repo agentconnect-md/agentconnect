@@ -2,7 +2,8 @@ import {
   DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
   normalizeAllowedWorkspaceGitUrl,
   normalizeWorkspaceGitOrigin,
-  workspaceGitOriginOf
+  workspaceGitOriginOf,
+  WORKSPACE_GIT_ANY_ORIGIN
 } from '@agentconnect.md/protocol'
 import { gitlabManagedHost } from '../gitcred/managed-hosts.js'
 
@@ -69,9 +70,11 @@ export function unauthorizedWorkspaceGitOrigin(repository: string, deploymentCod
   }
 }
 
-/** True when the OPERATOR list carries no HTTPS origin. Managed GitLab is HTTPS-only (§13.2), so
- *  such a daemon serves no GitLab instance beyond the one its own deployment names — which is a
- *  per-agent answer this startup-time check cannot have. */
+/** True when the OPERATOR list carries no HTTPS origin (`*` carries them all). Managed GitLab is
+ *  HTTPS-only (§13.2), so such a daemon serves no GitLab instance beyond the one its own
+ *  deployment names — which is a per-agent answer this startup-time check cannot have. */
 export function permitsNoHttpsOrigin(): boolean {
-  return !allowedOrigins.some((origin) => origin.toLowerCase().startsWith('https://'))
+  return !allowedOrigins.some(
+    (origin) => origin === WORKSPACE_GIT_ANY_ORIGIN || origin.toLowerCase().startsWith('https://')
+  )
 }

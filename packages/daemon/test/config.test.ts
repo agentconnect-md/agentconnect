@@ -32,6 +32,11 @@ describe('loadConfig', () => {
       expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['https://gitlab.example.test'])
     })
 
+    it("accepts the bare '*' wildcard entry", () => {
+      const cfg = withEnv('*', () => loadConfig({ root: tmpRoot({ version: 1 }) }))
+      expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['*'])
+    })
+
     it('takes a list, trimming the spacing a values file is likely to hand it', () => {
       const cfg = withEnv(' https://github.com , https://gitlab.example.test:8443 ', () =>
         loadConfig({ root: tmpRoot({ version: 1 }) })
@@ -57,11 +62,7 @@ describe('loadConfig', () => {
 
     it('is ignored when blank', () => {
       const cfg = withEnv('   ', () => loadConfig({ root: tmpRoot({ version: 1 }) }))
-      expect(cfg.security.workspaceGitAllowedOrigins).toEqual([
-        'https://github.com',
-        'ssh://github.com',
-        'https://gitlab.com'
-      ])
+      expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['*'])
     })
   })
 
@@ -75,11 +76,7 @@ describe('loadConfig', () => {
     expect(cfg.version).toBe(1)
     expect(cfg.runtimes!.claude!.command).toBe('npx')
     expect(cfg.security.isolateAccountApps).toBe(true)
-    expect(cfg.security.workspaceGitAllowedOrigins).toEqual([
-      'https://github.com',
-      'ssh://github.com',
-      'https://gitlab.com'
-    ])
+    expect(cfg.security.workspaceGitAllowedOrigins).toEqual(['*'])
     expect(cfg.features.turnFinalContextRefresh).toBe(true)
     expect(cfg.limits.maxAgents).toBe(32)
     expect(cfg.agentsDir).toContain('agents')

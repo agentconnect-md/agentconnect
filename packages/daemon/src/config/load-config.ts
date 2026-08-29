@@ -118,7 +118,7 @@ export function loadConfig(
       )
     if (!parsed.success) {
       throw new Error(
-        `${WORKSPACE_GIT_ORIGINS_ENV} must be a comma-separated list of exact credential-free https/ssh origins`
+        `${WORKSPACE_GIT_ORIGINS_ENV} must be a comma-separated list of exact credential-free https/ssh origins (or '*')`
       )
     }
     cfg.security.workspaceGitAllowedOrigins = parsed.data

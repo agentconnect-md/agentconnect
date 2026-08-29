@@ -320,9 +320,10 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
     // Linux SRT/bwrap sandbox. macOS and Windows are not supported in this rollout.
     "requireSandbox": false,
 
-    // Exact origins that daemon-managed workspace clone/pull may target.
-    // Scheme and non-default port are part of the match; no wildcards or paths.
-    // Add self-managed Git origins explicitly. [] disables remote Git workspaces.
+    // Origins that daemon-managed workspace clone/pull may target. Default ["*"]
+    // admits any valid https/ssh origin; exact entries (scheme and non-default
+    // port are part of the match, no partial wildcards or paths) tighten it, and
+    // [] disables remote Git workspaces entirely.
     "workspaceGitAllowedOrigins": ["https://github.com", "ssh://github.com"]
   },
 
