@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { SQLInputValue } from 'node:sqlite'
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
@@ -825,6 +825,10 @@ export interface RuntimeModelCapRecord {
  * path that vanished (WAL siblings appear lazily) is not an error worth failing a
  * daemon boot over.
  */
+// MEASUREMENT ONLY — not for merge. One in-memory database per store path, so a reopen finds
+// what the first open wrote. Shared across a worker because `isolate: false` shares this module.
+const memoryStores = new Map<string, StoreDatabase>()
+
 function restrictPath(path: string, mode: number): void {
   try {
     if ((statSync(path).mode & 0o777) !== mode) chmodSync(path, mode)
@@ -1045,6 +1049,29 @@ export class LocalStore {
       const dir = dirname(source)
       mkdirSync(dir, { recursive: true, mode: 0o700 })
       restrictPath(dir, 0o700)
+      // MEASUREMENT ONLY — not for merge. Same directory work, database in RAM: what this arm
+      // prices is the store's own file I/O and nothing else. Keyed by path so a reopen — the
+      // suite's daemon-restart shape — still finds the rows the first open wrote; a reopen from
+      // another PROCESS does not, which is why this can only ever be a measurement.
+      if (process.env.AGENTCONNECT_TEST_STORE_MEMORY === '1') {
+        let database = memoryStores.get(source)
+        if (database === undefined) {
+          const owned = SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:'))
+          // A suite closes its store and reopens the same path — a daemon restart. The file store
+          // survives that; a closed in-memory one would not, so the handle ignores `close`.
+          database = {
+            exec: (sql) => owned.exec(sql),
+            query: (sql, params) => owned.query(sql, params),
+            batch: (statements) => owned.batch(statements),
+            transaction: (fn) => owned.transaction(fn),
+            close: async () => undefined
+          }
+          memoryStores.set(source, database)
+        }
+        store = new LocalStore(database, { shared: false, ownerId: undefined, orgForAgent: undefined })
+        await store.initializeSchema()
+        return store
+      }
       store = new LocalStore(SqliteAsyncDatabase.open(source), {
         shared: false,
         ownerId: undefined,

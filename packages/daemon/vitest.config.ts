@@ -67,6 +67,9 @@ export const BASE_TEST_TIMEOUT = 30_000
 export default defineConfig({
   test: {
     environment: 'node',
+    // MEASUREMENT ONLY — not for merge. Prices the store's own file I/O: same directories, same
+    // fixture files, database in RAM.
+    env: { AGENTCONNECT_TEST_STORE_MEMORY: '1' },
     // Keep process-heavy, integration-shaped unit files from oversubscribing available test-worker
     // resources. Four on Windows too: the halving there bought time for inline per-test budgets that
     // no longer exist, and the polls those budgets never governed now scale in `test/wait-support.ts`.

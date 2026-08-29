@@ -55,7 +55,9 @@ const dropTranscriptOrg = (db: DatabaseSync): void => {
   `)
 }
 
-describe.skipIf(pg)('LocalStore schema versioning', () => {
+// MEASUREMENT ONLY: these seed an old schema into a FILE and reopen it by path, which the
+// in-memory override cannot represent — they are the cases that genuinely need a file.
+describe.skipIf(pg || process.env.AGENTCONNECT_TEST_STORE_MEMORY === '1')('LocalStore schema versioning', () => {
   const userVersion = (path: string): number => {
     const db = new DatabaseSync(path)
     const v = (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
@@ -2505,56 +2507,59 @@ describe('code-host note projection ledger (gitlab-com-integration.md §16)', ()
   })
 })
 
-describe.skipIf(pg)('transcript org migration from a v10 store', () => {
-  const v10Store = async (prefix: string): Promise<string> => {
-    const path = join(mkdtempSync(join(tmpdir(), prefix)), 'local.sqlite')
-    await (await LocalStore.open(path)).close()
-    const old = new DatabaseSync(path)
-    dropTranscriptOrg(old)
-    old.exec(`INSERT INTO transcript (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, revision)
+describe.skipIf(pg || process.env.AGENTCONNECT_TEST_STORE_MEMORY === '1')(
+  'transcript org migration from a v10 store',
+  () => {
+    const v10Store = async (prefix: string): Promise<string> => {
+      const path = join(mkdtempSync(join(tmpdir(), prefix)), 'local.sqlite')
+      await (await LocalStore.open(path)).close()
+      const old = new DatabaseSync(path)
+      dropTranscriptOrg(old)
+      old.exec(`INSERT INTO transcript (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, revision)
       VALUES ('C1', 'T1', '1', 'U', 'text', 'kept', 'agent-a', 1000000, 1)`)
-    old.exec("INSERT INTO transcript_recipient (channel, thread, ts, agentId) VALUES ('C1', 'T1', '1', 'agent-b')")
-    old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
-    old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
-    old.exec('PRAGMA user_version = 10')
-    old.close()
-    return path
-  }
+      old.exec("INSERT INTO transcript_recipient (channel, thread, ts, agentId) VALUES ('C1', 'T1', '1', 'agent-b')")
+      old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
+      old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
+      old.exec('PRAGMA user_version = 10')
+      old.close()
+      return path
+    }
 
-  it('backfills a store no pool shares with its single partition, keeping every row', async () => {
-    const path = await v10Store('ac-transcript-v10-')
-    const upgraded = await LocalStore.open(path)
-    expect((await upgraded.threadTranscript('C1', 'T1')).map((r) => r.text)).toEqual(['kept'])
-    // The delivery table came across too, so the co-hosted recipient still sees the row.
-    expect((await upgraded.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10)).rows.map((r) => r.text)).toEqual([
-      'kept'
-    ])
-    await upgraded.close()
+    it('backfills a store no pool shares with its single partition, keeping every row', async () => {
+      const path = await v10Store('ac-transcript-v10-')
+      const upgraded = await LocalStore.open(path)
+      expect((await upgraded.threadTranscript('C1', 'T1')).map((r) => r.text)).toEqual(['kept'])
+      // The delivery table came across too, so the co-hosted recipient still sees the row.
+      expect((await upgraded.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10)).rows.map((r) => r.text)).toEqual([
+        'kept'
+      ])
+      await upgraded.close()
 
-    const after = new DatabaseSync(path)
-    const recipientKey = (
-      after.prepare('PRAGMA table_info(transcript_recipient)').all() as { name: string; pk: number }[]
-    )
-      .filter((column) => column.pk > 0)
-      .sort((first, second) => first.pk - second.pk)
-      .map((column) => column.name)
-    expect(recipientKey).toEqual(['orgId', 'channel', 'thread', 'ts', 'agentId'])
-    after.close()
-  })
-
-  it('drops what a shared store cannot attribute, because no org survives in its rows', async () => {
-    // Nothing here records an agent's org — the daemon learns it from the CP at runtime — so
-    // sessions → agent → org resolves to nothing and a kept row would be readable by whichever
-    // org reused the channel/thread ids.
-    const path = await v10Store('ac-transcript-v10-shared-')
-    const shared = await LocalStore.open({
-      database: SqliteAsyncDatabase.adopt(new DatabaseSync(path)),
-      shared: true,
-      ownerId: 'member-1',
-      orgForAgent: () => 'org-a'
+      const after = new DatabaseSync(path)
+      const recipientKey = (
+        after.prepare('PRAGMA table_info(transcript_recipient)').all() as { name: string; pk: number }[]
+      )
+        .filter((column) => column.pk > 0)
+        .sort((first, second) => first.pk - second.pk)
+        .map((column) => column.name)
+      expect(recipientKey).toEqual(['orgId', 'channel', 'thread', 'ts', 'agentId'])
+      after.close()
     })
-    expect(await shared.threadTranscript('C1', 'T1', 'agent-a')).toEqual([])
-    expect((await shared.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10)).rows).toEqual([])
-    await shared.close()
-  })
-})
+
+    it('drops what a shared store cannot attribute, because no org survives in its rows', async () => {
+      // Nothing here records an agent's org — the daemon learns it from the CP at runtime — so
+      // sessions → agent → org resolves to nothing and a kept row would be readable by whichever
+      // org reused the channel/thread ids.
+      const path = await v10Store('ac-transcript-v10-shared-')
+      const shared = await LocalStore.open({
+        database: SqliteAsyncDatabase.adopt(new DatabaseSync(path)),
+        shared: true,
+        ownerId: 'member-1',
+        orgForAgent: () => 'org-a'
+      })
+      expect(await shared.threadTranscript('C1', 'T1', 'agent-a')).toEqual([])
+      expect((await shared.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10)).rows).toEqual([])
+      await shared.close()
+    })
+  }
+)
