@@ -78,6 +78,8 @@ export interface SlackTurn {
   plan: SlackTurnPlan
   /** The in-place message anchors this applier edits rather than re-posts. */
   chrome: {
+    /** Stored session title awaiting the turn's first registering write (status/stream). */
+    sessionTitleToPush?: string
     liveReplyTs?: string
     liveReplyText?: string
     liveReplyAttempted?: boolean
@@ -428,6 +430,15 @@ async function postSlackReply<TTurn extends SlackTurn>(
   return ts
 }
 
+/** Push the turn's stored session title once its thread is a registered agent session — the
+ *  status/stream write that just landed is what registered it (an earlier rename is refused). */
+async function flushSessionTitle(conn: SlackConnection, p: SlackTurn): Promise<void> {
+  const title = p.chrome.sessionTitleToPush
+  if (!title || !p.plan.statusThread) return
+  p.chrome.sessionTitleToPush = undefined
+  await conn.setTitle(p.plan.channel, p.plan.statusThread, title)
+}
+
 /** The single in-place tool-activity message: post once, then edit. Shared by the legacy
  *  `progress` action and by a streaming turn whose stream never opened. If the first post
  *  rejects or returns no ts, mark it attempted and skip later edits rather than duplicating. */
@@ -515,15 +526,19 @@ export async function applySlackAction<TTurn extends SlackTurn>(
   const chromeOptions: SlackPostOptions = { ...(identity ?? {}), chrome: true }
   switch (action.kind) {
     case 'set-status':
-      if (p.plan.statusThread)
+      if (p.plan.statusThread) {
         await conn.setStatus(
           p.plan.channel,
           p.plan.statusThread,
           action.text,
           slackStatusOptions(p.plan.platform, p.plan.agentName, p.plan.iconUrl, p.plan.sessionKey)
         )
+        await flushSessionTitle(conn, p)
+      }
       return
     case 'set-title':
+      // A live runtime title supersedes any stored title still waiting on its first status.
+      p.chrome.sessionTitleToPush = undefined
       if (p.plan.statusThread) await conn.setTitle(p.plan.channel, p.plan.statusThread, action.text)
       return
     case 'post': {
@@ -589,7 +604,11 @@ export async function applySlackAction<TTurn extends SlackTurn>(
           ...(state.recipient ? { recipientUserId: state.recipient } : {}),
           ...(identity ? { identity } : {})
         })
-        if (state.stream) return
+        if (state.stream) {
+          // The stream registered the thread, so the stored title can land now too.
+          await flushSessionTitle(conn, p)
+          return
+        }
       }
       // The stream could not open, so this turn's chrome falls back to today's in-place
       // message. Chrome degrades ALONE — the body never rode the stream, so nothing moves.

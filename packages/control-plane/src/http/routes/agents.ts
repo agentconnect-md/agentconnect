@@ -34,7 +34,6 @@ import type {
   DreamFilesPage,
   DreamFileReadContent
 } from '@agentconnect.md/protocol'
-import { gitlabWorkspaceAccessLevel } from '../../gitlab/api.js'
 import type { GitlabLiveProject } from '../../gitlab/provisioner.js'
 import { gitlabAccountUnavailableMessage } from '../../gitlab/account.service.js'
 import {
@@ -212,7 +211,7 @@ import { provisionDaemonConnect } from '../onboarding.js'
 import { Tag } from '../plugins/openapi.js'
 import { buildAgentMoves } from '../agent-moves.js'
 import { GithubApiError } from '../../github/api.js'
-import { GitlabApiError } from '../../gitlab/api.js'
+import { GitlabApiError, gitlabWorkspaceAccessLevel } from '../../gitlab/api.js'
 import { LogtoApiError } from '../../github/logto-identity.js'
 import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { syncAgentBotIcons } from '../agent-bot-icon-sync.js'

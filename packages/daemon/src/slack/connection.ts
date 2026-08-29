@@ -2255,11 +2255,16 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
+  /** Last title written per thread — every turn re-pushes the stored title, so unchanged
+   *  repeats must not spend an API call. */
+  private lastTitles = new Map<string, string>()
+
   /** Best-effort agent-session title, DMs and channels alike: Slack renders it as the thread
    *  panel's header once the thread is a registered agent session — which every turn's
    *  lifecycle `setStatus` (and any card stream) makes it. Unregistered threads answer
    *  `not_authorized` and degrade here. */
   async setTitle(channel: string, threadTs: string, title: string): Promise<void> {
+    if (this.lastTitles.get(`${channel}:${threadTs}`) === title) return
     try {
       await this.queue.enqueue(() =>
         this.app.client.agents.sessions.rename({
@@ -2268,6 +2273,7 @@ export class SlackConnection implements PlatformConnection {
           title
         })
       )
+      this.lastTitles.set(`${channel}:${threadTs}`, title)
     } catch (err) {
       this.rememberMissingScopes(err)
       await this.postPermissionUpdateCard(channel, threadTs)

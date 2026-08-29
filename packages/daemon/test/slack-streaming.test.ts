@@ -691,6 +691,7 @@ describe('applySlackAction — chrome stream actions', () => {
       updateMessage: vi.fn(async (_c: string, _ts: string, _text: string, _chrome?: boolean) => true),
       postMessage: vi.fn(async (_channel: string, _text: string, _thread?: string, _options?: unknown) => 'p1'),
       setStatus: vi.fn(async () => {}),
+      setTitle: vi.fn(async () => {}),
       ...over
     }
     const turn: SlackTurn = {
@@ -735,6 +736,34 @@ describe('applySlackAction — chrome stream actions', () => {
     id,
     title: 'Read file',
     status
+  })
+
+  it('flushes the stored session title after the first registering write, exactly once', async () => {
+    // An earlier rename is refused (`not_authorized` until the thread is a registered agent
+    // session), so the title rides the queue BEHIND the status/stream write that registers it.
+    const { apply, conn, turn } = fixture()
+    turn.chrome.sessionTitleToPush = 'Summarize today’s changes'
+    await apply({ kind: 'set-status', text: 'is thinking…' })
+    expect(conn.setStatus).toHaveBeenCalled()
+    expect(conn.setTitle).toHaveBeenCalledWith('C1', 'T1', 'Summarize today’s changes')
+    await apply({ kind: 'set-status', text: 'is working…' })
+    expect(conn.setTitle).toHaveBeenCalledOnce()
+  })
+
+  it('flushes the stored title on stream-start too — the stream registers the thread as well', async () => {
+    const { apply, conn, turn } = fixture()
+    turn.chrome.sessionTitleToPush = 'Summarize today’s changes'
+    await apply({ kind: 'stream-start' })
+    expect(conn.setTitle).toHaveBeenCalledWith('C1', 'T1', 'Summarize today’s changes')
+  })
+
+  it('lets a live runtime title supersede a stored title still waiting to flush', async () => {
+    const { apply, conn, turn } = fixture()
+    turn.chrome.sessionTitleToPush = 'first message fallback'
+    await apply({ kind: 'set-title', text: 'Runtime summary' })
+    expect(conn.setTitle).toHaveBeenCalledWith('C1', 'T1', 'Runtime summary')
+    await apply({ kind: 'set-status', text: 'is thinking…' })
+    expect(conn.setTitle).toHaveBeenCalledOnce()
   })
 
   it('opens the stream with the recipient and the agent identity, and records the handle', async () => {

@@ -955,7 +955,8 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       sessionUpdate: 'session_info_update',
       title: 'Wrong agent title'
     })
-    expect((await (daemon as any).store.getSessionByAcpId('acp-title-late'))?.title).toBeNull()
+    // Born with the first-message fallback; the wrong agent's rename must not replace it.
+    expect((await (daemon as any).store.getSessionByAcpId('acp-title-late'))?.title).toBe('fix session titles')
     await await (daemon as any).stopHost('bot-a')
 
     await vi.waitFor(() => expect(connB.setTitle).toHaveBeenCalledWith('D1', '210.1', 'Fix session titles'), WAIT)

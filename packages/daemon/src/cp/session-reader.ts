@@ -31,6 +31,7 @@ import {
 } from '../store/local-store.js'
 import { mentionedUserIds, substituteUserMentions } from '../slack/mentions.js'
 import { hasNativeMessageOrder } from '../platforms/message-ordering.js'
+import { deriveTitle } from '../session/derive-title.js'
 
 /** Encoded-payload ceiling, leaving headroom under MAX_FRAME_BYTES for the
  *  envelope (id/ts/type/corr + fencing ext, well under 4 KiB). */
@@ -112,24 +113,6 @@ function utf8Boundary(buf: Buffer, len: number): number {
   const seqLen =
     lead < 0x80 ? 1 : (lead & 0xe0) === 0xc0 ? 2 : (lead & 0xf0) === 0xe0 ? 3 : (lead & 0xf8) === 0xf0 ? 4 : 1
   return start + seqLen <= len ? len : start
-}
-
-/** Cap for a first-message-derived session title (chars). Runtime-pushed titles are
- *  already short; a raw user message can be long, so the fallback is trimmed. */
-const TITLE_MAX_CHARS = 80
-
-/** A short, single-line session title from a raw message body: the first non-empty
- *  line, trimmed and capped at TITLE_MAX_CHARS (a trailing `…` marks truncation).
- *  Returns undefined for empty/whitespace input. Used as the session/list fallback
- *  when the runtime never pushed a title. */
-function deriveTitle(text: string | undefined): string | undefined {
-  if (!text) return undefined
-  const line = text
-    .split('\n')
-    .map((l) => l.trim())
-    .find((l) => l.length > 0)
-  if (!line) return undefined
-  return line.length > TITLE_MAX_CHARS ? line.slice(0, TITLE_MAX_CHARS).trimEnd() + '…' : line
 }
 
 /** Parse a session row's `usage` JSON into the wire shape. Returns undefined when

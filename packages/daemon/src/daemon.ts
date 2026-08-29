@@ -9563,6 +9563,12 @@ export class Daemon {
       this.clock.now()
     )
     const p = this.buildPending(run, { conv, rec, sessionId, outwardSessionId, webchat: pendingWebchat })
+    // Every turn re-stashes the stored title (fallback or runtime): the connection dedupes
+    // repeats, and re-pushing heals a rename lost to a restart or an unregistered thread.
+    if (turnChromeFor(run.plan.platform).sessionTitle) {
+      const storedTitle = (await this.store.getSession(run.plan.sessionKey))?.title?.trim()
+      if (storedTitle) p.chrome.sessionTitleToPush = storedTitle
+    }
     const activeTurn = await this.installActiveTurnContext(run, sessionId)
     const settlement: TurnSettlement = { finalPhase: 'end', propagatingTurnError: false }
     let turnModel: string | undefined

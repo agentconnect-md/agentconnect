@@ -411,6 +411,11 @@ export function turnState<S extends object>(p: Pending): S {
  *  message id of a single row, and its `*Attempted` sibling records that the first post was
  *  tried so a failed post cannot spam a duplicate on the next action. */
 export interface TurnChromeCursors {
+  /** The session's stored (fallback or runtime) title, pushed onto the thread after the
+   *  turn's FIRST status write — which is what registers the thread as an agent session, so
+   *  an earlier rename would be refused. Cleared once flushed or superseded by a live
+   *  runtime title. */
+  sessionTitleToPush?: string
   /** ts of the single in-place "main progress" message, once posted (medium/high). */
   progressTs?: string
   /** Whether the progress message's first post was attempted. */
