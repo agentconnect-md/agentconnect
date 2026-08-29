@@ -729,6 +729,30 @@ describe('Daemon in-conversation commands', () => {
     await daemon.stop()
   })
 
+  it('cancels the turn even when the audit row cannot be written', async () => {
+    const blocked = blockingHost()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold(),
+      hostFactory: () => blocked.host as any
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(hasPending(daemon, 'acp-1')).toBe(true), WAIT)
+    // The row is presentation: a store that refuses it must not leave the runtime running
+    // after someone pressed Stop, with output already suppressed and the drain begun.
+    vi.spyOn((daemon as any).store, 'appendTranscript').mockRejectedValue(new Error('disk full'))
+
+    await (daemon as any).onInboundOutcome(dm('200', '!cancel'))
+    expect(blocked.host.cancel).toHaveBeenCalledWith('acp-1')
+
+    blocked.release()
+    await turn
+    await daemon.stop()
+  })
+
   it('!cancel with no in-flight turn just reports (no mute)', async () => {
     const blocked = blockingHost()
     const daemon = new Daemon({
