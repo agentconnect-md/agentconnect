@@ -118,6 +118,35 @@ affinity: {}
 # `helm template --set installCRD=true --show-only templates/agent-sandbox.yaml`.
 installCRD: true
 
+# Product feature switches — one knob per feature, so a values file cannot ship half of one.
+# Each entry drives every half its feature has: the console flag (the chart assembles the web
+# FEATURE_FLAGS env from these; stating that env in web.extraEnv is refused) and, where noted,
+# a server-side policy beside it.
+features:
+  # Org-scoped daemon groups: the console's Infra section, the group dialogs, and group
+  # entries in the placement picker.
+  daemonGroups: false
+  # The install-wide pool's console surfaces: the fleet entry and the Cloud placement option.
+  # Deliberately independent of daemonPool.enabled below — an agent already ON the pool still
+  # names it, so hiding a live placement is not the same as hiding an entry point.
+  daemonPool: false
+  # This deployment IS AgentConnect's managed cloud: the console names the pool
+  # "AgentConnect Cloud" and quotes the plan's included usage, rather than presenting it as
+  # the operator's own cluster.
+  managed: false
+  # The org billing page. The flag opens the page; web.extraEnv.BILLING_URL says where the
+  # billing API is — kept separate so a missing endpoint is a misconfiguration rather than a
+  # silent opt-out.
+  billing: false
+  # Native-git workspaces — the one switch here that couples a server policy. On (default):
+  # the console offers the "Git URL" workspace tile, and the pool's clone-origin policy is
+  # whatever daemonPool.workspaceGitAllowedOrigins says (the daemon's own default admits any
+  # origin). Off: the tile is hidden and the pool is pinned to the managed hosts —
+  # github.com (https and ssh) and gitlab.com — so GitHub and GitLab workspaces, public
+  # repositories included, keep working; daemonPool.workspaceGitAllowedOrigins is then
+  # refused as contradictory.
+  gitUrl: true
+
 # The install-wide daemon pool, whose Pods are pool members. Every member serves agents
 # from every organization and derives the org from the CP agent registry. The fixed
 # ServiceAccount name (`ac-cloud-daemon`), token audience and mount paths are wire
