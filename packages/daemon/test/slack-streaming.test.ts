@@ -455,12 +455,26 @@ describe('OutputConverger streaming axis', () => {
     ])
   })
 
-  it('falls back to the tool title, clamped to one line, when the runtime described nothing', () => {
+  it('falls back to the tool title, cut at the first shell separator, when nothing was described', () => {
+    // codex-acp sends no description, so the raw `&&` chain would be the label. Its opening
+    // command names the step better than 72 characters of run-on shell.
     const converger = streaming('medium')
+    converger.onUpdate(tool('t1', 'git status --short --branch && git branch --show-current && git log -n 20'))
+    const chained = cards(converger.streamUpdate())[0]
+    expect(chained?.type === 'task_update' && chained.title).toBe('git status --short --branch …')
+
+    // No separator: plain clamp, at the tighter command width.
+    const single = streaming('medium')
     const command = `git log --since='2026-08-28' --pretty=format:'%h%x09%ad%x09%an%x09%s' --decorate --all -n 80`
-    converger.onUpdate(tool('t1', command))
-    const card = cards(converger.streamUpdate())[0]
-    expect(card?.type === 'task_update' && card.title).toBe(`${command.slice(0, 71)}…`)
+    single.onUpdate(tool('t1', command))
+    const card = cards(single.streamUpdate())[0]
+    expect(card?.type === 'task_update' && card.title).toBe(`${command.slice(0, 47)}…`)
+
+    // A pipe inside quotes is prose, not a separator boundary… but a spaced pipe is.
+    const piped = streaming('medium')
+    piped.onUpdate(tool('t1', 'grep -rn pattern src | head -5'))
+    const pcard = cards(piped.streamUpdate())[0]
+    expect(pcard?.type === 'task_update' && pcard.title).toBe('grep -rn pattern src …')
   })
 
   it('keeps the command out of a card whose title already shows it whole', () => {
@@ -487,7 +501,7 @@ describe('OutputConverger streaming axis', () => {
     const converger = streaming('high')
     converger.onUpdate(toolDone('t1', 'x'.repeat(400), 'y'.repeat(4000)))
     const card = cards(converger.streamUpdate())[0]
-    expect(card?.type === 'task_update' && card.title.length).toBe(72)
+    expect(card?.type === 'task_update' && card.title.length).toBe(48)
     expect(card?.type === 'task_update' && card.output?.length).toBe(2800)
   })
 

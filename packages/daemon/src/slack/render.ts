@@ -150,6 +150,12 @@ const MAX_STREAM_TASK = 256
 // a long title into a paragraph of shell instead of truncating it, and there is no hover or
 // per-title disclosure to recover the rest. The verbatim command rides the card's code block.
 const MAX_CARD_TITLE = 72
+// A COMMAND standing in for a missing description is clamped tighter still — Slack's thread
+// panel fits roughly this much on one line (the channel view fits more, mobile less) — and cut
+// at its first shell separator first: the opening command of a `&&` chain is a far better
+// label than 72 characters of run-on shell. The full chain rides the card's code block.
+const MAX_COMMAND_TITLE = 48
+const SHELL_SEPARATOR = / (?:&&|\|\||;|\|) /
 /** The card that stands for one thinking run until its first line names it. */
 const THINKING_CARD = 'Thinking'
 // How much of a thinking run to hold while waiting for its first line to end. A runtime opens
@@ -1339,11 +1345,16 @@ export class OutputConverger {
   }
 
   /** A card's one-line step label: the runtime's own description when it gave one, else the
-   *  tool title clamped. An ACP title for a shell tool IS the command, which reads as a
-   *  paragraph of shell on a card; a description ("List files in working directory") is the
-   *  line a reader actually wants, and is what the web console shows too. */
+   *  tool title SHAPED. An ACP title for a shell tool IS the command (codex-acp sends no
+   *  description at all), which reads as a paragraph of shell on a card — so a command-shaped
+   *  fallback is cut at its first shell separator and clamped tighter than a prose title:
+   *  `git status --short --branch …` labels the step; the full chain rides the code block. */
   private cardTitle(id: string, label: string): string {
-    return this.toolDescriptions.get(id) || label
+    const description = this.toolDescriptions.get(id)
+    if (description) return description
+    const head = label.split(SHELL_SEPARATOR, 1)[0] ?? label
+    if (head.length < label.length) return `${clampTo(head, MAX_COMMAND_TITLE - 2)} …`
+    return clampTo(label, MAX_COMMAND_TITLE)
   }
 
   /** What the card's code block shows: the verbatim command, or the full title when that is
@@ -1351,8 +1362,7 @@ export class OutputConverger {
    *  one-line label needs no code block repeating it. */
   private cardCommand(id: string, label: string): string {
     const command = this.toolCommands.get(id) || label
-    const title = clampTo(plainCardText(this.cardTitle(id, label)), MAX_CARD_TITLE)
-    return plainCardText(command) === title ? '' : command
+    return plainCardText(command) === plainCardText(this.cardTitle(id, label)) ? '' : command
   }
 
   /** Refresh the newest output for one tool call. content/rawOutput are a whole replacement
