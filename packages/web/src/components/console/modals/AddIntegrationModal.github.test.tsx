@@ -144,17 +144,17 @@ afterEach(async () => {
 })
 
 describe('AddIntegrationModal, GitHub trigger cadence', () => {
-  it('defaults every selected subject to the opened cadence', async () => {
+  it('defaults a pull-request subject to the any-update cadence', async () => {
     await renderAgent({ id: 'agent-default' })
 
-    // No cadence click: the form opens on "opened", pull requests only.
+    // No cadence click: the form opens on "any update", pull requests only.
     await act(async () => clickText('Connect')?.click())
 
     expect(mocks.createGithubHook).toHaveBeenCalledTimes(1)
     expect(mocks.createGithubHook).toHaveBeenCalledWith(
       expect.objectContaining({
         family: 'pull_request',
-        events: ['pull_request:opened'],
+        events: ['pull_request:*', 'issue_comment:created'],
         commentFamilies: ['pull_request'],
         mentionOnly: false
       })

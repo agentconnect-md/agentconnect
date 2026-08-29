@@ -210,12 +210,12 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     expect(document.body.textContent).not.toContain('Couldn’t load your GitLab projects')
   })
 
-  it('defaults to the opened trigger, which subscribes to no notes', async () => {
+  it('defaults a merge-request subject to the any-update trigger, notes included', async () => {
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     await render()
     await pickProject()
 
-    // No cadence click: the form opens on "opened", merge requests only.
+    // No cadence click: the form opens on "any update", merge requests only.
     await act(async () => clickText('Connect')?.click())
 
     expect(mocks.createGitlabHook).toHaveBeenCalledWith({
@@ -223,8 +223,8 @@ describe('AddIntegrationModal, GitLab trigger', () => {
       name: 'acme/platform',
       projectId: '4210',
       family: 'merge_request',
-      events: ['merge_request:opened'],
-      commentFamilies: [],
+      events: ['merge_request:*'],
+      commentFamilies: ['merge_request'],
       mentionOnly: false,
       // The review format opens on the full set, exactly like the github pane.
       reviewPolicy: 'full',
@@ -434,7 +434,7 @@ describe('AddIntegrationModal, GitLab trigger', () => {
     expect(mocks.createGitlabHook.mock.calls.map(([body]) => body.family)).toEqual(['issues', 'merge_request'])
     expect(mocks.createGitlabHook.mock.calls.flatMap(([body]) => body.events)).toEqual([
       'issues:opened',
-      'merge_request:opened'
+      'merge_request:*'
     ])
   })
 

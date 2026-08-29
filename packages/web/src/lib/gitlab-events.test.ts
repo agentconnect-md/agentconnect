@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  GL_DEFAULT_TRIGGER_MODE,
   GL_FAMILIES,
   GL_TRIGGER_LABEL,
   GL_TRIGGER_MODES,
@@ -8,6 +7,7 @@ import {
   commentFamiliesForGitlabFamilies,
   eventsForGitlabFamilies,
   gitlabCadencePick,
+  gitlabDefaultTriggerMode,
   gitlabFamilyCarriesReviews,
   gitlabFamilySubscription,
   gitlabFamilyTile,
@@ -25,9 +25,12 @@ describe('GL_TRIGGER_LABEL', () => {
     expect(GL_TRIGGER_LABEL.mention).toBe('@-mention')
   })
 
-  it('opens every new subscription on the opening itself', () => {
-    expect(GL_DEFAULT_TRIGGER_MODE).toBe('first')
-    expect(GL_TRIGGER_LABEL[GL_DEFAULT_TRIGGER_MODE]).toBe('opened')
+  it('opens a merge-request subscription on every update and every other one on the opening', () => {
+    expect(gitlabDefaultTriggerMode('merge_request')).toBe('every')
+    expect(GL_TRIGGER_LABEL[gitlabDefaultTriggerMode('merge_request')]).toBe('any update')
+    expect(gitlabDefaultTriggerMode('issues')).toBe('first')
+    expect(gitlabDefaultTriggerMode('push')).toBe('first')
+    expect(GL_TRIGGER_LABEL[gitlabDefaultTriggerMode('issues')]).toBe('opened')
   })
 
   it('offers no label cadence — GitLab label events are not subscribed here', () => {

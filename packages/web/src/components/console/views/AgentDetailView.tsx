@@ -77,11 +77,11 @@ import { buildAgentReachabilityGraph } from '@/lib/agent-reachability'
 import type { Platform } from '@/components/console/modals/AddIntegrationModal'
 import { INTEGRATION_BLURB, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
 import {
-  GL_DEFAULT_TRIGGER_MODE,
   GL_TRIGGER_MODES,
   GL_TRIGGER_PILL,
   gitlabCadencePick,
   gitlabCommentFamilies,
+  gitlabDefaultTriggerMode,
   gitlabFamilyCarriesReviews,
   gitlabFamilySubscription,
   gitlabFamilyTile,
@@ -103,10 +103,10 @@ import { consoleKeys } from '@/lib/swr-keys'
 import { acpRuntime, useAcpRegistry } from '@/lib/acp-registry'
 import { useSessionList } from '@/lib/use-session-list'
 import {
-  GH_DEFAULT_TRIGGER_MODE,
   GH_TRIGGER_MODES,
   GH_TRIGGER_PILL,
   githubCommentFamilies,
+  githubDefaultTriggerMode,
   githubFamilyCarriesReviews,
   githubFamilySubscription,
   githubFamilyTile,
@@ -484,7 +484,7 @@ export default function AgentDetailView() {
         name: seed.repoFullName,
         repoFullName: seed.repoFullName,
         family: fam,
-        ...githubFamilySubscription(fam, GH_DEFAULT_TRIGGER_MODE),
+        ...githubFamilySubscription(fam, githubDefaultTriggerMode(fam)),
         reviewPolicy: 'off',
         reportingMode: 'off',
         gateMode: 'informational'
@@ -507,7 +507,7 @@ export default function AgentDetailView() {
         name: seed.repoFullName ?? seed.name,
         projectId: seed.repoId,
         family: fam,
-        ...gitlabFamilySubscription(fam, GL_DEFAULT_TRIGGER_MODE),
+        ...gitlabFamilySubscription(fam, gitlabDefaultTriggerMode(fam)),
         reviewPolicy: 'off',
         reportingMode: 'off'
       })

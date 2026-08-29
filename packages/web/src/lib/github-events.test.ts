@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   commentFamiliesForFamilies,
   eventsForFamilies,
-  GH_DEFAULT_TRIGGER_MODE,
   GH_FAMILIES,
   GH_TRIGGER_LABEL,
   GH_TRIGGER_MODES,
   GH_TRIGGER_PILL,
+  githubDefaultTriggerMode,
   githubFamilyCarriesReviews,
   githubFamilySubscription,
   githubFamilyTile,
@@ -20,9 +20,12 @@ import {
 } from './github-events'
 
 describe('GH_TRIGGER_LABEL', () => {
-  it('opens every new subscription on the opening itself', () => {
-    expect(GH_DEFAULT_TRIGGER_MODE).toBe('first')
-    expect(GH_TRIGGER_LABEL[GH_DEFAULT_TRIGGER_MODE]).toBe('opened')
+  it('opens a pull-request subscription on every update and every other one on the opening', () => {
+    expect(githubDefaultTriggerMode('pull_request')).toBe('every')
+    expect(GH_TRIGGER_LABEL[githubDefaultTriggerMode('pull_request')]).toBe('any update')
+    expect(githubDefaultTriggerMode('issues')).toBe('first')
+    expect(githubDefaultTriggerMode('push')).toBe('first')
+    expect(GH_TRIGGER_LABEL[githubDefaultTriggerMode('issues')]).toBe('opened')
   })
 
   it('spells the cadences out for the create surfaces', () => {
@@ -146,11 +149,11 @@ describe('githubFamilySubscription', () => {
     })
   })
 
-  it('falls back to the default cadence for a family that has no label events', () => {
+  it('narrows to the opening for a family that has no label events', () => {
     // The console never offers `labeled` off the issues subject; a stray pick
-    // must not compile `pull_request:labeled`.
+    // must not compile `pull_request:labeled`, nor widen past what was picked.
     expect(githubFamilySubscription('pull_request', 'labeled')).toEqual(
-      githubFamilySubscription('pull_request', GH_DEFAULT_TRIGGER_MODE)
+      githubFamilySubscription('pull_request', 'first')
     )
   })
 
