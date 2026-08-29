@@ -19,15 +19,12 @@ const SCP_RE = /^[\w.-]+@[\w.-]+:(.+)$/
 const SCP_PARTS_RE = /^([\w.-]+)@([\w.-]+):(.+)$/
 const CONTROL_RE = /[\u0000-\u001f\u007f]/
 
-/** Conservative daemon default. Operators may explicitly add exact origins
- * for GitLab, Bitbucket, or self-managed Git services. */
-// gitlab-com-integration.md §13.2: managed GitLab workspaces are HTTPS-only and
-// exactly this origin. An operator-supplied allowlist stays authoritative.
-export const DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS = [
-  'https://github.com',
-  'ssh://github.com',
-  'https://gitlab.com'
-] as const
+/** Wildcard allowlist entry: a policy containing it admits every valid clone origin. */
+export const WORKSPACE_GIT_ANY_ORIGIN = '*'
+
+/** Ease-of-use daemon default: any valid https/ssh origin. An operator tightens by
+ * stating exact origins — which REPLACE this — or disables remote Git with []. */
+export const DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS = [WORKSPACE_GIT_ANY_ORIGIN] as const
 
 /**
  * Hard cap on an untrusted repo reference. Real clone addresses are far under
@@ -264,12 +261,14 @@ function canonicalGitOrigin(protocol: 'https:' | 'ssh:', hostname: string, port:
 
 /**
  * Normalize an operator-owned allowlist entry to an exact scheme/host/port
- * origin. Paths, credentials, wildcards, queries, and fragments are not policy
- * syntax: repository paths remain tenant-selected within an allowed origin.
+ * origin, or the bare `*` wildcard. Partial wildcards, paths, credentials,
+ * queries, and fragments are not policy syntax: repository paths remain
+ * tenant-selected within an allowed origin.
  */
 export function normalizeWorkspaceGitOrigin(input: string): string {
   if (CONTROL_RE.test(input)) invalidCloneUrl('git origin must not contain control characters')
   const raw = input.trim()
+  if (raw === WORKSPACE_GIT_ANY_ORIGIN) return WORKSPACE_GIT_ANY_ORIGIN
   if (!raw || /\s/.test(raw) || raw.includes('\\') || raw.includes('*')) {
     invalidCloneUrl('git origin must be an exact https or ssh origin')
   }
@@ -312,12 +311,13 @@ export function workspaceGitOriginOf(input: string): string {
 
 /**
  * Normalize a clone URL and require its exact scheme/host/port origin to be in
- * the deployment policy. The caller owns the list; tenant input can never add
- * to it.
+ * the deployment policy; a policy carrying `*` admits every valid origin. The
+ * caller owns the list; tenant input can never add to it.
  */
 export function normalizeAllowedWorkspaceGitUrl(input: string, allowedOrigins: readonly string[]): string {
   const normalized = normalizeGitCloneUrl(input)
   const allowed = new Set(allowedOrigins.map(normalizeWorkspaceGitOrigin))
+  if (allowed.has(WORKSPACE_GIT_ANY_ORIGIN)) return normalized
   const origin = workspaceGitOriginOf(normalized)
   if (!allowed.has(origin)) {
     // The refusal names the origin and the operator knob: the reader is usually a tenant whose

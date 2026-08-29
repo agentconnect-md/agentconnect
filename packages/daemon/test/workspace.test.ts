@@ -13,6 +13,8 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { Agent } from '../src/agents/agent-schema.js'
+import { configureWorkspaceGitOrigins } from '../src/workspace/git-origin-policy.js'
+import { DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS } from '@agentconnect.md/protocol'
 
 const { rename: realRename } = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
 const renameMock = vi.fn(realRename)
@@ -160,6 +162,8 @@ describe('prepareWorkspace', () => {
   })
 
   it('rejects a hand-edited transport or unconfigured origin before clone or pull', async () => {
+    // An unconfigured origin only exists under a stated exact list; the wildcard default admits it.
+    configureWorkspaceGitOrigins(['https://github.com', 'ssh://github.com', 'https://gitlab.com'])
     for (const gitRepo of ['file:///var/lib/agentconnect/other-workspace', 'https://git.example/acme/repo.git']) {
       const fresh = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'fresh')
       const existing = join(mkdtempSync(join(tmpdir(), 'ac-ws-')), 'existing')
@@ -173,6 +177,7 @@ describe('prepareWorkspace', () => {
 
     expect(cloneImpl).not.toHaveBeenCalled()
     expect(pullMock).not.toHaveBeenCalled()
+    configureWorkspaceGitOrigins(DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)
   })
 
   it('single-flights concurrent clones into the same cwd (dedupe)', async () => {

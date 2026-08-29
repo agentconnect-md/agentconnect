@@ -157,6 +157,7 @@ export type { DecodeResultOf } from './wire.js'
 // ── git repo address helpers (normalize on write, shorten for display) ──
 export {
   DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS,
+  WORKSPACE_GIT_ANY_ORIGIN,
   MAX_GIT_REPO_LENGTH,
   GitCloneUrlError,
   normalizeAllowedWorkspaceGitUrl,

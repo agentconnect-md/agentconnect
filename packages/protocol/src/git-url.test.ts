@@ -161,19 +161,32 @@ describe('workspace git origin policy', () => {
     expect(workspaceGitOriginOf('ssh://git@git.example:2222/acme/infra.git')).toBe('ssh://git.example:2222')
   })
 
-  it('requires an exact allowed scheme, host, and port', () => {
+  it('admits every valid origin under the wildcard default, still normalizing the URL', () => {
+    expect(DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS).toEqual(['*'])
     expect(normalizeAllowedWorkspaceGitUrl('acme/infra', DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)).toBe(
       'https://github.com/acme/infra'
     )
     expect(
-      normalizeAllowedWorkspaceGitUrl('git@github.com:acme/infra.git', DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)
-    ).toBe('git@github.com:acme/infra.git')
+      normalizeAllowedWorkspaceGitUrl('https://code.example.test/acme/infra', DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)
+    ).toBe('https://code.example.test/acme/infra')
+    // The wildcard waives the origin check, never URL validation itself.
+    expect(() => normalizeAllowedWorkspaceGitUrl('ext::sh -c id', DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)).toThrow(
+      GitCloneUrlError
+    )
+  })
 
-    // §13.2: https://gitlab.com is a DEFAULT origin now (HTTPS only) — ssh
+  it('requires an exact allowed scheme, host, and port once origins are stated', () => {
+    const exact = ['https://github.com', 'ssh://github.com', 'https://gitlab.com']
+    expect(normalizeAllowedWorkspaceGitUrl('acme/infra', exact)).toBe('https://github.com/acme/infra')
+    expect(normalizeAllowedWorkspaceGitUrl('git@github.com:acme/infra.git', exact)).toBe(
+      'git@github.com:acme/infra.git'
+    )
+
+    // §13.2: https://gitlab.com stays HTTPS-only under an exact list — ssh
     // gitlab and lookalike/port-widened hosts still refuse.
-    expect(
-      normalizeAllowedWorkspaceGitUrl('https://gitlab.com/group/repo', DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS)
-    ).toBe('https://gitlab.com/group/repo')
+    expect(normalizeAllowedWorkspaceGitUrl('https://gitlab.com/group/repo', exact)).toBe(
+      'https://gitlab.com/group/repo'
+    )
     for (const url of [
       'ssh://git@gitlab.com/group/repo',
       'https://gitlab.com.evil.example/group/repo',
@@ -181,10 +194,13 @@ describe('workspace git origin policy', () => {
       'https://github.com:8443/acme/infra',
       'ssh://git@github.com:2222/acme/infra'
     ]) {
-      expect(() => normalizeAllowedWorkspaceGitUrl(url, DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS), url).toThrow(
-        'is not allowed by this daemon'
-      )
+      expect(() => normalizeAllowedWorkspaceGitUrl(url, exact), url).toThrow('is not allowed by this daemon')
     }
+  })
+
+  it('accepts the bare wildcard entry and nothing containing it', () => {
+    expect(normalizeWorkspaceGitOrigin('*')).toBe('*')
+    expect(normalizeWorkspaceGitOrigin(' * ')).toBe('*')
   })
 
   it('rejects ambiguous allowlist entries', () => {

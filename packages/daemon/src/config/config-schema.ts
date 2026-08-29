@@ -72,7 +72,7 @@ export const WorkspaceGitOrigin = z.string().transform((value, ctx) => {
   } catch {
     ctx.addIssue({
       code: 'custom',
-      message: 'workspace Git origins must be exact credential-free HTTPS or SSH origins without a path'
+      message: 'workspace Git origins must be "*" or exact credential-free HTTPS or SSH origins without a path'
     })
     return z.NEVER
   }
@@ -159,8 +159,9 @@ export const ConfigSchema = z.object({
       // Linux SRT/bwrap is available and every agent runs sandboxed; the
       // console locks the per-agent option on. false leaves it agent-selectable.
       requireSandbox: z.boolean().default(false),
-      // Operator-owned remote-origin policy for daemon-managed workspace clone/pull.
-      // Exact scheme + host + port only; [] disables remote Git workspaces.
+      // Operator-owned remote-origin policy for daemon-managed workspace clone/pull. Default
+      // ['*'] admits any https/ssh origin; exact scheme+host+port entries tighten it, and []
+      // disables remote Git workspaces entirely.
       workspaceGitAllowedOrigins: z.array(WorkspaceGitOrigin).default([...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS])
     })
     .default({
