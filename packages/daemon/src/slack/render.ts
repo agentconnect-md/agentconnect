@@ -927,6 +927,7 @@ export class OutputConverger {
   private thinkingRun = 0
   private thinkingHead = ''
   private thinkingTitle = ''
+  private thinkingBody = ''
   /** The container's label, so an unchanged one is never re-sent, plus the one awaiting the
    *  next append and the legacy `progress` text that append would degrade to. */
   private planTitle = ''
@@ -1045,18 +1046,20 @@ export class OutputConverger {
    * Queue one task card, keyed by id so streamed updates edit the same card and an unchanged
    * repeat emits nothing. `title` and `status` may be re-sent freely — Slack REPLACES them per
    * id. The body may not: `details` and `output` both append, so they are written together
-   * exactly once, at completion. Callers pass the command and result RAW — the cap and the
-   * code fence belong here, where the wire limit is known.
+   * exactly once, at completion. Callers pass their text RAW — the cap and the code fence
+   * belong here, where the wire limit is known. `command` is fenced into a code block;
+   * `details` is prose (a thinking run) and takes the same slot unfenced.
    */
   private queueTask(
     id: string,
     title: string,
     status: 'in_progress' | 'complete' | 'error',
-    body: { command?: string; output?: string } = {}
+    body: { command?: string; details?: string; output?: string } = {}
   ): void {
     const clamped = clampTo(plainCardText(title), MAX_CARD_TITLE) || 'tool'
     const fresh = !this.outputWritten.has(id)
-    const details = fresh && body.command ? codeSpan(capOutput(body.command), true) : ''
+    const above = body.command ? codeSpan(capOutput(body.command), true) : capOutput(body.details ?? '')
+    const details = fresh ? above : ''
     const output = fresh && body.output ? capOutput(body.output) : ''
     const chunk: Extract<SlackStreamChunk, { type: 'task_update' }> = {
       type: 'task_update',
@@ -1137,11 +1140,24 @@ export class OutputConverger {
    *  high mode's in-place Thinking message, which is where 2,800 characters fit. */
   private closeThinkingRun(status: 'complete' | 'error' = 'complete'): void {
     if (!this.thinkingActive) return
-    this.queueTask(this.thinkingId(), this.thinkingTitleFrom(true) || THINKING_CARD, status)
+    this.queueTask(this.thinkingId(), this.thinkingTitleFrom(true) || THINKING_CARD, status, {
+      details: this.thinkingRunBody()
+    })
     this.thinkingActive = false
     this.thinkingRun += 1
     this.thinkingHead = ''
     this.thinkingTitle = ''
+    this.thinkingBody = ''
+  }
+
+  /** What a settled thinking card shows under its title on `high`: the WHOLE run, exactly as
+   *  the web console's work rows do — the title is a clamped first line, so expanding must show
+   *  it in full rather than a headless remainder. A single-line run has nothing beyond its
+   *  title and gets no body, which is the console's own test for an expandable row. */
+  private thinkingRunBody(): string {
+    if (this.mode !== 'high') return ''
+    const body = this.thinkingBody.trim()
+    return body.includes('\n') ? body : ''
   }
 
   /** Flush pending output for the idle timer: in high mode one in-place `reasoning` update
@@ -1212,7 +1228,9 @@ export class OutputConverger {
    *  high mode ever sets `reasoningDirty`). Callers place it before the body flush so the
    *  Thinking block posts above the reply. */
   private drainReasoning(): SlackAction[] {
-    if (!this.reasoningDirty) return []
+    // A streaming turn's thinking cards ARE this message — posting it too would repeat every
+    // line of it under the container that already holds them.
+    if (this.streaming || !this.reasoningDirty) return []
     this.reasoningDirty = false
     return [{ kind: 'reasoning', text: renderReasoning(this.reasoningBuf) }]
   }
@@ -1363,8 +1381,9 @@ export class OutputConverger {
         // dirty; the actual in-place `reasoning` update is deferred to flushBuffered()
         // (idle timer) / onFinal so a token-by-token stream doesn't flood chat.update.
         // low + medium keep only the transient status — no reasoning in the channel.
+        // A STREAMING turn keeps none of this: its cards are the Thinking message (§5).
         const thought = (update as { content?: { text?: string } }).content?.text ?? ''
-        if (this.mode === 'high' && thought) {
+        if (this.mode === 'high' && thought && !this.streaming) {
           this.reasoningBuf += thought
           // Soft-cap the raw buffer so a very long turn can't grow it unbounded;
           // renderReasoning tail-clamps again for the message body.
@@ -1373,15 +1392,16 @@ export class OutputConverger {
           }
           this.reasoningDirty = true
         }
-        // streaming: ONE card per thinking run, opened once and settled once — title and
-        // status only, the title being the run's own first line (§5). high keeps its full
-        // in-place Thinking message, which is where 2,800 characters belong anyway (§4).
+        // streaming: ONE card per thinking run, opened once and settled once. Its title is the
+        // run's own first line and, on high, its body is the rest of the run — so the card IS
+        // the Thinking message and the separate one is not posted (§5).
         if (this.streaming && thought) {
           if (!this.thinkingActive) {
             this.thinkingActive = true
             this.queueTask(this.thinkingId(), THINKING_CARD, 'in_progress')
           }
           this.noteThinkingTitle(thought)
+          if (this.mode === 'high') this.thinkingBody = (this.thinkingBody + thought).slice(0, MAX_REASONING)
         }
         // minimal: keep the streamed reply intact (thinking mid-reply doesn't close a
         // segment) — only surface the transient status.

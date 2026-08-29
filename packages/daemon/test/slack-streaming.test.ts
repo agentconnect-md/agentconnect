@@ -85,8 +85,11 @@ describe('OutputConverger streaming axis', () => {
       }
       const streamedFinal = streamed.onFinal(attribution())
       const legacyFinal = legacy.onFinal(attribution())
+      // CHROME is what the stream replaces — the `progress` message, the Thinking message and
+      // the tool-output block all move onto the cards. The ANSWER is what must not move.
+      const chromeKinds = new Set(['progress', 'reasoning', 'tool-output'])
       const bodyOnly = (actions: SlackAction[]): SlackAction[] =>
-        actions.filter((a) => !a.kind.startsWith('stream-') && a.kind !== 'progress')
+        actions.filter((a) => !a.kind.startsWith('stream-') && !chromeKinds.has(a.kind))
       expect(bodyOnly(streamedFinal)).toEqual(bodyOnly(legacyFinal))
       // …and every `post` is a real post, never demoted to a transcript-only copy.
       expect(streamedFinal.some((a) => a.kind === 'post' && a.recordOnly)).toBe(false)
@@ -455,10 +458,51 @@ describe('OutputConverger streaming axis', () => {
     })
   })
 
-  it('keeps high mode its own in-place Thinking message beside the card', () => {
-    const converger = streaming('high')
-    converger.onUpdate(think('weighing the options'))
-    expect(converger.flushBuffered().some((a) => a.kind === 'reasoning')).toBe(true)
+  it('drops high mode’s in-place Thinking message — the cards ARE it', () => {
+    // Every line of that message is a card title in the container right above it.
+    const streamed = streaming('high')
+    streamed.onUpdate(think('**Weighing the options**\nthe body'))
+    expect(streamed.flushBuffered().some((a) => a.kind === 'reasoning')).toBe(false)
+    expect(streamed.onFinal(attribution()).some((a) => a.kind === 'reasoning')).toBe(false)
+
+    const legacy = new OutputConverger('high')
+    legacy.onUpdate(think('**Weighing the options**\nthe body'))
+    expect(legacy.flushBuffered().some((a) => a.kind === 'reasoning')).toBe(true)
+  })
+
+  it('gives a high thinking card the whole run as its body, as the console’s work rows do', () => {
+    const high = streaming('high')
+    high.onUpdate(think('**Weighing the options**\n\nboth branches settle the same way.'))
+    high.onUpdate(tool('t1', 'Read file'))
+    expect(cards(high.streamUpdate())).toContainEqual({
+      type: 'task_update',
+      id: 'thinking-0',
+      title: 'Weighing the options',
+      status: 'complete',
+      // The title is a clamped first line, so expanding shows the run in full, not a remainder.
+      details: '**Weighing the options**\n\nboth branches settle the same way.'
+    })
+
+    // A single-line run has nothing beyond its title, and medium has no body at all.
+    const oneLine = streaming('high')
+    oneLine.onUpdate(think('**Weighing the options**'))
+    oneLine.onUpdate(tool('t1', 'Read file'))
+    expect(cards(oneLine.streamUpdate())).toContainEqual({
+      type: 'task_update',
+      id: 'thinking-0',
+      title: 'Weighing the options',
+      status: 'complete'
+    })
+
+    const medium = streaming('medium')
+    medium.onUpdate(think('**Weighing the options**\n\nboth branches settle the same way.'))
+    medium.onUpdate(tool('t1', 'Read file'))
+    expect(cards(medium.streamUpdate())).toContainEqual({
+      type: 'task_update',
+      id: 'thinking-0',
+      title: 'Weighing the options',
+      status: 'complete'
+    })
   })
 
   it('keeps the ACP plan on its own message — a checklist is not a container label', () => {
