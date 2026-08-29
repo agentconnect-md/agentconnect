@@ -156,16 +156,22 @@ export function cronTimezoneInput(
 }
 
 /** Short next-run label: "in 14 min" / "Today 3:00 AM" / "Mon 9:00 AM" / "—". */
-export function fmtNextRun(d: Date | null): string {
+/** The calendar day an instant falls on IN `timeZone`, as `YYYY-MM-DD`, so "Today" means today there. */
+export function zonedDay(d: Date, timeZone?: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
+}
+
+/** `timeZone` omitted renders in the viewer's own zone, which is what every caller wanted before it existed. */
+export function fmtNextRun(d: Date | null, timeZone?: string): string {
   if (!d) return '—'
   const now = Date.now()
   const mins = Math.round((d.getTime() - now) / 60000)
   if (mins < 1) return 'now'
+  // Relative for the next hour: a duration reads the same in every zone, so no conversion applies.
   if (mins < 60) return `in ${mins} min`
-  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-  const today = new Date()
-  if (d.toDateString() === today.toDateString()) return `Today ${time}`
-  const tomorrow = new Date(now + 86400000)
-  if (d.toDateString() === tomorrow.toDateString()) return `Tomorrow ${time}`
-  return `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone })
+  const day = zonedDay(d, timeZone)
+  if (day === zonedDay(new Date(now), timeZone)) return `Today ${time}`
+  if (day === zonedDay(new Date(now + 86400000), timeZone)) return `Tomorrow ${time}`
+  return `${d.toLocaleDateString([], { weekday: 'short', timeZone })} ${time}`
 }

@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { CronDto } from './api'
-import { cronNext, cronTimezoneInput, cronTimezoneSelectModel, cronUpdateInput, isIanaTimezone } from './cron'
+import {
+  cronNext,
+  cronTimezoneInput,
+  cronTimezoneSelectModel,
+  cronUpdateInput,
+  fmtNextRun,
+  isIanaTimezone,
+  zonedDay
+} from './cron'
 
 afterEach(() => vi.useRealTimers())
 
@@ -11,6 +19,46 @@ describe('cronNext', () => {
 
     expect(cronNext('0 9 * * *', 'UTC')?.toISOString()).toBe('2026-01-01T09:00:00.000Z')
     expect(cronNext('0 9 * * *', 'Asia/Tokyo')?.toISOString()).toBe('2026-01-02T00:00:00.000Z')
+  })
+})
+
+describe('fmtNextRun', () => {
+  // 2026-01-01T20:30Z is still Jan 1 in UTC but already Jan 2 in Tokyo, so "Today" has to be
+  // decided in the zone being rendered rather than in the viewer's.
+  const evening = new Date('2026-01-01T20:30:00.000Z')
+
+  it("names the calendar day of the zone it renders in, not the viewer's", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T12:00:00.000Z'))
+
+    expect(fmtNextRun(evening, 'UTC')).toBe('Today 8:30 PM')
+    expect(fmtNextRun(evening, 'Asia/Tokyo')).toBe('Tomorrow 5:30 AM')
+  })
+
+  it('renders the same instant at the wall clock of each zone', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+
+    expect(fmtNextRun(new Date('2026-01-01T09:00:00.000Z'), 'UTC')).toBe('Today 9:00 AM')
+    expect(fmtNextRun(new Date('2026-01-01T09:00:00.000Z'), 'Asia/Shanghai')).toBe('Today 5:00 PM')
+  })
+
+  it('stays relative inside the hour, where a duration reads the same in every zone', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T09:00:00.000Z'))
+
+    const soon = new Date('2026-01-01T09:20:00.000Z')
+    expect(fmtNextRun(soon, 'UTC')).toBe('in 20 min')
+    expect(fmtNextRun(soon, 'Asia/Tokyo')).toBe('in 20 min')
+    expect(fmtNextRun(null, 'UTC')).toBe('—')
+  })
+})
+
+describe('zonedDay', () => {
+  it('splits one instant across two calendar days by zone', () => {
+    const instant = new Date('2026-01-01T20:30:00.000Z')
+    expect(zonedDay(instant, 'UTC')).toBe('2026-01-01')
+    expect(zonedDay(instant, 'Asia/Tokyo')).toBe('2026-01-02')
   })
 })
 
