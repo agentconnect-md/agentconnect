@@ -102,10 +102,15 @@ export type SlackAction =
  * `markdown_text` is ever sent — this stream carries chrome only.
  *
  * The FIELD SEMANTICS are not uniform, and that is the load-bearing fact here: `title` and
- * `status` REPLACE per id, but `details` APPENDS server-side. Refreshing an appending field
- * per update concatenates on Slack's side rather than replacing — which is how repeated
- * `**bold**` fragments ran together into literal `****`. Write-once fields only: `output` at
- * completion, and `details` never at all.
+ * `status` REPLACE per id, while `details` and `output` APPEND server-side. Refreshing an
+ * appending field per update concatenates on Slack's side rather than replacing — which is
+ * how repeated `**bold**` fragments once ran together into literal `****`. So both bodies are
+ * written EXACTLY ONCE, when the call completes; only `title` and `status` are ever refreshed.
+ *
+ * Both bodies are markdown (verified live 2026-08-29): a fenced value renders as a real code
+ * block, which is what puts the command in `details` and its result in `output`. Slack accepts
+ * far more than the documented 256 characters but SILENTLY DROPS an oversized field, so
+ * everything is capped here rather than trusting an error.
  */
 export type SlackStreamChunk =
   | {
@@ -113,6 +118,7 @@ export type SlackStreamChunk =
       id: string
       title: string
       status: 'in_progress' | 'complete' | 'error'
+      details?: string
       output?: string
     }
   // The collapsed container's own label. `plan` display mode renders every task card inside
@@ -136,6 +142,15 @@ const MAX_REASONING = 2800
 // Every streaming card field caps at 256 characters ON THE WIRE, per chunk. Because nothing
 // appending is ever re-sent, a clamped field is also the card's final size.
 const MAX_STREAM_TASK = 256
+// A card title is a ONE-LINE step label, so it is clamped far below the wire cap: Slack wraps
+// a long title into a paragraph of shell instead of truncating it, and there is no hover or
+// per-title disclosure to recover the rest. The verbatim command rides the card's code block.
+const MAX_CARD_TITLE = 72
+/** The card that stands for one thinking run until its first line names it. */
+const THINKING_CARD = 'Thinking'
+// How much of a thinking run to hold while waiting for its first line to end. A runtime opens
+// a thought with a short `**heading**`, so this only ever buffers one line's worth.
+const MAX_THINKING_HEAD = 400
 /** The collapsed container's label while the turn is still working (§4). */
 const STREAM_PLAN_WORKING = 'Working…'
 /** …and after a cancel, a user Stop, or suppression — the in-flight cards settle as errors. */
@@ -190,6 +205,16 @@ const MAX_TOOL_OUTPUT = 2800
 function capOutput(s: string): string {
   const t = s.trim()
   return t.length > MAX_TOOL_OUTPUT ? `${t.slice(0, MAX_TOOL_OUTPUT - 1)}…` : t
+}
+
+/** A tool call's `rawInput` field, when the runtime sent one as a string. MCP-shaped calls nest
+ *  the tool's own arguments one level down, so read both. */
+function rawInputField(update: { rawInput?: unknown }, key: 'command' | 'description'): string {
+  const raw = update.rawInput as Record<string, unknown> | undefined
+  if (!raw || typeof raw !== 'object') return ''
+  const args = raw.arguments as Record<string, unknown> | undefined
+  const value = typeof raw[key] === 'string' ? raw[key] : args && typeof args[key] === 'string' ? args[key] : ''
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 /** Escape interpolated labels before embedding them in Slack mrkdwn. `|` is a link-label
@@ -894,13 +919,20 @@ export class OutputConverger {
   private emittedTasks = new Map<string, string>()
   private taskTitles = new Map<string, string>()
   private openTasks = new Set<string>()
-  /** Cards whose write-once `output` has been sent, so a later update cannot append a second. */
+  /** Cards whose write-once body has been sent, so a later update cannot append a second. */
   private outputWritten = new Set<string>()
   /** Cards that ended in error — the closing label counts these, never the model. */
   private failedTasks = new Set<string>()
-  // The current thinking run: whether one is open, and a counter so each gets its own card.
+  // A tool call's own one-line label and verbatim command, remembered from whichever update
+  // carried `rawInput` — a streamed `tool_call_update` usually carries none.
+  private toolDescriptions = new Map<string, string>()
+  private toolCommands = new Map<string, string>()
+  // The current thinking run: whether one is open, a counter so each gets its own card, and
+  // the head of its text until the first line names it.
   private thinkingActive = false
   private thinkingRun = 0
+  private thinkingHead = ''
+  private thinkingTitle = ''
   /** The container's label, so an unchanged one is never re-sent, plus the one awaiting the
    *  next append and the legacy `progress` text that append would degrade to. */
   private planTitle = ''
@@ -1018,21 +1050,31 @@ export class OutputConverger {
   /**
    * Queue one task card, keyed by id so streamed updates edit the same card and an unchanged
    * repeat emits nothing. `title` and `status` may be re-sent freely — Slack REPLACES them per
-   * id. `output` may not: it is written exactly once, at completion.
+   * id. The body may not: `details` and `output` both append, so they are written together
+   * exactly once, at completion. Callers pass the command and result RAW — the cap and the
+   * code fence belong here, where the wire limit is known.
    */
-  private queueTask(id: string, title: string, status: 'in_progress' | 'complete' | 'error', output = ''): void {
-    const clamped = clampTo(plainCardText(title), MAX_STREAM_TASK) || 'tool'
-    const writeOutput = output && !this.outputWritten.has(id) ? clampTo(plainCardText(output), MAX_STREAM_TASK) : ''
+  private queueTask(
+    id: string,
+    title: string,
+    status: 'in_progress' | 'complete' | 'error',
+    body: { command?: string; output?: string } = {}
+  ): void {
+    const clamped = clampTo(plainCardText(title), MAX_CARD_TITLE) || 'tool'
+    const fresh = !this.outputWritten.has(id)
+    const details = fresh && body.command ? codeSpan(capOutput(body.command), true) : ''
+    const output = fresh && body.output ? capOutput(body.output) : ''
     const chunk: Extract<SlackStreamChunk, { type: 'task_update' }> = {
       type: 'task_update',
       id,
       title: clamped,
       status,
-      ...(writeOutput ? { output: writeOutput } : {})
+      ...(details ? { details } : {}),
+      ...(output ? { output } : {})
     }
     const signature = `${chunk.title} ${chunk.status}`
-    if (!writeOutput && this.emittedTasks.get(id) === signature) return
-    if (writeOutput) this.outputWritten.add(id)
+    if (!details && !output && this.emittedTasks.get(id) === signature) return
+    if (details || output) this.outputWritten.add(id)
     this.emittedTasks.set(id, signature)
     this.taskTitles.set(id, clamped)
     if (status === 'error') this.failedTasks.add(id)
@@ -1062,14 +1104,50 @@ export class OutputConverger {
     return failed === 0 ? `Completed ${steps}` : `Completed ${steps} · ${failed} failed`
   }
 
+  private thinkingId(): string {
+    return `thinking-${this.thinkingRun}`
+  }
+
+  /**
+   * Title a thinking run from its FIRST LINE. Runtimes open a thought with a short
+   * `**heading**` — the same line the web console shows as the step's title — so the card can
+   * say what the agent is thinking about instead of the bare word "Thinking". The card opens
+   * before that line has arrived, which costs nothing: `title` REPLACES per id, so the
+   * placeholder is simply renamed (verified live 2026-08-29).
+   *
+   * Runs once per run, at the first newline or once the head is title-width, whichever comes
+   * first — a runtime that streams one unbroken paragraph still gets a title out of its head.
+   */
+  private noteThinkingTitle(thought: string): void {
+    if (this.thinkingTitle) return
+    this.thinkingHead = (this.thinkingHead + thought).slice(0, MAX_THINKING_HEAD)
+    const title = this.thinkingTitleFrom(false)
+    if (title) this.queueTask(this.thinkingId(), title, 'in_progress')
+  }
+
+  /** The run's title, resolved from its head, or '' while the first line could still grow.
+   *  `final` takes whatever the head holds — at settle time no more of it is coming, which is
+   *  what titles a short last thought that never reached a newline. */
+  private thinkingTitleFrom(final: boolean): string {
+    if (this.thinkingTitle) return this.thinkingTitle
+    // trimStart: a thought can open with blank lines, which must not resolve to a blank title.
+    const head = this.thinkingHead.trimStart()
+    const nl = head.indexOf('\n')
+    if (!final && nl < 0 && head.length < MAX_CARD_TITLE) return ''
+    this.thinkingTitle = clampTo(plainCardText(nl < 0 ? head : head.slice(0, nl)), MAX_CARD_TITLE)
+    return this.thinkingTitle
+  }
+
   /** A thinking run ends at the next tool call or at turn end — settle its card rather than
-   *  leaving a spinner behind. Title and status only: the thought text would have to ride
-   *  `details`, which appends server-side. */
+   *  leaving a spinner behind. Title and status only: the thought text itself belongs in
+   *  high mode's in-place Thinking message, which is where 2,800 characters fit. */
   private closeThinkingRun(status: 'complete' | 'error' = 'complete'): void {
     if (!this.thinkingActive) return
-    this.queueTask(`thinking-${this.thinkingRun}`, 'Thinking', status)
+    this.queueTask(this.thinkingId(), this.thinkingTitleFrom(true) || THINKING_CARD, status)
     this.thinkingActive = false
     this.thinkingRun += 1
+    this.thinkingHead = ''
+    this.thinkingTitle = ''
   }
 
   /** Flush pending output for the idle timer: in high mode one in-place `reasoning` update
@@ -1207,6 +1285,34 @@ export class OutputConverger {
     return (id && this.toolTitles.get(id)) ?? id ?? 'tool'
   }
 
+  /** Remember what a tool call's `rawInput` said about itself. Only some updates carry it — a
+   *  streamed `tool_call_update` usually does not — so the first one that does wins. */
+  private noteToolInput(update: { toolCallId?: string; rawInput?: unknown }): void {
+    const id = update.toolCallId
+    if (!id || update.rawInput === undefined) return
+    const description = rawInputField(update, 'description')
+    const command = rawInputField(update, 'command')
+    if (description && !this.toolDescriptions.has(id)) this.toolDescriptions.set(id, description)
+    if (command && !this.toolCommands.has(id)) this.toolCommands.set(id, command)
+  }
+
+  /** A card's one-line step label: the runtime's own description when it gave one, else the
+   *  tool title clamped. An ACP title for a shell tool IS the command, which reads as a
+   *  paragraph of shell on a card; a description ("List files in working directory") is the
+   *  line a reader actually wants, and is what the web console shows too. */
+  private cardTitle(id: string, label: string): string {
+    return this.toolDescriptions.get(id) || label
+  }
+
+  /** What the card's code block shows: the verbatim command, or the full title when that is
+   *  all the runtime gave. Skipped when the title already shows it whole — an untruncated
+   *  one-line label needs no code block repeating it. */
+  private cardCommand(id: string, label: string): string {
+    const command = this.toolCommands.get(id) || label
+    const title = clampTo(plainCardText(this.cardTitle(id, label)), MAX_CARD_TITLE)
+    return plainCardText(command) === title ? '' : command
+  }
+
   /** Refresh the newest output for one tool call. content/rawOutput are a whole replacement
    *  when present, so only touch the cache when this update actually carries them: set the
    *  newest text, or clear a stale entry if the replacement is empty / a non-text block. */
@@ -1274,11 +1380,14 @@ export class OutputConverger {
           this.reasoningDirty = true
         }
         // streaming: ONE card per thinking run, opened once and settled once — title and
-        // status only. high keeps its full in-place Thinking message, which is where 2,800
-        // characters belong anyway (§4).
-        if (this.streaming && thought && !this.thinkingActive) {
-          this.thinkingActive = true
-          this.queueTask(`thinking-${this.thinkingRun}`, 'Thinking', 'in_progress')
+        // status only, the title being the run's own first line (§5). high keeps its full
+        // in-place Thinking message, which is where 2,800 characters belong anyway (§4).
+        if (this.streaming && thought) {
+          if (!this.thinkingActive) {
+            this.thinkingActive = true
+            this.queueTask(this.thinkingId(), THINKING_CARD, 'in_progress')
+          }
+          this.noteThinkingTitle(thought)
         }
         // minimal: keep the streamed reply intact (thinking mid-reply doesn't close a
         // segment) — only surface the transient status.
@@ -1293,12 +1402,14 @@ export class OutputConverger {
           title?: string
           status?: string
           content?: unknown
+          rawInput?: unknown
           rawOutput?: unknown
         }
         // Minimal deliberately hides the concrete tool label as well as tool cards/output:
         // keep Slack's transient working indicator generic so commands and tool names do
         // not leak into the channel chrome. Thinking remains a distinct thought-chunk state.
         const label = this.mode === 'minimal' ? WORKING : this.toolLabel(u)
+        this.noteToolInput(u)
         const status = this.pushActivity(label)
         // minimal: a tool boundary closes the current reply segment (record it + settle the
         // live message); closeSegment marks the next chunk as a fresh segment. No progress/
@@ -1317,22 +1428,28 @@ export class OutputConverger {
         if (this.streaming && u.toolCallId) {
           this.closeThinkingRun()
           const terminal = u.status === 'completed' || u.status === 'failed'
-          // The tool's own result is HIGH only — medium keeps the card's title and status,
-          // matching the legacy pipeline where tool output is a high-mode rung.
+          // The card's BODY is HIGH only — medium keeps one line per step, matching the legacy
+          // pipeline where tool output is a high-mode rung. The body cannot start collapsed
+          // (Slack has no such field), so on medium a step stays a step.
           if (terminal && this.mode === 'high') this.noteToolOutput(u)
-          const result = terminal && this.mode === 'high' ? (this.toolOutputs.get(u.toolCallId) ?? '') : ''
+          const body =
+            terminal && this.mode === 'high'
+              ? { command: this.cardCommand(u.toolCallId, label), output: this.toolOutputs.get(u.toolCallId) ?? '' }
+              : {}
           this.queueTask(
             u.toolCallId,
-            label,
+            this.cardTitle(u.toolCallId, label),
             u.status === 'completed' ? 'complete' : u.status === 'failed' ? 'error' : 'in_progress',
-            result
+            body
           )
+          if (terminal) this.toolOutputs.delete(u.toolCallId)
           this.pendingProgress = progressText
         } else {
           actions.push({ kind: 'progress', text: progressText })
         }
-        // high only: once the tool finishes, post its output as a code block.
-        if (this.mode === 'high') actions.push(...this.drainToolOutput(u))
+        // high only, and only off the stream: a streaming turn's card already carries the same
+        // command and result, so posting the code block too would say everything twice.
+        if (this.mode === 'high' && !this.streaming) actions.push(...this.drainToolOutput(u))
         return actions
       }
       case 'plan': {
