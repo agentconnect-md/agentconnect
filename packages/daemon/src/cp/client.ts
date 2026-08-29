@@ -343,6 +343,12 @@ export class CpClient {
     this.state = 'CLOSED'
   }
 
+  /** True once this client will never dial again — stop() ran, a fatal auth close latched, or a
+   *  bootstrap upgrade retired the connection — so a retry loop waiting on it should give up now. */
+  terminallyClosed(): boolean {
+    return this.stopped || this.fatal
+  }
+
   private beginConnect(): void {
     if (this.stopped || this.fatal) return
     if (this.connectRun) {

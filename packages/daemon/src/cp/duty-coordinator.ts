@@ -969,6 +969,13 @@ export class DutyCoordinator {
         if (outcome === 'timeout') throw new Error('no acknowledgement before the drain deadline')
         return true
       } catch (err) {
+        // A terminally closed client never dials again (a bootstrap upgrade retires the connection
+        // before this drain runs), so no retry can deliver the release — lapse now, not at the deadline.
+        const cp = this.host.cpClient()
+        if (!cp || cp.terminallyClosed()) {
+          this.log.warn(`duty: releasing ${groupId} abandoned — the CP client is permanently closed, its lease lapses`)
+          return false
+        }
         if (this.host.clock().now() + backoffMs >= deadlineAt) {
           this.log.warn(`duty: releasing ${groupId} was not acknowledged before the drain deadline: ${err}`)
           return false

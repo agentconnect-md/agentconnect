@@ -67,6 +67,7 @@ async function boot(opts: { releaseDuties?: (groupIds: string[]) => Promise<void
   ;(daemon as any).cpClient = {
     organizationScope: () => 'frame',
     memberSet: () => ({ setId: '9f11e5e7-0000-4000-8000-000000000001', name: 'Cloud' }),
+    terminallyClosed: () => false,
     stop,
     releaseDuties,
     reportDutiesNow,
@@ -391,6 +392,30 @@ describe('shutdown drain of a duty-holding member', () => {
     expect(summary).toMatch(/released 2 group\(s\) covering 2 agent\(s\)/)
     expect(summary).toMatch(/0 acknowledged, 2 left to lapse/)
     // Locally withdrawn regardless: nothing here still serves what the CP will hand on.
+    expect(duties(daemon).size()).toBe(0)
+  })
+
+  it('a permanently closed CP client is not retried against — every lease lapses at once, not at the deadline', async () => {
+    // The bootstrap-upgrade shape: the client is retired (stopped, socket closed, no redial)
+    // BEFORE Daemon.stop() runs, so no retry can ever deliver a release.
+    const { daemon, clock, releaseDuties } = await boot({
+      releaseDuties: async () => {
+        throw new Error('control plane unreachable (client CLOSED)')
+      }
+    })
+    ;(daemon as any).cpClient.terminallyClosed = () => true
+    const info = vi.spyOn((daemon as any).log, 'info')
+    const warn = vi.spyOn((daemon as any).log, 'warn')
+
+    const startedAt = clock.now()
+    await runVirtual(clock, daemon.stop())
+
+    // One attempt per group, no backoff ladder, and nowhere near the 300s pool drain budget.
+    expect(releaseDuties).toHaveBeenCalledTimes(2)
+    expect(clock.now() - startedAt).toBeLessThan(5_000)
+    expect(warn.mock.calls.some(([m]) => /permanently closed, its lease lapses/.test(String(m)))).toBe(true)
+    const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
+    expect(summary).toMatch(/0 acknowledged, 2 left to lapse/)
     expect(duties(daemon).size()).toBe(0)
   })
 
