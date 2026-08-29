@@ -13,6 +13,7 @@ import { startK8sRuntimePlane, type K8sRuntimePlane } from '../src/k8s/runtime-p
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
 import { fakeGenerations } from './fake-generations.js'
+import { waitBudget } from './wait-support.js'
 
 /**
  * The sandbox cold-start race (#1010).
@@ -30,7 +31,7 @@ const fakeAgent = join(here, 'fixtures', 'fake-acp-agent.mjs')
 const SILENT = { info: () => {}, warn: () => {}, debug: () => {} }
 const POD_NAME = 'pool-pod-9'
 const AGENT = 'agent-a'
-const WAIT = { timeout: 15_000 }
+const WAIT = waitBudget(15_000)
 
 const planes: K8sRuntimePlane[] = []
 const clients: ShimClient[] = []

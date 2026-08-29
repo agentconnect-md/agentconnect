@@ -10,11 +10,7 @@ import { executeTool, type MessageAgentReq } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
 import * as monotonic from '../src/store/monotonic-ts.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
+import { WAIT } from './wait-support.js'
 
 const TEST_ORG = '00000000-0000-0000-0000-0000000000a1'
 /** Peers this suite wakes that are NOT on the daemon under test — they must still be in

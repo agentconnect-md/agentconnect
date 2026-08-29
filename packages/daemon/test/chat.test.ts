@@ -95,7 +95,7 @@ describe('runChat', () => {
     const run = runChat({ agentsDir, message: 'hi', configPath, root, out: out.stream })
     await run
     expect(out.text()).toContain('echo:hi')
-  }, 20_000)
+  })
 
   // Before the LAUNCH, not just before start(): a sandboxed run computes its boundary from what is
   // on disk, so a workspace materialized afterwards would be outside the policy the child gets.
@@ -153,7 +153,7 @@ describe('runChat', () => {
     await expect(runChat({ agentsDir, message: 'hi', configPath, root, out: capture().stream })).rejects.toThrow(
       /runtime "missing".*Available: .*fake/s
     )
-  }, 20_000)
+  })
 
   it('errors and asks for --agent when several agents are discovered', async () => {
     const { agentsDir, configPath, root } = scaffold()
@@ -174,7 +174,7 @@ describe('runChat', () => {
     await expect(
       runChat({ agentsDir: parent, message: 'hi', configPath, root, out: capture().stream })
     ).rejects.toThrow(/multiple agents found.*--agent/s)
-  }, 20_000)
+  })
 
   it('synchronously admits a curated runtime before creating the real host', async () => {
     const files = curatedScaffold('omp')

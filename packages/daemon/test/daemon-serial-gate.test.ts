@@ -6,11 +6,7 @@ import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import type { WebchatOutput, WebchatDone } from '@agentconnect.md/protocol'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
+import { WAIT, waitBudget } from './wait-support.js'
 
 /**
  * P4-gate: the per-sessionKey serial admission gate (design §4.3/§6.9). These drive
@@ -544,7 +540,7 @@ describe('P4 serial gate', () => {
         g.releaseAll()
         expect((daemon as any).inflight.has(key)).toBe(false)
       },
-      { timeout: 10_000, interval: 25 }
+      waitBudget(10_000, 25)
     )
     await Promise.all(queued)
 

@@ -6,17 +6,13 @@ import { ORGANIZATION_SUGGESTION_REVIEW_FEATURE } from '@agentconnect.md/protoco
 import { Daemon } from '../src/daemon.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT } from '../src/memory/distill.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
+import { WAIT } from './wait-support.js'
 
 // The outward `sessionId` a frame carries for the slot behind an ACP hop id (session-concept.md §1.1).
 const outwardId = async (daemon: any, acpSessionId: string): Promise<string> => {
   const slot = await daemon.store.getSessionByAcpId(acpSessionId)
   return slot!.sessionId ?? (await daemon.store.ensureOutwardSessionId(slot!.key, slot!.agentId ?? undefined))
 }
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
 
 const AGENT_ID = 'evaluation-agent'
 

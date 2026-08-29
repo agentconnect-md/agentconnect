@@ -7,11 +7,7 @@ import { Daemon } from '../src/daemon.js'
 import { CuratedRuntimeAdmission } from '../src/runtimes/curated-admission.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { FakeClock } from './cp/fake-clock.js'
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
+import { WAIT } from './wait-support.js'
 
 function root(): string {
   const path = mkdtempSync(join(tmpdir(), 'ac-curated-daemon-'))
@@ -102,7 +98,7 @@ describe('daemon curated runtime admission', () => {
     } finally {
       await daemon.stop()
     }
-  }, 20_000)
+  })
 
   it('reports an auth-required curated runtime with the login warning without admitting it', async () => {
     const probe = vi.fn(async (runtimes: Record<string, unknown>) =>

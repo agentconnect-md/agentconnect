@@ -52,9 +52,9 @@ async function registrationFeatures(withGrantDelivery: boolean): Promise<string[
 describe('registrationFeatures — webchat_remote_mcp_v1', () => {
   it('advertises descriptor delivery independently of runtime probes and sandbox mode', async () => {
     expect(await registrationFeatures(true)).toContain(WEBCHAT_REMOTE_MCP_FEATURE)
-  }, 20_000)
+  })
 
   it('does not advertise when confidential grant delivery is unavailable', async () => {
     expect(await registrationFeatures(false)).not.toContain(WEBCHAT_REMOTE_MCP_FEATURE)
-  }, 20_000)
+  })
 })

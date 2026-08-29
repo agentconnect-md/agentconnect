@@ -7,17 +7,13 @@ import { Daemon } from '../src/daemon.js'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-server.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { WAIT } from './wait-support.js'
 
 // The outward `sessionId` a frame carries for the slot behind an ACP hop id (session-concept.md §1.1).
 const outwardId = async (daemon: any, acpSessionId: string): Promise<string> => {
   const slot = await daemon.store.getSessionByAcpId(acpSessionId)
   return slot!.sessionId ?? (await daemon.store.ensureOutwardSessionId(slot!.key, slot!.agentId ?? undefined))
 }
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
 
 function scaffold(displayName?: string, memoryProvider?: 'none' | 'managed', iconUrl?: string): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-daemon-'))

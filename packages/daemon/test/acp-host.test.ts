@@ -138,7 +138,7 @@ describe('AcpHost session deletion', () => {
     expect(await host.deleteSession(sessionId)).toBe(true)
     expect(host.hasSession(sessionId)).toBe(false)
     await host.stop()
-  }, 15_000)
+  })
 })
 
 describe('AcpHost session/load update filtering', () => {

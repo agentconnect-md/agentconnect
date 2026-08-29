@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DreamScheduler } from '../src/scheduler/dream-scheduler.js'
 import { Daemon } from '../src/daemon.js'
+import { waitBudget } from './wait-support.js'
 
 /** A cron that fires every second, so a real tick is observable in a test. */
 const EVERY_SECOND = '* * * * * *'
@@ -83,7 +84,7 @@ describe('DreamScheduler', () => {
     scheduler.sync('a1', { enabled: true, schedule: EVERY_SECOND })
     // Wait for the tick itself, not for a window a tick usually fits in: the cron is real, so a
     // runner slow enough to miss a fixed one-second-and-a-bit sleep failed this for no reason.
-    await vi.waitFor(() => expect(fired.length).toBeGreaterThanOrEqual(1), { timeout: 30_000, interval: 10 })
+    await vi.waitFor(() => expect(fired.length).toBeGreaterThanOrEqual(1), waitBudget(30_000, 10))
     scheduler.stop()
     expect(new Set(fired)).toEqual(new Set(['a1']))
   })

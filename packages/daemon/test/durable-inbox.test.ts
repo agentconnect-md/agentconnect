@@ -10,11 +10,7 @@ import { Daemon } from '../src/daemon.js'
 import { stableMessageId } from '../src/messages/normalized.js'
 import type { WebchatOutput, WebchatDone } from '@agentconnect.md/protocol'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
+import { WAIT, waitBudget } from './wait-support.js'
 
 /**
  * §6.9 #353 durable inbox: an admitted-but-queued message is persisted to the node:sqlite
@@ -502,7 +498,7 @@ describe('daemon durable inbox', () => {
         g.releaseAll()
         expect((daemon as any).inflight.has(key)).toBe(false)
       },
-      { timeout: 10_000, interval: 25 }
+      waitBudget(10_000, 25)
     )
     await Promise.all(queued)
     await daemon.stop()

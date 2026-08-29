@@ -7,11 +7,7 @@ import { SlackConnection } from '../src/slack/connection.js'
 import { TelegramConnection } from '../src/telegram/connection.js'
 import { DiscordConnection } from '../src/discord/connection.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
+import { WAIT } from './wait-support.js'
 
 // A SlackConnection backed by an inert fake Bolt app (no network), with a fixed
 // bot user id, so reconcileSlackConnections' existing-socket branch can be exercised.

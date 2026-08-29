@@ -139,5 +139,5 @@ describe('skill-invocation translation through dispatch', () => {
     } finally {
       await restarted.stop()
     }
-  }, 30_000)
+  })
 })

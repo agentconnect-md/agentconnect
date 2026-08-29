@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import type { RdAck, RdChatEvent, RdMsgWebchat } from '@agentconnect.md/protocol'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { WAIT } from './wait-support.js'
 
 // Session-targeted webchat continuation (webchat-cross-integration-continuation.md
 // §5.2/§6.4): a browser turn carrying `targetSessionId` dispatches onto the target
@@ -16,7 +17,6 @@ const AGENT = 'bot-a'
 const CONV = '99999999-9999-4999-8999-999999999999'
 const TARGET_ACP = 'acp-target-1'
 const KEY = `slack:C1:100.1:${AGENT}`
-const WAIT = { timeout: 10_000 }
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-wc-sess-cont-'))

@@ -837,5 +837,5 @@ describe('feature negotiation (§17.3)', () => {
     expect(features).toContain(CODEHOST_NOTE_PROJECTION_V1_FEATURE)
     // The projection rides the GitLab surface, so the older bit stays advertised beside it.
     expect(features).toContain(GITLAB_COM_V1_FEATURE)
-  }, 20_000)
+  })
 })

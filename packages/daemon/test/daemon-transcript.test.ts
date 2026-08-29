@@ -9,11 +9,7 @@ import { sessionKey, transcriptChannelKey, type TranscriptEntry } from '../src/s
 import { stableTurnId } from '../src/messages/normalized.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import type { SlackPostOptions } from '../src/slack/connection.js'
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
+import { WAIT } from './wait-support.js'
 
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 const TRANSCRIPT_CHANNEL = transcriptChannelKey('C1', TRANSPORT_SCOPE)

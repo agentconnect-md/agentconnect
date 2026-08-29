@@ -15,6 +15,7 @@ import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
 import { fakeGenerations } from './fake-generations.js'
 import type { ShimEvent } from '../src/shim/protocol.js'
 import type { TunnelName } from '../src/shim/tunnel.js'
+import { waitBudget } from './wait-support.js'
 
 /**
  * The credential tunnel, end to end over real sockets.
@@ -264,10 +265,10 @@ describe('the shim tunnel', () => {
     const helper = inPodClient(podSocketPath)
     helper.socket.write('{"op":"get","agentId":"agent-a"}\n')
 
-    await vi.waitFor(() => expect(helper.received()).toContain('"password":"token"'), { timeout: 10_000 })
+    await vi.waitFor(() => expect(helper.received()).toContain('"password":"token"'), waitBudget(10_000))
     // And the daemon's server saw the request verbatim: nothing on the path interprets the bytes.
     expect(asked).toEqual(['{"op":"get","agentId":"agent-a"}\n'])
-  }, 30_000)
+  })
 
   it('ends the in-pod connection when the daemon-side server hangs up', async () => {
     // A helper whose socket neither answers nor closes hangs the git operation that spawned it,
@@ -277,8 +278,8 @@ describe('the shim tunnel', () => {
 
     const helper = inPodClient(podSocketPath)
     helper.socket.write('ask\n')
-    await vi.waitFor(() => expect(helper.ended()).toBe(true), { timeout: 10_000 })
-  }, 30_000)
+    await vi.waitFor(() => expect(helper.ended()).toBe(true), waitBudget(10_000))
+  })
 
   it('keeps a live connection working across a real credential renewal', async () => {
     // The pod's listener and its open connections belong to the POD, not to a channel: the shim
@@ -291,15 +292,15 @@ describe('the shim tunnel', () => {
 
     const helper = inPodClient(podSocketPath)
     helper.socket.write('before\n')
-    await vi.waitFor(() => expect(helper.received()).toContain('echo:before'), { timeout: 10_000 })
+    await vi.waitFor(() => expect(helper.received()).toContain('echo:before'), waitBudget(10_000))
 
     const bindsBefore = bindCount()
     shimClock.advance(300_000)
-    await vi.waitFor(() => expect(bindCount()).toBeGreaterThan(bindsBefore), { timeout: 15_000 })
+    await vi.waitFor(() => expect(bindCount()).toBeGreaterThan(bindsBefore), waitBudget(15_000))
 
     // Same in-pod connection, same daemon-side socket, after the channel underneath was replaced.
     helper.socket.write('after\n')
-    await vi.waitFor(() => expect(helper.received()).toContain('echo:after'), { timeout: 10_000 })
+    await vi.waitFor(() => expect(helper.received()).toContain('echo:after'), waitBudget(10_000))
     expect(helper.ended()).toBe(false)
   }, 40_000)
 
@@ -324,15 +325,15 @@ describe('the shim tunnel', () => {
     const helper = inPodClient(podSocketPath)
     helper.socket.write('{"op":"get"}\n')
     // The daemon has answered and its reply frame is in flight but unapplied.
-    await vi.waitFor(() => expect(replied).toBe(true), { timeout: 10_000 })
+    await vi.waitFor(() => expect(replied).toBe(true), waitBudget(10_000))
 
     const bindsBefore = bindCount()
     shimClock.advance(300_000)
-    await vi.waitFor(() => expect(bindCount()).toBeGreaterThan(bindsBefore), { timeout: 15_000 })
+    await vi.waitFor(() => expect(bindCount()).toBeGreaterThan(bindsBefore), waitBudget(15_000))
 
     // The close has to LAND on the new channel: git has no deadline of its own, so a rejected
     // cleanup is a helper that hangs until the idle timer.
-    await vi.waitFor(() => expect(helper.ended()).toBe(true), { timeout: 15_000 })
+    await vi.waitFor(() => expect(helper.ended()).toBe(true), waitBudget(15_000))
     release()
   }, 60_000)
 
@@ -371,7 +372,7 @@ describe('the shim tunnel', () => {
 
     const helper = inPodClient(podSocketPath)
     helper.socket.write('ask\n')
-    await vi.waitFor(() => expect(helper.received().length).toBe(payload.length), { timeout: 15_000 })
+    await vi.waitFor(() => expect(helper.received().length).toBe(payload.length), waitBudget(15_000))
     expect(helper.received()).toBe(payload)
   }, 40_000)
 
@@ -383,17 +384,17 @@ describe('the shim tunnel', () => {
 
     const helper = inPodClient(podSocketPath)
     // Nothing is listening in the pod, so the connection fails rather than reaching the daemon.
-    await vi.waitFor(() => expect(helper.ended()).toBe(true), { timeout: 10_000 })
-  }, 30_000)
+    await vi.waitFor(() => expect(helper.ended()).toBe(true), waitBudget(10_000))
+  })
 
   it('refuses to serve a tunnel this daemon has no socket for', async () => {
     // Better than dialling something plausible: an unserved tunnel names a socket the daemon does
     // not own, and guessing one would be a path traversal with extra steps.
     const { podSocketPath, warnings } = await clusterWithTunnel({ daemonSocketPath: undefined })
     const helper = inPodClient(podSocketPath)
-    await vi.waitFor(() => expect(helper.ended()).toBe(true), { timeout: 10_000 })
+    await vi.waitFor(() => expect(helper.ended()).toBe(true), waitBudget(10_000))
     expect(warnings.join('\n')).toMatch(/no gitcred socket/)
-  }, 30_000)
+  })
 
   it('refuses a connect the daemon never authorized, whoever minted the stream id', async () => {
     // The half-trusted side mints tunnel stream ids and announces them, so this side re-checks
@@ -464,10 +465,10 @@ describe('the shim tunnel', () => {
     const { podSocketPath } = await clusterWithTunnel({ daemonSocketPath, maxStreams: 2 })
 
     const held = [inPodClient(podSocketPath), inPodClient(podSocketPath)]
-    await vi.waitFor(() => expect(held.every((client) => !client.ended())).toBe(true), { timeout: 5_000 })
+    await vi.waitFor(() => expect(held.every((client) => !client.ended())).toBe(true), waitBudget(5_000))
     const refused = inPodClient(podSocketPath)
-    await vi.waitFor(() => expect(refused.ended()).toBe(true), { timeout: 10_000 })
+    await vi.waitFor(() => expect(refused.ended()).toBe(true), waitBudget(10_000))
     // The two that were already open are untouched: the cap sheds new work, not live work.
     expect(held.every((client) => !client.ended())).toBe(true)
-  }, 30_000)
+  })
 })

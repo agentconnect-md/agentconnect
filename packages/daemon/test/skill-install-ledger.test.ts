@@ -140,7 +140,7 @@ describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
 
     expect(existsSync(noMarkerTarget)).toBe(false)
     expect(existsSync(markerOnlyTarget)).toBe(false)
-  }, 20_000)
+  })
 
   it('fails closed on partial content without durably journaled inode authority', async () => {
     const forged = operation('.runtime/skills/forged')
@@ -153,7 +153,7 @@ describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
     await expect(recover(location, applying!)).rejects.toThrow(/prior executable set could not be restored|refused/i)
 
     expect(await readFile(join(target, 'manual'), 'utf8')).toBe('do not delete')
-  }, 20_000)
+  })
 
   it('resumes deletion of partial and published bundles only under persisted inode authority', async () => {
     const partial = operation('.runtime/skills/partial')
@@ -178,7 +178,7 @@ describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
 
     expect(existsSync(partialReservation)).toBe(false)
     expect(existsSync(target)).toBe(false)
-  }, 20_000)
+  })
 
   it('finishes a ready cleanup after a crash during tombstone removal', async () => {
     const sourceDir = join(root, 'source')
@@ -232,7 +232,7 @@ describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
     expect(recovered.owned).toEqual([])
     expect('cleanup' in recovered).toBe(false)
     expect(existsSync(tombstone)).toBe(false)
-  }, 20_000)
+  })
 
   it('accepts the maximum legal two-set journal within the derived read cap', async () => {
     const location = await skillLedgerLocation(cwd, stateDir)
@@ -286,7 +286,7 @@ describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
     if (!parsed || parsed.phase !== 'applying') throw new Error('expected applying ledger')
     expect(parsed.prior).toHaveLength(64)
     expect(parsed.pending).toHaveLength(64)
-  }, 20_000)
+  })
 })
 
 describe.skipIf(process.platform !== 'win32')('skill install ledger on Windows', () => {
@@ -332,5 +332,5 @@ describe.skipIf(process.platform !== 'win32')('skill install ledger on Windows',
 
     expect(result.installed).toEqual(['.agents/skills/fixture'])
     await expect(readFile(join(cwd, '.agents/skills/fixture/SKILL.md'), 'utf8')).resolves.toBe(body)
-  }, 20_000)
+  })
 })

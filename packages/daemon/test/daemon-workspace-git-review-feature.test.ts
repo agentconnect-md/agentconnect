@@ -71,7 +71,7 @@ describe('registrationFeatures — the console dock reads (git review + write + 
     expect(features).toContain(WORKSPACE_REPO_SCOPE_FEATURE)
     // The sandbox wake is the one dock read that is NOT unconditional: a local daemon has nothing to wake.
     expect(features).not.toContain(AGENT_WAKE_FEATURE)
-  }, 20_000)
+  })
 })
 
 // git-workspace-model.md §8: the `git` arm is FRAME-FATAL without this bit, so it is what lets the CP stop dual-encoding.
@@ -85,5 +85,5 @@ describe('registrationFeatures — the host-neutral workspace arm', () => {
     const features = (daemon as never as Record<string, any>).registrationFeatures() as string[]
     await daemon.stop().catch(() => {})
     expect(features).toContain(WORKSPACE_GIT_V1_FEATURE)
-  }, 20_000)
+  })
 })
