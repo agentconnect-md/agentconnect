@@ -290,6 +290,16 @@ jobs:
       # store saved by one would cost the full-install jobs a re-download on every run.
       - name: Install
         run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..." --filter "@agentconnect.md/cli..."
+      # `os.tmpdir()` resolves onto C:, this runner's network-attached OS disk, while the workspace,
+      # the pnpm store and `RUNNER_TEMP` already sit on D:, which is storage local to the host. The
+      # suite builds ~1400 stores and every fixture root through that name, so the one thing writing
+      # the most small files was the one thing left on the slower disk. Measured three samples per
+      # arm in one run: 1399 s of test time on C against 857 s on D, ranges disjoint. Node reads
+      # TEMP first on win32; TMP is set too because other tooling reads that one.
+      - name: Put the suite's temp root on the host-local disk
+        run: |
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
       # POSIX-only files self-skip via `it.skipIf(process.platform === 'win32')`, or — when every
       # case in the file is POSIX-only — via `WINDOWS_EXCLUDED` in that package's vitest.config.ts.
       #
