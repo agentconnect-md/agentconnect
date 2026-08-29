@@ -1565,15 +1565,62 @@ describe('Daemon idle sweep — background-task lease', () => {
     )
 
     expect(conn.postMessage).toHaveBeenCalledTimes(1)
-    const [channel, text, thread] = (conn.postMessage as any).mock.calls[0]
+    const [channel, text, thread, options] = (conn.postMessage as any).mock.calls[0]
     expect(channel).toBe('C1')
     expect(thread).toBe('T1')
     expect(text).toContain('Sleep for 15 seconds')
     expect(text).toContain('completed')
+    // Chrome-marked so thread backfill never re-ingests the notice as agent speech;
+    // a DM keeps the bot's own identity (no username/icon override), per slackPostOptions.
+    expect(options).toMatchObject({ chrome: true })
+    expect(options.username).toBeUndefined()
 
     // The near-simultaneous task_notification for the same task must NOT double-post.
     await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
     expect(conn.postMessage).toHaveBeenCalledTimes(1)
+    await daemon.stop()
+  })
+
+  it('neither announces nor wakes a task that settles inside a live foreground turn', async () => {
+    const clock = new FakeClock()
+    const { host, release } = blockingHost()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold({ agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 }),
+      hostFactory: () => host as any,
+      clock
+    })
+    await daemon.start()
+    const conn = makeRoutable(daemon)
+    const turn = (daemon as any).dispatch('bot-a', dm('100', 'hello'), 'int-a')
+    await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(1), WAIT)
+
+    // The loop is live (running SDK cycle + pending dispatch): the runtime hands the result
+    // to the model in-turn and the turn's chrome shows the step — the daemon stays quiet.
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+    await (daemon as any).onSdkLifecycle(
+      'bot-a',
+      'acp-1',
+      evt('task_started', { task_id: 't1', description: 'Wait 5 seconds' })
+    )
+    await (daemon as any).onSdkLifecycle(
+      'bot-a',
+      'acp-1',
+      evt('task_updated', { task_id: 't1', patch: { status: 'completed' } })
+    )
+
+    expect(JSON.stringify((conn.postMessage as any).mock.calls)).not.toContain('Background task finished')
+    expect((daemon as any).sdkLease.get(LEASE_KEY)?.armedWakes).toBe(0)
+    expect((daemon as any).bgWakeTimers.size).toBe(0)
+    // Still retained for the tasks panel — only the delivery is skipped.
+    expect((daemon as any).sdkLease.get(LEASE_KEY)?.settled?.length).toBe(1)
+
+    await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+    release()
+    await turn
+    clock.advance(10_000)
+    await new Promise((r) => setImmediate(r))
+    expect(host.prompt).toHaveBeenCalledTimes(1) // no wake turn either
     await daemon.stop()
   })
 
