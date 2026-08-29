@@ -1388,7 +1388,20 @@ export class WorkspaceManager {
         return { outcome: 'removed' }
       }
       const worktreeGit = this.runnerFor(agent.id, cwd).withEnv(workspaceGitLocalEnv())
-      if ((await worktreeGit.raw(['status', '--porcelain'])).trim() !== '') {
+      // Fetched review refs mark this root's worktree as a daemon-owned review snapshot: every
+      // delivery re-fetches the exact revision and resets the tree (`reset --hard` + `clean -ffdx`),
+      // so dirty state and local commits alike are disposable by construction and retaining on them
+      // protects nothing. Probed lazily — only when a protection would otherwise keep the worktree —
+      // and at most once; a probe failure conservatively reads as "not a snapshot".
+      let snapshot: boolean | undefined
+      const isReviewSnapshot = async () =>
+        (snapshot ??=
+          (
+            await rootGit()
+              .raw(['for-each-ref', '--count=1', `refs/agentconnect/reviews/${id}`])
+              .catch(() => '')
+          ).trim() !== '')
+      if ((await worktreeGit.raw(['status', '--porcelain'])).trim() !== '' && !(await isReviewSnapshot())) {
         return { outcome: 'retained', reason: 'dirty' }
       }
       // The generated branch this worktree checks out, read BEFORE the removal that
@@ -1407,15 +1420,15 @@ export class WorkspaceManager {
           `--glob=refs/agentconnect/reviews/${id}`
         ])
       ).trim()
-      if (unique !== '0') return { outcome: 'retained', reason: 'unique-commits' }
-      // No --force: if the tree went dirty between the check and here, Git refuses
-      // and the failure keeps the session.
-      await rootGit().raw(['worktree', 'remove', cwd])
+      if (unique !== '0' && !(await isReviewSnapshot())) return { outcome: 'retained', reason: 'unique-commits' }
+      // --force only for a probed snapshot, whose dirt was judged disposable above. Otherwise none:
+      // if the tree went dirty between the check and here, Git refuses and the failure keeps the session.
+      await rootGit().raw(['worktree', 'remove', ...(snapshot ? ['--force'] : []), cwd])
       await cleanupRegistrations()
-      // Only a branch this daemon generated for a session worktree, and only after
-      // the check above proved every commit on it is reachable from a remote — so
-      // the forced delete can drop no work. Best-effort: a surviving ref is clutter,
-      // not a reason to report a removed worktree as retained.
+      // Only a branch this daemon generated for a session worktree, and only when dropping it can
+      // drop no work: either every commit on it was proven reachable from a remote, or the worktree
+      // was a review snapshot whose commits the next delivery's reset would discard anyway.
+      // Best-effort: a surviving ref is clutter, not a reason to report a removed worktree as retained.
       if (isSessionBranch(branch)) {
         await rootGit()
           .raw(['branch', '-D', branch])
@@ -2589,11 +2602,14 @@ export type SessionWorktreeRemoval = (
 /** Retention GC (#485): remove one logical session's worktree, but only when it
  * is provably safe — no dirty/untracked files and no commit unreachable from
  * every remote ref (daemon-owned review refs count as remote-backed: they were
- * fetched verbatim). Safe candidates go through Git-aware cleanup
- * (`worktree remove` → `worktree prune`) and their review refs are deleted;
- * anything else is reported as retained/failed so the caller keeps the session.
- * The active-turn exclusion is the caller's job — this function only judges the
- * on-disk state. */
+ * fetched verbatim). One exemption: a worktree whose root holds fetched review
+ * refs at its id is a daemon-owned review snapshot, hard-reset and cleaned on
+ * every delivery — its dirt and local commits are disposable by construction,
+ * so both protections are skipped and the removal is forced. Safe candidates go
+ * through Git-aware cleanup (`worktree remove` → `worktree prune`) and their
+ * review refs are deleted; anything else is reported as retained/failed so the
+ * caller keeps the session. The active-turn exclusion is the caller's job —
+ * this function only judges the on-disk state. */
 
 /** Replace any earlier checkout with an empty stable cwd. This lets a formal
  * review continue through revision-addressed GitHub tools without exposing a

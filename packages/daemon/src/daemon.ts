@@ -14224,9 +14224,11 @@ export class Daemon {
    *  worktree first. Runs at startup and hourly on the idle sweep. Auto-deletion
    *  requires ALL of: no active turn (durable state + serial gate + pending map +
    *  durable inbox + SDK background-task lease), no dirty/untracked files, and no
-   *  commit unreachable from every remote ref. A worktree that fails the Git
-   *  safety checks is only reported — its session row is kept so the working
-   *  state stays reachable through the same logical session. */
+   *  commit unreachable from every remote ref (a review-snapshot worktree is
+   *  exempt from the last two — daemon-owned and reset on every delivery, its
+   *  state is disposable). A worktree that fails the Git safety checks is only
+   *  reported — its session row is kept so the working state stays reachable
+   *  through the same logical session. */
   /** The retention sweep's active-turn exclusion, beyond the durable-state filter:
    *  a claimed serial gate (owns cold dispatch + queued arrivals), a live Pending
    *  turn, pending durable inbox work, or unsettled SDK background tasks. All are

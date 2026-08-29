@@ -131,7 +131,8 @@ secondary's token.
 The CP re-projects the spec without the row; the daemon marks the root retired
 and drops it from every future session immediately. At idle sweep, and only
 when no session or turn holds the root (rechecked under the workspace admission
-fence), its worktrees go through the existing dirty/unique-commit rules; the
+fence), its worktrees go through the existing dirty/unique-commit rules (with
+the review-snapshot exemption those rules carry); the
 checkout is removed only once no worktree remains and it is itself clean,
 otherwise retained and reported. Re-adding the row un-retires the root in place.
 
