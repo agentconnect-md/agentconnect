@@ -594,27 +594,25 @@ export interface SharedStatusActions {
   shareable: boolean
 }
 
-/** Build the compact in-thread status message. Both dedicated and shared bots use
- *  one overflow accessory so the status stays on a single row. A SHAREABLE (multi-agent)
- *  bot also exposes Switch agent; Cancel run is present only while the current turn can
- *  still be interrupted. */
+/** Build the compact in-thread status message. Both dedicated and shared bots use one
+ *  overflow accessory so the status stays on a single row; a SHAREABLE (multi-agent) bot
+ *  also exposes Switch agent. Interrupting a turn is Slack's own Stop control or Session
+ *  options' Cancel turn — the overflow carries no cancel item. */
 export function buildStatusBlocks(
   info: StatusBarInfo,
   sessionKey: string,
   link?: string,
-  shared?: SharedStatusActions,
-  cancellable = false
+  shared?: SharedStatusActions
 ): unknown[] {
   const text = `${renderStatusBar(info)}${link ? `  ·  <${link}|View Session>` : ''}`
   const target = shared?.sessionTarget ?? sessionKey
-  const option = (label: string, action: 'switch-agent' | 'manage' | 'cancel') => ({
+  const option = (label: string, action: 'switch-agent' | 'manage') => ({
     text: { type: 'plain_text', text: label },
     value: encodeSlackStatusOverflowValue(action)
   })
   const options = [
     ...(shared?.shareable ? [option('Switch agent', 'switch-agent')] : []),
-    option('Session options', 'manage'),
-    ...(cancellable ? [option('Cancel run', 'cancel')] : [])
+    option('Session options', 'manage')
   ]
   return [
     {
@@ -663,14 +661,14 @@ export function buildStatusUnavailableModal(): Record<string, unknown> {
  * stream). `private_metadata` carries either the direct session key or a shared-bot
  * routing target so the modal's `block_actions` resolve the session. The modal stays
  * compact: identity + View-session share one line, related selectors render two per
- * row, and usage uses label-over-value fields. Cancel appears only while the turn is active.
+ * row, and usage uses label-over-value fields. Interrupting a turn is Slack's own Stop
+ * control — the modal carries no cancel button.
  */
 export function buildStatusModal(
   info: StatusBarInfo,
   sessionKey: string,
   link?: string,
   privateMetadata = sessionKey,
-  cancellable = false,
   identity?: StatusModalIdentity
 ): Record<string, unknown> {
   const blocks: unknown[] = []
@@ -850,21 +848,6 @@ export function buildStatusModal(
     if (blocks.length) blocks.push({ type: 'divider' })
     if (summaryFields.length) blocks.push({ type: 'section', fields: summaryFields })
     if (breakdownFields.length) blocks.push({ type: 'section', fields: breakdownFields })
-  }
-
-  if (cancellable) {
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          action_id: STATUS_ACTION.cancel,
-          text: { type: 'plain_text', text: 'Cancel turn' },
-          style: 'danger',
-          value: sessionKey
-        }
-      ]
-    })
   }
 
   return {

@@ -1505,9 +1505,11 @@ describe('Slack interactive status bar', () => {
     // The status line uses the selected agent identity even in DMs, and remains marked as
     // chrome so a peer daemon's thread backfill skips it.
     expect(conn.postBlocks.mock.calls[0]?.[4]).toEqual(STATUS_BAR_POST_OPTIONS)
-    expect(statusActions(conn.postBlocks.mock.calls[0]![1] as any[])).toEqual(['manage', 'cancel'])
+    expect(statusActions(conn.postBlocks.mock.calls[0]![1] as any[])).toEqual(['manage'])
     release()
     await t1
+    // The turn's closing write still lands, and no emission ever offers a cancel item —
+    // interrupting is Slack's own Stop control, or Cancel turn inside Session options.
     const settledStatus = [...conn.updateBlocks.mock.calls]
       .reverse()
       .find((call) => statusActions(call[2] as any[]) !== undefined)
@@ -1664,7 +1666,7 @@ describe('Slack interactive status bar', () => {
       action_id: SLACK_STATUS_ACTION.more
     })
     const choices = section!.accessory.options.map((o: any) => decodeSlackStatusOverflowValue(o.value)?.action)
-    expect(choices).toEqual(['switch-agent', 'manage', 'cancel'])
+    expect(choices).toEqual(['switch-agent', 'manage'])
     expect(decodeSharedSlackStatusTarget(section!.block_id!)).toEqual({
       v: 1,
       agentId: 'bot-a',
@@ -1708,9 +1710,9 @@ describe('Slack interactive status bar', () => {
     const [section] = blocks
 
     const choices = section!.accessory.options.map((o: any) => decodeSlackStatusOverflowValue(o.value)?.action)
-    expect(choices).toEqual(['manage', 'cancel']) // no 'switch-agent'
+    expect(choices).toEqual(['manage']) // no 'switch-agent'
     // Overflow still routes through the relay (the block_id is the encoded session target),
-    // so Session options / Cancel run keep working for a single-agent http bot.
+    // so Session options keeps working for a single-agent http bot.
     expect(decodeSharedSlackStatusTarget(section!.block_id!)).toEqual({
       v: 1,
       agentId: 'bot-a',
@@ -2284,10 +2286,8 @@ describe('Slack interactive status bar', () => {
     expect(data.identity.sessionTitle).toBeUndefined()
     await (daemon as any).store.setSessionTitle(SESSION_KEY, 'Fix login flow')
     expect((await (daemon as any).statusInfoForKey(SESSION_KEY)).identity.sessionTitle).toBe('Fix login flow')
-    expect(data.cancellable).toBe(true)
     release()
     await t1
-    expect((await (daemon as any).statusInfoForKey(SESSION_KEY)).cancellable).toBe(false)
     await daemon.stop()
   })
 
@@ -2364,7 +2364,7 @@ describe('Slack interactive status bar', () => {
     })
     await daemon.start()
     ;(daemon as any).agents.get('bot-a').allowRuntimeChangesInChat = true
-    const conn = routableWithBlocks(daemon)
+    routableWithBlocks(daemon)
     const store = (daemon as any).store
     const key = SESSION_KEY
 
@@ -2380,12 +2380,6 @@ describe('Slack interactive status bar', () => {
     await (daemon as any).commands.handleStatusAction({ kind: 'cancel', sessionKey: key })
     expect(host.cancel).toHaveBeenCalledWith('acp-1')
     expect(await store.isSessionMuted(key)).toBe(false)
-    await vi.waitFor(() => {
-      const settledStatus = [...conn.updateBlocks.mock.calls]
-        .reverse()
-        .find((call) => statusActions(call[2] as any[]) !== undefined)
-      expect(statusActions(settledStatus?.[2] as any[])).toEqual(['manage'])
-    }, WAIT)
 
     release()
     await t1

@@ -574,8 +574,7 @@ describe('SlackConnection membership events', () => {
             iconUrl: 'https://app/icons/review-bot.png',
             sessionTitle: 'Fix login flow'
           },
-          link: `https://app/s/${k}`,
-          cancellable: true
+          link: `https://app/s/${k}`
         })
       } as any,
       () => fakeAppWithEvents(handlers, actions, opened) as any
@@ -645,8 +644,7 @@ describe('SlackConnection membership events', () => {
         onMessageShortcut: resolve,
         onStatusInfo: (key: string) => ({
           info: { model: 'opus-4.8' },
-          link: `https://app/s/${key}`,
-          cancellable: false
+          link: `https://app/s/${key}`
         })
       } as any,
       () => fakeAppWithEvents(new Map(), new Map(), opened, shortcuts) as any
@@ -699,8 +697,7 @@ describe('SlackConnection membership events', () => {
         ...deps(),
         onStatusInfo: (k: string) => ({
           info: { model: 'opus-4.8' },
-          link: `https://app/s/${k}`,
-          cancellable: true
+          link: `https://app/s/${k}`
         })
       } as any,
       () => fakeAppWithEvents(new Map(), new Map(), opened) as any

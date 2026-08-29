@@ -285,11 +285,11 @@ export interface SlackDeps {
     outputMode?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
   }) => void
   /** Synchronous getter into the daemon (source of truth) for a session's agent identity,
-   *  current status snapshot, deep link, and cancel availability — used to build the
-   *  Configure controls modal on demand. Undefined for an unknown/closed session key. */
+   *  current status snapshot, and deep link — used to build the Configure controls modal on
+   *  demand. Undefined for an unknown/closed session key. */
   onStatusInfo?: (
     sessionKey: string
-  ) => Promise<{ info: StatusBarInfo; identity?: StatusModalIdentity; link?: string; cancellable: boolean } | undefined>
+  ) => Promise<{ info: StatusBarInfo; identity?: StatusModalIdentity; link?: string } | undefined>
   /** Resolve the exact local session owned by the selected Slack conversation, awaited
    *  before the one-shot shortcut trigger opens its modal. */
   onMessageShortcut?: (a: { channel: string; thread: string; userId: string }) => Promise<string | undefined>
@@ -1012,7 +1012,7 @@ export class SlackConnection implements PlatformConnection {
         trigger_id: triggerId,
         view:
           data && sessionKey
-            ? buildStatusModal(data.info, sessionKey, data.link, privateMetadata, data.cancellable, data.identity)
+            ? buildStatusModal(data.info, sessionKey, data.link, privateMetadata, data.identity)
             : buildStatusUnavailableModal()
       })
     } catch (err) {
