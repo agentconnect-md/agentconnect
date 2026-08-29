@@ -270,11 +270,26 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           cache: true
+          # Its own primary key, keyed by the closure it stores rather than by the lockfile alone.
+          # Nothing shares this OS today, but the rule is the one the two narrowed Linux jobs
+          # follow: a job that installs a subset never saves under the shared key.
+          cache_dependency_path: |
+            pnpm-lock.yaml
+            packages/daemon/package.json
+            packages/cli/package.json
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
+      # Only what this job runs, plus its workspace closure — 7 of the 14 projects. A full install
+      # also fetches the console's Next.js and the control plane's Prisma, which this job can never
+      # reach, and Windows pays for every one of those files twice: extracting the store cache, then
+      # materializing node_modules. Safe to narrow because the three imports that leave these two
+      # packages — `evals/games/mcp-client.ts` and the two `docker/runtime-sandbox` helpers — use
+      # only Node built-ins, as do the summary scripts, and both packages carry their own vitest.
+      # The other jobs keep the full install: every Linux job shares one cache key, so a partial
+      # store saved by one would cost the full-install jobs a re-download on every run.
       - name: Install
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..." --filter "@agentconnect.md/cli..."
       # POSIX-only files self-skip via `it.skipIf(process.platform === 'win32')`, or — when every
       # case in the file is POSIX-only — via `WINDOWS_EXCLUDED` in that package's vitest.config.ts.
       #
@@ -363,13 +378,22 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           cache: true
+          # Its own PRIMARY key. The default one is shared by every job on this runner OS, so the
+          # filtered subset this job stores would otherwise be what `build`, `check` and `unit`
+          # restore on every run. Only the primary: the action's restore-key prefix stops before the
+          # hash, so on the one run after a lockfile change a full-install job can still fall back
+          # onto this store and re-fetch what it misses.
+          cache_dependency_path: |
+            pnpm-lock.yaml
+            packages/daemon/package.json
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
+      # Only the daemon and its workspace closure — this job runs nothing else. No Prisma step
+      # either, for the reason the Windows job gives: the daemon never imports the generated client,
+      # and `pnpm -r` would now reach a control plane this install deliberately left out.
       - name: Install
-        run: pnpm install --frozen-lockfile
-      - name: Generate Prisma client
-        run: pnpm -r prisma:generate
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..."
       # The only apt on the critical path. A runner's regional mirror can black-hole a fetch for
       # hours, and the acquire timeouts below do NOT rescue that: apt falls through to upstream,
       # but per index file, so the step cap expires before the fallbacks finish. Drop the mirror
@@ -416,11 +440,16 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           cache: true
+          # Its own primary key, for the reason the sandbox job gives.
+          cache_dependency_path: |
+            pnpm-lock.yaml
+            packages/daemon/package.json
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
+      # Only the daemon and its workspace closure — this job runs nothing else.
       - name: Install
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..."
       - name: Daemon store suites on PostgreSQL
         run: pnpm --filter @agentconnect.md/daemon test:store:postgres
 
