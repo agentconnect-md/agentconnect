@@ -9,6 +9,7 @@ import {
 } from './session-work'
 
 const step = (lane: string, files: string[] = []) => ({ lane, files: files.map((path) => ({ path })) })
+const demotedStep = (lane: string) => ({ ...step(lane), demoted: true })
 
 describe('workCounts', () => {
   it('counts edited FILES by path, not EDIT-step count (one EDIT row, two files → 2)', () => {
@@ -33,6 +34,18 @@ describe('workCounts', () => {
       toolCount: 2,
       editCount: 0
     })
+  })
+
+  it('leaves a superseded answer demoted into the work lane out of the reasoning count', () => {
+    // The playground re-tags a superseded turn's streamed `done` blocks as PLAN — message text, not thoughts.
+    expect(workCounts([step('THINK'), demotedStep('PLAN'), demotedStep('PLAN')])).toEqual({
+      thinkCount: 1,
+      toolCount: 0,
+      editCount: 0
+    })
+    // A turn whose only work is the demoted answer reports no work at all.
+    const only = workCounts([demotedStep('PLAN')])
+    expect(workSummary(only.thinkCount, only.toolCount, only.editCount)).toBe('')
   })
 
   it('feeds the summary so one EDIT row with two files reads "edited 2 files"', () => {

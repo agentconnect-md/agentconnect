@@ -454,6 +454,8 @@ interface FmtStep {
   code: string
   files: { tag: string; path: string; color: string }[]
   time?: string
+  // A superseded answer collapsed into this lane — carried so the summary can skip it.
+  demoted?: boolean
   // A peer participant's message attachment (rendered like the user bubble's).
   image?: SessionImage
   // Present only on real-transcript tool rows that carry a captured body.
@@ -723,6 +725,7 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     code: stp.code ?? '',
     files: (stp.files ?? []).map((f) => ({ tag: f.tag, path: f.path, color: fileColor(f.tag) })),
     time: stp.time ?? '',
+    ...(stp.demoted ? { demoted: true } : {}),
     ...(platform ? { platform } : {}),
     // The live wire frame carries no body (kept off the hot path); attach just
     // enough of a SessionMessageDto shape for ToolBodyDetail to pull the same

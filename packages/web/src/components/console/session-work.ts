@@ -12,25 +12,25 @@ export const NOTICE_LANE = 'NOTICE'
  *  reasoning STEPS (THINK/PLAN), tool-command STEPS (TOOL), and edited FILES — the
  *  DISTINCT file paths across all EDIT steps (a single EDIT row can touch several
  *  files), with a metadata-less EDIT row counting as one file. Files are counted by
- *  path, not by EDIT-row count, so "1 EDIT step touching a.ts + b.ts" reads "2 files". */
-export function workCounts(steps: { lane: string; files: { path: string }[] }[]): {
+ *  path, not by EDIT-row count, so "1 EDIT step touching a.ts + b.ts" reads "2 files".
+ *  A DEMOTED step — a superseded answer re-tagged into this lane — is skipped, not counted. */
+export function workCounts(steps: { lane: string; files: { path: string }[]; demoted?: boolean }[]): {
   thinkCount: number
   toolCount: number
   editCount: number
 } {
+  let thinkCount = 0
   let toolCount = 0
-  let editStepCount = 0
   let bareEdits = 0
   const editPaths = new Set<string>()
   for (const s of steps) {
     if (s.lane === 'TOOL') toolCount += 1
     else if (s.lane === 'EDIT') {
-      editStepCount += 1
       if (s.files.length === 0) bareEdits += 1
       else for (const f of s.files) editPaths.add(f.path)
-    }
+    } else if (!s.demoted) thinkCount += 1
   }
-  return { thinkCount: steps.length - toolCount - editStepCount, toolCount, editCount: editPaths.size + bareEdits }
+  return { thinkCount, toolCount, editCount: editPaths.size + bareEdits }
 }
 
 /** Is a turn in flight for this session? `rawState` is the session's RAW daemon
