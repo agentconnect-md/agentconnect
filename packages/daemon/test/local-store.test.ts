@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import type { NoteProjectionRow } from '../src/gitlab/note-projection.js'
 import { LocalStore, sessionKey, type StoreDatabase } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
-import { memoryStoreDatabase, openTestStore, usingPostgresStore } from './store-support.js'
+import { memoryStoreDatabase, openFileStore, openTestStore, usingPostgresStore } from './store-support.js'
 
 /** True in the `store-postgres` project, where every store below is the real pool store. */
 const pg = usingPostgresStore()
@@ -67,18 +67,18 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     // A new database gets the whole schema from the CREATE block, so it must skip
     // the upgrade list outright rather than replay it.
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-fresh-')), 'local.sqlite')
-    await (await LocalStore.open(path)).close()
+    await (await openFileStore(path)).close()
     expect(userVersion(path)).toBeGreaterThanOrEqual(1)
   })
 
   it('reopens an existing store without rewriting its version', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-reopen-')), 'local.sqlite')
-    const first = await LocalStore.open(path)
+    const first = await openFileStore(path)
     await first.appendTranscript({ channel: 'C1', thread: 'T', ts: '1', sender: 'U1', kind: 'text', text: 'hello' })
     await first.close()
     const stamped = userVersion(path)
 
-    const second = await LocalStore.open(path)
+    const second = await openFileStore(path)
     expect((await second.threadTranscript('C1', 'T')).map((r) => r.text)).toEqual(['hello'])
     await second.close()
     expect(userVersion(path)).toBe(stamped)
@@ -86,7 +86,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
 
   it('adds permission ownership, recovery ownership and per-owner routing when upgrading a v1 store', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v1-')), 'local.sqlite')
-    await (await LocalStore.open(path)).close()
+    await (await openFileStore(path)).close()
     const old = new DatabaseSync(path)
     old.exec('ALTER TABLE permission_requests DROP COLUMN ownerId')
     old.exec('DROP INDEX session_metadata_outbox_attempt')
@@ -107,7 +107,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('PRAGMA user_version = 1')
     old.close()
 
-    await (await LocalStore.open(path)).close()
+    await (await openFileStore(path)).close()
 
     const upgraded = new DatabaseSync(path)
     const columnsOf = (table: string): string[] =>
@@ -161,7 +161,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
 
   it('re-keys the capture gate by agent when upgrading a v5 store', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v5-')), 'local.sqlite')
-    await (await LocalStore.open(path)).close()
+    await (await openFileStore(path)).close()
     const old = new DatabaseSync(path)
     old.exec('DROP TABLE session_gates')
     old.exec(`CREATE TABLE session_gates (
@@ -183,7 +183,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('PRAGMA user_version = 5')
     old.close()
 
-    const upgraded = await LocalStore.open(path)
+    const upgraded = await openFileStore(path)
     // Attributable: the CP verdict follows the one agent that held the id.
     expect(await upgraded.isCaptureExcluded('bot-a', 'acp-1')).toBe(false)
     // Held by two agents: the stored verdict was never attributable to either, so
@@ -200,7 +200,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v7-')), 'local.sqlite')
-    await (await LocalStore.open(path)).close()
+    await (await openFileStore(path)).close()
     const old = new DatabaseSync(path)
     old.exec(`
       DROP TABLE runtime_catalog_meta;
@@ -229,7 +229,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('PRAGMA user_version = 7')
     old.close()
 
-    const upgraded = await LocalStore.open(path)
+    const upgraded = await openFileStore(path)
     // Pre-upgrade rows name no member, so no member can honestly claim them; the next
     // probe refills the cache this one owns.
     expect(await upgraded.getRuntimeCatalogMeta('claude')).toBeUndefined()
@@ -252,7 +252,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
 
   it('backfills a v11 store with the outward id its sessions were already reported under', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v11-')), 'local.sqlite')
-    await (await LocalStore.open(path)).close()
+    await (await openFileStore(path)).close()
     const old = new DatabaseSync(path)
     old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
     old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
@@ -264,7 +264,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('PRAGMA user_version = 11')
     old.close()
 
-    const upgraded = await LocalStore.open(path)
+    const upgraded = await openFileStore(path)
     // The control plane already knows this session by its ACP id: renaming it would orphan the row.
     expect((await upgraded.getSession('k1'))?.sessionId).toBe('acp-1')
     expect((await upgraded.getSessionByOutwardId('acp-1'))?.key).toBe('k1')
@@ -279,7 +279,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
   // of it and every established store failed at query time instead of at boot.
   it('adds directDestination to a v12 store', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-v12-')), 'local.sqlite')
-    await (await LocalStore.open(path)).close()
+    await (await openFileStore(path)).close()
     const old = new DatabaseSync(path)
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
@@ -287,7 +287,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('PRAGMA user_version = 12')
     old.close()
 
-    const upgraded = await LocalStore.open(path)
+    const upgraded = await openFileStore(path)
     // The read path that broke: every dispatch resolves a session's classification.
     expect(await upgraded.getSessionClassification('bot-a', 'acp-1')).toEqual({})
     await upgraded.setSessionClassification('k1', { sourceBindingKind: 'external', directDestination: true })
@@ -303,14 +303,14 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     // newer store "not exists" is the wrong question, and re-adding this version's
     // objects is exactly the damage the refusal exists to prevent.
     const path = join(mkdtempSync(join(tmpdir(), 'ac-schema-future-')), 'local.sqlite')
-    await (await LocalStore.open(path)).close()
+    await (await openFileStore(path)).close()
     const setup = new DatabaseSync(path)
     // Stand in for an object this build would happily recreate.
     setup.exec('DROP TABLE transcript')
     setup.exec('PRAGMA user_version = 9999')
     setup.close()
 
-    await expect(LocalStore.open(path)).rejects.toThrow(/newer than this daemon understands/)
+    await expect(openFileStore(path)).rejects.toThrow(/newer than this daemon understands/)
 
     const after = new DatabaseSync(path)
     const rebuilt = after
@@ -2508,7 +2508,7 @@ describe('code-host note projection ledger (gitlab-com-integration.md §16)', ()
 describe.skipIf(pg)('transcript org migration from a v10 store', () => {
   const v10Store = async (prefix: string): Promise<string> => {
     const path = join(mkdtempSync(join(tmpdir(), prefix)), 'local.sqlite')
-    await (await LocalStore.open(path)).close()
+    await (await openFileStore(path)).close()
     const old = new DatabaseSync(path)
     dropTranscriptOrg(old)
     old.exec(`INSERT INTO transcript (channel, thread, ts, sender, kind, text, recipient, eventTimeUs, revision)
@@ -2523,7 +2523,7 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
 
   it('backfills a store no pool shares with its single partition, keeping every row', async () => {
     const path = await v10Store('ac-transcript-v10-')
-    const upgraded = await LocalStore.open(path)
+    const upgraded = await openFileStore(path)
     expect((await upgraded.threadTranscript('C1', 'T1')).map((r) => r.text)).toEqual(['kept'])
     // The delivery table came across too, so the co-hosted recipient still sees the row.
     expect((await upgraded.transcriptPageForAgent('C1', 'T1', 'agent-b', null, 10)).rows.map((r) => r.text)).toEqual([

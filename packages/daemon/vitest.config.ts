@@ -67,6 +67,16 @@ export const BASE_TEST_TIMEOUT = 30_000
 export default defineConfig({
   test: {
     environment: 'node',
+    // Windows only. The runner charges for creating and deleting the store's file and its two WAL
+    // siblings once per daemon start — ~1000 a run — and backing those stores with RAM took the
+    // Windows suite from 1037 s of test time to 767 s. Elsewhere it is a loss, because the page
+    // cache already makes that I/O free, so the flag stops at the platform that pays for it.
+    // A test that needs a real file opens one explicitly; see `LocalStore.open`.
+    // An explicit value wins, so the flag can be exercised from any platform.
+    env: {
+      AGENTCONNECT_TEST_STORE_MEMORY:
+        process.env.AGENTCONNECT_TEST_STORE_MEMORY ?? (process.platform === 'win32' ? '1' : '')
+    },
     // Keep process-heavy, integration-shaped unit files from oversubscribing available test-worker
     // resources. Four on Windows too: the halving there bought time for inline per-test budgets that
     // no longer exist, and the polls those budgets never governed now scale in `test/wait-support.ts`.

@@ -5,8 +5,7 @@
  */
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
-import { LocalStore } from '../src/store/local-store.js'
-import { tempStorePath } from './store-support.js'
+import { tempStorePath, openFileStore } from './store-support.js'
 import {
   bind,
   changesOf,
@@ -197,7 +196,7 @@ describe('canonical column coverage', () => {
   // real schema and require every one of them, instead of trusting the list to be maintained.
   it('names every camelCase column the store schema declares', async () => {
     const path = tempStorePath('ac-dialect-')
-    await (await LocalStore.open(path)).close()
+    await (await openFileStore(path)).close()
     const db = new DatabaseSync(path)
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")

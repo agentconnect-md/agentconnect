@@ -8,9 +8,9 @@
  * the same suites then open their `LocalStore` over the real pool store — the SQL text
  * the daemon pool runs.
  */
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { LocalStore, type OrgForAgent, type StoreDatabase } from '../src/store/local-store.js'
 import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
@@ -41,6 +41,16 @@ function borrowed(database: StoreDatabase): StoreDatabase {
 /** A fresh temporary SQLite file — the default store a suite gets. */
 export function tempStorePath(prefix = 'ac-store-'): string {
   return join(mkdtempSync(join(tmpdir(), prefix)), 'local.sqlite')
+}
+
+/**
+ * A store on a real FILE, for the cases whose subject IS the file — a schema seeded into one and
+ * reopened, or its permissions. `LocalStore.open(path)` is backed by RAM on Windows, so those cases
+ * ask for a database explicitly, the way the pool does.
+ */
+export async function openFileStore(path: string): Promise<LocalStore> {
+  mkdirSync(dirname(path), { recursive: true })
+  return await LocalStore.open({ database: SqliteAsyncDatabase.open(path) })
 }
 
 /** An in-memory SQLite database behind the async seam, for suites that share one handle. */

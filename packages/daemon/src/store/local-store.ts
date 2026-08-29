@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { SQLInputValue } from 'node:sqlite'
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import { chmodSync, mkdirSync, statSync } from 'node:fs'
 import { dirname } from 'node:path'
 import {
@@ -825,6 +825,21 @@ export interface RuntimeModelCapRecord {
  * path that vanished (WAL siblings appear lazily) is not an error worth failing a
  * daemon boot over.
  */
+/**
+ * Windows tests only — see the daemon's `vitest.config.ts`. A store opened by PATH is backed by
+ * RAM there instead of a file, keyed by that path so a reopen (the suite's daemon-restart shape)
+ * still finds what the first open wrote. `close` is a no-op for the same reason, so a worker holds
+ * every store it made; the suite makes ~250 per worker and they are small.
+ *
+ * The point is the file LIFECYCLE, not the flush: the Windows runner charges for creating and
+ * deleting the database and its two WAL siblings once per daemon start, ~1000 times a run, and
+ * `synchronous = NORMAL` measured as nothing once the temp root moved to a local disk.
+ *
+ * A test that needs a real file asks for one the way the pool does — `LocalStore.open({ database:
+ * SqliteAsyncDatabase.open(path) })` — which this never touches.
+ */
+const memoryStores = new Map<string, StoreDatabase>()
+
 function restrictPath(path: string, mode: number): void {
   try {
     if ((statSync(path).mode & 0o777) !== mode) chmodSync(path, mode)
@@ -1045,6 +1060,25 @@ export class LocalStore {
       const dir = dirname(source)
       mkdirSync(dir, { recursive: true, mode: 0o700 })
       restrictPath(dir, 0o700)
+      // `:memory:` is SQLite's own name for this, and every caller of it wants a database of its
+      // own, so it stays out of the table — keying it by "path" would hand them all one.
+      if (process.env.AGENTCONNECT_TEST_STORE_MEMORY === '1' && source !== ':memory:') {
+        let database = memoryStores.get(source)
+        if (database === undefined) {
+          const owned = SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:'))
+          database = {
+            exec: (sql) => owned.exec(sql),
+            query: (sql, params) => owned.query(sql, params),
+            batch: (statements) => owned.batch(statements),
+            transaction: (fn) => owned.transaction(fn),
+            close: async () => undefined
+          }
+          memoryStores.set(source, database)
+        }
+        store = new LocalStore(database, { shared: false, ownerId: undefined, orgForAgent: undefined })
+        await store.initializeSchema()
+        return store
+      }
       store = new LocalStore(SqliteAsyncDatabase.open(source), {
         shared: false,
         ownerId: undefined,
