@@ -1,5 +1,6 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import type { WireFeishuCardActionTarget } from '@agentconnect.md/protocol'
+import { flattenUnsafeLinks } from '../messages/agent-links.js'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 import { extractToolOutput } from '../session/tool-output.js'
@@ -436,7 +437,7 @@ export class FeishuConverger {
   streamUpdate(): FeishuAction[] {
     if (!this.hasStreamingUpdate()) return []
     this.lastStreamText = this.cardText
-    return [{ kind: 'card-stream', text: this.cardText }]
+    return [{ kind: 'card-stream', text: flattenUnsafeLinks(this.cardText) }]
   }
 
   /** Idle-timer flush: update the answer card, record the buffered body, and drain
@@ -454,7 +455,7 @@ export class FeishuConverger {
     const stream = includeStream ? this.streamUpdate() : []
     if (!this.recordDirty || !this.buf.trim()) return stream
     if (isNoResponsePrefix(this.buf.trim())) return []
-    const text = this.buf
+    const text = flattenUnsafeLinks(this.buf)
     this.recordDirty = false
     return [
       ...stream,
@@ -467,7 +468,7 @@ export class FeishuConverger {
   private drainReasoning(): FeishuAction[] {
     if (!this.reasoningDirty) return []
     this.reasoningDirty = false
-    return [{ kind: 'reasoning', text: renderReasoning(this.reasoningBuf) }]
+    return [{ kind: 'reasoning', text: renderReasoning(flattenUnsafeLinks(this.reasoningBuf)) }]
   }
 
   /** Record one non-minimal body window. A semantic boundary starts the next answer
@@ -481,7 +482,7 @@ export class FeishuConverger {
       return includeStream ? this.streamUpdate() : []
     }
     if (isNoResponsePrefix(trimmed)) return []
-    const text = this.buf
+    const text = flattenUnsafeLinks(this.buf)
     this.buf = ''
     if (boundary) this.cardBoundary = true
     return [
@@ -595,6 +596,7 @@ export class FeishuConverger {
   /** Turn end: persist the last body window and replace the streaming entity with the
    * completed answer. Optional shared attribution stays inside that same final card. */
   onFinal(attribution?: ReplyAttributionInfo): FeishuAction[] {
+    this.cardText = flattenUnsafeLinks(this.cardText)
     const display = this.cardText.trim()
     if (isNoResponseBody(display)) {
       this.buf = ''
@@ -614,6 +616,7 @@ export class FeishuConverger {
   /** Prompt failure after the card has started: preserve any useful runtime-authored
    * error text, otherwise append one concise failure line, then close the card. */
   onFailure(reason: string, attribution?: ReplyAttributionInfo): FeishuAction[] {
+    this.cardText = flattenUnsafeLinks(this.cardText)
     const display = this.cardText.trim()
     if (isNoResponseBody(display)) {
       this.buf = ''

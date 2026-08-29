@@ -38,9 +38,14 @@ const CORPUS: ReadonlyArray<readonly [name: string, input: string, html: string]
     '<div class="mdtxt"><p><a href="mailto:ops@example.test" target="_blank" rel="noopener noreferrer">mail us</a> or tel:+15550100</p></div>'
   ],
   [
-    'a non-http(s) target is not a Slack link token',
+    'a non-http(s) target is not a Slack link token, and renders as its label rather than an empty anchor',
     'run <file:///etc/hosts> yourself',
-    '<div class="mdtxt"><p>run <a href="" target="_blank" rel="noopener noreferrer">file:///etc/hosts</a> yourself</p></div>'
+    '<div class="mdtxt"><p>run file:///etc/hosts yourself</p></div>'
+  ],
+  [
+    'a host path never becomes a same-origin anchor this console would 404 on',
+    'wrote [the digest](/home/agent/workspace/out.md)',
+    '<div class="mdtxt"><p>wrote the digest</p></div>'
   ],
   ['user mention with a name', 'ping <@U012ABC|ada> about it', '<div class="mdtxt"><p>ping @ada about it</p></div>'],
   ['user mention without a name', 'ping <@U012ABC> about it', '<div class="mdtxt"><p>ping @U012ABC about it</p></div>'],
