@@ -672,6 +672,8 @@ describe('workspaceSourceOf', () => {
     try {
       expect(workspaceSourceOf({ mode: 'git', gitRepo: 'https://gitlab.example.test/team/repo' })).toBe('gitlab')
       expect(workspaceSourceOf({ mode: 'git', gitRepo: 'https://git.example.test/team/repo' })).toBe('giturl')
+      // gitlab.com is only the unset fallback — a configured instance owns the tile.
+      expect(workspaceSourceOf({ mode: 'git', gitRepo: 'https://gitlab.com/team/repo' })).toBe('giturl')
     } finally {
       delete g.window
     }

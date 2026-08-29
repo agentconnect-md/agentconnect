@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { gitRepoUrlTileHint } from './git-url-tile'
+import { gitRepoUrlTileHint, managedGitlabRepoPath } from './git-url-tile'
 
 // The Git URL tile takes FULL addresses on unmanaged hosts only, so tile ↔ stored
 // shape stays injective (git-workspace-model.md §7). A non-null hint says why.
@@ -36,12 +36,29 @@ describe('managed self-hosted instance (runtime config)', () => {
     delete g.window
   })
 
-  it('refuses the configured GitLab host with the switch-tile hint', () => {
+  it('refuses the configured GitLab base with the CP classifier semantics', () => {
     g.window = { __AC_ENV: { GITLAB_URL: 'https://gitlab.example.test' } }
     expect(gitRepoUrlTileHint('https://gitlab.example.test/team/repo')).toBe(
       'Use the “GitLab” tile for GitLab projects.'
     )
-    // An unrelated self-hosted server stays on this tile.
+    // An unrelated self-hosted server stays on this tile — and so does
+    // gitlab.com once another instance is configured.
     expect(gitRepoUrlTileHint('https://git.example.test/team/repo')).toBeNull()
+    expect(gitRepoUrlTileHint('https://gitlab.com/team/repo')).toBeNull()
+  })
+
+  it('matches a non-default port exactly', () => {
+    g.window = { __AC_ENV: { GITLAB_URL: 'https://gitlab.example.test:8443' } }
+    expect(gitRepoUrlTileHint('https://gitlab.example.test:8443/team/repo')).toBe(
+      'Use the “GitLab” tile for GitLab projects.'
+    )
+    expect(gitRepoUrlTileHint('https://gitlab.example.test/team/repo')).toBeNull()
+  })
+
+  it('claims only addresses under a path-prefixed base', () => {
+    g.window = { __AC_ENV: { GITLAB_URL: 'https://example.test/gitlab' } }
+    expect(managedGitlabRepoPath('https://example.test/gitlab/team/repo.git')).toBe('team/repo')
+    expect(managedGitlabRepoPath('https://example.test/other/team/repo')).toBeNull()
+    expect(gitRepoUrlTileHint('https://example.test/other/team/repo')).toBeNull()
   })
 })
