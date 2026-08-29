@@ -1051,6 +1051,7 @@ export class LocalStore {
         orgForAgent: undefined
       })
       await store.db.exec('PRAGMA journal_mode = WAL')
+      await store.db.exec('PRAGMA synchronous = NORMAL')
       // WAL mode publishes two siblings alongside the database; they carry the same
       // rows, so restricting only the main file would leave the content readable.
       for (const p of [source, `${source}-wal`, `${source}-shm`]) restrictPath(p, 0o600)
