@@ -441,7 +441,12 @@ used only after its object ID and ordered parents are proven to be the trusted
 base and head; otherwise the exact head is used.
 Reused formal-review worktrees are hard-reset and cleaned including ignored
 untracked content before they are presented as exact snapshots. Ordinary session
-worktrees continue to preserve their working state between turns.
+worktrees continue to preserve their working state between turns. The retention
+GC reads the same distinction from the fetched review refs: a worktree whose
+root holds `refs/agentconnect/reviews/<id>/*` is a daemon-owned snapshot whose
+scratch state and local commits the next delivery would discard anyway, so the
+GC's dirty and unique-commit protections do not retain it — they keep guarding
+ordinary session worktrees only.
 
 Repository hooks are not a reason to reject a workspace. Every daemon-managed
 Git command disables hooks and fsmonitor at command scope, and every configured
