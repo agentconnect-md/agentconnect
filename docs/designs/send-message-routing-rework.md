@@ -358,7 +358,15 @@ For AgentConnect-authored messages:
 4. Outbound streaming posts and intermediate edits carry
    `delivery_state: 'streaming'` and do not enter recipient routing.
 5. Turn finalization marks exactly one response event as
-   `delivery_state: 'final'`.
+   `delivery_state: 'final'`. Preferred form: the routing facts of the complete
+   response are resolved before the final body flush, so a terminal section that
+   is first posted at finalization is born `final` — one post, no closing edit.
+   The content-identical closing `chat.update` remains the fallback for a final
+   message that was already fully delivered mid-stream; it is skipped entirely
+   when the conversation's directory holds no agent besides the author, because
+   the final event then has no consumer and the edit would only mark the visible
+   reply "(edited)". (A peer added during that turn's snapshot-propagation window
+   misses one activation and catches up on the next turn.)
 6. Ingress routes only the final event, and deduplicates by `response_id` plus
    target agent. The ordinary ladder may supply a primary, but delivery also goes
    independently to every existing participant and every agent the body newly

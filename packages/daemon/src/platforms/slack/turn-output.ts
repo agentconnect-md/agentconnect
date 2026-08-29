@@ -104,6 +104,13 @@ export interface SlackTurn {
      *  because chat.update REPLACES content, so closing the response means re-sending what
      *  is already displayed. */
     lastResponse?: { ts: string; text: string }
+    /** Routing facts of the COMPLETE response, resolved by the host before the final body
+     *  flush (§5.5): the recipient set, the addressed-anyone bit, and whether any peer
+     *  agent shares this conversation at all. Lets a terminal section be BORN `final`. */
+    finalRouting?: { mentionedAgentIds: string[]; addressedAnyone: boolean; hasPeers: boolean }
+    /** ts of the body message that was born `final` — set only after Slack accepted a
+     *  terminal post carrying the closing metadata, so finalization can skip its edit. */
+    finalStamped?: string
   }
   /** The turn's finalized attribution footer, and a key identifying its content so
    *  a re-post can tell "same footer" from "footer changed". */
@@ -182,7 +189,10 @@ export function slackAgentIdentityOptions(
  *  the Agent's name and icon in the Console transcript. */
 export function slackAgentPostOptions(
   p: Pick<SlackTurnPlan, 'platform' | 'agentId' | 'agentName' | 'iconUrl'> &
-    Partial<Pick<SlackTurnPlan, 'sourceHopCount'>> & { responseId?: string }
+    Partial<Pick<SlackTurnPlan, 'sourceHopCount'>> & { responseId?: string },
+  /** §5.5: closing metadata for a TERMINAL section posted at finalization, when the
+   *  complete response is already known — the post is born `final`, needing no re-stamp. */
+  closure?: { mentionedAgentIds: string[]; addressedAnyone: boolean }
 ): SlackPostOptions | undefined {
   const identity = slackAgentIdentityOptions(p)
   if (!identity) return undefined
@@ -199,12 +209,20 @@ export function slackAgentPostOptions(
     // closes no response and must never be routed as one.
     ...(p.responseId
       ? {
-          response: {
-            responseId: p.responseId,
-            deliveryState: 'streaming' as const,
-            hopCount: p.sourceHopCount ?? 0,
-            mentionedAgentIds: []
-          }
+          response: closure
+            ? {
+                responseId: p.responseId,
+                deliveryState: 'final' as const,
+                hopCount: p.sourceHopCount ?? 0,
+                mentionedAgentIds: closure.mentionedAgentIds,
+                ...(closure.addressedAnyone ? { addressedAnyone: true } : {})
+              }
+            : {
+                responseId: p.responseId,
+                deliveryState: 'streaming' as const,
+                hopCount: p.sourceHopCount ?? 0,
+                mentionedAgentIds: []
+              }
         }
       : {})
   }
@@ -271,6 +289,9 @@ export async function finalizeSlackResponse(
 ): Promise<void> {
   const body = p.reply.lastResponse
   if (p.plan.platform !== 'slack' || !body || !p.reply.responseId) return
+  // Born-final (§5.5): the terminal section already carried the closing metadata on its
+  // own post, so the response is closed — a re-stamp would only re-mark it "(edited)".
+  if (p.reply.finalStamped !== undefined && p.reply.finalStamped === body.ts) return
   // Duck-typed adaptor/test connections implement only the subset they need. Closing the
   // response is additive metadata, not delivery — a connection that cannot do it must not
   // fail the turn whose answer was already delivered.
@@ -368,17 +389,24 @@ async function postSlackReply<TTurn extends SlackTurn>(
   p: TTurn,
   state: SlackTurnState,
   text: string,
-  trackReply = true
+  trackReply = true,
+  /** §5.5: this is the response's LAST section, posted at finalization — when the host
+   *  has prepared the closing routing facts, stamp it `final` at birth so the response
+   *  needs no closing chat.update (which would mark the reply "(edited)"). */
+  terminal = false
 ): Promise<string | undefined> {
   const previous = trackReply ? p.reply.lastReply : undefined
   const attribution = trackReply ? p.attribution : undefined
-  const agentPostOptions = slackAgentPostOptions({ ...p.plan, responseId: p.reply.responseId })
+  const closure = terminal ? p.reply.finalRouting : undefined
+  const agentPostOptions = slackAgentPostOptions({ ...p.plan, responseId: p.reply.responseId }, closure)
   const options = attribution ? { ...agentPostOptions, trailingBlocks: attribution.blocks } : agentPostOptions
   const ts = await conn.postMessage(p.plan.channel, text, p.plan.thread, options as SlackPostOptions | undefined)
   // Remember the newest conversational body so finalization knows which message closes
   // the response (§5.5). Tracked for every agent-authored body, including `attributed:
   // false` sections: "last posted" is a fact about ordering, not about footer ownership.
   if (ts) p.reply.lastResponse = { ts, text }
+  // Record the born-final ts only when the closing metadata actually rode the post.
+  if (ts && closure && agentPostOptions?.response) p.reply.finalStamped = ts
   if (ts && trackReply) {
     if (attribution)
       await clearStaleSlackReplyFooters(
@@ -501,7 +529,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       // The latest reply is born with its linked context footer, so unfurls are
       // disabled at the supported chat.postMessage boundary. Once that succeeds,
       // strip the footer from this turn's previous section and move the pointer.
-      const ts = await postSlackReply(host, conn, p, state, action.text, trackReply)
+      const ts = await postSlackReply(host, conn, p, state, action.text, trackReply, action.terminal === true)
       await host.appendTranscript({
         channel: p.plan.transcriptChannel,
         thread: p.plan.statusThread,
@@ -658,11 +686,13 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         if (p.chrome.liveReplyTs) await updateSlackLiveReply(conn, p, first)
         else if (!p.chrome.liveReplyAttempted) {
           p.chrome.liveReplyAttempted = true
-          p.chrome.liveReplyTs = await postSlackReply(host, conn, p, state, first)
+          // A single-section answer whose FIRST post happens here is the terminal
+          // section: the complete response is known, so it is born `final` (§5.5).
+          p.chrome.liveReplyTs = await postSlackReply(host, conn, p, state, first, true, rest.length === 0)
         }
       }
-      for (const section of rest) {
-        const ts = await postSlackReply(host, conn, p, state, section)
+      for (const [index, section] of rest.entries()) {
+        const ts = await postSlackReply(host, conn, p, state, section, true, index === rest.length - 1)
         if (ts) {
           p.chrome.liveReplyTs = ts
           p.chrome.liveReplyText = section

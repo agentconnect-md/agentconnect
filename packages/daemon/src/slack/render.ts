@@ -46,7 +46,10 @@ export type SlackAction =
   // `recordOnly: true` writes the text to the transcript WITHOUT posting to the channel —
   // used by `minimal` mode to keep the full audit trail while the channel shows only the
   // single collapsed `live-reply` message.
-  | { kind: 'post'; text: string; attributed?: boolean; recordOnly?: boolean }
+  // `terminal: true` marks the LAST body section of the turn's final flush: the complete
+  // response is known when it posts, so the applier can stamp it `final` at birth
+  // (send-message-routing-rework.md §5.5) instead of re-editing it after delivery.
+  | { kind: 'post'; text: string; attributed?: boolean; recordOnly?: boolean; terminal?: boolean }
   // `live-reply` is `minimal` mode's single, in-place agent reply: posted once then
   // chat.update-ed as the turn streams (same post-once/edit-thereafter contract as
   // `progress`), collapsing what would otherwise be many `post` messages into one that
@@ -1379,12 +1382,31 @@ export class OutputConverger {
         : []
       return [...this.closeSegment(true), clear, ...footer]
     }
-    if (this.mode === 'low') return [...this.flush(), clear, ...attribution]
+    if (this.mode === 'low') return [...this.markTerminalPost(this.flush()), clear, ...attribution]
     // The daemon cancels the idle-flush timer before onFinal, so drain any reasoning
     // buffered since the last flush here. It goes BEFORE the body flush so the Thinking
     // block posts above the reply — thinking precedes the answer (§9.1), so it must sit
     // above it, not below (only high mode ever has reasoning to drain).
     const reasoning = this.drainReasoning()
-    return [...reasoning, ...this.flush(), clear, ...attribution, ...this.settleStream('completed')]
+    return [
+      ...reasoning,
+      ...this.markTerminalPost(this.flush()),
+      clear,
+      ...attribution,
+      ...this.settleStream('completed')
+    ]
+  }
+
+  /** onFinal only: flag the last delivered body section as this response's terminal post,
+   *  so the applier can close the response at post time instead of re-editing it (§5.5). */
+  private markTerminalPost(actions: SlackAction[]): SlackAction[] {
+    for (let i = actions.length - 1; i >= 0; i--) {
+      const action = actions[i]
+      if (action?.kind === 'post' && !action.recordOnly && action.attributed !== false) {
+        action.terminal = true
+        break
+      }
+    }
+    return actions
   }
 }

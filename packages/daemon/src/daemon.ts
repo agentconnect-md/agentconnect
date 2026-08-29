@@ -808,6 +808,9 @@ export class Daemon {
           return recipient ? { recipient } : {}
         },
         apply: (p, action) => this.applySlackAction(p, action as SlackAction),
+        // §5.5: resolve the closing routing facts before the final body flush, so a
+        // terminal section posted at finalization is born `final` (no closing edit).
+        prepareResponseClosure: (p) => this.prepareSlackResponseClosure(p),
         // §5.5: re-stamp the delivered answer as this response's one `final` event.
         closeResponse: (p) => this.closeSlackResponse(p),
         // Suppression teardown: stop the append timer and settle the chrome stream mid-flight
@@ -10747,6 +10750,10 @@ export class Daemon {
     currentAttributionInfo: () => Promise<SlackAttributionInfo>
   ): Promise<void> {
     if (p.webchat && !p.webchat.continuation) return
+    // The complete reply text exists now, so the closing routing facts can be resolved
+    // BEFORE the final body actions are enqueued — any section they post is then born
+    // `final` instead of owing a closing edit (§5.5). Exact lookup, like closeResponse.
+    this.turnSurfaces.exact(p.plan.platform)?.prepareResponseClosure?.(p)
     const { plan } = run
     const link = plan.showFooter ? this.sessionLink(p.outwardSessionId) : undefined
     const finalAttributionInfo = plan.showFooter ? await currentAttributionInfo() : undefined
@@ -11484,34 +11491,65 @@ export class Daemon {
   }
 
   /**
-   * Slack's §7.3 `closeResponse`: close this turn's logical response with one
-   * content-preserving edit (send-message-routing-rework.md §5.5). Reached only through
-   * the Slack turn-output surface, so the platform is Slack by construction.
+   * Slack's §7.3 `prepareResponseClosure`: resolve the routing facts of the COMPLETE
+   * response — recipients, the addressed-anyone bit, and whether any peer agent shares
+   * this conversation — before the final body flush, so a terminal section posted at
+   * finalization is born `final` instead of owing the closing edit (§5.5).
    *
-   * Recipients come from the COMPLETE response and are resolved against the
-   * CONVERSATION's directory — the same bidirectional mapping the target will use — so
-   * author and target cannot disagree about who was addressed.
+   * Recipients are resolved against the CONVERSATION's directory — the same
+   * bidirectional mapping the target will use — so author and target cannot disagree
+   * about who was addressed. Conservative on a missing org/snapshot: leave
+   * `finalRouting` unset, and the closure falls back to today's unconditional re-stamp.
    */
-  private async closeSlackResponse(p: Pending): Promise<void> {
-    if (!p.conn) return
+  private prepareSlackResponseClosure(p: Pending): void {
+    if (!p.conn || !p.reply.responseId) return
     const orgId = this.cpCollab.orgForAgent(p.plan.agentId)
-    const recipients = orgId
-      ? resolveSlackMentionedAgents(
-          p.reply.text,
-          this.cpCollab.mentionDirectory(orgId, p.plan.platform, p.plan.channel)
-        ).filter((id) => id !== p.plan.agentId)
-      : []
+    if (!orgId) return
+    const directory = this.cpCollab.mentionDirectory(orgId, p.plan.platform, p.plan.channel)
     // Whether the answer addressed ANYONE is read from the complete reply text, not
     // from the final section: §2.3 makes any address binding, and the splitter may
     // have put the only mention in section one. Without this the same answer would
     // wake a peer or not depending on where the cut landed.
-    const addressedAnyone = slackTextAddressesAnyone(p.reply.text)
+    p.reply.finalRouting = {
+      mentionedAgentIds: resolveSlackMentionedAgents(p.reply.text, directory).filter((id) => id !== p.plan.agentId),
+      addressedAnyone: slackTextAddressesAnyone(p.reply.text),
+      hasPeers: directory.some((entry) => entry.agentId !== p.plan.agentId)
+    }
+  }
+
+  /**
+   * Slack's §7.3 `closeResponse`: close this turn's logical response with one
+   * content-preserving edit (send-message-routing-rework.md §5.5). Reached only through
+   * the Slack turn-output surface, so the platform is Slack by construction.
+   *
+   * The edit is a LAST RESORT, because chat.update marks the visible reply "(edited)":
+   * a terminal section born `final` already closed the response, and a conversation
+   * with no peer agent has no consumer for the final event at all — both skip here.
+   */
+  private async closeSlackResponse(p: Pending): Promise<void> {
+    if (!p.conn) return
+    if (p.reply.finalStamped !== undefined && p.reply.finalStamped === p.reply.lastResponse?.ts) {
+      this.log.debug(`slack: response ${p.reply.responseId} closed at post time (ts=${p.reply.finalStamped})`)
+      return
+    }
+    const prepared = p.reply.finalRouting
+    if (prepared && !prepared.hasPeers) {
+      this.log.debug(
+        `slack: skipping finalization of response ${p.reply.responseId} — no peer agents in the conversation`
+      )
+      return
+    }
+    const orgId = this.cpCollab.orgForAgent(p.plan.agentId)
+    const mentionDir = orgId ? this.cpCollab.mentionDirectory(orgId, p.plan.platform, p.plan.channel) : []
+    const recipients =
+      prepared?.mentionedAgentIds ??
+      resolveSlackMentionedAgents(p.reply.text, mentionDir).filter((id) => id !== p.plan.agentId)
+    const addressedAnyone = prepared?.addressedAnyone ?? slackTextAddressesAnyone(p.reply.text)
     // What this response RESOLVED to, at the one place the author still knows it.
     // Everything downstream (relay arbitration, the target's ladder) sees only the
     // outcome, so without this a response that addressed a peer but resolved to no
     // agent — a stale or unpopulated mention directory — is indistinguishable from
     // one that addressed nobody, on either side of the wire.
-    const mentionDir = orgId ? this.cpCollab.mentionDirectory(orgId, p.plan.platform, p.plan.channel) : []
     this.log.debug(
       `slack: finalizing response ${p.reply.responseId} for "${p.plan.agentId}" — recipients=[${recipients.join(',')}] ` +
         `addressedAnyone=${addressedAnyone} text=${JSON.stringify(p.reply.text.slice(0, 120))} ` +
