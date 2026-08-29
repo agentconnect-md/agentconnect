@@ -748,10 +748,14 @@ describe('applySlackAction — chrome stream actions', () => {
     expect(state.stream).toEqual({ channel: 'C1', threadTs: 'T1', ts: '900.1' })
   })
 
-  it('carries no identity in a DM, exactly like the progress message it replaces', async () => {
+  it('carries the agent identity in a DM too — an undecorated stream renders a placeholder', async () => {
     const { apply, conn } = fixture({}, { isDm: true })
     await apply({ kind: 'stream-start' })
-    expect(conn.startTurnStream).toHaveBeenCalledWith('C1', 'T1', { isDm: true, recipientUserId: 'U1' })
+    expect(conn.startTurnStream).toHaveBeenCalledWith('C1', 'T1', {
+      isDm: true,
+      recipientUserId: 'U1',
+      identity: { username: 'Bot A', icon_url: 'https://icons.example.test/a.png' }
+    })
   })
 
   it('refuses to open a second stream beside a live one', async () => {

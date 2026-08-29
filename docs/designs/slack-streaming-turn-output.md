@@ -119,10 +119,14 @@ contradict the published documentation, and two of them changed the design.
    every non-recipient sees an italic "Thinking…" placeholder that flips to the full plan card
    at stop. Body posts are real-time for everyone throughout — which is exactly the property
    that makes chrome-only viable and body streaming not (§1).
-8. **`username` / `icon_url` / `icon_emoji` are accepted on `chat.startStream`.** The stream
-   therefore takes the same identity policy as today's chrome rows — the agent's name and icon
-   in a channel, the app's own in a DM — reusing the existing `customUsernameRetryAt` cooldown
-   for a workspace without `chat:write.customize` (retry undecorated, re-probe in five minutes).
+8. **`username` / `icon_url` / `icon_emoji` are accepted on `chat.startStream` — in DMs too.**
+   There is ONE identity policy: every Slack row — body, chrome, status bar, stream — carries
+   the agent's name and icon, on every surface. A DM exemption used to exist for chrome rows
+   and produced a mixed DM (decorated bodies beside app-identity chrome) plus a broken stream:
+   an undecorated `chat.startStream` renders a placeholder avatar with NO app-profile fallback
+   (verified live 2026-08-29), unlike an undecorated `postMessage`. The existing
+   `customUsernameRetryAt` cooldown still governs a workspace without `chat:write.customize`
+   (retry undecorated, re-probe in five minutes).
 9. **Recipient.** Channel only; a DM passes none. A human-initiated turn names the initiating
    human's Slack user id plus the team id. A turn with no human initiator — agent-to-agent,
    cron, hook, dream — names the bot's OWN user id and its team id, which Slack accepts. There

@@ -172,19 +172,11 @@ export interface SlackTurnHost<TTurn> {
   debug(message: string): void
 }
 
-/** Conversational authorship for Slack rows: the agent's name and icon, applied
- *  only in channels. A DM is already a one-to-one surface, so overriding the
- *  author there would replace the bot's own identity for no gain. */
-export function slackPostOptions(
-  p: Pick<SlackTurnPlan, 'platform' | 'isDm' | 'agentName' | 'iconUrl'>
-): SlackPostOptions | undefined {
-  if (p.platform !== 'slack' || p.isDm) return undefined
-  return { username: p.agentName, ...(p.iconUrl ? { icon_url: p.iconUrl } : {}) }
-}
-
-/** Visual identity for Slack rows owned by the selected agent. Kept separate from
- *  conversational authorship because status/chrome rows must retain their chrome
- *  metadata marker instead of masquerading as transcript messages. */
+/** The ONE identity policy for Slack rows: the agent's name and icon, on every surface —
+ *  channel and DM, body and chrome alike. A DM exemption used to exist for chrome rows and
+ *  produced a mixed DM (decorated bodies beside app-identity chrome) plus a broken stream
+ *  (an undecorated `chat.startStream` renders a placeholder avatar, no fallback). A
+ *  customize-less workspace still degrades per send via the connection's cooldown. */
 export function slackAgentIdentityOptions(
   p: Pick<SlackTurnPlan, 'platform' | 'agentName' | 'iconUrl'>
 ): SlackPostOptions | undefined {
@@ -517,11 +509,10 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     }
     return
   }
-  const postOptions = slackPostOptions(p.plan)
-  const statusBarPostOptions = slackAgentIdentityOptions(p.plan)
-  // Chrome variant of the post options: marks status/progress/plan/reasoning/notice/card
+  const identity = slackAgentIdentityOptions(p.plan)
+  // Chrome variant of the identity: marks status/progress/plan/reasoning/notice/card
   // messages so a peer daemon's thread backfill skips them (they are not conversation).
-  const chromeOptions: SlackPostOptions = { ...(postOptions ?? {}), chrome: true }
+  const chromeOptions: SlackPostOptions = { ...(identity ?? {}), chrome: true }
   switch (action.kind) {
     case 'set-status':
       if (p.plan.statusThread)
@@ -592,12 +583,11 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     case 'stream-start': {
       if (state.stream || state.streamDead || state.streamDegraded) return
       if (p.plan.thread) {
-        // Exactly the identity today's `progress` message carries: the agent's name and icon
-        // in a channel, nothing in a DM, under the connection's customize cooldown.
+        // Same identity as every row — an undecorated stream has no app-profile fallback.
         state.stream = await conn.startTurnStream(p.plan.channel, p.plan.thread, {
           isDm: p.plan.isDm,
           ...(state.recipient ? { recipientUserId: state.recipient } : {}),
-          ...(postOptions ? { identity: postOptions } : {})
+          ...(identity ? { identity } : {})
         })
         if (state.stream) return
       }
@@ -763,7 +753,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
         // The session status line represents the selected agent, so keep its author
         // identity aligned with the native loading state and the eventual reply.
         const posted = await conn.postBlocks(p.plan.channel, action.blocks, action.text, p.plan.thread, {
-          ...(statusBarPostOptions ?? {}),
+          ...(identity ?? {}),
           chrome: true,
           chromeOwnerAgentId: p.plan.agentId
         })

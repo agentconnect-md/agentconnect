@@ -834,9 +834,11 @@ describe('Daemon transcript records the agent reply', () => {
     await (daemon as any).dispatch('bot-a', dm('100', 'q'), 'int-a')
 
     // High mode still posts tool-progress chrome, but that is not an agent reply body
-    // and must not become the attribution target. It's marked `chrome` so the backfill skips it.
+    // and must not become the attribution target. It's marked `chrome` so the backfill skips
+    // it, and carries the one identity policy (agent name on every surface, DMs included).
     expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('Read file.ts'), 'T1', {
-      chrome: true
+      chrome: true,
+      username: 'bot-a'
     })
     expect(conn.postMessage.mock.calls.some((call) => call[3]?.trailingBlocks)).toBe(false)
     await daemon.stop()
