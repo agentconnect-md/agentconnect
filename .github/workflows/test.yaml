@@ -249,6 +249,15 @@ jobs:
       run:
         shell: bash
     steps:
+      # The daemon suite creates and deletes a temporary root, a SQLite database and its two WAL
+      # siblings per store, thousands of times over, and real-time scanning charges for each write.
+      # Advisory, so `continue-on-error`: a runner image without Defender must not fail the job here.
+      - name: Exempt the workspace from real-time scanning
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
+          Add-MpPreference -ExclusionProcess 'node.exe', 'git.exe'
       # Before checkout: the runner's Git installs with `core.autocrlf=true`, which would rewrite
       # every fixture's line endings and diverge golden files from the Linux jobs' bytes.
       - name: Keep line endings as committed
