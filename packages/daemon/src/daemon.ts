@@ -12330,7 +12330,6 @@ export class Daemon {
     }
   }
 
-  /** Persist one authoritative title and push the CP metadata projection. */
   /** A title for DISPLAY on a platform surface: raw `<@U…>` mentions rewritten to `@name`,
    *  exactly as the console's session reader does at read time. */
   private async displayTitle(title: string): Promise<string> {
@@ -12339,6 +12338,7 @@ export class Daemon {
     return substituteUserMentions(title, await this.store.getDisplayNames(ids))
   }
 
+  /** Persist one authoritative title and push the CP metadata projection. */
   private async persistSessionTitle(rec: SessionRecord, title: string | null): Promise<void> {
     await this.store.setSessionTitle(rec.key, title)
     if (!rec.acpSessionId) return
