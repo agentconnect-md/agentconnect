@@ -294,6 +294,14 @@ for the session, whichever comes first — delivers it:
 - Delivered as **agent speech**, with the agent's conversational identity
   (name, icon, author id) and a transcript row — not as a chrome notice: the
   model authored it.
+- The attribution footer **migrates** onto the narration's last section, the
+  way it migrates onto each new in-turn reply section: turn teardown records
+  the footer-carrying reply (with the §5.5 closure metadata a clearing edit
+  must re-supply — chat.update replaces it wholesale), the narration posts
+  born-with-footer, and the previous holder is edited footer-less,
+  best-effort. A turn that left no footer clears the record instead, so a
+  drain never steals an older response's footer; a daemon restart in between
+  loses the record and the old footer simply stays put.
 - The no-response sentinel, a closed session, and `none` output mode keep their
   usual semantics (sentinel drops; `none` records without posting).
 - Capture is gated on the lease saying `running`, so a straggler chunk after

@@ -124,11 +124,14 @@ function makeRoutable(daemon: Daemon) {
       config: { botToken: 'b', appToken: 'p' }
     }
   ]
+  let post = 0
   const conn = {
     workspaceId: vi.fn(() => 'T1'),
     setStatus: vi.fn(async () => {}),
     setTitle: vi.fn(async () => {}),
-    postMessage: vi.fn(async () => {})
+    postMessage: vi.fn(async () => `ts-${++post}`),
+    updateBlocks: vi.fn(async () => true),
+    finalizeResponse: vi.fn(async () => true)
   }
   ;(daemon as any).connByIntegration.set('int-a', conn)
   return conn
@@ -1966,6 +1969,92 @@ describe('Daemon idle sweep — background-task lease', () => {
       await new Promise((r) => setImmediate(r))
       const bodies = (conn.postMessage as any).mock.calls.map((call: any[]) => String(call[1]))
       expect(bodies.filter((body: string) => body === 'early words')).toHaveLength(1)
+      await daemon.stop()
+    })
+
+    it('migrates the attribution footer onto the narration and clears the previous holder', async () => {
+      const clock = new FakeClock()
+      const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+      await (daemon as any).store.setOutputModeOverride(KEY, 'low')
+      // The turn's last reply currently holds the footer — recorded at teardown.
+      ;(daemon as any).lastFooterReply.set(KEY, { channel: 'C1', ts: '111.222', text: 'old body' })
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onAcpUpdate('bot-a', 'acp-1', chunk('narration words'))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      await vi.waitFor(() => expect(conn.postMessage).toHaveBeenCalledTimes(1), WAIT)
+      // Born with the footer: the last (only) section carries the attribution context block.
+      const options = (conn.postMessage as any).mock.calls[0][3]
+      expect(JSON.stringify(options.trailingBlocks)).toContain('sent by')
+      // The previous holder loses its footer via the authorship-only re-stamp (no closure).
+      await vi.waitFor(() => expect(conn.updateBlocks).toHaveBeenCalledTimes(1), WAIT)
+      expect((conn.updateBlocks as any).mock.calls[0].slice(0, 3)).toEqual([
+        'C1',
+        '111.222',
+        [{ type: 'markdown', text: 'old body' }]
+      ])
+      expect(conn.finalizeResponse).not.toHaveBeenCalled()
+      // The narration is the new holder, tracked for the next migration.
+      expect((daemon as any).lastFooterReply.get(KEY)).toMatchObject({ ts: 'ts-1', text: 'narration words' })
+      await daemon.stop()
+    })
+
+    it('re-supplies the §5.5 closure when clearing a closure-stamped holder', async () => {
+      const clock = new FakeClock()
+      const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+      await (daemon as any).store.setOutputModeOverride(KEY, 'low')
+      const closure = { responseId: 'resp-9', hopCount: 2, mentionedAgentIds: ['peer-1'], addressedAnyone: true }
+      ;(daemon as any).lastFooterReply.set(KEY, { channel: 'C1', ts: '111.333', text: 'closed body', closure })
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onAcpUpdate('bot-a', 'acp-1', chunk('follow-up'))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      await vi.waitFor(() => expect(conn.finalizeResponse).toHaveBeenCalledTimes(1), WAIT)
+      // chat.update replaces metadata wholesale — the closure must ride the clearing edit.
+      expect((conn.finalizeResponse as any).mock.calls[0]).toEqual([
+        'C1',
+        '111.333',
+        [{ type: 'markdown', text: 'closed body' }],
+        'closed body',
+        'bot-a',
+        {
+          responseId: 'resp-9',
+          deliveryState: 'final',
+          hopCount: 2,
+          mentionedAgentIds: ['peer-1'],
+          addressedAnyone: true
+        }
+      ])
+      expect(conn.updateBlocks).not.toHaveBeenCalled()
+      await daemon.stop()
+    })
+
+    it('records the footer holder at teardown, and clears it for a footerless turn', async () => {
+      const clock = new FakeClock()
+      const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+      const base = {
+        plan: { sessionKey: KEY, channel: 'C1', sourceHopCount: 1 },
+        reply: {
+          lastReply: { ts: '5.5', text: 'reply body', footerKey: 'fk' },
+          lastResponse: { ts: '5.5', text: 'reply body' },
+          responseId: 'resp-1',
+          closedRouting: { mentionedAgentIds: ['peer-2'], addressedAnyone: false }
+        }
+      }
+      ;(daemon as any).recordFooterHolder(base)
+      expect((daemon as any).lastFooterReply.get(KEY)).toEqual({
+        channel: 'C1',
+        ts: '5.5',
+        text: 'reply body',
+        closure: { responseId: 'resp-1', hopCount: 1, mentionedAgentIds: ['peer-2'], addressedAnyone: false }
+      })
+      // Footer on a NON-terminal message ⇒ no closure to re-supply.
+      ;(daemon as any).recordFooterHolder({
+        ...base,
+        reply: { ...base.reply, lastResponse: { ts: '9.9', text: 'other' } }
+      })
+      expect((daemon as any).lastFooterReply.get(KEY)?.closure).toBeUndefined()
+      // A footerless turn CLEARS the record — a drain must not steal an older response's footer.
+      ;(daemon as any).recordFooterHolder({ ...base, reply: { ...base.reply, lastReply: undefined } })
+      expect((daemon as any).lastFooterReply.get(KEY)).toBeUndefined()
       await daemon.stop()
     })
 

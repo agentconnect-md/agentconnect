@@ -491,6 +491,9 @@ export interface ReplyAccumulator {
    *  finalization with the closing metadata already aboard, so `closeResponse` skips its
    *  content-identical edit (which would mark the visible reply "(edited)"). */
   finalStamped?: string
+  /** What the closure actually resolved to, recorded when `closeSlackResponse` computes it
+   *  locally — §5.2's footer migration must re-supply it if it later edits that message. */
+  closedRouting?: { mentionedAgentIds: string[]; addressedAnyone: boolean }
 }
 
 /** The turn's completion machinery: what settles it, what defers it, and the once-only
