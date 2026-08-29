@@ -108,6 +108,7 @@ export class AgentDelivery {
     }
     const targets = candidates.filter((daemonId) => daemonSupportsAgent(shaped, this.deps.daemonFeatures?.(daemonId)))
     if (targets.length === 0) return
+    // The per-peer workspace dual encoding (§8) lives in the sender's agentUpsert.
     await this.fanOut(targets, onError, (daemonId) =>
       this.deps.control.agentUpsert(daemonId, { agentId: agent.id, spec }, agent.orgId)
     )

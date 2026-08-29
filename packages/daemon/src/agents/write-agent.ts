@@ -664,7 +664,7 @@ export function pruneMovedAgentDependents(
 }
 
 /** Map a CP workspace mode onto the daemon's AgentSchema workspace mode. */
-function mapWorkspaceMode(mode: 'scratch' | 'github' | 'gitlab'): 'from-scratch' | 'git-repo' {
+function mapWorkspaceMode(mode: 'scratch' | 'git' | 'github' | 'gitlab'): 'from-scratch' | 'git-repo' {
   return mode === 'scratch' ? 'from-scratch' : 'git-repo'
 }
 
@@ -847,15 +847,16 @@ export function applySpecFields(
       existing.gitBranch = ws.branch
       if (ws.agentDir !== undefined) existing.agentDir = ws.agentDir
     }
-    if (ws.mode === 'github') {
+    if (ws.mode === 'github' || ws.mode === 'git') {
       // Keep old CPs safe too: strip historical URL secrets, then reject any
       // transport a current daemon would refuse. Origin authorization remains
       // daemon-local and happens at the clone/pull boundary: one incompatible
       // roster entry must not prevent the daemon from completing CP register.
-      existing.gitRepo =
-        ws.gitCredential === 'github-app'
-          ? normalizeGithubRepoUrl(ws.gitRepo)
-          : normalizeGitCloneUrl(redactGitUrlSecrets(ws.gitRepo))
+      const githubBacked =
+        ws.mode === 'github' ? ws.gitCredential === 'github-app' : ws.credential?.provider === 'github'
+      existing.gitRepo = githubBacked
+        ? normalizeGithubRepoUrl(ws.gitRepo)
+        : normalizeGitCloneUrl(redactGitUrlSecrets(ws.gitRepo))
       existing.gitBranch = ws.branch
       if (ws.agentDir !== undefined) {
         try {
@@ -876,6 +877,17 @@ export function applySpecFields(
       // The rename-stable identity rides the spec (§17.1); the grant consumer
       // verifies every echo against it.
       existing.gitlabProjectId = ws.projectId
+    } else if (ws.mode === 'git') {
+      // The host-neutral arm (git-workspace-model.md §3): the credential union
+      // is a near-identity map onto the internal marker pair, absent ⇒ anonymous.
+      if (ws.credential?.provider === 'gitlab') {
+        existing.gitCredential = 'gitlab'
+        existing.gitlabProjectId = ws.credential.projectId
+      } else {
+        if (ws.credential?.provider === 'github') existing.gitCredential = 'github-app'
+        else delete existing.gitCredential
+        delete existing.gitlabProjectId
+      }
     } else {
       if (ws.gitCredential !== undefined) existing.gitCredential = ws.gitCredential
       else delete existing.gitCredential

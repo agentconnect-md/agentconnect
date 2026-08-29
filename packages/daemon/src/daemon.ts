@@ -314,6 +314,7 @@ import {
   RUNTIME_COMMANDS_FEATURE,
   AGENT_WAKE_FEATURE,
   PULL_REQUEST_FEEDBACK_FEATURE,
+  WORKSPACE_GIT_V1_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
@@ -4055,7 +4056,10 @@ export class Daemon {
       CODEHOST_NOTE_PROJECTION_V1_FEATURE,
       // The provider-routed formal-review surface: `submitCodeReview` plus the §15 GitLab adapter.
       CODEHOST_REVIEW_V1_FEATURE,
-      PULL_REQUEST_FEEDBACK_FEATURE
+      PULL_REQUEST_FEEDBACK_FEATURE,
+      // This daemon decodes the host-neutral `mode: 'git'` workspace arm; the CP
+      // dual-encodes the legacy host-shaped arms to peers without this bit.
+      WORKSPACE_GIT_V1_FEATURE
     ]
   }
 

@@ -338,8 +338,12 @@ export async function applyReconcileSnapshot(host: ConfigApplyHost, snap: Regist
  * nothing adopts past that.
  */
 function gitlabOriginRefusal(spec: AgentUpsert['spec']): string | undefined {
+  // Keyed on the credential axis, not the wire arm: the host-neutral `git` arm
+  // carries the same managed-GitLab binding the legacy `gitlab` arm did.
   const workspace = spec.workspace
-  if (workspace?.mode !== 'gitlab') return undefined
+  const gitlabBacked =
+    workspace?.mode === 'gitlab' || (workspace?.mode === 'git' && workspace.credential?.provider === 'gitlab')
+  if (!gitlabBacked) return undefined
   const origin = unauthorizedWorkspaceGitOrigin(workspace.gitRepo, spec.gitlabHost)
   return origin === undefined
     ? undefined

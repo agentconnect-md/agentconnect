@@ -81,12 +81,13 @@ const agent = {
   name: 'public-reviewer',
   canEdit: true,
   workspace: {
-    mode: 'github',
+    mode: 'git',
+    provider: 'github',
     repo: 'acme/infra',
+    gitRepo: 'https://github.com/acme/infra',
     branch: 'main',
     agentDir: '/',
-    worktree: true,
-    installationId: 'ins-1'
+    worktree: true
   }
 } as unknown as Agent
 
@@ -178,7 +179,7 @@ afterEach(async () => {
 describe('shared GitHub repository picker', () => {
   it('offers a public repository in the creation wizard, and keeps the roster App-backed', async () => {
     await render(<AddAgentModal onClose={() => undefined} />)
-    await act(async () => buttonsNamed('From GitHub')[0]?.click())
+    await act(async () => buttonsNamed('GitHub')[0]?.click())
     await openPicker()
 
     // A synced row still resolves through its installation.
@@ -224,11 +225,11 @@ describe('shared GitHub repository picker', () => {
 
     await act(async () => buttonsNamed('Replace workspace')[0]?.click())
     expect(mocks.setAgentWorkspace).toHaveBeenCalledWith('agent-a', {
-      mode: 'github',
+      mode: 'git',
       worktree: true,
-      repoFullName: 'github/docs',
+      gitRepo: 'github/docs',
       gitBranch: 'main',
-      gitAccess: 'read'
+      access: 'read'
     })
   })
 
@@ -241,7 +242,14 @@ describe('shared GitHub repository picker', () => {
         agent={
           {
             ...agent,
-            workspace: { mode: 'github', repo: 'github/docs', branch: 'main', agentDir: '/', worktree: true }
+            workspace: {
+              mode: 'git',
+              repo: 'github/docs',
+              gitRepo: 'https://github.com/github/docs',
+              branch: 'main',
+              agentDir: '/',
+              worktree: true
+            }
           } as unknown as Agent
         }
         authorized={[]}
@@ -257,12 +265,12 @@ describe('shared GitHub repository picker', () => {
     await act(async () => buttonsNamed('Save')[0]?.click())
 
     expect(mocks.setAgentWorkspace).toHaveBeenCalledWith('agent-a', {
-      mode: 'github',
+      mode: 'git',
       worktree: true,
-      repoFullName: 'github/docs',
+      gitRepo: 'github/docs',
       gitBranch: 'main',
       agentDir: 'content',
-      gitAccess: 'read'
+      access: 'read'
     })
   })
 
@@ -274,7 +282,14 @@ describe('shared GitHub repository picker', () => {
         agent={
           {
             ...agent,
-            workspace: { mode: 'github', repo: 'github/docs', branch: 'main', agentDir: '/', worktree: true }
+            workspace: {
+              mode: 'git',
+              repo: 'github/docs',
+              gitRepo: 'https://github.com/github/docs',
+              branch: 'main',
+              agentDir: '/',
+              worktree: true
+            }
           } as unknown as Agent
         }
         authorized={[]}
@@ -288,12 +303,12 @@ describe('shared GitHub repository picker', () => {
     await act(async () => buttonsNamed('Save')[0]?.click())
 
     expect(mocks.setAgentWorkspace).toHaveBeenCalledWith('agent-a', {
-      mode: 'github',
+      mode: 'git',
       worktree: true,
-      repoFullName: 'github/docs',
+      gitRepo: 'github/docs',
       gitBranch: 'main',
       agentDir: 'content',
-      gitAccess: 'read'
+      access: 'read'
     })
   })
 })

@@ -22,6 +22,9 @@ const KEYS = [
   'SOCIAL_PROVIDERS',
   'CP_URL',
   'RELAY_URL',
+  // The deployment's GitLab instance base URL (workspace tile derivation). Served
+  // by the CP's runtime-config below; this env key is the local-dev fallback.
+  'GITLAB_URL',
   // Dedicated MCP origin (mirrors the CP's PUBLIC_MCP_URL). Unset ⇒ the console
   // renders the MCP endpoint as CP_URL + /mcp (ConnectAiCard).
   'MCP_URL',
@@ -68,6 +71,7 @@ interface RuntimeConfigResponse {
       apiResource: string | null
       socialProviders: string[]
     }
+    gitlab?: null | { instanceUrl: string }
   }
 }
 
@@ -89,6 +93,7 @@ async function loadDeploymentEnv(): Promise<Record<string, string> | null> {
     if (body.config.auth.apiResource) env.LOGTO_API_RESOURCE = body.config.auth.apiResource
     env.SOCIAL_PROVIDERS = body.config.auth.socialProviders.join(',')
   }
+  if (body.config.gitlab?.instanceUrl) env.GITLAB_URL = body.config.gitlab.instanceUrl
   return env
 }
 

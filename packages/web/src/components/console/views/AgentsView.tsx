@@ -579,7 +579,7 @@ export default function AgentsView() {
             // Only a GitHub App checkout can promise privacy, so every other clone takes the neutral repo glyph.
             const repoIcon = !isGitWorkspace(a.workspace)
               ? 'folder'
-              : a.workspace.mode === 'github' && a.workspace.installationId
+              : a.workspace.provider === 'github'
                 ? 'lock'
                 : 'book-marked'
             const repoLabel = isGitWorkspace(a.workspace) ? a.repo : 'scratch'

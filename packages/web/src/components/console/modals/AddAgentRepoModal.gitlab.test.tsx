@@ -215,7 +215,7 @@ describe('AddAgentRepoModal, GitLab projects', () => {
         id: 'agent-a',
         name: 'build-agent',
         canEdit: true,
-        workspace: { mode: 'gitlab', projectId: '4455667' }
+        workspace: { mode: 'git', provider: 'gitlab', repoId: '4455667', gitRepo: 'https://gitlab.com/acme/analytics' }
       } as unknown as Agent,
       authorized: [grant({ repoId: '4455668', repoFullName: 'example-group/example-second' })]
     })

@@ -8,7 +8,7 @@ import type {
   AgentWorkspace,
   BotRecord,
   CronRecord,
-  GithubAgentWorkspace,
+  GitAgentWorkspace,
   IntegrationRecord
 } from '../persistence/ports.js'
 import type { ControlSender } from './outbound.js'
@@ -48,12 +48,11 @@ const SESSION_KEY = { platform: 'slack' as const, channel: 'C-move', thread: 'T-
 const WORKSPACE_REPO_ID = 4242n
 const STAGED_MOVE = '77777777-7777-4777-8777-777777777777'
 const GITHUB_WORKSPACE = {
-  mode: 'github',
+  mode: 'git',
   gitRepo: 'https://github.com/acme/repo.git',
   gitBranch: 'main',
-  installationId: '66666666-6666-4666-8666-666666666666',
-  gitAccess: 'write'
-} satisfies GithubAgentWorkspace
+  credential: { provider: 'github', installationId: '66666666-6666-4666-8666-666666666666', access: 'write' }
+} satisfies GitAgentWorkspace
 
 function agent(daemonId: string | null): AgentRecord {
   return {
@@ -178,7 +177,7 @@ function make(
     workspacePersistenceFailsBeforeCommit?: boolean
     workspacePersistenceFailsAfterCommit?: boolean
     unplaced?: boolean
-    workspace?: GithubAgentWorkspace
+    workspace?: GitAgentWorkspace
     workspaceRepoId?: bigint
     sourceDetachStarted?: () => void
     waitSourceDetach?: Promise<void>
@@ -220,7 +219,7 @@ function make(
       _orgId: string,
       _id: string,
       _expected: Date,
-      _expectedMode: 'scratch' | 'github',
+      _expectedMode: AgentWorkspace['mode'],
       workspace: AgentWorkspace,
       workspaceRepoId?: bigint
     ) => {
@@ -451,7 +450,9 @@ describe('AgentMoveService', () => {
     expect(t.activations[0]).toMatchObject({
       agentId: AGENT,
       reconcileWorkspace: true,
-      spec: { workspace: { mode: 'github', gitRepo: GITHUB_WORKSPACE.gitRepo } }
+      // The assembled spec carries the host-neutral arm; the legacy downgrade is per-peer,
+      // at the transmit site this stub replaces.
+      spec: { workspace: { mode: 'git', gitRepo: GITHUB_WORKSPACE.gitRepo, credential: { provider: 'github' } } }
     })
     expect(t.detaches[0]?.moveId).toBe(t.activations[0]?.moveId)
     // The trailing upsert re-projects the spec after the redundant-grant cleanup, which
@@ -512,7 +513,10 @@ describe('AgentMoveService', () => {
 
   it('reconciles an access edit so the daemon can preserve the matching checkout', async () => {
     const t = make({ workspace: GITHUB_WORKSPACE })
-    const readOnly = { ...GITHUB_WORKSPACE, gitAccess: 'read' as const }
+    const readOnly = {
+      ...GITHUB_WORKSPACE,
+      credential: { ...GITHUB_WORKSPACE.credential, access: 'read' as const }
+    }
 
     const edited = await t.service.setWorkspace(t.current(), readOnly, WORKSPACE_REPO_ID)
 

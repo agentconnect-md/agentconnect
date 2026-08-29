@@ -90,10 +90,9 @@ function agent(): AgentRecord {
     orgId,
     name: 'review-agent',
     workspace: {
-      mode: 'github',
+      mode: 'git',
       gitRepo: 'https://github.com/acme/repo.git',
-      installationId: 'installation-row',
-      gitAccess: 'write'
+      credential: { provider: 'github', installationId: 'installation-row', access: 'write' }
     },
     workspaceRepoId: 42n
   } as AgentRecord

@@ -66,11 +66,11 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
       await lockHookReviewAgentRepoScope(tx, input.agentId, input.repoId)
       const agent = await tx.agent.findUnique({
         where: { id: input.agentId },
-        select: { workspaceRepoId: true, workspaceMode: true }
+        select: { workspaceRepoId: true, gitCredentialProvider: true }
       })
       // The hosts number repositories independently, so the workspace collides only
-      // when the grant names ITS provider — `workspaceMode` doubles as that provider.
-      if (agent?.workspaceRepoId === input.repoId && agent.workspaceMode === input.provider) {
+      // when the grant names ITS provider — `gitCredentialProvider` is that provider.
+      if (agent?.workspaceRepoId === input.repoId && agent.gitCredentialProvider === input.provider) {
         throw new AgentWorkspaceRepoConflict(input.repoId)
       }
       const row = await tx.agentRepoAuthorization.create({
@@ -142,9 +142,9 @@ export class PgAgentRepoAuthorizationRepo implements AgentRepoAuthorizationRepo 
       await lockHookReviewAgentRepoScope(tx, agentId, repoId)
       const agent = await tx.agent.findUnique({
         where: { id: agentId },
-        select: { workspaceRepoId: true, workspaceMode: true }
+        select: { workspaceRepoId: true, gitCredentialProvider: true }
       })
-      const workspaceIsThisRepo = agent?.workspaceRepoId === repoId && agent.workspaceMode === provider
+      const workspaceIsThisRepo = agent?.workspaceRepoId === repoId && agent.gitCredentialProvider === provider
       // HookReviewProjection is the GitHub Checks ledger — GitLab publishes notes and
       // has no durable projection to retire, so only a github grant reaches it.
       //

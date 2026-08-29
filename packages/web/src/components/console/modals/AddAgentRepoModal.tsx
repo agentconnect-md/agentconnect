@@ -225,7 +225,8 @@ export default function AddAgentRepoModal({
       new Set(authorized.filter((r) => repoAuthProvider(r) === 'gitlab' && r.repoId).map((r) => r.repoId as string)),
     [authorized]
   )
-  const workspaceProject = agent.workspace.mode === 'gitlab' ? agent.workspace.projectId : undefined
+  const workspaceProject =
+    agent.workspace.mode === 'git' && agent.workspace.provider === 'gitlab' ? agent.workspace.repoId : undefined
   const glMatches = matchGitlabProjects(gl.choices, glQ)
   const glPicked = gl.choices.find((c) => c.projectId === glPick)
   const glTakenBy = (projectId: string): 'workspace' | 'authorized' | null =>

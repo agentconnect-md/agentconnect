@@ -2015,7 +2015,8 @@ export default function SessionDetailView() {
   const prBranchScoped =
     prSessionId !== null &&
     headerFocusSessionId === prSessionId &&
-    focusedAgent?.workspace.mode === 'github' &&
+    focusedAgent?.workspace.mode === 'git' &&
+    focusedAgent.workspace.provider === 'github' &&
     (focusedSessionDetail?.workspaceIsolation ?? focusedSession?.workspaceIsolation) === 'session' &&
     !(focusedSessionDetail?.contentPurgedAt ?? focusedSession?.contentPurgedAt)
   const focusedAgentRuntime = focusedSession?.runtime || focusedAgent?.runtime || ''

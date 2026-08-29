@@ -592,33 +592,40 @@ export interface RelayRepo {
 
 /** Where the agent runs (inline on the agent; path is daemon-generated). */
 export type WorkspaceIsolation = 'shared' | 'session'
+
+/** Who vouches for a git workspace's repository (git-workspace-model.md §2):
+ *  the second, orthogonal axis of the workspace model. Absent ⇒ anonymous clone,
+ *  which is why "anonymous + write" is unrepresentable — `access` (the ceiling
+ *  for minted tokens) lives inside the credential. */
+export type AgentWorkspaceCredential =
+  | {
+      provider: 'github'
+      /** The GithubInstallation row id picked at write time. A PROVENANCE HINT
+       *  only — minting re-resolves the live installation by repo owner, so
+       *  uninstall→reinstall self-heals. */
+      installationId: string
+      access: 'read' | 'write'
+    }
+  | {
+      /** A managed GitLab project binding vouches (gitlab-com-integration.md §13):
+       *  credentials come from the binding's purpose-separated PATs, never a
+       *  per-agent installation. `workspaceRepoId` holds the numeric project id. */
+      provider: 'gitlab'
+      access: 'read' | 'write'
+    }
+
 export type AgentWorkspace =
   | { mode: 'scratch'; isolation?: WorkspaceIsolation }
   | {
-      mode: 'github'
+      mode: 'git'
       isolation?: WorkspaceIsolation
       gitRepo: string
       gitBranch?: string
       agentDir?: string
-      /** github-app credential mode: the GithubInstallation row id picked at create.
-       *  A PROVENANCE HINT only — minting re-resolves the live installation by repo
-       *  owner, so uninstall→reinstall self-heals. Absent ⇒ anonymous git. */
-      installationId?: string
-      /** Ceiling for minted tokens (contents read|write); absent ⇒ 'write'. */
-      gitAccess?: 'read' | 'write'
+      /** Absent ⇒ anonymous clone; the daemon's operator-owned origin policy still gates the host. */
+      credential?: AgentWorkspaceCredential
     }
-  | {
-      /** A managed GitLab project binding is the workspace (gitlab-com-integration.md
-       *  §13): credentials come from the binding's purpose-separated PATs, never a
-       *  per-agent installation. `workspaceRepoId` holds the numeric project id. */
-      mode: 'gitlab'
-      isolation?: WorkspaceIsolation
-      gitRepo: string
-      gitBranch?: string
-      agentDir?: string
-      gitAccess?: 'read' | 'write'
-    }
-export type GithubAgentWorkspace = Extract<AgentWorkspace, { mode: 'github' }>
+export type GitAgentWorkspace = Extract<AgentWorkspace, { mode: 'git' }>
 
 export interface CreateAgentInput {
   id: AgentId
@@ -3439,6 +3446,9 @@ export interface GitlabProjectBindingRepo {
   }): Promise<GitlabProjectBindingRecord>
   get(orgId: string, bindingId: string): Promise<GitlabProjectBindingRecord | null>
   byProject(orgId: string, projectId: bigint): Promise<GitlabProjectBindingRecord | null>
+  /** Case-insensitive lookup by the CURRENT namespaced path, any lifecycle state —
+   *  the §6 derivation's entry point for a URL-addressed managed project. */
+  byProjectPath(orgId: string, projectPath: string): Promise<GitlabProjectBindingRecord | null>
   listForOrg(orgId: string): Promise<GitlabProjectBindingRecord[]>
   /** How many bindings each connection still administers, keyed by connection id
    *  (§7.1): a connection with any is not released and cannot be removed. */

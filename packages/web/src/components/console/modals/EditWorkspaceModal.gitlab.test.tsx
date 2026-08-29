@@ -4,8 +4,9 @@
  * with no GitLab application 404s the routes behind it, which the pane states as
  * an absence instead of a failed load. Where it is configured, the picker offers
  * the organization's added projects — every state except the transient ones —
- * alongside the ones the connected account can still set up, and the save sends
- * the numeric project id, never the path.
+ * alongside the ones the connected account can still set up, and the save sends the
+ * one host-neutral payload every tile produces: the project's clone address on the
+ * deployment's instance, plus the requested access.
  */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -118,11 +119,11 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
     mocks.fetchGitlabConnections.mockResolvedValue({ enabled: false, connections: [] })
     await render()
 
-    expect(document.body.textContent).toContain('From GitLab')
+    expect(document.body.textContent).toContain('GitLab')
     // Nothing is asked until the source is picked.
     expect(mocks.fetchGitlabProjects).not.toHaveBeenCalled()
 
-    await act(async () => buttonsNamed('From GitLab')[0]?.click())
+    await act(async () => buttonsNamed('GitLab')[0]?.click())
     expect(document.body.textContent).toContain(
       'GitLab is not enabled on this deployment — no GitLab application is configured.'
     )
@@ -139,7 +140,7 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
     // GitLab lists an added project among the account's projects too — it stays one row.
     connected([{ projectId: '1', path: 'acme/platform', defaultBranch: 'main', lastActivityAt: null }])
     await render()
-    await act(async () => buttonsNamed('From GitLab')[0]?.click())
+    await act(async () => buttonsNamed('GitLab')[0]?.click())
     await settleSearch()
     await act(async () => document.querySelector<HTMLDivElement>('.inp')?.click())
 
@@ -152,11 +153,11 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
     expect(document.body.textContent).toContain('bot access degraded')
   })
 
-  it('saves the picked project by its numeric id', async () => {
+  it('saves the picked project as its clone address on the instance', async () => {
     mocks.fetchGitlabProjects.mockResolvedValue([binding({ projectId: '4210', projectPath: 'acme/platform' })])
     connected()
     await render()
-    await act(async () => buttonsNamed('From GitLab')[0]?.click())
+    await act(async () => buttonsNamed('GitLab')[0]?.click())
     await act(async () => document.querySelector<HTMLDivElement>('.inp')?.click())
     const option = Array.from(document.querySelectorAll('button')).find((button) =>
       button.textContent?.includes('acme/platform')
@@ -165,11 +166,11 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
     await act(async () => buttonsNamed('Replace workspace')[0]?.click())
 
     expect(mocks.setAgentWorkspace).toHaveBeenCalledWith('agent-a', {
-      mode: 'gitlab',
+      mode: 'git',
       worktree: true,
-      projectId: '4210',
+      gitRepo: 'https://gitlab.com/acme/platform',
       gitBranch: 'main',
-      gitAccess: 'write'
+      access: 'write'
     })
   })
 
@@ -177,7 +178,7 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
     mocks.fetchGitlabProjects.mockResolvedValue([])
     mocks.fetchGitlabConnections.mockResolvedValue({ enabled: true, connections: [] })
     await render()
-    await act(async () => buttonsNamed('From GitLab')[0]?.click())
+    await act(async () => buttonsNamed('GitLab')[0]?.click())
 
     expect(buttonsNamed('Connect GitLab').length).toBe(1)
     expect(document.querySelector('a[href="/acme/integrations"]')).toBeNull()
@@ -195,7 +196,7 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
         })
     )
     await render()
-    await act(async () => buttonsNamed('From GitLab')[0]?.click())
+    await act(async () => buttonsNamed('GitLab')[0]?.click())
     await settleSearch()
     expect(mocks.searchGitlabProjects).toHaveBeenCalledWith('conn-1', {})
 
@@ -214,11 +215,11 @@ describe('EditWorkspaceModal, GitLab workspace', () => {
     })
     await act(async () => buttonsNamed('Replace workspace')[0]?.click())
     expect(mocks.setAgentWorkspace).toHaveBeenCalledWith('agent-a', {
-      mode: 'gitlab',
+      mode: 'git',
       worktree: true,
-      projectId: '4210',
+      gitRepo: 'https://gitlab.com/acme/platform',
       gitBranch: 'main',
-      gitAccess: 'write'
+      access: 'write'
     })
   })
 })

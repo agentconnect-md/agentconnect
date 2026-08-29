@@ -156,7 +156,9 @@ async function install(a: HttpApp & { fake: FakeGitlab }): Promise<{ authorizeUr
     payload: {
       name: 'axis-bot',
       runtime: 'claude',
-      workspace: { mode: 'gitlab', projectId: PROJECT.toString(), gitAccess: 'write' }
+      // Addressed by URL on the deployment's own GitLab host; the managed binding
+      // is what the server derives from it (git-workspace-model.md §5/§6).
+      workspace: { mode: 'git', gitRepo: `${a.fake.opts.baseUrl}/${a.fake.opts.path}`, access: 'write' }
     }
   })
   expect(created.statusCode).toBe(201)

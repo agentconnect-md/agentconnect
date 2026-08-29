@@ -42,6 +42,11 @@ const PROJECT = 4455667n
 /** A second project under the SAME top-level group — the retarget's other half. */
 const SECOND_PROJECT = 4455668n
 const ROOT_GROUP = 900n
+/** GitLab workspaces are addressed BY URL (git-workspace-model.md §5): the managed
+ *  binding is derived server-side from the path on the deployment's GitLab host. */
+const PROJECT_PATH = 'example-group/example-project'
+const SECOND_PATH = 'example-group/example-second'
+const glRepo = (path: string, base: string = GITLAB_DEFAULT_BASE_URL): string => `${base}/${path}`
 /** The agent whose own account (§7.2) backs every grant assertion below. */
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
@@ -168,7 +173,11 @@ function gitlabAgent(over: Partial<AgentRecord> = {}): AgentRecord {
     id: AGENT,
     orgId: DEFAULT_ORG_ID,
     workspaceRepoId: PROJECT,
-    workspace: { mode: 'gitlab', gitRepo: 'https://gitlab.com/example-group/example-project', gitAccess: 'write' },
+    workspace: {
+      mode: 'git',
+      gitRepo: 'https://gitlab.com/example-group/example-project',
+      credential: { provider: 'gitlab', access: 'write' }
+    },
     ...over
   } as AgentRecord
 }
@@ -182,42 +191,87 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
       payload: {
         name: 'gitlab-bot',
         runtime: 'claude',
-        workspace: { mode: 'gitlab', projectId: PROJECT.toString(), gitAccess: 'write' }
+        workspace: { mode: 'git', gitRepo: glRepo(PROJECT_PATH), access: 'write' }
       }
     })
     expect(res.statusCode).toBe(201)
     const dto = res.json() as { id: string; workspace: Record<string, unknown>; workspaceRepoId: string | null }
     expect(dto.workspace).toMatchObject({
-      mode: 'gitlab',
+      mode: 'git',
       worktree: true,
+      // The catalog row's provider-authored clone URL, never the address as typed.
       gitRepo: 'https://gitlab.com/example-group/example-project.git',
-      projectId: PROJECT.toString(),
-      gitAccess: 'write'
+      credential: { provider: 'gitlab', access: 'write', projectId: PROJECT.toString() }
     })
     expect(dto.workspaceRepoId).toBe(PROJECT.toString())
 
     const row = await prisma.agent.findUniqueOrThrow({ where: { id: dto.id } })
-    expect(row.workspaceMode).toBe('gitlab')
+    expect(row.workspaceMode).toBe('git')
+    expect(row.gitCredentialProvider).toBe('gitlab')
     expect(row.workspaceRepoId).toBe(PROJECT)
   })
 
-  it('refuses an unbound project and a deployment without the gitlab seam', async () => {
+  it('refuses an unbound private project, and reads a deployment without the seam as any other host', async () => {
     const h = await harness()
+    // Unbound on the managed host and not public either: the actionable answer
+    // names the binding, never a degraded anonymous clone (§6).
     const unbound = await h.a.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
-      payload: { name: 'g1', runtime: 'claude', workspace: { mode: 'gitlab', projectId: '999' } }
+      payload: { name: 'g1', runtime: 'claude', workspace: { mode: 'git', gitRepo: glRepo('example-group/unbound') } }
     })
     expect(unbound.statusCode).toBe(409)
+    expect((unbound.json() as { message: string }).message).toContain('add the project first')
 
+    // With no gitlab seam configured, gitlab.com is just another host: an anonymous
+    // read is accepted with no preflight, and write has no credentials to mint.
     await running?.close()
     running = buildHttpApp(prisma, { PUBLIC_CP_URL: 'https://api.example.test' })
-    const disabled = await running.app.inject({
+    const anonymous = await running.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
-      payload: { name: 'g2', runtime: 'claude', workspace: { mode: 'gitlab', projectId: PROJECT.toString() } }
+      payload: { name: 'g2', runtime: 'claude', workspace: { mode: 'git', gitRepo: glRepo(PROJECT_PATH) } }
     })
-    expect(disabled.statusCode).toBe(409)
+    expect(anonymous.statusCode).toBe(201)
+    expect(await prisma.agent.findFirstOrThrow({ where: { name: 'g2' } })).toMatchObject({
+      workspaceMode: 'git',
+      gitCredentialProvider: null
+    })
+    const write = await running.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: {
+        name: 'g3',
+        runtime: 'claude',
+        workspace: { mode: 'git', gitRepo: glRepo(PROJECT_PATH), access: 'write' }
+      }
+    })
+    expect(write.statusCode).toBe(409)
+  })
+
+  it('takes an unbound but PUBLIC project on the managed host as an anonymous read', async () => {
+    const h = await harness()
+    h.fake.opts.publicPaths = { 'example-group/open-source': 7788 }
+    const created = await h.a.app.inject({
+      method: 'POST',
+      url: `${ORG}/agents`,
+      payload: {
+        name: 'gl-public',
+        runtime: 'claude',
+        workspace: { mode: 'git', gitRepo: glRepo('example-group/open-source') }
+      }
+    })
+    expect(created.statusCode).toBe(201)
+    expect((created.json() as { workspace: Record<string, unknown> }).workspace).toMatchObject({
+      mode: 'git',
+      gitRepo: 'https://gitlab.com/example-group/open-source.git'
+    })
+    expect((created.json() as { workspace: Record<string, unknown> }).workspace).not.toHaveProperty('credential')
+    expect(await prisma.agent.findFirstOrThrow({ where: { name: 'gl-public' } })).toMatchObject({
+      workspaceMode: 'git',
+      gitCredentialProvider: null,
+      workspaceRepoId: null
+    })
   })
 
   it('refuses a DIRECT placement on a daemon that has not advertised gitlab-com-v1 (§17.3)', async () => {
@@ -232,7 +286,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
       name: `gl-${daemonId.slice(0, 4)}`,
       runtime: 'claude',
       daemonId,
-      workspace: { mode: 'gitlab', projectId: PROJECT.toString() }
+      workspace: { mode: 'git', gitRepo: glRepo(PROJECT_PATH) }
     })
     expect(
       (await h.a.app.inject({ method: 'POST', url: `${ORG}/agents`, payload: payload(OLD_DAEMON) })).statusCode
@@ -258,7 +312,8 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
       name: `gl-${daemonId.slice(0, 4)}`,
       runtime: 'claude',
       daemonId,
-      workspace: { mode: 'gitlab', projectId: PROJECT.toString() }
+      // The address sits on the deployment's own host, so the binding still vouches.
+      workspace: { mode: 'git', gitRepo: glRepo(PROJECT_PATH, SELF_MANAGED) }
     })
     expect(
       (await h.a.app.inject({ method: 'POST', url: `${ORG}/agents`, payload: payload(OLD_DAEMON) })).statusCode
@@ -273,7 +328,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     const res = await h.a.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
-      payload: { name: 'gl-branch', runtime: 'claude', workspace: { mode: 'gitlab', projectId: PROJECT.toString() } }
+      payload: { name: 'gl-branch', runtime: 'claude', workspace: { mode: 'git', gitRepo: glRepo(PROJECT_PATH) } }
     })
     expect(res.statusCode).toBe(201)
     const row = await prisma.agent.findUniqueOrThrow({ where: { id: (res.json() as { id: string }).id } })
@@ -298,7 +353,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     const res = await h.a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'gitlab', projectId: PROJECT.toString() }
+      payload: { mode: 'git', gitRepo: glRepo(PROJECT_PATH) }
     })
     expect(res.statusCode).toBe(409)
     expect((res.json() as { message: string }).message).toContain('does not support GitLab workspaces')
@@ -309,7 +364,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     const created = await h.a.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
-      payload: { name: 'gl-joiner', runtime: 'claude', workspace: { mode: 'gitlab', projectId: PROJECT.toString() } }
+      payload: { name: 'gl-joiner', runtime: 'claude', workspace: { mode: 'git', gitRepo: glRepo(PROJECT_PATH) } }
     })
     expect(created.statusCode).toBe(201)
     const agentId = (created.json() as { id: string }).id
@@ -353,7 +408,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     const created = await h.a.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
-      payload: { name: 'gl-rename', runtime: 'claude', workspace: { mode: 'gitlab', projectId: PROJECT.toString() } }
+      payload: { name: 'gl-rename', runtime: 'claude', workspace: { mode: 'git', gitRepo: glRepo(PROJECT_PATH) } }
     })
     expect(created.statusCode).toBe(201)
     const agentId = (created.json() as { id: string }).id
@@ -383,7 +438,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
       payload: {
         name: 'gl-saga-rename',
         runtime: 'claude',
-        workspace: { mode: 'gitlab', projectId: PROJECT.toString() }
+        workspace: { mode: 'git', gitRepo: glRepo(PROJECT_PATH) }
       }
     })
     expect(created.statusCode).toBe(201)
@@ -412,11 +467,12 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     const res = await h.a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'gitlab', projectId: PROJECT.toString(), gitAccess: 'read' }
+      payload: { mode: 'git', gitRepo: glRepo(PROJECT_PATH), access: 'read' }
     })
     expect(res.statusCode).toBe(200)
     const row = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
-    expect(row.workspaceMode).toBe('gitlab')
+    expect(row.workspaceMode).toBe('git')
+    expect(row.gitCredentialProvider).toBe('gitlab')
     expect(row.workspaceRepoId).toBe(PROJECT)
     expect(row.gitBranch).toBe('main')
     expect(row.gitAccess).toBe('read')
@@ -448,7 +504,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     const res = await h.a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'gitlab', projectId: SECOND_PROJECT.toString(), gitAccess: 'write' }
+      payload: { mode: 'git', gitRepo: glRepo(SECOND_PATH), access: 'write' }
     })
     expect(res.statusCode).toBe(200)
 
@@ -492,7 +548,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     const res = await h.a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'gitlab', projectId: SECOND_PROJECT.toString() }
+      payload: { mode: 'git', gitRepo: glRepo(SECOND_PATH) }
     })
     expect(res.statusCode).toBe(409)
     expect((res.json() as { message: string }).message).toContain('no service-account slots left')
@@ -518,7 +574,7 @@ describe('gitlab workspaces — agent create/edit (§8.3)', () => {
     const moved = await h.a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${AGENT}/workspace`,
-      payload: { mode: 'gitlab', projectId: SECOND_PROJECT.toString() }
+      payload: { mode: 'git', gitRepo: glRepo(SECOND_PATH) }
     })
     expect(moved.statusCode).toBe(200)
 
@@ -563,7 +619,11 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
 
     const read = await service.grantForAgent(
       gitlabAgent({
-        workspace: { mode: 'gitlab', gitRepo: 'https://gitlab.com/example-group/example-project', gitAccess: 'read' }
+        workspace: {
+          mode: 'git',
+          gitRepo: 'https://gitlab.com/example-group/example-project',
+          credential: { provider: 'gitlab', access: 'read' }
+        }
       } as Partial<AgentRecord>)
     )
     const readCred = (await creds.get(h.account.id, 'read'))!
@@ -576,7 +636,11 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
     expect(narrowed.access).toBe('read')
     expect(narrowed.token).toBe(await store.get(DEFAULT_ORG_ID, readCred.id))
     const readAgent = gitlabAgent({
-      workspace: { mode: 'gitlab', gitRepo: 'https://gitlab.com/example-group/example-project', gitAccess: 'read' }
+      workspace: {
+        mode: 'git',
+        gitRepo: 'https://gitlab.com/example-group/example-project',
+        credential: { provider: 'gitlab', access: 'read' }
+      }
     } as Partial<AgentRecord>)
     expect((await service.grantForAgent(readAgent, undefined, 'write')).access).toBe('read')
   })
@@ -670,7 +734,11 @@ describe('gitcred v2 GitLab grants (§13.1/§17.1)', () => {
 
     // A read workspace gets the SAME PAT under a comment-level clamp the broker enforces per operation.
     const readAgent = gitlabAgent({
-      workspace: { mode: 'gitlab', gitRepo: 'https://gitlab.com/example-group/example-project', gitAccess: 'read' }
+      workspace: {
+        mode: 'git',
+        gitRepo: 'https://gitlab.com/example-group/example-project',
+        credential: { provider: 'gitlab', access: 'read' }
+      }
     } as Partial<AgentRecord>)
     const read = await service.grantForBrokerEffect(readAgent, PROJECT, false)
     expect(read.access).toBe('comment')
@@ -941,7 +1009,7 @@ describe('additional GitLab project authorizations (§8.3/§13.1)', () => {
     const fresh = await secondBinding(h)
     await prisma.agent.update({
       where: { id: AGENT },
-      data: { workspaceMode: 'scratch', workspaceRepoId: null, gitRepo: null }
+      data: { workspaceMode: 'scratch', gitCredentialProvider: null, workspaceRepoId: null, gitRepo: null }
     })
     await prisma.gitlabAccountMembership.deleteMany({})
     await prisma.gitlabAgentAccount.deleteMany({})

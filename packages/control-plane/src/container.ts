@@ -1393,23 +1393,26 @@ export function buildContainer(
   const syncFeishuAppIcon = createFeishuAppIconSyncer(iconStore)
 
   const httpDeps: HttpDeps = {
-    runtimeConfig: opts.deploymentConfig
-      ? {
-          deploymentRevision: opts.deploymentConfig.revision,
-          publicRuntimeConfig: {
-            auth:
-              opts.deploymentConfig.values.auth.mode === 'oidc' && config.OIDC_ISSUER
-                ? {
-                    endpoint: new URL(config.OIDC_ISSUER).origin,
-                    issuer: config.OIDC_ISSUER,
-                    appId: opts.deploymentConfig.values.auth.browserClient.appId,
-                    apiResource: opts.deploymentConfig.values.auth.browserClient.apiResource,
-                    socialProviders: opts.deploymentConfig.values.auth.socialProviders
-                  }
-                : null
+    runtimeConfig:
+      opts.deploymentConfig || gitlab
+        ? {
+            ...(opts.deploymentConfig ? { deploymentRevision: opts.deploymentConfig.revision } : {}),
+            publicRuntimeConfig: {
+              auth:
+                opts.deploymentConfig?.values.auth.mode === 'oidc' && config.OIDC_ISSUER
+                  ? {
+                      endpoint: new URL(config.OIDC_ISSUER).origin,
+                      issuer: config.OIDC_ISSUER,
+                      appId: opts.deploymentConfig.values.auth.browserClient.appId,
+                      apiResource: opts.deploymentConfig.values.auth.browserClient.apiResource,
+                      socialProviders: opts.deploymentConfig.values.auth.socialProviders
+                    }
+                  : null,
+              // The console derives workspace tiles from this host (§7).
+              gitlab: gitlab ? { instanceUrl: gitlab.api.baseUrl } : null
+            }
           }
-        }
-      : {},
+        : {},
     maxOrgsPerNonAdminUser: opts.deploymentConfig?.values.features.maxOrgsPerNonAdminUser ?? 1,
     clock,
     // The same late-bound façade the orchestrators above hold (see its

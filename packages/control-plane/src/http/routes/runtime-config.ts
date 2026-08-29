@@ -13,13 +13,18 @@ const PublicBrowserAuth = z
   })
   .strict()
 
+// The deployment's GitLab instance (§24.1 axis) — public topology the console
+// needs for tile/source derivation; gitlab.com when the deployment carries none.
+const PublicGitlabInstance = z.object({ instanceUrl: z.string().url() }).strict()
+
 export const RuntimeConfigDto = z
   .object({
     schemaVersion: z.literal('1'),
     revision: z.number().int().positive().nullable(),
     config: z
       .object({
-        auth: PublicBrowserAuth.nullable()
+        auth: PublicBrowserAuth.nullable(),
+        gitlab: PublicGitlabInstance.nullable()
       })
       .strict()
       .nullable()
@@ -45,7 +50,7 @@ export function runtimeConfigRoutes(deps: RuntimeConfigRouteDeps) {
           tags: [Tag.Deployment],
           summary: 'Get public runtime configuration',
           description:
-            'Returns the secret-free browser authentication configuration loaded for this process. A deployment change takes effect after restart.',
+            'Returns the secret-free browser configuration loaded for this process: authentication plus the GitLab instance the deployment talks to. A deployment change takes effect after restart.',
           operationId: 'getRuntimeConfig',
           response: { 200: RuntimeConfigDto }
         }

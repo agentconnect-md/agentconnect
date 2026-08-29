@@ -17,7 +17,8 @@ describe('runtime config route', () => {
             appId: 'web-app',
             apiResource: 'https://api.example.test',
             socialProviders: ['github']
-          }
+          },
+          gitlab: { instanceUrl: 'https://gitlab.example.test' }
         }
       }),
       { prefix: '/api/v1' }
@@ -35,8 +36,26 @@ describe('runtime config route', () => {
           appId: 'web-app',
           apiResource: 'https://api.example.test',
           socialProviders: ['github']
-        }
+        },
+        gitlab: { instanceUrl: 'https://gitlab.example.test' }
       }
+    })
+  })
+
+  it('serves the GitLab instance alone when only the code host is configured', async () => {
+    const app = Fastify()
+    installZod(app)
+    await app.register(
+      runtimeConfigRoutes({
+        publicRuntimeConfig: { auth: null, gitlab: { instanceUrl: 'https://gitlab.example.test' } }
+      }),
+      { prefix: '/api/v1' }
+    )
+    const response = await app.inject({ method: 'GET', url: '/api/v1/runtime-config' })
+    expect(response.json()).toEqual({
+      schemaVersion: '1',
+      revision: null,
+      config: { auth: null, gitlab: { instanceUrl: 'https://gitlab.example.test' } }
     })
   })
 

@@ -58,11 +58,11 @@ export async function seedAgent(
     visibility?: 'org' | 'restricted'
     sharedWith?: string[]
     createdByUserId?: string
-    /** Full cloneable address (storage invariant) ⇒ a github-mode workspace. */
+    /** Full cloneable address (storage invariant) ⇒ a git-mode workspace. */
     gitRepo?: string
-    /** GithubInstallation row-id provenance hint ⇒ github-APP credential mode. */
+    /** GithubInstallation row-id provenance hint ⇒ the github credential vouches. */
     installationId?: string
-    /** Numeric GitLab project id ⇒ a gitlab-mode workspace on that managed binding. */
+    /** Numeric GitLab project id ⇒ the gitlab credential vouches (managed binding). */
     gitlabProjectId?: bigint
     gitAccess?: 'read' | 'write'
     /** `runtimeOverrides` JSON — where the MCP enable-list and memory binding live. */
@@ -84,15 +84,16 @@ export async function seedAgent(
       ...(opts.visibility ? { visibility: opts.visibility } : {}),
       ...(opts.sharedWith ? { sharedWith: opts.sharedWith } : {}),
       ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
-      ...(opts.gitRepo ? { workspaceMode: 'github' as const, gitRepo: opts.gitRepo } : {}),
+      ...(opts.gitRepo ? { workspaceMode: 'git' as const, gitRepo: opts.gitRepo } : {}),
       ...(opts.gitlabProjectId !== undefined
         ? {
-            workspaceMode: 'gitlab' as const,
+            workspaceMode: 'git' as const,
+            gitCredentialProvider: 'gitlab',
             workspaceRepoId: opts.gitlabProjectId,
             gitRepo: opts.gitRepo ?? 'https://gitlab.com/example-group/example-project'
           }
         : {}),
-      ...(opts.installationId ? { installationId: opts.installationId } : {}),
+      ...(opts.installationId ? { installationId: opts.installationId, gitCredentialProvider: 'github' } : {}),
       ...(opts.gitAccess ? { gitAccess: opts.gitAccess } : {}),
       ...(opts.runtimeOverrides ? { runtimeOverrides: opts.runtimeOverrides as Prisma.InputJsonValue } : {})
     }

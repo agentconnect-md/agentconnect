@@ -90,7 +90,9 @@ describe('computeGettingStarted', () => {
   it('merges GitHub + repository into one step, done when a repo is attached', () => {
     const gh = (agents: Agent[]) => computeGettingStarted({ ...empty, agents }).items.find((i) => i.key === 'github')!
     expect(gh([agent()]).done).toBe(false)
-    expect(gh([agent({ workspace: { mode: 'github', repo: 'acme/x' } as Agent['workspace'] })]).done).toBe(true)
+    expect(
+      gh([agent({ workspace: { mode: 'git', provider: 'github', repo: 'acme/x' } as Agent['workspace'] })]).done
+    ).toBe(true)
     // the old separate 'repo' step is gone
     expect(computeGettingStarted(empty).items.some((i) => i.key === 'repo')).toBe(false)
   })
@@ -167,7 +169,12 @@ describe('computeGettingStarted', () => {
 
   it('reaches allDone with a full ring when every signal is satisfied', () => {
     const gs = computeGettingStarted({
-      agents: [agent({ workspace: { mode: 'github', repo: 'acme/x' } as Agent['workspace'], hookKinds: ['github'] })],
+      agents: [
+        agent({
+          workspace: { mode: 'git', provider: 'github', repo: 'acme/x' } as Agent['workspace'],
+          hookKinds: ['github']
+        })
+      ],
       daemons: [daemon('online')],
       integrations: [{ platform: 'slack', name: 's' } as IntegrationRow],
       sessions: [{ id: 's1', statusLabel: 'completed' } as Session],

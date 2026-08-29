@@ -182,7 +182,9 @@ describe('Phase 5 — whole-app assembly via buildApp (REST + WS share one DB/or
         name: 'smoke-agent',
         runtime: 'claude',
         daemonId: DAEMON,
-        workspace: { mode: 'github', gitRepo: 'github.com/acme/infra', agentDir: './services/api' }
+        // A host nothing manages: the §6 derivation takes it anonymously with NO
+        // preflight, so this assembly smoke test reaches no provider over the network.
+        workspace: { mode: 'git', gitRepo: 'https://git.example.test/acme/infra', agentDir: './services/api' }
       }
     })
     expect(agentRes.statusCode).toBe(201)
@@ -214,13 +216,15 @@ describe('Phase 5 — whole-app assembly via buildApp (REST + WS share one DB/or
       expect(snap.assignments).toHaveLength(1)
       expect(snap.assignments[0]!.agentId).toBe(agentId)
       expect(snap.assignments[0]!.workspaceId).toBe(agentId)
-      // the agent roster carries the inline workspace (rides the reconcile snapshot);
-      // the shorthand POSTed above was normalized to the full address on write
+      // The agent roster carries the inline workspace (it rides the reconcile
+      // snapshot). This daemon advertises no `workspace-git-v1`, so it arrives on the
+      // LEGACY arm — whose gitRepo is host-agnostic, which is why an anonymous
+      // workspace on any host rides it unchanged (git-workspace-model.md §8).
       const agentSpec = snap.agents.find((a) => a.agentId === agentId)
       expect(agentSpec?.workspace).toEqual({
         mode: 'github',
         isolation: 'session',
-        gitRepo: 'https://github.com/acme/infra',
+        gitRepo: 'https://git.example.test/acme/infra',
         branch: 'main',
         agentDir: 'services/api',
         additionalRepos: []

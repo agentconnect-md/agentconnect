@@ -321,6 +321,25 @@ export async function gitlabListProjects(
   return { projects: (await res.json()) as GitlabProjectSummary[], nextPage }
 }
 
+/** One project by URL-encoded path, ANONYMOUSLY — resolves public projects only
+ *  (git-workspace-model.md §6). Null on 404/401: a private or absent project is
+ *  indistinguishable to an unauthenticated read, and either way it is not a
+ *  public target this deployment can clone anonymously. */
+export async function gitlabPublicProject(
+  projectPath: string,
+  client: GitlabApiClient
+): Promise<GitlabProjectSummary | null> {
+  try {
+    return await gitlabRequest<GitlabProjectSummary>(`/projects/${encodeURIComponent(projectPath)}`, {
+      auth: null,
+      client
+    })
+  } catch (e) {
+    if (e instanceof GitlabApiError && (e.code === 'NOT_FOUND' || e.code === 'AUTH_REQUIRED')) return null
+    throw e
+  }
+}
+
 /** One project by numeric id; null on a definitive 404 (out of grant / gone). */
 export async function gitlabProject(
   accessToken: string,

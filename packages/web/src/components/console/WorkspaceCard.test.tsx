@@ -37,40 +37,65 @@ const agent = (
     workspace
   }) as unknown as Agent
 
-const GITHUB = { mode: 'github', repo: 'acme/infra', branch: 'main', agentDir: '/' }
-const GITLAB = { mode: 'gitlab', repo: 'example-group/example-project', branch: 'main', agentDir: '/' }
+// Stored workspaces are host-neutral now: one `git` mode plus the credential that
+// vouches for the checkout. The displayed tile is derived from the two (§7).
+const GITHUB_APP = {
+  mode: 'git',
+  provider: 'github',
+  repoId: '42',
+  repo: 'acme/infra',
+  gitRepo: 'https://github.com/acme/infra',
+  branch: 'main',
+  agentDir: '/'
+}
+// No credential ⇒ an anonymous clone of a public repository on the same host.
+const GITHUB_ANON = {
+  mode: 'git',
+  repo: 'acme/infra',
+  gitRepo: 'https://github.com/acme/infra',
+  branch: 'main',
+  agentDir: '/'
+}
+const GITLAB = {
+  mode: 'git',
+  provider: 'gitlab',
+  repo: 'example-group/example-project',
+  gitRepo: 'https://gitlab.com/example-group/example-project',
+  branch: 'main',
+  agentDir: '/'
+}
 
 it('does not repeat the checkout branch in the Source card', () => {
   repos.rows = []
   const branch = 'release/source-should-not-render'
-  const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ ...GITHUB, branch })} />)
+  const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ ...GITHUB_APP, branch })} />)
 
   expect(html).not.toContain(branch)
 })
 
-// Only an App-backed workspace has implicit authority over its own repository. A
-// manual checkout's effective access comes from an explicit agent-repo grant (or
+// Only a credential-backed workspace has implicit authority over its own repository.
+// An anonymous checkout's effective access comes from an explicit agent-repo grant (or
 // is none), so an implicit chip there would claim authorization it does not have
 // and duplicate the real explicit row when one exists.
 describe('workspace repository authority', () => {
   it('shows the workspace repo as an implicit grant when the App backs it', () => {
     repos.rows = []
-    const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ ...GITHUB, installationId: 'inst-1' })} />)
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITHUB_APP)} />)
     expect(html).toContain('authorized implicitly')
     expect(html).toContain('acme/infra')
     expect(html).not.toContain('None explicitly authorized')
   })
 
-  it('does not claim implicit authority for a manual GitHub checkout', () => {
+  it('does not claim implicit authority for an anonymous checkout', () => {
     repos.rows = []
-    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITHUB)} />)
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITHUB_ANON)} />)
     expect(html).not.toContain('authorized implicitly')
     expect(html).toContain('None explicitly authorized')
   })
 
-  it('renders a manual checkout through its explicit grant summary', () => {
+  it('renders an anonymous checkout through its explicit grant summary', () => {
     repos.rows = [{ id: 'g1', repoFullName: 'acme/infra', access: 'comment', createdBy: 'u1' }]
-    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITHUB)} />)
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITHUB_ANON)} />)
     expect(html).not.toContain('authorized implicitly')
     // The card summarizes the real explicit tier; edits and revocation live in
     // the shared Edit workspace dialog rather than a second inline flow.
@@ -95,6 +120,40 @@ describe('workspace repository authority', () => {
   })
 })
 
+// The Source row no longer converts in place: the segmented GitHub/GitLab/Scratch
+// switcher is gone, and the pencil is the single entry point into the editor —
+// which opens on the tile the stored workspace derives to.
+describe('workspace source row', () => {
+  it('drops the segmented source switcher and keeps the derived mark and pencil', () => {
+    repos.rows = []
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITHUB_APP)} />)
+
+    expect(html).not.toContain('GitHub repo')
+    expect(html).not.toContain('GitLab project')
+    expect(html).not.toContain('Convert this workspace')
+    expect(html).toContain('Edit workspace')
+    expect(html).toContain('lucide-pencil')
+    expect(html).toContain('acme/infra')
+  })
+
+  it('badges an anonymous checkout on a managed host as public and read-only', () => {
+    repos.rows = []
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITHUB_ANON)} />)
+
+    expect(html).toContain('>public<')
+    expect(html).toContain('>read<')
+    expect(html).not.toContain('>write<')
+  })
+
+  it('keeps a credentialed workspace at its stored access with no public badge', () => {
+    repos.rows = []
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ ...GITLAB, gitAccess: 'write' })} />)
+
+    expect(html).not.toContain('>public<')
+    expect(html).toContain('>write<')
+  })
+})
+
 // A GitLab workspace names no identity on its source line, exactly as a GitHub one does not: the
 // agent page carries no GitLab identity surface at all (gitlab-com-integration.md §18.1).
 describe('workspace push identity', () => {
@@ -110,7 +169,7 @@ describe('workspace push identity', () => {
 
   it('leaves a GitHub workspace naming its installation instead', () => {
     repos.rows = []
-    const html = renderToStaticMarkup(<WorkspaceCard agent={agent({ ...GITHUB, installationId: 'inst-1' })} />)
+    const html = renderToStaticMarkup(<WorkspaceCard agent={agent(GITHUB_APP)} />)
 
     expect(html).toContain('authorized implicitly by the GitHub App installation')
     expect(html).not.toContain('pushes as')

@@ -155,7 +155,12 @@ interface BindResult {
 }
 
 /** Bind a project and put an agent's workspace on it — what provisions accounts. */
-async function bind(a: HttpApp, connectionId: string, projectId: bigint, agentName: string): Promise<BindResult> {
+async function bind(
+  a: HttpApp & { fake: FakeGitlab },
+  connectionId: string,
+  projectId: bigint,
+  agentName: string
+): Promise<BindResult> {
   await seedAgent(prisma, randomUUID(), { name: `gl-${randomUUID().slice(0, 6)}`, gitlabProjectId: projectId })
   const bound = await a.app.inject({
     method: 'POST',
@@ -169,7 +174,7 @@ async function bind(a: HttpApp, connectionId: string, projectId: bigint, agentNa
     payload: {
       name: agentName,
       runtime: 'claude',
-      workspace: { mode: 'gitlab', projectId: projectId.toString(), gitAccess: 'write' }
+      workspace: { mode: 'git', gitRepo: `${a.fake.opts.baseUrl}/${a.fake.pathFor(projectId)}`, access: 'write' }
     }
   })
   return {

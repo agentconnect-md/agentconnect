@@ -1016,12 +1016,14 @@ does not replace the current review verdict.
 
 The workspace options live in the agent's Workspace tab, above the files they
 configure — not in Configuration, and not behind a summary row that navigates
-there. A `Source` control owns conversion between scratch and GitHub; a single
-`Edit` action owns repository, branch, working-subdirectory, and
-repository-access settings. Replacing a workspace must replace the file browser
-with it: the tree, the open preview, and the git status below the card always
-belong to the workspace the card currently describes, never to the one it
-replaced.
+there. A single `Edit` action owns the workspace source (scratch, GitHub,
+GitLab, or a plain Git URL) together with repository, branch,
+working-subdirectory, and repository-access settings; the card shows a derived
+provider mark, never a stored source or a separate conversion switcher
+(git-workspace-model.md §7). Replacing a workspace must replace the file
+browser with it: the tree, the open preview, and the git status below the card
+always belong to the workspace the card currently describes, never to the one
+it replaced.
 
 In the Workspace tab, callers who can edit the agent may create, edit, or delete
 one file at a time when the workspace is scratch. New UTF-8 files use exclusive
@@ -1057,13 +1059,14 @@ belong in the preview summary row: managed Memory exposes `History` there today,
 repository-backed Workspace history must reuse the same action slot and history pane
 when it is added.
 
-For a GitHub workspace, show the effective `read` or `write` access beside the
-repository. The editor may switch freely between scratch and GitHub, choose another
-repository or branch, change the working subdirectory, edit read/write access, or bind
-a manual GitHub checkout to the GitHub App. Before a mode, repository, or branch
-change, state clearly that saving permanently replaces the current daemon-local
-workspace files and cannot be undone. Use an explicit `Replace workspace` save label
-for that destructive case. A working-subdirectory or access-only edit preserves the
+For a Git workspace, show the effective `read` or `write` access beside the
+repository — an anonymous checkout is always `read`, whatever preference is stored.
+The editor may switch freely between the sources, choose another repository or
+branch, change the working subdirectory, edit read/write access, or bind a manual
+checkout to the GitHub App. Before a mode, repository, or branch change, state
+clearly that saving permanently replaces the current daemon-local workspace files
+and cannot be undone. Use an explicit `Replace workspace` save label for that
+destructive case. A working-subdirectory or access-only edit preserves the
 current checkout.
 
 The same Edit workspace dialog owns additional repository access for both GitHub and

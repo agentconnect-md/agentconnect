@@ -17,10 +17,10 @@ import {
 describe('R1/R2a GitHub review settings', () => {
   it('identifies the App-backed workspace by id and only name-matches without conflicting ids', () => {
     const workspace = {
-      mode: 'github' as const,
+      mode: 'git' as const,
+      provider: 'github' as const,
       repoId: '42',
-      repo: 'acme/repo',
-      installationId: 'installation'
+      repo: 'acme/repo'
     }
     expect(isWorkspaceRepo({ repoId: '42', repoFullName: 'renamed/repo', workspace })).toBe(true)
     expect(isWorkspaceRepo({ repoFullName: 'ACME/REPO', workspace })).toBe(true)
@@ -108,21 +108,21 @@ describe('R1/R2a GitHub review settings', () => {
     expect(
       effectiveRepoAccess({
         repoFullName: 'ACME/INFRA',
-        workspace: { mode: 'github', repo: 'acme/infra', installationId: 'ins-1', gitAccess: 'read' },
+        workspace: { mode: 'git', provider: 'github', repo: 'acme/infra', gitAccess: 'read' },
         authorizations
       })
     ).toBe('read')
     expect(
       effectiveRepoAccess({
         repoFullName: 'acme/docs',
-        workspace: { mode: 'github', repo: 'acme/infra', installationId: 'ins-1', gitAccess: 'write' },
+        workspace: { mode: 'git', provider: 'github', repo: 'acme/infra', gitAccess: 'write' },
         authorizations
       })
     ).toBe('comment')
     expect(
       effectiveRepoAccess({
         repoFullName: 'acme/infra',
-        workspace: { mode: 'github', repo: 'acme/infra' },
+        workspace: { mode: 'git', repo: 'acme/infra' },
         authorizations: [...authorizations, { repoFullName: 'acme/infra', access: 'write' }]
       })
     ).toBe('write')
@@ -138,10 +138,10 @@ describe('R1/R2a GitHub review settings', () => {
         repoId: '11',
         repoFullName: 'acme/new-name',
         workspace: {
-          mode: 'github',
+          mode: 'git',
+          provider: 'github',
           repoId: '11',
           repo: 'acme/old-name',
-          installationId: 'ins-1',
           gitAccess: 'write'
         },
         authorizations
@@ -152,10 +152,10 @@ describe('R1/R2a GitHub review settings', () => {
         repoId: '22',
         repoFullName: 'acme/renamed',
         workspace: {
-          mode: 'github',
+          mode: 'git',
+          provider: 'github',
           repoId: '11',
           repo: 'acme/renamed',
-          installationId: 'ins-1',
           gitAccess: 'write'
         },
         authorizations
@@ -167,10 +167,10 @@ describe('R1/R2a GitHub review settings', () => {
         repoId: '33',
         repoFullName: 'acme/old-name',
         workspace: {
-          mode: 'github',
+          mode: 'git',
+          provider: 'github',
           repoId: '11',
           repo: 'acme/old-name',
-          installationId: 'ins-1',
           gitAccess: 'write'
         },
         authorizations

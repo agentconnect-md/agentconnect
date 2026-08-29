@@ -822,7 +822,7 @@ describe('HookRun bookkeeping — delivery opens, completion closes', () => {
     ).toBe(true)
     await prisma.agent.update({
       where: { id: agentId },
-      data: { workspaceMode: 'github', workspaceRepoId: hook.repoId, gitAccess: 'write' }
+      data: { workspaceMode: 'git', gitCredentialProvider: 'github', workspaceRepoId: hook.repoId, gitAccess: 'write' }
     })
     const failed = (await repo().getRun(HookId(hookId), 'projection-before-recovery'))!
     const projection = await repo().upsertReviewProjection({

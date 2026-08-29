@@ -25,6 +25,7 @@ import {
   sessionChannelDisplay,
   sessionChannelFilterValue,
   status,
+  workspaceSourceOf,
   type DaemonRow,
   type RuntimeModelCatalog,
   type Session
@@ -658,5 +659,47 @@ describe('agent config display helpers (card ↔ editor parity)', () => {
     it('falls back to the static permission table without a catalog', () => {
       expect(agentPermissionDisplay(undefined, 'codex', 'agent-full-access')).toBe('Full access')
     })
+  })
+})
+
+// The display tile is DERIVED from host + credential, never stored (§7): a stored
+// `source` would go stale the moment the credential behind a checkout changes.
+describe('workspaceSourceOf', () => {
+  it('maps an anonymous checkout on the configured self-managed instance to the gitlab tile', () => {
+    // These lib tests run in node — publish the browser global the getter reads.
+    const g = globalThis as unknown as { window?: { __AC_ENV?: Record<string, string> } }
+    g.window = { __AC_ENV: { GITLAB_URL: 'https://gitlab.example.test' } }
+    try {
+      expect(workspaceSourceOf({ mode: 'git', gitRepo: 'https://gitlab.example.test/team/repo' })).toBe('gitlab')
+      expect(workspaceSourceOf({ mode: 'git', gitRepo: 'https://git.example.test/team/repo' })).toBe('giturl')
+      // gitlab.com is only the unset fallback — a configured instance owns the tile.
+      expect(workspaceSourceOf({ mode: 'git', gitRepo: 'https://gitlab.com/team/repo' })).toBe('giturl')
+    } finally {
+      delete g.window
+    }
+  })
+
+  const git = (over: Record<string, unknown>) =>
+    workspaceSourceOf({ mode: 'git', ...over } as Parameters<typeof workspaceSourceOf>[0])
+
+  it('names the credential provider whatever the host is', () => {
+    expect(git({ provider: 'github', gitRepo: 'https://ghe.example.test/acme/infra' })).toBe('github')
+    expect(git({ provider: 'gitlab', gitRepo: 'https://gitlab.example.test/acme/infra' })).toBe('gitlab')
+  })
+
+  it('falls back to the managed hosts for an anonymous checkout', () => {
+    expect(git({ gitRepo: 'https://github.com/acme/infra' })).toBe('github')
+    expect(git({ gitRepo: 'git@github.com:acme/infra.git' })).toBe('github')
+    expect(git({ gitRepo: 'https://gitlab.com/acme/platform' })).toBe('gitlab')
+  })
+
+  it('reads bare owner/repo shorthand as GitHub-only sugar', () => {
+    expect(git({ gitRepo: 'acme/infra' })).toBe('github')
+  })
+
+  it('sends everything else to the Git URL tile', () => {
+    expect(git({ gitRepo: 'https://git.example.test/team/repo.git' })).toBe('giturl')
+    expect(git({ gitRepo: 'ssh://git@git.example.test/team/repo.git' })).toBe('giturl')
+    expect(workspaceSourceOf({ mode: 'scratch' })).toBe('scratch')
   })
 })

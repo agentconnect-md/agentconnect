@@ -240,7 +240,10 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     expect(spy.upserts.at(-1)!.u.spec.secrets).toEqual({})
   })
 
-  it('PATCH replicates a changed and cleared GitHub working subdirectory', async () => {
+  it('PATCH replicates a changed and cleared git working subdirectory', async () => {
+    // The spy replaces the real WsControlSender, which owns the per-peer dual
+    // encoding (§8) — so what it observes is the canonical host-neutral arm; the
+    // legacy downgrade is pinned where the real senders run (register.handler).
     await seedDaemon(prisma, DAEMON)
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, {
@@ -256,7 +259,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
     })
     expect(update.statusCode).toBe(200)
     expect(spy.upserts.at(-1)?.u.spec.workspace).toMatchObject({
-      mode: 'github',
+      mode: 'git',
       agentDir: 'services/api'
     })
 
@@ -266,11 +269,41 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
       payload: { agentDir: null }
     })
     expect(clear.statusCode).toBe(200)
+    // Anonymous: mode says "there is a repository" and no credential vouches (§2).
     expect(spy.upserts.at(-1)?.u.spec.workspace).toEqual({
-      mode: 'github',
+      mode: 'git',
       isolation: 'shared',
       gitRepo: 'https://github.com/acme/monorepo',
       branch: 'main',
+      additionalRepos: []
+    })
+  })
+
+  it('PATCH marks an App-backed workspace with the credential the anonymous one does not carry', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, {
+      daemonId: DAEMON,
+      gitRepo: 'https://github.com/acme/monorepo',
+      installationId: 'monorepo-installation'
+    })
+    const { app, spy } = withSpy()
+
+    const update = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/agents/${agentId}`,
+      payload: { agentDir: './services/api' }
+    })
+    expect(update.statusCode).toBe(200)
+    // `installationId` stays off the wire: minting re-resolves the live
+    // installation by owner, so an uninstall→reinstall self-heals (§3).
+    expect(spy.upserts.at(-1)?.u.spec.workspace).toEqual({
+      mode: 'git',
+      isolation: 'shared',
+      gitRepo: 'https://github.com/acme/monorepo',
+      branch: 'main',
+      agentDir: 'services/api',
+      credential: { provider: 'github' },
       additionalRepos: []
     })
   })

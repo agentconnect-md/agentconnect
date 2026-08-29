@@ -551,6 +551,77 @@ describe('spec-admission origin refusal (§24.4)', () => {
     }
   })
 
+  // git-workspace-model.md §8: the refusal keys on the credential axis, not the wire arm — the `git`
+  // arm carries the same managed binding, so admission must see the two identically.
+  const gitCredentialedSpec = () =>
+    ({
+      name: 'gl',
+      gitlabHost: INSTANCE,
+      workspace: {
+        mode: 'git',
+        isolation: 'shared',
+        gitRepo: `${INSTANCE}/example-group/example-project.git`,
+        branch: 'main',
+        credential: { provider: 'gitlab', projectId: '4455667' },
+        additionalRepos: []
+      }
+    }) as unknown as AgentSpec
+
+  it('refuses a `git`-arm gitlab credential off the deployment instance, and names that origin', async () => {
+    const { daemon, root } = await daemonWithOrigins(['https://github.com', 'https://gitlab.com'])
+    try {
+      const spec = gitCredentialedSpec() as unknown as { workspace: { gitRepo: string } }
+      spec.workspace.gitRepo = 'https://elsewhere.example.test/group/proj.git'
+      const ack = await (daemon as any).cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec })
+      expect(ack.ok).toBe(false)
+      expect(ack.reason).toContain('https://elsewhere.example.test')
+      expect((daemon as any).agents.has(AGENT)).toBe(false)
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('admits a `git`-arm gitlab credential on the deployment instance', async () => {
+    const { daemon, root } = await daemonWithOrigins(['https://github.com', 'https://gitlab.com'])
+    try {
+      const ack = await (daemon as any)
+        .cpConfigApply()
+        .applyAgentUpsert({ agentId: AGENT, spec: gitCredentialedSpec() })
+      expect(ack).toEqual({ ok: true })
+      const agent = (daemon as any).agents.get(AGENT)
+      expect(agent.gitlabHost).toBe(INSTANCE)
+      expect(agent.workspace.gitCredential).toBe('gitlab')
+      expect(agent.workspace.gitlabProjectId).toBe('4455667')
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // An anonymous `git` workspace carries no managed binding, so this fence has nothing to say about it.
+  it('leaves an anonymous `git` workspace on a foreign origin to the clone boundary', async () => {
+    const { daemon, root } = await daemonWithOrigins(['https://github.com', 'https://gitlab.com'])
+    try {
+      const spec = {
+        name: 'anon',
+        workspace: {
+          mode: 'git',
+          isolation: 'shared',
+          gitRepo: 'https://elsewhere.example.test/group/proj.git',
+          branch: 'main',
+          additionalRepos: []
+        }
+      } as unknown as AgentSpec
+      const ack = await (daemon as any).cpConfigApply().applyAgentUpsert({ agentId: AGENT, spec })
+      expect(ack).toEqual({ ok: true })
+      expect((daemon as any).agents.get(AGENT).workspace.gitCredential).toBeUndefined()
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('admits the same spec once the operator permits the origin, and resolves the clone target on it', async () => {
     const { daemon, root } = await daemonWithOrigins(['https://github.com', 'https://gitlab.example.test:8443'])
     try {

@@ -635,7 +635,9 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       })
       await prisma.agent.update({
         where: { id: agentId },
-        data: { installationId: installation.id, gitAccess: 'write' }
+        // `installationId` is a provenance hint; `gitCredentialProvider` is the axis
+        // that says the App vouches for this workspace (git-workspace-model.md §4).
+        data: { installationId: installation.id, gitCredentialProvider: 'github', gitAccess: 'write' }
       })
       const createPayload = prBody(agentId, {
         labelFilter: [],
@@ -752,7 +754,7 @@ describe('hooks REST — CRUD, ingress gating, secret echo, runs, audit', () => 
       })
       await prisma.agent.updateMany({
         where: { id: { in: [firstAgent, secondAgent] } },
-        data: { installationId: installation.id, gitAccess: 'write' }
+        data: { installationId: installation.id, gitCredentialProvider: 'github', gitAccess: 'write' }
       })
       const a = ghApp()
       const payload = prBody(firstAgent, {

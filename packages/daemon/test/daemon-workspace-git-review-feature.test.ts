@@ -7,6 +7,7 @@ import {
   AGENT_WAKE_FEATURE,
   WORKSPACE_GIT_MESSAGE_FEATURE,
   WORKSPACE_GIT_REVIEW_FEATURE,
+  WORKSPACE_GIT_V1_FEATURE,
   WORKSPACE_GIT_WRITE_FEATURE,
   WORKSPACE_REPO_SCOPE_FEATURE
 } from '@agentconnect.md/protocol'
@@ -70,5 +71,19 @@ describe('registrationFeatures — the console dock reads (git review + write + 
     expect(features).toContain(WORKSPACE_REPO_SCOPE_FEATURE)
     // The sandbox wake is the one dock read that is NOT unconditional: a local daemon has nothing to wake.
     expect(features).not.toContain(AGENT_WAKE_FEATURE)
+  }, 20_000)
+})
+
+// git-workspace-model.md §8: the `git` arm is FRAME-FATAL without this bit, so it is what lets the CP stop dual-encoding.
+describe('registrationFeatures — the host-neutral workspace arm', () => {
+  it('advertises workspace-git-v1 so the CP may project the `git` arm to this daemon', async () => {
+    const daemon = new Daemon({
+      root: scaffold(),
+      hostFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn(async () => {}) }) as never
+    })
+    await daemon.start()
+    const features = (daemon as never as Record<string, any>).registrationFeatures() as string[]
+    await daemon.stop().catch(() => {})
+    expect(features).toContain(WORKSPACE_GIT_V1_FEATURE)
   }, 20_000)
 })

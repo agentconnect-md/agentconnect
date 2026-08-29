@@ -906,10 +906,9 @@ describe('GithubService.mintForAgent — capabilities forwarding (P2.5)', () => 
       id: 'agent-1',
       orgId: 'org-a',
       workspace: {
-        mode: 'github',
+        mode: 'git',
         gitRepo: 'https://github.com/acme/infra',
-        installationId: 'row-1',
-        gitAccess: 'write'
+        credential: { provider: 'github', installationId: 'row-1', access: 'write' }
       }
     } as never
     // The whole P2.5 chain hinges on this third argument actually reaching the
@@ -945,10 +944,9 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     orgId: 'org-a',
     workspaceRepoId: 777n,
     workspace: {
-      mode: 'github',
+      mode: 'git',
       gitRepo: 'https://github.com/acme/infra',
-      installationId: 'row-1',
-      gitAccess: 'write'
+      credential: { provider: 'github', installationId: 'row-1', access: 'write' }
     }
   } as never
 
@@ -957,10 +955,9 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     orgId: 'org-a',
     workspaceRepoId: 777n,
     workspace: {
-      mode: 'github',
+      mode: 'git',
       gitRepo: 'https://github.com/acme/infra',
-      installationId: 'row-1',
-      gitAccess: 'read'
+      credential: { provider: 'github', installationId: 'row-1', access: 'read' }
     }
   } as never
 
@@ -968,17 +965,16 @@ describe('GithubService.mintForAgent — additional repos (issue #457)', () => {
     id: 'agent-legacy',
     orgId: 'org-a',
     workspace: {
-      mode: 'github',
+      mode: 'git',
       gitRepo: 'https://github.com/acme/infra',
-      installationId: 'row-1',
-      gitAccess: 'write'
+      credential: { provider: 'github', installationId: 'row-1', access: 'write' }
     }
   } as never
 
   const MANUAL_WORKSPACE_AGENT = {
     id: 'agent-manual',
     orgId: 'org-a',
-    workspace: { mode: 'github', gitRepo: 'https://github.com/acme/infra' }
+    workspace: { mode: 'git', gitRepo: 'https://github.com/acme/infra' }
   } as never
 
   const SCRATCH_AGENT = {
@@ -1315,10 +1311,9 @@ describe('GithubService.mintReviewForAgent — persisted installation permission
       orgId: 'org-a',
       workspaceRepoId: 123n,
       workspace: {
-        mode: 'github',
+        mode: 'git',
         gitRepo: 'https://github.com/acme/infra',
-        installationId: 'row-1',
-        gitAccess: 'write'
+        credential: { provider: 'github', installationId: 'row-1', access: 'write' }
       }
     } as never
     return { svc, agent, mintBodies }
@@ -1361,10 +1356,9 @@ describe('GithubService.mintReviewForAgent — persisted installation permission
     const readAgent = {
       ...(readTier.agent as Record<string, unknown>),
       workspace: {
-        mode: 'github',
+        mode: 'git',
         gitRepo: 'https://github.com/acme/infra',
-        installationId: 'row-1',
-        gitAccess: 'read'
+        credential: { provider: 'github', installationId: 'row-1', access: 'read' }
       }
     } as never
     await expect(readTier.svc.mintAutoMergeForAgent(readAgent, 123n, 'acme/infra')).rejects.toMatchObject({

@@ -53,14 +53,18 @@ export class GitlabGitcredService {
 
   /** §14.2 broker effect lease: the same never-agent-visible effect PAT, authorized by the agent's GitLab workspace binding or an enabled gitlab hook (§13.1). */
   async grantForBrokerEffect(agent: AgentRecord, projectId: bigint, hookAuthorized: boolean): Promise<GitCredGrant> {
-    const workspace =
-      agent.workspace.mode === 'gitlab' && agent.workspaceRepoId === projectId ? agent.workspace : undefined
-    if (workspace === undefined && !hookAuthorized) {
+    const credential =
+      agent.workspace.mode === 'git' &&
+      agent.workspace.credential?.provider === 'gitlab' &&
+      agent.workspaceRepoId === projectId
+        ? agent.workspace.credential
+        : undefined
+    if (credential === undefined && !hookAuthorized) {
       throw new GitCredDeniedError('the agent is not authorized for that gitlab project', 'SCOPE_DENIED', false)
     }
     // The clamp the daemon broker enforces per operation (§13.1): only a write workspace earns full
     // effect authority; a read workspace or hook-only authorization stays comment-level.
-    const access = workspace !== undefined && workspace.gitAccess !== 'read' ? 'write' : 'comment'
+    const access = credential !== undefined && credential.access !== 'read' ? 'write' : 'comment'
     return this.effectGrant(agent.orgId, agent.id, projectId, access)
   }
 
@@ -153,12 +157,16 @@ export class GitlabGitcredService {
     agent: AgentRecord,
     requestedExternalRepoId?: bigint
   ): Promise<{ projectId: bigint; clamp: 'read' | 'write' }> {
-    const workspaceProject = agent.workspace.mode === 'gitlab' ? agent.workspaceRepoId : undefined
+    const workspaceCredential =
+      agent.workspace.mode === 'git' && agent.workspace.credential?.provider === 'gitlab'
+        ? agent.workspace.credential
+        : undefined
+    const workspaceProject = workspaceCredential !== undefined ? agent.workspaceRepoId : undefined
     if (requestedExternalRepoId === undefined || requestedExternalRepoId === workspaceProject) {
-      if (agent.workspace.mode !== 'gitlab' || workspaceProject === undefined) {
+      if (workspaceCredential === undefined || workspaceProject === undefined) {
         throw new GitCredDeniedError('agent workspace is not a managed GitLab project', 'SCOPE_DENIED', false)
       }
-      return { projectId: workspaceProject, clamp: agent.workspace.gitAccess === 'read' ? 'read' : 'write' }
+      return { projectId: workspaceProject, clamp: workspaceCredential.access === 'read' ? 'read' : 'write' }
     }
     const grants = await this.deps.repoAuths.listForAgent(agent.id)
     const grant = grants.find((row) => row.provider === 'gitlab' && row.repoId === requestedExternalRepoId)

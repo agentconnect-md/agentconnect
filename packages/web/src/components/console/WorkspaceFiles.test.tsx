@@ -200,7 +200,7 @@ describe('workspaceReadModelKey', () => {
   const github = {
     id: 'agent-a',
     workdir: '/ws/agent-a',
-    workspace: { mode: 'github', repo: 'acme/infra', branch: 'main', agentDir: '/' }
+    workspace: { mode: 'git', provider: 'github', repo: 'acme/infra', branch: 'main', agentDir: '/' }
   } as unknown as Pick<Agent, 'id' | 'workspace' | 'workdir'>
 
   const keyOf = (over: Record<string, unknown> = {}, workspaceOver: Record<string, unknown> = {}) =>
@@ -242,16 +242,17 @@ describe('workspaceReadModelKey', () => {
     )
   })
 
-  // Every gitlab workspace used to fall through to the `:scratch` arm, so switching
-  // project — or converting scratch → GitLab — reused the previous checkout's tree.
+  // A GitLab checkout is named by the credential plus its rename-stable numeric id, so
+  // switching project — or converting scratch → GitLab — never reuses the previous tree.
   describe('gitlab workspaces', () => {
     const gitlabAt = (over: Record<string, unknown>) =>
       workspaceReadModelKey({
         id: 'agent-a',
         workdir: '/ws/agent-a',
         workspace: {
-          mode: 'gitlab',
-          projectId: '4210',
+          mode: 'git',
+          provider: 'gitlab',
+          repoId: '4210',
           repo: 'acme/platform',
           branch: 'main',
           agentDir: '/',
@@ -260,7 +261,7 @@ describe('workspaceReadModelKey', () => {
       } as unknown as Pick<Agent, 'id' | 'workspace' | 'workdir'>)
 
     it('separates two projects, and a project from scratch', () => {
-      expect(gitlabAt({ projectId: '4211', repo: 'acme/runtime' })).not.toBe(gitlabAt({}))
+      expect(gitlabAt({ repoId: '4211', repo: 'acme/runtime' })).not.toBe(gitlabAt({}))
       expect(gitlabAt({})).not.toBe(
         workspaceReadModelKey({
           id: 'agent-a',
@@ -273,7 +274,7 @@ describe('workspaceReadModelKey', () => {
     it('separates a renamed project from a genuinely different one', () => {
       // The path moved but the project did not: same checkout, so the same key.
       expect(gitlabAt({ repo: 'acme-group/platform' })).toBe(gitlabAt({}))
-      expect(gitlabAt({ projectId: '99' })).not.toBe(gitlabAt({}))
+      expect(gitlabAt({ repoId: '99' })).not.toBe(gitlabAt({}))
     })
 
     it.each([
@@ -284,7 +285,7 @@ describe('workspaceReadModelKey', () => {
     })
 
     it('never collides with a GitHub workspace of the same path', () => {
-      expect(gitlabAt({ repo: 'acme/infra', projectId: 'acme/infra' })).not.toBe(workspaceReadModelKey(github))
+      expect(gitlabAt({ repo: 'acme/infra', repoId: 'acme/infra' })).not.toBe(workspaceReadModelKey(github))
     })
   })
 })

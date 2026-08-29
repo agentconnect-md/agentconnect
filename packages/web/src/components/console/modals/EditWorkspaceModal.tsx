@@ -8,10 +8,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { GithubMark, GitlabMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
-import { agentLabel, isPoolPlacementKind, type Agent } from '@/lib/data'
+import { agentLabel, isPoolPlacementKind, workspaceSourceOf, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
+import { gitRepoUrlTileHint } from '@/lib/git-url-tile'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 import {
   ApiError,
@@ -43,6 +44,8 @@ import {
   GitlabNoProjectsNotice,
   GitlabProjectField,
   GitlabProjectOption,
+  GitUrlTileFields,
+  PublicGitlabProjectOption,
   RepositoryAccessField,
   REPOSITORY_ACCESS_BADGE,
   WorktreeField,
@@ -90,16 +93,18 @@ export default function EditWorkspaceModal({
   const { orgSetIds } = useConsoleData()
   // Pool placements do not materialize secondary roots yet, so they keep the authorization-only wording.
   const poolPlaced = isPoolPlacementKind(agent.placementKind, agent.setId, orgSetIds)
-  const githubWorkspace = agent.workspace.mode === 'github' ? agent.workspace : null
-  const gitlabWorkspace = agent.workspace.mode === 'gitlab' ? agent.workspace : null
-  const gitWorkspace = githubWorkspace ?? gitlabWorkspace
-  const currentWrite = githubWorkspace
-    ? !!githubWorkspace.installationId && githubWorkspace.gitAccess !== 'read'
-    : gitlabWorkspace
-      ? gitlabWorkspace.gitAccess !== 'read'
-      : null
+  // The tile an existing workspace edits under is DERIVED from host + credential
+  // (git-workspace-model.md §7) — no source is stored.
+  const currentSource = workspaceSourceOf(agent.workspace)
+  const gitWorkspace = agent.workspace.mode === 'git' ? agent.workspace : null
+  const githubWorkspace = currentSource === 'github' ? gitWorkspace : null
+  const gitlabWorkspace = currentSource === 'gitlab' ? gitWorkspace : null
+  const giturlWorkspace = currentSource === 'giturl' ? gitWorkspace : null
+  const isGithubApp = githubWorkspace?.provider === 'github'
+  // An anonymous checkout mints nothing, so only a credentialed workspace can hold write.
+  const currentWrite = gitWorkspace ? gitWorkspace.provider !== undefined && gitWorkspace.gitAccess !== 'read' : null
   const currentAgentDir = agentDirInputValue(gitWorkspace?.agentDir)
-  const [mode, setMode] = useState<WorkspaceMode>(initialMode ?? agent.workspace.mode)
+  const [mode, setMode] = useState<WorkspaceMode>(initialMode ?? currentSource)
   const [gh, setGh] = useState<{ enabled: boolean; installations: GithubInstallationDto[] } | null>(null)
   const [ghSyncing, setGhSyncing] = useState(false)
   const [repos, setRepos] = useState<Array<GithubRepoDto & { installationId: string }> | null>(null)
@@ -111,7 +116,7 @@ export default function EditWorkspaceModal({
   // read: cloned without credentials, so read-only. A workspace that already has
   // no installation is one of these, and stays editable without re-verifying it.
   const [publicPick, setPublicPick] = useState<GithubRepoDto | null>(() =>
-    githubWorkspace && !githubWorkspace.installationId
+    githubWorkspace && githubWorkspace.provider === undefined
       ? {
           fullName: githubWorkspace.repo,
           private: false,
@@ -130,7 +135,13 @@ export default function EditWorkspaceModal({
   const [branchQ, setBranchQ] = useState('')
   const [agentDir, setAgentDir] = useState(currentAgentDir)
   const [worktree, setWorktree] = useState(gitWorkspace ? gitWorkspace.worktree === true : true)
-  const [glPick, setGlPick] = useState(gitlabWorkspace?.projectId ?? '')
+  const [glPick, setGlPick] = useState(gitlabWorkspace?.provider === 'gitlab' ? (gitlabWorkspace.repoId ?? '') : '')
+  // A public GitLab project path (anonymous clone) — the gitlab tile's second arm.
+  const [glPublic, setGlPublic] = useState<string | null>(
+    gitlabWorkspace && gitlabWorkspace.provider === undefined ? gitlabWorkspace.repo : null
+  )
+  // The Git URL tile's address; full https/ssh only — never shorthand.
+  const [urlInput, setUrlInput] = useState(giturlWorkspace?.gitRepo ?? '')
   const [glPickOpen, setGlPickOpen] = useState(false)
   const [glQ, setGlQ] = useState('')
   const [write, setWrite] = useState(currentWrite ?? (authorized[0] ? authorized[0].access === 'write' : true))
@@ -252,7 +263,7 @@ export default function EditWorkspaceModal({
   )
   const grantOf = (fullName: string) => authorizedByName.get(fullName.toLowerCase())
   const manualWorkspaceAuthorization =
-    githubWorkspace && !githubWorkspace.installationId ? grantOf(githubWorkspace.repo) : undefined
+    githubWorkspace && githubWorkspace.provider === undefined ? grantOf(githubWorkspace.repo) : undefined
 
   const picked = repos?.find((r) => r.fullName.toLowerCase() === pick.toLowerCase())
   const publicSelected =
@@ -347,41 +358,63 @@ export default function EditWorkspaceModal({
   const glMatches = matchGitlabProjects(gl.choices, glQ)
   // Falls back to the stored path so the current project reads correctly before the list lands.
   const glPickLabel =
-    glPicked?.projectPath ?? (glPick && glPick === gitlabWorkspace?.projectId ? gitlabWorkspace.repo : '')
+    glPublic ?? glPicked?.projectPath ?? (glPick && glPick === gitlabWorkspace?.repoId ? gitlabWorkspace.repo : '')
+  // The Git URL tile refuses the managed hosts with a switch-tile hint, so
+  // tile ↔ stored-shape stays injective by construction (§7).
+  const urlTileHint = mode === 'giturl' ? gitRepoUrlTileHint(urlInput) : null
   const accessChanged = gitWorkspace !== null && effectiveWrite !== currentWrite
-  const installationChanged =
-    githubWorkspace !== null && pickInstallationId !== null && githubWorkspace.installationId !== pickInstallationId
   const repoChanged =
     mode === 'github'
       ? githubWorkspace === null || pick.toLowerCase() !== githubWorkspace.repo.toLowerCase()
-      : mode === 'gitlab' && (gitlabWorkspace === null || glPick !== gitlabWorkspace.projectId)
-  const branchChanged = mode === agent.workspace.mode && gitWorkspace !== null && branch.trim() !== gitWorkspace.branch
+      : mode === 'gitlab'
+        ? gitlabWorkspace === null ||
+          (glPublic !== null
+            ? glPublic !== (gitlabWorkspace.provider === undefined ? gitlabWorkspace.repo : null)
+            : glPick !== gitlabWorkspace.repoId)
+        : mode === 'giturl' && (giturlWorkspace === null || urlInput.trim() !== giturlWorkspace.gitRepo)
+  const branchChanged = mode === currentSource && gitWorkspace !== null && branch.trim() !== gitWorkspace.branch
   const agentDirChanged =
-    mode === agent.workspace.mode && gitWorkspace !== null && (normalizedAgentDir ?? '') !== currentAgentDir
-  const worktreeChanged = mode === agent.workspace.mode && gitWorkspace !== null && worktree !== !!gitWorkspace.worktree
-  const destructiveChange = mode !== agent.workspace.mode || repoChanged || branchChanged
+    mode === currentSource && gitWorkspace !== null && (normalizedAgentDir ?? '') !== currentAgentDir
+  const worktreeChanged = mode === currentSource && gitWorkspace !== null && worktree !== !!gitWorkspace.worktree
+  // Binding a manual checkout to the App is a real edit even when nothing else
+  // moves: the stored credential flips from anonymous to github-vouched.
+  const bindsApp =
+    mode === 'github' &&
+    githubWorkspace !== null &&
+    githubWorkspace.provider === undefined &&
+    !publicSelected &&
+    pickInstallationId !== null
+  const destructiveChange = mode !== currentSource || repoChanged || branchChanged
   const changed =
-    mode !== agent.workspace.mode ||
+    mode !== currentSource ||
     (mode === 'github' &&
       (githubWorkspace === null ||
         repoChanged ||
         branchChanged ||
         agentDirChanged ||
         worktreeChanged ||
-        accessChanged ||
-        installationChanged)) ||
+        accessChanged)) ||
     (mode === 'gitlab' &&
-      (gitlabWorkspace === null || repoChanged || branchChanged || agentDirChanged || worktreeChanged || accessChanged))
+      (gitlabWorkspace === null ||
+        repoChanged ||
+        branchChanged ||
+        agentDirChanged ||
+        worktreeChanged ||
+        accessChanged)) ||
+    (mode === 'giturl' &&
+      (giturlWorkspace === null || repoChanged || branchChanged || agentDirChanged || worktreeChanged))
   const canSubmit =
     changed &&
     (mode === 'scratch' ||
       (mode === 'gitlab'
-        ? !!glPick && agentDirError === null
-        : !!pick &&
-          !uncovered &&
-          !probeDenies &&
-          agentDirError === null &&
-          (!!pickInstallationId || publicSelected || !appAvailable)))
+        ? (!!glPick || !!glPublic) && agentDirError === null
+        : mode === 'giturl'
+          ? !!urlInput.trim() && urlTileHint === null && agentDirError === null
+          : !!pick &&
+            !uncovered &&
+            !probeDenies &&
+            agentDirError === null &&
+            (!!pickInstallationId || publicSelected || !appAvailable)))
 
   const applyPick = (fullName: string, defaultBranch: string | undefined, asPublic: GithubRepoDto | null) => {
     setPick(fullName)
@@ -415,6 +448,7 @@ export default function EditWorkspaceModal({
   // Picking an unadded project provisions it first; a failed setup picks nothing.
   const selectProject = async (choice: GitlabProjectChoice) => {
     if (!choice.binding && !(await gl.provision(choice.projectId))) return
+    setGlPublic(null)
     setGlPick(choice.projectId)
     setGlPickOpen(false)
     setAccessOpen(false)
@@ -430,27 +464,42 @@ export default function EditWorkspaceModal({
     setErr(null)
     try {
       if (agentDirError) throw new Error(agentDirError)
+      // Every tile produces the same payload (git-workspace-model.md §5/§7): one
+      // gitRepo address; the server derives who vouches for it.
       await setAgentWorkspace(
         agent.id,
         mode === 'scratch'
           ? { mode: 'scratch' }
           : mode === 'gitlab'
             ? {
-                mode: 'gitlab',
+                mode: 'git',
+                // An unchanged pick submits the STORED address — never a client-side
+                // recomposition, which cannot know the deployment's instance URL.
+                gitRepo:
+                  !repoChanged && gitlabWorkspace !== null
+                    ? gitlabWorkspace.gitRepo
+                    : `${gl.instanceUrl.replace(/\/+$/, '')}/${glPickLabel}`,
                 worktree,
-                projectId: glPick,
                 ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
                 ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-                gitAccess: write ? 'write' : 'read'
+                access: glPublic === null && write ? 'write' : 'read'
               }
-            : {
-                mode: 'github',
-                worktree,
-                repoFullName: pick,
-                ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-                gitAccess: effectiveWrite ? 'write' : 'read'
-              }
+            : mode === 'giturl'
+              ? {
+                  mode: 'git',
+                  gitRepo: urlInput.trim(),
+                  worktree,
+                  ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                  ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
+                }
+              : {
+                  mode: 'git',
+                  gitRepo: pick,
+                  worktree,
+                  ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                  ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                  access: effectiveWrite ? 'write' : 'read'
+                }
       )
       onChanged()
     } catch (error) {
@@ -491,9 +540,9 @@ export default function EditWorkspaceModal({
     return (
       <AddAgentRepoModal
         agent={agent}
-        workspaceRepo={githubWorkspace?.installationId ? githubWorkspace.repo : null}
+        workspaceRepo={isGithubApp && githubWorkspace ? githubWorkspace.repo : null}
         authorized={authorizations}
-        {...(githubWorkspace && !githubWorkspace.installationId ? { fixedRepo: githubWorkspace.repo } : {})}
+        {...(githubWorkspace && githubWorkspace.provider === undefined ? { fixedRepo: githubWorkspace.repo } : {})}
         {...(repositoryEditor.repo ? { initialRepo: repositoryEditor.repo } : {})}
         {...(repositoryEditor.access ? { initialAccess: repositoryEditor.access } : {})}
         workspaceContext
@@ -556,8 +605,8 @@ export default function EditWorkspaceModal({
             <Icon name={destructiveChange ? 'shield-alert' : 'info'} size={14} className="mt-[2px] flex-none" />
             <span>
               {destructiveChange
-                ? 'Saving permanently replaces all files in the current workspace. Commit or back up anything you need first; this cannot be undone.'
-                : 'Saving preserves the current workspace files, briefly stops active work, and clears cached repository credentials. Working-directory changes restart the agent in the selected subdirectory. GitHub integrations that review pull requests or report Checks require read & write access.'}
+                ? 'Replaces all files in the current workspace — commit anything you need first.'
+                : 'Keeps the current files; active work pauses briefly.'}
             </span>
           </div>
 
@@ -605,15 +654,41 @@ export default function EditWorkspaceModal({
                         onSelect={() => void selectProject(choice)}
                       />
                     ))}
-                    {glMatches.length === 0 && <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>}
+                    {/* A public project outside the managed set rides the anonymous arm (§7). */}
+                    <PublicGitlabProjectOption
+                      query={glQ}
+                      choices={gl.choices}
+                      onSelect={(path) => {
+                        setGlPublic(path)
+                        setGlPick('')
+                        setGlPickOpen(false)
+                        setAccessOpen(false)
+                        setWrite(false)
+                        setBranch('')
+                        setAgentDir('')
+                        setErr(null)
+                      }}
+                    />
+                    {glMatches.length === 0 && !glQ.trim().includes('/') && (
+                      <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>
+                    )}
                   </GitlabProjectField>
 
                   <RepositoryAccessField
-                    repositorySelected={!!glPick}
+                    repositorySelected={!!glPick || !!glPublic}
                     label="Project access"
                     unselectedLabel="Select project first"
                     writeDescription="Push, open merge requests & run pipelines"
-                    value={write ? 'write' : 'read'}
+                    value={glPublic !== null ? 'read' : write ? 'write' : 'read'}
+                    readOnly={glPublic !== null}
+                    readOnlyNote={
+                      glPublic !== null ? (
+                        <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                          <Icon name="info" size={13} className="mt-[1px] flex-none" />
+                          Public project — read-only clone.
+                        </span>
+                      ) : undefined
+                    }
                     open={accessOpen}
                     onToggle={() => {
                       setGlPickOpen(false)
@@ -629,7 +704,7 @@ export default function EditWorkspaceModal({
 
                   <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
                     <WorkspaceBranchField
-                      repositorySelected={!!glPick}
+                      repositorySelected={!!glPick || !!glPublic}
                       unselectedLabel="Pick project first"
                       defaultBranchLabel="GitLab default branch"
                       value={branch}
@@ -826,6 +901,30 @@ export default function EditWorkspaceModal({
               </div>
             ))}
 
+          {mode === 'giturl' && (
+            <GitUrlTileFields
+              url={urlInput}
+              urlHint={urlTileHint}
+              branch={branch}
+              agentDir={agentDir}
+              agentDirError={agentDirError}
+              worktree={worktree}
+              onUrlChange={(value) => {
+                setUrlInput(value)
+                setErr(null)
+              }}
+              onBranchChange={(value) => {
+                setBranch(value)
+                setErr(null)
+              }}
+              onAgentDirChange={(value) => {
+                setAgentDir(value)
+                setErr(null)
+              }}
+              onWorktreeChange={setWorktree}
+            />
+          )}
+
           <div className="mt-1 border-t border-(--border-subtle) pt-4">
             <div className="flex flex-wrap items-start gap-3">
               <div className="min-w-0 flex-1">
@@ -833,7 +932,7 @@ export default function EditWorkspaceModal({
                   Additional repositories
                 </div>
                 <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  {githubWorkspace && !githubWorkspace.installationId
+                  {githubWorkspace && githubWorkspace.provider === undefined
                     ? 'This manual checkout can authorize only its workspace repository. Changes here apply immediately.'
                     : poolPlaced
                       ? 'Authorize repositories this agent can use in addition to its workspace. Changes here apply immediately.'
