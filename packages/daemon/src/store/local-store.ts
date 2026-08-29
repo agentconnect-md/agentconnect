@@ -1612,10 +1612,15 @@ export class LocalStore {
     `
     // One transaction, not 58: a multi-statement script commits — and so flushes — each statement.
     // The stamp joins it, so a creation that fails halfway leaves no schema to claim it is current.
-    await this.transaction(async (tx) => {
-      await tx.exec(schema)
-      if (freshDatabase) await tx.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
-    })
+    // Creation only: an established store re-runs this block as pure IF NOT EXISTS, so it saves
+    // nothing there, and BEGIN IMMEDIATE held across 58 statements would collide with any peer
+    // holding the same file open — every boot, not just the first.
+    if (freshDatabase)
+      await this.transaction(async (tx) => {
+        await tx.exec(schema)
+        await tx.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+      })
+    else await this.db.exec(schema)
     // The revision counter is in-memory but the rows it numbers are durable, so it
     // must resume from the database on every open — starting a restarted daemon back
     // at 0 would hand already-issued revisions to new rows. Deliberately unfenced: it
