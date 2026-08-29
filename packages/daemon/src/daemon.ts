@@ -118,6 +118,7 @@ import { TelegramConnection } from './telegram/connection.js'
 import { DiscordConnection } from './discord/connection.js'
 import { FeishuConnection } from './feishu/connection.js'
 import { SlackNameResolver } from './slack/name-resolver.js'
+import { splitIntoSections } from './slack/formatter.js'
 import {
   integrationConfig,
   integrationCore,
@@ -525,6 +526,7 @@ import {
   IDLE_FLUSH_MS,
   MAX_BG_TASK_WAKE_REARMS,
   MAX_BG_TASK_WAKES_PER_SESSION,
+  MAX_DRAIN_TEXT_CHARS,
   MAX_QUEUED_PER_SESSION,
   MAX_SESSION_PURGE_BATCH,
   MAX_SETTLED_TASKS_PER_SESSION,
@@ -773,6 +775,16 @@ export class Daemon {
        *  task's completion: once `host.prompt()` has returned the model is no longer running,
        *  yet the dispatch stays pending through renderer/finalization. */
       deliveringWakes: number
+      /** Narration captured from the CURRENT runtime-initiated cycle (`running` with no
+       *  Pending) instead of being dropped — delivered on the idle edge or ahead of the
+       *  next real dispatch. Capped at {@link MAX_DRAIN_TEXT_CHARS}. */
+      drainText: string
+      /** Clock ms of the last delivered drain narration — the wake reads it to say the
+       *  follow-up WAS delivered instead of asking the model to repeat it. */
+      drainDeliveredAt?: number
+      /** Drain deliveries spent on this session — bounds the model's self-continuation
+       *  loop the way {@link MAX_BG_TASK_WAKES_PER_SESSION} bounds wakes (same cap). */
+      drainDeliveries: number
     }
   >()
   /** Armed background-task wake checks (one per settled non-subagent task), tracked so
@@ -9998,6 +10010,11 @@ export class Daemon {
           }
         : {})
     }
+    // A real turn takes over the session — flush any drain narration first (delivered, not
+    // dropped), so buffered text can neither leak into this turn nor go stale behind it.
+    void this.deliverDrainNarration(agentId, sessionId).catch((err) =>
+      this.log.warn(`drain delivery failed for "${agentId}": ${(err as Error).message}`)
+    )
     this.pending.set(pendingTurnKey(agentId, sessionId), p)
     return p
   }
@@ -12597,7 +12614,18 @@ export class Daemon {
         }
       }
     }
-    if (!p) return
+    if (!p) {
+      // A runtime-initiated cycle (Claude's bg-task self-drain) narrates into a turn nobody
+      // owns. Capture the text instead of dropping it — the idle edge delivers it (§5.2 of
+      // background-task-aware-reclaim.md). Gated on a lease saying `running`: a straggler
+      // chunk after idle stays dropped, so stale text can never leak into a later flush.
+      if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+        const lease = this.sdkLease.get(sdkLeaseKey(agentId, sessionId))
+        if (lease?.sdkState === 'running')
+          lease.drainText = (lease.drainText + String(update.content.text ?? '')).slice(0, MAX_DRAIN_TEXT_CHARS)
+      }
+      return
+    }
     const isAnswerChunk = update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text'
     if (isAnswerChunk) {
       const text = String(update.content.text ?? '')
@@ -13809,6 +13837,7 @@ export class Daemon {
       task_id?: unknown
       subagent_type?: unknown
       description?: unknown
+      summary?: unknown
       patch?: { status?: unknown }
       tasks?: unknown
     } | null
@@ -13832,28 +13861,29 @@ export class Daemon {
       sdkState: 'idle' as const,
       bgWakes: 0,
       armedWakes: 0,
-      deliveringWakes: 0
+      deliveringWakes: 0,
+      drainText: '',
+      drainDeliveries: 0
     }
     // Release a task from the lease and, if it's a real background task (not an
     // internal subagent), announce its completion when the agent is verbose enough
     // and hand the completion back to the model so the work is not stranded.
-    const settle = async (taskId: string, status?: string) => {
+    const settle = async (taskId: string, status?: string, summary?: string) => {
       const rec = lease.tasks.get(taskId)
       if (!rec) {
-        // Already settled: still dedup announce + wake, but let a later terminal edge fill in the
-        // outcome the first one could not carry — the snapshot and task_notification paths supply
-        // no status, so this is how `failed` becomes reachable at all. Display only.
-        if (status) {
-          const prior = lease.settled.find((t) => t.id === taskId) // at most one: retention dedups by id
-          if (prior && !prior.status) prior.status = status
-        }
+        // Already settled: still dedup announce + wake, but let a later terminal edge fill in
+        // what the first one could not carry — the snapshot path supplies no status, so this is
+        // how `failed` and the runtime's summary become reachable at all. Display/wake only.
+        const prior = lease.settled.find((t) => t.id === taskId) // at most one: retention dedups by id
+        if (prior && status && !prior.status) prior.status = status
+        if (prior && summary && !prior.summary) prior.summary = summary
         return
       }
       lease.tasks.delete(taskId) // liveness removal FIRST — see the `tasks` field docblock
       // Retained OUTSIDE the liveness set, and before the subagent bail so the panel's data set
       // equals the set that fences reclaim (subagents are filtered at render, never at the source).
       lease.settled = lease.settled.filter((t) => t.id !== taskId)
-      lease.settled.push({ id: taskId, ...rec, endedAt: this.clock.now(), status })
+      lease.settled.push({ id: taskId, ...rec, endedAt: this.clock.now(), status, ...(summary ? { summary } : {}) })
       if (lease.settled.length > MAX_SETTLED_TASKS_PER_SESSION) lease.settled.shift()
       if (rec.isSubagent) return
       // Settled inside this session's own live foreground loop (running SDK cycle + pending
@@ -13877,7 +13907,16 @@ export class Daemon {
         // Top-level Claude cycle. `idle` alone is NOT an end signal — it fires at
         // end_turn while a background task is still running (verified); the lease's
         // task set closes that gap.
-        if (m.state === 'idle' || m.state === 'running') lease.sdkState = m.state
+        if (m.state === 'idle' || m.state === 'running') {
+          const wasRunning = lease.sdkState === 'running'
+          lease.sdkState = m.state
+          // The cycle ended — deliver whatever a Pending-less drain narrated (no-op after a
+          // real turn, whose chunks were never buffered). Fire-and-forget like the announce.
+          if (m.state === 'idle' && wasRunning)
+            void this.deliverDrainNarration(agentId, acpSessionId).catch((err) =>
+              this.log.warn(`drain delivery failed for "${agentId}": ${(err as Error).message}`)
+            )
+        }
         break
       case 'task_started':
         if (typeof m.task_id === 'string')
@@ -13889,8 +13928,10 @@ export class Daemon {
           })
         break
       case 'task_notification':
-        // The task settled (no status carried) — release + announce as finished.
-        if (typeof m.task_id === 'string') await settle(m.task_id)
+        // The task settled — release + announce as finished, keeping the runtime's own
+        // completion summary for the wake prompt (this edge carries no usable status).
+        if (typeof m.task_id === 'string')
+          await settle(m.task_id, undefined, typeof m.summary === 'string' ? m.summary : undefined)
         break
       case 'task_updated': {
         // The terminal patch is guaranteed per transition even if a task_notification
@@ -14002,6 +14043,73 @@ export class Daemon {
     void Promise.resolve(post).catch((err) =>
       this.log.warn(`bg-task announce failed for "${agentId}": ${(err as Error).message}`)
     )
+  }
+
+  /** Deliver the narration a runtime-initiated drain cycle produced (§5.2 of
+   *  background-task-aware-reclaim.md) — the text the model wrote right after a background
+   *  task finished, which previously had no Pending to ride and was dropped. The buffer is
+   *  claimed synchronously, so the idle-edge and dispatch-time callers can never double-post.
+   *  Agent speech, not a notice: it posts with the agent's conversational identity and lands
+   *  in the transcript. The completion wake stays armed; {@link wakeOnBackgroundTaskDone}
+   *  reads `drainDeliveredAt` to tell the model this narration WAS delivered. */
+  private async deliverDrainNarration(agentId: string, acpSessionId: string): Promise<void> {
+    const lease = this.sdkLease.get(sdkLeaseKey(agentId, acpSessionId))
+    if (!lease?.drainText) return
+    const text = lease.drainText.trim()
+    lease.drainText = ''
+    // The sentinel is a control marker, never chat; past the budget the narration drops as
+    // it always did — the cap is what bounds a model that keeps self-continuing via tasks.
+    if (!text || isNoResponseBody(text)) return
+    if (lease.drainDeliveries >= MAX_BG_TASK_WAKES_PER_SESSION) {
+      this.log.warn(
+        `drain delivery budget exhausted (${MAX_BG_TASK_WAKES_PER_SESSION}) on ${acpSessionId} — narration dropped`
+      )
+      return
+    }
+    const rec = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    if (!rec || rec.state === 'closed') return
+    const mode = (await this.store.getOutputModeOverride(rec.key)) ?? this.agents.get(agentId)?.output?.mode ?? 'low'
+    // Resolved against the SESSION's platform (delivery binding first) — never replyConnFor's
+    // any-integration fallback, which hands a webchat/hook/dream session another platform's
+    // client that throws on the session's channel id after having claimed delivery.
+    const integrationId =
+      this.sessionDeliveryBindings.get(rec.key)?.integrationId ??
+      this.integrationIdForTransportScope(agentId, rec.platform, rec.transportScope)
+    const conn = integrationId ? this.connForIntegration(integrationId) : undefined
+    // No surface at all ⇒ keep today's drop, and do NOT claim delivery to the wake.
+    if (mode !== 'none' && !conn) return
+    if (mode !== 'none' && conn) {
+      this.log.info(`drain delivery: ${text.length} chars → ${rec.key}`)
+      const agent = this.agents.get(agentId)
+      // The same conversational authorship an agent reply carries (name, icon, author id —
+      // no responseId: authorship only, it closes no response); undefined off Slack.
+      const options = slackAgentPostOptions({
+        platform: rec.platform,
+        agentId,
+        agentName: agent?.displayName?.trim() || agent?.name || agentId,
+        ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})
+      })
+      if (options) {
+        for (const section of splitIntoSections(text))
+          await (conn as SlackConnection).postMessage(rec.channel, section, rec.thread || undefined, options)
+      } else {
+        await conn.postMessage(rec.channel, text, rec.thread || undefined)
+      }
+    }
+    // Claimed only past the post: a throwing post above leaves no stamp, so the wake still
+    // asks for the full report. Recorded like a reply row, so the console reads it back.
+    if (rec.thread) {
+      await this.store.appendTranscript({
+        channel: transcriptChannelKey(rec.channel, rec.transportScope),
+        thread: rec.thread,
+        ts: monotonicTs(),
+        sender: agentId,
+        kind: 'text',
+        text
+      })
+    }
+    lease.drainDeliveries += 1
+    lease.drainDeliveredAt = this.clock.now()
   }
 
   /** Arm the deferred wake for a settled background task. Deliberately NOT immediate: the
@@ -14148,6 +14256,14 @@ export class Daemon {
     const integrationId = this.integrationIdForSessionTransport(agentId, platform, rec.transportScope)
     if (rec.transportScope && !integrationId) return skip('integration for the session scope is gone')
 
+    // Read at fire time from the settled record, never captured at arm: the runtime's own
+    // completion summary, and whether a drain narration already landed at-or-after this settle
+    // (drains follow settles, so >= only ties on the same clock ms).
+    const settledRec = lease.settled.find((t) => t.id === taskId)
+    const summary = settledRec?.summary?.trim().slice(0, 500)
+    const drainDelivered =
+      settledRec !== undefined && lease.drainDeliveredAt !== undefined && lease.drainDeliveredAt >= settledRec.endedAt
+
     // No CallMeta: this is not an agent call, it carries no hop chain, and it must not look
     // like one. A child woken this way still reaches its parent — `replyToSession` falls back
     // to the origin PERSISTED on the session for exactly this kind of turn (§5.3), and the
@@ -14166,12 +14282,19 @@ export class Daemon {
       sender: { id: `background-task:${taskId}`, isBot: true },
       text:
         `[background task finished] ${what}${status ? ` — ${status}` : ''}\n\n` +
-        `This is a daemon notification, not a message from anyone. A background task you started ` +
-        `settled after your turn had already ended, so nothing you said about it reached anyone. Read its ` +
-        `output now (its task id is \`${taskId}\`) and finish what you were waiting on it for — this turn ` +
-        `is the one that is actually delivered. If you owe a report to another session, send it, unless ` +
-        `you already sent it after the task finished; do not report the same result twice. If the result ` +
-        `needs no action at all, stay silent.`,
+        (summary ? `Task summary: ${summary}\n\n` : '') +
+        (drainDelivered
+          ? `This is a daemon notification, not a message from anyone. A background task you started ` +
+            `settled after your turn had already ended. The follow-up you produced after it finished WAS ` +
+            `delivered to the conversation this time — do not repeat it. Check whether anything is still ` +
+            `owed (unread output — the task id is \`${taskId}\` — or a report to another session not yet ` +
+            `sent) and do only that. If nothing is owed, stay silent.`
+          : `This is a daemon notification, not a message from anyone. A background task you started ` +
+            `settled after your turn had already ended, so nothing you said about it reached anyone. Read its ` +
+            `output now (its task id is \`${taskId}\`) and finish what you were waiting on it for — this turn ` +
+            `is the one that is actually delivered. If you owe a report to another session, send it, unless ` +
+            `you already sent it after the task finished; do not report the same result twice. If the result ` +
+            `needs no action at all, stay silent.`),
       mentionedBots: integrationId && this.botUserIds[integrationId] ? [this.botUserIds[integrationId]!] : [],
       isDm: rec.conversationKind === 'dm',
       ...(rec.conversationKind === 'group_dm' ? { isGroupDm: true } : {})

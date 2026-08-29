@@ -158,11 +158,8 @@ Delivery follows these rules:
   (§5.1): the runtime hands the result to the model in that loop, and the
   turn's own chrome already shows the step. Auto-backgrounded commands
   (sleeps, watchers) settle this way every time. Both conditions are required:
-  `running` without a pending dispatch is an invisible self-drain cycle, and a
-  pending dispatch past `idle` is finalization the model has already left. A
-  settle that races the loop's very end may forfeit the runtime's follow-up
-  narration; its MCP side effects still land, and that narrow loss is accepted
-  over announcing every in-turn completion twice.
+  `running` without a pending dispatch is a self-drain cycle (§5.2), and a
+  pending dispatch past `idle` is finalization the model has already left.
 
 The message is daemon-authored system output, not an agent reply, so it has no
 agent-attribution footer. On platforms that mark notices it is posted as
@@ -171,13 +168,11 @@ keeps the bot's own identity, per the conversational-authorship rule — so
 thread backfill skips it instead of re-ingesting it as something the agent
 said.
 
-The runtime's own unsolicited follow-up narration is not routed when no
-foreground turn is pending. This is not a stylistic choice — `onAcpUpdate`
-returns early on `!pending`, so **every** content-bearing update from such a
-cycle (message chunks, tool renders, transcript rows, the webchat sink) is
-discarded. Its MCP tool calls are unaffected: that socket is not `Pending`-gated,
-so side effects a self-drain performs — including a `sendMessage` report — do
-land. §5.1 depends on both halves of this.
+The runtime's own drain-cycle narration is captured and delivered — §5.2. Its
+non-text updates (tool renders, the webchat sink) are still not routed, and
+its MCP tool calls still land: that socket is not `Pending`-gated, so side
+effects a self-drain performs — including a `sendMessage` report — do land.
+§5.1 and §5.2 depend on these halves.
 
 ### 5.1 Waking the session
 
@@ -195,9 +190,12 @@ The daemon therefore delivers it, as a new turn into the same session:
 
 - The turn is `source: "agent"` with sender `background-task:<task_id>`. Its text
   states plainly that it is a daemon notification rather than a message from
-  anyone, names the task id to read output from, says that THIS turn is the one
-  actually delivered, tells the model not to repeat a report it already sent after
-  the task finished, and permits silence when the result needs no action.
+  anyone, names the task id to read output from, carries the runtime's own
+  completion summary when `task_notification` supplied one, and permits silence
+  when the result needs no action. When no drain narration was delivered (§5.2)
+  it says THIS turn is the one actually delivered and asks for the report; when
+  one was, it says that narration WAS delivered and asks only for what is still
+  owed — without that split the model re-says the whole thing or loses half of it.
 - It carries **no** `CallMeta`. It is not an agent call and must not look like
   one. A child woken this way still reaches its parent, because
   `replyToSession` authorizes against the origin persisted on the session
@@ -261,11 +259,12 @@ the host mid-initialization.
 A wake turn that never settles keeps the fence indefinitely; the absolute
 `agentMaxLifetimeMs` ceiling (§4) remains the backstop, as it is for a hung task.
 
-The `running` case is a **wait, not a stand-down**. The self-drain cycle delivers
-nothing (see §5), so treating it as the delivery is what strands the session; the
-wake only defers to it so an injected turn does not race the runtime's own work,
-then delivers regardless. `MAX_BG_TASK_WAKE_REARMS` (15, ≈1 minute) bounds that
-wait so a cycle that never returns to `idle` is not polled forever.
+The `running` case is a **wait, not a stand-down**. A self-drain cycle may
+produce nothing observable (its narration, when any, is delivered by §5.2), so
+treating it as the delivery is what strands the session; the wake only defers to
+it so an injected turn does not race the runtime's own work, then delivers
+regardless. `MAX_BG_TASK_WAKE_REARMS` (15, ≈1 minute) bounds that wait so a
+cycle that never returns to `idle` is not polled forever.
 
 Observed sequence for a `sleep 30` in `run_in_background` (Claude
 claude-agent-acp 0.63.0), which is what this design is calibrated against:
@@ -290,6 +289,39 @@ exhausting it logs a warning and leaves the completion undelivered.
 A wake is **not** gated on output mode. The channel notification in §5 is for the
 human and stays gated at `medium`; the wake is for the model and must happen at
 every output mode, including `low` and `none`.
+
+### 5.2 Delivering the drain narration
+
+When a task settles after the turn, the Claude runtime keeps its own
+"you will be notified" promise in-process: it self-wakes a drain cycle and the
+model narrates the completion there. That cycle has no `Pending`, so its updates
+used to be discarded wholesale — the narration (often the very output the human
+asked for) was lost, and the wake had to ask the model to say everything again,
+which it does only probabilistically.
+
+The daemon now captures that narration. While the lease reads `running` with no
+pending dispatch, `agent_message_chunk` text accumulates on the lease (capped at
+`MAX_DRAIN_TEXT_CHARS`); the `running → idle` edge — or the next real dispatch
+for the session, whichever comes first — delivers it:
+
+- Delivered as **agent speech**, with the agent's conversational identity
+  (name, icon, author id) and a transcript row — not as a chrome notice: the
+  model authored it.
+- The no-response sentinel, a closed session, and `none` output mode keep their
+  usual semantics (sentinel drops; `none` records without posting).
+- Capture is gated on the lease saying `running`, so a straggler chunk after
+  `idle` stays dropped and stale text can never leak into a later flush; a real
+  dispatch claims the buffer synchronously before taking the session over.
+- Deliveries spend the same per-session cap as wakes
+  (`MAX_BG_TASK_WAKES_PER_SESSION`, counted separately), bounding a model that
+  keeps self-continuing by starting new tasks from each drain — a loop the wake
+  budget alone cannot bound, since drains need no wake to keep going.
+- A drain with nowhere to deliver (no platform connection) keeps the old drop
+  and does **not** stamp `drainDeliveredAt`, so the wake still asks for a full
+  report.
+
+The wake stays armed either way (§5.1) — a drain may narrate nothing — and reads
+`drainDeliveredAt` at fire time to pick its wording.
 
 ## 6. Fallback and Runtime Limits
 

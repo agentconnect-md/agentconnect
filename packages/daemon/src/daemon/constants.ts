@@ -78,6 +78,9 @@ export const MAX_BG_TASK_WAKE_REARMS = 15
  *  budget is the only backstop against a self-feeding wake loop. Counted over the
  *  lease's life (i.e. until the host is reclaimed), not per turn. */
 export const MAX_BG_TASK_WAKES_PER_SESSION = 20
+/** Cap on buffered self-drain narration per runtime-initiated cycle — bounds memory, and
+ *  splitIntoSections keeps the delivered form readable at this size. */
+export const MAX_DRAIN_TEXT_CHARS = 16_000
 
 /** How many SETTLED background tasks one lease retains for the console's `task/list` read. The
  *  daemon keeps no task history anywhere else, so without this a finished task is unshowable;

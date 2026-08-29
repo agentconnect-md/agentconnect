@@ -82,6 +82,9 @@ export interface SettledSdkTask extends LiveSdkTask {
   id: string
   endedAt: number
   status?: string
+  /** The runtime's own completion summary (`task_notification.summary`), when it sent one —
+   *  carried into the wake prompt so the model reports from the result, not from memory. */
+  summary?: string
 }
 
 /**

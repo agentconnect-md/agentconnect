@@ -8,7 +8,8 @@ import { Daemon } from '../src/daemon.js'
 import { TaskViolationError } from '../src/cp/task-reader.js'
 import { configFilesDir } from '../src/shim/config-file-env.js'
 import { readSkillLedger, skillLedgerLocation } from '../src/skills/skill-install-ledger.js'
-import { sessionKey } from '../src/store/local-store.js'
+import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
+import { NO_RESPONSE_SENTINEL } from '../src/session/no-response.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT, waitBudget } from './wait-support.js'
@@ -1917,6 +1918,144 @@ describe('Daemon idle sweep — background-task lease', () => {
   // ACP session ids are runtime-local: two agents can each expose `acp-1`. Sharing one lease
   // entry would let one agent's task overwrite the other's record, suppress its completion
   // wake (via `tasks.size`/`sdkState`), or spend its wake budget.
+  // §5.2: the narration a Pending-less runtime drain cycle produces is captured and
+  // delivered as agent speech instead of dropped, and the wake stops asking for a repeat.
+  describe('delivering the drain narration', () => {
+    const chunk = (text: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+
+    it('captures a Pending-less running cycle and posts it as agent speech on the idle edge', async () => {
+      const clock = new FakeClock()
+      const { daemon, host, conn } = await bootWithTurn(clock, {
+        agentIdleTimeoutMs: 10_000_000,
+        idleSweepMs: 10_000_000
+      })
+      await (daemon as any).store.setOutputModeOverride(KEY, 'low') // announce off; delivery is not mode-gated
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_started', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('task_notification', { task_id: 't1' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onAcpUpdate('bot-a', 'acp-1', chunk('first sleep '))
+      await (daemon as any).onAcpUpdate('bot-a', 'acp-1', chunk('done'))
+      expect(conn.postMessage).not.toHaveBeenCalled() // buffered, never streamed
+      clock.advance(10)
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      await vi.waitFor(() => expect(conn.postMessage).toHaveBeenCalledTimes(1), WAIT)
+      const [channel, text, thread, options] = (conn.postMessage as any).mock.calls[0]
+      expect(channel).toBe('C1')
+      expect(text).toBe('first sleep done')
+      expect(thread).toBe('T1')
+      expect(options).toMatchObject({ username: 'bot-a', agentAuthorId: 'bot-a' })
+      // Recorded like a reply row, so the console reads it back.
+      const rows = await (daemon as any).store.transcriptSince(transcriptChannelKey('C1', TRANSPORT_SCOPE), 'T1', null)
+      expect(rows.some((row: any) => row.sender === 'bot-a' && row.text === 'first sleep done')).toBe(true)
+      // The wake still fires, but now says the narration WAS delivered instead of re-asking.
+      clock.advance(4000)
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
+      const woken = JSON.stringify((host.prompt as any).mock.calls[1])
+      expect(woken).toContain('WAS delivered')
+      expect(woken).not.toContain('nothing you said')
+      await daemon.stop()
+    })
+
+    it('drops a straggler chunk that arrives outside a running cycle', async () => {
+      const clock = new FakeClock()
+      const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+      await (daemon as any).store.setOutputModeOverride(KEY, 'low')
+      // Lease exists but the cycle is over — a late chunk must not be buffered.
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      await (daemon as any).onAcpUpdate('bot-a', 'acp-1', chunk('stale tail'))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      await new Promise((r) => setImmediate(r))
+      expect(conn.postMessage).not.toHaveBeenCalled()
+      await daemon.stop()
+    })
+
+    it('a real dispatch claims the buffer and delivers it exactly once', async () => {
+      const clock = new FakeClock()
+      const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+      await (daemon as any).store.setOutputModeOverride(KEY, 'low')
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onAcpUpdate('bot-a', 'acp-1', chunk('early words'))
+      await (daemon as any).dispatch('bot-a', dm('200', 'again'), 'int-a')
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      await new Promise((r) => setImmediate(r))
+      const bodies = (conn.postMessage as any).mock.calls.map((call: any[]) => String(call[1]))
+      expect(bodies.filter((body: string) => body === 'early words')).toHaveLength(1)
+      await daemon.stop()
+    })
+
+    it('a session whose platform has no integration neither posts nor claims delivery', async () => {
+      const clock = new FakeClock()
+      const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+      // A webchat-like session: platform backed by NO integration on this agent. The
+      // any-integration fallback used to hand it the Slack client, which would throw on the
+      // webchat channel id AFTER claiming delivery — the wake then wrongly said "delivered".
+      const webKey = sessionKey('webchat', 'chat-1', '', 'bot-a')
+      await (daemon as any).store.upsertSession({
+        key: webKey,
+        agentId: 'bot-a',
+        platform: 'webchat',
+        channel: 'chat-1',
+        thread: '',
+        acpSessionId: 'acp-w',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: clock.now()
+      })
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-w', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onAcpUpdate('bot-a', 'acp-w', chunk('webchat drain words'))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-w', evt('session_state_changed', { state: 'idle' }))
+      await new Promise((r) => setImmediate(r))
+      expect(conn.postMessage).not.toHaveBeenCalled() // the Slack conn is NOT this session's surface
+      const lease = (daemon as any).sdkLease.get(JSON.stringify(['bot-a', 'acp-w']))
+      expect(lease?.drainDeliveredAt).toBeUndefined() // and delivery is not claimed to the wake
+      await daemon.stop()
+    })
+
+    it('holds the no-response sentinel and an exhausted budget silent', async () => {
+      const clock = new FakeClock()
+      const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+      await (daemon as any).store.setOutputModeOverride(KEY, 'low')
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onAcpUpdate('bot-a', 'acp-1', chunk(NO_RESPONSE_SENTINEL))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      await new Promise((r) => setImmediate(r))
+      expect(conn.postMessage).not.toHaveBeenCalled()
+      // Past the budget the narration drops as it always did — the self-continuation bound.
+      const lease = (daemon as any).sdkLease.get(LEASE_KEY)
+      lease.drainDeliveries = 20
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onAcpUpdate('bot-a', 'acp-1', chunk('over budget'))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-1', evt('session_state_changed', { state: 'idle' }))
+      await new Promise((r) => setImmediate(r))
+      expect(conn.postMessage).not.toHaveBeenCalled()
+      await daemon.stop()
+    })
+
+    it('carries the task_notification summary into the wake prompt', async () => {
+      const clock = new FakeClock()
+      const { daemon, host } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+      await (daemon as any).store.setOutputModeOverride(KEY, 'low')
+      await (daemon as any).onSdkLifecycle(
+        'bot-a',
+        'acp-1',
+        evt('task_started', { task_id: 't1', description: 'Sleep 5' })
+      )
+      await (daemon as any).onSdkLifecycle(
+        'bot-a',
+        'acp-1',
+        evt('task_notification', { task_id: 't1', summary: 'slept five seconds, printed done' })
+      )
+      clock.advance(4000)
+      await vi.waitFor(() => expect(host.prompt).toHaveBeenCalledTimes(2), WAIT)
+      const woken = JSON.stringify((host.prompt as any).mock.calls[1])
+      expect(woken).toContain('Task summary: slept five seconds, printed done')
+      expect(woken).toContain('nothing you said') // no drain delivery happened
+      await daemon.stop()
+    })
+  })
+
   it('keys the lease per (agent, ACP session) so two agents sharing an id do not collide', async () => {
     const clock = new FakeClock()
     const { daemon } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
