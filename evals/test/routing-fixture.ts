@@ -67,8 +67,11 @@ export class RoutingFixture {
   private readonly echoHandles: Promise<DeliveryHandle>[] = []
   private readonly echoAdmissionRecords: {
     messageId: string
-    /** Set on the response-closing arrival; absent on the post it edits. */
+    /** Set on a `message_changed` closing edit; absent on an ordinary post. */
     ingressEventTag?: string
+    /** The claim's delivery state — `final` marks the ONE routable event of a response,
+     *  whether it arrived as a born-final post (§5.5) or as the closing edit. */
+    deliveryState?: 'streaming' | 'final'
     integrationId: string
     admission: Promise<DeliveryAdmission>
   }[] = []
@@ -190,9 +193,10 @@ export class RoutingFixture {
     }
     const echoMessageId = effect.messageId
     const mentions = [...effect.text.matchAll(/<@([A-Z0-9]+)>/g)].map((match) => match[1]!)
-    // The authorship CLAIM travels exactly as the platform normalizer would
-    // surface it: streaming on ordinary posts (unroutable), final only on the
-    // response-closing edit. Verification stays entirely in the daemon.
+    // The authorship CLAIM travels exactly as the platform normalizer would surface it:
+    // streaming on mid-answer posts (unroutable), final on the ONE response-closing
+    // event — the terminal post itself when the response closes at post time (§5.5),
+    // or the `message_changed` edit. Verification stays entirely in the daemon.
     const authorAgentId = effect.identity?.agentAuthorId ?? effect.agentId
     const claim =
       effect.response !== undefined
@@ -226,6 +230,7 @@ export class RoutingFixture {
       this.echoAdmissionRecords.push({
         messageId: echoMessageId,
         ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
+        ...(claim !== undefined ? { deliveryState: claim.deliveryState } : {}),
         integrationId,
         admission: handle.then((settled) => settled.admission)
       })
@@ -234,12 +239,19 @@ export class RoutingFixture {
 
   /** Admission outcome of every platform echo injected so far, in order. */
   async echoAdmissions(): Promise<
-    { messageId: string; ingressEventTag?: string; integrationId: string; admission: DeliveryAdmission }[]
+    {
+      messageId: string
+      ingressEventTag?: string
+      deliveryState?: 'streaming' | 'final'
+      integrationId: string
+      admission: DeliveryAdmission
+    }[]
   > {
     return Promise.all(
       this.echoAdmissionRecords.map(async (record) => ({
         messageId: record.messageId,
         ...(record.ingressEventTag !== undefined ? { ingressEventTag: record.ingressEventTag } : {}),
+        ...(record.deliveryState !== undefined ? { deliveryState: record.deliveryState } : {}),
         integrationId: record.integrationId,
         admission: await record.admission
       }))

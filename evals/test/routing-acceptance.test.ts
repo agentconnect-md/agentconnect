@@ -358,9 +358,9 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
     // No turn was lost to source binding — the #583 regression pin.
     expect(fixture.events().some((event) => JSON.stringify(event).includes('session_source_mismatch'))).toBe(false)
     // ...and the edge past the budget is REFUSED, with no dispatch behind it.
-    const finalizedAdmissions = (await fixture.echoAdmissions()).filter(
-      (record) => record.ingressEventTag !== undefined
-    )
+    // The routable event is the `final` claim — the terminal post itself when the
+    // response closes at post time (§5.5), or the closing edit when one was needed.
+    const finalizedAdmissions = (await fixture.echoAdmissions()).filter((record) => record.deliveryState === 'final')
     const admitted = finalizedAdmissions.filter((record) => record.admission.admitted)
     expect(admitted).toHaveLength(CHAIN_EDGES)
     // Cause-specific: the refusal must be the dispatch GATE, not some other
@@ -398,13 +398,14 @@ describe('case 3 — ordinary-reply mentions: agent-authored platform messages r
       mentions: [fixture.botUserId('agent1')]
     })
     await fixture.settle(trigger.handles)
-    // Exactly one activation from the finalized response; the streaming echo
-    // of the same message never routes.
+    // Exactly one activation from the finalized response; a streaming echo
+    // never routes (a single-post reply closes at post time, so its one echo
+    // already carries the `final` claim — §5.5).
     expect(fixture.activations('agent2')).toBe(1)
     expect(fixture.turnInputs('agent2')[0]).toContain('please review the rollout')
     const admissions = await fixture.echoAdmissions()
-    const streaming = admissions.filter((record) => record.ingressEventTag === undefined)
-    const finalized = admissions.filter((record) => record.ingressEventTag !== undefined)
+    const streaming = admissions.filter((record) => record.deliveryState !== 'final')
+    const finalized = admissions.filter((record) => record.deliveryState === 'final')
     expect(streaming.every((record) => record.admission.admitted === false)).toBe(true)
     expect(finalized.some((record) => record.admission.admitted === true)).toBe(true)
     // agent2's unmentioning reply names nobody, so it continues the conversation

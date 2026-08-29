@@ -166,12 +166,13 @@ describe('quota counting end to end — scripted hosts over the real daemon', ()
     expect(result.error).toBeUndefined()
     // Measured behavior on current main (#503 + #549 + #568): the referee's
     // start broadcast admits every member once and then the referee is silent.
-    // Each delivered post fans back as the production echo — streaming copies
-    // suppressed (final events only), finalized copies verified and routed
-    // through the ordinary arbitration ladder. Since #568 an admitted
-    // continuation binds the conversation audience of the session a HUMAN
-    // opened, so the exchange survives the wrap-around and the pair counts
-    // out its full quota with perfect alternation.
+    // Each delivered post fans back as the production echo — only `final`
+    // claims route (a single-post reply closes at post time, so its one echo
+    // already carries them — §5.5), verified through the ordinary arbitration
+    // ladder. Since #568 an admitted continuation binds the conversation
+    // audience of the session a HUMAN opened, so the exchange survives the
+    // wrap-around and the pair counts out its full quota with perfect
+    // alternation.
     expect(result.status).toBe('passed')
     expect(result.verdict.terminalReason).toBe('completed')
     expect(result.verdict.outcome).toMatchObject({
@@ -192,9 +193,11 @@ describe('quota counting end to end — scripted hosts over the real daemon', ()
     expect(worldEvents.filter((event) => event.type === 'referee.room_event')).toHaveLength(1)
     expect(worldEvents.filter((event) => event.type === 'wave')).toHaveLength(1)
     const outcomes = worldEvents.filter((event) => event.type === 'platform.echo.outcome')
-    const streaming = outcomes.filter((event) => event.ingressEventTag === undefined)
-    const finalized = outcomes.filter((event) => event.ingressEventTag !== undefined)
-    expect(streaming.length).toBeGreaterThan(0)
+    // Streaming never routes; every admitted echo carried the `final` claim. Single-post
+    // turns produce no separate streaming copy (born-final, §5.5) — the parity suite's
+    // streaming-never-routes scenario pins the suppression path explicitly.
+    const streaming = outcomes.filter((event) => event.deliveryState !== 'final')
+    const finalized = outcomes.filter((event) => event.deliveryState === 'final')
     for (const outcome of streaming) expect(outcome).toMatchObject({ admitted: false, reason: 'suppressed' })
     expect(finalized.filter((outcome) => outcome.admitted === true).length).toBeGreaterThan(0)
     // The #583 regression pin: no turn was lost to source binding.

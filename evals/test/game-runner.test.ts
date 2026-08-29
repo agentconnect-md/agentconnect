@@ -101,11 +101,11 @@ describe('collaboration game runner — same-room counting with scripted hosts',
     expect(result.error).toBeUndefined()
     // The measured behavior on current main (#503 + #549 + #568):
     //  1. The referee's start broadcast admits every member once; ONE wave.
-    //  2. Each delivered agent post fans back as the production echo. The
-    //     STREAMING copy is suppressed (final events only); the FINALIZED copy
-    //     carries the daemon-stamped claim, verifies, and — naming nobody —
-    //     takes the ordinary arbitration ladder, which ADMITS every other
-    //     member's connection (dedicated-bot fan-out).
+    //  2. Each delivered agent post fans back as the production echo. Only the
+    //     `final` claim routes — a single-post reply closes at post time, so
+    //     its one echo already carries it (§5.5) — verifies, and, naming
+    //     nobody, takes the ordinary arbitration ladder, which ADMITS every
+    //     other member's connection (dedicated-bot fan-out).
     //  3. Since #568 an admitted continuation can bind the conversation
     //     audience of the session a HUMAN opened, so the exchange no longer
     //     dies at the first wrap-around: the room counts all the way to the
@@ -133,10 +133,11 @@ describe('collaboration game runner — same-room counting with scripted hosts',
     const echoes = worldEvents.filter((event) => event.type === 'platform.echo')
     expect(echoes.length).toBeGreaterThanOrEqual(2)
     const outcomes = worldEvents.filter((event) => event.type === 'platform.echo.outcome')
-    const streaming = outcomes.filter((event) => event.ingressEventTag === undefined)
-    const finalized = outcomes.filter((event) => event.ingressEventTag !== undefined)
-    // Final events only: the streaming copy never routes.
-    expect(streaming.length).toBeGreaterThan(0)
+    // Final events only: a streaming echo never routes. Single-post turns close their
+    // response at post time (§5.5), so no separate streaming copy exists here — the
+    // parity suite's streaming-never-routes scenario pins the suppression path.
+    const streaming = outcomes.filter((event) => event.deliveryState !== 'final')
+    const finalized = outcomes.filter((event) => event.deliveryState === 'final')
     for (const outcome of streaming) expect(outcome).toMatchObject({ admitted: false, reason: 'suppressed' })
     // #549: a finalized post naming NOBODY is admitted on every other member's
     // connection — one agent message wakes every other agent (fan-out) — until

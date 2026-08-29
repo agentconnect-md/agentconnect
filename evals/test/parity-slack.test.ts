@@ -132,12 +132,17 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     expect(leg.activations('agent2')).toBe(1)
     expect(leg.turnInputs('agent2')[0]).toContain('please review the rollout')
     const admissions = await leg.echoAdmissions()
-    const finalized = admissions.filter((record) => record.ingressEventTag !== undefined)
+    // The one routable event of a response is its `final` claim — carried on the
+    // terminal post itself when the response closes at post time (§5.5), or on the
+    // closing edit when one was needed.
+    const finalized = admissions.filter((record) => record.deliveryState === 'final')
     expect(finalized.filter((record) => record.admission.admitted)).toHaveLength(1)
   },
 
-  // (e) Streaming never routes: every streaming echo admission is refused;
-  // only the response-closing (finalized) edit routes, once.
+  // (e) Streaming never routes: every streaming echo admission is refused —
+  // even when the streaming section carries the mention — and only the
+  // response-closing `final` event routes, once, on the recipients resolved
+  // from the COMPLETE response (§5.2/§5.4).
   'streaming-never-routes': async (scenario) => {
     // The spec is load-bearing: editing this scenario's declared outcome
     // fails this pin; changing the behavior fails the measured asserts below.
@@ -147,7 +152,14 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     })
     const leg = await startRoom({
       agent1: (ctx) => {
-        if (/START/.test(ctx.text)) ctx.reply(`<@${fixture!.botUserId('agent2')}> please review the rollout`)
+        if (!/START/.test(ctx.text)) return
+        // Longer than one Slack markdown block, so the splitter cuts the answer:
+        // the mention-carrying first section posts as a STREAMING copy, and only
+        // the closing section carries the response's `final` claim (§5.5 rule 7).
+        ctx.reply(
+          `<@${fixture!.botUserId('agent2')}> please review the rollout\n\n` +
+            'the staging soak finished clean. '.repeat(400)
+        )
       }
     })
     const trigger = leg.injectHuman(`<@${leg.botUserId('agent1')}> START`, {
@@ -155,8 +167,8 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     })
     await leg.settle(trigger.handles)
     const admissions = await leg.echoAdmissions()
-    const streaming = admissions.filter((record) => record.ingressEventTag === undefined)
-    const finalized = admissions.filter((record) => record.ingressEventTag !== undefined)
+    const streaming = admissions.filter((record) => record.deliveryState !== 'final')
+    const finalized = admissions.filter((record) => record.deliveryState === 'final')
     expect(streaming.length).toBeGreaterThan(0)
     expect(streaming.every((record) => record.admission.admitted === false)).toBe(true)
     expect(finalized.some((record) => record.admission.admitted === true)).toBe(true)
@@ -196,7 +208,7 @@ const drivers: Record<string, (scenario: ParityScenario) => Promise<void>> = {
     expect(leg.activations('agent2')).toBe(AUTOMATIC_TURNS_PER_WINDOW)
     // The hop cap is NOT what stopped it — the chain ends with budget to spare.
     expect(refusal.afterEdges).toBeLessThan(MAX_AGENT_CALL_HOPS)
-    const finalizedAdmissions = (await leg.echoAdmissions()).filter((record) => record.ingressEventTag !== undefined)
+    const finalizedAdmissions = (await leg.echoAdmissions()).filter((record) => record.deliveryState === 'final')
     expect(finalizedAdmissions.filter((record) => record.admission.admitted)).toHaveLength(refusal.afterEdges)
     // The refusal past the budget is the dispatch GATE's verdict (§7.1 `gated`
     // — the loop guard's bucket), recorded rather than silently dropped.
