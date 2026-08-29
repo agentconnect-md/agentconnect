@@ -270,6 +270,13 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           cache: true
+          # Its own cache namespace, keyed by the closure it stores rather than by the lockfile
+          # alone. Nothing shares this OS today, but the rule is the same one the two narrowed
+          # Linux jobs follow: a job that installs a subset never writes the shared entry.
+          cache_dependency_path: |
+            pnpm-lock.yaml
+            packages/daemon/package.json
+            packages/cli/package.json
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
@@ -371,13 +378,20 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           cache: true
+          # Its own cache namespace. The default key is shared by every job on this runner OS, and
+          # this job stores a filtered subset — under the shared key that subset would cost the
+          # full-install jobs a re-download on every run after a lockfile change.
+          cache_dependency_path: |
+            pnpm-lock.yaml
+            packages/daemon/package.json
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
+      # Only the daemon and its workspace closure — this job runs nothing else. No Prisma step
+      # either, for the reason the Windows job gives: the daemon never imports the generated client,
+      # and `pnpm -r` would now reach a control plane this install deliberately left out.
       - name: Install
-        run: pnpm install --frozen-lockfile
-      - name: Generate Prisma client
-        run: pnpm -r prisma:generate
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..."
       # The only apt on the critical path. A runner's regional mirror can black-hole a fetch for
       # hours, and the acquire timeouts below do NOT rescue that: apt falls through to upstream,
       # but per index file, so the step cap expires before the fallbacks finish. Drop the mirror
@@ -424,11 +438,16 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           cache: true
+          # Its own cache namespace, for the reason the sandbox job gives.
+          cache_dependency_path: |
+            pnpm-lock.yaml
+            packages/daemon/package.json
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
+      # Only the daemon and its workspace closure — this job runs nothing else.
       - name: Install
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..."
       - name: Daemon store suites on PostgreSQL
         run: pnpm --filter @agentconnect.md/daemon test:store:postgres
 
