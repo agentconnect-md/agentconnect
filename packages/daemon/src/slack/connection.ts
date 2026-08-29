@@ -269,9 +269,10 @@ export interface SlackDeps {
   /** Fired when the bot's channel membership changes (invited to / removed from a
    *  channel), so the daemon can re-list + re-report the membership snapshot. */
   onChannelsChanged?: () => void
-  /** Fired when a user interacts with the status modal's controls (the model
-   *  `static_select` or the Cancel button). `sessionKey` comes from the modal's
-   *  `private_metadata`; payload fields are present only for their matching action. */
+  /** Fired when a user interacts with the status modal's selects, or raises a cancel —
+   *  Slack's native Stop, or a status row posted while the overflow still rendered one.
+   *  `sessionKey` comes from the modal's `private_metadata`; payload fields are present
+   *  only for their matching action. */
   onStatusAction?: (a: {
     kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
     sessionKey: string
@@ -905,9 +906,8 @@ export class SlackConnection implements PlatformConnection {
     })
     // Status-bar interactivity (Block Kit block_actions over Socket Mode). Each handler
     // MUST ack() promptly (Slack drops the interaction / trigger_id after ~3s). Configure
-    // opens the controls modal; the modal's select/Cancel carry the session key in
-    // `view.private_metadata`. No-op when
-    // interactivity is unsubscribed (the handler never fires).
+    // opens the controls modal; its selects carry the session key in `view.private_metadata`.
+    // No-op when interactivity is unsubscribed (the handler never fires).
     this.app.action(STATUS_ACTION.more, async ({ ack, action, body }) => {
       await ack()
       const choice = action.selected_option?.value ? decodeSlackStatusOverflowValue(action.selected_option.value) : null

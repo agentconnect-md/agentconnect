@@ -172,7 +172,8 @@ export class CommandHandlers {
   }
 
   /** Cancel the in-flight turn for a local session key — the `!cancel` core (interrupt,
-   *  NO mute) shared by the Slack status-bar Cancel button. No-op if nothing is running. */
+   *  NO mute) shared by Slack's native Stop and webchat's cancel frame. No-op if nothing
+   *  is running. */
   async cancelSessionByKey(key: string): Promise<boolean> {
     const rec = await this.host.store().getSession(key)
     // Cancel a gate-owned/queued session even if it has no live ACP turn yet (§6.9 #390):
@@ -285,9 +286,9 @@ export class CommandHandlers {
     await this.refreshStatusBarForKey(key)
     return true // reports whether the override was recorded (nothing else reads it)
   }
-  /** Route a Slack status-bar Block Kit interaction (model / effort / fast select or the
-   *  Cancel button) to the shared key-based cores. `sessionKey` rides the block; no-op on
-   *  an unknown key. */
+  /** Route a Slack status-bar Block Kit interaction (the model / effort / fast selects, or
+   *  a cancel raised by the native Stop) to the shared key-based cores. `sessionKey` rides
+   *  the block; no-op on an unknown key. */
   async handleStatusAction(a: {
     kind: 'set-model' | 'set-effort' | 'set-permission-mode' | 'set-fast' | 'set-output' | 'cancel'
     sessionKey: string

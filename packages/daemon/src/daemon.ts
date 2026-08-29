@@ -814,7 +814,7 @@ export class Daemon {
         // §5.5: re-stamp the delivered answer as this response's one `final` event.
         closeResponse: (p) => this.closeSlackResponse(p),
         // Suppression teardown: stop the append timer and settle the chrome stream mid-flight
-        // (native Stop, status-bar Cancel, displacement, loop protection, shutdown). Slack
+        // (native Stop, an explicit cancel, displacement, loop protection, shutdown). Slack
         // does NOT end the stream itself on a Stop click, so this is what closes it.
         onSuppress: (p) => {
           this.clearSlackStream(p)
