@@ -13,8 +13,11 @@
  * not carry output of its own.
  */
 
-/** Head-cap per call, matching the transcript's own single-body ceiling. */
-const MAX_TERMINAL_OUTPUT_BYTES = 1024 * 1024
+/** Head-cap per call, WELL below the transcript's 1 MiB body ceiling: that ceiling measures
+ *  the serialized whole ToolBody in UTF-8 bytes and sheds `rawOutput` entirely when over, so
+ *  a fold near the ceiling would erase itself. 256 KiB of UTF-16 code units stays under it
+ *  even at 3 bytes per unit, with room for rawInput/content and JSON escaping. */
+const MAX_TERMINAL_OUTPUT_UNITS = 256 * 1024
 
 type MetaOutput = { data?: unknown; terminal_id?: unknown }
 
@@ -59,11 +62,15 @@ export class TerminalOutputFolder {
           ? ((full ?? delta)!.terminal_id as string)
           : ''
     if (!id) return update
-    if (typeof full?.data === 'string') this.buffers.set(id, full.data.slice(0, MAX_TERMINAL_OUTPUT_BYTES))
-    else if (typeof delta?.data === 'string') {
+    // BOTH meta spellings carry deltas: codex-acp routes every chunk through the same
+    // stream and `terminal_output` merely renames the key when the client advertises that
+    // capability — `createTerminalOutputMeta` is handed `event.delta` either way, never the
+    // aggregate. Treating it as a replacement would collapse a command to its last chunk.
+    const data = typeof full?.data === 'string' ? full.data : typeof delta?.data === 'string' ? delta.data : ''
+    if (data) {
       const held = this.buffers.get(id) ?? ''
-      if (held.length < MAX_TERMINAL_OUTPUT_BYTES) {
-        this.buffers.set(id, held + delta.data.slice(0, MAX_TERMINAL_OUTPUT_BYTES - held.length))
+      if (held.length < MAX_TERMINAL_OUTPUT_UNITS) {
+        this.buffers.set(id, held + data.slice(0, MAX_TERMINAL_OUTPUT_UNITS - held.length))
       }
     }
     if (u.status !== 'completed' && u.status !== 'failed') return update

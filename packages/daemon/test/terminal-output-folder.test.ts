@@ -30,15 +30,18 @@ describe('TerminalOutputFolder', () => {
     })
   })
 
-  it('treats terminal_output as a whole replacement', () => {
+  it('treats terminal_output as the same delta stream under another key', () => {
+    // codex-acp routes every chunk through one stream; `terminal_output` only renames the
+    // meta key when the client advertises the capability. A replacement reading would
+    // collapse a command's output to its last chunk.
     const folder = new TerminalOutputFolder()
-    folder.fold(delta('t1', 'partial'))
+    folder.fold(delta('t1', 'first chunk\n'))
     folder.fold({
       sessionUpdate: 'tool_call_update',
       toolCallId: 't1',
-      _meta: { terminal_output: { data: 'the whole thing', terminal_id: 't1' } }
+      _meta: { terminal_output: { data: 'second chunk', terminal_id: 't1' } }
     })
-    expect(folder.fold(done('t1'))).toMatchObject({ rawOutput: { formatted_output: 'the whole thing' } })
+    expect(folder.fold(done('t1'))).toMatchObject({ rawOutput: { formatted_output: 'first chunk\nsecond chunk' } })
   })
 
   it('never clobbers output the update carries itself', () => {
@@ -75,10 +78,12 @@ describe('TerminalOutputFolder', () => {
     expect(folder.fold(chunk)).toBe(chunk)
   })
 
-  it('caps a runaway stream at the transcript body ceiling', () => {
+  it('caps a runaway stream well below the transcript body ceiling', () => {
+    // The transcript sheds rawOutput ENTIRELY when the serialized body tops 1 MiB, so a
+    // fold near that ceiling would erase itself — the cap has to leave serialization room.
     const folder = new TerminalOutputFolder()
     for (let i = 0; i < 24; i++) folder.fold(delta('t1', 'y'.repeat(64 * 1024)))
     const folded = folder.fold(done('t1')) as { rawOutput: { formatted_output: string } }
-    expect(folded.rawOutput.formatted_output.length).toBe(1024 * 1024)
+    expect(folded.rawOutput.formatted_output.length).toBe(256 * 1024)
   })
 })

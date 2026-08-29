@@ -2,6 +2,7 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { splitIntoSections } from '../messages/split-sections.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
+import { extractToolOutput } from '../session/tool-output.js'
 
 /**
  * The mode-aware ACP→Telegram intermediate representation — the Telegram analog of
@@ -100,23 +101,6 @@ function htmlPre(s: string): string {
 function capOutput(s: string): string {
   const t = s.trim()
   return t.length > MAX_TOOL_OUTPUT ? `${t.slice(0, MAX_TOOL_OUTPUT - 1)}…` : t
-}
-
-/** Pull human-readable output text out of an ACP tool_call/_update (content[] text
- *  blocks preferred; string rawOutput fallback). Mirrors slack/render's extractor. */
-function extractToolOutput(update: { content?: unknown; rawOutput?: unknown }): string {
-  const content = update.content
-  if (Array.isArray(content)) {
-    const parts: string[] = []
-    for (const item of content) {
-      if (!item || typeof item !== 'object') continue
-      if ((item as { type?: string }).type !== 'content') continue
-      const block = (item as { content?: { type?: string; text?: string } }).content
-      if (block?.type === 'text' && block.text) parts.push(block.text)
-    }
-    if (parts.length) return parts.join('\n').trim()
-  }
-  return typeof update.rawOutput === 'string' ? update.rawOutput.trim() : ''
 }
 
 type PlanEntry = { content?: string; status?: 'pending' | 'in_progress' | 'completed' }

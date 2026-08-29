@@ -715,7 +715,9 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     weight: L.weight,
     textColor: L.textColor,
     codeColor: L.codeColor,
-    text: stp.text,
+    // Live reasoning ('plan' steps) de-bolds exactly as the persisted THINK rows do — the
+    // same run must not read bold while streaming and plain once re-read from history.
+    text: stp.kind === 'plan' ? stripBoldMarks(stp.text) : stp.text,
     code: stp.code ?? '',
     files: (stp.files ?? []).map((f) => ({ tag: f.tag, path: f.path, color: fileColor(f.tag) })),
     time: stp.time ?? '',
