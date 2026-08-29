@@ -32,6 +32,12 @@ export type FeatureFlagId =
    *  nothing to point it at. `BILLING_URL` then says WHERE that service is; this says WHETHER to
    *  offer the page, so a missing endpoint is a misconfiguration rather than a silent opt-out. */
   | 'billing'
+  /** The "Git URL" workspace tile — anonymous clones from arbitrary Git servers. A standing
+   *  switch: the tile is only usable where the deployment widens the daemons' clone-origin
+   *  allowlist past the managed hosts, so the environment that does that turns it on here. A
+   *  workspace ALREADY on a git URL still renders its tile — hiding live state is not hiding an
+   *  entry point. */
+  | 'git-url'
 
 function enabledIds(): ReadonlySet<string> {
   // The server must read the SAME value `PublicEnvScript` injects, in the same precedence, or a

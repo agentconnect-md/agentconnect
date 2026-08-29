@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import type { KeyboardEvent, ReactNode } from 'react'
 import { GithubMark, GitlabMark } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
+import { featureFlagEnabled } from '@/lib/feature-flags'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import type { RepoAccess } from '@/lib/api'
 
@@ -75,12 +76,16 @@ export function WorkspaceModeField({
   label?: string | null
 }) {
   const fieldClassName = className ? `fld ${className}` : 'fld'
+  // Fixed at mount: a workspace already on a git URL keeps its tile even where the flag is off
+  // (live state stays representable — and reversible while the modal is open), new picks don't.
+  const [withGitUrl] = useState(() => featureFlagEnabled('git-url') || value === 'giturl')
+  const options = withGitUrl ? WORKSPACE_MODE_OPTIONS : WORKSPACE_MODE_OPTIONS.filter((o) => o.value !== 'giturl')
 
   return (
     <div className={fieldClassName}>
       {label !== null && <span className="fldlbl">{label}</span>}
       <div className="flex flex-wrap gap-[10px]">
-        {WORKSPACE_MODE_OPTIONS.map((option) => {
+        {options.map((option) => {
           const selected = value === option.value
           return (
             <button
