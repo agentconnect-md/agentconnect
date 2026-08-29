@@ -446,9 +446,11 @@ export interface TurnChromeCursors {
 export interface ReplyAccumulator {
   /** Complete raw assistant text, used only as input to opt-in memory distillation. */
   text: string
-  /** IM answer text is generation-local until the final context fence accepts it. */
+  /** IM answer text staged since the last committed segment boundary; the final
+   *  context fence commits the closing segment (the only regenerable one). */
   attemptText: string
-  /** Answer-bearing ACP updates withheld from the platform converger until commit. */
+  /** Answer-bearing ACP updates withheld from the platform converger until their
+   *  segment commits — at a tool/thought/plan boundary, or at the final fence. */
   attemptAnswerUpdates: any[]
   /** Current successfully-delivered agent reply message. `footerKey` records which footer
    *  it owns; progress/tool/reasoning chrome never replaces this pointer. */

@@ -236,18 +236,29 @@ Masked ACP updates still feed usage, title handling, approval/elicitation handli
 and the private activity recorder. Answer-bearing `agent_message_chunk` updates feed
 the attempt buffer, not the platform converger's send path.
 
-The first version should allow only non-answer chrome to remain live:
+Non-answer chrome remains live:
 
 - Slack status, Discord/Telegram typing, and a Feishu "Thinking" card may be shown.
 - Permission or elicitation UI must remain interactive.
 - Tool/plan/reasoning messages may remain visible according to output mode, but they
   must be tagged as trusted chrome and excluded from context refresh.
-- No candidate answer body or answer attribution footer is published until commit.
 
-This changes the perceived streaming behavior: answer text arrives at commit rather
-than token-by-token. That tradeoff is required for genuine discard semantics. A future
-platform-specific implementation may stream into a private/draft surface, but public
-messages must obey the same commit rule.
+Answer text commits per **segment**, not per turn. A boundary the live renderer
+flushes buffered text on — `tool_call`, `tool_call_update`, `agent_thought_chunk`,
+`plan` — commits the staged text ahead of it: the staged chunks replay in order
+through the platform converger (which still applies its own mode semantics), the
+text appends to the turn's canonical reply, and the stage clears. Interleaved
+"say → work → say more" therefore reaches the channel as it happens, as separate
+messages, instead of collapsing into one body at turn end. Turn-end housekeeping
+updates (usage, session titles) are deliberately not boundaries, so the closing
+segment — the text after the model's last tool or thinking step — stays staged
+until the final context fence.
+
+Discard semantics narrow accordingly: a segment committed at a boundary is
+already said, exactly like any other message in the thread that precedes a
+late-arriving event; only the closing segment is regenerable. Token-by-token
+streaming of the closing segment is still withheld until commit — that remains
+required for its discard semantics.
 
 ### 5.3 Final refresh and regeneration
 
@@ -255,9 +266,9 @@ After `host.prompt()` resolves, the workflow performs another refresh using the
 generation's revision and provider checkpoint. If no invalidating event exists, it
 enters the commit protocol in section 7.
 
-If new events exist, the workflow drops the `AttemptBuffer` and sends one replacement
-prompt to the same ACP session. The daemon-generated prefix should be stable and
-provider-neutral:
+If new events exist, the workflow drops the `AttemptBuffer` — which by then holds
+only the closing segment (§5.2) — and sends one replacement prompt to the same ACP
+session. The daemon-generated prefix should be stable and provider-neutral:
 
 ```text
 (AgentConnect context update: the conversation changed while you were working.
@@ -269,6 +280,12 @@ unless it matters to the user.)
 (new thread messages, oldest to newest)
 [sender-id] message text
 ```
+
+When earlier segments of the answer were already committed at a boundary, the
+heading instead says that everything before the model's last tool or thinking step
+was delivered and stands, and asks for a replacement of the undelivered closing
+part alone (`contextUpdateText`'s `deliveredPrefix` variant) — otherwise the model
+reasonably re-says the whole answer.
 
 The replacement prompt contains only events after the previous generation fence; the
 ACP session already contains the original prompt and prior candidate. The workflow then

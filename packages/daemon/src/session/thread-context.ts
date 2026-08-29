@@ -119,19 +119,28 @@ export class ThreadContextCoordinator {
 }
 
 /** Stable, provider-neutral replacement prompt. The bounded newest suffix matches
- * the daemon's existing replay cap and keeps chronological order inside the suffix. */
+ * the daemon's existing replay cap and keeps chronological order inside the suffix.
+ * `deliveredPrefix`: segments of the answer already committed at a tool/thought
+ * boundary were delivered and stand — only the closing segment is regenerable. */
 export function contextUpdateText(
   events: readonly TranscriptRow[],
-  quoteFor?: (event: TranscriptRow) => string | undefined
+  quoteFor?: (event: TranscriptRow) => string | undefined,
+  opts?: { deliveredPrefix?: boolean }
 ): string {
   const suffix = events.slice(-MAX_CONTEXT_REFRESH_EVENTS)
   const elided = events.length - suffix.length
-  const heading =
-    '(AgentConnect context update: the conversation changed while you were working.\n' +
-    'Your previous candidate answer was not delivered. Re-evaluate the task using the new\n' +
-    'thread messages below and produce a replacement final answer. Preserve useful work\n' +
-    'already completed, do not repeat side effects blindly, and do not mention this retry\n' +
-    'unless it matters to the user.)'
+  const heading = opts?.deliveredPrefix
+    ? '(AgentConnect context update: the conversation changed while you were working.\n' +
+      'The parts of your answer written before your last tool or thinking step were\n' +
+      'already delivered and stand; only the text after them was not. Re-evaluate with\n' +
+      'the new thread messages below and produce a replacement for that undelivered part\n' +
+      'alone — do not repeat what was already delivered, do not repeat side effects\n' +
+      'blindly, and do not mention this retry unless it matters to the user.)'
+    : '(AgentConnect context update: the conversation changed while you were working.\n' +
+      'Your previous candidate answer was not delivered. Re-evaluate the task using the new\n' +
+      'thread messages below and produce a replacement final answer. Preserve useful work\n' +
+      'already completed, do not repeat side effects blindly, and do not mention this retry\n' +
+      'unless it matters to the user.)'
   const deltaHeading =
     elided > 0 ? `(new thread messages — ${elided} earlier message(s) elided)` : '(new thread messages)'
   const rows = suffix.flatMap((event) => {
