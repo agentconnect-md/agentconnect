@@ -142,6 +142,8 @@ export interface InstallSkillsResult {
   installed: string[]
   removed: string[]
   skipped: 'unchanged' | null
+  /** Checkout-relative roots this daemon owns after the run — what git must be told to ignore. */
+  owned: string[]
   errors: Array<{ source: string; error: string }>
 }
 
@@ -176,7 +178,7 @@ async function installSkillsLocked(
   cwd: string,
   opts: InstallSkillsOptions
 ): Promise<InstallSkillsResult> {
-  const result: InstallSkillsResult = { installed: [], removed: [], skipped: null, errors: [] }
+  const result: InstallSkillsResult = { installed: [], removed: [], skipped: null, owned: [], errors: [] }
   const wireGitSources = agent.skills ?? []
   const localSources = opts.localSkills ?? []
   if (localSources.length > MAX_LOCAL_SKILL_SOURCES) throw new Error('too many local skill sources')
@@ -276,6 +278,7 @@ async function installSkillsLocked(
       (await installedBundlesIntact(cwd, ledger.owned, location.workspaceIdentity))
     ) {
       result.skipped = 'unchanged'
+      result.owned = ledger.owned.map((bundle) => bundle.relativeRoot)
       return result
     }
 
@@ -294,6 +297,7 @@ async function installSkillsLocked(
         warn: opts.warn
       })
       result.removed.push(...reconciled.removed)
+      result.owned = reconciled.owned.map((bundle) => bundle.relativeRoot)
       return result
     }
 
@@ -451,6 +455,7 @@ async function installSkillsLocked(
     result.installed.push(...reconciled.installed)
     result.removed.push(...reconciled.removed)
     result.skipped = reconciled.skipped
+    result.owned = reconciled.owned.map((bundle) => bundle.relativeRoot)
     for (const conflict of reconciled.conflicts) {
       result.errors.push({ source: conflict, error: 'destination is not owned by this daemon ledger; skill skipped' })
     }
@@ -484,6 +489,7 @@ async function installSkillsLocked(
         warn: opts.warn
       })
       result.removed.push(...cleared.removed)
+      result.owned = cleared.owned.map((bundle) => bundle.relativeRoot)
       return result
     } catch (cleanupError) {
       throw new Error(

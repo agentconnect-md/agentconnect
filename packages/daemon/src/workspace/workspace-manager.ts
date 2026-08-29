@@ -26,6 +26,7 @@ import { formatErr } from '../daemon/text.js'
 import { makeLogger } from '../log.js'
 import { installSkills, type LocalSkillSource } from '../skills/install-skills.js'
 import { acceptedDreamSkillSources } from '../skills/dream-skills.js'
+import { bundlePathsFromCheckoutRoot, excludeManagedSkillBundles } from './git-exclude.js'
 import {
   assertSafeWorkspaceGitConfig,
   canonicalWorkspaceGitUrl,
@@ -267,14 +268,35 @@ export class WorkspaceManager {
     // be removed or the ledger cannot be proven coherent. Those must block host
     // startup rather than launch ACP with stale/incoherent executable skills, so
     // let them propagate (design: docs/designs/shared-skills.md §2).
-    await installSkills(agent, acpCwd, {
+    const installed = await installSkills(agent, acpCwd, {
       ...(opts.skillsStateDir ? { stateDir: opts.skillsStateDir } : {}),
       ...(opts.skillsAgentId === undefined ? {} : { skillsAgentId: opts.skillsAgentId }),
       localSkills: [...managedSkills, ...acceptedSkills],
       useGitCredential: this.usesGithubApp(agent),
       warn: (msg) => skillsLog.warn(msg)
     })
+    await this.excludeInstalledSkills(agent, acpCwd, installed.owned)
     return acpCwd
+  }
+
+  /** Tell Git the bundles we just wrote are ours, so the retention GC never reads them as the
+   *  user's untracked work and pins this worktree forever (see workspace/git-exclude.ts). */
+  private async excludeInstalledSkills(agent: Agent, acpCwd: string, owned: string[]): Promise<void> {
+    // Cluster bundles live on the pod OUTSIDE the checkout and never dirty a worktree; worse, the
+    // shim would answer rev-parse with pod paths this local write would then create on daemon disk.
+    if (this.sandboxMode) return
+    try {
+      const git = this.runnerFor(agent.id, acpCwd).withEnv(workspaceGitLocalEnv())
+      const [commonDir = '', checkoutRoot = ''] = (await git.raw(['rev-parse', '--git-common-dir', '--show-toplevel']))
+        .split('\n')
+        .map((line) => line.trim())
+      if (commonDir === '' || checkoutRoot === '') return
+      const roots = bundlePathsFromCheckoutRoot(checkoutRoot, acpCwd, owned)
+      await excludeManagedSkillBundles(isAbsolute(commonDir) ? commonDir : join(acpCwd, commonDir), roots)
+    } catch (err) {
+      // A from-scratch workspace has no repository to exclude in, and bookkeeping must not fail a launch.
+      skillsLog.debug(`skills: could not record managed bundles as ignored: ${(err as Error).message}`)
+    }
   }
 
   usesGithubApp(agent: Agent): boolean {
