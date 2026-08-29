@@ -161,6 +161,7 @@ import {
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
+import { mentionedUserIds, substituteUserMentions } from './slack/mentions.js'
 import {
   WorkspaceManager,
   type PrepareSessionWorkspaceRequest,
@@ -9565,9 +9566,11 @@ export class Daemon {
     const p = this.buildPending(run, { conv, rec, sessionId, outwardSessionId, webchat: pendingWebchat })
     // Every turn re-stashes the stored title (fallback or runtime): the connection dedupes
     // repeats, and re-pushing heals a rename lost to a restart or an unregistered thread.
+    // Substituted at push time — a first-message fallback carries raw `<@U…>` mentions, and
+    // the stored value stays canonical so a display-name change converges on the next turn.
     if (turnChromeFor(run.plan.platform).sessionTitle) {
       const storedTitle = (await this.store.getSession(run.plan.sessionKey))?.title?.trim()
-      if (storedTitle) p.chrome.sessionTitleToPush = storedTitle
+      if (storedTitle) p.chrome.sessionTitleToPush = await this.displayTitle(storedTitle)
     }
     const activeTurn = await this.installActiveTurnContext(run, sessionId)
     const settlement: TurnSettlement = { finalPhase: 'end', propagatingTurnError: false }
@@ -11922,7 +11925,7 @@ export class Daemon {
     const info = await this.statusInfoFrom(rec.agentId, sessionKey, rec.acpSessionId ?? undefined, { breakdown: true })
     const agent = this.agents.get(rec.agentId)
     const name = agent?.displayName?.trim() || agent?.name || rec.agentId
-    const sessionTitle = rec.title?.trim()
+    const sessionTitle = rec.title?.trim() ? await this.displayTitle(rec.title.trim()) : undefined
     const iconUrl = agent?.iconUrl?.trim()
     const identity: StatusModalIdentity = {
       name,
@@ -12328,6 +12331,14 @@ export class Daemon {
   }
 
   /** Persist one authoritative title and push the CP metadata projection. */
+  /** A title for DISPLAY on a platform surface: raw `<@U…>` mentions rewritten to `@name`,
+   *  exactly as the console's session reader does at read time. */
+  private async displayTitle(title: string): Promise<string> {
+    const ids = mentionedUserIds(title)
+    if (ids.length === 0) return title
+    return substituteUserMentions(title, await this.store.getDisplayNames(ids))
+  }
+
   private async persistSessionTitle(rec: SessionRecord, title: string | null): Promise<void> {
     await this.store.setSessionTitle(rec.key, title)
     if (!rec.acpSessionId) return

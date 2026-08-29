@@ -743,6 +743,9 @@ export class SlackConnection implements PlatformConnection {
   private queue: PlatformSendQueue
   /** Cooldown after Slack proves this installation lacks chat:write.customize. */
   private customUsernameRetryAt = 0
+  /** Last title written per `channel:thread` — every turn re-pushes the stored title, so
+   *  unchanged repeats must not spend an API call. Grows like sessionLifecycle: unevicted. */
+  private lastTitles = new Map<string, string>()
   /** Slack app/workspace ids are public metadata used only for the OAuth settings link. */
   private appId = ''
   private teamId = ''
@@ -2254,10 +2257,6 @@ export class SlackConnection implements PlatformConnection {
       )
     }
   }
-
-  /** Last title written per thread — every turn re-pushes the stored title, so unchanged
-   *  repeats must not spend an API call. */
-  private lastTitles = new Map<string, string>()
 
   /** Best-effort agent-session title, DMs and channels alike: Slack renders it as the thread
    *  panel's header once the thread is a registered agent session — which every turn's
