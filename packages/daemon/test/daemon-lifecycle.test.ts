@@ -1985,6 +1985,34 @@ describe('Daemon idle sweep — background-task lease', () => {
       await daemon.stop()
     })
 
+    it('a session whose platform has no integration neither posts nor claims delivery', async () => {
+      const clock = new FakeClock()
+      const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })
+      // A webchat-like session: platform backed by NO integration on this agent. The
+      // any-integration fallback used to hand it the Slack client, which would throw on the
+      // webchat channel id AFTER claiming delivery — the wake then wrongly said "delivered".
+      const webKey = sessionKey('webchat', 'chat-1', '', 'bot-a')
+      await (daemon as any).store.upsertSession({
+        key: webKey,
+        agentId: 'bot-a',
+        platform: 'webchat',
+        channel: 'chat-1',
+        thread: '',
+        acpSessionId: 'acp-w',
+        state: 'idle',
+        lastDeliveredTs: null,
+        updatedAt: clock.now()
+      })
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-w', evt('session_state_changed', { state: 'running' }))
+      await (daemon as any).onAcpUpdate('bot-a', 'acp-w', chunk('webchat drain words'))
+      await (daemon as any).onSdkLifecycle('bot-a', 'acp-w', evt('session_state_changed', { state: 'idle' }))
+      await new Promise((r) => setImmediate(r))
+      expect(conn.postMessage).not.toHaveBeenCalled() // the Slack conn is NOT this session's surface
+      const lease = (daemon as any).sdkLease.get(JSON.stringify(['bot-a', 'acp-w']))
+      expect(lease?.drainDeliveredAt).toBeUndefined() // and delivery is not claimed to the wake
+      await daemon.stop()
+    })
+
     it('holds the no-response sentinel and an exhausted budget silent', async () => {
       const clock = new FakeClock()
       const { daemon, conn } = await bootWithTurn(clock, { agentIdleTimeoutMs: 10_000_000, idleSweepMs: 10_000_000 })

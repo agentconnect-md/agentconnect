@@ -14069,12 +14069,35 @@ export class Daemon {
     const rec = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
     if (!rec || rec.state === 'closed') return
     const mode = (await this.store.getOutputModeOverride(rec.key)) ?? this.agents.get(agentId)?.output?.mode ?? 'low'
-    const conn = this.replyConnFor(agentId, this.sessionDeliveryBindings.get(rec.key)?.integrationId)
+    // Resolved against the SESSION's platform (delivery binding first) — never replyConnFor's
+    // any-integration fallback, which hands a webchat/hook/dream session another platform's
+    // client that throws on the session's channel id after having claimed delivery.
+    const integrationId =
+      this.sessionDeliveryBindings.get(rec.key)?.integrationId ??
+      this.integrationIdForTransportScope(agentId, rec.platform, rec.transportScope)
+    const conn = integrationId ? this.connForIntegration(integrationId) : undefined
     // No surface at all ⇒ keep today's drop, and do NOT claim delivery to the wake.
     if (mode !== 'none' && !conn) return
-    lease.drainDeliveries += 1
-    lease.drainDeliveredAt = this.clock.now()
-    // Recorded like a reply row, so the console reads the narration back even in `none` mode.
+    if (mode !== 'none' && conn) {
+      this.log.info(`drain delivery: ${text.length} chars → ${rec.key}`)
+      const agent = this.agents.get(agentId)
+      // The same conversational authorship an agent reply carries (name, icon, author id —
+      // no responseId: authorship only, it closes no response); undefined off Slack.
+      const options = slackAgentPostOptions({
+        platform: rec.platform,
+        agentId,
+        agentName: agent?.displayName?.trim() || agent?.name || agentId,
+        ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})
+      })
+      if (options) {
+        for (const section of splitIntoSections(text))
+          await (conn as SlackConnection).postMessage(rec.channel, section, rec.thread || undefined, options)
+      } else {
+        await conn.postMessage(rec.channel, text, rec.thread || undefined)
+      }
+    }
+    // Claimed only past the post: a throwing post above leaves no stamp, so the wake still
+    // asks for the full report. Recorded like a reply row, so the console reads it back.
     if (rec.thread) {
       await this.store.appendTranscript({
         channel: transcriptChannelKey(rec.channel, rec.transportScope),
@@ -14085,22 +14108,8 @@ export class Daemon {
         text
       })
     }
-    if (mode === 'none' || !conn) return
-    this.log.info(`drain delivery: ${text.length} chars → ${rec.key}`)
-    const agent = this.agents.get(agentId)
-    if (rec.platform === 'slack') {
-      // The same conversational authorship an agent reply carries — name, icon, author id —
-      // so peers and backfill attribute it to the agent, not to the shared bot.
-      const options = {
-        username: agent?.displayName?.trim() || agent?.name || agentId,
-        ...(agent?.iconUrl ? { icon_url: agent.iconUrl } : {}),
-        agentAuthorId: agentId
-      }
-      for (const section of splitIntoSections(text))
-        await (conn as SlackConnection).postMessage(rec.channel, section, rec.thread || undefined, options)
-      return
-    }
-    await conn.postMessage(rec.channel, text, rec.thread || undefined)
+    lease.drainDeliveries += 1
+    lease.drainDeliveredAt = this.clock.now()
   }
 
   /** Arm the deferred wake for a settled background task. Deliberately NOT immediate: the
