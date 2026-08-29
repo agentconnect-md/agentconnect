@@ -1090,6 +1090,9 @@ export interface SessionStep {
    *  step's lane never merges across it, so a replacement generation starts
    *  fresh blocks while the marker stays a visible part of the conversation. */
   boundary?: boolean
+  /** A superseded answer's streamed `done` blocks, re-tagged 'plan' to collapse into the work
+   *  lane. Still MESSAGE text — renderers must not apply reasoning-only treatment to it. */
+  demoted?: boolean
   /** Display timestamp for live/mock-only steps. Persisted transcripts use their raw ts. */
   time?: string
   text: string

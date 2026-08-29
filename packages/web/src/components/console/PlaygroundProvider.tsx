@@ -545,7 +545,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             if ((step.agentId ?? undefined) !== agentId) continue
             if (step.turnId !== turnId) break
             if (step.boundary) break
-            if (step.kind === 'done') collapsed[i] = { ...step, kind: 'plan' }
+            if (step.kind === 'done') collapsed[i] = { ...step, kind: 'plan', demoted: true }
           }
           // The marker lives INSIDE the collapsible work lane ('plan'), at the
           // chronological point the update happened — it is live-only chrome (a

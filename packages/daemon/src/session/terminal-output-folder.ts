@@ -2,9 +2,8 @@
  * Folds codex-acp's out-of-band terminal output back into the tool call it belongs to.
  *
  * For a shell command, codex-acp sends no `content[]` text at all: the output streams as
- * `_meta.terminal_output_delta` chunks on status-less `tool_call_update`s (or one
- * `_meta.terminal_output` replacement), and the completing update carries only
- * `rawOutput.formatted_output: ""`. Nothing downstream reads `_meta`, so the transcript, the
+ * `_meta.terminal_output*` delta chunks on status-less `tool_call_update`s, and the completing
+ * update carries only `rawOutput.formatted_output: ""`. Nothing downstream reads `_meta`, so the transcript, the
  * web console and every platform renderer showed a command with an empty result.
  *
  * This runs ONCE at the daemon's ACP ingress — the `maskAgentSecrets` precedent — so every
@@ -13,8 +12,12 @@
  * not carry output of its own.
  */
 
-/** Head-cap per call, matching the transcript's own single-body ceiling. */
-const MAX_TERMINAL_OUTPUT_BYTES = 1024 * 1024
+/** Head-cap per call, WELL below the transcript's 1 MiB body ceiling: that ceiling measures
+ *  the serialized whole ToolBody in UTF-8 bytes and sheds `rawOutput` entirely when over, so
+ *  a fold near the ceiling would erase itself. 256 KiB of UTF-16 code units leaves ample
+ *  room in practice (JSON-escaped control characters can reach 6 bytes per unit, but terminal
+ *  output is overwhelmingly printable), plus headroom for rawInput/content. */
+const MAX_TERMINAL_OUTPUT_UNITS = 256 * 1024
 
 type MetaOutput = { data?: unknown; terminal_id?: unknown }
 
@@ -59,11 +62,15 @@ export class TerminalOutputFolder {
           ? ((full ?? delta)!.terminal_id as string)
           : ''
     if (!id) return update
-    if (typeof full?.data === 'string') this.buffers.set(id, full.data.slice(0, MAX_TERMINAL_OUTPUT_BYTES))
-    else if (typeof delta?.data === 'string') {
+    // BOTH meta spellings carry deltas: codex-acp routes every chunk through the same
+    // stream and `terminal_output` merely renames the key when the client advertises that
+    // capability — `createTerminalOutputMeta` is handed `event.delta` either way, never the
+    // aggregate. Treating it as a replacement would collapse a command to its last chunk.
+    const data = typeof full?.data === 'string' ? full.data : typeof delta?.data === 'string' ? delta.data : ''
+    if (data) {
       const held = this.buffers.get(id) ?? ''
-      if (held.length < MAX_TERMINAL_OUTPUT_BYTES) {
-        this.buffers.set(id, held + delta.data.slice(0, MAX_TERMINAL_OUTPUT_BYTES - held.length))
+      if (held.length < MAX_TERMINAL_OUTPUT_UNITS) {
+        this.buffers.set(id, held + data.slice(0, MAX_TERMINAL_OUTPUT_UNITS - held.length))
       }
     }
     if (u.status !== 'completed' && u.status !== 'failed') return update
