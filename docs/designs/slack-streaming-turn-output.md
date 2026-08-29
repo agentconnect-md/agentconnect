@@ -208,6 +208,19 @@ one-line description when it sent one (`rawInput.description`, which Claude Code
 carry), else the title clamped to 72 characters. The verbatim command is not lost — it is the
 card's code block on `high`, and it is skipped when the title already showed it whole.
 
+**Only the TOP LEVEL of `rawInput` is read, and only when it looks like a label.** A nested
+`arguments` object holds the TOOL's own fields, where the same key means whatever that tool
+says it means: `createCodeHostMergeRequest` takes a whole merge-request body as
+`arguments.description`, and titling a step with a document is worse than titling it with a
+command. Even a top-level description is a string the daemon did not author, so it stands as a
+title only if it reads as one — a single line, short enough that clamping it would not be
+hiding most of it — and otherwise the ACP title is used.
+
+**A card body is tracked across the whole call, not read off its last update.** ACP sends tool
+output as deltas: the text can arrive while the call is still `in_progress` and the update that
+finishes it carry nothing but a status. Sampling only the terminal update writes a blank body,
+and on a streaming turn there is no separate code-block message left to carry it.
+
 **A thinking card is titled by its run's first line.** Runtimes open a thought with a short
 `**heading**` — the same line the web console shows as the step title — so the card says what
 the agent is thinking about rather than the bare word "Thinking". The card is opened before
