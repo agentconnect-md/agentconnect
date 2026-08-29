@@ -1051,9 +1051,14 @@ export class LocalStore {
         orgForAgent: undefined
       })
       await store.db.exec('PRAGMA journal_mode = WAL')
-      // MEASUREMENT ONLY — not for merge. Read from an allowlist so the value can never be argv.
-      const measured = { FULL: 'FULL', NORMAL: 'NORMAL' }[process.env.AC_STORE_SYNCHRONOUS ?? '']
-      if (measured !== undefined) await store.db.exec(`PRAGMA synchronous = ${measured}`)
+      // A test suite's only knob on this store, and the suites set it to NORMAL — see the daemon's
+      // `vitest.config.ts`. WAL keeps `synchronous = FULL`, an fsync per commit, and the suite pays
+      // ~22k of them a run; NORMAL cannot corrupt the database and survives a process crash intact,
+      // it only risks losing recent commits to a power cut, which no test asserts. Never set this
+      // in production: the durable inbox's whole promise is being there after the machine died.
+      // Read through an allowlist so the value can never reach the statement as argv.
+      const synchronous = { NORMAL: 'NORMAL', FULL: 'FULL' }[process.env.AGENTCONNECT_TEST_STORE_SYNCHRONOUS ?? '']
+      if (synchronous !== undefined) await store.db.exec(`PRAGMA synchronous = ${synchronous}`)
       // WAL mode publishes two siblings alongside the database; they carry the same
       // rows, so restricting only the main file would leave the content readable.
       for (const p of [source, `${source}-wal`, `${source}-shm`]) restrictPath(p, 0o600)
