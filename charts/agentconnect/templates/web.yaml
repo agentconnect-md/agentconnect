@@ -71,6 +71,21 @@ spec:
             - name: WAITLIST_FROM_EMAIL
               value: {{ . | quote }}
             {{- end }}
+            {{- if hasKey .Values.web.extraEnv "FEATURE_FLAGS" }}
+            {{- fail "web.extraEnv.FEATURE_FLAGS collides with the features block: flip features.* instead, so a console flag cannot come from two sources" }}
+            {{- end }}
+            {{- $flags := list }}
+            {{- if .Values.features.daemonGroups }}{{- $flags = append $flags "daemon-groups" }}{{- end }}
+            {{- if .Values.features.daemonPool }}{{- $flags = append $flags "daemon-pool" }}{{- end }}
+            {{- if .Values.features.managed }}{{- $flags = append $flags "managed" }}{{- end }}
+            {{- if .Values.features.billing }}{{- $flags = append $flags "billing" }}{{- end }}
+            {{- if .Values.features.gitUrl }}{{- $flags = append $flags "git-url" }}{{- end }}
+            {{- with $flags }}
+            # Assembled from the features block — the values file flips one knob per feature
+            # and never spells flag ids.
+            - name: FEATURE_FLAGS
+              value: {{ join "," . | quote }}
+            {{- end }}
             {{- range $k, $v := .Values.web.extraEnv }}
             - name: {{ $k }}
               value: {{ $v | quote }}
