@@ -88,7 +88,11 @@ export function WorkspaceModeField({
               type="button"
               title={option.hint}
               aria-pressed={selected}
-              className={selected ? 'ptile on flex-none px-[13px] py-[9px]' : 'ptile flex-none px-[13px] py-[9px]'}
+              className={
+                selected
+                  ? 'ptile on flex-1 justify-center px-[13px] py-[9px]'
+                  : 'ptile flex-1 justify-center px-[13px] py-[9px]'
+              }
               onClick={() => onChange(option.value)}
             >
               {option.mark(selected)}
