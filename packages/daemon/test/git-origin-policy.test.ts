@@ -11,22 +11,20 @@ afterEach(() => configureWorkspaceGitOrigins(DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGI
 describe('workspace Git origin policy', () => {
   it('denies an unconfigured host at the daemon boundary', () => {
     expect(() => authorizeWorkspaceGitUrl('https://code.example.test/acme/repo.git')).toThrow(
-      'git clone origin is not allowed'
+      'is not allowed by this daemon'
     )
     // §13.2: managed GitLab is HTTPS-only and part of the default policy now.
     expect(authorizeWorkspaceGitUrl('https://gitlab.com/example-group/example-project.git')).toBe(
       'https://gitlab.com/example-group/example-project.git'
     )
     expect(() => authorizeWorkspaceGitUrl('ssh://git@gitlab.com/example-group/example-project.git')).toThrow(
-      'git clone origin is not allowed'
+      'is not allowed by this daemon'
     )
   })
 
   it('treats an explicit empty policy as deny-all', () => {
     configureWorkspaceGitOrigins([])
-    expect(() => authorizeWorkspaceGitUrl('https://github.com/acme/repo.git')).toThrow(
-      'git clone origin is not allowed'
-    )
+    expect(() => authorizeWorkspaceGitUrl('https://github.com/acme/repo.git')).toThrow('is not allowed by this daemon')
   })
 
   it('allows an exact operator-configured origin without widening its port', () => {
@@ -35,9 +33,7 @@ describe('workspace Git origin policy', () => {
     expect(authorizeWorkspaceGitUrl('https://git.example:8443/acme/repo.git')).toBe(
       'https://git.example:8443/acme/repo.git'
     )
-    expect(() => authorizeWorkspaceGitUrl('https://git.example/acme/repo.git')).toThrow(
-      'git clone origin is not allowed'
-    )
+    expect(() => authorizeWorkspaceGitUrl('https://git.example/acme/repo.git')).toThrow('is not allowed by this daemon')
   })
 })
 
@@ -49,7 +45,7 @@ describe("the deployment's own code host", () => {
   it('is cloneable when the spec in hand names it, with nothing configured locally', () => {
     expect(authorizeWorkspaceGitUrl(`${INSTANCE}/team/repo.git`, INSTANCE)).toBe(`${INSTANCE}/team/repo.git`)
     // ...and only for the spec that names it: no process state leaks to the next caller.
-    expect(() => authorizeWorkspaceGitUrl(`${INSTANCE}/team/repo.git`)).toThrow('git clone origin is not allowed')
+    expect(() => authorizeWorkspaceGitUrl(`${INSTANCE}/team/repo.git`)).toThrow('is not allowed by this daemon')
   })
 
   it('admits that origin only, never anywhere else', () => {
@@ -58,7 +54,7 @@ describe("the deployment's own code host", () => {
       `${INSTANCE}/gitlab/team/repo.git`
     )
     expect(() => authorizeWorkspaceGitUrl('https://elsewhere.example.test/team/repo.git', prefixed)).toThrow(
-      'git clone origin is not allowed'
+      'is not allowed by this daemon'
     )
   })
 
@@ -66,7 +62,7 @@ describe("the deployment's own code host", () => {
   it('does not widen past an explicit deny-all', () => {
     configureWorkspaceGitOrigins([])
     expect(() => authorizeWorkspaceGitUrl(`${INSTANCE}/team/repo.git`, INSTANCE)).toThrow(
-      'git clone origin is not allowed'
+      'is not allowed by this daemon'
     )
     expect(permitsNoHttpsOrigin()).toBe(true)
   })
@@ -80,7 +76,7 @@ describe("the deployment's own code host", () => {
 
   it('ignores a host that is not addressable as an origin', () => {
     expect(() => authorizeWorkspaceGitUrl(`${INSTANCE}/team/repo.git`, 'not a url')).toThrow(
-      'git clone origin is not allowed'
+      'is not allowed by this daemon'
     )
   })
 })

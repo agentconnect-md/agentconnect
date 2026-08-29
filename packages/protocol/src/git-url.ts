@@ -8,6 +8,8 @@
  * with `gitRepoLabel`.
  */
 
+import { WORKSPACE_GIT_ORIGINS_ENV } from './consts.js'
+
 /** Scheme-full address: https://, ssh://, git://, file://, … */
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i
 /** Any URI scheme, including non-hierarchical forms such as `ext::…`. */
@@ -316,8 +318,13 @@ export function workspaceGitOriginOf(input: string): string {
 export function normalizeAllowedWorkspaceGitUrl(input: string, allowedOrigins: readonly string[]): string {
   const normalized = normalizeGitCloneUrl(input)
   const allowed = new Set(allowedOrigins.map(normalizeWorkspaceGitOrigin))
-  if (!allowed.has(workspaceGitOriginOf(normalized))) {
-    invalidCloneUrl('git clone origin is not allowed by this daemon')
+  const origin = workspaceGitOriginOf(normalized)
+  if (!allowed.has(origin)) {
+    // The refusal names the origin and the operator knob: the reader is usually a tenant whose
+    // fix is asking the daemon's operator, so the message must say what to ask for.
+    invalidCloneUrl(
+      `git clone origin ${origin} is not allowed by this daemon — its operator can allow it via security.workspaceGitAllowedOrigins in the daemon config (${WORKSPACE_GIT_ORIGINS_ENV} for a cluster member)`
+    )
   }
   return normalized
 }

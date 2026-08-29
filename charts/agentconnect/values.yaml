@@ -205,7 +205,7 @@ daemonPool:
   # Clone origins this pool's members will serve a workspace from — the OPERATOR's policy, which
   # is why a tenant cannot widen it and why an install that runs a self-managed code host has to
   # state it here. Empty ⇒ the daemon's own default, which is GitHub and GitLab.com only, and a
-  # self-managed GitLab is then refused with `git clone origin is not allowed by this daemon`.
+  # self-managed GitLab is then refused with `git clone origin … is not allowed by this daemon`.
   # Exact scheme + host + port, no path, no credentials:
   #
   #   workspaceGitAllowedOrigins:

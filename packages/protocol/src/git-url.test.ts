@@ -182,7 +182,7 @@ describe('workspace git origin policy', () => {
       'ssh://git@github.com:2222/acme/infra'
     ]) {
       expect(() => normalizeAllowedWorkspaceGitUrl(url, DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS), url).toThrow(
-        'git clone origin is not allowed'
+        'is not allowed by this daemon'
       )
     }
   })
