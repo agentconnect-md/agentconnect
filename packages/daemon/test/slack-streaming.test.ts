@@ -131,13 +131,16 @@ describe('OutputConverger streaming axis', () => {
   })
 
   it('turns tool calls into cards keyed by toolCallId', () => {
+    // A failed TOOL is `complete` + a plain "(failed)" prefix, never card status `error`: the
+    // container icon is derived from the cards, so one error card would present the whole turn
+    // as failed. `error` is reserved for the cancel path, where a red container is the truth.
     const converger = streaming('medium')
     converger.onUpdate(tool('t1', 'Read file'))
     converger.onUpdate(tool('t1', 'Read file', 'completed'))
     converger.onUpdate(tool('t2', 'Run tests', 'failed'))
     expect(cards(converger.streamUpdate())).toEqual([
       { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' },
-      { type: 'task_update', id: 't2', title: 'Run tests', status: 'error' }
+      { type: 'task_update', id: 't2', title: '(failed) Run tests', status: 'complete' }
     ])
   })
 
@@ -172,6 +175,32 @@ describe('OutputConverger streaming axis', () => {
     expect(appends(converger.onFinal(attribution())).filter((c) => c.type === 'plan_update')).toEqual([
       { type: 'plan_update', title: 'Completed 2 steps · 1 failed' }
     ])
+  })
+
+  it('never lets a tool failure put an error card on the stream — that reddens the container', () => {
+    const converger = streaming('high')
+    converger.onUpdate(think('**Weighing it**'))
+    converger.onUpdate(tool('t1', 'Read file'))
+    const live = converger.streamUpdate()
+    converger.onUpdate(toolDone('t1', 'Read file', 'exit 1', 'failed'))
+    const all = [...appends(live), ...cards(converger.streamUpdate()), ...appends(converger.onFinal(attribution()))]
+    expect(all.filter((c) => c.type === 'task_update' && c.status === 'error')).toEqual([])
+    // …while the failure is still said: prefix on the card, count on the container.
+    expect(all).toContainEqual(
+      expect.objectContaining({ type: 'task_update', id: 't1', title: '(failed) Read file', status: 'complete' })
+    )
+    expect(all).toContainEqual({ type: 'plan_update', title: 'Completed 2 steps · 1 failed' })
+  })
+
+  it('keeps the (failed) prefix through the title clamp, and the body on high', () => {
+    const converger = streaming('high')
+    const long = `Weighing whether the ${'very '.repeat(20)}long command settles`
+    converger.onUpdate(bash('t1', long, ''))
+    converger.onUpdate(bash('t1', long, '', 'exit 1', 'failed'))
+    const card = cards(converger.streamUpdate()).find((c) => c.type === 'task_update' && c.id === 't1')
+    expect(card?.type === 'task_update' && card.title.startsWith('(failed) ')).toBe(true)
+    expect(card?.type === 'task_update' && card.title.length).toBeLessThanOrEqual(72)
+    expect(card?.type === 'task_update' && card.output).toBe('exit 1')
   })
 
   it('rides the terminal settle ON the stop, so the two can never be split', () => {
@@ -252,20 +281,32 @@ describe('OutputConverger streaming axis', () => {
     expect(converger.settleStream('stopped')).toEqual([])
   })
 
-  it('settles the stream on a terminal failure too, as a finished turn rather than a stopped one', () => {
+  it('settles a crashed turn as a stop would — the in-flight step died with the runtime', () => {
     const converger = streaming('medium')
     converger.onUpdate(chunk('partial answer'))
     converger.onUpdate(tool('t1', 'Read file'))
     converger.streamUpdate()
     const terminal = converger.flushTerminal()
-    // The tool calls did not fail; the turn did, and the ⚠️ notice carries that in the body.
+    // The step still open did not finish BECAUSE the turn died — `error` is the truth here,
+    // under the label that says which way the turn ended. The ⚠️ notice carries the reason.
     expect(terminal.at(-1)).toEqual({
       kind: 'stream-stop',
       settle: [
-        { type: 'task_update', id: 't1', title: 'Read file', status: 'complete' },
-        { type: 'plan_update', title: 'Completed 1 step' }
+        { type: 'task_update', id: 't1', title: 'Read file', status: 'error' },
+        { type: 'plan_update', title: 'Failed' }
       ]
     })
+  })
+
+  it('lets a crashed turn keep the steps that DID finish, (failed)-prefixed ones included', () => {
+    const converger = streaming('medium')
+    converger.onUpdate(tool('t1', 'Read file', 'completed'))
+    converger.onUpdate(tool('t2', 'Run tests', 'failed'))
+    converger.streamUpdate()
+    const settle = appends(converger.flushTerminal())
+    // Nothing was in flight, so no card is rewritten — only the label says the turn failed.
+    expect(settle.filter((c) => c.type === 'task_update')).toEqual([])
+    expect(settle).toContainEqual({ type: 'plan_update', title: 'Failed' })
   })
 
   it('settles a silent turn that still ran tools', () => {
