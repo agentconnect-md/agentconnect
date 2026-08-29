@@ -238,6 +238,9 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            {{- if hasKey .Values.daemonPool.extraEnv "AC_WORKSPACE_GIT_ALLOWED_ORIGINS" }}
+            {{- fail "daemonPool.extraEnv.AC_WORKSPACE_GIT_ALLOWED_ORIGINS collides with the chart-owned clone-origin policy: state it via daemonPool.workspaceGitAllowedOrigins (with features.gitUrl on), so the policy cannot come from two sources" }}
+            {{- end }}
             {{- if not .Values.features.gitUrl }}
             {{- if .Values.daemonPool.workspaceGitAllowedOrigins }}
             {{- fail "daemonPool.workspaceGitAllowedOrigins contradicts features.gitUrl=false: turn the feature on to state a policy, or drop the list to pin the pool to the managed hosts" }}
