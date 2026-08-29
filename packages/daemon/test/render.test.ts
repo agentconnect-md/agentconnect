@@ -417,7 +417,9 @@ describe('OutputConverger', () => {
     c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done.' } } as any)
     const actions = c.onFinal()
     expect(actions).toEqual([
-      { kind: 'post', text: 'done.' },
+      // Posted at finalization with the complete answer known ⇒ marked as the
+      // response's terminal section so the applier can close it at post time (§5.5).
+      { kind: 'post', text: 'done.', terminal: true },
       { kind: 'set-status', text: '' }
     ])
   })
@@ -437,7 +439,7 @@ describe('OutputConverger', () => {
     c.onUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done.' } } as any)
     const actions = c.onFinal(undefined)
     expect(actions).toEqual([
-      { kind: 'post', text: 'done.' },
+      { kind: 'post', text: 'done.', terminal: true },
       { kind: 'set-status', text: '' }
     ])
     expect(actions.some((a) => (a as { text: string }).text.includes('details'))).toBe(false)
@@ -566,7 +568,8 @@ describe('OutputConverger', () => {
     chunk('ency graph before building.')
     expect(c.onFinal(undefined)).toContainEqual({
       kind: 'post',
-      text: 'So I am rebuilding the dependency graph before building.'
+      text: 'So I am rebuilding the dependency graph before building.',
+      terminal: true
     })
   })
 

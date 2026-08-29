@@ -464,6 +464,22 @@ export interface ReplyAccumulator {
    *  deduplicates on (responseId, target agent) and activates exactly once even when the
    *  answer was split across several Slack messages. Minted per turn, never per post. */
   responseId: string
+  /** Routing facts of the COMPLETE response, resolved at final flush (§5.5): recipients,
+   *  the addressed-anyone bit, whether any peer agent shares this conversation, and
+   *  whether one of them posts as the SAME bot (their ingress admits only the closing
+   *  edit past its self-echo filter, so those conversations keep the re-stamp). Unset
+   *  until then — and left unset without an org/snapshot, which makes the closure fall
+   *  back to the unconditional re-stamp. */
+  finalRouting?: {
+    mentionedAgentIds: string[]
+    addressedAnyone: boolean
+    hasPeers: boolean
+    peerSharesBot: boolean
+  }
+  /** ts of the body message born `delivery_state: 'final'` — a terminal section posted at
+   *  finalization with the closing metadata already aboard, so `closeResponse` skips its
+   *  content-identical edit (which would mark the visible reply "(edited)"). */
+  finalStamped?: string
 }
 
 /** The turn's completion machinery: what settles it, what defers it, and the once-only

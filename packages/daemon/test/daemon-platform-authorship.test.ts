@@ -313,4 +313,94 @@ describe('response closure is a turn-output surface member (audit F19, site 7)',
     ).resolves.toBeUndefined()
     await daemon.stop()
   })
+
+  it('prepares the closing routing facts from the complete reply and the directory', async () => {
+    const daemon = await boot(['bot-a', 'bot-b'])
+    const turn = {
+      plan: { platform: 'slack', agentId: 'bot-a', channel: 'C1' },
+      reply: { text: 'done <@UBOTB>', responseId: 'r-1' },
+      conn: {}
+    }
+    ;(daemon as any).turnSurfaces.exact('slack').prepareResponseClosure(turn)
+    expect((turn.reply as any).finalRouting).toEqual({
+      mentionedAgentIds: ['bot-b'],
+      addressedAnyone: true,
+      hasPeers: true,
+      peerSharesBot: false
+    })
+    await daemon.stop()
+  })
+
+  it('marks the peer as sharing the bot when both agents post under one identity', async () => {
+    // A shared-bot peer's ingress admits only the closing edit past its self-echo
+    // filter, so this flag is what keeps the re-stamp for those conversations.
+    const daemon = await boot(['bot-a', 'bot-b'], { botShared: true })
+    const turn = {
+      plan: { platform: 'slack', agentId: 'bot-a', channel: 'C1' },
+      reply: { text: 'done', responseId: 'r-1' },
+      conn: {}
+    }
+    ;(daemon as any).turnSurfaces.exact('slack').prepareResponseClosure(turn)
+    expect((turn.reply as any).finalRouting).toMatchObject({ hasPeers: true, peerSharesBot: true })
+    await daemon.stop()
+  })
+
+  it('skips the closing edit entirely when no peer agent shares the conversation', async () => {
+    // The single-agent conversation is the common case, and the final event has no
+    // consumer there — re-stamping would only mark the visible reply "(edited)".
+    const daemon = await boot(['bot-a'])
+    const finalizeResponse = vi.fn(async () => true)
+    const turn = {
+      plan: { platform: 'slack', agentId: 'bot-a', channel: 'C1' },
+      reply: { text: 'done', responseId: 'r-1', lastResponse: { ts: '1720000000.000300', text: 'done' } },
+      conn: { finalizeResponse }
+    }
+    const surface = (daemon as any).turnSurfaces.exact('slack')
+    surface.prepareResponseClosure(turn)
+    expect((turn.reply as any).finalRouting).toMatchObject({ hasPeers: false })
+    await surface.closeResponse(turn)
+    expect(finalizeResponse).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
+  it('closes with the PREPARED routing facts rather than re-resolving them', async () => {
+    const daemon = await boot(['bot-a', 'bot-b'])
+    const finalizeResponse = vi.fn(async () => true)
+    const turn = {
+      plan: { platform: 'slack', agentId: 'bot-a', channel: 'C1', sourceHopCount: 0 },
+      reply: {
+        text: 'done',
+        responseId: 'r-1',
+        lastResponse: { ts: '1720000000.000300', text: 'done' },
+        // Deliberately different from what the text would resolve to, so the assertion
+        // proves the prepared set wins over a recompute. `peerSharesBot` also pins that
+        // a shared-bot conversation still closes through the edit.
+        finalRouting: { mentionedAgentIds: ['bot-b'], addressedAnyone: true, hasPeers: true, peerSharesBot: true }
+      },
+      conn: { finalizeResponse }
+    }
+    await (daemon as any).turnSurfaces.exact('slack').closeResponse(turn)
+    const [, , , , , response] = finalizeResponse.mock.calls[0] as unknown as any[]
+    expect(response).toMatchObject({ mentionedAgentIds: ['bot-b'], addressedAnyone: true })
+    await daemon.stop()
+  })
+
+  it('does not re-edit an answer whose terminal section was born final', async () => {
+    const daemon = await boot(['bot-a', 'bot-b'])
+    const finalizeResponse = vi.fn(async () => true)
+    const turn = {
+      plan: { platform: 'slack', agentId: 'bot-a', channel: 'C1' },
+      reply: {
+        text: 'done',
+        responseId: 'r-1',
+        lastResponse: { ts: '1720000000.000300', text: 'done' },
+        finalStamped: '1720000000.000300',
+        finalRouting: { mentionedAgentIds: [], addressedAnyone: false, hasPeers: true, peerSharesBot: false }
+      },
+      conn: { finalizeResponse }
+    }
+    await (daemon as any).turnSurfaces.exact('slack').closeResponse(turn)
+    expect(finalizeResponse).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
 })

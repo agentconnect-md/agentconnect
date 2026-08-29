@@ -3,12 +3,13 @@
  * (send-message-routing-rework.md §2.3/§5/§6, landed in PR #503).
  *
  * Every DELIVERED agent post fans back to every other member integration as
- * real platform ingress under the author's managed bot identity: the streaming
- * post under its own message id (unroutable — verification only admits
- * `final`), and the response-closing `message_changed` edit under the SAME
- * msgId, told apart by `ingressEventTag` and carrying the daemon-stamped §4
- * claim. Whether an echo activates anyone is the DAEMON's decision — mention
- * verification, hop transition, policy — never this helper's.
+ * real platform ingress under the author's managed bot identity: each post
+ * under its own message id carrying the daemon-stamped §4 claim (`final` on a
+ * terminal section closed at post time, `streaming` otherwise — verification
+ * only admits `final`), plus the response-closing `message_changed` edit under
+ * the SAME msgId when one was needed, told apart by `ingressEventTag`. Whether
+ * an echo activates anyone is the DAEMON's decision — mention verification,
+ * hop transition, policy — never this helper's.
  */
 import { SLACK_RESPONSE_FINAL_EVENT_TAG } from '../../packages/message/src/index.js'
 import type {
@@ -27,8 +28,11 @@ import type { CompiledRoom } from './types.js'
  *  one is that budget refusing the wake. */
 export interface PlatformEchoOutcome {
   integrationId: string
-  /** Present on the response-closing edit — the only copy that can route. */
+  /** Present on a `message_changed` closing edit; absent on an ordinary post. */
   ingressEventTag?: string
+  /** The claim's delivery state — `final` marks the ONE routable event of a response,
+   *  whether it arrived as a born-final post (§5.5) or as the closing edit. */
+  deliveryState: 'streaming' | 'final'
   admitted: boolean
   reason?: string
   fromAlias: string
@@ -145,6 +149,7 @@ export class PlatformEcho {
               roomId: this.room.alias,
               messageId: echoMessageId,
               ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
+              deliveryState: effect.response?.deliveryState ?? 'streaming',
               integrationId,
               ...(admission.admitted
                 ? { admitted: true, agentAlias: this.world.aliasOfAgent(admission.agentId) }
@@ -153,6 +158,7 @@ export class PlatformEcho {
             this.onOutcome?.({
               integrationId,
               ...(ingressEventTag !== undefined ? { ingressEventTag } : {}),
+              deliveryState: effect.response?.deliveryState ?? 'streaming',
               admitted: admission.admitted,
               ...(admission.admitted ? {} : { reason: admission.reason }),
               fromAlias,

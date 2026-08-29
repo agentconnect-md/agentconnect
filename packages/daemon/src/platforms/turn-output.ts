@@ -91,6 +91,15 @@ export interface TurnOutputSurface<TTurn, TAction, TConv, TMessage> {
    *  {@link onSuppress}. */
   onSettle?(turn: TTurn): Promise<void>
   /**
+   * Resolve the closing routing facts of this turn's logical response BEFORE its
+   * final body flush (send-message-routing-rework.md §5.5). The complete answer
+   * text is known by then, so a terminal section that is first POSTED at
+   * finalization can carry the `final` delivery state at birth — sparing the
+   * content-identical closing edit that would mark it "(edited)". Exact-lookup
+   * only, like {@link closeResponse}, and always paired with it.
+   */
+  prepareResponseClosure?(turn: TTurn): void
+  /**
    * Close this turn's logical RESPONSE, once the complete answer has been
    * delivered (send-message-routing-rework.md §5.5). Distinct from
    * {@link onSettle}, and not foldable into it: this runs on the SUCCESS path
