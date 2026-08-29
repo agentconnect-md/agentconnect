@@ -13841,6 +13841,19 @@ export class Daemon {
       lease.settled.push({ id: taskId, ...rec, endedAt: this.clock.now(), status })
       if (lease.settled.length > MAX_SETTLED_TASKS_PER_SESSION) lease.settled.shift()
       if (rec.isSubagent) return
+      // Settled inside this session's own live foreground loop (running SDK cycle + pending
+      // dispatch): the runtime hands the result to the model in that loop and the turn's chrome
+      // already shows the step, so the announce would say it twice and the wake would burn a
+      // turn re-delivering it — auto-backgrounded commands (sleeps, watchers) settle here every
+      // time. Both conditions are required: `running` without a Pending is an invisible
+      // self-drain cycle, and a Pending past `idle` is finalization the model has already left.
+      if (lease.sdkState === 'running' && this.pending.has(pendingTurnKey(agentId, acpSessionId))) {
+        this.log.debug(
+          `bg-task delivery skipped (settled inside the live foreground turn): ` +
+            `"${rec.description?.trim() || 'background task'}" on ${acpSessionId}`
+        )
+        return
+      }
       await this.announceBackgroundTaskDone(agentId, acpSessionId, rec.description, status)
       this.scheduleBackgroundTaskWake(agentId, acpSessionId, taskId, rec.description, status)
     }
@@ -13941,9 +13954,10 @@ export class Daemon {
   }
 
   /** Proactively announce a completed background task to its session's channel/thread
-   *  (a plain system notice, like the loop-guard warning — not an agent response, so
-   *  no attribution footer). Gated on output mode ≥ medium; skipped for closed
-   *  sessions, missing bindings, or non-Claude sessions with no lease. */
+   *  (a system notice, like the gating notice — not an agent response, so no attribution
+   *  footer). Chrome-marked with the agent's identity where the platform supports it, so
+   *  thread backfill never re-ingests it as something the agent said. Gated on output mode
+   *  ≥ medium; skipped for closed sessions, missing bindings, or sessions with no lease. */
   private async announceBackgroundTaskDone(
     agentId: string,
     acpSessionId: string,
@@ -13959,7 +13973,19 @@ export class Daemon {
     if (!conn) return
     const what = description?.trim() || 'background task'
     const text = `🔔 Background task finished: ${what}${status ? ` (${status})` : ''}`
-    void Promise.resolve(conn.postMessage(rec.channel, text, rec.thread || undefined)).catch((err) =>
+    const agent = this.agents.get(agentId)
+    const post = turnChromeFor(rec.platform).chromeMarkedNotices
+      ? (conn as SlackConnection).postMessage(rec.channel, text, rec.thread || undefined, {
+          ...(slackPostOptions({
+            platform: rec.platform,
+            isDm: rec.conversationKind === 'dm',
+            agentName: agent?.displayName?.trim() || agent?.name || agentId,
+            ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})
+          }) ?? {}),
+          chrome: true
+        })
+      : conn.postMessage(rec.channel, text, rec.thread || undefined)
+    void Promise.resolve(post).catch((err) =>
       this.log.warn(`bg-task announce failed for "${agentId}": ${(err as Error).message}`)
     )
   }

@@ -153,9 +153,23 @@ Delivery follows these rules:
 - Internal subagents never produce this notification.
 - `task_updated` can supply a terminal status; a completion edge without a
   status uses the description alone.
+- A task that settles inside the session's own live foreground loop — a
+  `running` SDK cycle with a pending dispatch — is neither announced nor woken
+  (§5.1): the runtime hands the result to the model in that loop, and the
+  turn's own chrome already shows the step. Auto-backgrounded commands
+  (sleeps, watchers) settle this way every time. Both conditions are required:
+  `running` without a pending dispatch is an invisible self-drain cycle, and a
+  pending dispatch past `idle` is finalization the model has already left. A
+  settle that races the loop's very end may forfeit the runtime's follow-up
+  narration; its MCP side effects still land, and that narrow loss is accepted
+  over announcing every in-turn completion twice.
 
 The message is daemon-authored system output, not an agent reply, so it has no
-agent-attribution footer.
+agent-attribution footer. On platforms that mark notices it is posted as
+chrome with the agent's visual identity (name and icon) in channels — a DM
+keeps the bot's own identity, per the conversational-authorship rule — so
+thread backfill skips it instead of re-ingesting it as something the agent
+said.
 
 The runtime's own unsolicited follow-up narration is not routed when no
 foreground turn is pending. This is not a stylistic choice — `onAcpUpdate`
@@ -194,6 +208,8 @@ The daemon therefore delivers it, as a new turn into the same session:
 - The reply transport is resolved from the **session's** transport scope, not the
   agent's default integration.
 
+No wake is armed for a task that settled inside the session's own live
+foreground loop (§5) — the loop already delivered the completion to the model.
 The wake is armed on a `BG_TASK_WAKE_GRACE_MS` (4s) delay and every precondition
 is re-checked when it fires, never captured when it is armed:
 
