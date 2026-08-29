@@ -86,7 +86,8 @@ describe('per-platform reply anchoring', () => {
     const calls: unknown[][] = []
     const conn = { postMessage: (...a: unknown[]) => void calls.push(a) }
     slackCommandChrome.reply(conn, undefined, ctx, 'ok')
-    expect(calls[0]).toEqual(['C1', 'ok', '1700000000.001'])
+    // Chrome-marked: a control reply is not conversation, so thread backfill skips it.
+    expect(calls[0]).toEqual(['C1', 'ok', '1700000000.001', { chrome: true }])
   })
 
   it('discord renders the select card only under its 25-button ceiling', () => {

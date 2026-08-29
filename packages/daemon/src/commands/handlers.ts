@@ -67,7 +67,13 @@ export interface CommandHost {
   hostForStoredSession(agentId: string, acpSessionId: string): Promise<AcpHost | undefined>
   statusInfoFrom(agentId: string, sessionKey: string, acpSessionId?: string): Promise<StatusBarInfo>
   emitStatusBar(p: Pending): Promise<void>
-  interruptTurn(agentId: string, key: string, reason: TurnInterruptReason, acpSessionId?: string): Promise<void>
+  interruptTurn(
+    agentId: string,
+    key: string,
+    reason: TurnInterruptReason,
+    acpSessionId?: string,
+    opts?: { actor?: InteractionActor }
+  ): Promise<void>
   /** `!queue` admission through the unified per-sessionKey gate — it decides run-now vs enqueue. */
   dispatchQueueCommand(agentId: string, msg: NormalizedMessage, integrationId: string): Promise<void>
   replyConnFor(agentId: string, integrationId?: string): PlatformConnection | undefined
@@ -87,6 +93,12 @@ export interface CommandHost {
 }
 
 /** Everything `handleCommand`'s shared pre-dispatch resolves once, handed to the per-kind handler. */
+/** The human behind a chat command, in the same shape a Block Kit click reports. */
+function senderActor(msg: NormalizedMessage): InteractionActor {
+  const name = msg.sender.name?.trim()
+  return { userId: msg.sender.id, isBot: msg.sender.isBot, ...(name ? { name } : {}) }
+}
+
 interface CommandContext {
   msg: NormalizedMessage
   target: { agentId: string; integrationId: string; via: RouteVia }
@@ -174,7 +186,7 @@ export class CommandHandlers {
   /** Cancel the in-flight turn for a local session key — the `!cancel` core (interrupt,
    *  NO mute) shared by Slack's native Stop and webchat's cancel frame. No-op if nothing
    *  is running. */
-  async cancelSessionByKey(key: string): Promise<boolean> {
+  async cancelSessionByKey(key: string, actor?: InteractionActor): Promise<boolean> {
     const rec = await this.host.store().getSession(key)
     // Cancel a gate-owned/queued session even if it has no live ACP turn yet (§6.9 #390):
     // interruptTurn drains the queue by key and cancels the ACP turn only if one exists.
@@ -183,7 +195,9 @@ export class CommandHandlers {
     const agentId =
       rec?.agentId ?? this.host.activeGateEntries().get(key)?.agentId ?? this.host.serialQueue().get(key)?.[0]?.agentId
     if (!agentId) return false
-    await this.host.interruptTurn(agentId, key, 'cancel', rec?.acpSessionId ?? undefined)
+    await this.host.interruptTurn(agentId, key, 'cancel', rec?.acpSessionId ?? undefined, {
+      ...(actor ? { actor } : {})
+    })
     return true // reports whether a turn was actually interrupted (nothing else reads it)
   }
 
@@ -304,7 +318,7 @@ export class CommandHandlers {
     // at the one point every ingress funnels through — but only when the verb actually
     // applied, so a refused or no-op click never reads as a change someone made.
     let applied = false
-    if (a.kind === 'cancel') applied = await this.cancelSessionByKey(a.sessionKey)
+    if (a.kind === 'cancel') applied = await this.cancelSessionByKey(a.sessionKey, a.actor)
     else if (a.kind === 'set-model') {
       if (a.model) applied = await this.setModelByKey(a.sessionKey, a.model)
     } else if (a.kind === 'set-effort') {
@@ -642,7 +656,9 @@ export class CommandHandlers {
       reply(rec ? `🔇 Nothing is running. ${muteNote}` : 'Nothing is running to stop.')
       return true
     }
-    await this.host.interruptTurn(target.agentId, key, 'stop', acpSessionId ?? undefined)
+    await this.host.interruptTurn(target.agentId, key, 'stop', acpSessionId ?? undefined, {
+      actor: senderActor(ctx.msg)
+    })
     reply(`🛑 Stopped. ${muteNote}`)
     return true
   }
@@ -656,7 +672,9 @@ export class CommandHandlers {
       reply('Nothing is running to cancel.')
       return true
     }
-    await this.host.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined)
+    await this.host.interruptTurn(target.agentId, key, 'cancel', acpSessionId ?? undefined, {
+      actor: senderActor(ctx.msg)
+    })
     reply('🛑 Cancelled.')
     return true
   }

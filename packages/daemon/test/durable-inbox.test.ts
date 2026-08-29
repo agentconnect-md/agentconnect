@@ -1012,7 +1012,9 @@ describe('daemon durable inbox', () => {
     ;(daemon as any).connByIntegration.set('int-a', conn)
     await (daemon as any).onInboundOutcome(msg('10', '!resume'))
     expect(await loopGuard(root)).toMatchObject({ reason: 'automatic_turn_burst' })
-    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('still stopping'), 'T1')
+    expect(conn.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('still stopping'), 'T1', {
+      chrome: true
+    })
 
     g.releaseOne()
     await expect(head).resolves.toBeNull()

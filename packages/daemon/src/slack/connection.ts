@@ -344,7 +344,7 @@ type BlockActionArgs = {
     trigger_id?: string
     view?: { id?: string; private_metadata?: string }
     actions?: { block_id?: string }[]
-    user?: { id?: string }
+    user?: { id?: string; username?: string; name?: string }
   }
 }
 
@@ -360,7 +360,10 @@ type MessageShortcutArgs = {
 
 /** The clicking user off a `block_actions` payload, for the action's audit record. */
 function actorOf(body: BlockActionArgs['body']): InteractionActor | undefined {
-  return body?.user?.id ? { userId: body.user.id } : undefined
+  const user = body?.user
+  if (!user?.id) return undefined
+  const name = (user.username ?? user.name)?.trim()
+  return { userId: user.id, ...(name ? { name } : {}) }
 }
 
 /** The Slack surface `SlackConnection` drives. Exported so a caller can supply its own — see

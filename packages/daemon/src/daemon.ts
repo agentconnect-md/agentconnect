@@ -124,6 +124,7 @@ import {
   platformIds,
   platformIntegrationConfig
 } from './platforms/integration-config.js'
+import type { InteractionActor } from './platforms/contract.js'
 import { compoundMentionAddressesFor } from './platforms/mention-address.js'
 import { rootPostNeedsThreadMaterialization, rootPostThreadName, threadKeyForPost } from './platforms/thread-keys.js'
 import { isMalformedPlatformTurn } from './platforms/malformed-turn.js'
@@ -1344,7 +1345,8 @@ export class Daemon {
       statusInfoFrom: async (agentId, sessionKey, acpSessionId) =>
         await this.statusInfoFrom(agentId, sessionKey, acpSessionId),
       emitStatusBar: (p) => this.emitStatusBar(p),
-      interruptTurn: (agentId, key, reason, acpSessionId) => this.interruptTurn(agentId, key, reason, acpSessionId),
+      interruptTurn: (agentId, key, reason, acpSessionId, opts) =>
+        this.interruptTurn(agentId, key, reason, acpSessionId, opts),
       dispatchQueueCommand: async (agentId, msg, integrationId) => {
         await this.dispatch(agentId, msg, integrationId, undefined, undefined, { isQueueCmd: true })
       },
@@ -11240,6 +11242,8 @@ export class Daemon {
       allowReviewLane?: string
       /** Duty handoff: stop running the work here, but leave its durable rows for the successor. */
       handoffInbox?: boolean
+      /** The human who raised it, when one did — recorded in the transcript. */
+      actor?: InteractionActor
     } = {}
   ): Promise<void> {
     // The force-cancel fallback is host-wide. Hold NEW admissions until this exact
@@ -11320,6 +11324,7 @@ export class Daemon {
       )
     }
     this.log.info(`command: ${reason} → agent "${agentId}" session ${key}${liveSessionId ? ` (${liveSessionId})` : ''}`)
+    await this.recordOperatorInterrupt(agentId, reason, opts.actor, live ?? activeEntry ?? queued?.[0])
     // Only a live ACP turn can be cancelled at the host; a purely-queued/cold session has
     // nothing running to cancel (the queue drop above already handled it).
     if (!liveSessionId || !live) {
@@ -11344,6 +11349,36 @@ export class Daemon {
       ?.cancel(liveSessionId)
       .catch((err) => this.log.error(`command ${reason}: cancel failed: ${(err as Error).message}`))
     this.armCancelBackstop(agentId, liveSessionId, key, reason)
+  }
+
+  /** Record an operator-raised interrupt in the transcript, so a cancel is visible in the
+   *  console wherever it came from — a chat command, Slack's native Stop, or the webchat
+   *  frame. `stop` shares its reason with internal interrupts (host respawn, agent removal),
+   *  so only an ATTRIBUTED stop is one a person raised; `cancel` has no such caller. */
+  private async recordOperatorInterrupt(
+    agentId: string,
+    reason: TurnInterruptReason,
+    actor: InteractionActor | undefined,
+    anchor: Pending | QueueEntry | undefined
+  ): Promise<void> {
+    if (reason !== 'cancel' && !(reason === 'stop' && actor)) return
+    if (!anchor) return
+    const coords =
+      'plan' in anchor
+        ? { channel: anchor.plan.transcriptChannel, thread: anchor.plan.statusThread }
+        : {
+            channel: transcriptChannelKey(anchor.msg.channel, anchor.msg.transportScope),
+            thread: transcriptCoords(anchor.msg).thread
+          }
+    const who = actor?.name?.trim() || actor?.userId
+    const by = who ? ` by ${who}` : ''
+    await this.store.appendTranscript({
+      ...coords,
+      ts: monotonicTs(),
+      sender: agentId,
+      kind: 'text',
+      text: reason === 'stop' ? `🛑 Turn stopped${by} — muted in this thread.` : `🛑 Turn cancelled${by}.`
+    })
   }
 
   /** Interrupt every logical session owned by an agent for a lifecycle gate (pause,
