@@ -62,6 +62,11 @@ const platformExcluded = process.platform === 'win32' ? WINDOWS_EXCLUDED : []
 // The budget every test gets before the platform scaling below. A per-test override can only
 // SHORTEN what this grants, never extend it, so one written at or under this value is dead weight
 // that fails first on the slowest platform. `test/no-shortened-test-budget.test.ts` rejects those.
+// Set on this process rather than through `test.env`, so every worker and every child a test
+// spawns inherits it. An explicit value wins, so the flag can be exercised from any platform.
+// `test/store-backing.test.ts` fails if this stops reaching the suite.
+process.env.AGENTCONNECT_TEST_STORE_MEMORY ??= process.platform === 'win32' ? '1' : ''
+
 export const BASE_TEST_TIMEOUT = 30_000
 
 export default defineConfig({
@@ -72,11 +77,7 @@ export default defineConfig({
     // Windows suite from 1037 s of test time to 767 s. Elsewhere it is a loss, because the page
     // cache already makes that I/O free, so the flag stops at the platform that pays for it.
     // A test that needs a real file opens one explicitly; see `LocalStore.open`.
-    // An explicit value wins, so the flag can be exercised from any platform.
-    env: {
-      AGENTCONNECT_TEST_STORE_MEMORY:
-        process.env.AGENTCONNECT_TEST_STORE_MEMORY ?? (process.platform === 'win32' ? '1' : '')
-    },
+
     // Keep process-heavy, integration-shaped unit files from oversubscribing available test-worker
     // resources. Four on Windows too: the halving there bought time for inline per-test budgets that
     // no longer exist, and the polls those budgets never governed now scale in `test/wait-support.ts`.
