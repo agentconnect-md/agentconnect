@@ -2,6 +2,7 @@
 // Ported from the AgentConnect design (static demo content for the console UI).
 
 import type { AgentIcon } from '@/lib/agent-icon'
+import { gitRepoHostname } from './git-url-tile'
 import { isCodeHostHookKind, type HookKind } from '@agentconnect.md/protocol/code-host'
 import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
@@ -379,20 +380,22 @@ export function flattenFiles(files: WorkspaceFile[]): WorkspaceFile[] {
   return files.flatMap((f) => [f, ...(f.children ? flattenFiles(f.children) : [])])
 }
 
-// Where the agent runs — two modes, mirroring protocol `AgentWorkspace`
-// (scratch | github + agentDir). The path is daemon-generated; the UI only
-// picks the mode and, for github, the repo/branch/subdir.
-export interface GithubWorkspace {
-  mode: 'github'
+// Where the agent runs — two modes, mirroring the host-neutral workspace model
+// (git-workspace-model.md: scratch | git + orthogonal credential). The path is
+// daemon-generated; the UI picks the mode plus repo/branch/subdir.
+export interface GitWorkspace {
+  mode: 'git'
   worktree?: boolean
-  /** Rename-proof GitHub numeric repository id, when repaired by the CP. */
+  /** Who vouches for the repository (persisted credential); absent ⇒ anonymous clone. */
+  provider?: 'github' | 'gitlab'
+  /** Rename-proof numeric repository/project id, when the credential carries one. */
   repoId?: string
-  repo: string // short display form, e.g. acme/infra (storage keeps the full git address)
+  gitAccess?: 'read' | 'write'
+  /** Full stored clone address — drives the display-tile derivation (§7). */
+  gitRepo: string
+  repo: string // short display form, e.g. acme/infra
   /** Browsable https URL derived from the stored full git address. */
   repoUrl?: string
-  /** Present when the workspace was created through the GitHub App picker. */
-  installationId?: string
-  gitAccess?: 'read' | 'write'
   branch: string // e.g. main
   agentDir: string // subdir within the repo; '/' ⇒ repo root
   lastPull: string
@@ -403,13 +406,6 @@ export interface GithubWorkspace {
   files: WorkspaceFile[]
 }
 
-/** A managed GitLab project checkout — the same git shape, keyed by project id. */
-export interface GitlabWorkspace extends Omit<GithubWorkspace, 'mode' | 'repoId' | 'installationId'> {
-  mode: 'gitlab'
-  /** Numeric GitLab project id — rename-stable, unlike the namespaced path. */
-  projectId?: string
-}
-
 export interface ScratchWorkspace {
   mode: 'scratch'
   created: string
@@ -417,10 +413,25 @@ export interface ScratchWorkspace {
   files: WorkspaceFile[]
 }
 
-/** A workspace backed by a git checkout, on either code host. */
-export type GitWorkspace = GithubWorkspace | GitlabWorkspace
-
 export type Workspace = GitWorkspace | ScratchWorkspace
+
+// Which provider tile a workspace displays as (§7) — DERIVED from host + credential,
+// never stored: a provider names its tile; anonymous on a managed host shows that
+// tile with a public badge; anonymous anywhere else is the Git URL tile.
+export type WorkspaceSource = 'scratch' | 'github' | 'gitlab' | 'giturl'
+
+export function workspaceSourceOf(
+  ws: Pick<Workspace, 'mode'> & Partial<Pick<GitWorkspace, 'provider' | 'gitRepo'>>
+): WorkspaceSource {
+  if (ws.mode === 'scratch') return 'scratch'
+  if (ws.provider === 'github' || ws.provider === 'gitlab') return ws.provider
+  const host = ws.gitRepo !== undefined ? gitRepoHostname(ws.gitRepo) : undefined
+  if (host === 'github.com') return 'github'
+  if (host === 'gitlab.com') return 'gitlab'
+  // Bare `owner/repo` shorthand (legacy rows) is GitHub-only sugar.
+  if (host === undefined && ws.gitRepo !== undefined && /^[^/\s]+\/[^/\s]+$/.test(ws.gitRepo.trim())) return 'github'
+  return 'giturl'
+}
 
 /** Whether the workspace is a clone rather than an empty directory. Everything that
  *  reads a checkout — the files view, session worktrees, branch scope — keys off this
@@ -1364,7 +1375,9 @@ export const AGENTS: Agent[] = (
         { platform: 'discord', name: 'acme-ops', channel: '#ops', workMode: '@-mention' }
       ],
       workspace: {
-        mode: 'github',
+        mode: 'git',
+        provider: 'github',
+        gitRepo: 'https://github.com/acme/infra',
         repo: 'acme/infra',
         branch: 'main',
         agentDir: './services/api',
@@ -1454,7 +1467,9 @@ export const AGENTS: Agent[] = (
       lastModifiedAt: 'Jun 21, 2026',
       integrations: [{ platform: 'slack', name: 'slackconnect', channel: '#pull-requests', workMode: 'all messages' }],
       workspace: {
-        mode: 'github',
+        mode: 'git',
+        provider: 'github',
+        gitRepo: 'https://github.com/acme/web',
         repo: 'acme/web',
         branch: 'main',
         agentDir: './',
@@ -1601,7 +1616,9 @@ export const AGENTS: Agent[] = (
       lastModifiedAt: 'Jun 12, 2026',
       integrations: [{ platform: 'telegram', name: 'acme-docs-bot', channel: '@acme_docs', workMode: '@-mention' }],
       workspace: {
-        mode: 'github',
+        mode: 'git',
+        provider: 'github',
+        gitRepo: 'https://github.com/acme/docs',
         repo: 'acme/docs',
         branch: 'main',
         agentDir: './',

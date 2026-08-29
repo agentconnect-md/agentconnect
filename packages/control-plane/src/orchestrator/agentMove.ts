@@ -17,7 +17,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import {
-  gitRepoLabel,
+  normalizeGitUrl,
   type Ack,
   type AgentActivate,
   type DutyAgentBundle,
@@ -36,6 +36,7 @@ import type {
   CronRepo,
   MemberSetRepo,
   AgentWorkspace,
+  AgentWorkspaceCredential,
   IntegrationChannelRepo,
   IntegrationRepo
 } from '../persistence/ports.js'
@@ -175,17 +176,30 @@ function requireAck(action: string, ack: Ack): void {
   if (!ack.ok) throw new AgentMoveFailed(`${action} rejected${ack.reason ? `: ${ack.reason}` : ''}`)
 }
 
+function sameWorkspaceCredential(
+  left: AgentWorkspaceCredential | undefined,
+  right: AgentWorkspaceCredential | undefined
+): boolean {
+  if (left?.provider !== right?.provider) return false
+  if (left === undefined || right === undefined) return left === right
+  return (
+    left.access === right.access &&
+    (left.provider === 'github' ? left.installationId : undefined) ===
+      (right.provider === 'github' ? right.installationId : undefined)
+  )
+}
+
 function sameWorkspaceDefinition(left: AgentWorkspace, right: AgentWorkspace): boolean {
   if (left.mode !== right.mode) return false
   if (left.mode === 'scratch' || right.mode === 'scratch') return true
   return (
     (left.isolation ?? 'shared') === (right.isolation ?? 'shared') &&
-    gitRepoLabel(left.gitRepo).toLowerCase() === gitRepoLabel(right.gitRepo).toLowerCase() &&
+    // Full address, not the path label: with the mode host-neutral, only the
+    // address separates two hosts sharing an owner/repo path.
+    normalizeGitUrl(left.gitRepo).toLowerCase() === normalizeGitUrl(right.gitRepo).toLowerCase() &&
     (left.gitBranch ?? 'main') === (right.gitBranch ?? 'main') &&
     (left.agentDir ?? '') === (right.agentDir ?? '') &&
-    (left.mode === 'github' ? left.installationId : undefined) ===
-      (right.mode === 'github' ? right.installationId : undefined) &&
-    (left.gitAccess ?? 'write') === (right.gitAccess ?? 'write')
+    sameWorkspaceCredential(left.credential, right.credential)
   )
 }
 
@@ -356,11 +370,11 @@ export class AgentMoveService {
     workspaceRepoId?: bigint,
     editor?: string
   ): Promise<AgentRecord> {
-    // A credential-minting GitHub workspace needs its resolved repository; an
-    // anonymous public checkout mints none and has no managed identity (the
-    // agent's `workspaceRepoId` is nullable for exactly that arm).
-    if (workspace.mode === 'github' && workspace.installationId !== undefined && workspaceRepoId === undefined) {
-      throw new AgentMoveConflict('a GitHub workspace requires a resolved repository')
+    // A credential-minting workspace needs its resolved repository; an anonymous
+    // checkout mints none and has no managed identity (the agent's
+    // `workspaceRepoId` is nullable for exactly that arm).
+    if (workspace.mode === 'git' && workspace.credential !== undefined && workspaceRepoId === undefined) {
+      throw new AgentMoveConflict('a credentialed git workspace requires a resolved repository')
     }
     // The member to fence and re-activate: placement when it names a machine, otherwise whichever
     // pool member currently holds the agent. Nothing serving it ⇒ this is a cold edit.
@@ -769,7 +783,11 @@ export class AgentMoveService {
     workspaceRepoId: bigint | undefined,
     httpBotIds: string[]
   ): Promise<void> {
-    if (agent.workspace.mode !== 'github' || workspaceRepoId === undefined) {
+    if (
+      agent.workspace.mode !== 'git' ||
+      agent.workspace.credential?.provider !== 'github' ||
+      workspaceRepoId === undefined
+    ) {
       await this.convergeDerived(agent, httpBotIds)
       return
     }

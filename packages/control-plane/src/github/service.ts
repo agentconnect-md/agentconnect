@@ -654,13 +654,12 @@ export class GithubService {
   ): Promise<MintedGitCred> {
     const workspace = agent.workspace
     let label: string | undefined
-    if (workspace.mode === 'github') {
-      if (workspace.installationId === undefined) {
-        throw new GitCredDeniedError('agent workspace is not github-app mode', 'SCOPE_DENIED', false)
-      }
+    if (workspace.mode === 'git' && workspace.credential?.provider === 'github') {
       label = gitRepoLabel(workspace.gitRepo)
     } else if (requestedRepo === undefined) {
-      throw new GitCredDeniedError('scratch workspace has no default github repository', 'SCOPE_DENIED', false)
+      // Scratch, anonymous, and gitlab-vouched workspaces alike: no default
+      // github repository, but explicit per-agent grants still resolve by name.
+      throw new GitCredDeniedError('agent has no default github repository', 'SCOPE_DENIED', false)
     }
     for (const key of bucketKeys) {
       if (!this.mintBucket.take(key)) {
@@ -770,7 +769,7 @@ export class GithubService {
     }
 
     const workspace = agent.workspace
-    if (workspace.mode === 'github' && workspace.installationId !== undefined) {
+    if (workspace.mode === 'git' && workspace.credential?.provider === 'github') {
       let workspaceRepoId = agent.workspaceRepoId
       if (workspaceRepoId === undefined) {
         const workspaceLabel = gitRepoLabel(workspace.gitRepo)
@@ -798,7 +797,7 @@ export class GithubService {
           kind: 'workspace',
           repoId,
           repoFullName: ref.fullName,
-          access: workspace.gitAccess ?? 'write',
+          access: workspace.credential.access,
           installation
         }
       }
@@ -878,7 +877,7 @@ export class GithubService {
     agent: AgentRecord
   ): Promise<{ repoId: bigint; repoFullName: string; installationId: bigint } | null> {
     const workspace = agent.workspace
-    if (workspace.mode !== 'github' || workspace.installationId === undefined) return null
+    if (workspace.mode !== 'git' || workspace.credential?.provider !== 'github') return null
     const label = gitRepoLabel(workspace.gitRepo)
     const [owner, repo] = label.split('/')
     if (!owner || !repo) return null
@@ -1015,10 +1014,7 @@ export class GithubService {
     const workspace = agent.workspace
     let workspaceLabel: string | undefined
     let workspaceOwner: string | undefined
-    if (workspace.mode === 'github') {
-      if (workspace.installationId === undefined) {
-        throw new GitCredDeniedError('agent workspace is not github-app mode', 'SCOPE_DENIED', false)
-      }
+    if (workspace.mode === 'git' && workspace.credential?.provider === 'github') {
       workspaceLabel = gitRepoLabel(workspace.gitRepo)
       workspaceOwner = workspaceLabel.split('/')[0]
       if (workspaceLabel.toLowerCase() === repoFullName.toLowerCase()) {
@@ -1030,7 +1026,7 @@ export class GithubService {
           kind: 'workspace',
           ...(agent.workspaceRepoId !== undefined ? { repoId: agent.workspaceRepoId } : {}),
           repoFullName: workspaceLabel,
-          access: workspace.gitAccess ?? 'write',
+          access: workspace.credential.access,
           installation
         }
       }
@@ -1067,12 +1063,17 @@ export class GithubService {
 
     const ref = await this.repoRefFor(installation, owner, repo)
     if (!ref) throw new GitCredDeniedError(`${repoFullName} is not covered by the installation`, 'SCOPE_DENIED', false)
-    if (workspace.mode === 'github' && workspaceRenameCandidate && ref.repoId === agent.workspaceRepoId) {
+    if (
+      workspace.mode === 'git' &&
+      workspace.credential?.provider === 'github' &&
+      workspaceRenameCandidate &&
+      ref.repoId === agent.workspaceRepoId
+    ) {
       return {
         kind: 'workspace',
         repoId: agent.workspaceRepoId,
         repoFullName,
-        access: workspace.gitAccess ?? 'write',
+        access: workspace.credential.access,
         installation
       }
     }

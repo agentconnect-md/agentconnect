@@ -237,33 +237,20 @@ export async function webchatWsUrl(
 
 // ── wire DTOs (subset we consume) ───────────────────────────────────────────
 
-// Where the agent runs — inline two-mode workspace (CP `AgentWorkspaceBody`,
-// protocol `AgentWorkspace`). The path is daemon-generated; github mode carries
-// the repo/branch/subdir the daemon clones.
+// Who vouches for the workspace repository (git-workspace-model.md §5, read
+// shape): provenance persisted at the last workspace write. Absent ⇒ anonymous.
+export type AgentWorkspaceCredentialDto =
+  { provider: 'github'; access: 'read' | 'write' } | { provider: 'gitlab'; access: 'read' | 'write'; projectId: string }
+
 export type AgentWorkspaceDto =
   | { mode: 'scratch' }
   | {
-      mode: 'github'
+      mode: 'git'
       worktree?: boolean
       gitRepo: string
       gitBranch?: string
       agentDir?: string
-      // github-app credential mode: the GithubInstallation picked in the repo
-      // picker. Absent ⇒ anonymous git — the daemon host is assumed to have its
-      // own GitHub access (the pre-picker behavior, still the manual-URL path).
-      installationId?: string
-      gitAccess?: 'read' | 'write'
-    }
-  | {
-      // A managed GitLab project binding. `projectId` is what a caller sends; the
-      // clone address comes back derived from the binding and is never supplied.
-      mode: 'gitlab'
-      worktree?: boolean
-      projectId?: string
-      gitRepo?: string
-      gitBranch?: string
-      agentDir?: string
-      gitAccess?: 'read' | 'write'
+      credential?: AgentWorkspaceCredentialDto
     }
 
 export interface ExternalMemoryRecallPolicy {
@@ -971,30 +958,24 @@ export interface UpdateAgentInput {
   memory?: AgentMemoryConfig | null
 }
 
-export type SetAgentWorkspaceInput =
+/** The ONE workspace input shape, shared verbatim by agent creation and workspace
+ *  replacement (git-workspace-model.md §5). Provenance is server-derived from the
+ *  address; `access` is a request (absent takes the highest tier the target carries:
+ *  write where credentials are minted for it, read for an anonymous checkout). */
+export type AgentWorkspaceInput =
   | { mode: 'scratch' }
   | {
-      mode: 'github'
-      worktree?: boolean
-      repoFullName: string
-      /** Absent lets the server use GitHub's current default branch. */
+      mode: 'git'
+      /** Full cloneable https/ssh address; bare `owner/repo` is GitHub-only sugar. */
+      gitRepo: string
+      /** Absent lets the server use the target's current default branch. */
       gitBranch?: string
       agentDir?: string
-      /** Absent takes the highest tier the target carries: write when an App
-       *  installation grants it, read for an anonymous public checkout. */
-      gitAccess?: 'read' | 'write'
-    }
-  | {
-      mode: 'gitlab'
       worktree?: boolean
-      /** Numeric GitLab project id of a managed binding in this organization. */
-      projectId: string
-      /** Absent lets the server use the project's current default branch. */
-      gitBranch?: string
-      agentDir?: string
-      /** Absent is write: a managed binding always mints credentials. */
-      gitAccess?: 'read' | 'write'
+      access?: 'read' | 'write'
     }
+
+export type SetAgentWorkspaceInput = AgentWorkspaceInput
 
 export interface DaemonCapabilitiesDto {
   platforms: string[]
@@ -1139,7 +1120,7 @@ export interface CreateAgentInput {
   /** The owning daemon, if chosen at create. */
   daemonId?: string
   /** Where it runs; absent ⇒ the CP defaults to scratch. Immutable after create. */
-  workspace?: AgentWorkspaceDto
+  workspace?: AgentWorkspaceInput
   capabilities?: string[]
   /** Daemon-configured MCP server names to attach at session/new; absent ⇒ none. */
   mcpServers?: string[]
@@ -1737,35 +1718,15 @@ export function repoWebUrl(gitRepo: string): string | undefined {
 // The CP does not surface git state (commit/pull/dirty/files), so those render
 // as placeholders / empty until a daemon read model exists.
 function workspaceFromDto(w: AgentWorkspaceDto, workspaceRepoId?: string | null): Workspace {
-  if (w.mode === 'gitlab') {
-    // The clone address is the binding's, so the namespaced path is what it labels.
-    const gitRepo = w.gitRepo ?? ''
+  if (w.mode === 'git') {
     return {
-      mode: 'gitlab',
+      mode: 'git',
       worktree: w.worktree === true,
-      ...((w.projectId ?? workspaceRepoId) ? { projectId: (w.projectId ?? workspaceRepoId)! } : {}),
-      repo: repoLabel(gitRepo),
-      ...(repoWebUrl(gitRepo) ? { repoUrl: repoWebUrl(gitRepo) } : {}),
-      ...(w.gitAccess ? { gitAccess: w.gitAccess } : {}),
-      branch: w.gitBranch || 'main',
-      agentDir: w.agentDir || '/',
-      lastPull: PLACEHOLDER,
-      commit: PLACEHOLDER,
-      commitMsg: '',
-      commitTime: '',
-      clean: true,
-      files: []
-    }
-  }
-  if (w.mode === 'github') {
-    return {
-      mode: 'github',
-      worktree: w.worktree === true,
-      ...(workspaceRepoId ? { repoId: workspaceRepoId } : {}),
+      gitRepo: w.gitRepo,
       repo: repoLabel(w.gitRepo),
       ...(repoWebUrl(w.gitRepo) ? { repoUrl: repoWebUrl(w.gitRepo) } : {}),
-      ...(w.installationId ? { installationId: w.installationId } : {}),
-      ...(w.gitAccess ? { gitAccess: w.gitAccess } : {}),
+      ...(w.credential !== undefined ? { provider: w.credential.provider, gitAccess: w.credential.access } : {}),
+      ...(workspaceRepoId ? { repoId: workspaceRepoId } : {}),
       branch: w.gitBranch || 'main',
       agentDir: w.agentDir || '/',
       lastPull: PLACEHOLDER,

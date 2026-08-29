@@ -23,7 +23,7 @@ import {
   type GitlabProjectBindingDto,
   type GitlabProjectDto
 } from './api'
-import { mergeGitlabProjectChoices, type GitlabProjectChoice } from './gitlab-projects'
+import { GITLAB_DEFAULT_INSTANCE_URL, mergeGitlabProjectChoices, type GitlabProjectChoice } from './gitlab-projects'
 
 const SEARCH_DEBOUNCE_MS = 300
 
@@ -54,6 +54,8 @@ export interface GitlabProjectPicker {
   error: string | null
   /** A connection that can still talk to GitLab exists. */
   connected: boolean
+  /** The instance this deployment talks to (§24.1); the default until a connection answers. */
+  instanceUrl: string
   /** Authorize a GitLab account in a new tab. The grant lands on the connection,
    *  so the picker learns about it through `reload`, not through this call. */
   connect: () => Promise<void>
@@ -75,6 +77,7 @@ export function useGitlabProjects(active: boolean, query: string): GitlabProject
   const [bindings, setBindings] = useState<GitlabProjectBindingDto[] | null>(null)
   const [enabled, setEnabled] = useState(true)
   const [connectionId, setConnectionId] = useState<string | null>(null)
+  const [instanceUrl, setInstanceUrl] = useState(GITLAB_DEFAULT_INSTANCE_URL)
   const [candidates, setCandidates] = useState<GitlabProjectDto[]>([])
   const [error, setError] = useState<string | null>(null)
   const [provisioning, setProvisioning] = useState<string | null>(null)
@@ -98,6 +101,7 @@ export function useGitlabProjects(active: boolean, query: string): GitlabProject
         setBindings(bound)
         // Only a connection GitLab still accepts can add a project (§10.1).
         setConnectionId(connections.find((c) => c.state === 'connected')?.id ?? null)
+        if (connections[0]?.instanceUrl) setInstanceUrl(connections[0].instanceUrl)
         setReloading(false)
       },
       (e) => {
@@ -185,6 +189,7 @@ export function useGitlabProjects(active: boolean, query: string): GitlabProject
     empty: !loading && !everOffered && choices.length === 0,
     error,
     connected: connectionId !== null,
+    instanceUrl,
     connect,
     reload,
     reloading,

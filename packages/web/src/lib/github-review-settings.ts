@@ -83,10 +83,10 @@ interface WorkspaceRepoMatchInput {
   repoId?: string | null
   repoFullName: string | null | undefined
   workspace: {
-    mode: 'github' | 'gitlab' | 'scratch'
+    mode: 'git' | 'scratch'
+    provider?: 'github' | 'gitlab'
     repoId?: string
     repo?: string
-    installationId?: string
   }
 }
 
@@ -94,10 +94,10 @@ interface WorkspaceRepoMatchInput {
 export function isWorkspaceRepo(input: WorkspaceRepoMatchInput): boolean {
   const wantedId = input.repoId?.trim()
   const wanted = input.repoFullName?.trim().toLowerCase()
-  const workspaceId = input.workspace.mode === 'github' ? input.workspace.repoId?.trim() : undefined
+  const githubBacked = input.workspace.mode === 'git' && input.workspace.provider === 'github'
+  const workspaceId = githubBacked ? input.workspace.repoId?.trim() : undefined
   return (
-    input.workspace.mode === 'github' &&
-    !!input.workspace.installationId &&
+    githubBacked &&
     ((!!wantedId && !!workspaceId && wantedId === workspaceId) ||
       ((!wantedId || !workspaceId) && !!wanted && input.workspace.repo?.toLowerCase() === wanted))
   )
@@ -109,10 +109,10 @@ export function effectiveRepoAccess(input: {
   repoId?: string | null
   repoFullName: string | null | undefined
   workspace: {
-    mode: 'github' | 'gitlab' | 'scratch'
+    mode: 'git' | 'scratch'
+    provider?: 'github' | 'gitlab'
     repoId?: string
     repo?: string
-    installationId?: string
     gitAccess?: 'read' | 'write'
   }
   authorizations: ReadonlyArray<{

@@ -34,6 +34,7 @@ import type {
   SkillSourceRepo
 } from '../persistence/ports.js'
 import { AgentId } from '../domain/ids.js'
+import { gitlabManagedProjectPath } from '../domain/git-host.js'
 import { resolveAgentIconUrl, type IconUrlBases } from '../agents/agent-icon.js'
 import { resolveAgentSkillEntries, type InvalidSkillSourceProjection } from './skillSource.js'
 import {
@@ -210,27 +211,34 @@ export class AgentSpecAssembler {
       managedSkillEntries,
       effective.env,
       additionalRepos,
-      gitlabHost(this.gitlabHost, a.workspace.mode, additionalRepos, gitlabHook)
+      gitlabHost(this.gitlabHost, a.workspace, additionalRepos, gitlabHook)
     )
   }
 }
 
 /**
  * The §24.4 host carriage rule, in one place: the configured instance rides the spec
- * whenever ANY GitLab consumer does — the workspace, an additional-repository
- * authorization, or an enabled hook. It never branches on "is this GitLab.com" (§24.1):
- * the value is the axis, and an absent one means GitLab is unconfigured. A daemon reading
- * an absent field means GitLab.com, so an older Control Plane needs no negotiation.
+ * whenever ANY GitLab consumer does — a gitlab-vouched workspace, an additional-
+ * repository authorization, or an enabled hook. It never branches on "is this
+ * GitLab.com" (§24.1): the value is the axis, and an absent one means GitLab is
+ * unconfigured. A daemon reading an absent field means GitLab.com, so an older
+ * Control Plane needs no negotiation.
  */
 export function gitlabHost(
   configured: string | undefined,
-  workspaceMode: string,
+  workspace: AgentRecord['workspace'],
   additionalRepos: readonly AgentAdditionalRepo[],
   enabledGitlabHook: boolean
 ): string | undefined {
   if (configured === undefined) return undefined
   const consumer =
-    workspaceMode === 'gitlab' || enabledGitlabHook || additionalRepos.some((repo) => repo.provider === 'gitlab')
+    (workspace.mode === 'git' &&
+      (workspace.credential?.provider === 'gitlab' ||
+        // An anonymous public project on the deployment's own instance still needs
+        // the host: the daemon widens its clone-origin allowlist from this field.
+        gitlabManagedProjectPath(workspace.gitRepo, configured) !== null)) ||
+    enabledGitlabHook ||
+    additionalRepos.some((repo) => repo.provider === 'gitlab')
   return consumer ? configured : undefined
 }
 
@@ -259,43 +267,40 @@ export function agentRecordToSpec(
   host?: string
 ): AssembledAgentSpec {
   // Domain AgentWorkspace uses `gitBranch`; the wire AgentWorkspace uses `branch`.
-  // App-backed GitHub workspaces have one implicit repo. Scratch workspaces have
-  // no implicit repo, but still use the helper for explicit per-agent repo
-  // grants. Installation resolution and the allowlist both stay CP-side.
+  // The assembled spec always carries the host-neutral `git` arm; the per-peer
+  // dual encoding to the legacy arms (git-workspace-model.md §8) happens at the
+  // transmit sites through encodeSpecWorkspaceForPeer. Credential derivation and
+  // the allowlist both stay CP-side.
   const workspace: AgentSpec['workspace'] =
-    a.workspace.mode === 'github'
+    a.workspace.mode === 'git'
       ? {
-          mode: 'github',
+          mode: 'git',
           isolation: a.workspace.isolation ?? 'shared',
           // Defense in depth for historical/non-Prisma records: never send
           // credentials or an unsupported transport to any daemon version.
           gitRepo:
-            a.workspace.installationId !== undefined
+            a.workspace.credential?.provider === 'github'
               ? normalizeGithubRepoUrl(a.workspace.gitRepo)
               : normalizeGitCloneUrl(redactGitUrlSecrets(a.workspace.gitRepo)),
           branch: a.workspace.gitBranch ?? 'main',
           ...(a.workspace.agentDir !== undefined ? { agentDir: a.workspace.agentDir } : {}),
-          ...(a.workspace.installationId !== undefined ? { gitCredential: 'github-app' as const } : {}),
+          // installationId and access stay off the wire: minting re-resolves the live
+          // installation by owner, and the CP clamps minted tokens server-side.
+          ...(a.workspace.credential?.provider === 'github'
+            ? { credential: { provider: 'github' as const } }
+            : a.workspace.credential?.provider === 'gitlab'
+              ? // A gitlab-vouched workspace is frame-fatal on a pre-GitLab daemon;
+                // every projection path gates on daemonSupportsAgent before sending it.
+                { credential: { provider: 'gitlab' as const, projectId: (a.workspaceRepoId ?? 0n).toString() } }
+              : {}),
           additionalRepos
         }
-      : a.workspace.mode === 'gitlab'
-        ? {
-            // §17.3: this arm is frame-fatal on a pre-GitLab daemon; every
-            // projection path gates on daemonSupportsAgent before sending it.
-            mode: 'gitlab',
-            isolation: a.workspace.isolation ?? 'shared',
-            gitRepo: normalizeGitCloneUrl(redactGitUrlSecrets(a.workspace.gitRepo)),
-            branch: a.workspace.gitBranch ?? 'main',
-            ...(a.workspace.agentDir !== undefined ? { agentDir: a.workspace.agentDir } : {}),
-            projectId: (a.workspaceRepoId ?? 0n).toString(),
-            additionalRepos
-          }
-        : {
-            mode: 'scratch',
-            isolation: a.workspace.isolation ?? 'shared',
-            gitCredential: 'github-app',
-            additionalRepos
-          }
+      : {
+          mode: 'scratch',
+          isolation: a.workspace.isolation ?? 'shared',
+          gitCredential: 'github-app',
+          additionalRepos
+        }
   return {
     agentId: a.id,
     orgId: a.orgId,

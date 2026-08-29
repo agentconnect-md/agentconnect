@@ -412,6 +412,13 @@ export class PgGitlabProjectBindingRepo implements GitlabProjectBindingRepo {
     return row ? toBindingRecord(row) : null
   }
 
+  async byProjectPath(orgId: string, projectPath: string): Promise<GitlabProjectBindingRecord | null> {
+    const row = await this.prisma.gitlabProjectBinding.findFirst({
+      where: { orgId, projectPath: { equals: projectPath, mode: 'insensitive' } }
+    })
+    return row ? toBindingRecord(row) : null
+  }
+
   async listForOrg(orgId: string): Promise<GitlabProjectBindingRecord[]> {
     const rows = await this.prisma.gitlabProjectBinding.findMany({
       orderBy: { createdAt: 'asc' },
@@ -924,7 +931,7 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
   async consumers(orgId: string, projectId: bigint): Promise<GitlabAccountConsumer[]> {
     const [workspaces, hooks, grants] = await Promise.all([
       this.prisma.agent.findMany({
-        where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId },
+        where: { orgId, gitCredentialProvider: 'gitlab', workspaceRepoId: projectId },
         select: { id: true, gitAccess: true }
       }),
       this.prisma.hookDef.findMany({
@@ -953,7 +960,7 @@ export class PgGitlabAgentAccountRepo implements GitlabAgentAccountRepo {
   async consumersForOrg(orgId: string): Promise<GitlabProjectConsumer[]> {
     const [workspaces, hooks, grants] = await Promise.all([
       this.prisma.agent.findMany({
-        where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: { not: null } },
+        where: { orgId, gitCredentialProvider: 'gitlab', workspaceRepoId: { not: null } },
         select: { id: true, gitAccess: true, workspaceRepoId: true }
       }),
       this.prisma.hookDef.findMany({

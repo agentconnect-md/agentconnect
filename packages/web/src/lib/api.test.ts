@@ -355,9 +355,9 @@ describe('apiPut errors', () => {
     )
 
     const error = await setAgentWorkspace('agent-1', {
-      mode: 'github',
-      repoFullName: 'org/repo',
-      gitAccess: 'write'
+      mode: 'git',
+      gitRepo: 'org/repo',
+      access: 'write'
     }).catch((reason: unknown) => reason)
     expect(error).toBeInstanceOf(ApiError)
     expect(error).toMatchObject({
@@ -375,9 +375,9 @@ describe('apiPut errors', () => {
     )
 
     const error = await setAgentWorkspace('agent-1', {
-      mode: 'github',
-      repoFullName: 'org/repo',
-      gitAccess: 'write'
+      mode: 'git',
+      gitRepo: 'org/repo',
+      access: 'write'
     }).catch((reason: unknown) => reason)
     expect(error).toBeInstanceOf(ApiError)
     expect(error).toMatchObject({

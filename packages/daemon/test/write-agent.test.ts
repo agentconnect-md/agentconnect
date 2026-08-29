@@ -603,6 +603,133 @@ describe('writeAgentSpec — merge (agent.json exists)', () => {
 
     expect((readJson(file).workspace as { agentDir?: string }).agentDir).toBe('../legacy')
   })
+
+  // The host-neutral arm (git-workspace-model.md §3) is a near-identity map onto the daemon's own
+  // (git-repo, gitCredential) pair: `mode` says there is a repository, `credential` says who vouches.
+  it('maps a github-credentialed git workspace onto the App marker and canonical address', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({
+        workspace: {
+          mode: 'git',
+          gitRepo: 'https://legacy-user:legacy-token@other-host.example/acme/repo?token=query-secret',
+          branch: 'main',
+          credential: { provider: 'github' }
+        }
+      }),
+      deps
+    )
+
+    expect(readJson(file).workspace).toMatchObject({
+      mode: 'git-repo',
+      gitRepo: 'https://github.com/acme/repo',
+      gitBranch: 'main',
+      gitCredential: 'github-app'
+    })
+    expect(readJson(file).workspace).not.toHaveProperty('gitlabProjectId')
+  })
+
+  it('maps a gitlab-credentialed git workspace onto the marker plus the rename-stable project id', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({
+        workspace: {
+          mode: 'git',
+          gitRepo: 'https://gitlab.example.test/gitlab/example-group/example-project.git',
+          branch: 'main',
+          agentDir: './services/api',
+          credential: { provider: 'gitlab', projectId: '123' }
+        }
+      }),
+      deps
+    )
+
+    expect(readJson(file).workspace).toMatchObject({
+      mode: 'git-repo',
+      gitRepo: 'https://gitlab.example.test/gitlab/example-group/example-project.git',
+      agentDir: 'services/api',
+      gitCredential: 'gitlab',
+      gitlabProjectId: '123'
+    })
+  })
+
+  it('replicates an anonymous git workspace with no credential marker, still sanitizing url secrets', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({
+        workspace: {
+          mode: 'git',
+          gitRepo: 'https://legacy-user:legacy-token@git.example.test/team/repo.git?token=query-secret',
+          branch: 'main'
+        }
+      }),
+      deps
+    )
+
+    // Anonymous never re-badges onto the GitHub canonicalizer: the foreign host survives verbatim.
+    expect(readJson(file).workspace).toMatchObject({
+      mode: 'git-repo',
+      gitRepo: 'https://git.example.test/team/repo.git'
+    })
+    expect(readJson(file).workspace).not.toHaveProperty('gitCredential')
+    expect(readJson(file).workspace).not.toHaveProperty('gitlabProjectId')
+  })
+
+  it('clears both credential markers when a credentialed git workspace becomes anonymous', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ac-write-agent-'))
+    const file = seedAgent(dir, 'bot-a', {
+      id: 'bot-a',
+      name: 'bot-a',
+      status: 'active',
+      runtime: 'claude',
+      workspace: { mode: 'from-scratch', path: './workspace' }
+    })
+    const gitRepo = 'https://gitlab.example.test/gitlab/example-group/example-project.git'
+
+    writeAgentSpec(
+      dir,
+      'bot-a',
+      baseSpec({
+        workspace: { mode: 'git', gitRepo, branch: 'main', credential: { provider: 'gitlab', projectId: '123' } }
+      }),
+      deps
+    )
+    expect(readJson(file).workspace).toMatchObject({ gitCredential: 'gitlab', gitlabProjectId: '123' })
+
+    writeAgentSpec(dir, 'bot-a', baseSpec({ workspace: { mode: 'git', gitRepo, branch: 'main' } }), deps)
+    expect(readJson(file).workspace).not.toHaveProperty('gitCredential')
+    expect(readJson(file).workspace).not.toHaveProperty('gitlabProjectId')
+  })
 })
 
 describe('writeAgentSpec — create (no agent.json)', () => {

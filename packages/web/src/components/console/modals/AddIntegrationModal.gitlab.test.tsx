@@ -580,7 +580,10 @@ describe('AddIntegrationModal, GitLab trigger', () => {
   it('accepts the agent’s own workspace project without a separate grant', async () => {
     mocks.fetchGitlabProjects.mockResolvedValue([project])
     mocks.fetchAgentRepos.mockResolvedValue([])
-    await renderAgent({ id: 'agent-workspace', workspace: { mode: 'gitlab', projectId: '4210' } })
+    await renderAgent({
+      id: 'agent-workspace',
+      workspace: { mode: 'git', provider: 'gitlab', repoId: '4210', gitRepo: 'https://gitlab.com/acme/platform' }
+    })
     await pickProject()
     await settleSearch()
 

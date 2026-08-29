@@ -1,11 +1,16 @@
 # The Host-Neutral Git Workspace Model
 
-> **Status:** Accepted, not yet implemented. This document re-models the
-> workspace contract that [github-app-git-credentials.md](github-app-git-credentials.md)
-> and [gitlab-com-integration.md](gitlab-com-integration.md) currently share
-> implicitly; both keep describing their credential tracks and point here for
-> the workspace shape. The route-level behavior it consolidates shipped
-> incrementally (#1561, #1567); the wire and storage changes below have not.
+> **Status:** Implemented through rollout steps 1–3 plus the console tiles of
+> step 4 (§8) — the wire `git` arm + `workspace-git-v1`, the daemon decoder,
+> the storage migration with `gitCredentialProvider`, the unified input +
+> derivation + resolve endpoint, and per-peer dual encoding. Still open: the
+> picker's move onto the resolve endpoint (the browser-direct GitHub reads
+> survive it for now), and step 5 — dropping the legacy arms and the dual
+> encoding — waits for the fleet. This document re-models the workspace
+> contract that [github-app-git-credentials.md](github-app-git-credentials.md)
+> and [gitlab-com-integration.md](gitlab-com-integration.md) share implicitly;
+> both keep describing their credential tracks and point here for the
+> workspace shape.
 
 ## 1. Why
 

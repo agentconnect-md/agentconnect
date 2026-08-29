@@ -13,6 +13,7 @@ import type {
   AgentSkillSourceFence,
   AgentUpdateOpts,
   AgentWorkspace,
+  AgentWorkspaceCredential,
   CreateAgentInput,
   HookRecord,
   OrgAgentRecord,
@@ -29,6 +30,7 @@ import {
   type PlacementTarget
 } from '../../domain/placement.js'
 import { parseAgentIcon, randomGlyphIcon } from '../../agents/agent-icon.js'
+import { isCanonicalGithubAddress } from '../../domain/git-host.js'
 import {
   lockHookReviewAgentLifecycleScope,
   lockHookReviewAgentRepoScope,
@@ -135,7 +137,9 @@ async function assertWorkspaceIntegrationCompatible(
   workspaceRepoId?: bigint
 ): Promise<void> {
   const writableRepoId =
-    workspace.mode === 'github' && (workspace.gitAccess ?? 'write') === 'write' ? workspaceRepoId : undefined
+    workspace.mode === 'git' && workspace.credential?.provider === 'github' && workspace.credential.access === 'write'
+      ? workspaceRepoId
+      : undefined
   const incompatibleRepoIds = [...new Set(affectedRepoIds)].filter((repoId) => repoId !== writableRepoId)
   if (incompatibleRepoIds.length === 0) return
   const blocking = await tx.hookDef.findFirst({
@@ -196,10 +200,25 @@ async function settlePresetPlacement(tx: Prisma.TransactionClient, agentId: stri
   })
 }
 
+function credentialOf(a: Agent): AgentWorkspaceCredential | undefined {
+  // Provider is the explicit column (git-workspace-model.md §4); each arm also
+  // needs the identity that makes its credential mintable — the github
+  // provenance-hint installation, the gitlab rename-stable project id. A legacy
+  // row missing either reads as anonymous rather than minting against nothing.
+  if (a.gitCredentialProvider === 'github' && a.installationId !== null) {
+    return { provider: 'github', installationId: a.installationId, access: a.gitAccess }
+  }
+  if (a.gitCredentialProvider === 'gitlab' && a.workspaceRepoId !== null) {
+    return { provider: 'gitlab', access: a.gitAccess }
+  }
+  return undefined
+}
+
 function workspaceOf(a: Agent): AgentWorkspace {
-  if (a.workspaceMode === 'github') {
+  if (a.workspaceMode === 'git') {
+    const credential = credentialOf(a)
     return {
-      mode: 'github',
+      mode: 'git',
       isolation: a.workspaceIsolation,
       // Legacy rows may predate the credential-free clone URL invariant. Keep
       // reads total, but never let URL userinfo/query secrets enter DTOs or wire
@@ -207,20 +226,27 @@ function workspaceOf(a: Agent): AgentWorkspace {
       gitRepo: redactGitUrlSecrets(a.gitRepo ?? ''),
       ...(a.gitBranch !== null ? { gitBranch: a.gitBranch } : {}),
       ...(a.agentDir !== null ? { agentDir: a.agentDir } : {}),
-      ...(a.installationId !== null ? { installationId: a.installationId, gitAccess: a.gitAccess } : {})
-    }
-  }
-  if (a.workspaceMode === 'gitlab') {
-    return {
-      mode: 'gitlab',
-      isolation: a.workspaceIsolation,
-      gitRepo: redactGitUrlSecrets(a.gitRepo ?? ''),
-      ...(a.gitBranch !== null ? { gitBranch: a.gitBranch } : {}),
-      ...(a.agentDir !== null ? { agentDir: a.agentDir } : {}),
-      gitAccess: a.gitAccess
+      ...(credential !== undefined ? { credential } : {})
     }
   }
   return { mode: 'scratch', isolation: a.workspaceIsolation }
+}
+
+/** The workspace columns every workspace write sets — one derivation, three writers. */
+function workspaceColumns(workspace: AgentWorkspace) {
+  const credential = workspace.mode === 'git' ? workspace.credential : undefined
+  return {
+    workspaceMode: workspace.mode,
+    workspaceIsolation: workspace.mode !== 'scratch' ? (workspace.isolation ?? 'session') : 'shared',
+    gitRepo: workspace.mode !== 'scratch' ? workspace.gitRepo : null,
+    gitBranch: workspace.mode !== 'scratch' ? (workspace.gitBranch ?? 'main') : null,
+    agentDir: workspace.mode !== 'scratch' ? (workspace.agentDir ?? null) : null,
+    gitCredentialProvider: credential?.provider ?? null,
+    installationId: credential?.provider === 'github' ? credential.installationId : null,
+    // An anonymous checkout provably cannot push, so its row says `read`;
+    // scratch keeps the column's legacy `write` default (nothing reads it there).
+    gitAccess: credential?.access ?? (workspace.mode === 'git' ? 'read' : 'write')
+  }
 }
 
 function toRecord(a: AgentWithUsers): AgentRecord {
@@ -381,16 +407,8 @@ export class PgAgentRepo implements AgentRepo {
           ...(input.createdByUserId
             ? { createdByUserId: input.createdByUserId, lastModifiedByUserId: input.createdByUserId }
             : {}),
-          workspaceMode: ws.mode,
-          workspaceIsolation: ws.mode !== 'scratch' ? (ws.isolation ?? 'session') : 'shared',
-          gitRepo: ws.mode !== 'scratch' ? ws.gitRepo : null,
-          gitBranch: ws.mode !== 'scratch' ? (ws.gitBranch ?? 'main') : null,
-          agentDir: ws.mode !== 'scratch' ? (ws.agentDir ?? null) : null,
-          installationId: ws.mode === 'github' ? (ws.installationId ?? null) : null,
+          ...workspaceColumns(ws),
           workspaceRepoId: ws.mode !== 'scratch' ? (input.workspaceRepoId ?? null) : null,
-          ...((ws.mode === 'github' && ws.installationId) || ws.mode === 'gitlab'
-            ? { gitAccess: ws.gitAccess ?? 'write' }
-            : {}),
           capabilities: input.capabilities ?? [],
           // #536 self-introduce-on-join (dedicated column; absent ⇒ DB default false).
           ...(input.introduceOnJoin !== undefined ? { introduceOnJoin: input.introduceOnJoin } : {}),
@@ -647,14 +665,8 @@ export class PgAgentRepo implements AgentRepo {
         const a = await tx.agent.update({
           where: { id: agentId, orgId, workspaceMode: expectedMode, lastModifiedAt: expectedLastModifiedAt },
           data: {
-            workspaceMode: workspace.mode,
-            workspaceIsolation: workspace.mode !== 'scratch' ? (workspace.isolation ?? 'session') : 'shared',
-            gitRepo: workspace.mode !== 'scratch' ? workspace.gitRepo : null,
-            gitBranch: workspace.mode !== 'scratch' ? (workspace.gitBranch ?? 'main') : null,
-            agentDir: workspace.mode !== 'scratch' ? (workspace.agentDir ?? null) : null,
-            installationId: workspace.mode === 'github' ? (workspace.installationId ?? null) : null,
+            ...workspaceColumns(workspace),
             workspaceRepoId: workspaceRepoId ?? null,
-            gitAccess: workspace.mode !== 'scratch' ? (workspace.gitAccess ?? 'write') : 'write',
             lastModifiedAt: new Date(Math.max(Date.now(), expectedLastModifiedAt.getTime() + 1)),
             ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
             // `workspace` rides the AgentSpec, so this edit joins the same
@@ -700,14 +712,8 @@ export class PgAgentRepo implements AgentRepo {
             lastModifiedAt: expectedLastModifiedAt
           },
           data: {
-            workspaceMode: workspace.mode,
-            workspaceIsolation: workspace.mode !== 'scratch' ? (workspace.isolation ?? 'session') : 'shared',
-            gitRepo: workspace.mode !== 'scratch' ? workspace.gitRepo : null,
-            gitBranch: workspace.mode !== 'scratch' ? (workspace.gitBranch ?? 'main') : null,
-            agentDir: workspace.mode !== 'scratch' ? (workspace.agentDir ?? null) : null,
-            installationId: workspace.mode === 'github' ? (workspace.installationId ?? null) : null,
+            ...workspaceColumns(workspace),
             workspaceRepoId: workspaceRepoId ?? null,
-            gitAccess: workspace.mode !== 'scratch' ? (workspace.gitAccess ?? 'write') : 'write',
             lastModifiedAt: new Date(Math.max(Date.now(), expectedLastModifiedAt.getTime() + 1)),
             ...(byUserId ? { lastModifiedByUserId: byUserId } : {}),
             // `workspace` rides the AgentSpec, so this edit joins the same
@@ -743,14 +749,19 @@ export class PgAgentRepo implements AgentRepo {
     return this.transaction(async (tx) => {
       const workspaces = cloneUrl
         ? await tx.agent.findMany({
-            where: { orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId, NOT: { gitRepo: cloneUrl } },
+            where: {
+              orgId,
+              gitCredentialProvider: 'gitlab',
+              workspaceRepoId: projectId,
+              NOT: { gitRepo: cloneUrl }
+            },
             select: { id: true }
           })
         : []
       const workspaceIds = workspaces.map((row: { id: string }) => row.id)
       if (cloneUrl && workspaceIds.length > 0) {
         await tx.agent.updateMany({
-          where: { id: { in: workspaceIds }, orgId, workspaceMode: 'gitlab', workspaceRepoId: projectId },
+          where: { id: { in: workspaceIds }, orgId, gitCredentialProvider: 'gitlab', workspaceRepoId: projectId },
           data: { gitRepo: cloneUrl }
         })
       }
@@ -784,11 +795,18 @@ export class PgAgentRepo implements AgentRepo {
       await lockHookReviewAgentRepoScope(tx, agentId, repoId)
       const agent = await tx.agent.findUnique({
         where: { id: agentId },
-        select: { workspaceMode: true, workspaceRepoId: true }
+        select: { workspaceMode: true, gitCredentialProvider: true, workspaceRepoId: true, gitRepo: true }
       })
+      // A git workspace whose id GitHub numbered: anonymous included, since an
+      // anonymous github.com checkout is exactly the row this repair exists for (a
+      // credentialed one is given its id at write time). The ADDRESS must select
+      // github.com — the hosts number their repositories independently (§8.1), so
+      // stamping a GitHub id onto any other host's row would silently retarget it.
       if (
         !agent ||
-        agent.workspaceMode !== 'github' ||
+        agent.workspaceMode !== 'git' ||
+        agent.gitCredentialProvider === 'gitlab' ||
+        !isCanonicalGithubAddress(agent.gitRepo ?? '') ||
         (agent.workspaceRepoId !== null && agent.workspaceRepoId !== repoId)
       ) {
         return false

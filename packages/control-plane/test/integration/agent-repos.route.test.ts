@@ -213,34 +213,35 @@ async function makeUser(sub: string, role: OrgMemberRole): Promise<string> {
 describe('agent repo authorizations REST — grant, list, revoke, gates', () => {
   it('canonicalizes an App-backed workspace to the repository authorized by GitHub', async () => {
     await seedInstallation()
-    const installation = await prisma.githubInstallation.findFirstOrThrow({
-      where: { orgId: DEFAULT_ORG_ID, installationId: INSTALLATION }
-    })
     const a = app()
 
+    // Provenance is derived from the ADDRESS alone (§6) — the caller reports none.
+    // The stale name and the shifted casing both resolve through the covering
+    // installation, so the persisted address is GitHub's canonical one.
     const created = await a.app.inject({
       method: 'POST',
       url: `${ORG}/agents`,
       payload: {
         name: 'canonical-workspace',
         runtime: 'claude',
-        workspace: {
-          mode: 'github',
-          gitRepo: 'https://other-host.example/acme/infra',
-          installationId: installation.id,
-          gitAccess: 'read'
-        }
+        workspace: { mode: 'git', gitRepo: 'https://github.com/ACME/Old-Infra', access: 'read' }
       }
     })
 
     expect(created.statusCode).toBe(201)
     expect(created.json()).toMatchObject({
-      workspace: { gitRepo: 'https://github.com/acme/infra' },
+      workspace: {
+        mode: 'git',
+        gitRepo: 'https://github.com/acme/infra',
+        credential: { provider: 'github', access: 'read' }
+      },
       workspaceRepoId: '100'
     })
-    expect((await prisma.agent.findFirstOrThrow({ where: { name: 'canonical-workspace' } })).gitRepo).toBe(
-      'https://github.com/acme/infra'
-    )
+    expect(await prisma.agent.findFirstOrThrow({ where: { name: 'canonical-workspace' } })).toMatchObject({
+      gitRepo: 'https://github.com/acme/infra',
+      workspaceMode: 'git',
+      gitCredentialProvider: 'github'
+    })
   })
 
   it('PATCH upgrades an App-backed workspace from read to write after checking the caller', async () => {
@@ -271,7 +272,9 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     })
 
     expect(upgraded.statusCode).toBe(200)
-    expect(upgraded.json()).toMatchObject({ workspace: { mode: 'github', gitAccess: 'write' } })
+    expect(upgraded.json()).toMatchObject({
+      workspace: { mode: 'git', credential: { provider: 'github', access: 'write' } }
+    })
     expect(needs).toEqual(['write'])
     expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({ gitAccess: 'write' })
   })
@@ -400,12 +403,17 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const converted = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'acme/tools', gitAccess: 'write' }
+      payload: { mode: 'git', gitRepo: 'acme/tools', access: 'write' }
     })
 
     expect(converted.statusCode).toBe(200)
     expect(converted.json()).toMatchObject({
-      workspace: { mode: 'github', worktree: true, gitBranch: 'trunk', gitAccess: 'write' },
+      workspace: {
+        mode: 'git',
+        worktree: true,
+        gitBranch: 'trunk',
+        credential: { provider: 'github', access: 'write' }
+      },
       workspaceRepoId: '111'
     })
     expect(control.detaches).toMatchObject([{ agentId }])
@@ -413,12 +421,15 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
       {
         agentId,
         reconcileWorkspace: true,
-        spec: { workspace: { mode: 'github', branch: 'trunk', gitCredential: 'github-app' } }
+        // The spy stands in for WsControlSender, so this is the assembled spec — the
+        // per-peer dual encoding (§8) happens inside the real sender.
+        spec: { workspace: { mode: 'git', branch: 'trunk', credential: { provider: 'github' } } }
       }
     ])
     expect(await prisma.agentRepoAuthorization.count({ where: { agentId } })).toBe(0)
     expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
-      workspaceMode: 'github',
+      workspaceMode: 'git',
+      gitCredentialProvider: 'github',
       workspaceIsolation: 'session',
       gitBranch: 'trunk',
       workspaceRepoId: 111n
@@ -436,19 +447,20 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const converted = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'ACME/Tools', gitAccess: 'write' }
+      payload: { mode: 'git', gitRepo: 'ACME/Tools', access: 'write' }
     })
 
     expect(converted.statusCode).toBe(200)
     expect(converted.json()).toMatchObject({
-      workspace: { mode: 'github', gitBranch: 'trunk', gitAccess: 'write' },
+      workspace: { mode: 'git', gitBranch: 'trunk', credential: { provider: 'github', access: 'write' } },
       workspaceRepoId: '111'
     })
     expect(control.detaches).toMatchObject([{ agentId }])
     expect(control.activations).toMatchObject([{ agentId, reconcileWorkspace: true }])
     expect(await prisma.agentRepoAuthorization.count({ where: { agentId } })).toBe(0)
     expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
-      workspaceMode: 'github',
+      workspaceMode: 'git',
+      gitCredentialProvider: 'github',
       workspaceRepoId: 111n
     })
   })
@@ -466,11 +478,13 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const converted = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'acme/tools', gitAccess: 'write' }
+      payload: { mode: 'git', gitRepo: 'acme/tools', access: 'write' }
     })
 
     expect(converted.statusCode).toBe(200)
-    expect(converted.json()).toMatchObject({ workspace: { mode: 'github', gitAccess: 'write' } })
+    expect(converted.json()).toMatchObject({
+      workspace: { mode: 'git', credential: { provider: 'github', access: 'write' } }
+    })
     expect(await prisma.agentRepoAuthorization.count({ where: { agentId } })).toBe(0)
   })
 
@@ -485,11 +499,13 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const edited = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', worktree: false, repoFullName: 'acme/infra', gitAccess: 'read' }
+      payload: { mode: 'git', worktree: false, gitRepo: 'acme/infra', access: 'read' }
     })
 
     expect(edited.statusCode).toBe(200)
-    expect(edited.json()).toMatchObject({ workspace: { mode: 'github', worktree: false, gitAccess: 'read' } })
+    expect(edited.json()).toMatchObject({
+      workspace: { mode: 'git', worktree: false, credential: { provider: 'github', access: 'read' } }
+    })
     expect(control.detaches).toHaveLength(1)
     expect(control.detaches[0]?.requireEmptyWorkspace).toBeUndefined()
     expect(control.activations).toHaveLength(1)
@@ -515,21 +531,21 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
       payload: {
-        mode: 'github',
-        repoFullName: 'acme/tools',
+        mode: 'git',
+        gitRepo: 'acme/tools',
         gitBranch: 'feature/workspace-edit',
         agentDir: 'services/api',
-        gitAccess: 'write'
+        access: 'write'
       }
     })
 
     expect(switched.statusCode).toBe(200)
     expect(switched.json()).toMatchObject({
       workspace: {
-        mode: 'github',
+        mode: 'git',
         gitBranch: 'feature/workspace-edit',
         agentDir: 'services/api',
-        gitAccess: 'write'
+        credential: { provider: 'github', access: 'write' }
       },
       workspaceRepoId: '111'
     })
@@ -556,12 +572,12 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const edited = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'acme/infra', gitAccess: 'read' }
+      payload: { mode: 'git', gitRepo: 'acme/infra', access: 'read' }
     })
 
     expect(edited.statusCode).toBe(200)
     expect(edited.json()).toMatchObject({
-      workspace: { mode: 'github', gitAccess: 'read', installationId: expect.any(String) },
+      workspace: { mode: 'git', credential: { provider: 'github', access: 'read' } },
       workspaceRepoId: '100'
     })
     expect(control.detaches[0]?.requireEmptyWorkspace).toBeUndefined()
@@ -594,7 +610,7 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const rejected = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'acme/infra', gitAccess: 'read' }
+      payload: { mode: 'git', gitRepo: 'acme/infra', access: 'read' }
     })
 
     expect(rejected.statusCode).toBe(409)
@@ -625,7 +641,7 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const denied = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'acme/tools', gitAccess: 'write' }
+      payload: { mode: 'git', gitRepo: 'acme/tools', access: 'write' }
     })
 
     expect(denied.statusCode).toBe(403)
@@ -645,7 +661,7 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const rejected = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'acme/tools', gitAccess: 'read' }
+      payload: { mode: 'git', gitRepo: 'acme/tools', access: 'read' }
     })
 
     expect(rejected.statusCode).toBe(503)
@@ -668,12 +684,13 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const converted = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'acme/tools', gitAccess: 'write' }
+      payload: { mode: 'git', gitRepo: 'acme/tools', access: 'write' }
     })
 
     expect(converted.statusCode).toBe(200)
     expect(await prisma.agent.findUnique({ where: { id: agentId } })).toMatchObject({
-      workspaceMode: 'github',
+      workspaceMode: 'git',
+      gitCredentialProvider: 'github',
       workspaceRepoId: 111n
     })
     expect(control.activations).toMatchObject([{ agentId, reconcileWorkspace: true }])
@@ -720,29 +737,31 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const replaced = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'github/docs', gitBranch: 'main', gitAccess: 'read' }
+      payload: { mode: 'git', gitRepo: 'github/docs', gitBranch: 'main', access: 'read' }
     })
 
     expect(replaced.statusCode).toBe(200)
     expect(replaced.json()).toMatchObject({
-      workspace: { mode: 'github', gitRepo: 'https://github.com/github/docs', gitBranch: 'main' },
+      workspace: { mode: 'git', gitRepo: 'https://github.com/github/docs', gitBranch: 'main' },
       workspaceRepoId: null
     })
-    // Anonymous git: no installation, no credential tier, no `gitCredential` on the spec.
-    expect((replaced.json() as { workspace: Record<string, unknown> }).workspace).not.toHaveProperty('installationId')
-    expect(control.activations[0]?.spec.workspace).not.toHaveProperty('gitCredential')
+    // Anonymous git: no credential on the DTO, and no `gitCredential` on the spec.
+    expect((replaced.json() as { workspace: Record<string, unknown> }).workspace).not.toHaveProperty('credential')
+    expect(control.activations[0]?.spec.workspace).not.toHaveProperty('credential')
+    // `gitAccess` is meaningful only where a credential provider is set (§4), so the
+    // anonymous outcome is stated by the provider column, not by that tier.
     expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
       gitRepo: 'https://github.com/github/docs',
+      gitCredentialProvider: null,
       installationId: null,
-      workspaceRepoId: null,
-      gitAccess: 'read'
+      workspaceRepoId: null
     })
 
     // Push still requires an installation — an anonymous clone cannot push.
     const write = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'github/docs', gitAccess: 'write' }
+      payload: { mode: 'git', gitRepo: 'github/docs', access: 'write' }
     })
     expect(write.statusCode).toBe(409)
     expect(write.json()).toMatchObject({ message: expect.stringContaining('requires a GitHub App installation') })
@@ -761,7 +780,7 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const ungranted = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'acme/gone', gitAccess: 'read' }
+      payload: { mode: 'git', gitRepo: 'acme/gone', access: 'read' }
     })
     expect(ungranted.statusCode).toBe(409)
     expect(ungranted.json()).toMatchObject({ message: expect.stringContaining('is not granted') })
@@ -778,13 +797,13 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const noApp = await bare.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'github/docs', gitBranch: 'master', gitAccess: 'read' }
+      payload: { mode: 'git', gitRepo: 'github/docs', gitBranch: 'master', access: 'read' }
     })
     expect(noApp.statusCode).toBe(200)
     expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
       gitRepo: 'https://github.com/github/docs',
-      installationId: null,
-      gitAccess: 'read'
+      gitCredentialProvider: null,
+      installationId: null
     })
   })
 
@@ -798,22 +817,24 @@ describe('agent repo authorizations REST — grant, list, revoke, gates', () => 
     const granted = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'acme/tools' }
+      payload: { mode: 'git', gitRepo: 'acme/tools' }
     })
     expect(granted.statusCode).toBe(200)
-    expect(granted.json()).toMatchObject({ workspace: { gitAccess: 'write' } })
+    expect(granted.json()).toMatchObject({ workspace: { credential: { provider: 'github', access: 'write' } } })
 
     // An anonymous checkout has nothing to push with, so it stays read.
     const anonymous = await a.app.inject({
       method: 'PUT',
       url: `${ORG}/agents/${agentId}/workspace`,
-      payload: { mode: 'github', repoFullName: 'github/docs', gitBranch: 'master' }
+      payload: { mode: 'git', gitRepo: 'github/docs', gitBranch: 'master' }
     })
     expect(anonymous.statusCode).toBe(200)
+    expect(anonymous.json()).toMatchObject({ workspace: { mode: 'git' } })
+    expect((anonymous.json() as { workspace: Record<string, unknown> }).workspace).not.toHaveProperty('credential')
     expect(await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })).toMatchObject({
       gitRepo: 'https://github.com/github/docs',
-      installationId: null,
-      gitAccess: 'read'
+      gitCredentialProvider: null,
+      installationId: null
     })
   })
 

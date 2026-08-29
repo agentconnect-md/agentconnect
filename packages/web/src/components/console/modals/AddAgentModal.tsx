@@ -38,7 +38,7 @@ import {
   fetchGithubRepoRoster,
   fetchGithubRepoAccess,
   invalidateGithubRepoRosterCache,
-  type AgentWorkspaceDto,
+  type AgentWorkspaceInput,
   type GithubInstallationDto,
   type GithubRepoAccess,
   type GithubRepoDto
@@ -82,6 +82,8 @@ import {
   GitlabNoProjectsNotice,
   GitlabProjectField,
   GitlabProjectOption,
+  GitUrlTileFields,
+  PublicGitlabProjectOption,
   RepositoryAccessField,
   WorktreeField,
   WorkingSubdirectoryField,
@@ -90,6 +92,7 @@ import {
   type WorkspaceMode
 } from '@/components/console/WorkspaceFormFields'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
+import { gitRepoUrlTileHint } from '@/lib/git-url-tile'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
 
 type WsMode = WorkspaceMode
@@ -178,9 +181,13 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const [ghQ, setGhQ] = useState('')
   // The picked repository, when it is a public one no installation covers.
   const [ghManualPublicRepo, setGhManualPublicRepo] = useState<GithubRepoDto | null>(null)
+  // Git URL tile: a full https/ssh address cloned anonymously (§7).
+  const [urlInput, setUrlInput] = useState('')
   // GitLab path: projects picked by their numeric id. One this organization has
   // not added yet is set up as part of picking it (§18.1).
   const [glProject, setGlProject] = useState('')
+  // A public GitLab project path (anonymous clone) — the gitlab tile's second arm.
+  const [glPublicPath, setGlPublicPath] = useState<string | null>(null)
   const [glOpen, setGlOpen] = useState(false)
   const [glQ, setGlQ] = useState('')
   const [glAccessOpen, setGlAccessOpen] = useState(false)
@@ -403,6 +410,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   // Picking an unadded project provisions it first; a failed setup picks nothing.
   const pickGlProject = async (choice: GitlabProjectChoice) => {
     if (!choice.binding && !(await gl.provision(choice.projectId))) return
+    setGlPublicPath(null)
     setGlProject(choice.projectId)
     setGlOpen(false)
     setBranch(choice.defaultBranch ?? '')
@@ -601,7 +609,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       return
     }
     if (usingPicker && !ghRepo) {
-      setErr('Pick a repository, type an authorized GitHub repository, or switch to “From scratch”.')
+      setErr('Pick a repository, type an authorized GitHub repository, or switch to “Scratch”.')
       return
     }
     if (usingPicker && !picked && !publicRepo) {
@@ -617,11 +625,15 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       return
     }
     if (wsMode === 'github' && !usingPicker && !repo.trim()) {
-      setErr('Pick a GitHub repository, or switch to “From scratch”.')
+      setErr('Pick a GitHub repository, or switch to “Scratch”.')
       return
     }
-    if (wsMode === 'gitlab' && !glProject) {
-      setErr('Pick a GitLab project, or switch to “From scratch”.')
+    if (wsMode === 'gitlab' && !glProject && !glPublicPath) {
+      setErr('Pick a GitLab project, or switch to “Scratch”.')
+      return
+    }
+    if (wsMode === 'giturl' && (!urlInput.trim() || urlTileHint !== null)) {
+      setErr(urlTileHint ?? 'Enter a full https:// or ssh:// clone URL.')
       return
     }
     if (memoryProvider === 'external' && !externalMemory.connectionId) {
@@ -645,43 +657,52 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     }
     setBusy(true)
     setErr(null)
-    const workspace: AgentWorkspaceDto =
+    // Every tile produces the same payload (git-workspace-model.md §5/§7): one
+    // gitRepo address; the server derives who vouches for it.
+    const workspace: AgentWorkspaceInput =
       wsMode === 'gitlab'
         ? {
-            mode: 'gitlab',
+            mode: 'git',
+            gitRepo: `${gl.instanceUrl.replace(/\/+$/, '')}/${glPublicPath ?? glPicked?.projectPath ?? ''}`,
             worktree,
-            projectId: glProject,
             ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
             ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-            gitAccess: glPush ? ('write' as const) : ('read' as const)
+            ...(glPublicPath === null ? { access: glPush ? ('write' as const) : ('read' as const) } : {})
           }
-        : wsMode === 'github'
-          ? usingPicker
-            ? picked
-              ? {
-                  mode: 'github',
-                  worktree,
-                  gitRepo: picked.fullName, // owner/repo — the CP normalizes to the full address
-                  ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                  ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
-                  installationId: picked.installationId,
-                  gitAccess: ghPush ? ('write' as const) : ('read' as const)
-                }
+        : wsMode === 'giturl'
+          ? {
+              mode: 'git',
+              gitRepo: urlInput.trim(),
+              worktree,
+              ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+              ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
+            }
+          : wsMode === 'github'
+            ? usingPicker
+              ? picked
+                ? {
+                    mode: 'git',
+                    gitRepo: picked.fullName, // owner/repo — GitHub-only sugar the CP normalizes
+                    worktree,
+                    ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                    ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {}),
+                    access: ghPush ? ('write' as const) : ('read' as const)
+                  }
+                : {
+                    mode: 'git',
+                    gitRepo: publicRepo ?? ghRepo.trim(),
+                    worktree,
+                    ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
+                    ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
+                  }
               : {
-                  mode: 'github',
+                  mode: 'git',
+                  gitRepo: repo.trim(),
                   worktree,
-                  gitRepo: publicRepo ?? ghRepo.trim(),
                   ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
                   ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
                 }
-            : {
-                mode: 'github',
-                worktree,
-                gitRepo: repo.trim(),
-                ...(branch.trim() ? { gitBranch: branch.trim() } : {}),
-                ...(normalizedAgentDir ? { agentDir: normalizedAgentDir } : {})
-              }
-          : { mode: 'scratch' }
+            : { mode: 'scratch' }
     try {
       await createAgent({
         name: slug,
@@ -763,7 +784,10 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
       ? 'The project is cloned onto the machine; the agent runs from the directory you pick.'
       : wsMode === 'github'
         ? 'The repo is cloned onto the machine; the agent runs from the directory you pick.'
-        : 'We create a fresh working directory on the daemon — nothing is cloned.'
+        : wsMode === 'giturl'
+          ? 'Cloned with the daemon host’s own git credentials; the agent runs from the directory you pick.'
+          : 'We create a fresh working directory on the daemon — nothing is cloned.'
+  const urlTileHint = wsMode === 'giturl' ? gitRepoUrlTileHint(urlInput) : null
 
   // What still blocks Create, per section — an amber dot on the rail item plus,
   // in the footer, the first one you have to go fix. These mirror `submit`'s
@@ -786,7 +810,8 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   else if (usingPicker && !picked && !publicRepo) blockers.workspace = 'pick a repository'
   else if (wsMode === 'github' && !usingPicker && !repo.trim()) blockers.workspace = 'add a repository'
   else if (wsMode === 'gitlab' && glNoProjects) blockers.workspace = 'no GitLab projects added'
-  else if (wsMode === 'gitlab' && !glProject) blockers.workspace = 'pick a project'
+  else if (wsMode === 'gitlab' && !glProject && !glPublicPath) blockers.workspace = 'pick a project'
+  else if (wsMode === 'giturl' && (!urlInput.trim() || urlTileHint !== null)) blockers.workspace = 'enter a clone URL'
   if (envSecretError) blockers.secrets = envSecretError
   if (memoryProvider === 'external' && !externalMemory.connectionId) blockers.memory = 'select a connection'
   const firstBlocker = SECTIONS.find((s) => blockers[s.id])
@@ -1207,7 +1232,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                 ) : (
                   <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-2 desktop:gap-x-7">
                     <GitlabProjectField
-                      value={glPicked?.projectPath ?? ''}
+                      value={glPublicPath ?? glPicked?.projectPath ?? ''}
                       icon="book-marked"
                       loading={false}
                       open={glOpen}
@@ -1230,15 +1255,40 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                           onSelect={() => void pickGlProject(choice)}
                         />
                       ))}
-                      {glMatches.length === 0 && <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>}
+                      {/* A public project outside the managed set rides the anonymous arm (§7). */}
+                      <PublicGitlabProjectOption
+                        query={glQ}
+                        choices={gl.choices}
+                        onSelect={(path) => {
+                          setGlPublicPath(path)
+                          setGlProject('')
+                          setGlOpen(false)
+                          setGlAccessOpen(false)
+                          setGlPush(false)
+                          setBranch('')
+                          setAgentDir('')
+                        }}
+                      />
+                      {glMatches.length === 0 && !glQ.trim().includes('/') && (
+                        <div className="fnohit">No projects match &ldquo;{glQ}&rdquo;</div>
+                      )}
                     </GitlabProjectField>
 
                     <RepositoryAccessField
-                      repositorySelected={!!glProject}
+                      repositorySelected={!!glProject || !!glPublicPath}
                       label="Project access"
                       unselectedLabel="Select project first"
                       writeDescription="Push, open merge requests & run pipelines"
-                      value={glPush ? 'write' : 'read'}
+                      value={glPublicPath !== null ? 'read' : glPush ? 'write' : 'read'}
+                      readOnly={glPublicPath !== null}
+                      readOnlyNote={
+                        glPublicPath !== null ? (
+                          <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                            <Icon name="info" size={13} className="mt-[1px] flex-none" />
+                            Public project — read-only clone.
+                          </span>
+                        ) : undefined
+                      }
                       open={glAccessOpen}
                       onToggle={() => {
                         setGlOpen(false)
@@ -1253,7 +1303,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
 
                     <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
                       <WorkspaceBranchField
-                        repositorySelected={!!glProject}
+                        repositorySelected={!!glProject || !!glPublicPath}
                         unselectedLabel="Pick project first"
                         defaultBranchLabel="GitLab default branch"
                         value={branch}
@@ -1270,6 +1320,20 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     </div>
                   </div>
                 ))}
+
+              {wsMode === 'giturl' && (
+                <GitUrlTileFields
+                  url={urlInput}
+                  urlHint={urlTileHint}
+                  branch={branch}
+                  agentDir={agentDir}
+                  worktree={worktree}
+                  onUrlChange={setUrlInput}
+                  onBranchChange={setBranch}
+                  onAgentDirChange={setAgentDir}
+                  onWorktreeChange={setWorktree}
+                />
+              )}
             </div>
             <div className="mt-2 flex items-center gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
               <Icon name="corner-down-right" size={13} />

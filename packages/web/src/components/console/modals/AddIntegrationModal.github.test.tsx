@@ -93,10 +93,11 @@ const agent = {
   daemon: 'daemon-1',
   canEdit: true,
   workspace: {
-    mode: 'github',
+    mode: 'git',
+    provider: 'github',
     repo: 'acme/platform',
     repoId: '990',
-    installationId: 'inst-1',
+    gitRepo: 'https://github.com/acme/platform',
     gitAccess: 'write'
   }
 } as unknown as Agent

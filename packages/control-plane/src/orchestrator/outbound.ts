@@ -9,7 +9,7 @@
  * never message bodies; daemons construct any resulting prompt locally.
  */
 import { createHash } from 'node:crypto'
-import { daemonSupportsAgent } from '../domain/daemon-features.js'
+import { daemonSupportsAgent, encodeSpecWorkspaceForPeer } from '../domain/daemon-features.js'
 import type {
   Ack,
   AgentLaunch,
@@ -318,7 +318,9 @@ export class ControlSender {
     const c = this.must(daemonId)
     const ack = await c.conn.request<Ack>(
       'agent/upsert',
-      u,
+      // Workspace dual-encoded per the connection (§8) — at the SENDER, so every
+      // upsert caller (delivery fan-out, post-cleanup push) is covered alike.
+      { ...u, spec: encodeSpecWorkspaceForPeer(u.spec, c.capabilities?.features) },
       { epoch: c.sessionEpoch, agentId: u.agentId },
       undefined,
       orgId
@@ -365,7 +367,9 @@ export class ControlSender {
       try {
         return await c.conn.request<Ack>(
           'agent/activate',
-          a,
+          // Workspace dual-encoded against the connection actually selected (§8) —
+          // re-derived per retry for the same reason the gate above is.
+          { ...a, spec: encodeSpecWorkspaceForPeer(a.spec, c.capabilities?.features) },
           { epoch: c.sessionEpoch, agentId: a.agentId },
           { ackTimeoutMs: COLD_ACTIVATE_ACK_TIMEOUT_MS, maxTries: COLD_ACTIVATE_MAX_TRIES },
           orgId

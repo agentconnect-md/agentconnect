@@ -22,6 +22,10 @@ export interface FakeGitlabOptions {
   version?: string
   /** Per-project paths, for a test holding more than one binding; `path` is the fallback. */
   pathById?: Record<string, string>
+  /** Paths the UNAUTHENTICATED project read resolves — the anonymous public probe
+   *  the workspace derivation runs for an unbound path (git-workspace-model.md §6).
+   *  Every other path answers 404, so an unbound private project refuses. */
+  publicPaths?: Record<string, number>
   accessLevel?: number
   namespaceKind?: 'group' | 'user'
   /** Refuse service-account creation (Owner verification, §5). */
@@ -116,8 +120,10 @@ export class FakeGitlab {
     this.api = new GitlabApiClient(this.opts.baseUrl, this.fetch())
   }
 
-  /** One project's namespaced path — per-id when a test holds several bindings. */
-  private pathOf(projectId: number): string {
+  /** One project's namespaced path — per-id when a test holds several bindings.
+   *  Public because a workspace is addressed BY URL now (git-workspace-model.md §5),
+   *  so a test composing that address needs the path this fake will answer with. */
+  pathFor(projectId: number | bigint): string {
     return this.opts.pathById?.[String(projectId)] ?? this.opts.path
   }
 
@@ -280,7 +286,7 @@ export class FakeGitlab {
 
       if (/\/api\/v4\/projects\/\d+$/.test(url)) {
         const id = Number(/projects\/(\d+)$/.exec(url)![1])
-        const path = this.pathOf(id)
+        const path = this.pathFor(id)
         return Response.json({
           id,
           path_with_namespace: path,
@@ -292,6 +298,20 @@ export class FakeGitlab {
             kind: this.opts.namespaceKind,
             full_path: path.split('/')[0]!
           }
+        })
+      }
+      // One project by URL-ENCODED PATH — the anonymous public probe. Unknown ⇒ 404.
+      const byPath = /\/api\/v4\/projects\/([^/?]+)$/.exec(url)
+      if (byPath && !/^\d+$/.test(byPath[1]!)) {
+        const path = decodeURIComponent(byPath[1]!)
+        const id = this.opts.publicPaths?.[path]
+        if (id === undefined) return Response.json({ message: '404 Project Not Found' }, { status: 404 })
+        return Response.json({
+          id,
+          path_with_namespace: path,
+          default_branch: 'main',
+          http_url_to_repo: `${this.opts.baseUrl}/${path}.git`,
+          namespace: { id: 900, parent_id: null, kind: this.opts.namespaceKind, full_path: path.split('/')[0]! }
         })
       }
       if (url.includes('/api/v4/projects?')) {

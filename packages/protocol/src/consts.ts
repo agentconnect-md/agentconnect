@@ -357,6 +357,11 @@ export const GITCRED_GITHUB_V2_FEATURE = 'gitcred-github-v2'
  *  review authorization/result frames). */
 export const CODEHOST_REVIEW_V1_FEATURE = 'codehost-review-v1'
 
+/** Daemon decodes the host-neutral `mode: 'git'` workspace arm (git-workspace-model.md §8).
+ *  The CP dual-encodes: the `git` arm to daemons advertising this, the legacy
+ *  `github`/`gitlab` arms to everyone else — the new arm is frame-fatal without it. */
+export const WORKSPACE_GIT_V1_FEATURE = 'workspace-git-v1'
+
 /** Informational status-note projection, each side attesting to its own half: the daemon renders
  *  and updates the note (desired/result frame pair), the CP drives the ledger end to end including
  *  the gitlab arm of `hook/start` that records the started head and opens `running`. */

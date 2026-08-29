@@ -5,12 +5,13 @@
 // the source, its live git state and the files below it read as one surface.
 //
 // One compact card, two rows:
-//   1. Source — a segment that owns workspace conversion (scratch ⇄ GitHub),
-//      then the workspace identity (mark, repo/title, status) and, on
+//   1. Source — the workspace identity (a provider mark DERIVED from host +
+//      credential, git-workspace-model.md §7; repo/title, status) and, on
 //      the right, the HEAD commit plus the pull / view-on-remote / edit actions.
-//      Everything after the segment is supplied by the caller as
-//      `WorkspaceHeaderInfo` — live git state from <WorkspaceFiles> for real
-//      agents, the static mock fields for demo agents.
+//      The pencil is the single conversion/edit entry point. Everything after
+//      the identity is supplied by the caller as `WorkspaceHeaderInfo` — live
+//      git state from <WorkspaceFiles> for real agents, the static mock fields
+//      for demo agents.
 //   2. Authorized repos — the agent's explicit repository authorizations
 //      (agent-multi-repo-authorization.md §web 1). App-backed workspaces already
 //      cover their workspace repo implicitly (rendered as a non-removable chip);
@@ -27,7 +28,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { GithubMark, GitlabMark, LoadingState } from '@/components/marks'
 import { Icon } from '@/components/ui'
-import { isPoolPlacementKind, type Agent, type WorkspaceStatusInfo } from '@/lib/data'
+import { isPoolPlacementKind, workspaceSourceOf, type Agent, type WorkspaceStatusInfo } from '@/lib/data'
 import { creatorLabel, fetchAgentRepos, repoAuthProvider } from '@/lib/api'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
@@ -55,16 +56,6 @@ export interface WorkspaceHeaderInfo {
   /** Transient pull outcome ("Already up to date."), shown after the actions. */
   pullMsg?: string | null
 }
-
-// Segment buttons — complete literal strings, one per state.
-const SEG_ON =
-  'flex h-5 flex-none cursor-pointer items-center gap-[5px] rounded-[5px] border-0 bg-(--surface-card) px-2 font-sans text-[11.5px] font-semibold leading-normal text-(--text-primary) shadow-(--shadow-xs)'
-const SEG_OFF =
-  'flex h-5 flex-none cursor-pointer items-center gap-[5px] rounded-[5px] border-0 bg-transparent px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) hover:text-(--text-primary)'
-const SEG_ON_LOCKED =
-  'flex h-5 flex-none cursor-default items-center gap-[5px] rounded-[5px] border-0 bg-(--surface-card) px-2 font-sans text-[11.5px] font-semibold leading-normal text-(--text-primary) shadow-(--shadow-xs)'
-const SEG_OFF_LOCKED =
-  'flex h-5 flex-none cursor-default items-center gap-[5px] rounded-[5px] border-0 bg-transparent px-2 font-sans text-[11.5px] font-medium leading-normal text-(--text-tertiary)'
 
 export function WorkspaceCard({
   agent,
@@ -106,10 +97,10 @@ export function WorkspaceCard({
     router.replace(`${pathname}${sp.size ? `?${sp}` : ''}`, { scroll: false })
   }, [searchParams, agent.canEdit, pathname, router])
 
-  const isGithub = ws.mode === 'github'
-  const isGitlab = ws.mode === 'gitlab'
-  const isGit = ws.mode !== 'scratch'
-  const isGithubApp = ws.mode === 'github' && !!ws.installationId
+  // The displayed provider is derived from host + credential (§7), never stored.
+  const source = workspaceSourceOf(ws)
+  const isGit = ws.mode === 'git'
+  const isGithubApp = ws.mode === 'git' && ws.provider === 'github'
   const reposKey = consoleKeys.agentRepos(activeOrg?.id, agent.id)
   const {
     data: reposData,
@@ -121,74 +112,44 @@ export function WorkspaceCard({
   const loadError = reposData === undefined && reposError
   const canEdit = agent.canEdit
   const manualWorkspaceAuthorized =
-    ws.mode === 'github' &&
-    !isGithubApp &&
+    ws.mode === 'git' &&
+    ws.provider === undefined &&
     repos.some(
       (authorization) =>
         repoAuthProvider(authorization) === 'github' &&
         authorization.repoFullName.toLowerCase() === ws.repo.toLowerCase()
     )
-  // A manual checkout has no App installation to mint a write token from, so its
+  // An anonymous checkout has nothing to mint a write token from, so its
   // effective workspace access is read regardless of the stored preference.
-  const workspaceAccess =
-    ws.mode === 'github'
-      ? ws.installationId
-        ? (ws.gitAccess ?? 'write')
-        : ('read' as const)
-      : ws.mode === 'gitlab'
-        ? (ws.gitAccess ?? 'write')
-        : null
-  const remoteLabel = header?.remoteLabel ?? (isGitlab ? 'GitLab' : 'GitHub')
-
-  // The segment is the conversion entry point; picking the mode the agent is
-  // already on is a no-op (the pencil edits the current source's settings).
-  const pickMode = (next: WorkspaceMode) => {
-    if (!canEdit || next === ws.mode) return
-    setEditState({ mode: next })
-  }
-  const segClass = (mode: WorkspaceMode) =>
-    mode === ws.mode ? (canEdit ? SEG_ON : SEG_ON_LOCKED) : canEdit ? SEG_OFF : SEG_OFF_LOCKED
+  const workspaceAccess = ws.mode === 'git' ? (ws.provider !== undefined ? (ws.gitAccess ?? 'write') : 'read') : null
+  const remoteLabel =
+    header?.remoteLabel ?? (source === 'gitlab' ? 'GitLab' : source === 'github' ? 'GitHub' : 'remote')
 
   return (
     <div className={`card overflow-hidden max-desktop:rounded-lg ${className ?? ''}`}>
-      {/* Source row — conversion segment, then the workspace identity and its
-          live git actions. Wraps on narrow viewports; nothing is truncated away. */}
+      {/* Source row — the workspace identity and its live git actions; the pencil
+          owns conversion. Wraps on narrow viewports; nothing is truncated away. */}
       <div className="flex flex-wrap items-center gap-[10px] px-4 py-[9px]">
         <span className="eyebrow flex-none text-[10.5px]">Source</span>
-        <span className="inline-flex flex-none gap-px rounded-[7px] border border-(--border-subtle) bg-(--surface-sunken) p-px">
-          <button
-            className={segClass('github')}
-            onClick={() => pickMode('github')}
-            title={isGithub ? 'The workspace is a GitHub clone' : 'Convert this workspace to a GitHub repository'}
-          >
-            <Icon name="git-branch" size={12} />
-            GitHub repo
-          </button>
-          <button
-            className={segClass('gitlab')}
-            onClick={() => pickMode('gitlab')}
-            title={isGitlab ? 'The workspace is a GitLab clone' : 'Convert this workspace to a GitLab project'}
-          >
-            <Icon name="git-branch" size={12} />
-            GitLab project
-          </button>
-          <button
-            className={segClass('scratch')}
-            onClick={() => pickMode('scratch')}
-            title={
-              isGit ? 'Convert this workspace to an empty scratch directory' : 'The workspace is a scratch directory'
-            }
-          >
-            <Icon name="folder" size={12} />
-            Scratch
-          </button>
-        </span>
-
-        <span className="mx-[2px] h-[18px] w-px flex-none bg-(--border-subtle)" />
 
         {isGit ? (
-          <span className="flex h-5 w-5 flex-none items-center justify-center">
-            {isGitlab ? <GitlabMark /> : <GithubMark color="var(--text-secondary)" />}
+          <span
+            className="flex h-5 w-5 flex-none items-center justify-center"
+            title={
+              source === 'giturl'
+                ? 'Cloned from a Git URL with the host\u2019s own credentials'
+                : ws.provider === undefined
+                  ? 'Public repository, cloned anonymously'
+                  : undefined
+            }
+          >
+            {source === 'gitlab' ? (
+              <GitlabMark />
+            ) : source === 'github' ? (
+              <GithubMark color="var(--text-secondary)" />
+            ) : (
+              <Icon name="link-2" size={16} color="var(--text-secondary)" />
+            )}
           </span>
         ) : (
           <Icon name="folder" size={16} color="var(--text-tertiary)" />
@@ -200,6 +161,14 @@ export function WorkspaceCard({
             (product-conventions.md §Workspace navigation and repository access) —
             it is the blast radius of everything the agent pushes. */}
         {workspaceAccess && <span className={REPOSITORY_ACCESS_BADGE[workspaceAccess]}>{workspaceAccess}</span>}
+        {isGit && ws.provider === undefined && source !== 'giturl' && (
+          <span
+            className="badge flex-none bg-(--surface-active) text-(--text-tertiary)"
+            title="Public repository, cloned anonymously"
+          >
+            public
+          </span>
+        )}
         {header?.status && (
           <span className="badge flex-none" style={{ background: header.status.bg, color: header.status.text }}>
             <span className="dot h-[6px] w-[6px]" style={{ background: header.status.dot }} />
@@ -239,11 +208,11 @@ export function WorkspaceCard({
         )}
         {canEdit && (
           <button
-            className="iconbtn h-6 w-6 flex-none"
-            title="Edit workspace"
-            onClick={() => setEditState({ mode: ws.mode })}
+            className="inline-flex h-7 flex-none cursor-pointer items-center gap-[6px] rounded-[7px] border border-(--border-default) bg-(--surface-card) px-[10px] font-sans text-[12px] font-semibold leading-normal text-(--text-primary) hover:border-(--brand) hover:text-(--brand)"
+            onClick={() => setEditState({ mode: source })}
           >
-            <Icon name="pencil" size={13} />
+            <Icon name="pencil" size={12} />
+            Edit workspace
           </button>
         )}
         {header?.pullMsg && (
@@ -308,7 +277,7 @@ export function WorkspaceCard({
             className="inline-flex h-6 flex-none cursor-pointer items-center gap-[5px] rounded-[5px] border border-dashed border-(--border-default) bg-transparent px-[9px] font-sans text-[11.5px] font-medium leading-normal text-(--text-secondary) hover:border-(--brand) hover:text-(--brand)"
             onClick={() =>
               setEditState({
-                mode: ws.mode,
+                mode: source,
                 ...(!manualWorkspaceAuthorized ? { authorizeRepository: true as const } : {})
               })
             }

@@ -428,17 +428,20 @@ describe('R1/R2a persistence foundation', () => {
       installationId: 'workspace-installation',
       gitAccess: 'write'
     })
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceMode: 'github', workspaceRepoId: repoId } })
+    await prisma.agent.update({ where: { id: agentId }, data: { workspaceRepoId: repoId } })
     const original = await agents.get(OrgId(DEFAULT_ORG_ID), agentId)
-    if (!original || original.workspace.mode !== 'github') throw new Error('expected GitHub workspace fixture')
+    if (!original || original.workspace.mode !== 'git' || original.workspace.credential?.provider !== 'github') {
+      throw new Error('expected GitHub workspace fixture')
+    }
+    const credential = original.workspace.credential
 
     const settled = await Promise.allSettled([
       agents.setWorkspace(
         OrgId(DEFAULT_ORG_ID),
         agentId,
         original.lastModifiedAt,
-        'github',
-        { ...original.workspace, gitAccess: 'read' },
+        'git',
+        { ...original.workspace, credential: { ...credential, access: 'read' } },
         repoId
       ),
       hooks.upsert({
@@ -703,7 +706,10 @@ describe('R1/R2a persistence foundation', () => {
     const repoId = 777n
     const reportSha = 'c'.repeat(40)
     await seedAgent(prisma, agentId, { daemonId: D1, gitAccess: 'write', name: 'concurrent-agent' })
-    await prisma.agent.update({ where: { id: agentId }, data: { workspaceMode: 'github', workspaceRepoId: repoId } })
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { workspaceMode: 'git', gitCredentialProvider: 'github', workspaceRepoId: repoId }
+    })
     const hook = await repo.upsert({
       hookId,
       orgId: OrgId(DEFAULT_ORG_ID),
@@ -1528,7 +1534,11 @@ describe('R1/R2a persistence foundation', () => {
       name: `repo-${randomUUID().slice(0, 8)}`,
       runtime: 'claude',
       daemonId: D1,
-      workspace: { mode: 'github', gitRepo: 'github.com/acme/infra', installationId: randomUUID() },
+      workspace: {
+        mode: 'git',
+        gitRepo: 'https://github.com/acme/infra',
+        credential: { provider: 'github', installationId: randomUUID(), access: 'write' }
+      },
       workspaceRepoId: 987654321n
     })
     expect((await agents.get(OrgId(DEFAULT_ORG_ID), agentId))?.workspaceRepoId).toBe(987654321n)
@@ -1576,10 +1586,9 @@ describe('R1/R2a persistence foundation', () => {
       runtime: 'claude',
       daemonId: D1,
       workspace: {
-        mode: 'github',
+        mode: 'git',
         gitRepo: 'https://github.com/acme/old-name',
-        installationId: randomUUID(),
-        gitAccess: 'write'
+        credential: { provider: 'github', installationId: randomUUID(), access: 'write' }
       },
       workspaceRepoId: 44n
     })
@@ -1589,7 +1598,7 @@ describe('R1/R2a persistence foundation', () => {
       orgId: OrgId(DEFAULT_ORG_ID),
       name: `manual-workspace-rename-${randomUUID().slice(0, 8)}`,
       runtime: 'claude',
-      workspace: { mode: 'github', gitRepo: 'git@github.com:acme/old-name.git' },
+      workspace: { mode: 'git', gitRepo: 'git@github.com:acme/old-name.git' },
       workspaceRepoId: 44n
     })
     const hookIds = [HookId(randomUUID()), HookId(randomUUID())]
@@ -1709,12 +1718,12 @@ describe('R1/R2a persistence foundation', () => {
       })
     ).toEqual({ repoFullName: 'example-group/example-project' })
     expect(await agents.get(OrgId(DEFAULT_ORG_ID), workspaceAgentId)).toMatchObject({
-      workspace: { mode: 'github', gitRepo: 'https://github.com/acme/new-name' },
+      workspace: { mode: 'git', gitRepo: 'https://github.com/acme/new-name' },
       workspaceRepoId: 44n,
       lastModifiedAt: workspaceBefore.lastModifiedAt
     })
     expect(await agents.get(OrgId(DEFAULT_ORG_ID), manualWorkspaceAgentId)).toMatchObject({
-      workspace: { mode: 'github', gitRepo: 'git@github.com:acme/old-name.git' },
+      workspace: { mode: 'git', gitRepo: 'git@github.com:acme/old-name.git' },
       workspaceRepoId: 44n
     })
 
@@ -1836,7 +1845,7 @@ describe('R1/R2a persistence foundation', () => {
     await seedAgent(prisma, agentId, { daemonId: D1, name: 'review-agent' })
     await prisma.agent.update({
       where: { id: agentId },
-      data: { workspaceMode: 'github', workspaceRepoId: 22n, gitAccess: 'write' }
+      data: { workspaceMode: 'git', gitCredentialProvider: 'github', workspaceRepoId: 22n, gitAccess: 'write' }
     })
     const repo = new PgHookRepo(prisma)
     const hookId = HookId(randomUUID())
@@ -2280,7 +2289,7 @@ describe('R1/R2a persistence foundation', () => {
     await seedAgent(prisma, agentId, { daemonId: D1, name: 'review-agent' })
     await prisma.agent.update({
       where: { id: agentId },
-      data: { workspaceMode: 'github', workspaceRepoId: 24n, gitAccess: 'write' }
+      data: { workspaceMode: 'git', gitCredentialProvider: 'github', workspaceRepoId: 24n, gitAccess: 'write' }
     })
     const repo = new PgHookRepo(prisma)
     const hookId = HookId(randomUUID())
@@ -2436,7 +2445,13 @@ describe('R1/R2a persistence foundation', () => {
     await seedAgent(prisma, agentId, { daemonId: D1, name: 'quota-agent' })
     await prisma.agent.update({
       where: { id: agentId },
-      data: { status: 'active', workspaceMode: 'github', workspaceRepoId: 23n, gitAccess: 'write' }
+      data: {
+        status: 'active',
+        workspaceMode: 'git',
+        gitCredentialProvider: 'github',
+        workspaceRepoId: 23n,
+        gitAccess: 'write'
+      }
     })
     const repo = new PgHookRepo(prisma)
     const hookId = HookId(randomUUID())

@@ -6,10 +6,28 @@
 import { describe, it, expect } from 'vitest'
 import { GITLAB_DEFAULT_BASE_URL } from '@agentconnect.md/protocol'
 import { AgentSpecAssembler, gitlabHost } from './agentSpecAssembler.js'
-import type { AgentRepoAuthorizationRepo, AgentRecord, AgentSecretStore, HookRepo } from '../persistence/ports.js'
+import type {
+  AgentRepoAuthorizationRepo,
+  AgentRecord,
+  AgentSecretStore,
+  GitAgentWorkspace,
+  HookRepo
+} from '../persistence/ports.js'
 import { AgentId, OrgId } from '../domain/ids.js'
 
 const SELF_MANAGED = 'https://gitlab.example.test'
+
+/** The two credentialed halves of the one `git` arm (git-workspace-model.md §2). */
+const GITHUB_WORKSPACE = {
+  mode: 'git',
+  gitRepo: 'https://github.com/acme/primary-service',
+  credential: { provider: 'github', installationId: 'installation-id', access: 'write' }
+} satisfies GitAgentWorkspace
+const GITLAB_WORKSPACE = {
+  mode: 'git',
+  gitRepo: 'https://gitlab.example.test/example-group/example-project',
+  credential: { provider: 'gitlab', access: 'write' }
+} satisfies GitAgentWorkspace
 
 const AGENT: AgentRecord = {
   id: AgentId('77777777-7777-4777-8777-777777777777'),
@@ -114,7 +132,7 @@ describe('AgentSpecAssembler', () => {
       ...AGENT,
       id: AgentId('88888888-8888-4888-8888-888888888888'),
       name: 'unsafe',
-      workspace: { mode: 'github' as const, gitRepo: 'file:///var/lib/agentconnect/other-workspace' }
+      workspace: { mode: 'git' as const, gitRepo: 'file:///var/lib/agentconnect/other-workspace' }
     }
     const quarantined: string[] = []
     const specs = new AgentSpecAssembler(storeWith({}))
@@ -148,7 +166,7 @@ describe('AgentSpecAssembler', () => {
       {
         ...AGENT,
         workspace: {
-          mode: 'github',
+          mode: 'git',
           gitRepo: 'https://legacy-user:legacy-password@github.com/acme/legacy.git?token=query-secret#fragment'
         }
       },
@@ -156,23 +174,25 @@ describe('AgentSpecAssembler', () => {
       []
     )
 
+    // No credential ⇒ nobody vouches, and the wire arm says so by omitting the key.
     expect(spec.workspace).toMatchObject({
-      mode: 'github',
+      mode: 'git',
       gitRepo: 'https://github.com/acme/legacy.git'
     })
+    expect(spec.workspace).not.toHaveProperty('credential')
     expect(JSON.stringify(spec.workspace)).not.toContain('legacy-password')
     expect(JSON.stringify(spec.workspace)).not.toContain('query-secret')
   })
 
-  it('binds a legacy App-backed workspace to its canonical GitHub repository', () => {
+  it('binds an App-vouched workspace to its canonical GitHub repository, credentials off the wire', () => {
     const specs = new AgentSpecAssembler(storeWith({}))
     const spec = specs.project(
       {
         ...AGENT,
         workspace: {
-          mode: 'github',
+          mode: 'git',
           gitRepo: 'https://legacy-user:legacy-password@other-host.example/acme/legacy.git?token=query-secret',
-          installationId: 'installation-id'
+          credential: { provider: 'github', installationId: 'installation-id', access: 'write' }
         }
       },
       {},
@@ -180,20 +200,47 @@ describe('AgentSpecAssembler', () => {
     )
 
     expect(spec.workspace).toMatchObject({
-      mode: 'github',
+      mode: 'git',
       gitRepo: 'https://github.com/acme/legacy.git',
-      gitCredential: 'github-app'
+      credential: { provider: 'github' }
     })
+    // Minting re-resolves the installation by owner and the CP clamps the tier, so
+    // neither the provenance hint nor the access ceiling may ride the frame.
+    expect(JSON.stringify(spec.workspace)).not.toContain('installation-id')
+    expect(JSON.stringify(spec.workspace)).not.toContain('write')
     expect(JSON.stringify(spec.workspace)).not.toContain('legacy-password')
     expect(JSON.stringify(spec.workspace)).not.toContain('query-secret')
     expect(JSON.stringify(spec.workspace)).not.toContain('other-host.example')
+  })
+
+  it('projects a gitlab-vouched workspace with the rename-stable project id', () => {
+    const specs = new AgentSpecAssembler(storeWith({}))
+    const spec = specs.project(
+      {
+        ...AGENT,
+        workspace: {
+          mode: 'git',
+          gitRepo: 'https://gitlab.example.test/example-group/example-project.git',
+          credential: { provider: 'gitlab', access: 'write' }
+        },
+        workspaceRepoId: 4455667n
+      },
+      {},
+      []
+    )
+
+    expect(spec.workspace).toMatchObject({
+      mode: 'git',
+      gitRepo: 'https://gitlab.example.test/example-group/example-project.git',
+      credential: { provider: 'gitlab', projectId: '4455667' }
+    })
   })
 
   it('refuses to project an unsafe historical clone transport', () => {
     const specs = new AgentSpecAssembler(storeWith({}))
     expect(() =>
       specs.project(
-        { ...AGENT, workspace: { mode: 'github', gitRepo: 'file:///var/lib/agentconnect/other-workspace' } },
+        { ...AGENT, workspace: { mode: 'git', gitRepo: 'file:///var/lib/agentconnect/other-workspace' } },
         {},
         []
       )
@@ -219,16 +266,16 @@ describe('AgentSpecAssembler', () => {
     })
   })
 
-  it('projects the same list onto a github workspace', async () => {
+  it('projects the same list onto a git workspace', async () => {
     const specs = assemblerWith(repoAuthWith([['example-co/shared-library', 815n]]))
 
     const spec = await specs.assemble({
       ...AGENT,
-      workspace: { mode: 'github', gitRepo: 'https://github.com/acme/primary-service' }
+      workspace: { mode: 'git', gitRepo: 'https://github.com/acme/primary-service' }
     })
 
     expect(spec.workspace).toMatchObject({
-      mode: 'github',
+      mode: 'git',
       additionalRepos: [{ repoFullName: 'example-co/shared-library', repoId: '815' }]
     })
   })
@@ -253,14 +300,18 @@ describe('AgentSpecAssembler', () => {
     const gitlabRepo = [{ repoFullName: 'example-group/example-project', repoId: '4455667', provider: 'gitlab' }]
     const githubRepo = [{ repoFullName: 'example-co/shared-library', repoId: '815', provider: 'github' }]
 
-    expect(gitlabHost(SELF_MANAGED, 'gitlab', [], false)).toBe(SELF_MANAGED)
-    expect(gitlabHost(SELF_MANAGED, 'scratch', gitlabRepo, false)).toBe(SELF_MANAGED)
-    expect(gitlabHost(SELF_MANAGED, 'github', [], true)).toBe(SELF_MANAGED)
-    expect(gitlabHost(SELF_MANAGED, 'github', githubRepo, false)).toBeUndefined()
+    // The workspace consumer is the credential OR an anonymous checkout on the
+    // managed host itself — the daemon widens its clone-origin allowlist from
+    // this field, and a public project on the deployment's own instance needs that.
+    expect(gitlabHost(SELF_MANAGED, GITLAB_WORKSPACE, [], false)).toBe(SELF_MANAGED)
+    expect(gitlabHost(SELF_MANAGED, { mode: 'scratch' }, gitlabRepo, false)).toBe(SELF_MANAGED)
+    expect(gitlabHost(SELF_MANAGED, GITHUB_WORKSPACE, [], true)).toBe(SELF_MANAGED)
+    expect(gitlabHost(SELF_MANAGED, GITHUB_WORKSPACE, githubRepo, false)).toBeUndefined()
+    expect(gitlabHost(SELF_MANAGED, { ...GITLAB_WORKSPACE, credential: undefined }, [], false)).toBe(SELF_MANAGED)
     // The axis has one value whether or not it is the default; only an UNCONFIGURED
     // deployment carries nothing, because then no consumer can exist.
-    expect(gitlabHost(GITLAB_DEFAULT_BASE_URL, 'gitlab', [], false)).toBe(GITLAB_DEFAULT_BASE_URL)
-    expect(gitlabHost(undefined, 'gitlab', gitlabRepo, true)).toBeUndefined()
+    expect(gitlabHost(GITLAB_DEFAULT_BASE_URL, GITLAB_WORKSPACE, [], false)).toBe(GITLAB_DEFAULT_BASE_URL)
+    expect(gitlabHost(undefined, GITLAB_WORKSPACE, gitlabRepo, true)).toBeUndefined()
   })
 
   it('projects the host only for a spec with a GitLab consumer', async () => {
@@ -278,11 +329,7 @@ describe('AgentSpecAssembler', () => {
         host,
         hooks
       )
-    const gitlabAgent = {
-      ...AGENT,
-      workspace: { mode: 'gitlab' as const, gitRepo: 'https://gitlab.example.test/example-group/example-project' },
-      workspaceRepoId: 4455667n
-    }
+    const gitlabAgent = { ...AGENT, workspace: GITLAB_WORKSPACE, workspaceRepoId: 4455667n }
     expect((await configured(SELF_MANAGED).assemble(gitlabAgent)).gitlabHost).toBe(SELF_MANAGED)
     expect((await configured(SELF_MANAGED).assemble(AGENT)).gitlabHost).toBeUndefined()
     expect((await configured().assemble(gitlabAgent)).gitlabHost).toBeUndefined()

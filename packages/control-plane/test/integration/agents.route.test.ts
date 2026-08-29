@@ -405,7 +405,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     ])
   })
 
-  it('POST /agents accepts model + daemonId + a github workspace (inline, returned on the DTO)', async () => {
+  it('POST /agents accepts model + daemonId + a git workspace (inline, returned on the DTO)', async () => {
     const app = build()
     const daemonId = 'a1a1a1a1-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     await seedDaemon(prisma, daemonId)
@@ -418,7 +418,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         runtime: 'claude',
         model: 'opus',
         daemonId,
-        workspace: { mode: 'github', gitRepo: 'github.com/acme/infra', agentDir: './services/api' }
+        workspace: { mode: 'git', gitRepo: 'github.com/acme/infra', agentDir: './services/api' }
       }
     })
     expect(create.statusCode).toBe(201)
@@ -432,9 +432,10 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(created.model).toBe('opus')
     expect(created.daemonId).toBe(daemonId) // placed on the chosen daemon
     expect(created.status).toBe('active')
-    // shorthand input is normalized to the full cloneable address at the DTO boundary
+    // Shorthand input is normalized to the full cloneable address, and with no covering
+    // installation the derivation lands on the anonymous outcome — so NO credential (§6).
     expect(created.workspace).toEqual({
-      mode: 'github',
+      mode: 'git',
       worktree: true,
       gitRepo: 'https://github.com/acme/infra',
       gitBranch: 'main',
@@ -443,7 +444,8 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
 
     // Persisted inline on the agent row (no separate workspace entity), full address.
     const row = await prisma.agent.findUnique({ where: { id: created.id } })
-    expect(row?.workspaceMode).toBe('github')
+    expect(row?.workspaceMode).toBe('git')
+    expect(row?.gitCredentialProvider).toBeNull()
     expect(row?.workspaceIsolation).toBe('session')
     expect(row?.gitRepo).toBe('https://github.com/acme/infra')
     expect(row?.agentDir).toBe('services/api')
@@ -473,7 +475,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       const response = await app.app.inject({
         method: 'POST',
         url: `${ORG}/agents`,
-        payload: { name, runtime: 'claude', workspace: { mode: 'github', gitRepo } }
+        payload: { name, runtime: 'claude', workspace: { mode: 'git', gitRepo } }
       })
       expect(response.statusCode).toBe(400)
       expect(await prisma.agent.findFirst({ where: { name } })).toBeNull()
@@ -488,7 +490,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         name: credentialName,
         runtime: 'claude',
         workspace: {
-          mode: 'github',
+          mode: 'git',
           gitRepo: `https://alice:${secret}@github.com/acme/infra?token=query-secret#fragment`
         }
       }
@@ -507,7 +509,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         name: ambiguousName,
         runtime: 'claude',
         workspace: {
-          mode: 'github',
+          mode: 'git',
           gitRepo: `https://good.example\\alice:${ambiguousSecret}@127.0.0.1/acme/infra`
         }
       }
@@ -525,7 +527,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: {
         name: 'monorepo-bot',
         runtime: 'claude',
-        workspace: { mode: 'github', gitRepo: 'acme/monorepo', agentDir: 'apps/web' }
+        workspace: { mode: 'git', gitRepo: 'acme/monorepo', agentDir: 'apps/web' }
       }
     })
     expect(create.statusCode).toBe(201)
@@ -558,7 +560,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: {
         name: 'unsafe-bot',
         runtime: 'claude',
-        workspace: { mode: 'github', gitRepo: 'acme/monorepo', agentDir: '../outside' }
+        workspace: { mode: 'git', gitRepo: 'acme/monorepo', agentDir: '../outside' }
       }
     })
     expect(invalid.statusCode).toBe(400)
@@ -598,7 +600,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     await seedAgent(prisma, missingRepoAgentId)
     await prisma.agent.update({
       where: { id: missingRepoAgentId },
-      data: { workspaceMode: 'github', gitRepo: null }
+      data: { workspaceMode: 'git', gitRepo: null }
     })
 
     const get = await app.app.inject({ method: 'GET', url: `${ORG}/agents/${agentId}` })
@@ -626,7 +628,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: {
         name: 'public-write-bot',
         runtime: 'claude',
-        workspace: { mode: 'github', gitRepo: 'github.com/acme/infra', gitAccess: 'write' }
+        workspace: { mode: 'git', gitRepo: 'github.com/acme/infra', access: 'write' }
       }
     })
 
@@ -634,6 +636,27 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(create.json()).toMatchObject({
       message: 'github write access requires a GitHub App installation'
     })
+  })
+
+  it('POST /agents rejects the host-shaped provenance fields a legacy client would send', async () => {
+    const app = build()
+    // §5: provenance is server-derived, so the input is STRICT — a payload still
+    // reporting it must fail loudly rather than quietly drop what it claimed.
+    for (const [index, workspace] of [
+      { mode: 'git', gitRepo: 'acme/infra', installationId: 'inst-1' },
+      { mode: 'git', gitRepo: 'acme/infra', gitAccess: 'write' },
+      { mode: 'github', gitRepo: 'acme/infra' },
+      { mode: 'gitlab', projectId: '4455667' },
+      { mode: 'scratch', gitRepo: 'acme/infra' }
+    ].entries()) {
+      const res = await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/agents`,
+        payload: { name: `legacy-shape-${index}`, runtime: 'claude', workspace }
+      })
+      expect(res.statusCode).toBe(400)
+      expect(await prisma.agent.findFirst({ where: { name: `legacy-shape-${index}` } })).toBeNull()
+    }
   })
 
   it('name must be a slug; displayName carries the original; duplicate name in an org → 409', async () => {

@@ -18,7 +18,12 @@ describe('workspace repository identity and additional grants', () => {
     const tx = {
       $queryRaw: vi.fn(async () => []),
       agent: {
-        findUnique: vi.fn(async () => ({ workspaceMode: 'github', workspaceRepoId: null })),
+        findUnique: vi.fn(async () => ({
+          workspaceMode: 'git',
+          gitCredentialProvider: 'github',
+          workspaceRepoId: null,
+          gitRepo: 'https://github.com/acme/infra'
+        })),
         update: vi.fn(async () => ({}))
       },
       agentRepoAuthorization: { deleteMany: vi.fn(async () => ({ count: 1 })) }
@@ -44,7 +49,7 @@ describe('workspace repository identity and additional grants', () => {
     const create = vi.fn()
     const tx = {
       $queryRaw: vi.fn(async () => []),
-      agent: { findUnique: vi.fn(async () => ({ workspaceMode: 'github', workspaceRepoId: REPO })) },
+      agent: { findUnique: vi.fn(async () => ({ gitCredentialProvider: 'github', workspaceRepoId: REPO })) },
       agentRepoAuthorization: { create }
     }
     const repo = new PgAgentRepoAuthorizationRepo(transactionalDb(tx) as never)
@@ -69,7 +74,7 @@ describe('workspace repository identity and additional grants', () => {
     const tx = {
       $queryRaw: vi.fn(async () => [{ id: AGENT }]),
       agent: {
-        findUnique: vi.fn(async () => ({ workspaceMode: 'github', workspaceRepoId: REPO })),
+        findUnique: vi.fn(async () => ({ gitCredentialProvider: 'github', workspaceRepoId: REPO })),
         updateMany: vi.fn(async () => ({ count: 1 }))
       },
       agentRepoAuthorization: { create }
@@ -89,7 +94,7 @@ describe('workspace repository identity and additional grants', () => {
   it('deletes a redundant workspace grant without tombstoning live projections', async () => {
     const tx = {
       $queryRaw: vi.fn(async () => []),
-      agent: { findUnique: vi.fn(async () => ({ workspaceMode: 'github', workspaceRepoId: REPO })) },
+      agent: { findUnique: vi.fn(async () => ({ gitCredentialProvider: 'github', workspaceRepoId: REPO })) },
       agentRepoAuthorization: { deleteMany: vi.fn(async () => ({ count: 1 })) }
     }
     const repo = new PgAgentRepoAuthorizationRepo(transactionalDb(tx) as never)

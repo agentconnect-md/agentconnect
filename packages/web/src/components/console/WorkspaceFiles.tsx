@@ -89,8 +89,8 @@ export function workspaceReadModelKey(
   // preview and git status belong to ONE root, and switching roots must remount rather than reuse.
   const at = `${agent.id}:${agent.workdir}:${sessionId ?? 'primary'}:${repo ?? 'workspace'}`
   if (!isGitWorkspace(ws)) return `${at}:scratch`
-  // Each host names its checkout its own way — GitLab by rename-stable project id, GitHub by owner/repo.
-  const source = ws.mode === 'gitlab' ? `gitlab:${ws.projectId ?? ws.repo}` : `github:${ws.repo}`
+  // A credentialed checkout is named by its rename-stable numeric id; anonymous ones by path.
+  const source = ws.provider !== undefined ? `${ws.provider}:${ws.repoId ?? ws.repo}` : `git:${ws.repo}`
   return `${at}:${source}@${ws.branch}:${ws.agentDir}`
 }
 

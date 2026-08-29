@@ -658,13 +658,14 @@ model RuntimeProfile {
 // §3.5 Workspace mode — INLINE on Agent (no standalone entity).
 // ───────────────────────────────────────────────────────────────────────────
 // The agent's working dir is daemon-generated; the caller picks one of two modes
-// (mirrors protocol AgentWorkspace). `github` clones gitRepo@gitBranch and runs the
-// agent in `agentDir` (a subdir); multiple agents may share a repo by differing
-// `agentDir`, so workspace config lives per-agent on the Agent row below.
+// (mirrors protocol AgentWorkspace; git-workspace-model.md §2). `mode` answers "is
+// there a repository"; `gitCredentialProvider` answers "who vouches for it". `git`
+// clones gitRepo@gitBranch and runs the agent in `agentDir` (a subdir); multiple
+// agents may share a repo by differing `agentDir`, so workspace config lives
+// per-agent on the Agent row below.
 enum WorkspaceMode {
   scratch // fresh empty working dir, no repo
-  github // clone gitRepo @ gitBranch, run in agentDir
-  gitlab // clone a managed GitLab project binding @ gitBranch, run in agentDir
+  git // clone gitRepo @ gitBranch, run in agentDir; any host
 }
 
 enum WorkspaceIsolation {
@@ -756,20 +757,26 @@ model Agent {
   // ── workspace (inline; §3.5) — daemon-generated path ──
   workspaceMode         WorkspaceMode      @default(scratch)
   workspaceIsolation    WorkspaceIsolation @default(shared)
-  gitRepo               String? // github mode: e.g. github.com/acme/infra
+  gitRepo               String? // git mode: FULL cloneable address, e.g. https://github.com/acme/infra
   gitBranch             String?            @default("main")
-  agentDir              String? // github mode: subdir within the repo (repo-root if null)
-  // github-app credential mode (docs/designs/github-app-git-credentials.md).
+  agentDir              String? // git mode: subdir within the repo (repo-root if null)
+  // Who vouches for the git workspace's repository (git-workspace-model.md §4):
+  // 'github' | 'gitlab' | null. Null ⇒ anonymous clone. Kept explicit rather than
+  // derived because `workspaceRepoId` is shared between GitHub's repo id and
+  // GitLab's project id, so provider cannot be reconstructed from the columns.
+  gitCredentialProvider String?
+  // github credential (docs/designs/github-app-git-credentials.md).
   // `installationId` = GithubInstallation.id picked at create time — a PROVENANCE
   // HINT only, deliberately NO relation/FK: minting re-resolves the live
   // installation by repo owner every time, so an uninstall→reinstall (new GitHub
   // installation id) self-heals without touching agents. Null ⇒ anonymous git.
   installationId        String?
-  // GitHub's numeric repository id for the workspace repo.  Unlike gitRepo,
-  // this survives rename and is the authority for repo-scoped effects.
+  // The host's numeric repository/project id for the workspace repo. Unlike
+  // gitRepo, this survives rename and is the authority for repo-scoped effects;
+  // `gitCredentialProvider` qualifies which host numbered it.
   // Nullable for pre-migration/anonymous workspaces and lazily repairable.
   workspaceRepoId       BigInt?
-  gitAccess             GitAccess          @default(write) // ceiling for minted tokens (contents read|write)
+  gitAccess             GitAccess          @default(write) // ceiling for minted tokens; meaningful only with a credential provider
   capabilities          String[]           @default([]) // → AgentLaunch.activeCapabilities
   permissions           Json               @default("{}") @db.JsonB // {policy:"ask",autoApprove:[...]}
   runtimeOverrides      Json?              @db.JsonB // {model, reasoningEffort, outputMode, fastMode, env{K:V}, mcpServers[], skills[]} — NO secret values (those live in agent_secret)

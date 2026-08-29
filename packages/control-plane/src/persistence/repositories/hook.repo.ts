@@ -557,12 +557,17 @@ export class PgHookRepo implements HookRepo {
           if (nextEnabled && (nextReviewPolicy !== 'off' || nextReportingMode !== 'off')) {
             const owner = await tx.agent.findUnique({
               where: { id: input.agentId },
-              select: { workspaceMode: true, workspaceRepoId: true, gitAccess: true }
+              select: { gitCredentialProvider: true, workspaceRepoId: true, gitAccess: true }
             })
+            // The workspace-is-this-repo write fence: a github-vouched read
+            // workspace cannot serve review/check effects, and an ANONYMOUS one
+            // (null provider, repoId lazily repaired) can mint nothing at all.
             if (
-              owner?.workspaceMode === 'github' &&
+              owner !== null &&
               owner.workspaceRepoId === input.repoId &&
-              owner.gitAccess === 'read'
+              (owner.gitCredentialProvider === 'github'
+                ? owner.gitAccess === 'read'
+                : owner.gitCredentialProvider === null)
             ) {
               throw new AgentWorkspaceIntegrationConflict(input.repoId)
             }
@@ -1072,7 +1077,7 @@ export class PgHookRepo implements HookRepo {
       const gitRepo = normalizeGitUrl(repoFullName)
       const workspaceWhere = {
         orgId,
-        workspaceMode: 'github',
+        gitCredentialProvider: 'github',
         workspaceRepoId: repoId,
         installationId: { not: null },
         OR: [{ gitRepo: null }, { gitRepo: { not: gitRepo } }]
@@ -2359,11 +2364,11 @@ export class PgHookRepo implements HookRepo {
         })
         const agent = await tx.agent.findUnique({
           where: { id: input.agentId },
-          select: { orgId: true, workspaceRepoId: true, workspaceMode: true, gitAccess: true }
+          select: { orgId: true, workspaceRepoId: true, gitCredentialProvider: true, gitAccess: true }
         })
         // HookReviewProjection is the GitHub Checks ledger, so both authorities read
         // github here — the hosts number their repositories independently (§8.1).
-        const workspaceIsThisRepo = agent?.workspaceRepoId === input.repoId && agent.workspaceMode === 'github'
+        const workspaceIsThisRepo = agent?.workspaceRepoId === input.repoId && agent.gitCredentialProvider === 'github'
         const additionalGrant = workspaceIsThisRepo
           ? null
           : await tx.agentRepoAuthorization.findUnique({

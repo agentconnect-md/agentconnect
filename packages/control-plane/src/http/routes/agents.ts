@@ -51,8 +51,7 @@ import {
   AGENT_WAKE_FEATURE,
   WorkspaceErrorReason,
   TaskErrorReason,
-  gitRepoLabel,
-  normalizeGitUrl
+  gitRepoLabel
 } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
@@ -61,10 +60,15 @@ import {
   type AgentSkillSourceFence,
   type AgentWorkspace,
   type AssignedOrganizationMetadata,
-  type GithubInstallationRecord,
   type McpProviderRecord,
   isSyntheticEmail
 } from '../../persistence/ports.js'
+import {
+  deriveWorkspaceCredential,
+  workspaceFromDerived,
+  WorkspaceCredentialRefused,
+  type DerivedWorkspace
+} from './workspace-credential.js'
 import type { DaemonView } from '../../ports.js'
 import { AgentId, DaemonId, OrgId, SessionId } from '../../domain/ids.js'
 import { advertises, requiredGitlabFeatures } from '../../domain/daemon-features.js'
@@ -213,33 +217,6 @@ import { UserAuthzDeniedError } from '../../github/user-authz.js'
 import { syncAgentBotIcons } from '../agent-bot-icon-sync.js'
 
 /** Public bases for resolving an agent's `image` icon URL (cp/store). */
-// Both workspace surfaces bind an App-backed repo the same way: resolve it
-// through the installation, converge the catalog row readers-first
-// (gitlab-com-integration.md §8.1), and hold the acting human to the access the
-// agent will run with. Null ⇒ the installation does not grant it.
-async function bindWorkspaceRepo(
-  deps: HttpDeps,
-  orgId: string,
-  ins: GithubInstallationRecord,
-  owner: string,
-  repo: string,
-  access: 'read' | 'write',
-  userId: string
-): Promise<{ repoId: bigint; fullName: string; defaultBranch: string } | null> {
-  const ref = await deps.github!.repoRefFor(ins, owner, repo)
-  if (!ref) return null
-  await deps.repos.codeHostRepository.upsert({
-    orgId,
-    provider: 'github',
-    externalId: ref.repoId,
-    displayPath: ref.fullName,
-    cloneUrl: `https://github.com/${ref.fullName}`,
-    defaultBranch: ref.defaultBranch
-  })
-  if (deps.githubUserAuthz) await deps.githubUserAuthz.assertAccess(userId, ins, owner, repo, access)
-  return ref
-}
-
 function iconBasesOf(deps: HttpDeps): IconUrlBases {
   return {
     ...(deps.config.PUBLIC_CP_URL ? { cp: deps.config.PUBLIC_CP_URL } : {}),
@@ -290,27 +267,25 @@ const NO_ORGANIZATION_ENVIRONMENT: AssignedOrganizationMetadata = { variables: [
 
 function workspaceToDto(workspace: AgentWorkspace, workspaceRepoId?: bigint): AgentDtoT['workspace'] {
   if (workspace.mode === 'scratch') return { mode: 'scratch' }
-  if (workspace.mode === 'gitlab') {
-    return {
-      mode: 'gitlab',
-      worktree: workspace.isolation === 'session',
-      gitRepo: workspace.gitRepo,
-      ...(workspace.gitBranch !== undefined ? { gitBranch: workspace.gitBranch } : {}),
-      ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
-      ...(workspaceRepoId !== undefined ? { projectId: workspaceRepoId.toString() } : {}),
-      ...(workspace.gitAccess !== undefined ? { gitAccess: workspace.gitAccess } : {})
-    }
-  }
+  // The DTO mirrors PERSISTED provenance (git-workspace-model.md §5) — never a live
+  // re-derivation. installationId stays server-side; the credential names the provider.
   return {
-    mode: 'github',
+    mode: 'git',
     worktree: workspace.isolation === 'session',
     gitRepo: workspace.gitRepo,
     ...(workspace.gitBranch !== undefined ? { gitBranch: workspace.gitBranch } : {}),
     ...(workspace.agentDir !== undefined ? { agentDir: workspace.agentDir } : {}),
-    ...(workspace.mode === 'github' && workspace.installationId !== undefined
-      ? { installationId: workspace.installationId }
-      : {}),
-    ...(workspace.gitAccess !== undefined ? { gitAccess: workspace.gitAccess } : {})
+    ...(workspace.credential?.provider === 'github'
+      ? { credential: { provider: 'github' as const, access: workspace.credential.access } }
+      : workspace.credential?.provider === 'gitlab'
+        ? {
+            credential: {
+              provider: 'gitlab' as const,
+              access: workspace.credential.access,
+              projectId: (workspaceRepoId ?? 0n).toString()
+            }
+          }
+        : {})
   }
 }
 
@@ -622,7 +597,7 @@ export function toWorkspaceGitStatusDto(
  *  answers with a `WorkspaceGitStatusDto` (the status read and both stage writes). */
 export function workspaceGitConfigOf(agent: AgentRecord): { repo?: string; agentDir?: string } {
   const ws = agent.workspace
-  return ws.mode === 'github' ? { repo: ws.gitRepo, ...(ws.agentDir ? { agentDir: ws.agentDir } : {}) } : {}
+  return ws.mode === 'git' ? { repo: ws.gitRepo, ...(ws.agentDir ? { agentDir: ws.agentDir } : {}) } : {}
 }
 
 /** The same, for a status read scoped to a secondary root: that root IS the repository named, and
@@ -1534,99 +1509,21 @@ export function agentRoutes(deps: HttpDeps) {
           : sandboxPolicy.supported
             ? (req.body.runInSandbox ?? false)
             : false
-        // github-app workspace: the picked installation must be a LIVE claim of
-        // THIS org, and the repo must sit inside that installation's account +
-        // grant set. Ordered AFTER the daemonId visibility gate (404 semantics);
-        // these answer 409 — installations and their grant sets are org-level
-        // infrastructure (visibility taxonomy), so a 409 is not an oracle.
+        // The one credential derivation (git-workspace-model.md §6) decides who
+        // vouches for the address — the identity gate runs inside it. Ordered
+        // AFTER the daemonId visibility gate (404 semantics); refusals answer
+        // 409 — installations and their grant sets are org-level infrastructure
+        // (visibility taxonomy), so a 409 is not an oracle.
         const ws = req.body.workspace
         let workspace: AgentWorkspace | undefined =
-          ws?.mode === 'github'
-            ? {
-                mode: 'github',
-                isolation: ws.worktree === false ? 'shared' : 'session',
-                gitRepo: ws.gitRepo,
-                ...(ws.gitBranch !== undefined ? { gitBranch: ws.gitBranch } : {}),
-                ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {}),
-                ...(ws.installationId !== undefined ? { installationId: ws.installationId } : {}),
-                ...(ws.gitAccess !== undefined ? { gitAccess: ws.gitAccess } : {})
-              }
-            : ws?.mode === 'gitlab'
-              ? undefined // resolved below against the managed binding
-              : ws
-                ? { mode: 'scratch', isolation: 'shared' }
-                : undefined
+          ws === undefined ? undefined : { mode: 'scratch', isolation: 'shared' }
         let workspaceRepoId: bigint | undefined
-        if (ws?.mode === 'gitlab') {
-          if (!deps.gitlab) return conflict('gitlab workspaces are not enabled on this control plane')
-          const projectId = BigInt(ws.projectId)
-          const binding = await deps.repos.gitlabProjectBinding.byProject(orgOf(req), projectId)
-          if (!binding || binding.state === 'cleanup_pending') {
-            return conflict('the project is not a managed GitLab binding in this organization')
-          }
-          // §17.3/§24.4: a DIRECT placement must advertise the features NOW — the
-          // delivery/reconcile gates would otherwise strand a 201'd agent
-          // assigned to a daemon that can never materialize it.
-          if (req.body.daemonId !== undefined) {
-            const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId))
-            if (!advertises(daemon?.capabilities.features, requiredGitlabFeatures(deps.gitlab?.api.baseUrl))) {
-              return conflict('the selected daemon does not support GitLab workspaces yet — upgrade it first')
-            }
-          }
-          // The persisted catalog row, not caller input and never a composed
-          // URL, is the authority for the clone URL (§24.1); the binding still
-          // is for the default branch absent an explicit one.
-          const catalogRow = await deps.repos.codeHostRepository.byExternalId(orgOf(req), 'gitlab', projectId)
-          if (!catalogRow?.cloneUrl) {
-            return conflict('the GitLab project binding has no clone URL yet — repair the project first')
-          }
-          workspace = {
-            mode: 'gitlab',
-            isolation: ws.worktree === false ? 'shared' : 'session',
-            gitRepo: catalogRow.cloneUrl,
-            gitBranch: ws.gitBranch ?? binding.defaultBranch ?? 'main',
-            ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {}),
-            gitAccess: ws.gitAccess ?? 'write'
-          }
-          workspaceRepoId = projectId
-        }
-        if (ws?.mode === 'github' && ws.installationId === undefined && ws.gitAccess === 'write') {
-          return conflict('github write access requires a GitHub App installation')
-        }
-        if (ws?.mode === 'github' && ws.installationId !== undefined) {
-          if (!deps.github) return conflict('github-app workspaces are not enabled on this control plane')
-          const ins = await deps.repos.githubInstallation.get(orgOf(req), ws.installationId)
-          if (!ins || ins.revokedAt) {
-            return conflict('github installation not found in this org')
-          }
-          const repoParts = gitRepoLabel(ws.gitRepo).split('/')
-          const [owner, repo] = repoParts
-          if (repoParts.length !== 2 || !owner || !repo) {
-            return conflict('workspace gitRepo is not a github repository')
-          }
-          if (owner.toLowerCase() !== ins.accountLogin.toLowerCase()) {
-            return conflict(`repo owner ${owner} does not match the installation account ${ins.accountLogin}`)
-          }
+        if (ws?.mode === 'git') {
+          let derived: DerivedWorkspace
           try {
-            // The identity gate inside is the SECURITY check; the picker's preflight is UX only.
-            const access = ws.gitAccess === 'read' ? 'read' : 'write'
-            const ref = await bindWorkspaceRepo(deps, orgOf(req), ins, owner, repo, access, req.principal!.userId)
-            if (!ref) {
-              return conflict(`${owner}/${repo} is not granted to the installation — re-select it on GitHub`)
-            }
-            workspaceRepoId = ref.repoId
-            // The installation lookup, not the caller's clone host/path, is the
-            // authority for an App-backed workspace.
-            workspace = {
-              mode: 'github',
-              isolation: ws.worktree === false ? 'shared' : 'session',
-              gitRepo: normalizeGitUrl(ref.fullName),
-              ...(ws.gitBranch !== undefined ? { gitBranch: ws.gitBranch } : {}),
-              ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {}),
-              installationId: ws.installationId,
-              ...(ws.gitAccess !== undefined ? { gitAccess: ws.gitAccess } : {})
-            }
+            derived = await deriveWorkspaceCredential(deps, orgOf(req), req.principal?.userId, ws.gitRepo, ws.access)
           } catch (e) {
+            if (e instanceof WorkspaceCredentialRefused) return conflict(e.message)
             if (e instanceof UserAuthzDeniedError) {
               return reply
                 .code(403)
@@ -1647,6 +1544,24 @@ export function agentRoutes(deps: HttpDeps) {
             }
             throw e
           }
+          // §17.3/§24.4: a DIRECT placement must advertise the features NOW — the
+          // delivery/reconcile gates would otherwise strand a 201'd agent
+          // assigned to a daemon that can never materialize it.
+          if (derived.kind === 'gitlab' && req.body.daemonId !== undefined) {
+            const daemon = await deps.registry.getAvailable(orgOf(req), DaemonId(req.body.daemonId))
+            if (!advertises(daemon?.capabilities.features, requiredGitlabFeatures(deps.gitlab?.api.baseUrl))) {
+              return conflict('the selected daemon does not support GitLab workspaces yet — upgrade it first')
+            }
+          }
+          // The derivation's canonical address and default branch — never the
+          // caller's clone host/path — are the authority for a credentialed workspace.
+          const built = workspaceFromDerived(derived, {
+            isolation: ws.worktree === false ? 'shared' : 'session',
+            ...(ws.gitBranch !== undefined ? { gitBranch: ws.gitBranch } : {}),
+            ...(ws.agentDir !== undefined ? { agentDir: ws.agentDir } : {})
+          })
+          workspace = built.workspace
+          workspaceRepoId = built.workspaceRepoId
         }
         if (Array.isArray(req.body.mcpServers)) {
           const denied = await enablingUnseenDenied(orgOf(req), ctxOf(req), [], req.body.mcpServers)
@@ -1771,14 +1686,19 @@ export function agentRoutes(deps: HttpDeps) {
           // created first on purpose — a crash here leaves an agent the next
           // convergence adopts as a consumer, where the reverse order would
           // leave an account no agent owns.
-          if (agent.workspace.mode === 'gitlab' && agent.workspaceRepoId !== undefined && deps.gitlab) {
+          if (
+            agent.workspace.mode === 'git' &&
+            agent.workspace.credential?.provider === 'gitlab' &&
+            agent.workspaceRepoId !== undefined &&
+            deps.gitlab
+          ) {
             const gitlab = deps.gitlab
             // The agent row IS the authorization here and is already committed,
             // so nothing has to run inside the lease alongside the ensure.
             const ensured = await gitlab.provisioner.provisionAgentAccount(
               agent.orgId,
               agent.workspaceRepoId,
-              { agentId: agent.id, accessLevel: gitlabWorkspaceAccessLevel(agent.workspace.gitAccess) },
+              { agentId: agent.id, accessLevel: gitlabWorkspaceAccessLevel(agent.workspace.credential.access) },
               async () => undefined
             )
             if (!ensured.ok) {
@@ -1830,7 +1750,9 @@ export function agentRoutes(deps: HttpDeps) {
           }
           await syncMcpDefsForAgent(agent, [], agent.mcpServers)
           // A gitlab workspace makes this agent a consumer of its project (§7.2).
-          if (agent.workspace.mode === 'gitlab') convergeGitlabProjects(agent.orgId, [agent.workspaceRepoId])
+          if (agent.workspace.mode === 'git' && agent.workspace.credential?.provider === 'gitlab') {
+            convergeGitlabProjects(agent.orgId, [agent.workspaceRepoId])
+          }
           return reply.code(201).send({
             ...toDto(
               agent,
@@ -2166,16 +2088,16 @@ export function agentRoutes(deps: HttpDeps) {
               message: 'Run in sandbox is unavailable on this daemon'
             })
           }
-          if (req.body.agentDir !== undefined && existing.workspace.mode !== 'github') {
+          if (req.body.agentDir !== undefined && existing.workspace.mode !== 'git') {
             return reply.code(409).send({
               error: 'Conflict',
               statusCode: 409,
-              message: 'working subdirectory is only available for GitHub workspaces'
+              message: 'working subdirectory is only available for Git workspaces'
             })
           }
           if (req.body.gitAccess === 'write') {
             const conflict = (message: string) => reply.code(409).send({ error: 'Conflict', statusCode: 409, message })
-            if (existing.workspace.mode !== 'github' || existing.workspace.installationId === undefined) {
+            if (existing.workspace.mode !== 'git' || existing.workspace.credential?.provider !== 'github') {
               return conflict('write access can only upgrade an existing GitHub App workspace')
             }
             if (!deps.github) return conflict('github-app workspaces are not enabled on this control plane')
@@ -2357,7 +2279,7 @@ export function agentRoutes(deps: HttpDeps) {
           tags: [Tag.Workspace],
           summary: 'Edit an agent workspace',
           description:
-            'Replace a workspace with scratch, a GitHub repository covered by an App installation, or one no installation covers — cloned anonymously, so read-only and public repositories only, and available with no App configured — or edit its repository, branch, working directory, and read/write access. A repository whose owner is covered but which the installation does not grant is refused, since an anonymous clone cannot serve it. An unstated access tier takes the highest the target can carry: write where credentials are minted for it, read for an anonymous checkout. Changing workspace type, repository, or branch discards daemon-local workspace files. The caller must hold the requested GitHub permission. Active work is drained and repository credentials are invalidated before success. Enabled GitHub review or Check actions reject edits that remove their required write authority.',
+            'Replace a workspace with scratch or a Git repository, or edit its repository, branch, working directory, and read/write access. Who vouches for the repository is derived from the address: a github.com repository covered by an App installation or a managed GitLab project earns managed credentials, a public repository on either host is cloned anonymously (read-only), and any other Git host is cloned anonymously with no preflight. A repository whose owner is covered but which the installation does not grant is refused, since an anonymous clone cannot serve it. An unstated access tier takes the highest the target can carry: write where credentials are minted for it, read for an anonymous checkout. Changing workspace type, repository, or branch discards daemon-local workspace files. The caller must hold the requested host permission. Active work is drained and repository credentials are invalidated before success. Enabled GitHub review or Check actions reject edits that remove their required write authority.',
           operationId: 'setAgentWorkspace',
           params: IdParam,
           body: SetAgentWorkspaceBody,
@@ -2394,105 +2316,57 @@ export function agentRoutes(deps: HttpDeps) {
         try {
           let workspace: AgentWorkspace = { mode: 'scratch', isolation: 'shared' }
           let workspaceRepoId: bigint | undefined
-          if (req.body.mode === 'github') {
-            const [owner, repo] = req.body.repoFullName.split('/')
-            if (!owner || !repo) return conflict('repoFullName must be owner/repo')
-            // The App is required to BIND an installation, not to accept a workspace:
-            // creation takes a credential-free one on a deployment with no App at all.
-            const covering = deps.github
-              ? await deps.repos.githubInstallation.liveByOrgAndAccount(existing.orgId, owner)
-              : null
-            const installation = covering && !covering.suspendedAt ? covering : null
-            const worktree =
-              req.body.worktree ??
-              (existing.workspace.mode === 'github' ? existing.workspace.isolation === 'session' : true)
-            if (installation) {
-              // Credentials are minted here, so an unstated tier takes the higher
-              // one — the identity gate then holds the caller to it.
-              const access = req.body.gitAccess ?? 'write'
-              const ref = await bindWorkspaceRepo(
+          let derived: DerivedWorkspace | undefined
+          if (req.body.mode === 'git') {
+            // The same derivation the create route runs (git-workspace-model.md §6):
+            // provenance from the address, eligibility from the acting caller.
+            try {
+              derived = await deriveWorkspaceCredential(
                 deps,
                 existing.orgId,
-                installation,
-                owner,
-                repo,
-                access,
-                req.principal!.userId
+                req.principal?.userId,
+                req.body.gitRepo,
+                req.body.access
               )
-              // An installation token reads any PUBLIC repository, so a miss here means
-              // private-and-ungranted (or absent) — an anonymous clone cannot serve it,
-              // and the actionable answer is to grant it rather than to degrade silently.
-              if (!ref) return conflict(`${owner}/${repo} is not granted to the GitHub installation`)
-              workspace = {
-                mode: 'github',
-                isolation: worktree ? 'session' : 'shared',
-                gitRepo: normalizeGitUrl(ref.fullName),
-                gitBranch: req.body.gitBranch ?? ref.defaultBranch,
-                ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
-                installationId: installation.id,
-                gitAccess: access
-              }
-              workspaceRepoId = ref.repoId
-            } else {
-              // Granted by no installation ⇒ the anonymous checkout agent creation
-              // accepts on the same terms: nothing is minted for it, so it is
-              // read-only and carries no catalog repository identity.
-              if (req.body.gitAccess === 'write') {
-                return conflict('github write access requires a GitHub App installation')
-              }
-              workspace = {
-                mode: 'github',
-                isolation: worktree ? 'session' : 'shared',
-                gitRepo: normalizeGitUrl(req.body.repoFullName),
-                ...(req.body.gitBranch ? { gitBranch: req.body.gitBranch } : {}),
-                ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
-                gitAccess: 'read'
-              }
+            } catch (e) {
+              if (e instanceof WorkspaceCredentialRefused) return conflict(e.message)
+              throw e // provider/identity errors map in the shared catch below
             }
-          }
-          if (req.body.mode === 'gitlab') {
-            if (!deps.gitlab) return conflict('gitlab workspaces are not enabled on this control plane')
-            // §17.3: the daemon that will re-activate this workspace must
-            // decode the gitlab spec arm — direct placement or a pool/duty
-            // incumbent alike (the earlier check only proves workspace-edit-v2).
-            const servingId = (await deps.placementResolver.servingDaemon(existing)) ?? existing.daemonId
-            if (servingId) {
-              const serving = await deps.registry.getAvailable(existing.orgId, servingId)
-              if (!advertises(serving?.capabilities.features, requiredGitlabFeatures(deps.gitlab?.api.baseUrl))) {
-                return conflict('the serving daemon does not support GitLab workspaces yet — upgrade it first')
+            // §17.3: the daemon that will re-activate a gitlab-vouched workspace must
+            // decode its credential — direct placement or a pool/duty incumbent alike
+            // (the earlier check only proves workspace-edit-v2).
+            if (derived.kind === 'gitlab') {
+              const servingId = (await deps.placementResolver.servingDaemon(existing)) ?? existing.daemonId
+              if (servingId) {
+                const serving = await deps.registry.getAvailable(existing.orgId, servingId)
+                if (!advertises(serving?.capabilities.features, requiredGitlabFeatures(deps.gitlab?.api.baseUrl))) {
+                  return conflict('the serving daemon does not support GitLab workspaces yet — upgrade it first')
+                }
               }
-            }
-            const projectId = BigInt(req.body.projectId)
-            const binding = await deps.repos.gitlabProjectBinding.byProject(existing.orgId, projectId)
-            if (!binding || binding.state === 'cleanup_pending') {
-              return conflict('the project is not a managed GitLab binding in this organization')
-            }
-            const catalogRow = await deps.repos.codeHostRepository.byExternalId(existing.orgId, 'gitlab', projectId)
-            if (!catalogRow?.cloneUrl) {
-              return conflict('the GitLab project binding has no clone URL yet — repair the project first')
             }
             const worktree =
               req.body.worktree ??
               (existing.workspace.mode !== 'scratch' ? existing.workspace.isolation === 'session' : true)
-            workspace = {
-              mode: 'gitlab',
+            const built = workspaceFromDerived(derived, {
               isolation: worktree ? 'session' : 'shared',
-              gitRepo: catalogRow.cloneUrl,
-              gitBranch: req.body.gitBranch ?? binding.defaultBranch ?? 'main',
-              ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {}),
-              // A managed binding always mints, so an unstated tier is write, as at creation.
-              gitAccess: req.body.gitAccess ?? 'write'
-            }
-            workspaceRepoId = projectId
+              ...(req.body.gitBranch !== undefined ? { gitBranch: req.body.gitBranch } : {}),
+              ...(req.body.agentDir ? { agentDir: req.body.agentDir } : {})
+            })
+            workspace = built.workspace
+            workspaceRepoId = built.workspaceRepoId
           }
 
           const writableRepoId =
-            workspace.mode === 'github' && (workspace.gitAccess ?? 'write') === 'write' ? workspaceRepoId : undefined
+            workspace.mode === 'git' &&
+            workspace.credential?.provider === 'github' &&
+            workspace.credential.access === 'write'
+              ? workspaceRepoId
+              : undefined
           const affectedRepoIds = new Set(
             [existing.workspaceRepoId, workspaceRepoId].filter((repoId): repoId is bigint => repoId !== undefined)
           )
           const currentRepoName =
-            existing.workspace.mode === 'github' ? gitRepoLabel(existing.workspace.gitRepo).toLowerCase() : undefined
+            existing.workspace.mode === 'git' ? gitRepoLabel(existing.workspace.gitRepo).toLowerCase() : undefined
           const blocking = (await deps.repos.hook.listForAgent(existing.id)).some((hook) => {
             if (
               hook.kind !== 'github' ||
@@ -2523,12 +2397,14 @@ export function agentRoutes(deps: HttpDeps) {
           const applyWorkspace = (live?: GitlabLiveProject): Promise<AgentRecord> =>
             agentMoves.setWorkspace(
               existing,
-              live?.cloneUrl && workspace.mode === 'gitlab' ? { ...workspace, gitRepo: live.cloneUrl } : workspace,
+              live?.cloneUrl && workspace.mode === 'git' && derived?.kind === 'gitlab'
+                ? { ...workspace, gitRepo: live.cloneUrl }
+                : workspace,
               workspaceRepoId,
               req.principal?.userId
             )
           let converted: AgentRecord
-          if (workspace.mode === 'gitlab' && workspaceRepoId !== undefined && deps.gitlab) {
+          if (derived?.kind === 'gitlab' && workspaceRepoId !== undefined && deps.gitlab) {
             let applied
             try {
               // The edit itself runs under the binding lease this takes, so the
@@ -2537,7 +2413,7 @@ export function agentRoutes(deps: HttpDeps) {
               applied = await deps.gitlab.provisioner.provisionAgentAccount(
                 existing.orgId,
                 workspaceRepoId,
-                { agentId: existing.id, accessLevel: gitlabWorkspaceAccessLevel(workspace.gitAccess) },
+                { agentId: existing.id, accessLevel: gitlabWorkspaceAccessLevel(derived.access) },
                 applyWorkspace
               )
             } catch (err) {
@@ -2558,7 +2434,9 @@ export function agentRoutes(deps: HttpDeps) {
           // destination is about to bind — deleting it at GitLab and recreating
           // it under a new user id. Binding the destination first leaves the
           // source unbind with a still-bound account to spare.
-          if (existing.workspace.mode === 'gitlab' || converted.workspace.mode === 'gitlab') {
+          const gitlabVouched = (workspace: AgentWorkspace): boolean =>
+            workspace.mode === 'git' && workspace.credential?.provider === 'gitlab'
+          if (gitlabVouched(existing.workspace) || gitlabVouched(converted.workspace)) {
             convergeGitlabProjects(converted.orgId, [converted.workspaceRepoId, existing.workspaceRepoId])
           }
           return toDto(

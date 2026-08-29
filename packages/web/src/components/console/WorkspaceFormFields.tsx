@@ -6,7 +6,10 @@ import { Button, Icon, Toggle } from '@/components/ui'
 import { GITLAB_PROJECT_STATE, gitlabChoiceSelectable, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import type { RepoAccess } from '@/lib/api'
 
-export type WorkspaceMode = 'scratch' | 'github' | 'gitlab'
+// The TILE the user types through, not what is stored (git-workspace-model.md §7):
+// every repo tile produces the same `{ mode: 'git', gitRepo }` payload, and the
+// displayed tile of an existing workspace is derived from host + credential.
+export type WorkspaceMode = 'scratch' | 'github' | 'gitlab' | 'giturl'
 export type WorkspaceRepoAccess = 'read' | 'write'
 type RepositoryMenuStyle = { left: number; top: number; width: number; maxHeight: number }
 
@@ -32,22 +35,29 @@ const WORKSPACE_MODE_OPTIONS: {
 }[] = [
   {
     value: 'scratch',
-    label: 'From scratch',
+    label: 'Scratch',
     hint: 'Fresh empty directory.',
     mark: (selected) =>
       workspaceModeMark(<Icon name="sparkles" size={16} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />)
   },
   {
     value: 'github',
-    label: 'From GitHub',
+    label: 'GitHub',
     hint: 'Clone a repo on a branch.',
     mark: () => workspaceModeMark(<GithubMark color="var(--text-primary)" fillPct={100} />)
   },
   {
     value: 'gitlab',
-    label: 'From GitLab',
+    label: 'GitLab',
     hint: 'Clone a project on a branch.',
     mark: () => workspaceModeMark(<GitlabMark fillPct={100} />)
+  },
+  {
+    value: 'giturl',
+    label: 'Git URL',
+    hint: 'Clone any Git server anonymously.',
+    mark: (selected) =>
+      workspaceModeMark(<Icon name="link-2" size={16} color={selected ? 'var(--brand)' : 'var(--text-tertiary)'} />)
   }
 ]
 
@@ -85,7 +95,6 @@ export function WorkspaceModeField({
               <span className="font-sans text-[13px] font-semibold leading-normal whitespace-nowrap">
                 {option.label}
               </span>
-              {selected && <Icon name="check" size={14} className="flex-none" color="var(--brand)" />}
             </button>
           )
         })}
@@ -396,6 +405,107 @@ export function GitlabProjectOption({
       {state && state.label !== 'ready' && <span className={`badge flex-none ${state.badge}`}>{state.label}</span>}
       {selected && <Icon name="check" size={17} color="var(--brand)" />}
     </button>
+  )
+}
+
+/** The gitlab tile's second arm (§7): a public project outside the managed set,
+ *  offered when the typed query looks like a path and matches no managed choice. */
+export function PublicGitlabProjectOption({
+  query,
+  choices,
+  onSelect
+}: {
+  query: string
+  choices: readonly GitlabProjectChoice[]
+  onSelect: (path: string) => void
+}) {
+  const path = query.trim()
+  if (!/^[^/\s]+\/[^\s]+$/.test(path)) return null
+  if (choices.some((choice) => choice.projectPath.toLowerCase() === path.toLowerCase())) return null
+  return (
+    <button type="button" className="fopt min-h-[46px] items-center gap-3 px-2 py-2" onClick={() => onSelect(path)}>
+      <span className="flex h-4 w-4 flex-none items-center justify-center">
+        <Icon name="book-marked" size={14} color="var(--text-tertiary)" />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col items-start gap-[2px] overflow-hidden">
+        <span className="block w-full min-w-0 truncate font-mono text-[12.5px] font-semibold leading-normal text-(--text-primary)">
+          {path}
+        </span>
+        <span className="block w-full min-w-0 truncate font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+          Use as a public project — read-only anonymous clone
+        </span>
+      </span>
+      <span className="badge flex-none bg-(--surface-active) text-(--text-tertiary)">public</span>
+    </button>
+  )
+}
+
+/** The Git URL tile's body, shared by create and edit so the two cannot drift. */
+export function GitUrlTileFields({
+  url,
+  urlHint,
+  branch,
+  agentDir,
+  agentDirError,
+  worktree,
+  onUrlChange,
+  onBranchChange,
+  onAgentDirChange,
+  onWorktreeChange
+}: {
+  url: string
+  urlHint: string | null
+  branch: string
+  agentDir: string
+  agentDirError?: string | null
+  worktree: boolean
+  onUrlChange: (value: string) => void
+  onBranchChange: (value: string) => void
+  onAgentDirChange: (value: string) => void
+  onWorktreeChange: (value: boolean) => void
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-2 desktop:gap-x-7">
+      <label className="fld desktop:col-span-2">
+        <span className="fldlbl">Clone URL</span>
+        <input
+          className="inp mn font-mono text-[12.5px]"
+          placeholder="https://git.example.test/team/repo.git"
+          value={url}
+          onChange={(event) => onUrlChange(event.target.value)}
+        />
+        {urlHint && (
+          <span className="mt-[6px] inline-flex items-start gap-[6px] font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+            <Icon name="info" size={13} className="mt-[1px] flex-none" />
+            {urlHint}
+          </span>
+        )}
+      </label>
+      <div className="grid grid-cols-1 gap-[14px] desktop:col-span-2 desktop:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_96px] desktop:gap-x-[14px]">
+        <WorkspaceBranchField
+          repositorySelected={!!url.trim()}
+          unselectedLabel="Enter a clone URL first"
+          defaultBranchLabel="Remote default branch"
+          value={branch}
+          branches={null}
+          open={false}
+          query=""
+          onToggle={() => undefined}
+          onClose={() => undefined}
+          onQueryChange={() => undefined}
+          onChange={onBranchChange}
+        />
+        <WorkingSubdirectoryField value={agentDir} error={agentDirError ?? null} onChange={onAgentDirChange} />
+        <WorktreeField checked={worktree} onChange={onWorktreeChange} />
+      </div>
+      <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
+        <Icon name="info" size={14} className="mt-[1px] flex-none" />
+        <span>
+          Cloned with the daemon host&rsquo;s own git credentials — read-only from AgentConnect&rsquo;s side, and the
+          daemon&rsquo;s allowed-origins policy must permit the host.
+        </span>
+      </div>
+    </div>
   )
 }
 

@@ -416,7 +416,10 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     const sibling = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, SIBLING, ROOT_GROUP))!
     const siblingUserId = Number(sibling.serviceAccountUserId)
     // The sibling's workspace moves off the project: it stops being a consumer.
-    await prisma.agent.update({ where: { id: SIBLING }, data: { workspaceMode: 'scratch', workspaceRepoId: null } })
+    await prisma.agent.update({
+      where: { id: SIBLING },
+      data: { workspaceMode: 'scratch', gitCredentialProvider: null, workspaceRepoId: null }
+    })
 
     expect(await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)).toEqual({ state: 'ready' })
     expect(h.fake.removedMembers).toEqual([siblingUserId])
@@ -692,7 +695,10 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     const doomed = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, AGENT, ROOT_GROUP))!
     // The agent stops consuming the project, so its account retires; GitLab
     // accepts the deletion but has not carried it out yet.
-    await prisma.agent.update({ where: { id: AGENT }, data: { workspaceMode: 'scratch', workspaceRepoId: null } })
+    await prisma.agent.update({
+      where: { id: AGENT },
+      data: { workspaceMode: 'scratch', gitCredentialProvider: null, workspaceRepoId: null }
+    })
     await h.provisioner.provision(DEFAULT_ORG_ID, h.binding.id)
     expect((await h.accounts.get(doomed.id))?.stateReason).toBe('deletion_pending')
 
@@ -701,7 +707,8 @@ describe('GitlabProvisioner (§10.2) — per-agent identity', () => {
     await prisma.agent.update({
       where: { id: AGENT },
       data: {
-        workspaceMode: 'gitlab',
+        workspaceMode: 'git',
+        gitCredentialProvider: 'gitlab',
         workspaceRepoId: PROJECT,
         gitRepo: 'https://gitlab.com/example-group/example-project'
       }

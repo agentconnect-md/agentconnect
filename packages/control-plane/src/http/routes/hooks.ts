@@ -33,6 +33,7 @@ import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
 import { toDbPlatform, type DbPlatform } from '../../persistence/platform.js'
 import { AgentWorkspaceIntegrationConflict } from '../../persistence/errors.js'
+import { isCanonicalGithubAddress } from '../../domain/git-host.js'
 import { hookFamilyShapeError, hookSiblingShapeError, type HookFamily } from '../../hooks/hook-family.js'
 import { Tag } from '../plugins/openapi.js'
 import {
@@ -61,6 +62,7 @@ const RERUN_STATUS_TEXT = {
  *  subscription arrives here as a constraint violation rather than a probe. */
 class DuplicateHookFamily extends Error {}
 const HOOK_FAMILY_INDEX = 'hook_def_agent_repo_family_key'
+
 function isHookFamilyCollision(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false
   if (Reflect.get(err, 'code') !== 'P2002') return false
@@ -358,12 +360,16 @@ export function hookRoutes(deps: HttpDeps) {
           (row) => row.provider === provider && row.repoId === repoId
         )
       // The workspace is this repository only when it is the SAME host's: the two
-      // number theirs independently, so `workspaceMode` qualifies the id (§8.1).
-      if (agent.workspaceRepoId === repoId && agent.workspace.mode === provider) return { ok: true }
-      // Legacy workspace rows acquire their rename-proof id lazily. The stored
-      // name is only an endpoint hint: after a GitHub rename the requested
-      // canonical name differs, so always resolve and compare numeric identity.
-      if (provider === 'github' && agent.workspace.mode === 'github' && deps.github) {
+      // number theirs independently, so the credential provider qualifies the id (§8.1).
+      const workspaceProvider = agent.workspace.mode === 'git' ? agent.workspace.credential?.provider : undefined
+      if (agent.workspaceRepoId === repoId && workspaceProvider === provider) return { ok: true }
+      // Workspace rows without a numeric id resolve it lazily. The stored name is
+      // only an endpoint hint: after a GitHub rename the requested canonical name
+      // differs, so always resolve and compare numeric identity. Gated on the
+      // ADDRESS's host, not on a credential: an anonymous github.com checkout still
+      // IS this repository, and a credentialed one already matched above.
+      const onGithubCom = agent.workspace.mode === 'git' && isCanonicalGithubAddress(agent.workspace.gitRepo)
+      if (provider === 'github' && agent.workspace.mode === 'git' && onGithubCom && deps.github) {
         const workspaceLabel = gitRepoLabel(agent.workspace.gitRepo)
         const [owner, repo] = workspaceLabel.split('/')
         const ins = owner ? await deps.repos.githubInstallation.liveByOrgAndAccount(agent.orgId, owner) : null

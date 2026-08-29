@@ -381,7 +381,8 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     await prisma.agent.update({
       where: { id: h.agentId },
       data: {
-        workspaceMode: 'gitlab',
+        workspaceMode: 'git',
+        gitCredentialProvider: 'gitlab',
         workspaceRepoId: PROJECT,
         gitRepo: 'https://gitlab.com/example-group/example-project'
       }
@@ -484,7 +485,8 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     await prisma.agent.update({
       where: { id: h.secondAgentId },
       data: {
-        workspaceMode: 'gitlab',
+        workspaceMode: 'git',
+        gitCredentialProvider: 'gitlab',
         workspaceRepoId: PROJECT,
         gitRepo: 'https://gitlab.com/example-group/example-project'
       }

@@ -148,7 +148,7 @@ export function computeGettingStarted(input: {
             key: 'github',
             label: 'Connect GitHub and assign a repository',
             expl: 'Install the GitHub App, then point an agent at a repo, branch and working directory so it has code to work in.',
-            done: agents.some((a) => a.workspace?.mode === 'github'),
+            done: agents.some((a) => a.workspace?.mode === 'git' && a.workspace.provider === 'github'),
             ctaLabel: 'Connect GitHub',
             action: { kind: 'github', agentId: firstAgent } as const
           },

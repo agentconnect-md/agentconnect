@@ -24,7 +24,8 @@ import {
   status,
   supportsModes,
   workspaceStatus,
-  type IntegrationRow
+  type IntegrationRow,
+  workspaceSourceOf
 } from '@/lib/data'
 import {
   createGithubHook,
@@ -608,8 +609,9 @@ export default function AgentDetailView() {
     ? {
         status: workspaceStatus(ws),
         ...(ws.commitMsg ? { commit: { sha: ws.commit, time: ws.commitTime, title: ws.commitMsg } } : {}),
-        repoUrl: ws.repoUrl ?? `https://${ws.mode === 'gitlab' ? 'gitlab.com' : 'github.com'}/${ws.repo}`,
-        remoteLabel: ws.mode === 'gitlab' ? 'GitLab' : 'GitHub'
+        repoUrl: ws.repoUrl ?? `https://${workspaceSourceOf(ws) === 'gitlab' ? 'gitlab.com' : 'github.com'}/${ws.repo}`,
+        remoteLabel:
+          workspaceSourceOf(ws) === 'gitlab' ? 'GitLab' : workspaceSourceOf(ws) === 'github' ? 'GitHub' : 'remote'
       }
     : { status: workspaceStatus(ws) }
   // Counts walk the whole mock tree (files are nested under folder children).

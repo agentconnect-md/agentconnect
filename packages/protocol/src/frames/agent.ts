@@ -27,22 +27,39 @@ export const AgentAdditionalRepo = z.object({
 export type AgentAdditionalRepo = z.infer<typeof AgentAdditionalRepo>
 
 /**
- * Where the agent runs. Two modes; the **path is always daemon-generated** —
- * never specified by the caller (UX picks the mode, the machine owns the dir).
+ * Where the agent runs. The **path is always daemon-generated** — never
+ * specified by the caller (UX picks the mode, the machine owns the dir).
  *
  * - `scratch`: a fresh empty working dir on the machine, with no default repo.
  *   `gitCredential: github-app` enables credentials only for repositories that
  *   were explicitly authorized for the agent.
- * - `github`: the daemon clones `gitRepo` @ `branch` and runs the agent in
- *   `agentDir` (a subdir of the repo, repo-root if omitted). **Multiple agents
- *   may share one repo** — they differ by `agentDir`, so the repo is not an
- *   owned entity, just shared config on each agent.
+ * - `git`: the host-neutral repository workspace (git-workspace-model.md). The
+ *   daemon clones `gitRepo` @ `branch` and runs the agent in `agentDir` (a
+ *   subdir of the repo, repo-root if omitted). **Multiple agents may share one
+ *   repo** — they differ by `agentDir`, so the repo is not an owned entity,
+ *   just shared config on each agent. `credential` names who vouches for the
+ *   repository; absent ⇒ anonymous clone.
+ * - `github` / `gitlab`: the pre-`git` host-shaped arms, kept decodable for the
+ *   rollout (git-workspace-model.md §8). The CP still projects them to daemons
+ *   that do not advertise `workspace-git-v1`.
  *
- * Both modes carry `additionalRepos`: the agent's additional-repository
+ * Every mode carries `additionalRepos`: the agent's additional-repository
  * allowlist, projected by the CP so the daemon has the set before a session
  * starts. A later phase materializes them as secondary workspace roots; today
  * nothing on the daemon reads the list.
  */
+// Who vouches for a `git` workspace's repository (git-workspace-model.md §3).
+// Absent ⇒ anonymous clone; the daemon's operator-owned `workspaceGitAllowedOrigins`
+// still gates the origin. `access` stays off the wire — the CP clamps minted tokens
+// server-side. A new code host is a new variant here, never a new workspace mode.
+export const AgentWorkspaceCredential = z.discriminatedUnion('provider', [
+  // Minting re-resolves the live installation by owner, so no installationId travels.
+  z.object({ provider: z.literal('github') }),
+  // The rename-stable numeric project id — the gitcred v2 request identity.
+  z.object({ provider: z.literal('gitlab'), projectId: z.string().regex(/^[1-9]\d*$/) })
+])
+export type AgentWorkspaceCredential = z.infer<typeof AgentWorkspaceCredential>
+
 export const AgentWorkspace = z.discriminatedUnion('mode', [
   z.object({
     mode: z.literal('scratch'),
@@ -52,6 +69,19 @@ export const AgentWorkspace = z.discriminatedUnion('mode', [
     // Scratch has no implicit/default repository. The credential helper still
     // lets git/gh request explicitly authorized repositories by name.
     gitCredential: z.enum(['github-app']).optional(),
+    additionalRepos: z.array(AgentAdditionalRepo).default([])
+  }),
+  // The host-neutral repository workspace (git-workspace-model.md §3): `mode`
+  // answers "is there a repository", `credential` answers "who vouches for it".
+  // FRAME-FATAL on an older daemon — the CP only projects this arm to daemons
+  // advertising `workspace-git-v1` and dual-encodes the legacy arms to the rest.
+  z.object({
+    mode: z.literal('git'),
+    isolation: z.enum(['shared', 'session']).default('shared'),
+    gitRepo: z.string(), // FULL cloneable https/ssh address (normalizeGitCloneUrl)
+    branch: z.string().default('main'),
+    agentDir: z.string().optional(), // subdir within the repo; omitted ⇒ repo root
+    credential: AgentWorkspaceCredential.optional(),
     additionalRepos: z.array(AgentAdditionalRepo).default([])
   }),
   z.object({

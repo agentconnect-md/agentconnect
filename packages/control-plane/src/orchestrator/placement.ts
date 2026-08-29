@@ -64,7 +64,7 @@ import {
   type McpDefinitionDeps,
   type MemoryDefinitionDeps
 } from './agentDefinitions.js'
-import { daemonSupportsAgent, requiredDaemonFeatures } from '../domain/daemon-features.js'
+import { daemonSupportsAgent, encodeSpecWorkspaceForPeer, requiredDaemonFeatures } from '../domain/daemon-features.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import { AgentId as toAgentId, DaemonId as toDaemonId, IntegrationId as toIntegrationId } from '../domain/ids.js'
 import { sessionKeyStr, type SessionKey } from '../domain/sessionKey.js'
@@ -615,7 +615,9 @@ export class Placement implements ReconcileService {
       // this neutral snapshot value immediately before register/ok is sent.
       serverFeatures: [],
       assignments: desiredAssignments,
-      agents: desiredAgents, // full spec-set the daemon replicates (direct-edge launch needs a local replica)
+      // Full spec-set the daemon replicates (direct-edge launch needs a local replica).
+      // Workspace dual-encoded per the registering daemon's advertised features (§8).
+      agents: desiredAgents.map((spec) => encodeSpecWorkspaceForPeer(spec, req.capabilities.features)),
       crons: desiredCrons,
       integrations: desiredIntegrations, // daemon-scoped platform integrations (token-bearing)
       // Both definition kinds are scoped by the SAME roster union as the agents

@@ -46,21 +46,28 @@ describe('WorkspaceFormFields', () => {
     await render(<WorkspaceModeField value="scratch" onChange={onChange} />)
 
     // Both code hosts are always offered; a deployment that configures neither
-    // says so in the pane the tile opens, never by dropping the tile.
+    // says so in the pane the tile opens, never by dropping the tile. The fourth
+    // tile clones any other Git server with no credential at all.
     const buttons = Array.from(container?.querySelectorAll('button') ?? [])
-    expect(buttons.map((button) => button.textContent)).toEqual(['From scratch', 'From GitHub', 'From GitLab'])
+    expect(buttons.map((button) => button.textContent)).toEqual(['Scratch', 'GitHub', 'GitLab', 'Git URL'])
     // The tiles are compact chips, so each one's one-line description is its tooltip.
     expect(buttons.map((button) => button.getAttribute('title'))).toEqual([
       'Fresh empty directory.',
       'Clone a repo on a branch.',
-      'Clone a project on a branch.'
+      'Clone a project on a branch.',
+      'Clone any Git server anonymously.'
     ])
-    expect(buttons.map((button) => button.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false'])
+    expect(buttons.map((button) => button.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false', 'false'])
+    // The accent style alone says which tile is on — no check glyph crowds the chip.
+    expect(buttons[0]?.className).toContain('ptile on')
+    expect(container?.innerHTML).not.toContain('lucide-check')
 
     await act(async () => buttons[1]?.click())
     expect(onChange).toHaveBeenCalledWith('github')
     await act(async () => buttons[2]?.click())
     expect(onChange).toHaveBeenCalledWith('gitlab')
+    await act(async () => buttons[3]?.click())
+    expect(onChange).toHaveBeenCalledWith('giturl')
   })
 
   it('returns the shared repository access vocabulary', async () => {

@@ -39,6 +39,7 @@ import { NoConnection } from '../../orchestrator/outbound.js'
 import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView } from '../../authorization/policy.js'
 import { Tag } from '../plugins/openapi.js'
+import { isCanonicalGithubAddress } from '../../domain/git-host.js'
 import {
   AgentRepoAuthDto,
   AgentRepoAuthListDto,
@@ -90,7 +91,7 @@ export function agentRepoRoutes(deps: HttpDeps) {
      * the shared (agent, repo) projection lock. */
     const ensureWorkspaceRepoId = async (agent: AgentRecord): Promise<bigint | undefined> => {
       if (agent.workspaceRepoId !== undefined) return agent.workspaceRepoId
-      if (agent.workspace.mode !== 'github' || agent.workspace.installationId === undefined || !deps.github)
+      if (agent.workspace.mode !== 'git' || agent.workspace.credential?.provider !== 'github' || !deps.github)
         return undefined
       const workspaceLabel = gitRepoLabel(agent.workspace.gitRepo)
       const [owner, repo] = workspaceLabel.split('/')
@@ -156,7 +157,11 @@ export function agentRepoRoutes(deps: HttpDeps) {
       if (!binding || binding.state === 'cleanup_pending') {
         return conflict('the project is not a managed GitLab project in this organization')
       }
-      if (agent.workspace.mode === 'gitlab' && agent.workspaceRepoId === projectId) {
+      if (
+        agent.workspace.mode === 'git' &&
+        agent.workspace.credential?.provider === 'gitlab' &&
+        agent.workspaceRepoId === projectId
+      ) {
         return conflict('this is already the agent’s workspace project')
       }
       const held = await deps.repos.agentRepoAuth.listForAgent(agent.id)
@@ -322,10 +327,16 @@ export function agentRepoRoutes(deps: HttpDeps) {
         // Scratch has no implicit repository, so every GitHub repo is an
         // explicit grant. A manual GitHub workspace stays the narrow exception:
         // it may grant only its own repo for CP-owned review/check effects.
-        const manualWorkspace = agent.workspace.mode === 'github' && agent.workspace.installationId === undefined
+        // A manual workspace is an anonymous GITHUB checkout: the own-repo exception
+        // exists for CP-owned review/check effects, which only github.com carries.
+        // Anonymous checkouts on other hosts behave like scratch — explicit grants only.
+        const manualWorkspace =
+          agent.workspace.mode === 'git' &&
+          agent.workspace.credential === undefined &&
+          isCanonicalGithubAddress(agent.workspace.gitRepo)
         if (
           manualWorkspace &&
-          agent.workspace.mode === 'github' &&
+          agent.workspace.mode === 'git' &&
           gitRepoLabel(agent.workspace.gitRepo).toLowerCase() !== req.body.repoFullName.toLowerCase()
         ) {
           return reply.code(409).send({
@@ -359,8 +370,12 @@ export function agentRepoRoutes(deps: HttpDeps) {
             })
           }
           await catalogGithubRepo(agent.orgId, ref)
+          // Only a github-vouched workspace's numeric id may collide with a GitHub
+          // repo id — the hosts number theirs independently (§8.1).
           const workspaceRepoId =
-            agent.workspace.mode === 'github' && !manualWorkspace ? await ensureWorkspaceRepoId(agent) : undefined
+            agent.workspace.mode === 'git' && agent.workspace.credential?.provider === 'github'
+              ? await ensureWorkspaceRepoId(agent)
+              : undefined
           if (workspaceRepoId === ref.repoId) {
             return reply.code(409).send({
               error: 'Conflict',
@@ -582,7 +597,10 @@ export function agentRepoRoutes(deps: HttpDeps) {
         }
         // The workspace is redundant with this grant only when it is the SAME host's
         // repository: the two number theirs independently (§8.1).
-        const redundantWorkspaceGrant = workspaceRepoId === row.repoId && agent.workspace.mode === row.provider
+        const redundantWorkspaceGrant =
+          workspaceRepoId === row.repoId &&
+          agent.workspace.mode === 'git' &&
+          agent.workspace.credential?.provider === row.provider
         const now = new Date()
         // Persist one-way cleanup authority and drop the grant atomically under
         // the projection lifecycle lock. Deleting first could leave a passing

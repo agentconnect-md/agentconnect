@@ -506,14 +506,14 @@ describe('workspaceGitConfigOf', () => {
   // Only `agent.workspace` is read, so the cast keeps the fixture to the field under test.
   const withWorkspace = (workspace: AgentWorkspace): AgentRecord => ({ workspace }) as AgentRecord
 
-  it('folds a github workspace’s repo and subdir into the status body', () => {
+  it('folds a git workspace’s repo and subdir into the status body', () => {
     expect(
-      workspaceGitConfigOf(withWorkspace({ mode: 'github', gitRepo: 'https://github.com/acme/infra', agentDir: 'api' }))
+      workspaceGitConfigOf(withWorkspace({ mode: 'git', gitRepo: 'https://github.com/acme/infra', agentDir: 'api' }))
     ).toEqual({ repo: 'https://github.com/acme/infra', agentDir: 'api' })
   })
 
   it('omits an absent subdir rather than sending an empty one', () => {
-    expect(workspaceGitConfigOf(withWorkspace({ mode: 'github', gitRepo: 'https://github.com/acme/infra' }))).toEqual({
+    expect(workspaceGitConfigOf(withWorkspace({ mode: 'git', gitRepo: 'https://github.com/acme/infra' }))).toEqual({
       repo: 'https://github.com/acme/infra'
     })
   })

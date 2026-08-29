@@ -41,7 +41,7 @@ import {
 } from '@/components/console/platforms/publish'
 import { platformRegistry, platformSupportsSharing } from '@/components/console/platforms/registry'
 import { BOT_PLATFORMS, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
-import { agentCapabilitySource, agentLabel, MOCK_MODE, type Agent } from '@/lib/data'
+import { agentCapabilitySource, agentLabel, MOCK_MODE, workspaceSourceOf, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { useProfile } from '@/lib/profile'
@@ -444,7 +444,7 @@ export default function AddIntegrationModal({
   const [ghReposError, setGhReposError] = useState<'failed' | null>(null)
   const [ghPrivateReposHidden, setGhPrivateReposHidden] = useState(false)
   const [ghRepoPick, setGhRepoPick] = useState<string | null>(
-    agent.workspace.mode === 'github' ? agent.workspace.repo : null
+    agent.workspace.mode === 'git' && workspaceSourceOf(agent.workspace) === 'github' ? agent.workspace.repo : null
   )
   const [ghRepoOpen, setGhRepoOpen] = useState(false)
   const [ghQ, setGhQ] = useState('')
@@ -501,8 +501,9 @@ export default function AddIntegrationModal({
   // user to authorize an unpicked one inline. Scratch workspaces have no
   // implicit repo and use this explicit allowlist for every GitHub repo. A
   // manual GitHub workspace remains limited to its own repo.
-  const wsRepo = agent.workspace.mode === 'github' ? agent.workspace.repo : null
-  const isGithubAppWs = agent.workspace.mode === 'github' && !!agent.workspace.installationId
+  const wsRepo =
+    agent.workspace.mode === 'git' && workspaceSourceOf(agent.workspace) === 'github' ? agent.workspace.repo : null
+  const isGithubAppWs = agent.workspace.mode === 'git' && agent.workspace.provider === 'github'
   const canAuthorizeAdditionalRepos = isGithubAppWs || agent.workspace.mode === 'scratch'
   const agentReposKey = consoleKeys.agentRepos(activeOrg?.id, agent.id)
   const { data: agentReposData, mutate: mutateAgentRepos } = useSWR(agentReposKey, ([, orgId, , agentId]) =>
@@ -1029,7 +1030,7 @@ export default function AddIntegrationModal({
   // else, and saying so here beats letting the user reach a refusal at the last click.
   const glProjectAuthorized =
     !glProject ||
-    (agent.workspace.mode === 'gitlab' && agent.workspace.projectId === glProject) ||
+    (agent.workspace.mode === 'git' && agent.workspace.provider === 'gitlab' && agent.workspace.repoId === glProject) ||
     authorizedRepos.some((r) => repoAuthProvider(r) === 'gitlab' && r.repoId === glProject)
 
   // One subscription = one hook row PER SELECTED FAMILY on this agent, each with

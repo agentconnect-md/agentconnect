@@ -328,33 +328,29 @@ const GitRepoOutput = z.codec(z.string(), z.string(), {
   encode: redactGitUrlSecrets
 })
 
-/** Where the agent runs (inline; path is daemon-generated). Mirrors protocol AgentWorkspace.
- *  Reused as the response shape inside `AgentDto` — new fields round-trip automatically. */
+/** Who vouches for the workspace repository (git-workspace-model.md §5, read shape):
+ *  provenance fixed at the last workspace write, never a live re-derivation. */
+export const AgentWorkspaceCredentialDto = z.discriminatedUnion('provider', [
+  z.object({ provider: z.literal('github'), access: z.enum(['read', 'write']) }),
+  z.object({
+    provider: z.literal('gitlab'),
+    access: z.enum(['read', 'write']),
+    projectId: z.string() // rename-stable numeric project id (workspaceRepoId)
+  })
+])
+
+/** Where the agent runs (inline; path is daemon-generated). Mirrors the domain
+ *  AgentWorkspace (git-workspace-model.md §5). Reused as the response shape inside
+ *  `AgentDto` — new fields round-trip automatically. Absent credential ⇒ anonymous. */
 export const AgentWorkspaceBody = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('scratch') }),
   z.object({
-    mode: z.literal('github'),
+    mode: z.literal('git'),
     worktree: z.boolean(),
     gitRepo: GitRepoOutput,
     gitBranch: z.string().optional(),
     agentDir: z.string().optional(),
-    // github-app credential mode: the GithubInstallation picked in the console
-    // repo picker. Provenance hint (minting re-resolves live by repo owner);
-    // absent ⇒ anonymous git (public repos, pre-github-app behavior).
-    installationId: z.string().uuid().optional(),
-    // Ceiling for minted tokens; only meaningful with installationId. Default 'write' —
-    // coding agents push branches; the console offers a read-only toggle.
-    gitAccess: z.enum(['read', 'write']).optional()
-  }),
-  // gitlab-com-integration.md M4: the workspace is a managed project binding.
-  z.object({
-    mode: z.literal('gitlab'),
-    worktree: z.boolean(),
-    gitRepo: GitRepoOutput,
-    gitBranch: z.string().optional(),
-    agentDir: z.string().optional(),
-    projectId: z.string().optional(), // numeric project id (workspaceRepoId)
-    gitAccess: z.enum(['read', 'write']).optional()
+    credential: AgentWorkspaceCredentialDto.optional()
   })
 ])
 
@@ -393,31 +389,25 @@ const AgentDirPatchInput = z
   .union([z.string(), z.null()])
   .transform((value, ctx) => (value === null ? null : (normalizeAgentDir(value, ctx) ?? null)))
 
-/** Input-only workspace shape. Responses stay lenient for historical agentDir rows. */
-const AgentWorkspaceInputBody = z.discriminatedUnion('mode', [
-  z.object({ mode: z.literal('scratch') }),
-  z.object({
-    mode: z.literal('github'),
-    // Product-facing boolean; the domain stores the generic isolation policy.
-    // Omitted clients get the new-agent default in the route.
-    worktree: z.boolean().optional(),
-    gitRepo: GitRepoInput,
-    gitBranch: z.string().optional(),
-    agentDir: AgentDirCreateInput.optional(),
-    installationId: z.string().uuid().optional(),
-    gitAccess: z.enum(['read', 'write']).optional()
-  }),
-  // The project is named by its rename-stable numeric id and must already be a
-  // managed GitLab binding in the organization; the route derives the clone URL
-  // from the binding — the caller never supplies a gitlab gitRepo directly.
-  z.object({
-    mode: z.literal('gitlab'),
-    worktree: z.boolean().optional(),
-    projectId: z.string().regex(/^[1-9]\d*$/),
-    gitBranch: z.string().optional(),
-    agentDir: AgentDirCreateInput.optional(),
-    gitAccess: z.enum(['read', 'write']).optional()
-  })
+// The ONE workspace input shape, shared verbatim by creation and replacement (§5):
+// provenance is server-derived from the address (no installationId/projectId input),
+// `access` is a request the derived credential records (unstated ⇒ the target's
+// highest tier). Strict, so a legacy host-shaped payload fails loudly.
+export const AgentWorkspaceInputBody = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('scratch') }).strict(),
+  z
+    .object({
+      mode: z.literal('git'),
+      // FULL cloneable address; bare `owner/repo` stays GitHub-only sugar.
+      gitRepo: GitRepoInput,
+      gitBranch: z.string().min(1).optional(),
+      agentDir: AgentDirCreateInput.optional(),
+      // Product-facing boolean; the domain stores the generic isolation policy.
+      // Omitted clients get the new-agent default in the route.
+      worktree: z.boolean().optional(),
+      access: z.enum(['read', 'write']).optional()
+    })
+    .strict()
 ])
 
 // Agent `name` is a slug: lowercase letters/digits/hyphens, no leading/trailing
@@ -694,33 +684,26 @@ export const SetAgentDaemonBody = z
     }
   )
 
-/** Full desired workspace definition for the acknowledged cold edit path. */
-// `gitAccess` absent takes the highest tier the target can actually carry, the
-// way agent creation does: write wherever credentials are minted for it, and read
-// for an anonymous checkout, which has none to push with.
-export const SetAgentWorkspaceBody = z.discriminatedUnion('mode', [
-  z.object({ mode: z.literal('scratch') }).strict(),
-  z
-    .object({
-      mode: z.literal('github'),
-      worktree: z.boolean().optional(),
-      repoFullName: z.string().regex(/^[^/\s]+\/[^/\s]+$/, 'repoFullName must be owner/repo'),
-      gitBranch: z.string().min(1).optional(),
-      agentDir: AgentDirCreateInput.optional(),
-      gitAccess: z.enum(['read', 'write']).optional()
-    })
-    .strict(),
-  z
-    .object({
-      mode: z.literal('gitlab'),
-      worktree: z.boolean().optional(),
-      projectId: z.string().regex(/^[1-9]\d*$/),
-      gitBranch: z.string().min(1).optional(),
-      agentDir: AgentDirCreateInput.optional(),
-      gitAccess: z.enum(['read', 'write']).optional()
-    })
-    .strict()
-])
+/** Full desired workspace definition for the acknowledged cold edit path —
+ *  the SAME shape agent creation takes (git-workspace-model.md §5). */
+export const SetAgentWorkspaceBody = AgentWorkspaceInputBody
+
+/** `GET /orgs/:orgId/git/resolve` answer (git-workspace-model.md §5): the same
+ *  derivation the write paths run, for the authenticated caller — the picker's
+ *  badges and branch defaults come from it, so picking cannot disagree with the
+ *  write path about what a pick means. Never consulted to display a stored workspace. */
+export const GitResolveDto = z.object({
+  /** Who would vouch for this address if written now; 'anonymous' ⇒ read-only clone. */
+  provider: z.enum(['github', 'gitlab', 'anonymous']),
+  /** Canonical cloneable address the write would persist. */
+  gitRepo: z.string(),
+  /** The acting caller's access ceiling on this target. */
+  access: z.enum(['read', 'write']),
+  defaultBranch: z.string().optional(),
+  /** For an anonymous outcome: which managed host the target sits on ('other' ⇒ neither). */
+  host: z.enum(['github', 'gitlab', 'other']).optional()
+})
+export type GitResolveDtoT = z.infer<typeof GitResolveDto>
 
 export const AgentDto = z.object({
   id: z.string(),

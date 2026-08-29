@@ -14,6 +14,7 @@ import {
   GITLAB_COM_V1_FEATURE,
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_INSTANCE_V1_FEATURE,
+  WORKSPACE_GIT_V1_FEATURE,
   isFrame
 } from '@agentconnect.md/protocol'
 import { prisma } from '../setup.db.js'
@@ -253,7 +254,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
     const SAFE_AGENT = 'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2'
     await prisma.agent.update({
       where: { id: AGENT },
-      data: { workspaceMode: 'github', gitRepo: 'file:///var/lib/agentconnect/other-workspace' }
+      data: { workspaceMode: 'git', gitRepo: 'file:///var/lib/agentconnect/other-workspace' }
     })
     await prisma.agent.create({
       data: {
@@ -416,7 +417,8 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
         name: 'gitlab-agent',
         runtime: 'claude',
         daemonId: DAEMON,
-        workspaceMode: 'gitlab',
+        workspaceMode: 'git',
+        gitCredentialProvider: 'gitlab',
         gitRepo: 'https://gitlab.com/example-group/example-project',
         gitBranch: 'main',
         workspaceRepoId: 4455667n
@@ -431,11 +433,13 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
     if (!isFrame('register/ok')(ok)) throw new Error('expected register/ok')
     expect(ok.payload.agents.map((a) => a.agentId)).toEqual([AGENT])
 
-    // Advertising the feature delivers the gitlab arm with the numeric identity.
+    // Advertising gitlab-com-v1 ALONE delivers the LEGACY host-shaped arm: the
+    // host-neutral `git` arm is frame-fatal on a daemon without workspace-git-v1
+    // (git-workspace-model.md §8, the dual encoding).
     const h2 = buildWsHarness(prisma)
     const { stub: stub2 } = await authThenAwaitOk(h2)
     const payload = registerPayload()
-    ;(payload.capabilities as { features?: string[] }).features = ['gitlab-com-v1']
+    ;(payload.capabilities as { features?: string[] }).features = [GITLAB_COM_V1_FEATURE]
     stub2.inject('register', payload, { id: 'f2f2f2f2-2222-4222-8222-222222222222' })
     const ok2 = await stub2.expectFrame('register/ok')
     if (!isFrame('register/ok')(ok2)) throw new Error('expected register/ok')
@@ -446,6 +450,96 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       gitRepo: 'https://gitlab.com/example-group/example-project',
       projectId: '4455667'
     })
+
+    // The same row, to a daemon that DOES advertise workspace-git-v1: the git arm,
+    // provenance on the credential axis rather than folded into the mode.
+    const h3 = buildWsHarness(prisma)
+    const { stub: stub3 } = await authThenAwaitOk(h3)
+    const modern = registerPayload()
+    ;(modern.capabilities as { features?: string[] }).features = [GITLAB_COM_V1_FEATURE, WORKSPACE_GIT_V1_FEATURE]
+    stub3.inject('register', modern, { id: 'f3f3f3f3-3333-4333-8333-333333333333' })
+    const ok3 = await stub3.expectFrame('register/ok')
+    if (!isFrame('register/ok')(ok3)) throw new Error('expected register/ok')
+    expect(ok3.payload.agents.find((a) => a.agentId === GITLAB_AGENT)?.workspace).toMatchObject({
+      mode: 'git',
+      gitRepo: 'https://gitlab.com/example-group/example-project',
+      credential: { provider: 'gitlab', projectId: '4455667' }
+    })
+  })
+
+  it('dual-encodes a github-vouched workspace per peer, and an anonymous one onto the legacy arm', async () => {
+    await seedReconcileState()
+    const APP_AGENT = 'd4d4d4d4-d4d4-4d4d-8d4d-d4d4d4d4d4d4'
+    const PUBLIC_AGENT = 'd5d5d5d5-d5d5-4d5d-8d5d-d5d5d5d5d5d5'
+    await prisma.agent.createMany({
+      data: [
+        {
+          id: APP_AGENT,
+          orgId: DEFAULT_ORG_ID,
+          name: 'app-backed-agent',
+          runtime: 'claude',
+          daemonId: DAEMON,
+          workspaceMode: 'git',
+          gitCredentialProvider: 'github',
+          installationId: 'roster-installation',
+          gitRepo: 'https://github.com/example-co/infra',
+          gitBranch: 'main'
+        },
+        {
+          id: PUBLIC_AGENT,
+          orgId: DEFAULT_ORG_ID,
+          name: 'anonymous-clone-agent',
+          runtime: 'claude',
+          daemonId: DAEMON,
+          workspaceMode: 'git',
+          gitRepo: 'https://git.example.test/example-co/tools',
+          gitBranch: 'trunk'
+        }
+      ]
+    })
+
+    // A daemon with no workspace-git-v1: the App-backed row rides the legacy
+    // `github` arm with its gitCredential marker, and the anonymous row rides the
+    // same arm with none — that arm's gitRepo is host-agnostic on purpose.
+    const legacy = buildWsHarness(prisma)
+    const { stub: legacyStub } = await authThenAwaitOk(legacy)
+    legacyStub.inject('register', registerPayload(), { id: REG_ID })
+    const legacyOk = await legacyStub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(legacyOk)) throw new Error('expected register/ok')
+    const legacyOf = (id: string) => legacyOk.payload.agents.find((a) => a.agentId === id)?.workspace
+    expect(legacyOf(APP_AGENT)).toMatchObject({
+      mode: 'github',
+      gitRepo: 'https://github.com/example-co/infra',
+      gitCredential: 'github-app'
+    })
+    expect(legacyOf(PUBLIC_AGENT)).toMatchObject({
+      mode: 'github',
+      gitRepo: 'https://git.example.test/example-co/tools'
+    })
+    expect(legacyOf(PUBLIC_AGENT)).not.toHaveProperty('gitCredential')
+
+    // The same two rows to a workspace-git-v1 peer: one git arm each, credential
+    // present exactly where one vouches.
+    const modern = buildWsHarness(prisma)
+    const { stub: modernStub } = await authThenAwaitOk(modern)
+    const payload = registerPayload()
+    ;(payload.capabilities as { features?: string[] }).features = [WORKSPACE_GIT_V1_FEATURE]
+    modernStub.inject('register', payload, { id: REG_ID2 })
+    const modernOk = await modernStub.expectFrame('register/ok')
+    if (!isFrame('register/ok')(modernOk)) throw new Error('expected register/ok')
+    const modernOf = (id: string) => modernOk.payload.agents.find((a) => a.agentId === id)?.workspace
+    expect(modernOf(APP_AGENT)).toMatchObject({
+      mode: 'git',
+      gitRepo: 'https://github.com/example-co/infra',
+      branch: 'main',
+      credential: { provider: 'github' }
+    })
+    expect(modernOf(PUBLIC_AGENT)).toMatchObject({
+      mode: 'git',
+      gitRepo: 'https://git.example.test/example-co/tools',
+      branch: 'trunk'
+    })
+    expect(modernOf(PUBLIC_AGENT)).not.toHaveProperty('credential')
   })
 
   describe('§24.4 self-managed host carriage and the projection gate', () => {
@@ -474,7 +568,8 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
           name: 'gitlab-workspace-agent',
           runtime: 'claude',
           daemonId: DAEMON,
-          workspaceMode: 'gitlab',
+          workspaceMode: 'git',
+          gitCredentialProvider: 'gitlab',
           gitRepo: `${SELF_MANAGED}/example-group/example-project`,
           gitBranch: 'main',
           workspaceRepoId: 4455667n
@@ -504,7 +599,7 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
       })
     }
 
-    /** A GITHUB-workspace agent whose only GitLab consumer is an enabled gitlab hook. */
+    /** A github-vouched workspace agent whose only GitLab consumer is an enabled gitlab hook. */
     async function seedHookOnlyAgent(): Promise<void> {
       await prisma.agent.create({
         data: {
@@ -513,7 +608,9 @@ describe('register handler — authoritative reconcile snapshot + idempotency + 
           name: 'github-workspace-with-gitlab-hook',
           runtime: 'claude',
           daemonId: DAEMON,
-          workspaceMode: 'github',
+          workspaceMode: 'git',
+          gitCredentialProvider: 'github',
+          installationId: 'hook-only-installation',
           gitRepo: 'https://github.com/example-co/infra',
           gitBranch: 'main'
         }
