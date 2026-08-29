@@ -142,7 +142,7 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
     // No `thread` ⇒ post to the channel ROOT (undefined), not the current thread.
     expect(gw.postMessage).toHaveBeenCalledWith('C9', '<@U9> e2e hi', undefined, { agentAuthorId: 'bot-a' })
     expect(recorded).toEqual([{ channel: 'C9', text: '<@U9> e2e hi', ts: 'ts-42' }])
-  }, 20_000)
+  })
 
   it('does not expose private stdio MCP until its persistent UDS attach is ACKed', async () => {
     const root = tempRoot('ac-private-bridge-attach-')
@@ -206,7 +206,7 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
     acknowledgeAttach()
     await connecting
     expect(stdioReady).toBe(true)
-  }, 20_000)
+  })
 
   it('keeps a private lazy bridge alive across first-list failure and preserves native MCP errors', async () => {
     const root = tempRoot('ac-private-bridge-e2e-')
@@ -284,7 +284,7 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
         })
       })
     )
-  }, 20_000)
+  })
 
   // A bridge that outlives its harness holds ~230 MB of RSS per session for the daemon's
   // lifetime (#936), so both ends of its lifetime have to terminate the process.
@@ -341,7 +341,7 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
       // What a dying harness does to the bridge: EOF on stdin, control socket still live.
       bridge.stdin!.end()
       await expect(exitOf(bridge)).resolves.toBe(0)
-    }, 20_000)
+    })
 
     it('exits when the daemon control socket closes', async () => {
       const path = join(tempRoot('ac-bridge-socket-'), 'mcp.sock')
@@ -351,6 +351,6 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
       // stdin stays open here: only the daemon went away, as on a daemon restart.
       for (const socket of privateSockets) socket.destroy()
       await expect(exitOf(bridge)).resolves.toBe(1)
-    }, 20_000)
+    })
   })
 })

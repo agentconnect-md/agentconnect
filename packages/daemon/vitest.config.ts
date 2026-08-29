@@ -59,18 +59,22 @@ export const WINDOWS_EXCLUDED = [
 
 const platformExcluded = process.platform === 'win32' ? WINDOWS_EXCLUDED : []
 
+// The budget every test gets before the platform scaling below. A per-test override can only
+// SHORTEN what this grants, never extend it, so one written at or under this value is dead weight
+// that fails first on the slowest platform. `test/no-shortened-test-budget.test.ts` rejects those.
+export const BASE_TEST_TIMEOUT = 30_000
+
 export default defineConfig({
   test: {
     environment: 'node',
     // Keep process-heavy, integration-shaped unit files from oversubscribing available test-worker
-    // resources. Halved on the 4-vCPU Windows runner: at four, files carrying an inline 15 s budget
-    // land right at it, and which ones tip over varies run to run.
-    maxWorkers: process.platform === 'win32' ? 2 : 4,
+    // resources. Four on Windows too: the halving there bought time for inline per-test budgets that
+    // no longer exist, and the polls those budgets never governed now scale in `test/wait-support.ts`.
+    maxWorkers: 4,
     // The async store pays a microtask hop per statement; on a loaded CI box the IO-heavy store files
     // drift past vitest's 5 s default without being hung. Windows I/O is slower again by enough that
-    // the same files need double the budget. This governs every test — a per-test override below it
-    // only shortens the budget, so the 15 s ones that predate this default were dropped.
-    testTimeout: process.platform === 'win32' ? 60_000 : 30_000,
+    // the same files need double the budget.
+    testTimeout: process.platform === 'win32' ? BASE_TEST_TIMEOUT * 2 : BASE_TEST_TIMEOUT,
     reporters: githubActionsReporters('daemon.md'),
     projects: [
       {

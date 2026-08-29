@@ -12,6 +12,7 @@ import { K8sApiError } from '@agentconnect.md/k8s-client'
 import { GuardedResumeRejectedError, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 import type { SpawnRecord } from '../src/shim/binding.js'
 import { fakeGenerations } from './fake-generations.js'
+import { waitBudget } from './wait-support.js'
 
 /**
  * A complete ACP turn through the cluster path: driver → listener → shim → runtime → back.
@@ -212,7 +213,7 @@ describe('a full ACP turn over the cluster driver', () => {
     // A lost channel is a dead runtime; without this the host waits on a stream that can
     // never produce another byte.
     driver.onChannelLost('agent-a', 'sandbox evicted')
-    await vi.waitFor(() => expect(terminal).toBe(1), { timeout: 10_000 })
+    await vi.waitFor(() => expect(terminal).toBe(1), waitBudget(10_000))
   }, 60_000)
 
   it('keeps the SAME runtime working across a real credential renewal', async () => {
@@ -232,7 +233,7 @@ describe('a full ACP turn over the cluster driver', () => {
     const bindsBefore = bindCount()
     // Half the advertised lifetime: the shim closes its socket and dials a replacement.
     shimClock.advance(300_000)
-    await vi.waitFor(() => expect(bindCount()).toBeGreaterThan(bindsBefore), { timeout: 15_000 })
+    await vi.waitFor(() => expect(bindCount()).toBeGreaterThan(bindsBefore), waitBudget(15_000))
 
     // Same runtime, same ACP session, after the channel underneath was replaced.
     expect(await host.prompt(sessionId, [{ type: 'text', text: 'after' }])).toMatchObject({ stopReason: 'end_turn' })

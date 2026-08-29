@@ -16,6 +16,7 @@ import {
   userPost as userPostIn
 } from './webchat-continuation-fixture.js'
 import type { RdChatEvent, WebchatPost } from '@agentconnect.md/protocol'
+import { WAIT, waitBudget } from './wait-support.js'
 
 // #549 parity for multi-agent webchat (webchat-multi-agents.md §5.2a, issue #904):
 // a peer agent's COMMITTED conversation post — delivered to this participant as a
@@ -34,7 +35,6 @@ const P2 = 'bot-b'
 const REF = 'bot-ref'
 const CONV = '88888888-8888-4888-8888-888888888888'
 const KICKOFF_TURN = '77777777-7777-4777-8777-777777777777'
-const WAIT = { timeout: 10_000 }
 
 const rd = rdFactory(CONV, P1)
 const fakeRelay = (daemonRef: { current?: Daemon }, roster: string[]) => fakeRelayIn(daemonRef, roster, CONV)
@@ -123,7 +123,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     // A woken player's prompt names the author of the post that woke it.
     expect(prompts.get(P2)![0]).toContain(`[${P1}] 1`)
     await daemon.stop()
-  }, 30_000)
+  })
 
   it('activates the whole roster on an unnarrowed human kickoff (standing mention, unchanged)', async () => {
     const { factory, prompts } = scriptedHosts({ [P1]: () => 'a1', [P2]: () => 'a2' })
@@ -187,7 +187,7 @@ describe('webchat multi-agent continuation (#549 parity)', () => {
     )
 
     // Posts at depths 0..MAX-1; the wake that would run at depth MAX is refused.
-    await vi.waitFor(() => expect(posts).toHaveLength(MAX_AGENT_CALL_HOPS), { timeout: 25_000 })
+    await vi.waitFor(() => expect(posts).toHaveLength(MAX_AGENT_CALL_HOPS), waitBudget(25_000))
     await settle()
     expect(posts).toHaveLength(MAX_AGENT_CALL_HOPS)
     const last = posts.at(-1)!

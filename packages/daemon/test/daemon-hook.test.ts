@@ -40,14 +40,10 @@ import { statePath } from '../src/paths.js'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { FakeClock } from '@agentconnect.md/connection'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { WAIT } from './wait-support.js'
 
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
 const workspaces = new WorkspaceManager()
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
 
 const AGENT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 const HOOK_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
@@ -555,7 +551,7 @@ describe('Daemon rd/msg hook fires', () => {
     // The settled write dropped the marker, so a later replay cannot resurrect it either.
     expect(settled).toEqual([undefined])
     await restarted.stop()
-  }, 20_000)
+  })
 
   it('re-derives the failed completion from the persisted outcome after a restart', async () => {
     const root = scaffold()
@@ -607,7 +603,7 @@ describe('Daemon rd/msg hook fires', () => {
     // A settled row builds no poster at all, so the reason can only have come from the durable record.
     expect(makeGithubReply).not.toHaveBeenCalled()
     await restarted.stop()
-  }, 20_000)
+  })
 
   it('records publish_barrier_failed and never reaches the poster when the durable barrier write fails', async () => {
     const { factory } = streamingHost()

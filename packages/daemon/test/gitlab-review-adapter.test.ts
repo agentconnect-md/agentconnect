@@ -1958,5 +1958,5 @@ describe('GitLab review adapter — credentials and features', () => {
     } finally {
       await daemon.stop().catch(() => {})
     }
-  }, 20_000)
+  })
 })

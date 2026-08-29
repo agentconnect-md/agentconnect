@@ -14,11 +14,7 @@ import { Daemon } from '../src/daemon.js'
 import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
+import { WAIT } from './wait-support.js'
 
 const AGENT_IDENTITY = {
   displayName: 'Review Bot',

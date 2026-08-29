@@ -7,11 +7,7 @@ import { executeTool, type SessionContext } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
+import { WAIT } from './wait-support.js'
 
 const AGENT_ID = 'bot-a'
 const CONV_1 = '11111111-1111-4111-8111-111111111111'
@@ -553,7 +549,7 @@ describe('Daemon interrupt safety gates', () => {
     }
     await runCase(false)
     await runCase(true)
-  }, 30_000)
+  })
 
   it('keeps host respawn gated until an existing host teardown settles', async () => {
     let releaseStop!: () => void

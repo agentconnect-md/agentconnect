@@ -65,5 +65,5 @@ describe('concurrent runtime install repair', () => {
     expect(await (daemon as any).repairAgentRuntimeInstall('bot-a', home, missing)).toBe('repaired')
     expect(repairRuntimeInstall).toHaveBeenCalledTimes(2)
     await daemon.stop()
-  }, 20_000)
+  })
 })

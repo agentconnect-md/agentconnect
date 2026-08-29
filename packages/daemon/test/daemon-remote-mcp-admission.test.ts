@@ -177,7 +177,7 @@ describe('preset admin MCP through the webchat dispatch path', () => {
     expect(dones).toHaveLength(1)
     expect(client.issueWebchatMcpGrant).not.toHaveBeenCalled()
     expect(adminDescriptor(host)).toBeUndefined()
-  }, 20_000)
+  })
 
   it('keeps ordinary preset webchat running when the runtime rejects the admin descriptor', async () => {
     const { client, host, dones } = await runTurn({
@@ -198,5 +198,5 @@ describe('preset admin MCP through the webchat dispatch path', () => {
     expect(fallbackServers.some((server) => server.name === 'agentconnect')).toBe(true)
     expect(fallbackServers.some((server) => server.name === 'agentconnect-admin')).toBe(false)
     expect(host.prompt).toHaveBeenCalledTimes(1)
-  }, 20_000)
+  })
 })

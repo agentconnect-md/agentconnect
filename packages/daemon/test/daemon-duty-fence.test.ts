@@ -10,6 +10,7 @@ import { Daemon } from '../src/daemon.js'
 import type { DutyRegistry } from '../src/cp/duty-registry.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { VirtualClock, runVirtual } from './fakes/virtual-clock.js'
+import { waitBudget } from './wait-support.js'
 
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const AGENT_B = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
@@ -257,7 +258,7 @@ describe('the duty self-fence', () => {
     // never that a loaded runner got through the real ladder inside the test budget.
     await runVirtual(
       clock,
-      vi.waitFor(() => expect(conn.stop).toHaveBeenCalled(), { timeout: 20_000, interval: 5 })
+      vi.waitFor(() => expect(conn.stop).toHaveBeenCalled(), waitBudget(20_000, 5))
     )
     expect(failures).toBeGreaterThan(1) // the first pass really did throw
     expect(pooled(daemon)).not.toContain(conn)

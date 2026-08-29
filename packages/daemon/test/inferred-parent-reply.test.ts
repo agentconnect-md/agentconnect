@@ -15,8 +15,8 @@ import type { MessageAgentReq } from '../src/mcp/ops.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { fakeCpClient, scaffold, seedCallPolicy, settle } from './webchat-continuation-fixture.js'
 import { callDaemonTool, daemonMcpBinding } from '../../../evals/games/mcp-client.js'
+import { WAIT } from './wait-support.js'
 
-const WAIT = { timeout: 10_000 }
 const CALLER = 'bot-parent'
 const CHILD = 'bot-child'
 
@@ -110,7 +110,7 @@ describe('inferred parent reply (#800 mechanism fix)', () => {
     } finally {
       await run.daemon.stop()
     }
-  }, 30_000)
+  })
 
   it('an empty / no-response child answer becomes an explicit "finished without reporting" wake', async () => {
     const run = await boot(() => 'AC_NO_RESPONSE')
@@ -123,7 +123,7 @@ describe('inferred parent reply (#800 mechanism fix)', () => {
     } finally {
       await run.daemon.stop()
     }
-  }, 30_000)
+  })
 
   it('a child that sends its real report is NOT doubled by an inferred copy', async () => {
     const run = await boot(async (text) => {
@@ -143,7 +143,7 @@ describe('inferred parent reply (#800 mechanism fix)', () => {
     } finally {
       await run.daemon.stop()
     }
-  }, 30_000)
+  })
 
   it('a plain call without needsReply never infers', async () => {
     const run = await boot(() => 'Some ordinary answer.')
@@ -155,5 +155,5 @@ describe('inferred parent reply (#800 mechanism fix)', () => {
     } finally {
       await run.daemon.stop()
     }
-  }, 30_000)
+  })
 })

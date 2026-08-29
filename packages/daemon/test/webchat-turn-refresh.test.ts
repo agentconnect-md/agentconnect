@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { transcriptChannelKey } from '../src/store/local-store.js'
 import type { RdChatEvent, RdMsgWebchat, RdWebchatPost } from '@agentconnect.md/protocol'
+import { WAIT } from './wait-support.js'
 
 // Turn-final context refresh for multi-agent webchat (webchat-multi-agents.md §5.4):
 // the browser stream stays live, so supersession is a stream EVENT and the fenced
@@ -14,7 +15,6 @@ const AGENT_ID = 'bot-a'
 const PEER_ID = 'agent-b'
 const CONV = '88888888-8888-4888-8888-888888888888'
 const TURN = '77777777-7777-4777-8777-777777777777'
-const WAIT = { timeout: 10_000 }
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-wc-refresh-'))

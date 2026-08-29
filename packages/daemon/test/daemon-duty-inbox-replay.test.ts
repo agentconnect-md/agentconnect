@@ -13,8 +13,8 @@ import { Daemon } from '../src/daemon.js'
 import { LocalStore, sessionKey, type InboxRow } from '../src/store/local-store.js'
 import { statePath } from '../src/paths.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { WAIT } from './wait-support.js'
 
-const WAIT = { timeout: 10_000 }
 const AGENT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
 const GROUP = '11111111-1111-4111-8111-111111111111'
 const INTEGRATION = 'int-a'

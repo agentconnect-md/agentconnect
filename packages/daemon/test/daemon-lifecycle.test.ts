@@ -11,11 +11,7 @@ import { readSkillLedger, skillLedgerLocation } from '../src/skills/skill-instal
 import { sessionKey } from '../src/store/local-store.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
+import { WAIT, waitBudget } from './wait-support.js'
 
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 
@@ -225,7 +221,7 @@ describe('Daemon session lifecycle (#118)', () => {
     await (daemon as any).dispatch('bot-a', dm('200', 'warm', 'T2'), 'int-a')
     expect(prepare).toHaveBeenCalledTimes(2)
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('earns one extra host start attempt when it repairs the runtime install', async () => {
     const root = scaffold({ agentStartAttempts: 1, agentStartBackoffMs: 0 })
@@ -244,7 +240,7 @@ describe('Daemon session lifecycle (#118)', () => {
     expect(repair).toHaveBeenCalledTimes(1)
     expect((daemon as any).lastStartFailure.has('bot-a')).toBe(false)
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('does not spend its one repair on a failure that was never a broken install', async () => {
     const root = scaffold({ agentStartAttempts: 2, agentStartBackoffMs: 0 })
@@ -265,7 +261,7 @@ describe('Daemon session lifecycle (#118)', () => {
     await expect((daemon as any).ensureHostAsync('bot-a')).resolves.toBe(started)
     expect(repair).toHaveBeenCalledTimes(2)
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('records the redacted cause when no repair rescues the start', async () => {
     const root = scaffold({ agentStartAttempts: 1, agentStartBackoffMs: 0 })
@@ -288,7 +284,7 @@ describe('Daemon session lifecycle (#118)', () => {
       'Error: Missing optional dependency @openai/codex-linux-x64'
     )
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('declines a repair it cannot own: no matching tree, or a cluster-launched runtime', async () => {
     const root = scaffold()
@@ -307,7 +303,7 @@ describe('Daemon session lifecycle (#118)', () => {
     const missing = new Error('Error: Missing optional dependency @openai/codex-linux-x64')
     expect(await (daemon as any).repairAgentRuntimeInstall('bot-a', home, missing)).toBe('declined')
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('re-runs the workspace receipt gate before every fresh host retry', async () => {
     const root = scaffold({ agentStartAttempts: 2, agentStartBackoffMs: 0 })
@@ -389,7 +385,7 @@ describe('Daemon session lifecycle (#118)', () => {
     expect(factory).toHaveBeenCalledOnce()
     expect(host.start).toHaveBeenCalledOnce()
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('serializes an aborted warm preparation before the reconciled host prepares and starts', async () => {
     const root = scaffold()
@@ -457,7 +453,7 @@ describe('Daemon session lifecycle (#118)', () => {
     const ledger = await readSkillLedger(await skillLedgerLocation(workspace, join(root, 'skill-installs')))
     expect(ledger).toMatchObject({ phase: 'ready', agentId: 'bot-a', runtime: 'codex' })
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('rejects a late warm preparation after its host generation was stopped', async () => {
     const firstHost = quietHost()
@@ -478,7 +474,7 @@ describe('Daemon session lifecycle (#118)', () => {
     expect(preparation).toHaveBeenCalledOnce()
     expect((daemon as any).hosts.get('bot-a')).toBe(secondHost)
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('keeps stopAgent fenced until an aborted warm preparation quiesces', async () => {
     const daemon = new Daemon({
@@ -517,7 +513,7 @@ describe('Daemon session lifecycle (#118)', () => {
     expect(stopped).toBe(true)
     expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(false)
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('coordinates a console git write like a file write, minus the host stop', async () => {
     const daemon = new Daemon({
@@ -580,7 +576,7 @@ describe('Daemon session lifecycle (#118)', () => {
     )
     ;(daemon as any).drainingAgents.delete('bot-a')
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('waits out a workspace mutation instead of failing an admitted cold host start', async () => {
     const host = quietHost()
@@ -608,7 +604,7 @@ describe('Daemon session lifecycle (#118)', () => {
     await expect(starting).resolves.toBe(host)
     expect(host.start).toHaveBeenCalledOnce()
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('still refuses a host start when a hard gate closes while the mutation drains', async () => {
     const factory = vi.fn(() => quietHost() as any)
@@ -629,7 +625,7 @@ describe('Daemon session lifecycle (#118)', () => {
     expect(factory).not.toHaveBeenCalled()
     ;(daemon as any).drainingAgents.delete('bot-a')
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('serializes workspace preparation and file publication in both admission orders', async () => {
     const daemon = new Daemon({
@@ -687,7 +683,7 @@ describe('Daemon session lifecycle (#118)', () => {
     expect((daemon as any).workspacePreparationTails.has('bot-a')).toBe(false)
     expect((daemon as any).workspaceDispatchFences.has('bot-a')).toBe(false)
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('writes the session back to idle once a turn finishes (no longer stuck prompting)', async () => {
     const daemon = new Daemon({
@@ -1857,10 +1853,10 @@ describe('Daemon idle sweep — background-task lease', () => {
           await new Promise((r) => setTimeout(r, 20))
           expect(host.prompt).toHaveBeenCalledTimes(3)
         },
-        { timeout: 8000, interval: 50 }
+        waitBudget(8000, 50)
       )
       await daemon.stop()
-    }, 20_000)
+    })
 
     it('does not wake for an internal subagent task', async () => {
       const clock = new FakeClock()
@@ -1916,7 +1912,7 @@ describe('Daemon idle sweep — background-task lease', () => {
       expect(host.prompt).toHaveBeenCalledTimes(2)
       expect(lease.bgWakes).toBe(20) // never spends past the cap
       await daemon.stop()
-    }, 30_000)
+    })
   })
 
   // ACP session ids are runtime-local: two agents can each expose `acp-1`. Sharing one lease

@@ -7,11 +7,7 @@ import { sessionKey, transcriptChannelKey } from '../src/store/local-store.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner, where a
-// cold session boot (workspace + host + session/new) can stall well past a second.
-// Give every poll in this file the same generous budget instead.
-const WAIT = { timeout: 10_000 }
+import { WAIT } from './wait-support.js'
 
 function scaffold(): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-turn-output-'))

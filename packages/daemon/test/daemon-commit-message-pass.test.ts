@@ -185,7 +185,7 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
       expect(host.discardSession).toHaveBeenCalledWith('sess-2')
       expect(inner.hosts.get(AGENT)).toBeDefined()
     })
-  }, 20_000)
+  })
 
   it('leaves no session row, no transcript and no live collector behind', async () => {
     await withDaemon({ chunks: ['fix: quiet'] }, async (daemon) => {
@@ -202,7 +202,7 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
       await pass(daemon)
       expect([...inner.memoryExtractionQuarantines.keys()]).toEqual([JSON.stringify([AGENT, 'sess-2'])])
     })
-  }, 20_000)
+  })
 
   it('keeps its throwaway cwd out of the command list the console reports for the agent', async () => {
     // The pass's session belongs to the agent's warm host, so host ownership alone would take this
@@ -219,7 +219,7 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
       await inner.onAcpUpdate(AGENT, 'chat-1', ADVERTISEMENT)
       expect(inner.runtimeCommands.get(AGENT).sessionId).toBe('chat-1')
     })
-  }, 20_000)
+  })
 
   it('rides _meta.systemPrompt on a runtime that has it, and prepends the policy on one that does not', async () => {
     await withDaemon({ trusted: true, chunks: ['fix: trusted'] }, async (daemon, host) => {
@@ -232,7 +232,7 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
       expect(host.newSession.mock.calls[0]![3]).toBeUndefined()
       expect(host.prompt.mock.calls[0]![1]).toEqual([{ type: 'text', text: 'SYSTEM-POLICY\n\nDIFF-PROMPT' }])
     })
-  }, 20_000)
+  })
 
   it('fails closed when the runtime has no non-mutating mode, before any prompt', async () => {
     await withDaemon({ modes: ['default', 'accept-edits'] }, async (daemon, host) => {
@@ -240,7 +240,7 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
       expect(host.newSession).not.toHaveBeenCalled()
       expect(host.prompt).not.toHaveBeenCalled()
     })
-  }, 20_000)
+  })
 
   it('fails closed when the mode switch is rejected, and still discards the session', async () => {
     await withDaemon({ modeAccepted: false }, async (daemon, host) => {
@@ -248,7 +248,7 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
       expect(host.prompt).not.toHaveBeenCalled()
       expect(host.discardSession).toHaveBeenCalledWith('sess-1')
     })
-  }, 20_000)
+  })
 
   it('drives the runtime cancel path when the caller budget aborts mid-prompt', async () => {
     // The in-flight case: the caller's budget fires while the runtime is still thinking, so the abort
@@ -264,7 +264,7 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
       expect(result).toEqual({ output: '', stopReason: 'cancelled' })
       expect(host.discardSession).toHaveBeenCalledWith('sess-1')
     })
-  }, 20_000)
+  })
 
   it('never dispatches an already-canceled press, and refuses an unknown agent', async () => {
     await withDaemon({ chunks: ['fix: x'] }, async (daemon, host) => {
@@ -278,5 +278,5 @@ describe('runCommitMessagePass — a fresh isolated session on the warm host', (
         'unknown agent'
       )
     })
-  }, 20_000)
+  })
 })

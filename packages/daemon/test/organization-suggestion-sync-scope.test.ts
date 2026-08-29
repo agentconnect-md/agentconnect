@@ -128,7 +128,7 @@ describe('organization suggestion sync scope', () => {
     expect(byOrg.get(ORG_A)).toEqual([AGENT_A])
     expect(byOrg.get(ORG_B)).toEqual([AGENT_B])
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('sends nothing unscoped on an install-wide connection with no resolvable org', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: hostFactory() as never })
@@ -143,7 +143,7 @@ describe('organization suggestion sync scope', () => {
     // The CP would answer SCOPE_DENIED to an unscoped frame here, which is the whole failure (#968).
     expect(sync).not.toHaveBeenCalled()
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('keeps a single unscoped frame on a connection-scoped daemon', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: hostFactory() as never })
@@ -161,7 +161,7 @@ describe('organization suggestion sync scope', () => {
     const sent = (sync.mock.calls[0] as unknown as [{ suggestions: { sourceAgentId: string }[] }])[0]
     expect(sent.suggestions.map((s) => s.sourceAgentId).sort()).toEqual([AGENT_A, AGENT_B])
     await daemon.stop()
-  }, 20_000)
+  })
 
   it('keeps every other org replaying when one org is refused', async () => {
     const daemon = new Daemon({ root: scaffold(), hostFactory: hostFactory() as never })
@@ -192,5 +192,5 @@ describe('organization suggestion sync scope', () => {
     expect(sync).toHaveBeenCalledTimes(2)
     expect(sync.mock.calls.map((call) => call[1]).sort()).toEqual([ORG_A, ORG_B])
     await daemon.stop()
-  }, 20_000)
+  })
 })

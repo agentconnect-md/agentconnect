@@ -1023,5 +1023,5 @@ describe('shim renewal, end to end', () => {
     renewed.close('simulated drop')
     await advanceUntil(replaced(renewed))
     expect(dialer.connectionsFor('agent-a')[0]?.binding.generation).toBe(3)
-  }, 20_000)
+  })
 })

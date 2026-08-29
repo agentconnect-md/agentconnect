@@ -264,7 +264,7 @@ describe('materialization over a real daemon-and-shim pair', () => {
     // validation — neither half of this is stubbed.
     expect(readFileSync(join(configFilesDir(sandboxRoot), 'kubeconfig'), 'utf8')).toBe('apiVersion: v1\n')
     expect(handled.map((entry) => entry.capability)).toEqual(['materialize', 'materialize'])
-  }, 20_000)
+  })
 
   it('is refused by the shim when the launch never received the capability', async () => {
     // The grant list is enforced on both sides deliberately. Here the binding carries only
@@ -272,5 +272,5 @@ describe('materialization over a real daemon-and-shim pair', () => {
     const { channel, handled } = await pair(['exec'])
     await expect(channel.request('materialize', { op: 'clear', root: '/tmp' })).rejects.toThrow(/not granted/)
     expect(handled).toEqual([])
-  }, 20_000)
+  })
 })

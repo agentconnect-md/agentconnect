@@ -687,5 +687,5 @@ describe('shim listener hardening', () => {
       dialer.stop()
       await expect(pending).rejects.toThrow(/daemon shutting down/)
     }
-  }, 30_000)
+  })
 })

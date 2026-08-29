@@ -5,16 +5,12 @@ import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { LocalMemoryFs } from '../src/memory/fs.js'
 import type { WebchatOutput, WebchatDone, RdChatEvent, RdMsgWebchat } from '@agentconnect.md/protocol'
+import { WAIT } from './wait-support.js'
 
 // A webchat conversation/agent target. agentId is a real UUID because the protocol
 // WebchatMessage.agentId is uuid-validated at the wire; here it is the on-disk agent id.
 const AGENT_ID = 'bot-a'
 const CONV = '88888888-8888-4888-8888-888888888888'
-
-// vi.waitFor defaults to a 1000ms budget — too tight on a loaded CI runner draining
-// N queued turns through the serial gate (the 11-turn poll flaked at ~7/11). Every
-// test here already allows 15s, so give the polls a uniform, generous budget.
-const WAIT = { timeout: 10_000 }
 
 function scaffold(limits?: Record<string, number>, agentExtra?: Record<string, unknown>): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-wc-'))
@@ -2072,7 +2068,7 @@ describe('Daemon handleRelayMsg (rd/msg op dispatch — the relay data plane)', 
       post: { conversationId: CONV, text: 'the answer', author: { kind: 'agent', agentId: AGENT_ID } }
     })
     await daemon.stop()
-  }, 15_000)
+  })
 
   it('rejects a turn while draining (accepted:false, reason draining) — no turn dispatched', async () => {
     const { factory } = streamingHost([])

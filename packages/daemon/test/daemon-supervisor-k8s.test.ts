@@ -70,7 +70,7 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     } finally {
       await realStop()
     }
-  }, 20_000)
+  })
 
   it('refuses an upgrade because the version is the image, not for want of a supervisor', async () => {
     const instance = daemon({ k8s: true, supervisor: K8S_SUPERVISOR })
@@ -87,7 +87,7 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     } finally {
       await instance.stop()
     }
-  }, 20_000)
+  })
 
   it.each(['service', 'cli'])(
     'refuses an upgrade in k8s mode even with an inherited %s marker and a valid cli-entry',
@@ -119,7 +119,7 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     } finally {
       await instance.stop()
     }
-  }, 20_000)
+  })
 
   it('still refuses a restart when no supervisor is declared, k8s or not', async () => {
     const instance = daemon({ k8s: true })
@@ -133,7 +133,7 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     } finally {
       await instance.stop()
     }
-  }, 20_000)
+  })
 
   it('keeps the CLI and service supervisors unchanged', async () => {
     const instance = daemon({ supervisor: 'service' })
@@ -143,5 +143,5 @@ describe('daemon lifecycle under the k8s supervisor', () => {
     } finally {
       await instance.stop()
     }
-  }, 20_000)
+  })
 })
