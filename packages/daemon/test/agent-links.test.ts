@@ -90,6 +90,16 @@ describe('flattenUnsafeLinks', () => {
     )
   })
 
+  // `String.replace` scans a STRING replacement for `$$`, `$&`, `` $` `` and `$'`, and a label is
+  // agent-authored — `$&` re-emitting the raw match would put an unflattened target back in the body.
+  it.each([
+    ['[a $$ b [log](/tmp/a.log)](https://ci.test)', '[a $$ b log (`a.log`)](https://ci.test)'],
+    ['[$& label [i](/x/i.md)](https://e.test)', '[$& label i (`i.md`)](https://e.test)'],
+    ["[$` and $' [i](/x/i.md)](https://e.test)", "[$` and $' i (`i.md`)](https://e.test)"]
+  ])("carries a dollar sequence in a kept link's label through verbatim: %s", (input, expected) => {
+    expect(flattenUnsafeLinks(input)).toBe(expected)
+  })
+
   it('matches a label carrying brackets, which used to leave its target live', () => {
     expect(flattenUnsafeLinks('see [[wiki]](/a/b.md)')).toBe('see [wiki] (`b.md`)')
   })

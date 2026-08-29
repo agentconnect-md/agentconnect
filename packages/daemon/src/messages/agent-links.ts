@@ -31,8 +31,10 @@ export function flattenUnsafeLinks(text: string, opts: FlattenOptions = {}): str
     segment.replace(link, (whole, bang: string, label: string, rawDest: string) => {
       // A label may itself hold a link, whose target is no safer for sitting inside another's.
       const flatLabel = flattenUnsafeLinks(label, opts)
-      // A kept link keeps its own syntax; only its label changes, and `[label]` opens the match.
-      const kept = (): string => (flatLabel === label ? whole : whole.replace(`[${label}]`, `[${flatLabel}]`))
+      // A kept link keeps its own syntax; only its label changes, and `[label]` opens the match. The
+      // replacement is a FUNCTION: a string one is still scanned for `$&` and friends, and a label is
+      // agent-authored — `$&` there would re-emit the raw match, target unflattened.
+      const kept = (): string => (flatLabel === label ? whole : whole.replace(`[${label}]`, () => `[${flatLabel}]`))
       const dest = rawDest.startsWith('<') ? rawDest.slice(1, -1).trim() : rawDest
       if (WEB_SCHEME.test(dest)) return kept()
       if (opts.resolvesRelativeTargets && !HOST_ABSOLUTE.test(dest)) return kept()
