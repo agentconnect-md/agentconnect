@@ -66,10 +66,10 @@ import {
 import EditWorkspaceModal from './EditWorkspaceModal'
 import {
   GH_DEFAULT_FAMILIES,
-  GH_DEFAULT_TRIGGER_MODE,
   GH_FAMILIES,
   GH_TRIGGER_LABEL,
   famCovered,
+  githubDefaultTriggerMode,
   githubFamilyCarriesReviews,
   githubFamilySubscription,
   githubMentionUsage,
@@ -79,9 +79,9 @@ import {
 } from '@/lib/github-events'
 import {
   GL_DEFAULT_FAMILIES,
-  GL_DEFAULT_TRIGGER_MODE,
   GL_FAMILIES,
   GL_TRIGGER_LABEL,
+  gitlabDefaultTriggerMode,
   gitlabFamCovered,
   gitlabFamilyCarriesReviews,
   gitlabFamilySubscription,
@@ -451,9 +451,9 @@ export default function AddIntegrationModal({
   const [ghExactRepoLoading, setGhExactRepoLoading] = useState(false)
   const [ghFams, setGhFams] = useState<Set<GhFamily>>(new Set(GH_DEFAULT_FAMILIES))
   // Cadence is per SUBJECT — one hook row per family, each with its own trigger.
-  // Unset ⇒ the shared default, so a newly ticked family needs no seeding here.
+  // Unset ⇒ that family's default, so a newly ticked family needs no seeding here.
   const [ghModes, setGhModes] = useState<Partial<Record<GhFamily, GhTriggerMode>>>({})
-  const ghModeOf = (fam: GhFamily): GhTriggerMode => ghModes[fam] ?? GH_DEFAULT_TRIGGER_MODE
+  const ghModeOf = (fam: GhFamily): GhTriggerMode => ghModes[fam] ?? githubDefaultTriggerMode(fam)
   const [ghReviewPolicy, setGhReviewPolicy] = useState<HookReviewPolicy>('full')
   const [ghReportingMode, setGhReportingMode] = useState<HookReportingMode>('check')
   const [ghSyncing, setGhSyncing] = useState(false)
@@ -555,7 +555,7 @@ export default function AddIntegrationModal({
   const gl = useGitlabProjects(platform === 'gitlab', glQ)
   const [glFams, setGlFams] = useState<Set<GlFamily>>(new Set(GL_DEFAULT_FAMILIES))
   const [glModes, setGlModes] = useState<Partial<Record<GlFamily, GlTriggerMode>>>({})
-  const glModeOf = (fam: GlFamily): GlTriggerMode => glModes[fam] ?? GL_DEFAULT_TRIGGER_MODE
+  const glModeOf = (fam: GlFamily): GlTriggerMode => glModes[fam] ?? gitlabDefaultTriggerMode(fam)
   const [glReviewPolicy, setGlReviewPolicy] = useState<HookReviewPolicy>('full')
   const [glReportingMode, setGlReportingMode] = useState<HookReportingMode>('check')
 

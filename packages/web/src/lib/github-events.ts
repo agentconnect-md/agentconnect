@@ -121,10 +121,10 @@ export function githubMentionUsage(agentName: string, teamOwner?: string | null)
 /** The default create-form selection: pull requests only. */
 export const GH_DEFAULT_FAMILIES: readonly GhFamily[] = ['pull_request']
 
-/** The default cadence every create surface opens a new subject on: the opening
- *  itself. The wizard's newly ticked family and the agent page's "add subject"
- *  read the same constant, so a subject starts the same way wherever it is made. */
-export const GH_DEFAULT_TRIGGER_MODE: GhTriggerMode = 'first'
+/** The cadence a create surface opens a new subject on — a change proposal on every update, the rest on the opening. */
+export function githubDefaultTriggerMode(fam: GhFamily): GhTriggerMode {
+  return fam === 'pull_request' ? 'every' : 'first'
+}
 
 /** The comment subscription that rides updated/mention-only modes for thread families. */
 export const THREAD_COMMENT_EVENT = 'issue_comment:created'
@@ -134,10 +134,9 @@ export function githubCommentFamilies(families: readonly HookCommentFamily[]): G
   return families.filter((family): family is GithubCommentFamily => family === 'issues' || family === 'pull_request')
 }
 
-/** A cadence a family cannot carry falls back to the shared default; only the
- *  issues-only `labeled` can reach this, and the console never offers it elsewhere. */
+/** A cadence a family cannot carry narrows to the opening, never widens — only issues-only `labeled` reaches this. */
 function effectiveMode(fam: GhFamily, mode: GhTriggerMode): GhTriggerMode {
-  return githubFamilySupportsMode(fam, mode) ? mode : GH_DEFAULT_TRIGGER_MODE
+  return githubFamilySupportsMode(fam, mode) ? mode : 'first'
 }
 
 /** Derive the explicit comment scope from the selected issue/PR families — a

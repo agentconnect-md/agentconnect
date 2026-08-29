@@ -103,9 +103,10 @@ export function gitlabMentionUsage(agentName: string): string {
 /** The default create-form selection: merge requests only. */
 export const GL_DEFAULT_FAMILIES: readonly GlFamily[] = ['merge_request']
 
-/** The default cadence every create surface opens a new subject on: the opening
- *  itself, exactly as the GitHub side does. */
-export const GL_DEFAULT_TRIGGER_MODE: GlTriggerMode = 'first'
+/** The cadence a create surface opens a new subject on — a merge request on every update, the rest on the opening. */
+export function gitlabDefaultTriggerMode(fam: GlFamily): GlTriggerMode {
+  return fam === 'merge_request' ? 'every' : 'first'
+}
 
 /** Narrow a stored cross-host comment scope to the GitLab families a gitlab hook may carry. */
 export function gitlabCommentFamilies(families: readonly HookCommentFamily[]): GitlabCommentFamily[] {

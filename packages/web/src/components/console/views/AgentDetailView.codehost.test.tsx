@@ -251,7 +251,7 @@ describe('AgentDetailView, code-host repository blocks', () => {
   })
 
   it('creates the missing family row at the default trigger', async () => {
-    // The same default the wizard opens a new subject on: the opening itself.
+    // The same default the wizard opens the subject on: every update, for a PR.
     const scope = await render()
     await act(async () => byTitle(scope, 'Watch another subject')[0]!.click())
     await act(async () => menuItem('Add Pull requests')!.click())
@@ -261,7 +261,7 @@ describe('AgentDetailView, code-host repository blocks', () => {
         agentId: 'agent-1',
         repoFullName: 'acme/web',
         family: 'pull_request',
-        events: ['pull_request:opened'],
+        events: ['pull_request:*', 'issue_comment:created'],
         commentFamilies: ['pull_request'],
         mentionOnly: false
       })
