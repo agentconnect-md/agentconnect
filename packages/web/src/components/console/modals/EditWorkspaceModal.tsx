@@ -393,7 +393,8 @@ export default function EditWorkspaceModal({
         branchChanged ||
         agentDirChanged ||
         worktreeChanged ||
-        accessChanged)) ||
+        accessChanged ||
+        bindsApp)) ||
     (mode === 'gitlab' &&
       (gitlabWorkspace === null ||
         repoChanged ||
