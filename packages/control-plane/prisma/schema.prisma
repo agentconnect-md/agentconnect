@@ -1108,7 +1108,7 @@ model SessionMeta {
   phase               SessionPhase        @default(start)
   link                String? // deep-link (NOT a body)
   summary             String?             @db.Text // short milestone text (NOT the stream)
-  title               String?             @db.Text // daemon-derived display title (NOT a body)
+  title               String?             @db.Text // display title: runtime/ingress, else a capped first-message excerpt
   status              String?
   triggeredBy         String?
   channelName         String?
