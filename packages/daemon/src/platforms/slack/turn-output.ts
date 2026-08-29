@@ -105,9 +105,17 @@ export interface SlackTurn {
      *  is already displayed. */
     lastResponse?: { ts: string; text: string }
     /** Routing facts of the COMPLETE response, resolved by the host before the final body
-     *  flush (§5.5): the recipient set, the addressed-anyone bit, and whether any peer
-     *  agent shares this conversation at all. Lets a terminal section be BORN `final`. */
-    finalRouting?: { mentionedAgentIds: string[]; addressedAnyone: boolean; hasPeers: boolean }
+     *  flush (§5.5): the recipient set, the addressed-anyone bit, whether any peer agent
+     *  shares this conversation at all, and whether one of them posts as the SAME bot —
+     *  a shared-bot peer's ingress admits only the closing edit past its self-echo filter,
+     *  so a born-final fresh post would never reach it. Lets a terminal section be BORN
+     *  `final` when no peer shares the sending bot. */
+    finalRouting?: {
+      mentionedAgentIds: string[]
+      addressedAnyone: boolean
+      hasPeers: boolean
+      peerSharesBot: boolean
+    }
     /** ts of the body message that was born `final` — set only after Slack accepted a
      *  terminal post carrying the closing metadata, so finalization can skip its edit. */
     finalStamped?: string
@@ -397,7 +405,10 @@ async function postSlackReply<TTurn extends SlackTurn>(
 ): Promise<string | undefined> {
   const previous = trackReply ? p.reply.lastReply : undefined
   const attribution = trackReply ? p.attribution : undefined
-  const closure = terminal ? p.reply.finalRouting : undefined
+  // A shared-bot peer sees fresh own-bot posts filtered as self-echo — only the closing
+  // edit is admitted past that filter — so those conversations keep the re-stamp.
+  const routing = terminal ? p.reply.finalRouting : undefined
+  const closure = routing && !routing.peerSharesBot ? routing : undefined
   const agentPostOptions = slackAgentPostOptions({ ...p.plan, responseId: p.reply.responseId }, closure)
   const options = attribution ? { ...agentPostOptions, trailingBlocks: attribution.blocks } : agentPostOptions
   const ts = await conn.postMessage(p.plan.channel, text, p.plan.thread, options as SlackPostOptions | undefined)

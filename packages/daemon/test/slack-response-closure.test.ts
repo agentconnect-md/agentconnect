@@ -19,7 +19,7 @@ import {
   type SlackTurnState
 } from '../src/platforms/slack/turn-output.js'
 
-const ROUTING = { mentionedAgentIds: ['bot-b'], addressedAnyone: true, hasPeers: true }
+const ROUTING = { mentionedAgentIds: ['bot-b'], addressedAnyone: true, hasPeers: true, peerSharesBot: false }
 
 function fixture(reply: SlackTurn['reply'] = { responseId: 'resp-1' }, over: Record<string, unknown> = {}) {
   let seq = 0
@@ -87,6 +87,19 @@ describe('born-final terminal posts (§5.5)', () => {
     const { apply, turn, posts } = fixture()
     await apply({ kind: 'post', text: 'done', terminal: true })
     expect(posts[0]?.options?.response).toMatchObject({ deliveryState: 'streaming', mentionedAgentIds: [] })
+    expect(turn.reply.finalStamped).toBeUndefined()
+  })
+
+  it('keeps a terminal post `streaming` when a peer shares the sending bot', async () => {
+    // A shared-bot peer's ingress admits only the closing `message_changed` edit past
+    // its self-echo filter — a fresh own-bot post would never reach it — so these
+    // conversations keep the re-stamp instead of closing at post time.
+    const { apply, turn, posts } = fixture({
+      responseId: 'resp-1',
+      finalRouting: { ...ROUTING, peerSharesBot: true }
+    })
+    await apply({ kind: 'post', text: 'done <@UBOTB>', terminal: true })
+    expect(posts[0]?.options?.response).toMatchObject({ deliveryState: 'streaming' })
     expect(turn.reply.finalStamped).toBeUndefined()
   })
 

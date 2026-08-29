@@ -325,8 +325,23 @@ describe('response closure is a turn-output surface member (audit F19, site 7)',
     expect((turn.reply as any).finalRouting).toEqual({
       mentionedAgentIds: ['bot-b'],
       addressedAnyone: true,
-      hasPeers: true
+      hasPeers: true,
+      peerSharesBot: false
     })
+    await daemon.stop()
+  })
+
+  it('marks the peer as sharing the bot when both agents post under one identity', async () => {
+    // A shared-bot peer's ingress admits only the closing edit past its self-echo
+    // filter, so this flag is what keeps the re-stamp for those conversations.
+    const daemon = await boot(['bot-a', 'bot-b'], { botShared: true })
+    const turn = {
+      plan: { platform: 'slack', agentId: 'bot-a', channel: 'C1' },
+      reply: { text: 'done', responseId: 'r-1' },
+      conn: {}
+    }
+    ;(daemon as any).turnSurfaces.exact('slack').prepareResponseClosure(turn)
+    expect((turn.reply as any).finalRouting).toMatchObject({ hasPeers: true, peerSharesBot: true })
     await daemon.stop()
   })
 
@@ -358,8 +373,9 @@ describe('response closure is a turn-output surface member (audit F19, site 7)',
         responseId: 'r-1',
         lastResponse: { ts: '1720000000.000300', text: 'done' },
         // Deliberately different from what the text would resolve to, so the assertion
-        // proves the prepared set wins over a recompute.
-        finalRouting: { mentionedAgentIds: ['bot-b'], addressedAnyone: true, hasPeers: true }
+        // proves the prepared set wins over a recompute. `peerSharesBot` also pins that
+        // a shared-bot conversation still closes through the edit.
+        finalRouting: { mentionedAgentIds: ['bot-b'], addressedAnyone: true, hasPeers: true, peerSharesBot: true }
       },
       conn: { finalizeResponse }
     }
@@ -379,7 +395,7 @@ describe('response closure is a turn-output surface member (audit F19, site 7)',
         responseId: 'r-1',
         lastResponse: { ts: '1720000000.000300', text: 'done' },
         finalStamped: '1720000000.000300',
-        finalRouting: { mentionedAgentIds: [], addressedAnyone: false, hasPeers: true }
+        finalRouting: { mentionedAgentIds: [], addressedAnyone: false, hasPeers: true, peerSharesBot: false }
       },
       conn: { finalizeResponse }
     }

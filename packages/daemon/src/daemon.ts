@@ -11506,6 +11506,8 @@ export class Daemon {
     const orgId = this.cpCollab.orgForAgent(p.plan.agentId)
     if (!orgId) return
     const directory = this.cpCollab.mentionDirectory(orgId, p.plan.platform, p.plan.channel)
+    const own = directory.find((entry) => entry.agentId === p.plan.agentId)
+    const hasPeers = directory.some((entry) => entry.agentId !== p.plan.agentId)
     // Whether the answer addressed ANYONE is read from the complete reply text, not
     // from the final section: §2.3 makes any address binding, and the splitter may
     // have put the only mention in section one. Without this the same answer would
@@ -11513,7 +11515,11 @@ export class Daemon {
     p.reply.finalRouting = {
       mentionedAgentIds: resolveSlackMentionedAgents(p.reply.text, directory).filter((id) => id !== p.plan.agentId),
       addressedAnyone: slackTextAddressesAnyone(p.reply.text),
-      hasPeers: directory.some((entry) => entry.agentId !== p.plan.agentId)
+      hasPeers,
+      // A shared-bot peer's ingress admits only the closing edit past its self-echo
+      // filter, so born-final is reserved for dedicated-bot conversations. An own
+      // identity the directory cannot prove dedicated is treated as shared.
+      peerSharesBot: hasPeers && (own?.botUserId === undefined || own.botShared === true)
     }
   }
 
