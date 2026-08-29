@@ -2,9 +2,8 @@
  * Folds codex-acp's out-of-band terminal output back into the tool call it belongs to.
  *
  * For a shell command, codex-acp sends no `content[]` text at all: the output streams as
- * `_meta.terminal_output_delta` chunks on status-less `tool_call_update`s (or one
- * `_meta.terminal_output` replacement), and the completing update carries only
- * `rawOutput.formatted_output: ""`. Nothing downstream reads `_meta`, so the transcript, the
+ * `_meta.terminal_output*` delta chunks on status-less `tool_call_update`s, and the completing
+ * update carries only `rawOutput.formatted_output: ""`. Nothing downstream reads `_meta`, so the transcript, the
  * web console and every platform renderer showed a command with an empty result.
  *
  * This runs ONCE at the daemon's ACP ingress — the `maskAgentSecrets` precedent — so every
@@ -15,8 +14,9 @@
 
 /** Head-cap per call, WELL below the transcript's 1 MiB body ceiling: that ceiling measures
  *  the serialized whole ToolBody in UTF-8 bytes and sheds `rawOutput` entirely when over, so
- *  a fold near the ceiling would erase itself. 256 KiB of UTF-16 code units stays under it
- *  even at 3 bytes per unit, with room for rawInput/content and JSON escaping. */
+ *  a fold near the ceiling would erase itself. 256 KiB of UTF-16 code units leaves ample
+ *  room in practice (JSON-escaped control characters can reach 6 bytes per unit, but terminal
+ *  output is overwhelmingly printable), plus headroom for rawInput/content. */
 const MAX_TERMINAL_OUTPUT_UNITS = 256 * 1024
 
 type MetaOutput = { data?: unknown; terminal_id?: unknown }
