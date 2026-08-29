@@ -273,8 +273,16 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
+      # Only what this job runs, plus its workspace closure — 7 of the 14 projects. A full install
+      # also fetches the console's Next.js and the control plane's Prisma, which this job can never
+      # reach, and Windows pays for every one of those files twice: extracting the store cache, then
+      # materializing node_modules. Safe to narrow because the three imports that leave these two
+      # packages — `evals/games/mcp-client.ts` and the two `docker/runtime-sandbox` helpers — use
+      # only Node built-ins, as do the summary scripts, and both packages carry their own vitest.
+      # The other jobs keep the full install: every Linux job shares one cache key, so a partial
+      # store saved by one would cost the full-install jobs a re-download on every run.
       - name: Install
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --filter "@agentconnect.md/daemon..." --filter "@agentconnect.md/cli..."
       # POSIX-only files self-skip via `it.skipIf(process.platform === 'win32')`, or — when every
       # case in the file is POSIX-only — via `WINDOWS_EXCLUDED` in that package's vitest.config.ts.
       #
