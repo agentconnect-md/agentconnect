@@ -1112,7 +1112,7 @@ export default function AgentDetailView() {
                         Permission mode
                       </span>
                       <span className="badge bg-(--surface-active) text-(--text-secondary) max-desktop:px-[10px] max-desktop:py-[3px] max-desktop:text-[12px]">
-                        {agentPermissionDisplay(capabilitySource, da.runtime, da.permissionMode, da.approvalsReviewer)}
+                        {agentPermissionDisplay(capabilitySource, da.runtime, da.permissionMode)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-4 border-b border-(--border-subtle) px-4 py-3">

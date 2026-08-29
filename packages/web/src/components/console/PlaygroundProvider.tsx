@@ -19,15 +19,7 @@ import {
   useSyncExternalStore,
   type ReactNode
 } from 'react'
-import {
-  agentLabel,
-  isGitWorkspace,
-  selectedPermissionPreset,
-  type Agent,
-  type Session,
-  type SessionImage,
-  type SessionStep
-} from '@/lib/data'
+import { agentLabel, isGitWorkspace, type Agent, type Session, type SessionImage, type SessionStep } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import {
   webchatWsUrl,
@@ -1300,7 +1292,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
               : {}),
             model: da.model,
             runtime: da.runtime,
-            permissionMode: selectedPermissionPreset(da.runtime, da.permissionMode, da.approvalsReviewer ?? 'user'),
+            permissionMode: da.permissionMode,
             duration: 'live',
             tokens: '0',
             cost: '—',

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  approvalsReviewerDefault,
   agentEffortDisplay,
   agentModelDisplay,
   agentPermissionDisplay,
@@ -17,8 +16,6 @@ import {
   modelCapability,
   modelLabel,
   permissionModeChoicesFor,
-  permissionModePresets,
-  permissionPresetSettings,
   preferredModelFor,
   PLAYGROUND_CHANNEL_FILTER,
   resolvedPermissionMode,
@@ -27,7 +24,6 @@ import {
   resolveEffortForModel,
   sessionChannelDisplay,
   sessionChannelFilterValue,
-  selectedPermissionPreset,
   status,
   type DaemonRow,
   type RuntimeModelCatalog,
@@ -333,27 +329,13 @@ describe('permissionModeChoicesFor', () => {
   })
 })
 
-describe('Codex permission presets', () => {
-  it('merges Auto-review into the Agent editor without inventing a runtime mode', () => {
-    const modes = permissionModeOptions('codex')
-    expect(modes.map((option) => option.v)).toEqual(['read-only', 'agent', 'agent-full-access'])
-    expect(permissionModePresets('codex', modes).map((option) => option.l)).toEqual([
-      'Read Only',
-      'Ask for approval',
-      'Auto',
-      'Full Access'
+describe('Codex permission modes', () => {
+  it("offers exactly the modes the runtime owns, under Codex's own names", () => {
+    expect(permissionModeOptions('codex')).toEqual([
+      { v: 'read-only', l: 'Read Only' },
+      { v: 'agent', l: 'Approve for me' },
+      { v: 'agent-full-access', l: 'Full Access' }
     ])
-    expect(selectedPermissionPreset('codex', 'agent', 'auto_review')).toBe('agent:auto-review')
-    expect(permissionPresetSettings('codex', 'agent:auto-review')).toEqual({
-      permissionMode: 'agent',
-      approvalsReviewer: 'auto_review'
-    })
-    expect(permissionPresetSettings('codex', 'read-only')).toEqual({
-      permissionMode: 'read-only',
-      approvalsReviewer: 'user'
-    })
-    expect(approvalsReviewerDefault('codex')).toBe('user')
-    expect(approvalsReviewerDefault('claude')).toBe('')
   })
 })
 
@@ -672,9 +654,6 @@ describe('agent config display helpers (card ↔ editor parity)', () => {
     })
     it('resolves a blank mode through the catalog default', () => {
       expect(agentPermissionDisplay(codexDaemon, 'codex', '')).toBe('Ask for approval')
-    })
-    it('shows the merged Auto preset when Agent requests use Auto-review', () => {
-      expect(agentPermissionDisplay(codexDaemon, 'codex', 'agent', 'auto_review')).toBe('Auto')
     })
     it('falls back to the static permission table without a catalog', () => {
       expect(agentPermissionDisplay(undefined, 'codex', 'agent-full-access')).toBe('Full Access')

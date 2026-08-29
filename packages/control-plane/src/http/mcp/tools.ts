@@ -17,7 +17,6 @@
  */
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { ApprovalsReviewer } from '@agentconnect.md/protocol'
 import { CP_PLATFORM_IDS } from '../../platforms/ids.js'
 
 /** The day presets `getUsage` accepts, which it converts to an explicit window. */
@@ -299,7 +298,6 @@ export const MCP_TOOLS: McpToolDef[] = [
         outputMode: OutputMode.optional(),
         fastMode: z.boolean().optional(),
         permissionMode: z.string().min(1).optional(),
-        approvalsReviewer: ApprovalsReviewer.optional(),
         daemonId: z.string().min(1).optional().describe('Pin to a daemon (from listDaemons); omit to leave unplaced'),
         pause: z.boolean().optional()
       })
@@ -322,7 +320,6 @@ export const MCP_TOOLS: McpToolDef[] = [
         outputMode: OutputMode.nullable().optional(),
         fastMode: z.boolean().nullable().optional(),
         permissionMode: z.string().min(1).nullable().optional(),
-        approvalsReviewer: ApprovalsReviewer.nullable().optional(),
         pause: z.boolean().optional().describe('true pauses the agent; false resumes it')
       })
       .strict(),

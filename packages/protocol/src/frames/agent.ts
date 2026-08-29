@@ -86,12 +86,6 @@ export const AgentWorkspace = z.discriminatedUnion('mode', [
 ])
 export type AgentWorkspace = z.infer<typeof AgentWorkspace>
 
-/** Who reviews Codex approval requests that cross the active sandbox boundary.
- * This is deliberately independent from the ACP permission mode: Auto-review
- * changes the reviewer, not the sandbox or approval policy. */
-export const ApprovalsReviewer = z.enum(['user', 'auto_review'])
-export type ApprovalsReviewer = z.infer<typeof ApprovalsReviewer>
-
 /**
  * MCP-server name reserved for the daemon's own injected stdio bridge (its
  * platform tools). A config-defined or agent-enabled server under this name
@@ -325,7 +319,6 @@ export const AgentSpec = z.object({
   showStatusBar: z.boolean().optional(), // render Slack's persistent session status row; absent ⇒ leave agent.json unchanged
   fastMode: z.boolean().optional(), // runtime fast mode (ACP `model_config` toggle); absent ⇒ leave runtime default
   permissionMode: z.string().nullable().optional(), // runtime permission/approval mode (ACP `mode` selector); absent ⇒ leave alone, null ⇒ clear
-  approvalsReviewer: ApprovalsReviewer.nullable().optional(), // Codex approval reviewer; independent from permissionMode
   // Explicit opt-in: when false, conversation participants cannot change runtime
   // settings (model, effort, permission mode, fast mode) or answer approval
   // requests. Agent editors decide pending requests from the console instead.

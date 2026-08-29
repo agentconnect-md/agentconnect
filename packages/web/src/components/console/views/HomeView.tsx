@@ -46,9 +46,7 @@ import {
   isGitWorkspace,
   resolveEffortForModel,
   permissionModeChoicesFor,
-  permissionModePresets,
   resolvedPermissionMode,
-  selectedPermissionPreset,
   supportsModes,
   type Agent,
   type SessionImage
@@ -296,10 +294,8 @@ export default function HomeView() {
   const permissionMode = showPermission
     ? resolvedPermissionMode(agent?.permissionMode ?? '', permissionList, modelCatalog)
     : ''
-  const permissionPreset =
-    runtime.permissionPreset ??
-    selectedPermissionPreset(agent?.runtime ?? '', permissionMode, agent?.approvalsReviewer ?? 'user')
-  const permissionChoices = permissionModePresets(agent?.runtime ?? '', permissionList).map((o) => ({
+  const permissionPreset = runtime.permissionPreset ?? permissionMode
+  const permissionChoices = permissionList.map((o) => ({
     value: o.v,
     label: o.l,
     description: o.description

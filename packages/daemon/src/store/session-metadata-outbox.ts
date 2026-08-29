@@ -14,7 +14,6 @@ import {
   type SessionListItem
 } from '@agentconnect.md/protocol'
 import type { LoadedAgent } from '../agents/load-agents.js'
-import { selectedPermissionPreset } from '../acp/permission-modes.js'
 import type { CpClient } from '../cp/client.js'
 import { createSessionReader } from '../cp/session-reader.js'
 import {
@@ -196,9 +195,7 @@ export class SessionMetadataOutbox {
     if (fastMode !== undefined) event.fastMode = fastMode
     const permissionMode =
       (allowRuntimeChangesInChat && storeKey ? await store.getPermissionModeOverride(storeKey) : undefined) ??
-      (agent?.permissionMode
-        ? selectedPermissionPreset(agent.permissionMode, agent.approvalsReviewer ?? 'user')
-        : undefined)
+      agent?.permissionMode
     if (input.permissionMode !== undefined) event.permissionMode = input.permissionMode
     else if (permissionMode !== undefined) event.permissionMode = permissionMode
     const outputMode = (storeKey ? await store.getOutputModeOverride(storeKey) : undefined) ?? agent?.output?.mode

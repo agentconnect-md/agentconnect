@@ -11,7 +11,6 @@ import { randomUuid } from '@/lib/random-uuid'
 export type LifecycleStatusKey = 'upgrading' | 'restarting'
 export type ConnectionStatusKey = 'online' | 'paused' | 'offline'
 export type StatusKey = ConnectionStatusKey | LifecycleStatusKey
-export type ApprovalsReviewer = 'user' | 'auto_review'
 
 export interface StatusInfo {
   dot: string
@@ -499,8 +498,6 @@ export interface Agent {
   memoryCaptureMode?: 'turn' | 'manual'
   /** Runtime permission/approval mode; 'default' means the runtime default. */
   permissionMode: string
-  /** Who reviews eligible Codex approval requests; absent means the runtime default (`user`). */
-  approvalsReviewer?: ApprovalsReviewer
   /** Explicit opt-in for chat-side runtime changes and approval controls. */
   allowRuntimeChangesInChat: boolean
   /** The agent's OWN variables, in display order. A row here may be inactive while
@@ -695,17 +692,14 @@ export function effortLabel(runtime: string, v: string): string {
 
 export function permissionModeOptions(runtime: string): { v: string; l: string }[] {
   if (runtimeLabel(runtime) === 'Codex') {
-    // Labels are the name Codex's own UI ("Update Model Permissions", v0.144.x) gives
-    // the same approval+sandbox preset — matched by policy, not menu position — so the
-    // console can't misrepresent them. Values are codex-acp's runtime-owned ids (probed
-    // from session/new): `agent` is Codex's default, labeled "Ask for approval"
-    // (on-request + workspace-write); `agent-full-access` is danger-full-access —
-    // out-of-workspace + network. Codex's Auto preset is composed by the UI from
-    // `agent` + approvalsReviewer; it is not a runtime mode and stays out of this
-    // raw list.
+    // Labels are matched to Codex's own names by policy, not menu position, so the
+    // console can't misrepresent them. Values are codex-acp's runtime-owned ids: `agent`
+    // is Codex's default (on-request approvals, reviewed by the runtime itself), and
+    // `agent-full-access` is danger-full-access — out-of-workspace + network. `read-only`
+    // keeps the daemon's read-only sandbox profile.
     return [
       { v: 'read-only', l: 'Read Only' },
-      { v: 'agent', l: 'Ask for approval' },
+      { v: 'agent', l: 'Approve for me' },
       { v: 'agent-full-access', l: 'Full Access' }
     ]
   }
@@ -728,67 +722,8 @@ export function permissionModeDefault(runtime: string): string {
 
 export function permissionModeLabel(runtime: string, v: string): string {
   const mode = v || permissionModeDefault(runtime)
-  if (supportsApprovalsReviewer(runtime) && mode === CODEX_AUTO_REVIEW_PRESET) return 'Auto'
   const o = permissionModeOptions(runtime).find((x) => x.v === mode)
   return o?.l ?? mode
-}
-
-function supportsApprovalsReviewer(runtime: string): boolean {
-  return runtimeLabel(runtime) === 'Codex'
-}
-
-export function approvalsReviewerDefault(runtime: string): ApprovalsReviewer | '' {
-  return supportsApprovalsReviewer(runtime) ? 'user' : ''
-}
-
-const CODEX_AUTO_REVIEW_PRESET = 'agent:auto-review'
-
-/** Agent and session presets compose Codex's independent mode + reviewer selectors
- * into the single permissions control users see in Codex. Other runtimes keep their
- * advertised mode list unchanged. */
-export function permissionModePresets(
-  runtime: string,
-  modes: Array<{ v: string; l: string; description?: string }>
-): Array<{ v: string; l: string; description?: string }> {
-  if (
-    !supportsApprovalsReviewer(runtime) ||
-    !modes.some((mode) => mode.v === 'agent') ||
-    modes.some((mode) => mode.v === CODEX_AUTO_REVIEW_PRESET)
-  ) {
-    return modes
-  }
-  return modes.flatMap((mode) =>
-    mode.v === 'agent'
-      ? [
-          mode,
-          {
-            v: CODEX_AUTO_REVIEW_PRESET,
-            l: 'Auto',
-            description: 'Use Auto-review for eligible requests without widening the sandbox'
-          }
-        ]
-      : [mode]
-  )
-}
-
-export function selectedPermissionPreset(
-  runtime: string,
-  permissionMode: string,
-  approvalsReviewer: ApprovalsReviewer | ''
-): string {
-  return supportsApprovalsReviewer(runtime) && permissionMode === 'agent' && approvalsReviewer === 'auto_review'
-    ? CODEX_AUTO_REVIEW_PRESET
-    : permissionMode
-}
-
-export function permissionPresetSettings(
-  runtime: string,
-  preset: string
-): { permissionMode: string; approvalsReviewer: ApprovalsReviewer | '' } {
-  if (!supportsApprovalsReviewer(runtime)) return { permissionMode: preset, approvalsReviewer: '' }
-  return preset === CODEX_AUTO_REVIEW_PRESET
-    ? { permissionMode: 'agent', approvalsReviewer: 'auto_review' }
-    : { permissionMode: preset, approvalsReviewer: 'user' }
 }
 
 // ── dynamic model catalog (runtime-model-catalog.md §7) ─────────────────────
@@ -1052,13 +987,11 @@ export function agentEffortDisplay(
 export function agentPermissionDisplay(
   daemon: Pick<DaemonRow, 'runtimeModels'> | undefined,
   runtime: string,
-  permissionMode: string,
-  approvalsReviewer?: ApprovalsReviewer
+  permissionMode: string
 ): string {
   const catalog = daemon?.runtimeModels.find((r) => r.runtime === runtime)?.modelCatalog ?? undefined
   const choices = permissionModeChoicesFor(runtime, catalog)
   const mode = permissionMode || catalog?.defaultPermissionMode || permissionModeDefault(runtime)
-  if (supportsApprovalsReviewer(runtime) && mode === 'agent' && approvalsReviewer === 'auto_review') return 'Auto'
   return choices.find((o) => o.v === mode)?.l ?? permissionModeLabel(runtime, permissionMode)
 }
 

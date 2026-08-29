@@ -956,7 +956,7 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
     expect(badKey.statusCode).toBe(400)
   })
 
-  it('POST + PATCH /agents carries output, reviewer, and chat runtime controls in runtimeOverrides', async () => {
+  it('POST + PATCH /agents carries output and chat runtime controls in runtimeOverrides', async () => {
     const app = build()
     const create = await app.app.inject({
       method: 'POST',
@@ -968,7 +968,6 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         showFooter: false,
         showStatusBar: false,
         fastMode: true,
-        approvalsReviewer: 'auto_review',
         allowRuntimeChangesInChat: true
       }
     })
@@ -979,21 +978,18 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       showFooter: boolean
       showStatusBar: boolean
       fastMode: boolean | null
-      approvalsReviewer: 'user' | 'auto_review' | null
       allowRuntimeChangesInChat: boolean
     }
     expect(created.outputMode).toBe('high')
     expect(created.showFooter).toBe(false)
     expect(created.showStatusBar).toBe(false)
     expect(created.fastMode).toBe(true)
-    expect(created.approvalsReviewer).toBe('auto_review')
     expect(created.allowRuntimeChangesInChat).toBe(true)
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       outputMode: 'high',
       showFooter: false,
       showStatusBar: false,
       fastMode: true,
-      approvalsReviewer: 'auto_review',
       allowRuntimeChangesInChat: true
     })
 
@@ -1006,7 +1002,6 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
         showFooter: true,
         showStatusBar: true,
         fastMode: false,
-        approvalsReviewer: 'user',
         allowRuntimeChangesInChat: false
       }
     })
@@ -1016,24 +1011,21 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       showFooter: boolean
       showStatusBar: boolean
       fastMode: boolean | null
-      approvalsReviewer: 'user' | 'auto_review' | null
       allowRuntimeChangesInChat: boolean
     }
     expect(patched.outputMode).toBe('low')
     expect(patched.showFooter).toBe(true)
     expect(patched.showStatusBar).toBe(true)
     expect(patched.fastMode).toBe(false)
-    expect(patched.approvalsReviewer).toBe('user')
     expect(patched.allowRuntimeChangesInChat).toBe(false)
 
     const cleared = await app.app.inject({
       method: 'PATCH',
       url: `${ORG}/agents/${created.id}`,
-      payload: { outputMode: null, fastMode: null, approvalsReviewer: null }
+      payload: { outputMode: null, fastMode: null }
     })
     expect((cleared.json() as { outputMode: string | null }).outputMode).toBeNull()
     expect((cleared.json() as { fastMode: boolean | null }).fastMode).toBeNull()
-    expect((cleared.json() as { approvalsReviewer: string | null }).approvalsReviewer).toBeNull()
     expect((await prisma.agent.findUnique({ where: { id: created.id } }))?.runtimeOverrides).toEqual({
       showFooter: true,
       showStatusBar: true,

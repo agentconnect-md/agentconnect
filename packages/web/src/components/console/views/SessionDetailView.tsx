@@ -3390,8 +3390,7 @@ export default function SessionDetailView() {
     agentRuntime,
     runtimeCatalog,
     livePermissionModes,
-    runtimeSelection?.permissionPreset ?? session.permissionMode ?? owner?.permissionMode ?? '',
-    owner?.approvalsReviewer ?? 'user'
+    runtimeSelection?.permissionPreset ?? session.permissionMode ?? owner?.permissionMode ?? ''
   )
   const pgPermissionPresets =
     livePermissionModes === undefined &&

@@ -5,11 +5,8 @@ import {
   permissionModeChoicesFor,
   permissionModeDefault,
   permissionModeLabel,
-  permissionModePresets,
   resolvedPermissionMode,
   resolveEffortForModel,
-  selectedPermissionPreset,
-  type ApprovalsReviewer,
   type DaemonRow,
   type EffortChoice,
   type RuntimeModelCatalog,
@@ -59,9 +56,8 @@ export function sessionPermissionChoices(
   liveValues: string[] | undefined
 ): PermissionChoice[] {
   const discovered = permissionModeChoicesFor(runtime, catalog)
-  if (liveValues === undefined) return permissionModePresets(runtime, discovered)
-  // A live daemon has already composed capability-backed presets. Preserve its
-  // exact list so an older runtime without the reviewer selector cannot expose Auto.
+  if (liveValues === undefined) return discovered
+  // A live daemon reports what its runtime actually advertises; preserve that list.
   return liveValues.map(
     (value) =>
       discovered.find((choice) => choice.v === value) ?? {
@@ -76,24 +72,15 @@ export function sessionPermissionSelection(
   runtime: string,
   catalog: RuntimeModelCatalog | undefined,
   liveValues: string[] | undefined,
-  current: string,
-  approvalsReviewer: ApprovalsReviewer | '' = ''
+  current: string
 ): string {
   const choices = sessionPermissionChoices(runtime, catalog, liveValues)
   const resolvedCurrent = current || catalog?.defaultPermissionMode || permissionModeDefault(runtime)
-  const selectedCurrent = selectedPermissionPreset(runtime, resolvedCurrent, approvalsReviewer)
-  if (choices.some((choice) => choice.v === selectedCurrent)) return selectedCurrent
-  if (liveValues === undefined) {
-    const resolvedMode = resolvedPermissionMode(resolvedCurrent, choices, catalog)
-    return selectedPermissionPreset(runtime, resolvedMode, approvalsReviewer)
-  }
-  if (choices.length === 0) return selectedCurrent
+  if (choices.some((choice) => choice.v === resolvedCurrent)) return resolvedCurrent
+  if (liveValues === undefined) return resolvedPermissionMode(resolvedCurrent, choices, catalog)
+  if (choices.length === 0) return resolvedCurrent
   const defaultMode = catalog?.defaultPermissionMode
-  if (defaultMode) {
-    const selectedDefault = selectedPermissionPreset(runtime, defaultMode, approvalsReviewer)
-    if (choices.some((choice) => choice.v === selectedDefault)) return selectedDefault
-    if (choices.some((choice) => choice.v === defaultMode)) return defaultMode
-  }
+  if (defaultMode && choices.some((choice) => choice.v === defaultMode)) return defaultMode
   return choices[0]?.v ?? ''
 }
 

@@ -9,7 +9,6 @@ import { Cron } from 'croner'
 import { RESERVED_AGENT_SLUGS } from '../../domain/reserved-agent-slugs.js'
 import {
   AgentMemoryBinding,
-  ApprovalsReviewer,
   AgentPermissionRequestRecord,
   CanonicalMemoryRecord,
   DecimalAmount,
@@ -594,7 +593,6 @@ export const CreateAgentBody = z.object({
   showStatusBar: z.boolean().optional(), // persistent Slack session status row (absent ⇒ default false)
   fastMode: z.boolean().optional(), // runtime fast mode toggle
   permissionMode: z.string().min(1).optional(), // runtime permission/approval mode
-  approvalsReviewer: ApprovalsReviewer.optional(), // who reviews eligible Codex approval requests
   allowRuntimeChangesInChat: z.boolean().optional(), // explicit opt-in; absent ⇒ false
   pause: z.boolean().optional(), // operational message-processing toggle (#288)
   introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
@@ -647,7 +645,6 @@ export const UpdateAgentBody = z
     showStatusBar: z.boolean().optional(),
     fastMode: z.boolean().nullable().optional(),
     permissionMode: z.string().min(1).nullable().optional(),
-    approvalsReviewer: ApprovalsReviewer.nullable().optional(),
     allowRuntimeChangesInChat: z.boolean().optional(),
     pause: z.boolean().nullable().optional(), // operational toggle (#288); null clears
     introduceOnJoin: z.boolean().optional(), // #536: self-introduce to peers on a genuine channel join
@@ -749,7 +746,6 @@ export const AgentDto = z.object({
   showStatusBar: z.boolean(),
   fastMode: z.boolean().nullable(), // null ⇒ never set (runtime default)
   permissionMode: z.string().nullable(), // null ⇒ never set (runtime default)
-  approvalsReviewer: ApprovalsReviewer.nullable(), // null ⇒ runtime default (`user`)
   allowRuntimeChangesInChat: z.boolean(),
   pause: z.boolean().nullable(), // null ⇒ not paused (#288)
   // The agent's OWN variables. Unchanged meaning: a row here may be inactive while

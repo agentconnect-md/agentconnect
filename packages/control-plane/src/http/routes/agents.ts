@@ -344,7 +344,6 @@ function toDto(
     showStatusBar: a.showStatusBar,
     fastMode: a.fastMode,
     permissionMode: a.permissionMode,
-    approvalsReviewer: a.approvalsReviewer ?? null,
     allowRuntimeChangesInChat: a.allowRuntimeChangesInChat,
     pause: a.pause,
     env: a.env,
@@ -1721,9 +1720,6 @@ export function agentRoutes(deps: HttpDeps) {
                   ...(req.body.showStatusBar !== undefined ? { showStatusBar: req.body.showStatusBar } : {}),
                   ...(req.body.fastMode !== undefined ? { fastMode: req.body.fastMode } : {}),
                   ...(req.body.permissionMode !== undefined ? { permissionMode: req.body.permissionMode } : {}),
-                  ...(req.body.approvalsReviewer !== undefined
-                    ? { approvalsReviewer: req.body.approvalsReviewer }
-                    : {}),
                   ...(req.body.allowRuntimeChangesInChat !== undefined
                     ? { allowRuntimeChangesInChat: req.body.allowRuntimeChangesInChat }
                     : {}),
