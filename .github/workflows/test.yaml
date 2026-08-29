@@ -238,10 +238,19 @@ jobs:
   #
   # No `prisma:generate` step: neither package imports the generated client.
   unit-windows:
-    name: Unit Test (Windows)
+    # MEASUREMENT — three samples per arm in one run. This job's `tests` total has come back
+    # 873, 1022, 1037, 1048 and 1135 s on content that differs only in the store's backing, so a
+    # single pair against a single baseline resolves nothing, which is how the first reading of
+    # this change came out at -26% and the second at +9%.
+    name: Unit Test (Windows) ${{ matrix.backing }}-${{ matrix.sample }}
     needs: windows-scope
     if: ${{ needs.windows-scope.outputs.changed == 'true' }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backing: [file, memory]
+        sample: [1, 2, 3]
     # The daemon suite alone runs ~20 min here against ~3 on Linux — Windows filesystem and
     # process-spawn cost, not extra work — so the cap is set well clear of it rather than near it.
     timeout-minutes: 45
@@ -310,6 +319,7 @@ jobs:
           GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+          AGENTCONNECT_TEST_STORE_MEMORY: ${{ matrix.backing == 'memory' && '1' || '' }}
         run: pnpm --filter @agentconnect.md/daemon test:unit
       - name: CLI unit tests
         if: ${{ !cancelled() }}
