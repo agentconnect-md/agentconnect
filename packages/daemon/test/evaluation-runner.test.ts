@@ -185,7 +185,7 @@ describe('EvaluationRunner', () => {
             type: 'select',
             currentValue: 'read-only',
             options: [
-              { value: 'read-only', name: 'Read Only' },
+              { value: 'read-only', name: 'Ask for approval' },
               { value: 'agent', name: 'Approve for me' }
             ]
           }

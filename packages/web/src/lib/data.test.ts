@@ -332,9 +332,9 @@ describe('permissionModeChoicesFor', () => {
 describe('Codex permission modes', () => {
   it("offers exactly the modes the runtime owns, under Codex's own names", () => {
     expect(permissionModeOptions('codex')).toEqual([
-      { v: 'read-only', l: 'Read Only' },
+      { v: 'read-only', l: 'Ask for approval' },
       { v: 'agent', l: 'Approve for me' },
-      { v: 'agent-full-access', l: 'Full Access' }
+      { v: 'agent-full-access', l: 'Full access' }
     ])
   })
 })
@@ -557,7 +557,7 @@ describe('literal ACP default model surfacing', () => {
 // Read-only config surfaces (detail card, list rows) must show the SAME effective
 // values the Add/Edit pickers do — a blank model resolves to the daemon default,
 // and effort/permission use the runtime catalog's own names. Reproduces the Codex
-// mismatch that motivated these helpers (card "Default / Extra High / Full Access"
+// mismatch that motivated these helpers (card "Default / Extra High / Full access"
 // vs editor "gpt-5.6-sol / Xhigh / Agent (full access)").
 describe('agent config display helpers (card ↔ editor parity)', () => {
   // A Codex daemon whose catalog names differ from the static tables.
@@ -656,7 +656,7 @@ describe('agent config display helpers (card ↔ editor parity)', () => {
       expect(agentPermissionDisplay(codexDaemon, 'codex', '')).toBe('Ask for approval')
     })
     it('falls back to the static permission table without a catalog', () => {
-      expect(agentPermissionDisplay(undefined, 'codex', 'agent-full-access')).toBe('Full Access')
+      expect(agentPermissionDisplay(undefined, 'codex', 'agent-full-access')).toBe('Full access')
     })
   })
 })
