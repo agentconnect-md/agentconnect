@@ -205,8 +205,12 @@ into a paragraph instead of truncating it, offers no hover and no per-title disc
 raw shell command as a title buries the step list — which is what a title straight off ACP is,
 because a shell tool's ACP title IS its command. Two sources, in order: the runtime's own
 one-line description when it sent one (`rawInput.description`, which Claude Code's shell tools
-carry), else the title clamped to 72 characters. The verbatim command is not lost — it is the
-card's code block on `high`, and it is skipped when the title already showed it whole.
+carry), else the title SHAPED as a command label: cut at its first shell separator
+(`&&` / `||` / `|` / `;`) and clamped to 48 characters — roughly one line of Slack's thread
+panel — so a chain reads as its opening command (`git status --short --branch …`) instead of a
+72-character run-on. Thinking titles keep the wider 72 clamp; they are prose. The verbatim
+command is not lost — it is the card's code block on `high`, and it is skipped when the title
+already shows it whole.
 
 **Only the TOP LEVEL of `rawInput` is read, and only when it looks like a label.** A nested
 `arguments` object holds the TOOL's own fields, where the same key means whatever that tool
