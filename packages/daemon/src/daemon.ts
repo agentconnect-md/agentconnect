@@ -13847,7 +13847,13 @@ export class Daemon {
       // turn re-delivering it — auto-backgrounded commands (sleeps, watchers) settle here every
       // time. Both conditions are required: `running` without a Pending is an invisible
       // self-drain cycle, and a Pending past `idle` is finalization the model has already left.
-      if (lease.sdkState === 'running' && this.pending.has(pendingTurnKey(agentId, acpSessionId))) return
+      if (lease.sdkState === 'running' && this.pending.has(pendingTurnKey(agentId, acpSessionId))) {
+        this.log.debug(
+          `bg-task delivery skipped (settled inside the live foreground turn): ` +
+            `"${rec.description?.trim() || 'background task'}" on ${acpSessionId}`
+        )
+        return
+      }
       await this.announceBackgroundTaskDone(agentId, acpSessionId, rec.description, status)
       this.scheduleBackgroundTaskWake(agentId, acpSessionId, taskId, rec.description, status)
     }
