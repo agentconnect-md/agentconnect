@@ -1099,11 +1099,11 @@ describe('buildStatusModal (Configure controls modal)', () => {
     expect(select.initial_option.value).toBe('agent-full-access')
     // Display text is Codex's own name for each mode (agent = "Approve for me").
     expect(select.options.map((o: any) => o.text.text)).toEqual([
-      'Permission · Read Only',
+      'Permission · Ask for approval',
       'Permission · Approve for me',
-      'Permission · Full Access'
+      'Permission · Full access'
     ])
-    expect(select.initial_option.text.text).toBe('Permission · Full Access')
+    expect(select.initial_option.text.text).toBe('Permission · Full access')
   })
 
   it('prepends a current effort the advertised list omits (e.g. a pending ultracode override)', () => {

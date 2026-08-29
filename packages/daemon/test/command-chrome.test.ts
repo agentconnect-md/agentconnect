@@ -51,7 +51,7 @@ describe('telegram select encoding', () => {
     const buttons = telegramSelectButtons('permission', 'agent-full-access', ['agent-full-access'])
     // Raw mode ids render through the shared display alias, exactly as the
     // pre-seam buildSelectCard did via selectDisplay.
-    expect(buttons[0]![0]!.text).toBe('✅ Full Access')
+    expect(buttons[0]![0]!.text).toBe('✅ Full access')
   })
 
   it('rejects callback data this scheme did not mint', () => {

@@ -692,15 +692,15 @@ export function effortLabel(runtime: string, v: string): string {
 
 export function permissionModeOptions(runtime: string): { v: string; l: string }[] {
   if (runtimeLabel(runtime) === 'Codex') {
-    // Labels are matched to Codex's own names by policy, not menu position, so the
-    // console can't misrepresent them. Values are codex-acp's runtime-owned ids: `agent`
-    // is Codex's default (on-request approvals, reviewed by the runtime itself), and
-    // `agent-full-access` is danger-full-access — out-of-workspace + network. `read-only`
-    // keeps the daemon's read-only sandbox profile.
+    // Labels are copied verbatim from codex-acp's own AgentMode names, so this fallback reads
+    // the same as the catalog path that prefers what the runtime reports. Values are codex-acp's
+    // runtime-owned ids: `agent` is Codex's default (its own reviewer approves what it judges
+    // safe), `agent-full-access` is danger-full-access — out-of-workspace + network, and
+    // `read-only` runs the daemon's read-only sandbox profile.
     return [
-      { v: 'read-only', l: 'Read Only' },
+      { v: 'read-only', l: 'Ask for approval' },
       { v: 'agent', l: 'Approve for me' },
-      { v: 'agent-full-access', l: 'Full Access' }
+      { v: 'agent-full-access', l: 'Full access' }
     ]
   }
   // Labels mirror claude-agent-acp's own mode names so the console can't misrepresent
@@ -938,7 +938,7 @@ export function resolvedPermissionMode(
 // default and label effort/permission with the runtime's OWN catalog names
 // (runtime-model-catalog.md §7). The read-only surfaces (detail card rows, list
 // sub-labels) must reproduce that exact resolution, or the same placed agent
-// reads "Default / Extra High / Full Access" in the card yet "gpt-5.6-sol /
+// reads "Default / Extra High / Full access" in the card yet "gpt-5.6-sol /
 // Xhigh / Agent (full access)" in the editor. Each helper degrades to the static
 // tables when the owning daemon reports no catalog (offline / unplaced / a
 // pre-catalog daemon), so nothing regresses where the catalog is absent.

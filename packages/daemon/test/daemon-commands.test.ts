@@ -1079,9 +1079,9 @@ describe('Daemon in-conversation commands', () => {
     // bare /permission lists Codex's own mode names, not the raw wire ids.
     await (daemon as any).onInboundOutcome(dm('200', '/permission'))
     const listed = conn.postMessage.mock.calls.at(-1)![1] as string
-    expect(listed).toContain('Read Only')
+    expect(listed).toContain('Ask for approval')
     expect(listed).toContain('Approve for me')
-    expect(listed).toContain('Full Access')
+    expect(listed).toContain('Full access')
     expect(listed).not.toContain('agent-full-access')
 
     // choose by label ("full access") → resolves to the raw wire id, applied live
@@ -1092,7 +1092,7 @@ describe('Daemon in-conversation commands', () => {
     }, WAIT)
     expect(conn.postMessage).toHaveBeenCalledWith(
       'C1',
-      expect.stringContaining('Permission mode set to Full Access'),
+      expect.stringContaining('Permission mode set to Full access'),
       'T1',
       CHROME_REPLY
     )
