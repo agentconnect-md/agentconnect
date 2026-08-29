@@ -238,18 +238,10 @@ jobs:
   #
   # No `prisma:generate` step: neither package imports the generated client.
   unit-windows:
-    # MEASUREMENT ONLY — not for merge. Both arms in one run, three samples each: this job's
-    # `tests` total swings 1326-1951 s between runs of identical content, so a single A/B pair
-    # cannot resolve a 20% effect. Running them together pins the time window and runner pool.
-    name: Unit Test (Windows) ${{ matrix.sync }}-${{ matrix.sample }}
+    name: Unit Test (Windows)
     needs: windows-scope
     if: ${{ needs.windows-scope.outputs.changed == 'true' }}
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        sync: [FULL, NORMAL]
-        sample: [1, 2, 3]
     # The daemon suite alone runs ~20 min here against ~3 on Linux — Windows filesystem and
     # process-spawn cost, not extra work — so the cap is set well clear of it rather than near it.
     timeout-minutes: 45
@@ -308,8 +300,6 @@ jobs:
           GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-          # MEASUREMENT ONLY. FULL is what the store keeps today, so that arm is the control.
-          AC_STORE_SYNCHRONOUS: ${{ matrix.sync }}
         run: pnpm --filter @agentconnect.md/daemon test:unit
       - name: CLI unit tests
         if: ${{ !cancelled() }}

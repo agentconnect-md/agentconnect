@@ -67,6 +67,12 @@ export const BASE_TEST_TIMEOUT = 30_000
 export default defineConfig({
   test: {
     environment: 'node',
+    // The suite creates ~1.4k stores and commits ~22k times across them, and WAL fsyncs every one.
+    // Measured on the Windows runner, three samples per arm in one run: 1813 s of test time at the
+    // shipped FULL against 1372 s at NORMAL, ranges that do not overlap. NORMAL removes no file
+    // operation — every Win32 rename, handle and deletion the suite exercises is untouched — and
+    // nothing here asserts what survives a power cut, which is the only thing FULL buys.
+    env: { AGENTCONNECT_TEST_STORE_SYNCHRONOUS: 'NORMAL' },
     // Keep process-heavy, integration-shaped unit files from oversubscribing available test-worker
     // resources. Four on Windows too: the halving there bought time for inline per-test budgets that
     // no longer exist, and the polls those budgets never governed now scale in `test/wait-support.ts`.
