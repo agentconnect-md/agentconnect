@@ -56,7 +56,7 @@ the picture it draws.
 - [github-app-git-credentials.md](designs/github-app-git-credentials.md) — GitHub App repository selection and credential-free git on daemons.
 - [github-pr-review-checks.md](designs/github-pr-review-checks.md) — Formal GitHub PR reviews and durable informational Checks.
 - [gitlab-com-integration.md](designs/gitlab-com-integration.md) — The GitLab integration end to end.
-- [linear-integration.md](designs/linear-integration.md) — The proposed Linear integration.
+- [linear-integration.md](designs/linear-integration.md) — The Linear integration.
 - [git-workspace-model.md](designs/git-workspace-model.md) — The host-neutral git workspace contract.
 - [multi-repository-workspaces.md](designs/multi-repository-workspaces.md) — Secondary workspace roots and cross-repository review.
 - [agent-multi-repo-authorization.md](designs/agent-multi-repo-authorization.md) — Explicit multi-repository allowlists, per-repository minting, and the `gh` wrapper.
@@ -90,7 +90,7 @@ the picture it draws.
 ### Agents and collaboration
 
 - [agents-collaboration-design.md](designs/agents-collaboration-design.md) — The product vision for agent-to-agent collaboration.
-- [agent-collaboration-implementation.md](designs/agent-collaboration-implementation.md) — The implemented collaboration mechanics.
+- [agent-collaboration-implementation.md](designs/agent-collaboration-implementation.md) — The collaboration mechanics: agent-to-agent delivery and orchestration.
 - [loop-breaker-design.md](designs/loop-breaker-design.md) — Feedback-loop protection for platform messages and collaboration.
 - [collaboration-arena.md](designs/collaboration-arena.md) — The collaboration arena.
 - [collaboration-arena-baseline.md](designs/collaboration-arena-baseline.md) — The arena's measured baseline.
