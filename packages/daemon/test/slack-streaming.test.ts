@@ -29,6 +29,17 @@ const toolDone = (id: string, title: string, output: string, status = 'completed
     status,
     content: [{ type: 'content', content: { type: 'text', text: output } }]
   }) as never
+// A shell tool call as a runtime that describes its own calls sends it: the ACP title is the
+// command, and `rawInput` carries the one-line description the card is titled with.
+const bash = (id: string, command: string, description: string, output = '', status = 'pending') =>
+  ({
+    sessionUpdate: output ? 'tool_call_update' : 'tool_call',
+    toolCallId: id,
+    title: command,
+    status,
+    rawInput: { command, description },
+    ...(output ? { content: [{ type: 'content', content: { type: 'text', text: output } }] } : {})
+  }) as never
 const think = (text: string) => ({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text } }) as never
 
 const attribution = () => ({
@@ -285,7 +296,7 @@ describe('OutputConverger streaming axis', () => {
     expect(mediumCard && 'output' in mediumCard).toBe(false)
   })
 
-  it('flattens markdown emphasis out of card fields, which render as plain text', () => {
+  it('flattens markdown emphasis out of a card TITLE, which is one plain line', () => {
     const converger = streaming('medium')
     converger.onUpdate(tool('t1', '**Read** `src/a.ts`'))
     expect(cards(converger.streamUpdate())).toEqual([
@@ -293,30 +304,110 @@ describe('OutputConverger streaming axis', () => {
     ])
   })
 
-  it('clamps a card field to the 256-character wire limit', () => {
+  it('titles a high card with the runtime description and fences the command below it', () => {
     const converger = streaming('high')
-    converger.onUpdate(toolDone('t1', 'x'.repeat(400), 'y'.repeat(400)))
-    const card = cards(converger.streamUpdate())[0]
-    expect(card?.type === 'task_update' && card.title.length).toBe(256)
-    expect(card?.type === 'task_update' && card.output?.length).toBe(256)
+    converger.onUpdate(bash('t1', 'ls -la', 'List files in working directory'))
+    converger.streamUpdate()
+    converger.onUpdate(bash('t1', 'ls -la', 'List files in working directory', 'total 8', 'completed'))
+    expect(cards(converger.streamUpdate())).toEqual([
+      {
+        type: 'task_update',
+        id: 't1',
+        title: 'List files in working directory',
+        status: 'complete',
+        details: '```\nls -la\n```',
+        output: 'total 8'
+      }
+    ])
   })
 
-  it('gives a thinking run one card and settles it at the next tool call', () => {
+  it('falls back to the tool title, clamped to one line, when the runtime described nothing', () => {
     const converger = streaming('medium')
-    converger.onUpdate(think('weighing the options'))
-    // Title and status only. `details` appends server-side, so a per-line refresh concatenates
-    // instead of replacing — which is how repeated emphasis ran together into literal `****`.
+    const command = `git log --since='2026-08-28' --pretty=format:'%h%x09%ad%x09%an%x09%s' --decorate --all -n 80`
+    converger.onUpdate(tool('t1', command))
+    const card = cards(converger.streamUpdate())[0]
+    expect(card?.type === 'task_update' && card.title).toBe(`${command.slice(0, 71)}…`)
+  })
+
+  it('keeps the command out of a card whose title already shows it whole', () => {
+    const converger = streaming('high')
+    converger.onUpdate(toolDone('t1', 'ls -la', 'total 8'))
+    const card = cards(converger.streamUpdate())[0]
+    expect(card).toEqual({ type: 'task_update', id: 't1', title: 'ls -la', status: 'complete', output: 'total 8' })
+  })
+
+  it('leaves the duplicate tool-output message to the turns that have no card', () => {
+    // A streaming high turn's card carries the same command and result, so posting the code
+    // block as well would say everything twice. A turn off the axis still posts it.
+    const streamed = streaming('high')
+    streamed.onUpdate(tool('t1', 'Read file'))
+    expect(kinds(streamed.onUpdate(toolDone('t1', 'Read file', 'read 42 lines')))).not.toContain('tool-output')
+    const legacy = new OutputConverger('high')
+    legacy.onUpdate(tool('t1', 'Read file'))
+    expect(kinds(legacy.onUpdate(toolDone('t1', 'Read file', 'read 42 lines')))).toContain('tool-output')
+  })
+
+  it('clamps a card title to one line and a card body to the output cap', () => {
+    // Slack accepts far more than the documented 256 characters but silently DROPS an
+    // oversized field, so both caps are ours to enforce, not Slack's to report.
+    const converger = streaming('high')
+    converger.onUpdate(toolDone('t1', 'x'.repeat(400), 'y'.repeat(4000)))
+    const card = cards(converger.streamUpdate())[0]
+    expect(card?.type === 'task_update' && card.title.length).toBe(72)
+    expect(card?.type === 'task_update' && card.output?.length).toBe(2800)
+  })
+
+  it('gives a thinking run one card, titled by its first line, settled at the next tool call', () => {
+    const converger = streaming('medium')
+    converger.onUpdate(think('**Weighing the options**'))
+    // The card opens before the line has ended, which costs nothing: `title` REPLACES per id.
     expect(cards(converger.streamUpdate())).toEqual([
       { type: 'task_update', id: 'thinking-0', title: 'Thinking', status: 'in_progress' }
     ])
-    converger.onUpdate(think('\nand another line'))
+    converger.onUpdate(think('\nand the body follows'))
+    expect(cards(converger.streamUpdate())).toEqual([
+      { type: 'task_update', id: 'thinking-0', title: 'Weighing the options', status: 'in_progress' }
+    ])
+    // The run is named once — later lines of the same thought do not re-title it.
     converger.onUpdate(think('\nand a third'))
     expect(converger.streamUpdate()).toEqual([])
     converger.onUpdate(tool('t1', 'Read file'))
     expect(cards(converger.streamUpdate())).toContainEqual({
       type: 'task_update',
       id: 'thinking-0',
-      title: 'Thinking',
+      title: 'Weighing the options',
+      status: 'complete'
+    })
+  })
+
+  it('names each thinking run separately, and keeps the placeholder when a run has no line', () => {
+    const converger = streaming('medium')
+    converger.onUpdate(think('**First pass**\nbody'))
+    converger.onUpdate(tool('t1', 'Read file'))
+    converger.onUpdate(think('**Second pass**\nbody'))
+    converger.onUpdate(toolDone('t1', 'Read file', ''))
+    const titles = cards(converger.streamUpdate())
+      .filter((c) => c.type === 'task_update' && c.id.startsWith('thinking-'))
+      .map((c) => (c.type === 'task_update' ? c.title : ''))
+    expect(titles).toEqual(['First pass', 'Second pass'])
+
+    const unnamed = streaming('medium')
+    unnamed.onUpdate(think('   '))
+    expect(cards(unnamed.streamUpdate())).toEqual([
+      { type: 'task_update', id: 'thinking-0', title: 'Thinking', status: 'in_progress' }
+    ])
+  })
+
+  it('names a last thought that ends without a line break — nothing more is coming', () => {
+    // A run that ends as the turn does never reaches a newline, and 'Thinking' would be the
+    // one card in the container that says nothing.
+    const converger = streaming('medium')
+    converger.onUpdate(tool('t1', 'Read file'))
+    converger.onUpdate(think('**Summarizing four update groups**'))
+    expect(appends(converger.settleStream('completed'))).toContainEqual({
+      type: 'task_update',
+      id: 'thinking-0',
+      title: 'Summarizing four update groups',
       status: 'complete'
     })
   })

@@ -33,7 +33,7 @@ in order to move an answer between transports is gone with it (§9).
 medium/high turns; change **nothing** about the body (post / live-reply / final-live-reply,
 response finalization by edit, the attribution footer, the transcript, the status bar, the
 transient status text, permission and elicitation cards, attachments, the ACP plan message, the
-high-mode Thinking message, tool-output code blocks); degrade to today's `progress` message
+high-mode Thinking message); degrade to today's `progress` message
 wherever streaming is unavailable, from Slack's own errors, with no config knob and no environment
 kill switch; and leave Layer 0's stop seam, `setSessionLifecycle`, the manifest, the relay, the
 control plane, the protocol, and every other platform alone.
@@ -128,6 +128,27 @@ contradict the published documentation, and two of them changed the design.
    cron, hook, dream — names the bot's OWN user id and its team id, which Slack accepts. There
    is no structural carve-out for non-human turns.
 
+Four more from the 2026-08-29 pass, which is where the card BODY was settled:
+
+10. **A card with a body is expandable, and starts expanded.** `details` / `output` / `sources`
+    each give the card a chevron the reader can fold, and there is no field that sets the
+    initial state: `collapsed`, `expanded`, `is_expanded`, `default_expanded`,
+    `initially_expanded`, `collapsible`, `hide_details` and `details_display_mode` are all
+    accepted by the API and then silently discarded (they do not survive into the finalized
+    block). The only default fold is the plan container itself. Slack messages have no hover
+    affordance at all, so the chevron is the whole disclosure story.
+11. **`title` can be rewritten mid-stream**, which is what lets a card be opened as a
+    placeholder and renamed once the run names itself.
+12. **A body over the limit is dropped, not rejected.** 8,000 characters store and render; at
+    12,000 the append still answers `ok: true` and the field comes back empty. Long bodies do
+    get a native "Show more" after roughly six rendered lines, so height is Slack's problem —
+    length is ours.
+13. **`hide_title` and `icon` exist but are not for us.** `hide_title: true` replaces the row's
+    title with its details text and takes the chevron away; `icon` is an object
+    (`{ type, name }` where `name` is an image URL), and the plausible string form is rejected
+    outright. `@slack/types` 2.22.0 declares neither — the published reference is ahead of the
+    SDK, so neither is safe to take on type inference alone.
+
 ## 5. ACP → card mapping
 
 Slack's streaming chunk vocabulary, as `@slack/types` declares it, is
@@ -137,21 +158,34 @@ Slack's streaming chunk vocabulary, as `@slack/types` declares it, is
 `{ type: 'blocks', blocks }`. **This design sends no `markdown_text` chunk, ever.**
 
 **The fields do not all behave the same way, and that is the single most load-bearing detail.**
-`title` and `status` REPLACE per card id — re-send them as often as you like. `details`
-**appends** server-side, and `output` is written once at completion. Refreshing an appending
-field per update therefore concatenates on Slack's side instead of replacing it: streaming a
-thinking line into `details` on every chunk is what ran repeated `**bold**` fragments together
-into literal `****`, since card fields render as plain text and never interpret emphasis. The
-rule is **write-once for anything that appends**: `output` at completion, `details` never, and
-everything else expressed through `title` / `status`.
+`title` and `status` REPLACE per card id — re-send them as often as you like. `details`,
+`output` and `sources` all **append** server-side (measured 2026-08-29: the same field written
+twice comes back concatenated with no separator, and a second `sources` entry lands beside the
+first). Refreshing an appending field per update therefore concatenates on Slack's side instead
+of replacing it — which is how repeated `**bold**` fragments once ran together into literal
+`****`. The rule is **write-once for anything that appends**: the whole card body is emitted in
+ONE chunk, at completion, and everything live is expressed through `title` / `status`.
+
+`details` and `output` are **markdown**, not plain text — the earlier reading of the `****`
+incident was wrong. A fenced value renders as a real code block, backticks as inline code,
+`**bold**` as bold and `<url|text>` as a link. That is what makes the card body the shape the
+web console already uses: the **command in a code block** (`details`), its **result** below it
+(`output`). The two render identically and carry no labels of their own; only their order is
+fixed. `sources` renders under them as a list of links.
+
+**Both bodies are capped here, because Slack will not complain.** The documented 256-character
+limit is not what the API enforces: 8,000 characters store and render fine, and somewhere past
+that an oversized field comes back `ok: true` with the field SILENTLY EMPTY. Card bodies
+therefore take the same 2,800-character cap as the legacy tool-output block, and titles a much
+tighter one (below).
 
 | ACP `session/update`             | today                                              | with the chrome stream                                                                                                                                                                           |
 | -------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `agent_message_chunk`            | buffered → `post` / `live-reply`                   | **unchanged**                                                                                                                                                                                    |
 | `tool_call` / `tool_call_update` | in-place `progress` message + rotating status text | `task_update` keyed by `toolCallId`; ACP `pending`/`in_progress` → `in_progress`, `completed` → `complete`, `failed` → `error`. The status text is unchanged; the `progress` message is replaced |
-| `agent_thought_chunk`            | `high`: in-place Thinking message; status text     | plus ONE `task_update` per thinking run, `title: "Thinking"`, status only. `high` keeps its full in-place Thinking message, which is where 2,800 characters belong                               |
+| `agent_thought_chunk`            | `high`: in-place Thinking message; status text     | plus ONE `task_update` per thinking run, titled by the run's FIRST LINE, status only. `high` keeps its full in-place Thinking message, which is where 2,800 characters belong                    |
 | `plan`                           | in-place `plan` message                            | **unchanged** — an ACP plan is a full entry list with per-entry statuses, i.e. a checklist, not a one-line container label                                                                       |
-| tool output, terminal (`high`)   | separate code-block message                        | **unchanged**, plus the result written ONCE as the card's `output` (high only), clamped to 256 characters                                                                                        |
+| tool output, terminal (`high`)   | separate code-block message                        | the command and its result become the card's body (`details` + `output`, high only); the separate code-block message is **dropped on a streaming turn**, which would otherwise say it twice      |
 | `usage_update`                   | dropped                                            | dropped                                                                                                                                                                                          |
 
 **`task_display_mode: 'plan'`, fixed, never configurable.** Every task card is collected into
@@ -166,10 +200,28 @@ everything around it. The container's own arc:
 Counted rather than narrated, deliberately: it is derived from the cards the turn actually
 emitted, so it needs no second model call and cannot disagree with what is inside the container.
 
+**A card title is one line, and the daemon is what makes it one.** Slack wraps a long title
+into a paragraph instead of truncating it, offers no hover and no per-title disclosure, so a
+raw shell command as a title buries the step list — which is what a title straight off ACP is,
+because a shell tool's ACP title IS its command. Two sources, in order: the runtime's own
+one-line description when it sent one (`rawInput.description`, which Claude Code's shell tools
+carry), else the title clamped to 72 characters. The verbatim command is not lost — it is the
+card's code block on `high`, and it is skipped when the title already showed it whole.
+
+**A thinking card is titled by its run's first line.** Runtimes open a thought with a short
+`**heading**` — the same line the web console shows as the step title — so the card says what
+the agent is thinking about rather than the bare word "Thinking". The card is opened before
+that line has arrived and renamed once it has, which is free: `title` REPLACES per id. A run
+whose head yields nothing keeps the placeholder.
+
 **Output modes.** `none`, `minimal` and `low` have no tool chrome today and gain none: they
-never take the axis. `medium` gets card titles and statuses; `high` adds the card `output`.
-This is the same ladder the modes already express — the stream changes the transport of the
-medium/high rung, not which rung shows what.
+never take the axis. `medium` gets card titles and statuses — one line per step; `high` adds
+the card body, the command as a code block and its result beneath. This is the same ladder the
+modes already express — the stream changes the transport of the medium/high rung, not which
+rung shows what. It also decides how tall the container is once opened, and that is the only
+control there is: a card body cannot start collapsed. The reader can fold each one away, and
+the container itself is still collapsed by default, but no chunk field sets the initial state
+(§4 fact 10), so on `medium` a step stays a step.
 
 **DM and channel take the same code path.** The only difference is the recipient argument
 (§4 fact 9).
@@ -317,5 +369,7 @@ is indistinguishable from `streamingUnavailableUntil` being set.
 Two cosmetic questions stay open. **Does the counted label read well after a long turn?**
 `Completed 41 steps` is honest but not informative; a model-narrated label was rejected (a second
 call, and a label that can disagree with the cards), and the next candidate is the last tool's
-title. **Should a `failed` card carry its error text as `output` on medium?** Today `output` is a
-high-only rung, matching the legacy pipeline; the card already says `error`.
+title. **Should a `failed` card carry its error text as `output` on medium?** Today the body is a
+high-only rung, matching the legacy pipeline; the card already says `error`, and a body cannot
+start collapsed (§4 fact 10), so granting one to medium would cost every medium step its single
+line — the failed one included.
