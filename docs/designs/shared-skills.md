@@ -546,10 +546,20 @@ any other local source.
 - `--copy` is mandatory. The snapshot walker and CLI-cell scanner reject source
   or output links, and the generic publisher copies only receipt-bound ordinary
   files.
-- The installer does not edit `.gitignore`, `.git/info/exclude`, or any other
-  repository ignore configuration. Runtime-visible skill directories are
-  ordinary workspace changes governed only by the trusted receipt/ledger;
-  repository owners may choose their own ignore policy.
+- The installer itself still edits no ignore configuration, and `.gitignore` or
+  any other tracked ignore file is never touched — repository owners keep ignore
+  policy for everything that is theirs. What changed: after installation,
+  workspace preparation declares the ledger-owned bundle roots in the checkout's
+  common `.git/info/exclude` (`workspace/git-exclude.ts`), inside one marked
+  block that is replaced wholesale so it always mirrors the ledger — a bundle
+  the agent stops installing stops being excluded, and human-authored entries
+  outside the block survive verbatim.
+- The exclusion exists because "ordinary workspace changes" was the bug, not a
+  neutral stance: untracked daemon-owned bundles read as user work to the
+  session-retention GC, which then refuses to reclaim any worktree the installer
+  touched. Registrations grow until the runtime's Bash sandbox profile — sized
+  per registered worktree — overflows the OS exec argument limit and every
+  command in the agent fails to spawn (issue #1603).
 
 ### 6.7 Runtime without a CLI identity
 
@@ -634,9 +644,9 @@ The implemented surface follows `McpServersCard`:
 
 ## 9. Main change index
 
-| Package       | Files                                                                                                                                                                                                                                                                                                                                                                  | Change                                                                                                       |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| protocol      | `frames/agent.ts` for strict and rolling-compatible inline skill entries; `git-url.ts` for bounded GitHub normalization                                                                                                                                                                                                                                                | **No** `skillsource/*` frame and **no** `RegisterOk.skillSources`; sources are inline in `AgentSpec.skills`. |
-| control-plane | `prisma/schema.prisma` for the `SkillSource` registry and `Agent.skills`; `http/routes/skill-sources.ts`; `orchestrator/skillSource.ts` for per-row projection/filtering and source-change fan-out; `github/service.ts` for best-effort preview scanning                                                                                                               | Section 4                                                                                                    |
-| daemon        | `src/skills/install-skills.ts`, `skills-cli-cell.ts`, `skill-source-snapshot.ts`, `skill-git-source.ts`, `skill-install-ledger.ts`, `skill-workspace-mutation-cli.ts`, `skill-workspace-mutator.ts`, `offline-sandbox.ts`, `dream-skills.ts`, and `runtimes/skills-capability.ts`; `workspace/workspace-manager.ts` as the cold-host trigger; exact bundled dependency | Section 6                                                                                                    |
-| web           | `SkillSourcesCard.tsx`, `ManagedSkillTile.tsx`, `ToolsHubView.tsx`, `lib/api.ts`, `lib/data-context.tsx`, and the agent editor                                                                                                                                                                                                                                         | Section 7                                                                                                    |
+| Package       | Files                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Change                                                                                                       |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| protocol      | `frames/agent.ts` for strict and rolling-compatible inline skill entries; `git-url.ts` for bounded GitHub normalization                                                                                                                                                                                                                                                                                                                               | **No** `skillsource/*` frame and **no** `RegisterOk.skillSources`; sources are inline in `AgentSpec.skills`. |
+| control-plane | `prisma/schema.prisma` for the `SkillSource` registry and `Agent.skills`; `http/routes/skill-sources.ts`; `orchestrator/skillSource.ts` for per-row projection/filtering and source-change fan-out; `github/service.ts` for best-effort preview scanning                                                                                                                                                                                              | Section 4                                                                                                    |
+| daemon        | `src/skills/install-skills.ts`, `skills-cli-cell.ts`, `skill-source-snapshot.ts`, `skill-git-source.ts`, `skill-install-ledger.ts`, `skill-workspace-mutation-cli.ts`, `skill-workspace-mutator.ts`, `offline-sandbox.ts`, `dream-skills.ts`, and `runtimes/skills-capability.ts`; `workspace/workspace-manager.ts` as the cold-host trigger; `workspace/git-exclude.ts` for the managed-bundle exclude block (section 6.6); exact bundled dependency | Section 6                                                                                                    |
+| web           | `SkillSourcesCard.tsx`, `ManagedSkillTile.tsx`, `ToolsHubView.tsx`, `lib/api.ts`, `lib/data-context.tsx`, and the agent editor                                                                                                                                                                                                                                                                                                                        | Section 7                                                                                                    |

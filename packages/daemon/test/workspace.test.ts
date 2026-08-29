@@ -22,7 +22,12 @@ vi.mock('node:fs/promises', () => ({ rename: renameMock }))
 // reassignable per test (success / failure / slow) via `cloneImpl`.
 let cloneImpl: (...args: any[]) => Promise<unknown>
 let lastGitEnv: Record<string, string> | undefined
-const pullMock = vi.fn().mockResolvedValue(undefined)
+// The env in effect when the PULL ran. `lastGitEnv` alone would name whichever git preparation
+// happens to run last, which is not what the credential-injection assertions are about.
+let pullGitEnv: Record<string, string> | undefined
+const pullMock = vi.fn().mockImplementation(async () => {
+  pullGitEnv = lastGitEnv
+})
 const rawMock = vi.fn().mockResolvedValue('')
 vi.mock('simple-git', () => ({
   simpleGit: (options?: string | { baseDir?: string }) => {
@@ -110,6 +115,7 @@ beforeEach(() => {
   cloneImpl = vi.fn().mockResolvedValue(undefined)
   renameMock.mockReset().mockImplementation(realRename)
   lastGitEnv = undefined
+  pullGitEnv = undefined
   pullMock.mockClear()
   rawMock.mockReset().mockResolvedValue('')
 })
@@ -202,7 +208,7 @@ describe('prepareWorkspace', () => {
       '+refs/heads/main:refs/remotes/origin/main',
       ['--ff-only', '--no-recurse-submodules']
     )
-    expect(Object.values(lastGitEnv ?? {})).toContain('https://github.com/acme/repo.git')
+    expect(Object.values(pullGitEnv ?? {})).toContain('https://github.com/acme/repo.git')
   })
 
   it('ignores a checkout-controlled upstream when pulling an existing workspace', async () => {
@@ -221,7 +227,7 @@ describe('prepareWorkspace', () => {
       '+refs/heads/release/v2:refs/remotes/origin/release/v2',
       ['--ff-only', '--no-recurse-submodules']
     )
-    expect(Object.values(lastGitEnv ?? {})).toContain('https://github.com/acme/repo.git')
+    expect(Object.values(pullGitEnv ?? {})).toContain('https://github.com/acme/repo.git')
   })
 
   it('returns the canonical configured repository subdirectory', async () => {
