@@ -596,20 +596,12 @@ export default function EditWorkspaceModal({
             }}
           />
 
-          <div
-            className={
-              destructiveChange
-                ? 'mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--status-error) bg-(--surface-sunken) p-[13px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)'
-                : 'mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) p-[13px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)'
-            }
-          >
-            <Icon name={destructiveChange ? 'shield-alert' : 'info'} size={14} className="mt-[2px] flex-none" />
-            <span>
-              {destructiveChange
-                ? 'Replaces all files in the current workspace — commit anything you need first.'
-                : 'Keeps the current files; active work pauses briefly.'}
-            </span>
-          </div>
+          {destructiveChange && (
+            <div className="mb-4 flex items-start gap-[10px] rounded-[9px] border border-(--status-error) bg-(--surface-sunken) p-[13px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">
+              <Icon name="shield-alert" size={14} className="mt-[2px] flex-none" />
+              <span>Replaces all files in the current workspace — commit anything you need first.</span>
+            </div>
+          )}
 
           {mode === 'gitlab' && (
             <div className="mb-4 grid grid-cols-1 gap-[14px] desktop:grid-cols-2 desktop:gap-x-7">
@@ -931,13 +923,6 @@ export default function EditWorkspaceModal({
               <div className="min-w-0 flex-1">
                 <div className="font-sans text-[13.5px] font-semibold leading-normal text-(--text-primary)">
                   Additional repositories
-                </div>
-                <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                  {githubWorkspace && githubWorkspace.provider === undefined
-                    ? 'A manual checkout can only authorize its own repository.'
-                    : poolPlaced
-                      ? 'Applies immediately.'
-                      : 'Checked out alongside the workspace; applies immediately.'}
                 </div>
               </div>
               {!manualWorkspaceAuthorization && (
