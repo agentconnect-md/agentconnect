@@ -221,6 +221,15 @@ output as deltas: the text can arrive while the call is still `in_progress` and 
 finishes it carry nothing but a status. Sampling only the terminal update writes a blank body,
 and on a streaming turn there is no separate code-block message left to carry it.
 
+**codex-acp's output arrives by other roads, and both are read.** It sends no `content[]` text
+for a finished call: an MCP tool's result is wrapped as `rawOutput.result.content[]`, and a
+shell command's output does not ride the update AT ALL — it streams as
+`_meta.terminal_output_delta` chunks while the completing update says
+`rawOutput.formatted_output: ""`. The extractor reads both rawOutput shapes, and the daemon
+folds the out-of-band terminal stream back into the owning call at ACP ingress
+(`TerminalOutputFolder`, next to the `maskAgentSecrets` precedent), so the transcript, the web
+console and every platform renderer see the same repaired call — not just this card.
+
 **A thinking card is titled by its run's first line.** Runtimes open a thought with a short
 `**heading**` — the same line the web console shows as the step title — so the card says what
 the agent is thinking about rather than the bare word "Thinking". The card is opened before
@@ -231,11 +240,14 @@ whose head yields nothing keeps the placeholder.
 The two said the same thing: every line of that message is a card title in the container
 directly above it, and a runtime that emits headings without prose made it a verbatim copy of
 the step list. So the card takes the console's shape for a reasoning row — the clamped first
-line as the title, the WHOLE run as the body, including that first line, because the title is a
-truncation and expanding must show what was truncated. The body is dropped only when the TITLE
-shows the run whole — "it has no newline" is not that test, or an unbroken thought longer than
-the clamp would survive as its own first 72 characters and nothing else. A run that outgrows the
-body cap keeps its truncation mark, so a card never presents a cut-off run as a complete one. `medium` keeps
+line as the title, the run as the body. The body is dropped only when the TITLE shows the run
+whole — "it has no newline" is not that test, or an unbroken thought longer than the clamp would
+survive as its own first 72 characters and nothing else; when the title DID show the first line
+whole, that line is dropped from the body instead of being repeated directly under itself. A run
+that outgrows the body cap keeps its truncation mark, so a card never presents a cut-off run as
+a complete one. Bold markers are stripped from the body — runtimes emit every thought heading as
+`**heading**`, so a heading-only run rendered as a slab of bold; the web console strips the same
+marks (`stripBoldMarks`, shared rule, two implementations). `medium` keeps
 neither, as it keeps no other body.
 
 A turn off the axis is untouched — it still posts the in-place Thinking message it always did.

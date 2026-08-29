@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { sessionTurnInFlight, toggleWorkPanel, workCounts, workPanelOpen, workSummary } from './session-work'
+import {
+  sessionTurnInFlight,
+  stripBoldMarks,
+  toggleWorkPanel,
+  workCounts,
+  workPanelOpen,
+  workSummary
+} from './session-work'
 
 const step = (lane: string, files: string[] = []) => ({ lane, files: files.map((path) => ({ path })) })
 
@@ -95,5 +102,18 @@ describe('work panel visibility', () => {
   it('an explicit open during streaming survives the turn completing', () => {
     const opened = toggleWorkPanel(new Map(), 'turn-a', workPanelOpen(undefined))
     expect(workPanelOpen(opened.get('turn-a'))).toBe(true)
+  })
+})
+
+describe('stripBoldMarks', () => {
+  it('drops paired bold markers and keeps everything else', () => {
+    expect(stripBoldMarks('**Planning peer polling**\n\n**Testing retrieval**')).toBe(
+      'Planning peer polling\n\nTesting retrieval'
+    )
+    expect(stripBoldMarks('keep `code` and _italics_ and __under__')).toBe('keep `code` and _italics_ and under')
+  })
+
+  it('never pairs markers across lines — a stray ** cannot swallow a paragraph', () => {
+    expect(stripBoldMarks('a stray ** here\nand ** another line')).toBe('a stray ** here\nand ** another line')
   })
 })

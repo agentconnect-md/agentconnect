@@ -97,6 +97,7 @@ import {
   NOTICE_LANE,
   WORK_LANES,
   sessionTurnInFlight,
+  stripBoldMarks,
   toggleWorkPanel,
   workCounts,
   workPanelOpen,
@@ -418,7 +419,9 @@ function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string
       weight: 500,
       textColor: 'var(--text-tertiary)',
       codeColor: 'var(--text-secondary)',
-      text: m.text,
+      // De-bolded: runtimes write every thought heading as `**heading**`, and a heading-only
+      // run rendered as a slab of bold. The Slack plan card strips the same marks.
+      text: stripBoldMarks(m.text),
       code: '',
       files: [],
       time: formatTranscriptRowTime(m),
@@ -500,7 +503,7 @@ function thinkStep(text: string, time?: string, platform?: string): FmtStep {
     weight: 500,
     textColor: 'var(--text-tertiary)',
     codeColor: 'var(--text-secondary)',
-    text,
+    text: stripBoldMarks(text),
     code: '',
     files: [],
     ...(time ? { time } : {}),
