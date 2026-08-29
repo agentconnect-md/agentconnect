@@ -11027,7 +11027,7 @@ export class Daemon {
     // reaches cleanup. Clear its host-kill backstop BEFORE awaiting renderer I/O;
     // renderer drain is tracked separately by this dispatch/safety lease.
     this.clearCancelBackstop(agentId, sessionId)
-    // Remove Cancel run before releasing the Slack transport. Suppressed turns still
+    // Settle the status row before releasing the Slack transport. Suppressed turns still
     // allow this one terminal chrome update; ordinary queued output remains blocked.
     await this.settleStatusBar(p)
     await p.signals.applyChain.catch(() => {})
@@ -11850,11 +11850,13 @@ export class Daemon {
     return { info, identity, ...(link ? { link } : {}), cancellable }
   }
 
-  /** Settle the persistent Slack status row without reviving suppressed turn output. */
+  /** Close the turn out on the persistent Slack status row — the final usage snapshot, and
+   *  the flag that keeps Session options' Cancel turn out of a modal opened afterwards —
+   *  without reviving suppressed turn output. */
   private async settleStatusBar(p: Pending): Promise<void> {
     const emitted = p.chrome.lastStatusBar !== undefined
     p.chrome.statusCancellable = false
-    if (turnChromeFor(p.plan.platform).statusSurface === 'turn-bar' && emitted) await this.emitStatusBar(p, true)
+    if (turnChromeFor(p.plan.platform).statusSurface === 'turn-bar' && emitted) await this.emitStatusBar(p, true, true)
   }
 
   /** Emit/refresh the session's status bar (model / context / tokens / cost). Called at
@@ -11865,7 +11867,7 @@ export class Daemon {
    *  Telegram has NO status bar — state is queried on
    *  demand via `/status` (see handleCommand) — so it's skipped here. Headless no-ops in
    *  applyAction (no connection), which is fine. */
-  private async emitStatusBar(p: Pending, allowWhenSuppressed = false): Promise<void> {
+  private async emitStatusBar(p: Pending, allowWhenSuppressed = false, terminal = false): Promise<void> {
     if (p.outputSuppressed && !allowWhenSuppressed) return
     const statusSurface = turnChromeFor(p.plan.platform).statusSurface
     if (statusSurface === 'turn-bar' && !p.plan.showStatusBar) {
@@ -11876,7 +11878,9 @@ export class Daemon {
       return
     }
     const info = await this.buildStatusInfo(p)
-    const key = JSON.stringify([info, statusSurface === 'turn-bar' ? p.chrome.statusCancellable : null])
+    // `terminal` keeps the turn's closing write distinct from every in-turn one, so it always
+    // lands: it carries the final usage and reposts a bar whose ts an edit proved dead.
+    const key = JSON.stringify([info, terminal])
     if (key === p.chrome.lastStatusBar) return // unchanged since the last emit — no-op
     if (p.webchat) {
       // Webchat: skip a truly-empty frame (nothing for the web bar to show); the model /
@@ -11922,7 +11926,7 @@ export class Daemon {
         {
           kind: 'status-bar',
           text: renderStatusBar(info),
-          blocks: buildStatusBlocks(info, p.plan.sessionKey, link, shared, p.chrome.statusCancellable)
+          blocks: buildStatusBlocks(info, p.plan.sessionKey, link, shared)
         },
         { allowWhenSuppressed }
       )

@@ -860,9 +860,7 @@ describe('buildStatusBlocks (compact in-thread line)', () => {
     const [section, ...rest] = buildStatusBlocks(
       { model: 'opus-4.8', models: ['opus-4.8', 'sonnet-5'], contextUsed: 120_000, contextSize: 200_000 },
       KEY,
-      'https://app/sessions/acp-1',
-      undefined,
-      true
+      'https://app/sessions/acp-1'
     ) as any[]
     expect(rest).toHaveLength(0)
     expect(section.type).toBe('section')
@@ -873,8 +871,7 @@ describe('buildStatusBlocks (compact in-thread line)', () => {
       accessory: { type: 'overflow', action_id: SLACK_STATUS_ACTION.more }
     })
     expect(section.accessory.options.map((o: any) => decodeSlackStatusOverflowValue(o.value)?.action)).toEqual([
-      'manage',
-      'cancel'
+      'manage'
     ])
   })
 
@@ -895,16 +892,10 @@ describe('buildStatusBlocks (compact in-thread line)', () => {
       integrationId: '22222222-2222-4222-8222-222222222222',
       sessionKey: `slack:C1234567890:1720000000.000100:${agentId}`
     })
-    const [section, ...rest] = buildStatusBlocks(
-      { model: 'x' },
-      KEY,
-      'https://app/sessions/acp-1',
-      {
-        sessionTarget,
-        shareable: true
-      },
-      true
-    ) as any[]
+    const [section, ...rest] = buildStatusBlocks({ model: 'x' }, KEY, 'https://app/sessions/acp-1', {
+      sessionTarget,
+      shareable: true
+    }) as any[]
     const [dedicatedSection] = buildStatusBlocks({ model: 'x' }, KEY, 'https://app/sessions/acp-1') as any[]
 
     expect(rest).toHaveLength(0)
@@ -921,14 +912,9 @@ describe('buildStatusBlocks (compact in-thread line)', () => {
     expect(section.text.text).toContain('<https://app/sessions/acp-1|View Session>')
     expect(section.accessory.options.map((o: any) => decodeSlackStatusOverflowValue(o.value)?.action)).toEqual([
       'switch-agent',
-      'manage',
-      'cancel'
+      'manage'
     ])
-    expect(section.accessory.options.map((o: any) => o.text.text)).toEqual([
-      'Switch agent',
-      'Session options',
-      'Cancel run'
-    ])
+    expect(section.accessory.options.map((o: any) => o.text.text)).toEqual(['Switch agent', 'Session options'])
     expect(section.block_id.length).toBeLessThanOrEqual(255)
     for (const option of section.accessory.options) expect(option.value.length).toBeLessThanOrEqual(150)
   })
@@ -941,25 +927,18 @@ describe('buildStatusBlocks (compact in-thread line)', () => {
       integrationId: '22222222-2222-4222-8222-222222222222',
       sessionKey: `slack:C1234567890:1720000000.000100:${agentId}`
     })
-    const [section] = buildStatusBlocks(
-      { model: 'x' },
-      KEY,
-      'https://app/sessions/acp-1',
-      {
-        sessionTarget,
-        shareable: false
-      },
-      true
-    ) as any[]
+    const [section] = buildStatusBlocks({ model: 'x' }, KEY, 'https://app/sessions/acp-1', {
+      sessionTarget,
+      shareable: false
+    }) as any[]
 
-    // Overflow still targets the relay (block_id == sessionTarget), so Session options /
-    // Cancel run keep working — only the multi-agent "Switch agent" option is dropped.
+    // Overflow still targets the relay (block_id == sessionTarget), so Session options keeps
+    // working — only the multi-agent "Switch agent" option is dropped.
     expect(section.block_id).toBe(sessionTarget)
     expect(section.accessory.options.map((o: any) => decodeSlackStatusOverflowValue(o.value)?.action)).toEqual([
-      'manage',
-      'cancel'
+      'manage'
     ])
-    expect(section.accessory.options.map((o: any) => o.text.text)).toEqual(['Session options', 'Cancel run'])
+    expect(section.accessory.options.map((o: any) => o.text.text)).toEqual(['Session options'])
   })
 })
 

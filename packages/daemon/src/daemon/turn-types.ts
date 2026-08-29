@@ -435,12 +435,12 @@ export interface TurnChromeCursors {
    *  session row so later turns update the first line instead of posting duplicates. */
   statusBarTs?: string
   statusBarAttempted?: boolean
-  /** Dedup key for the last status snapshot + cancel availability emitted this turn, so
-   *  a `usage_update` that changes nothing observable skips a redundant edit. */
+  /** Dedup key for the last status snapshot emitted this turn, so a `usage_update` that
+   *  changes nothing observable skips a redundant edit. */
   lastStatusBar?: string
-  /** Whether the Slack status controls may still interrupt this turn. Cleared as soon as
-   *  cancellation starts or terminal cleanup begins, then included in the dedup key so
-   *  the persisted status row drops its stale Cancel run option. */
+  /** Whether the Slack status controls may still interrupt this turn — gates Cancel turn in
+   *  the Session options modal. Cleared as soon as cancellation starts or terminal cleanup
+   *  begins, so a modal opened afterwards offers nothing stale. */
   statusCancellable: boolean
 }
 

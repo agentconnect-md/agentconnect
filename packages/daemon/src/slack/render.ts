@@ -569,27 +569,25 @@ export interface SharedStatusActions {
   shareable: boolean
 }
 
-/** Build the compact in-thread status message. Both dedicated and shared bots use
- *  one overflow accessory so the status stays on a single row. A SHAREABLE (multi-agent)
- *  bot also exposes Switch agent; Cancel run is present only while the current turn can
- *  still be interrupted. */
+/** Build the compact in-thread status message. Both dedicated and shared bots use one
+ *  overflow accessory so the status stays on a single row; a SHAREABLE (multi-agent) bot
+ *  also exposes Switch agent. Interrupting a turn is Slack's own Stop control or Session
+ *  options' Cancel turn — the overflow carries no cancel item. */
 export function buildStatusBlocks(
   info: StatusBarInfo,
   sessionKey: string,
   link?: string,
-  shared?: SharedStatusActions,
-  cancellable = false
+  shared?: SharedStatusActions
 ): unknown[] {
   const text = `${renderStatusBar(info)}${link ? `  ·  <${link}|View Session>` : ''}`
   const target = shared?.sessionTarget ?? sessionKey
-  const option = (label: string, action: 'switch-agent' | 'manage' | 'cancel') => ({
+  const option = (label: string, action: 'switch-agent' | 'manage') => ({
     text: { type: 'plain_text', text: label },
     value: encodeSlackStatusOverflowValue(action)
   })
   const options = [
     ...(shared?.shareable ? [option('Switch agent', 'switch-agent')] : []),
-    option('Session options', 'manage'),
-    ...(cancellable ? [option('Cancel run', 'cancel')] : [])
+    option('Session options', 'manage')
   ]
   return [
     {
