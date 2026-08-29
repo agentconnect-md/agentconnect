@@ -32,7 +32,7 @@ import {
 } from '../../src/persistence/index.js'
 import type { AgentRecord } from '../../src/persistence/ports.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
-import { systemClock } from '../../src/domain/clock.js'
+import { trackedTestClock } from '../fakes/tracked-clock.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import type { DaemonLiveness } from '../../src/ports.js'
 import { OrgId } from '../../src/domain/ids.js'
@@ -49,6 +49,8 @@ const SECOND_PATH = 'example-group/example-second'
 const glRepo = (path: string, base: string = GITLAB_DEFAULT_BASE_URL): string => `${base}/${path}`
 /** The agent whose own account (§7.2) backs every grant assertion below. */
 const AGENT = '11111111-1111-4111-8111-111111111111'
+// Real-time clock whose pending timers die with the test — see fakes/tracked-clock.ts.
+const clock = trackedTestClock()
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 
 let running: HttpApp | undefined
@@ -77,7 +79,7 @@ async function harness(liveness?: DaemonLiveness, baseUrl?: string) {
     states: new PgGitlabOauthStateStore(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
-    clock: systemClock,
+    clock,
     publicCpUrl: 'https://api.example.test',
     api: fake.api
   })
@@ -90,7 +92,7 @@ async function harness(liveness?: DaemonLiveness, baseUrl?: string) {
     agents: new PgAgentRepo(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
-    clock: systemClock,
+    clock,
     api: fake.api
   })
   const provisioner = new GitlabProvisioner({
@@ -100,7 +102,7 @@ async function harness(liveness?: DaemonLiveness, baseUrl?: string) {
     webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
     catalog: new PgCodeHostRepositoryRepo(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
-    clock: systemClock,
+    clock,
     publicRelayUrl: 'https://relay.example.test',
     desiredWebhookEvents: async () => null,
     // Mirrors the container: the durable clone-URL convergence is AWAITED
@@ -163,7 +165,7 @@ function credService(bindings: PgGitlabProjectBindingRepo, baseUrl = GITLAB_DEFA
     credentials: new PgGitlabProjectCredentialRepo(prisma),
     credentialSecrets: new PgGitlabProjectCredentialSecretStore(prisma, cipher),
     repoAuths: new PgAgentRepoAuthorizationRepo(prisma),
-    clock: systemClock,
+    clock,
     baseUrl
   })
 }

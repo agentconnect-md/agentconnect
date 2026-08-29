@@ -32,11 +32,13 @@ import { GitlabAccountService } from '../../src/gitlab/account.service.js'
 import { gitlabAgentAccountUsername } from '../../src/gitlab/api.js'
 import { FakeGitlab, type FakeGitlabOptions } from '../fakes/gitlab-api.js'
 import { makeSecretCipher } from '../../src/secrets/cipher.js'
-import { systemClock } from '../../src/domain/clock.js'
+import { trackedTestClock } from '../fakes/tracked-clock.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const PUBLIC_CP = 'https://api.example.test'
 
+// Real-time clock whose pending timers die with the test — see fakes/tracked-clock.ts.
+const clock = trackedTestClock()
 const cipher = makeSecretCipher({ SECRET_CIPHER: 'none' } as never)
 
 let running: HttpApp | undefined
@@ -59,7 +61,7 @@ function gitlabApp(
     states: new PgGitlabOauthStateStore(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
-    clock: systemClock,
+    clock,
     publicCpUrl: PUBLIC_CP,
     webAppUrl: 'https://console.example.test',
     api: fake.api
@@ -72,7 +74,7 @@ function gitlabApp(
     agents: new PgAgentRepo(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
     cipher,
-    clock: systemClock,
+    clock,
     api: fake.api
   })
   const provisioner = new GitlabProvisioner({
@@ -82,7 +84,7 @@ function gitlabApp(
     webhookSecrets: new PgGitlabWebhookSecretStore(prisma, cipher),
     catalog: new PgCodeHostRepositoryRepo(prisma),
     instanceState: new PgGitlabInstanceStateStore(prisma),
-    clock: systemClock,
+    clock,
     publicRelayUrl: deployment.publicRelayUrl ?? 'https://relay.example.test',
     // The same authority container.ts wires: an enabled gitlab hook on the project wants ingress.
     desiredWebhookEvents: async (orgId, projectId) =>
