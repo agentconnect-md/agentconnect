@@ -256,10 +256,32 @@ the container itself is still collapsed by default, but no chunk field sets the 
 **DM and channel take the same code path.** The only difference is the recipient argument
 (§4 fact 9).
 
-**A turn that fails** settles its cards like a finished one — `complete` and the counted
-summary. The tool calls did not necessarily fail; the turn did, and the `⚠️ Agent failed to
-respond` notice carries that in the body where it belongs. Marking them `error` would blame the
-tools for the runtime.
+### 5.1 What `error` means, and how a failure is said
+
+**The container icon is DERIVED, continuously, from the cards.** Any `error` card in the final
+task list renders the whole plan under a red warning — order-independent, and with no override
+anywhere: `plan_update` carries only `title` (every plausible extra field is accepted and
+silently discarded), no stream call takes an overall state, the finalized `plan` block has no
+state member, and flipping a card to `error` by `chat.update` AFTER the stop reddens the
+container just the same (all verified live 2026-08-29). The status enum is closed —
+`pending | in_progress | complete | error`, everything else rejected — and `pending` renders
+identically to `error` AND reddens the container too, so it is never sent. There is no yellow,
+no skipped, and no per-card glyph: the `icon` chunk field documented upstream is rejected, a
+title parses neither markdown nor emoji shortcodes, and card text has no color styles.
+
+So `error` is spent where red is the truth about the TURN, not about one step:
+
+- **A failed TOOL is `complete` + a plain `(failed)` title prefix**, counted into the closing
+  label (`Completed 41 steps · 1 failed`). Agents fail commands routinely — a grep without a
+  match, a probing run — and one non-zero exit must not present a completed turn as a failed
+  one. Plain text, deliberately: a Unicode ❌ renders as a large color emoji everywhere, and
+  shortcodes don't render on mobile card bodies at all.
+- **A cancelled turn settles in-flight cards as `error` under `Stopped`** — the reader stopped
+  it; red is accurate.
+- **A crashed turn settles in-flight cards as `error` under `Failed`** — the step still open
+  did not finish because the runtime died, steps already finished keep their state, and the
+  `⚠️ Agent failed to respond` notice carries the reason in the body. A crash with nothing in
+  flight rewrites no card: the label alone says how the turn ended.
 
 ## 6. Stop
 
@@ -400,6 +422,6 @@ Two cosmetic questions stay open. **Does the counted label read well after a lon
 `Completed 41 steps` is honest but not informative; a model-narrated label was rejected (a second
 call, and a label that can disagree with the cards), and the next candidate is the last tool's
 title. **Should a `failed` card carry its error text as `output` on medium?** Today the body is a
-high-only rung, matching the legacy pipeline; the card already says `error`, and a body cannot
-start collapsed (§4 fact 10), so granting one to medium would cost every medium step its single
-line — the failed one included.
+high-only rung, matching the legacy pipeline; the card already says `(failed)`, and a body
+cannot start collapsed (§4 fact 10), so granting one to medium would cost every medium step its
+single line — the failed one included.

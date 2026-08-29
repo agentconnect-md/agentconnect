@@ -158,6 +158,13 @@ const MAX_THINKING_HEAD = 400
 const STREAM_PLAN_WORKING = 'Working…'
 /** …and after a cancel, a user Stop, or suppression — the in-flight cards settle as errors. */
 const STREAM_PLAN_STOPPED = 'Stopped'
+/** …and after the RUNTIME dies mid-turn. Same error settle as a stop — the in-flight step did
+ *  not finish because the turn ended — under the label that says which way it ended. */
+const STREAM_PLAN_FAILED = 'Failed'
+/** A failed tool's title prefix — words, not card status: any `error` card reddens the whole
+ *  container (the icon is derived, verified live 2026-08-29), and the title parses no markdown
+ *  and no shortcodes, so plain text is the entire palette. */
+const FAILED_PREFIX = '(failed) '
 
 function clampTo(s: string, max: number): string {
   const t = s.trim()
@@ -918,7 +925,8 @@ export class OutputConverger {
   private openTasks = new Set<string>()
   /** Cards whose write-once body has been sent, so a later update cannot append a second. */
   private outputWritten = new Set<string>()
-  /** Cards that ended in error — the closing label counts these, never the model. */
+  /** Tool calls ACP reported failed — counted into the closing label, never the model's to
+   *  narrate, and deliberately NOT the cards' status (see FAILED_PREFIX). */
   private failedTasks = new Set<string>()
   // A tool call's own one-line label and verbatim command, remembered from whichever update
   // carried `rawInput` — a streamed `tool_call_update` usually carries none.
@@ -1010,19 +1018,20 @@ export class OutputConverger {
    * settle append is not cosmetic — it is what every stop is owed. Idempotent: the second
    * caller of a turn's settle gets nothing.
    */
-  settleStream(outcome: 'completed' | 'stopped'): SlackAction[] {
+  settleStream(outcome: 'completed' | 'stopped' | 'failed'): SlackAction[] {
     if (!this.streaming || this.streamClosed) return []
     this.streamClosed = true
     // A tool that started AND finished inside one coalescing window leaves cards pending with
     // no stream open yet. Opening it here is what keeps such a turn from ending with no tool
     // chrome at all; only a genuinely tool-free turn stays silent.
     if (!this.streamOpened && this.emittedTasks.size === 0) return []
-    const terminal = outcome === 'stopped' ? 'error' : 'complete'
+    const terminal = outcome === 'completed' ? 'complete' : 'error'
     this.closeThinkingRun(terminal)
     for (const id of [...this.openTasks]) this.queueTask(id, this.taskTitles.get(id) ?? 'tool', terminal)
     // Forced rather than queued: the container must always carry its closing label, even when
     // the working one happens to read the same.
-    this.planTitle = outcome === 'stopped' ? STREAM_PLAN_STOPPED : this.planSummary()
+    this.planTitle =
+      outcome === 'completed' ? this.planSummary() : outcome === 'stopped' ? STREAM_PLAN_STOPPED : STREAM_PLAN_FAILED
     this.pendingPlanTitle = this.planTitle
     const progressText = this.pendingProgress
     this.pendingProgress = ''
@@ -1078,8 +1087,6 @@ export class OutputConverger {
     if (details || output) this.outputWritten.add(id)
     this.emittedTasks.set(id, signature)
     this.taskTitles.set(id, clamped)
-    if (status === 'error') this.failedTasks.add(id)
-    else this.failedTasks.delete(id)
     if (status === 'in_progress') this.openTasks.add(id)
     else this.openTasks.delete(id)
     this.pendingTasks.set(id, chunk)
@@ -1200,9 +1207,11 @@ export class OutputConverger {
    *  dropped and replaced by the generic failure notice. */
   flushTerminal(): SlackAction[] {
     if (this.mode === 'minimal') return this.liveRefresh()
-    // A failed turn settles its cards like a finished one: the tool calls did not necessarily
-    // fail, the turn did, and the ⚠️ notice the caller appends carries that in the body.
-    return [...this.drainReasoning(), ...this.flush(), ...this.settleStream('completed')]
+    // A crashed turn settles like a stopped one: whatever was still in flight did not finish
+    // BECAUSE the turn died, so those cards are honestly `error` under a "Failed" label — while
+    // steps that already finished keep their state, (failed)-prefixed ones included. The ⚠️
+    // notice the caller appends still carries the reason in the body.
+    return [...this.drainReasoning(), ...this.flush(), ...this.settleStream('failed')]
   }
 
   /** minimal: refresh the single in-place `live-reply` with the current segment (display only;
@@ -1462,6 +1471,13 @@ export class OutputConverger {
         if (this.streaming && u.toolCallId) {
           this.closeThinkingRun()
           const terminal = u.status === 'completed' || u.status === 'failed'
+          // A failed TOOL never takes card status `error`: the container icon is derived from
+          // the cards (any error card reddens the whole plan, verified live 2026-08-29), so one
+          // non-zero exit would present a completed turn as a failed one. The failure is said
+          // in words instead — a plain "(failed)" prefix, counted into the closing label —
+          // and `error` is reserved for the cancel path, where a red container is the truth.
+          const failed = u.status === 'failed'
+          if (failed) this.failedTasks.add(u.toolCallId)
           // The card's BODY is HIGH only — medium keeps one line per step, matching the legacy
           // pipeline where tool output is a high-mode rung. The body cannot start collapsed
           // (Slack has no such field), so on medium a step stays a step.
@@ -1477,8 +1493,8 @@ export class OutputConverger {
               : {}
           this.queueTask(
             u.toolCallId,
-            this.cardTitle(u.toolCallId, label),
-            u.status === 'completed' ? 'complete' : u.status === 'failed' ? 'error' : 'in_progress',
+            (failed ? FAILED_PREFIX : '') + this.cardTitle(u.toolCallId, label),
+            terminal ? 'complete' : 'in_progress',
             body
           )
           if (terminal) this.toolOutputs.delete(u.toolCallId)
