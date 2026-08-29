@@ -766,44 +766,96 @@ export default function EditAgentModal({
                     autoFocus={!agent.builtin}
                   />
                 </div>
-                <div className="fld desktop:col-span-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="fldlbl">Runs on</span>
-                    {!!initialDaemonId.current && !daemonChanged && (
-                      <button
-                        type="button"
-                        className="font-sans text-[11.5px] font-medium leading-normal text-(--accent) hover:underline"
-                        onClick={() => {
-                          setRepairPlacement((value) => !value)
-                          setForceReassign(false)
-                          setForceConfirmed(false)
-                          setErr(null)
-                        }}
-                      >
-                        {repairPlacement ? 'Cancel repair' : 'Repair placement'}
-                      </button>
-                    )}
+                {/* Daemon / Runtime / Model share one 3-up row inside the Basics grid, as in Add agent. */}
+                <div className="desktop:col-span-2 grid grid-cols-1 gap-[14px] desktop:grid-cols-3">
+                  <div className="fld">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="fldlbl">Runs on</span>
+                      {!!initialDaemonId.current && !daemonChanged && (
+                        <button
+                          type="button"
+                          className="font-sans text-[11.5px] font-medium leading-normal text-(--accent) hover:underline"
+                          onClick={() => {
+                            setRepairPlacement((value) => !value)
+                            setForceReassign(false)
+                            setForceConfirmed(false)
+                            setErr(null)
+                          }}
+                        >
+                          {repairPlacement ? 'Cancel repair' : 'Repair placement'}
+                        </button>
+                      )}
+                    </div>
+                    <DaemonSelect
+                      value={daemonId}
+                      options={daemonOptions}
+                      placeholder="No daemon"
+                      onChange={(nextDaemonId) => {
+                        // Chaining through ModalProvider replaces this dialog; Continue reopens it
+                        // with the fresh daemon listed (same path as the unplaced agent's chip).
+                        if (nextDaemonId === ADD_DAEMON) {
+                          openModal('daemon', agent, { focusSection: 'basics' })
+                          return
+                        }
+                        setDaemonId(nextDaemonId)
+                        setRepairPlacement(false)
+                        setForceReassign(false)
+                        setForceConfirmed(false)
+                        setErr(null)
+                      }}
+                    />
                   </div>
-                  <DaemonSelect
-                    value={daemonId}
-                    options={daemonOptions}
-                    placeholder="No daemon"
-                    onChange={(nextDaemonId) => {
-                      // Chaining through ModalProvider replaces this dialog; Continue reopens it
-                      // with the fresh daemon listed (same path as the unplaced agent's chip).
-                      if (nextDaemonId === ADD_DAEMON) {
-                        openModal('daemon', agent, { focusSection: 'basics' })
-                        return
-                      }
-                      setDaemonId(nextDaemonId)
-                      setRepairPlacement(false)
-                      setForceReassign(false)
-                      setForceConfirmed(false)
-                      setErr(null)
-                    }}
-                  />
+                  <div className="fld">
+                    <span className="fldlbl">Runtime</span>
+                    <RuntimeSelect
+                      value={runtime}
+                      options={runtimeOptions}
+                      needsLogin={runtimesNeedingLogin}
+                      onChange={onRuntimeChange}
+                    />
+                  </div>
+                  <div className="fld">
+                    <span className="fldlbl">Model</span>
+                    {/* No advertised models ⇒ nothing to choose: an inert em-dash field
+                        rather than a fabricated "Default" entry the runtime never offered. */}
+                    <div
+                      className={modelSelectable ? 'inp relative' : 'inp cursor-not-allowed'}
+                      title={modelSelectable ? undefined : 'This runtime reports no selectable models'}
+                    >
+                      <span className={`truncate ${modelSelectable ? '' : 'text-(--text-tertiary)'}`}>
+                        {modelSelectable ? modelLabel(selectedModel) : '—'}
+                      </span>
+                      {modelSelectable && (
+                        <>
+                          <Icon name="chevron-down" size={15} color="var(--text-tertiary)" className="flex-none" />
+                          <select
+                            value={selectedModel}
+                            onChange={(e) => {
+                              const next = e.target.value
+                              setModel(next)
+                              // Picking a model resolves an effort the new model doesn't offer:
+                              // its default level, else the nearest available tier.
+                              setEffort((cur) =>
+                                resolveEffortForModel(runtime, modelCapability(daemon, runtime, next), cur)
+                              )
+                            }}
+                            className="absolute inset-0 cursor-pointer opacity-0"
+                            aria-label="Model"
+                          >
+                            {modelOptions.map((m) => (
+                              <option key={m} value={m}>
+                                {modelLabel(m)}
+                                {!reportedModels.includes(m) ? ' (unavailable)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  {/* Wide prose plus its confirmations — it spans the row under the three pickers. */}
                   {sourceDaemon && sourceUnavailable && (
-                    <div className="mt-2 flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
+                    <div className="desktop:col-span-3 flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
                       <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
                       <div className="min-w-0 flex-1">
                         <div className="font-sans text-[12.5px] font-semibold leading-normal text-(--text-primary)">
@@ -866,54 +918,6 @@ export default function EditAgentModal({
                       </div>
                     </div>
                   )}
-                </div>
-                <div className="fld">
-                  <span className="fldlbl">Runtime</span>
-                  <RuntimeSelect
-                    value={runtime}
-                    options={runtimeOptions}
-                    needsLogin={runtimesNeedingLogin}
-                    onChange={onRuntimeChange}
-                  />
-                </div>
-                <div className="fld">
-                  <span className="fldlbl">Model</span>
-                  {/* No advertised models ⇒ nothing to choose: an inert em-dash field
-                      rather than a fabricated "Default" entry the runtime never offered. */}
-                  <div
-                    className={modelSelectable ? 'inp relative' : 'inp cursor-not-allowed'}
-                    title={modelSelectable ? undefined : 'This runtime reports no selectable models'}
-                  >
-                    <span className={modelSelectable ? undefined : 'text-(--text-tertiary)'}>
-                      {modelSelectable ? modelLabel(selectedModel) : '—'}
-                    </span>
-                    {modelSelectable && (
-                      <>
-                        <Icon name="chevron-down" size={15} color="var(--text-tertiary)" />
-                        <select
-                          value={selectedModel}
-                          onChange={(e) => {
-                            const next = e.target.value
-                            setModel(next)
-                            // Picking a model resolves an effort the new model doesn't offer:
-                            // its default level, else the nearest available tier.
-                            setEffort((cur) =>
-                              resolveEffortForModel(runtime, modelCapability(daemon, runtime, next), cur)
-                            )
-                          }}
-                          className="absolute inset-0 cursor-pointer opacity-0"
-                          aria-label="Model"
-                        >
-                          {modelOptions.map((m) => (
-                            <option key={m} value={m}>
-                              {modelLabel(m)}
-                              {!reportedModels.includes(m) ? ' (unavailable)' : ''}
-                            </option>
-                          ))}
-                        </select>
-                      </>
-                    )}
-                  </div>
                 </div>
               </div>
             </section>
