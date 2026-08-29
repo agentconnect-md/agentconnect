@@ -270,9 +270,9 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           cache: true
-          # Its own cache namespace, keyed by the closure it stores rather than by the lockfile
-          # alone. Nothing shares this OS today, but the rule is the same one the two narrowed
-          # Linux jobs follow: a job that installs a subset never writes the shared entry.
+          # Its own primary key, keyed by the closure it stores rather than by the lockfile alone.
+          # Nothing shares this OS today, but the rule is the one the two narrowed Linux jobs
+          # follow: a job that installs a subset never saves under the shared key.
           cache_dependency_path: |
             pnpm-lock.yaml
             packages/daemon/package.json
@@ -378,9 +378,11 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           cache: true
-          # Its own cache namespace. The default key is shared by every job on this runner OS, and
-          # this job stores a filtered subset — under the shared key that subset would cost the
-          # full-install jobs a re-download on every run after a lockfile change.
+          # Its own PRIMARY key. The default one is shared by every job on this runner OS, so the
+          # filtered subset this job stores would otherwise be what `build`, `check` and `unit`
+          # restore on every run. Only the primary: the action's restore-key prefix stops before the
+          # hash, so on the one run after a lockfile change a full-install job can still fall back
+          # onto this store and re-fetch what it misses.
           cache_dependency_path: |
             pnpm-lock.yaml
             packages/daemon/package.json
@@ -438,7 +440,7 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           cache: true
-          # Its own cache namespace, for the reason the sandbox job gives.
+          # Its own primary key, for the reason the sandbox job gives.
           cache_dependency_path: |
             pnpm-lock.yaml
             packages/daemon/package.json
