@@ -749,8 +749,6 @@ describe('applySlackAction — chrome stream actions', () => {
   })
 
   it('carries the agent identity in a DM too — an undecorated stream renders a placeholder', async () => {
-    // Unlike the progress message it replaces: an undecorated postMessage falls back to the
-    // app's own profile, but an undecorated STREAM does not (verified live 2026-08-29).
     const { apply, conn } = fixture({}, { isDm: true })
     await apply({ kind: 'stream-start' })
     expect(conn.startTurnStream).toHaveBeenCalledWith('C1', 'T1', {

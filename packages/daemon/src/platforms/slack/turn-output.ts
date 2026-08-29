@@ -583,9 +583,7 @@ export async function applySlackAction<TTurn extends SlackTurn>(
     case 'stream-start': {
       if (state.stream || state.streamDead || state.streamDegraded) return
       if (p.plan.thread) {
-        // Same identity as every other row (see slackAgentIdentityOptions) — the stream is
-        // the row that made a DM exemption untenable: undecorated `chat.startStream` renders
-        // a placeholder avatar with no app-profile fallback (verified live 2026-08-29).
+        // Same identity as every row — an undecorated stream has no app-profile fallback.
         state.stream = await conn.startTurnStream(p.plan.channel, p.plan.thread, {
           isDm: p.plan.isDm,
           ...(state.recipient ? { recipientUserId: state.recipient } : {}),
