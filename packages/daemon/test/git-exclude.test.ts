@@ -145,13 +145,18 @@ describe('excludeManagedSkillBundles', () => {
     expect(bundlePathsFromCheckoutRoot('/repo', '/elsewhere', [BUNDLE])).toEqual([])
   })
 
-  it('escapes a name that would otherwise act as a gitignore pattern', async () => {
-    const odd = '.claude/skills/a[b]*c'
-    installBundle(repoWithSkills.worktree, odd)
+  // Win32 forbids `*` in a filename outright, so the directory this needs cannot exist there — and
+  // a bundle that cannot exist needs no escaping. The escaping itself is platform-independent.
+  it.skipIf(process.platform === 'win32')(
+    'escapes a name that would otherwise act as a gitignore pattern',
+    async () => {
+      const odd = '.claude/skills/a[b]*c'
+      installBundle(repoWithSkills.worktree, odd)
 
-    await excludeManagedSkillBundles(repoWithSkills.commonDir, [BUNDLE, odd])
+      await excludeManagedSkillBundles(repoWithSkills.commonDir, [BUNDLE, odd])
 
-    expect(readExclude()).toContain('/.claude/skills/a\\[b\\]\\*c/')
-    expect(git(repoWithSkills.worktree, 'status', '--porcelain').trim()).toBe('')
-  })
+      expect(readExclude()).toContain('/.claude/skills/a\\[b\\]\\*c/')
+      expect(git(repoWithSkills.worktree, 'status', '--porcelain').trim()).toBe('')
+    }
+  )
 })
