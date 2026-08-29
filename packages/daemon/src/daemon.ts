@@ -2820,6 +2820,9 @@ export class Daemon {
 
   /** Phase 29 — watch the discoverable agent config tree (not runtime homes/workspaces) and debounce it into reconcile. */
   private watchAgentConfigs(): void {
+    // MEASUREMENT ONLY — not for merge. Prices the recursive watcher: on Windows chokidar walks
+    // the tree and attaches ReadDirectoryChangesW per directory, once per daemon start, ~1005 times.
+    if (process.env.AGENTCONNECT_MEASURE_NO_WATCHER === '1') return
     // Watch the discoverable agent config tree, not runtime homes/workspaces.
     this.watcher = chokidarWatch(this.agentsDir, {
       ignoreInitial: true,

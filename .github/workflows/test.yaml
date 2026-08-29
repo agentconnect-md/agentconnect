@@ -238,10 +238,17 @@ jobs:
   #
   # No `prisma:generate` step: neither package imports the generated client.
   unit-windows:
-    name: Unit Test (Windows)
+    # MEASUREMENT ONLY — not for merge. Three arms, three samples each, one run: the job's `tests`
+    # total swings 1326-1951 s between runs of identical content, so a single pair resolves nothing.
+    name: Unit Test (Windows) ${{ matrix.arm }}-${{ matrix.sample }}
     needs: windows-scope
     if: ${{ needs.windows-scope.outputs.changed == 'true' }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [baseline, workers6, nowatch]
+        sample: [1, 2, 3]
     # The daemon suite alone runs ~20 min here against ~3 on Linux — Windows filesystem and
     # process-spawn cost, not extra work — so the cap is set well clear of it rather than near it.
     timeout-minutes: 45
@@ -310,6 +317,9 @@ jobs:
           GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
+          # MEASUREMENT ONLY. baseline sets neither, so it is the job as it ships.
+          AGENTCONNECT_MEASURE_WORKERS: ${{ matrix.arm == 'workers6' && '6' || '' }}
+          AGENTCONNECT_MEASURE_NO_WATCHER: ${{ matrix.arm == 'nowatch' && '1' || '' }}
         run: pnpm --filter @agentconnect.md/daemon test:unit
       - name: CLI unit tests
         if: ${{ !cancelled() }}
