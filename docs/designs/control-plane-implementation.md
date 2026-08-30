@@ -97,7 +97,7 @@ packages/control-plane/src/
 │   ├── routes/
 │   │   ├── health.ts         # GET /health   (the existing handler moves here)
 │   │   ├── agents.ts         # CRUD /agents, PATCH spec (name/description/model/runtime/caps), /agents/:id/integrations
-│   │   ├── daemons.ts        # GET /daemons, POST /daemons/token (onboard)
+│   │   ├── daemons.ts        # GET /daemons (liveness), /daemons/capabilities, /daemons/:id, POST /daemons/token
 │   │   ├── keys.ts           # POST/GET /daemons/:id/keys, DELETE /daemons/:id/keys/:keyRowId (mint/list/revoke)
 │   │   ├── sessions.ts       # GET /sessions, /sessions/:id  (metadata only)
 │   │   ├── crons.ts          # CRUD /crons

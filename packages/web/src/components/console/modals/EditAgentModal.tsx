@@ -57,6 +57,7 @@ import { OutputModeField } from '@/components/console/OutputModeField'
 import { RuntimeChatField } from '@/components/console/RuntimeChatField'
 import { SandboxField } from '@/components/console/SandboxField'
 import { isOutputMode, type OutputMode } from '@/lib/output-mode'
+import { useDaemonDetail } from '@/lib/use-daemon-detail'
 
 // The edit dialog mirrors the Add-agent modal: a single scrolling form with a
 // section rail beside it. Every group card on the Configuration page opens this
@@ -360,7 +361,8 @@ export default function EditAgentModal({
   )
   // The daemon whose reported CAPABILITIES the form reads — one live member for a set target, and
   // never the placement itself.
-  const daemon = editAgentCapabilitySource(daemons, daemonId, memberSets, daemonChoices.poolChoice)
+  // The model catalogs live on the single-daemon read; until it lands this is the fleet row.
+  const daemon = useDaemonDetail(editAgentCapabilitySource(daemons, daemonId, memberSets, daemonChoices.poolChoice))
   const sourceDaemon = daemons.find((d) => d.daemonId === initialDaemonId.current)
   const daemonChanged = daemonId !== initialDaemonId.current
   const initialPlacement = daemonChanged && !initialDaemonId.current

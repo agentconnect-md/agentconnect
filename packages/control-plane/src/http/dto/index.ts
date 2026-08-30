@@ -237,7 +237,37 @@ export const DaemonViewDto = z.object({
    *  Gates the console's lifecycle controls so non-owners never see an action they'd 403 on. */
   canManageLifecycle: z.boolean()
 })
-export const DaemonListDto = z.array(DaemonViewDto)
+// The fleet read splits by CHANGE RATE, not by "summary vs detail": the console polls
+// liveness every few seconds, while a daemon's capability moves only when it connects,
+// upgrades, or re-probes, and its per-model matrix is read one daemon at a time.
+
+/** `GET /daemons` — the liveness row. Capability lives at `/daemons/capabilities`. */
+export const DaemonFleetDto = DaemonViewDto.omit({ capabilities: true, runtimeProfiles: true, mcpServers: true })
+export const DaemonFleetListDto = z.array(DaemonFleetDto)
+
+/** The catalog a fleet-wide read carries: its runtime-level answers — default model,
+ *  permission modes and their default, which the console's read-only model/permission
+ *  labels resolve against for EVERY agent at once — and an empty `models`, because that
+ *  per-model matrix is 75% of a catalog and its only readers configure one daemon.
+ *  Enforced here rather than trusted: the response schema rejects a populated list. */
+export const RuntimeModelCatalogSummaryDto = RuntimeModelCatalogDto.extend({
+  models: z.array(RuntimeModelCapabilityDto).max(0)
+})
+
+/** A runtime profile whose catalog is that summary — everything a reader that needs EVERY
+ *  daemon at once uses: the pickers' runtime list, `authRequired`, MCP transports. */
+export const RuntimeProfileSummaryDto = RuntimeProfileDto.extend({
+  modelCatalog: RuntimeModelCatalogSummaryDto.nullable()
+})
+
+/** `GET /daemons/capabilities` — what each daemon can run, for the whole fleet. */
+export const DaemonCapabilityDto = z.object({
+  daemonId: z.string(),
+  capabilities: DaemonCapabilitiesDto,
+  runtimeProfiles: z.array(RuntimeProfileSummaryDto),
+  mcpServers: z.array(McpServerFactDto)
+})
+export const DaemonCapabilityListDto = z.array(DaemonCapabilityDto)
 
 // ── member sets (docs/designs/daemon-groups.md) ──
 // A named set of this organization's daemons within which an agent's duty may be claimed. The
@@ -3740,6 +3770,8 @@ export const SlackInstallErrorDto = ErrorDto.extend({
 // Inferred response types — route handlers return these so the zod type provider
 // type-checks the handler's payload against its declared response schema.
 export type DaemonViewDtoT = z.infer<typeof DaemonViewDto>
+export type DaemonFleetDtoT = z.infer<typeof DaemonFleetDto>
+export type DaemonCapabilityDtoT = z.infer<typeof DaemonCapabilityDto>
 export type ApiKeyDtoT = z.infer<typeof ApiKeyDto>
 export type AgentDtoT = z.infer<typeof AgentDto>
 export type IntegrationDtoT = z.infer<typeof IntegrationDto>

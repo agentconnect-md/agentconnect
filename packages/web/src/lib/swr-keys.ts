@@ -10,6 +10,11 @@ function consoleKey<const Resource extends string, const Parts extends readonly 
 export const consoleKeys = {
   agents: (orgId: string | null | undefined) => consoleKey(orgId, 'agents'),
   daemons: (orgId: string | null | undefined) => consoleKey(orgId, 'daemons'),
+  /** Fleet capability — split off the liveness poll because it only moves when a daemon
+   *  connects, upgrades, or re-probes. */
+  daemonCapabilities: (orgId: string | null | undefined) => consoleKey(orgId, 'daemon-capabilities'),
+  /** One daemon in full — the only read carrying a runtime's model catalog. */
+  daemon: (orgId: string | null | undefined, daemonId: string) => consoleKey(orgId, 'daemon', daemonId),
   crons: (orgId: string | null | undefined) => consoleKey(orgId, 'crons'),
   integrations: (orgId: string | null | undefined) => consoleKey(orgId, 'integrations'),
   bots: (orgId: string | null | undefined) => consoleKey(orgId, 'bots'),

@@ -239,9 +239,24 @@ export const MCP_TOOLS: McpToolDef[] = [
   },
   {
     name: 'listDaemons',
-    description: 'List the daemons (edge execution units) in the organization that are visible to you, with status.',
+    description:
+      'List the daemons (edge execution units) in the organization that are visible to you, with status and load. This is the liveness view — what each daemon can RUN is listDaemonCapabilities, and one runtime’s model catalog is getDaemon.',
     schema: NoArgs,
     call: (ctx) => ctx.get(org(ctx, '/daemons'))
+  },
+  {
+    name: 'listDaemonCapabilities',
+    description:
+      'What each daemon in the fleet can run: the platforms and features it supports, the runtimes installed on it with their available model ids, and its configured MCP servers. Use this to choose a placement — which daemon offers the runtime an agent needs. Per-model detail (efforts, permission modes) is not here; read one daemon with getDaemon for that.',
+    schema: NoArgs,
+    call: (ctx) => ctx.get(org(ctx, '/daemons/capabilities'))
+  },
+  {
+    name: 'getDaemon',
+    description:
+      'One daemon in full: liveness, capabilities, and each installed runtime’s complete model catalog — the model ids it offers and, per model, the reasoning efforts and permission modes it accepts. This is the only read carrying that catalog, so consult it before setting an agent’s model, reasoningEffort or permissionMode, whose valid values are whatever the serving daemon reports.',
+    schema: z.object({ daemonId: z.string().min(1).describe('The daemon id (from listDaemons)') }).strict(),
+    call: (ctx, a) => ctx.get(org(ctx, `/daemons/${seg(a.daemonId)}`))
   },
   {
     name: 'listCrons',
@@ -358,7 +373,7 @@ export const MCP_TOOLS: McpToolDef[] = [
         name: AgentSlug.describe('Immutable slug identifier (lowercase letters, digits, hyphens)'),
         displayName: z.string().min(1).optional().describe('Human-friendly label shown in chat and the console'),
         description: z.string().optional(),
-        runtime: z.string().min(1).describe('Runtime id — pick from the runtimes reported by listDaemons'),
+        runtime: z.string().min(1).describe('Runtime id — pick from the runtimes reported by listDaemonCapabilities'),
         model: z.string().min(1).optional(),
         reasoningEffort: z.string().min(1).optional(),
         outputMode: OutputMode.optional(),

@@ -94,6 +94,7 @@ import {
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
 import { gitRepoUrlTileHint } from '@/lib/git-url-tile'
 import { useGitlabProjects } from '@/lib/use-gitlab-projects'
+import { useDaemonDetail } from '@/lib/use-daemon-detail'
 
 type WsMode = WorkspaceMode
 
@@ -274,11 +275,13 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
     poolAvailable,
     availableGroups,
     offeredGroups,
-    daemon,
+    daemon: fleetDaemon,
     localDaemons,
     placement,
     value: effectiveDaemonId
   } = daemonChoice
+  // The model catalogs live on the single-daemon read; until it lands this is the fleet row.
+  const daemon = useDaemonDetail(fleetDaemon)
   const daemonOptions: DaemonSelectOption[] = [
     ...(poolAvailable
       ? [

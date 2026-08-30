@@ -135,6 +135,7 @@ import {
 import { useSessionList } from '@/lib/use-session-list'
 import { isFlatSessionView } from '@/lib/session-list-view'
 import { WebchatMcpApprovalCard } from '@/components/console/WebchatMcpApprovalCard'
+import { useDaemonDetail } from '@/lib/use-daemon-detail'
 import {
   sessionEffortAfterModelChange,
   sessionEffortChoicesForSelection,
@@ -1819,6 +1820,14 @@ export default function SessionDetailView() {
         }
       : sessionBase
   const agentRuntime = session?.runtime || owner?.runtime || ''
+  // Hoisted above this component's loading / not-found returns: a deep link renders it
+  // before `session` resolves, and a hook called only on the later render would change the
+  // hook count between renders. The model catalogs live on the single-daemon read; until
+  // it lands this is the fleet row.
+  const owningDaemonId = session?.daemon && session.daemon !== '—' ? session.daemon : owner?.daemon
+  const owningDaemon = useDaemonDetail(
+    owningDaemonId && owningDaemonId !== '—' ? daemons.find((d) => d.daemonId === owningDaemonId) : undefined
+  )
 
   // A real (CP) session arrives with an empty `steps` — its transcript is a separate on-demand pull
   // from the owning daemon. Playground + mock sessions carry their own steps, so they never fetch.
@@ -3295,9 +3304,6 @@ export default function SessionDetailView() {
   // The session's `daemon` is the owning agent's daemonId (or '—' when unplaced);
   // resolve it to the daemon's display name — never surface the raw id/host
   // (short-id fallback when it isn't in the fleet), matching the Agents list.
-  const owningDaemonId = session.daemon && session.daemon !== '—' ? session.daemon : owner?.daemon
-  const owningDaemon =
-    owningDaemonId && owningDaemonId !== '—' ? daemons.find((d) => d.daemonId === owningDaemonId) : undefined
   const focusedDaemonId =
     focusedSession?.daemon && focusedSession.daemon !== '—' ? focusedSession.daemon : focusedAgent?.daemon
   const focusedDaemon =
