@@ -1,6 +1,7 @@
 import { Cron } from 'croner'
 import type { CronDef } from '../agents/agent-schema.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
+import { deriveTitle } from '../session/derive-title.js'
 
 /** The zone a fire is read in, canonically spelled: the schedule's own, or the host's when it names
  *  none or names one no formatter accepts — croner reads a zone-less expression in local time, so
@@ -53,6 +54,11 @@ export function buildSyntheticMessage(
   traceId: string,
   now: Date = new Date()
 ): { agentId: string; msg: NormalizedMessage } {
+  // `msg.text` doubles as the fallback session title, and the stamp leads it — so the title comes
+  // from the TRIGGER instead. Through `deriveTitle`, not raw: `initialSessionTitle` is taken as
+  // written apart from a trim, and a schedule prompt is routinely long and multi-line, so copying
+  // it would persist the whole prompt as the title and push it to platform title surfaces.
+  const title = deriveTitle(cron.trigger)
   // No target ⇒ headless fire: the channel is a synthetic key (transcript/session
   // bookkeeping only) and `headless` suppresses all platform output in dispatch.
   // An anchored fire lives on the TARGET's platform (replies post there);
@@ -67,9 +73,7 @@ export function buildSyntheticMessage(
     thread: `cron:${cron.id}:${traceId}`, // fresh thread per fire (replaced by the real anchor ts when posted)
     sender: { id: `cron:${cron.id}`, isBot: false },
     text: `${scheduledRunContext(cron, now)}\n\n${cron.trigger}`,
-    // `msg.text` doubles as the fallback session title (`deriveTitle` takes its first line), and the
-    // stamp leads — so name the session by what the schedule DOES, as the hook path does.
-    ...(cron.trigger.trim() ? { initialSessionTitle: cron.trigger } : {}),
+    ...(title ? { initialSessionTitle: title } : {}),
     mentionedBots: [],
     isDm: false,
     trigger: 'cron',

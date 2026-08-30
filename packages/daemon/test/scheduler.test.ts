@@ -48,6 +48,22 @@ describe('buildSyntheticMessage', () => {
     expect(msg.text.split('\n')[0]).toContain('Scheduled run:')
   })
 
+  // `initialSessionTitle` is taken as written apart from a trim, and a schedule prompt is routinely
+  // long and multi-line — so the trigger goes through the same rule the derived title always used.
+  it('normalizes that title instead of persisting a whole multi-line prompt', () => {
+    const trigger = ['', `  ${'x'.repeat(120)}  `, 'a second line'].join('\n')
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily', { trigger }), 't', FIRED_AT)
+    expect(msg.initialSessionTitle).toBe(`${'x'.repeat(80)}…`)
+    expect(msg.initialSessionTitle).not.toContain('\n')
+    // The prompt itself is untouched — only the title is normalized.
+    expect(msg.text.endsWith(trigger)).toBe(true)
+  })
+
+  it('leaves the session untitled when the trigger is only whitespace', () => {
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily', { trigger: '  \n  ' }), 't', FIRED_AT)
+    expect(msg.initialSessionTitle).toBeUndefined()
+  })
+
   it('a target-less cron builds a HEADLESS message with a synthetic channel key', () => {
     const { msg } = buildSyntheticMessage('bot-a', cron('daily', { target: undefined }), 'trace-1', FIRED_AT)
     expect(msg.headless).toBe(true)
