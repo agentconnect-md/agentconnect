@@ -49,6 +49,8 @@ const AGENT_UUID = '5e0f8a25-31c8-4a1a-bb0e-9a8f6a2b1c22'
 /** Minimal happy-path args per tool (tools with no args pass {}). */
 const ARGS: Record<string, Record<string, unknown>> = {
   getAgent: { agentId: 'agent-1' },
+  listWorkspaceFiles: { agentId: 'agent-1', path: 'scripts' },
+  readWorkspaceFile: { agentId: 'agent-1', path: 'scripts/build.sh' },
   getCron: { cronId: 'cron-1' },
   listCronRuns: { cronId: 'cron-1' },
   getSession: { sessionId: 'sess-1' },
@@ -204,6 +206,29 @@ describe('MCP tool registry — §6.2 invariants', () => {
     const scopedCall = scoped.calls[0] as { query: Record<string, string> }
     expect(scopedCall.query.source).toBe('gateway')
     expect(Date.parse(scopedCall.query.to!) - Date.parse(scopedCall.query.from!)).toBe(30 * 24 * 60 * 60 * 1000)
+  })
+
+  it('workspace reads carry the scope and the byte slice as query parameters', async () => {
+    const { ctx, calls } = recordingCtx()
+    await findTool('listWorkspaceFiles')!.call(ctx, { agentId: 'a1', path: 'src', limit: 50 })
+    expect(calls[0]).toEqual({
+      method: 'GET',
+      path: `/orgs/${ORG_ID}/agents/a1/workspace/files`,
+      query: { path: 'src', sessionId: undefined, repo: undefined, cursor: undefined, limit: 50 }
+    })
+    // `offset` is the answer's own nextOffset fed back, so it must survive verbatim.
+    const file = recordingCtx()
+    await findTool('readWorkspaceFile')!.call(file.ctx, {
+      agentId: 'a1',
+      path: 'src/index.ts',
+      sessionId: 's1',
+      offset: 65536
+    })
+    expect(file.calls[0]).toEqual({
+      method: 'GET',
+      path: `/orgs/${ORG_ID}/agents/a1/workspace/file`,
+      query: { path: 'src/index.ts', sessionId: 's1', repo: undefined, offset: 65536, limit: undefined }
+    })
   })
 
   it('listSessions filters by every canonical platform — the /sessions route accepts the same set', () => {

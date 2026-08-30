@@ -171,6 +171,72 @@ export const MCP_TOOLS: McpToolDef[] = [
     schema: z.object({ agentId: z.string().min(1).describe('The agent id (from listAgents)') }).strict(),
     call: (ctx, a) => ctx.get(org(ctx, `/agents/${seg(a.agentId)}`))
   },
+  // `getAgent` answers WHERE an agent works; these two answer what is in there.
+  // Both proxy live from the owning daemon and the CP persists nothing.
+  {
+    name: 'listWorkspaceFiles',
+    description:
+      'List one directory of an agent’s workspace, proxied live from the owning daemon. A missing directory is data (exists:false), not an error; the answer pages through nextCursor. 503 while the agent is unplaced or its daemon is offline.',
+    schema: z
+      .object({
+        agentId: z.string().min(1).describe('The agent id (from listAgents)'),
+        path: z.string().optional().describe('Workspace-relative POSIX path; omit for the workspace root'),
+        sessionId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('Browse an authorized isolated session worktree instead of the primary checkout'),
+        repo: z
+          .string()
+          .min(1)
+          .max(256)
+          .optional()
+          .describe('owner/repo of one of the agent’s authorized additional repositories'),
+        cursor: z.string().min(1).optional().describe('Continue a listing from a previous nextCursor'),
+        limit: z.number().int().positive().max(500).optional().describe('Page size (default 200)')
+      })
+      .strict(),
+    call: (ctx, a) =>
+      ctx.get(org(ctx, `/agents/${seg(a.agentId)}/workspace/files`), {
+        path: a.path as string | undefined,
+        sessionId: a.sessionId as string | undefined,
+        repo: a.repo as string | undefined,
+        cursor: a.cursor as string | undefined,
+        limit: a.limit as number | undefined
+      })
+  },
+  {
+    name: 'readWorkspaceFile',
+    description:
+      'Read one byte slice of a file in an agent’s workspace, proxied live from the owning daemon (64 KiB per call). Page by passing the answer’s nextOffset back as offset while truncated is true — never recompute it from the content. A missing file is data (exists:false); a binary file answers encoding:none with no content.',
+    schema: z
+      .object({
+        agentId: z.string().min(1).describe('The agent id (from listAgents)'),
+        path: z.string().min(1).describe('Workspace-relative POSIX path to a file (from listWorkspaceFiles)'),
+        sessionId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('Read an authorized isolated session worktree instead of the primary checkout'),
+        repo: z
+          .string()
+          .min(1)
+          .max(256)
+          .optional()
+          .describe('owner/repo of one of the agent’s authorized additional repositories'),
+        offset: z.number().int().nonnegative().optional().describe('Byte offset to start at (default 0)'),
+        limit: z.number().int().positive().max(65536).optional().describe('Bytes per slice (default 65536)')
+      })
+      .strict(),
+    call: (ctx, a) =>
+      ctx.get(org(ctx, `/agents/${seg(a.agentId)}/workspace/file`), {
+        path: a.path as string,
+        sessionId: a.sessionId as string | undefined,
+        repo: a.repo as string | undefined,
+        offset: a.offset as number | undefined,
+        limit: a.limit as number | undefined
+      })
+  },
   {
     name: 'listDaemons',
     description: 'List the daemons (edge execution units) in the organization that are visible to you, with status.',
