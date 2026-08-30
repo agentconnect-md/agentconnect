@@ -15454,12 +15454,14 @@ export class Daemon {
     return undefined
   }
 
-  /** SIGTERM drain budget: a pool member holds duty leases and waits for turns instead of cutting
-   *  them (`poolShutdownDrainMs`); a local daemon keeps the short window its service manager allows. */
+  /** SIGTERM drain budget: only a cluster pool member waits `poolShutdownDrainMs` for turns —
+   *  that cost is sized to a pod eviction, where a successor takes over. Every other daemon keeps
+   *  the short window its service manager allows; when one holds duty leases, the release reserve
+   *  extends past that window (turn wait stays the full window) instead of being carved from it. */
   private shutdownDrainBudgetMs(): number {
-    return this.k8s || this.dutyCoordinator.dutyEnforced()
-      ? this.cfg.limits.poolShutdownDrainMs
-      : this.cfg.limits.shutdownDrainMs
+    if (this.k8s) return this.cfg.limits.poolShutdownDrainMs
+    if (this.dutyCoordinator.dutyEnforced()) return this.cfg.limits.shutdownDrainMs + Daemon.DUTY_RELEASE_RESERVE_MS
+    return this.cfg.limits.shutdownDrainMs
   }
 
   /** §2.5 SIGTERM / daemon shutdown: gate new turns, then await in-flight turns up

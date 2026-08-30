@@ -255,7 +255,7 @@ describe('shutdown drain of a duty-holding member', () => {
     // Never confirmed: lapses.
     {
       const { daemon, clock, calls } = await boot()
-      ;(daemon as any).cfg.limits.poolShutdownDrainMs = 1_500
+      ;(daemon as any).cfg.limits.shutdownDrainMs = 1_500
       await (daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
       await flush()
       ;(daemon as any).runReconcile = () => new Promise<void>(() => {})
@@ -264,8 +264,8 @@ describe('shutdown drain of a duty-holding member', () => {
 
       const stopping = daemon.stop()
       ;(daemon as any).dutyCoordinator.applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
-      // The 1.5s budget is the thing under test, so it is elapsed in virtual time, not slept.
-      await runVirtual(clock, stopping, 2_000)
+      // The 1.5s budget plus the 30s release reserve is elapsed in virtual time, not slept.
+      await runVirtual(clock, stopping, 40_000)
 
       expect(calls.releases).toEqual([])
       expect(warn.mock.calls.some(([m]) => /late grant .* connection teardown unconfirmed/.test(String(m)))).toBe(true)
@@ -328,14 +328,14 @@ describe('shutdown drain of a duty-holding member', () => {
 
   it('a group whose teardown cannot be confirmed by the deadline is not released — its lease is left to lapse', async () => {
     const { daemon, clock, releaseDuties } = await boot()
-    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 1_500
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 1_500
     // The reconcile that carries the connection convergence never finishes.
     ;(daemon as any).runReconcile = () => new Promise<void>(() => {})
     const info = vi.spyOn((daemon as any).log, 'info')
     const warn = vi.spyOn((daemon as any).log, 'warn')
 
-    // The budget it never confirms within is elapsed in virtual time.
-    await runVirtual(clock, daemon.stop(), 2_000)
+    // The budget it never confirms within (plus the release reserve) is elapsed in virtual time.
+    await runVirtual(clock, daemon.stop(), 40_000)
 
     expect(releaseDuties).not.toHaveBeenCalled()
     expect(warn.mock.calls.some(([m]) => /not released, its lease lapses/.test(String(m)))).toBe(true)
@@ -368,25 +368,48 @@ describe('shutdown drain of a duty-holding member', () => {
     expect(calls.order.at(-1)).toBe('socket-close')
   })
 
+  it('an off-cluster member of an organization set keeps the local turn-wait window, never the pool budget', async () => {
+    const { daemon, clock, calls } = await boot()
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 1_000
+    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 600_000
+    const warn = vi.spyOn((daemon as any).log, 'warn')
+    // A turn that outlives the local window: it settles at 5s, long before a pool-budget wait would cut it.
+    const settle = (daemon as any).beginActiveDispatch(AGENT, 'slack:C1:T1') as () => void
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) })
+    clock.setTimeout(() => settle(), 5_000)
+
+    const startedAt = clock.now()
+    await runVirtual(clock, daemon.stop(), 40_000)
+    const elapsed = clock.now() - startedAt
+
+    // The wait was cut at the 1s local window — under the pool's 570s wait this warning never fires —
+    // and the straggler's group still released inside the reserve once its turn settled.
+    expect(warn.mock.calls.some(([m]) => /deadline hit with .* still in flight/.test(String(m)))).toBe(true)
+    expect(elapsed).toBeLessThan(31_000)
+    expect(calls.releases.flat().sort()).toEqual([GROUP, GROUP_B].sort())
+    expect(calls.order.at(-1)).toBe('socket-close')
+  })
+
   it('a release the CP never acknowledges is retried until the drain deadline, then counted and left to lapse', async () => {
     const { daemon, clock, releaseDuties } = await boot({
       releaseDuties: async () => {
         throw new Error('control plane unreachable (client DEGRADED)')
       }
     })
-    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 2_500
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 2_500
     const info = vi.spyOn((daemon as any).log, 'info')
     const warn = vi.spyOn((daemon as any).log, 'warn')
 
     const startedAt = clock.now()
     // Budget and backoff both run on the injected clock, so the ladder below is exercised in
     // virtual time — and the bound is asserted against that clock, never against the wall one.
-    await runVirtual(clock, daemon.stop(), 3_000)
+    await runVirtual(clock, daemon.stop(), 40_000)
     const elapsed = clock.now() - startedAt
 
-    // Retried (1s backoff, then 2s would overrun) and bounded by the budget, not by the retries.
+    // Retried on the backoff ladder and bounded by the budget plus the release reserve,
+    // not by the retries.
     expect(releaseDuties.mock.calls.length).toBeGreaterThanOrEqual(2)
-    expect(elapsed).toBeLessThan(6_000)
+    expect(elapsed).toBeLessThan(35_000)
     expect(warn.mock.calls.some(([m]) => /not acknowledged before the drain deadline/.test(String(m)))).toBe(true)
     const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
     expect(summary).toMatch(/released 2 group\(s\) covering 2 agent\(s\)/)
