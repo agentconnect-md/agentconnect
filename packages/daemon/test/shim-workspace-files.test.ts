@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
+import { afterAll, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, promises as fsp, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, parse } from 'node:path'
 import type { WorkspaceListPage, WorkspaceReadContent, WorkspaceWriteOk } from '@agentconnect.md/protocol'
 import { createExecHandler } from '../src/shim/exec-handler.js'
 import {
@@ -11,6 +11,7 @@ import {
 } from '../src/shim/workspace-files-channel.js'
 import type { ShimRequester } from '../src/shim/channels.js'
 import {
+  canonicalWorkspacePath,
   localWorkspaceFiles,
   WorkspaceConflictError,
   WorkspaceViolationError
@@ -178,6 +179,40 @@ describe('the shim read capability', () => {
         })
       )
     expect(await ask('PRESENT.env')).toEqual(await ask('ABSENT.env'))
+  })
+
+  // Worktree cleanup and workspace conversion delete the tree under a reader, and Windows resolves an
+  // already-unlinked directory to a path OUTSIDE the root instead of failing with ENOENT — the realpath
+  // stub stands in for that. A deletion race is absence, so both directions are pinned: only a path
+  // that is still there is an escape.
+  it('reads a dropped directory as absent, and still refuses one that resolves outside the checkout', async () => {
+    const root = await fsp.realpath(volume().mount)
+    const checkout = join(root, 'repo')
+    const src = join(checkout, 'src')
+    let dropOnResolve = false
+    const realpath = fsp.realpath
+    const spy = vi.spyOn(fsp, 'realpath').mockImplementation((async (target: string) => {
+      if (target !== src) return realpath(target)
+      if (dropOnResolve) rmSync(src, { recursive: true, force: true })
+      return parse(src).root
+    }) as unknown as typeof fsp.realpath)
+    const listSrc = () => localWorkspaceFiles.list(checkout, { agentId: AGENT, path: 'src', limit: 50 })
+    const readSrc = () => localWorkspaceFiles.read(checkout, { agentId: AGENT, path: 'src', offset: 0, limit: 50 })
+    const escape = { name: 'WorkspaceViolationError', reason: 'path-escape' }
+    try {
+      await expect(listSrc()).rejects.toMatchObject(escape)
+      await expect(readSrc()).rejects.toMatchObject(escape)
+      await expect(canonicalWorkspacePath(checkout, 'src')).rejects.toMatchObject(escape)
+      // The stub drops the directory as it resolves it, so put it back for each of the three.
+      dropOnResolve = true
+      await expect(listSrc()).resolves.toMatchObject({ exists: false, entries: [] })
+      mkdirSync(src)
+      await expect(readSrc()).resolves.toMatchObject({ exists: false })
+      mkdirSync(src)
+      expect(await canonicalWorkspacePath(checkout, 'src')).toBeNull()
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('enforces the scratch gate again where the write lands', async () => {

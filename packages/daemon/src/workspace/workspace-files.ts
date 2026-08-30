@@ -96,6 +96,19 @@ function isErrno(err: unknown, code: string): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === code
 }
 
+/** Dropped by a concurrent rm: ENOENT, or the EPERM Windows answers while an unlinked entry is delete-pending. */
+function vanished(err: unknown): boolean {
+  return isErrno(err, 'ENOENT') || (process.platform === 'win32' && isErrno(err, 'EPERM'))
+}
+
+/** A failed containment check is an escape only while the path is STILL there: Windows resolves one a
+ *  concurrent rm already unlinked to a path outside the root, and that race is absence, not a violation.
+ *  Re-probe and let the probe's own error travel, so absence keeps the caller's `exists:false` answer. */
+async function rejectEscape(p: string): Promise<never> {
+  await fs.lstat(p)
+  throw new WorkspaceViolationError('path resolves outside the workspace root', 'path-escape')
+}
+
 function under(root: string, p: string): boolean {
   return p === root || p.startsWith(root + path.sep)
 }
@@ -134,15 +147,13 @@ export async function canonicalWorkspacePath(root: string, relPath: string): Pro
   }
   try {
     const canon = await fs.realpath(resolved)
-    if (!under(realRoot, canon)) {
-      throw new WorkspaceViolationError('path resolves outside the workspace root', 'path-escape')
-    }
+    if (!under(realRoot, canon)) return await rejectEscape(resolved)
     if (containsGitInternals(path.relative(realRoot, canon))) {
       throw new WorkspaceViolationError('git internals are not readable', 'git-internals')
     }
     return canon
   } catch (err) {
-    if (!isErrno(err, 'ENOENT')) throw err
+    if (!vanished(err)) throw err
   }
   // The leaf is absent, which is data — but the CHAIN above it still has to be checked, or
   // "outside and present" (rejected) and "outside and absent" (exists:false) remain two
@@ -152,13 +163,11 @@ export async function canonicalWorkspacePath(root: string, relPath: string): Pro
   for (;;) {
     try {
       const canon = await fs.realpath(ancestor)
-      if (!under(realRoot, canon) && canon !== realRoot) {
-        throw new WorkspaceViolationError('path resolves outside the workspace root', 'path-escape')
-      }
+      if (!under(realRoot, canon) && canon !== realRoot) return await rejectEscape(ancestor)
       return null
     } catch (err) {
       if (err instanceof WorkspaceViolationError) throw err
-      if (!isErrno(err, 'ENOENT')) throw err
+      if (!vanished(err)) throw err
       const up = path.dirname(ancestor)
       // Ran out of chain without finding anything real: nothing to escape through.
       if (up === ancestor) return null
@@ -188,8 +197,7 @@ async function resolveContained(root: string, relPath: string): Promise<{ resolv
  *  out and is rejected here). Returns the canonical path used for I/O. */
 async function canonicalUnder(realRoot: string, abs: string): Promise<string> {
   const canon = await fs.realpath(abs)
-  if (!under(realRoot, canon))
-    throw new WorkspaceViolationError('path resolves outside the workspace root', 'path-escape')
+  if (!under(realRoot, canon)) return rejectEscape(abs)
   if (containsGitInternals(path.relative(realRoot, canon))) {
     throw new WorkspaceViolationError('git internals are not readable', 'git-internals')
   }
@@ -267,7 +275,7 @@ export const localWorkspaceFiles: WorkspaceFiles = {
     try {
       target = await canonicalUnder(realRoot, resolved)
     } catch (err) {
-      if (isErrno(err, 'ENOENT')) return notFound
+      if (vanished(err)) return notFound
       throw err
     }
 
@@ -324,13 +332,23 @@ export const localWorkspaceFiles: WorkspaceFiles = {
     // made a `?file=` naming a directory indistinguishable from an offline daemon.
     // Every OTHER non-regular target keeps the violation — a final-component
     // symlink is a containment matter and must not read as an ordinary answer.
+    if (!st.isDirectory() && !st.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
+
+    // Canonicalise FIRST, for BOTH answers, and re-verify (this catches an intermediate component
+    // swapped to a symlink after resolveContained). `lstat` follows intermediate components, so a
+    // symlinked directory inside the workspace would otherwise let the dir branch report the
+    // existence and mtime of a host directory outside it — the same oracle the git-diff seam had,
+    // reopened by making directories an ordinary answer. A target dropped under us here is absence.
+    let target: string
+    try {
+      target = await canonicalUnder(realRoot, resolved)
+    } catch (err) {
+      if (vanished(err)) return notFound
+      throw err
+    }
+
     if (st.isDirectory()) {
-      // Canonicalise FIRST. `lstat` follows intermediate components, so a symlinked
-      // directory inside the workspace would otherwise let this branch report the
-      // existence and mtime of a host directory outside it — the same oracle the
-      // git-diff seam had, reopened by making directories an ordinary answer.
-      const dir = await canonicalUnder(realRoot, resolved)
-      const canonSt = await fs.lstat(dir)
+      const canonSt = await fs.lstat(target)
       return {
         agentId: req.agentId,
         path: req.path,
@@ -339,11 +357,7 @@ export const localWorkspaceFiles: WorkspaceFiles = {
         mtime: canonSt.mtime.toISOString()
       }
     }
-    if (!st.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
 
-    // Canonicalise and re-verify (catches an intermediate component swapped to
-    // a symlink after resolveContained), then read the canonical path.
-    const target = await canonicalUnder(realRoot, resolved)
     const size = st.size
     const mtime = st.mtime.toISOString()
     const fh = await fs.open(target, 'r')
@@ -451,7 +465,7 @@ export const localWorkspaceFiles: WorkspaceFiles = {
     try {
       target = await canonicalUnder(realRoot, resolved)
     } catch (err) {
-      if (isErrno(err, 'ENOENT')) throw changedFile()
+      if (vanished(err)) throw changedFile()
       throw err
     }
 
@@ -518,7 +532,7 @@ export const localWorkspaceFiles: WorkspaceFiles = {
     try {
       target = await canonicalUnder(realRoot, resolved)
     } catch (err) {
-      if (isErrno(err, 'ENOENT')) throw changedFile()
+      if (vanished(err)) throw changedFile()
       throw err
     }
 
