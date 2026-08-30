@@ -740,8 +740,12 @@ describe('OutputConverger', () => {
     } as any)
     const plan = actions.find((a) => a.kind === 'plan') as { text: string; blocks: unknown[] } | undefined
     expect(plan).toBeDefined()
-    // `text` is the notification/fallback only — the blocks carry the display.
-    expect(plan!.text).toBe('Plan · 1/3')
+    // The fallback carries the WHOLE plan, not just the count: Slack gives top-level `text` to
+    // screen readers and to the notification preview and reads neither from the blocks, so a
+    // bare count would drop the plan entirely for both.
+    expect(plan!.text).toBe(
+      ['Plan · 1/3', 'done: gather context', 'in progress: write code', 'to do: run tests'].join('\n')
+    )
     // Ruled off top and bottom so the plan reads as its own artifact, not as thread chrome.
     expect(plan!.blocks[0]).toEqual({ type: 'divider' })
     expect(plan!.blocks.at(-1)).toEqual({ type: 'divider' })
@@ -766,7 +770,8 @@ describe('OutputConverger', () => {
     }))
     const actions = c.onUpdate({ sessionUpdate: 'plan', entries } as any)
     const plan = actions.find((a) => a.kind === 'plan') as { text: string; blocks: unknown[] }
-    expect(plan.text).toBe('Plan · 5/24')
+    expect(plan.text.split('\n')).toHaveLength(25) // heading + one spoken line per entry
+    expect(plan.text.startsWith('Plan · 5/24\n')).toBe(true)
     expect(planItems(plan)).toHaveLength(24)
   })
 

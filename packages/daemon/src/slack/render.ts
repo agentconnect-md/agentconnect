@@ -347,8 +347,18 @@ function renderPlan(entries: PlanEntry[]): { text: string; blocks: unknown[] } {
       }
     ]
   })
+  // The fallback is NOT dead weight beside the blocks: Slack routes top-level `text` to screen
+  // readers and to the notification preview, and reads neither from the interior blocks. Left
+  // as the bare count it would be the one place the plan does not exist for those two readers,
+  // which is a regression against the text renderer this replaces. Statuses spell out as words
+  // rather than glyphs, because that is the form being read ALOUD.
+  const spoken = (status?: string) =>
+    status === 'completed' ? 'done' : status === 'in_progress' ? 'in progress' : 'to do'
   return {
-    text: `Plan · ${done}/${entries.length}`,
+    text: [
+      `Plan · ${done}/${entries.length}`,
+      ...entries.map((e) => `${spoken(e.status)}: ${clampTo(e.content ?? '', MAX_PLAN_LABEL)}`)
+    ].join('\n'),
     blocks: [
       { type: 'divider' },
       { type: 'context', elements: [{ type: 'mrkdwn', text: `*Plan* · ${done}/${entries.length}` }] },
