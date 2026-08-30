@@ -49,6 +49,14 @@ const capability: DaemonCapabilityDto = {
       toolCalling: true,
       mcpCapabilities: { http: true, sse: true },
       modelsSource: 'probed',
+      // The fleet read keeps the runtime-level answers and empties the matrix.
+      modelCatalog: {
+        models: [],
+        defaultModel: 'sonnet',
+        permissionModes: [{ value: 'auto', name: 'Auto' }],
+        source: 'acp',
+        observedAt: '2026-08-30T00:00:00.000Z'
+      },
       authRequired: true
     }
   ],
@@ -76,8 +84,11 @@ describe('daemon read split', () => {
     expect(row.runtimeModels[0]!.mcpCapabilities).toEqual({ http: true, sse: true })
     // The login warning is fleet-wide information, so it survives the split.
     expect(row.runtimeModels[0]!.authRequired).toBe(true)
-    // The catalog is not on either fleet read — `useDaemonDetail` fetches the one daemon.
-    expect(row.runtimeModels[0]!.modelCatalog).toBeUndefined()
+    // The runtime-level answers survive, so the read-only model/permission labels resolve
+    // for every agent; the per-model matrix is empty until `useDaemonDetail` reads one daemon.
+    expect(row.runtimeModels[0]!.modelCatalog!.defaultModel).toBe('sonnet')
+    expect(row.runtimeModels[0]!.modelCatalog!.permissionModes).toEqual([{ value: 'auto', name: 'Auto' }])
+    expect(row.runtimeModels[0]!.modelCatalog!.models).toEqual([])
   })
 
   it('leaves the row alone when that daemon has no capability row yet', () => {

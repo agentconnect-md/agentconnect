@@ -1047,11 +1047,14 @@ export interface McpServerDto {
 /** `GET /daemons` — the liveness half, without anything that only moves on connect/upgrade. */
 export type DaemonFleetDto = Omit<DaemonViewDto, 'capabilities' | 'runtimeProfiles' | 'mcpServers'>
 
-/** `GET /daemons/capabilities` — what each daemon can run, minus the per-model matrix. */
+/** `GET /daemons/capabilities` — what each daemon can run. Each catalog keeps its
+ *  runtime-level answers (`defaultModel`, `permissionModes`) so the read-only model and
+ *  permission labels resolve for every agent, but its `models` matrix is empty: that part
+ *  is 75% of a catalog and only a surface configuring one daemon reads it. */
 export interface DaemonCapabilityDto {
   daemonId: string
   capabilities: DaemonCapabilitiesDto
-  runtimeProfiles: Omit<RuntimeProfileDto, 'modelCatalog'>[]
+  runtimeProfiles: RuntimeProfileDto[]
   mcpServers: McpServerDto[]
 }
 
@@ -2093,8 +2096,9 @@ export function mergeSessionDetailUsage(local: Session, detail: Session | null):
  *  `daemonsLoading` rather than reading this as "the daemon can do nothing". */
 const EMPTY_DAEMON_CAPS: DaemonCapabilitiesDto = { platforms: [], runtimes: [], acp: false, features: [] }
 
-/** Stitch a capability row onto its liveness row. The catalog is deliberately absent —
- *  `modelCatalog` stays undefined until someone reads that one daemon in full. */
+/** Stitch a capability row onto its liveness row. The catalog arrives with an empty
+ *  `models` list — `modelCapability()` then reads as "not discovered" and falls back to the
+ *  static tables, which is exactly what a surface that has not read one daemon should see. */
 export function withDaemonCapability(row: DaemonRow, cap: DaemonCapabilityDto | undefined): DaemonRow {
   if (!cap) return row
   return {
@@ -2106,6 +2110,7 @@ export function withDaemonCapability(row: DaemonRow, cap: DaemonCapabilityDto | 
       models: p.models,
       acpProtocolVersion: p.acpProtocolVersion,
       mcpCapabilities: p.mcpCapabilities ?? null,
+      modelCatalog: p.modelCatalog ?? null,
       authRequired: p.authRequired ?? false
     })),
     mcpServers: cap.mcpServers

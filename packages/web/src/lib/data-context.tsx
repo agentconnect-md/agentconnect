@@ -788,17 +788,29 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     data: realDaemons = [],
     error: daemonsError,
     isLoading: daemonsIsLoading,
-    mutate: mutateDaemons
+    mutate: mutateDaemonLiveness
   } = useSWR<DaemonRow[]>(consoleKeys.daemons(orgKey), ([, orgId]) => fetchDaemons(orgId as string), {
     refreshInterval: DAEMON_REFRESH_MS
   })
   // Capability moves only when a daemon connects, upgrades, or re-probes, so it is read
   // apart from the liveness poll and stitched back on below. Its own revalidation is slow;
   // the events that actually change it already refresh the fleet through `mutateDaemons`.
-  const { data: daemonCapabilities, isLoading: capabilitiesIsLoading } = useSWR<Map<string, DaemonCapabilityDto>>(
+  const {
+    data: daemonCapabilities,
+    isLoading: capabilitiesIsLoading,
+    mutate: mutateDaemonCapabilities
+  } = useSWR<Map<string, DaemonCapabilityDto>>(
     consoleKeys.daemonCapabilities(orgKey),
     ([, orgId]) => fetchDaemonCapabilities(orgId as string),
     { refreshInterval: DAEMON_CAPABILITY_REFRESH_MS }
+  )
+  // The two halves are one row to every caller, and the events that refresh daemons —
+  // connect, upgrade, re-probe, onboarding polling — change BOTH. Revalidating only the
+  // liveness key would show a freshly connected daemon as running nothing until the slow
+  // capability backstop, so every existing `mutateDaemons()` refreshes the pair.
+  const mutateDaemons = useCallback(
+    () => Promise.all([mutateDaemonLiveness(), mutateDaemonCapabilities()]).then(() => undefined),
+    [mutateDaemonLiveness, mutateDaemonCapabilities]
   )
   const {
     data: realCrons = [],

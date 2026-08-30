@@ -109,10 +109,9 @@ type DaemonDto = {
   canManageLifecycle: boolean
 }
 
-/** `GET /daemons/capabilities` row — the capability half, minus each runtime's catalog. */
-type CapabilityDto = Pick<DaemonDto, 'daemonId' | 'capabilities' | 'mcpServers'> & {
-  runtimeProfiles: Omit<DaemonDto['runtimeProfiles'][number], 'modelCatalog'>[]
-}
+/** `GET /daemons/capabilities` row — the capability half. Catalogs keep their
+ *  runtime-level answers; only their per-model matrix is emptied. */
+type CapabilityDto = Pick<DaemonDto, 'daemonId' | 'capabilities' | 'runtimeProfiles' | 'mcpServers'>
 
 const listCapabilities = async (): Promise<CapabilityDto[]> =>
   (await running!.app.inject({ method: 'GET', url: `${ORG}/daemons/capabilities` })).json() as CapabilityDto[]
@@ -255,8 +254,8 @@ describe('GET /daemons — live-status overlay', () => {
     expect(d.runtimeProfiles[0]!.contextWindow).toBe(200000)
     // Never probed for MCP transports ⇒ explicit null (assume stdio-only), not undefined.
     expect(d.runtimeProfiles[0]!.mcpCapabilities).toBeNull()
-    // The catalog is not on this read at all; an unreported modelsSource is an explicit null.
-    expect(d.runtimeProfiles[0]!).not.toHaveProperty('modelCatalog')
+    // No catalog reported ⇒ explicit nulls (the console falls back to its static tables).
+    expect(d.runtimeProfiles[0]!.modelCatalog).toBeNull()
     expect(d.runtimeProfiles[0]!.modelsSource).toBeNull()
     // No login warning reported ⇒ explicit false (older daemons never send it).
     expect(d.runtimeProfiles[0]!.authRequired).toBe(false)
@@ -413,6 +412,7 @@ describe('GET /daemons — live-status overlay', () => {
         toolCalling: true,
         modelCatalog: {
           models: [{ id: 'claude-opus-4' }],
+          defaultModel: 'claude-opus-4',
           source: 'acp' as const,
           observedAt: '2026-07-18T00:00:00.000Z'
         }
@@ -426,12 +426,34 @@ describe('GET /daemons — live-status overlay', () => {
     expect(row.status).toBe('offline') // it IS the liveness row
     for (const half of ['capabilities', 'runtimeProfiles', 'mcpServers']) expect(row).not.toHaveProperty(half)
 
+    // The catalog's runtime-level answers survive the fleet read — the read-only model and
+    // permission labels resolve every agent against them — but the matrix does not.
     const caps = (await listCapabilities()).find((r) => r.daemonId === DAEMON)!
     expect(caps.runtimeProfiles[0]!.models).toEqual(['claude-opus-4'])
-    expect(caps.runtimeProfiles[0]!).not.toHaveProperty('modelCatalog')
+    expect(caps.runtimeProfiles[0]!.modelCatalog!.defaultModel).toBe('claude-opus-4')
+    expect(caps.runtimeProfiles[0]!.modelCatalog!.models).toEqual([])
 
     const one = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })).json() as DaemonDto
     expect(one.runtimeProfiles[0]!.modelCatalog!.models).toEqual([{ id: 'claude-opus-4' }])
+  })
+
+  // `registry.get` is the org-owned fleet, so resolving this read with it would 404 every
+  // daemon the fleet reads DO list from the shared pool.
+  it('serves the single-daemon read for an install-wide pool member', async () => {
+    const poolMember = await new PgDaemonRepo(prisma).resolvePoolClusterIdentity(
+      'system:serviceaccount:agentconnect:ac-cloud-daemon',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    )
+    running = buildHttpApp(prisma)
+
+    const listed = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
+    expect(listed.some((r) => r.daemonId === poolMember.id)).toBe(true)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${poolMember.id}` })
+    expect(res.statusCode).toBe(200)
+    const one = res.json() as DaemonDto & { cloud: boolean; canEdit: boolean }
+    expect(one.cloud).toBe(true)
+    expect(one.canEdit).toBe(false) // visible, but not this org's to mutate
   })
 
   it('404s the single-daemon read for an unknown id', async () => {

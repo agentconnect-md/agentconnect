@@ -245,9 +245,20 @@ export const DaemonViewDto = z.object({
 export const DaemonFleetDto = DaemonViewDto.omit({ capabilities: true, runtimeProfiles: true, mcpServers: true })
 export const DaemonFleetListDto = z.array(DaemonFleetDto)
 
-/** A runtime profile minus the per-model matrix — everything a reader that needs EVERY
+/** The catalog a fleet-wide read carries: its runtime-level answers — default model,
+ *  permission modes and their default, which the console's read-only model/permission
+ *  labels resolve against for EVERY agent at once — and an empty `models`, because that
+ *  per-model matrix is 75% of a catalog and its only readers configure one daemon.
+ *  Enforced here rather than trusted: the response schema rejects a populated list. */
+export const RuntimeModelCatalogSummaryDto = RuntimeModelCatalogDto.extend({
+  models: z.array(RuntimeModelCapabilityDto).max(0)
+})
+
+/** A runtime profile whose catalog is that summary — everything a reader that needs EVERY
  *  daemon at once uses: the pickers' runtime list, `authRequired`, MCP transports. */
-export const RuntimeProfileSummaryDto = RuntimeProfileDto.omit({ modelCatalog: true })
+export const RuntimeProfileSummaryDto = RuntimeProfileDto.extend({
+  modelCatalog: RuntimeModelCatalogSummaryDto.nullable()
+})
 
 /** `GET /daemons/capabilities` — what each daemon can run, for the whole fleet. */
 export const DaemonCapabilityDto = z.object({

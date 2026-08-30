@@ -131,6 +131,7 @@ import {
   type HookReportingMode,
   type HookReviewPolicy
 } from '@/lib/github-review-settings'
+import { useDaemonDetail } from '@/lib/use-daemon-detail'
 
 type DetailTab = 'config' | 'integrations' | 'workspace' | 'memory' | 'tools'
 const HOOK_REFRESH_MS = 30_000
@@ -563,6 +564,10 @@ export default function AgentDetailView() {
   const agentReach = useMemo(() => buildAgentReachabilityGraph(agents), [agents])
 
   const da = getAgent(id)
+  // Hoisted above the not-found return below — a hook may not be called conditionally, and
+  // a deep link renders this before the agents pull settles. The effort row reads the
+  // selected model's own effort vocabulary, which only the single-daemon read carries.
+  const capabilitySource = useDaemonDetail(da ? agentCapabilitySource(da, daemons, memberSets) : undefined)
   // Unknown id (a stale deep link, or a demo agent that's hidden outside mock mode) —
   // show a not-found notice rather than crash on the `da.*` reads below. While the
   // agents pull is still in flight, though, it's not "not found" yet — spin instead.
@@ -590,11 +595,11 @@ export default function AgentDetailView() {
   // The owning daemon (if placed in the live fleet). Gates the agent's "online" —
   // an agent can't be online when its daemon is offline — and names the daemon.
   const owningDaemon = daemons.find((d) => d.daemonId === da.daemon)
-  // Whose reported catalog the config rows read — resolved through the PLACEMENT, so a pool or
-  // group agent reads its set's real catalog via one serving member instead of the static tables.
-  // `owningDaemon` cannot answer that: a set placement names no member, and the nothing it found
-  // is what showed every such agent an em-dash model even when one was explicitly saved.
-  const capabilitySource = agentCapabilitySource(da, daemons, memberSets)
+  // `capabilitySource` above is whose reported catalog the config rows read — resolved through
+  // the PLACEMENT, so a pool or group agent reads its set's real catalog via one serving member
+  // instead of the static tables. `owningDaemon` cannot answer that: a set placement names no
+  // member, and the nothing it found is what showed every such agent an em-dash model even when
+  // one was explicitly saved.
   const runtimeMeta = acpRuntime(acpRegistry, da.runtime)
   // Config rows read the daemon-advertised runtime-model catalog so a placed
   // agent shows the SAME effective model / effort / permission the Edit modal

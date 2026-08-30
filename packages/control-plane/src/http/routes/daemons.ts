@@ -196,7 +196,12 @@ function capabilityOf(d: DaemonViewDtoT): DaemonCapabilityDtoT {
   return {
     daemonId: d.daemonId,
     capabilities: d.capabilities,
-    runtimeProfiles: d.runtimeProfiles.map(({ modelCatalog: _catalog, ...profile }) => profile),
+    // The catalog's runtime-level answers survive (read-only labels resolve every agent
+    // against them); only its per-model matrix is dropped.
+    runtimeProfiles: d.runtimeProfiles.map((p) => ({
+      ...p,
+      modelCatalog: p.modelCatalog ? { ...p.modelCatalog, models: [] } : null
+    })),
     mcpServers: d.mcpServers
   }
 }
@@ -235,7 +240,7 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'List daemons',
           description:
-            'The org’s available daemon fleet, including install-wide pool members, overlaid with live connection status. Liveness only — what each daemon can run is GET /daemons/capabilities, and a runtime’s model catalog is GET /daemons/:id.',
+            'The org’s available daemon fleet, including install-wide pool members, overlaid with live connection status. Liveness only — what each daemon can run is GET /daemons/capabilities, and a runtime’s per-model catalog is GET /daemons/:id.',
           operationId: 'listDaemons',
           response: { 200: DaemonFleetListDto }
         }
@@ -258,7 +263,7 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'List daemon capabilities',
           description:
-            'What each daemon in the fleet can run: platform/feature capabilities, the installed runtime profiles, and the daemon-configured MCP servers. This half of a daemon row changes only when it connects, upgrades, or re-probes, so it is read separately from the liveness poll. A runtime’s per-model catalog is not here — read one daemon with GET /daemons/:id for that.',
+            'What each daemon in the fleet can run: platform/feature capabilities, the installed runtime profiles, and the daemon-configured MCP servers. This half of a daemon row changes only when it connects, upgrades, or re-probes, so it is read separately from the liveness poll. Each runtime’s catalog carries its runtime-level answers (default model, permission modes) but an empty models list: that per-model matrix is GET /daemons/:id.',
           operationId: 'listDaemonCapabilities',
           response: { 200: DaemonCapabilityListDto }
         }
@@ -278,14 +283,14 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'Get a daemon',
           description:
-            'One daemon in full: its liveness row plus its capabilities and complete runtime profiles, including each runtime’s discovered model × configuration catalog. This is the only read that carries the catalog — its readers all want a single daemon at a time.',
+            'One daemon in full: its liveness row plus its capabilities and complete runtime profiles, including each runtime’s discovered model × configuration catalog. This is the only read carrying the per-model matrix — its readers all configure a single daemon at a time.',
           operationId: 'getDaemon',
           params: IdParam,
           response: { 200: DaemonViewDto, 404: ErrorDto }
         }
       },
       async (req, reply) => {
-        const view = await getOrgDaemon(req, req.params.id)
+        const view = await getAvailableDaemon(req, req.params.id)
         if (!view) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
         return dto(view, ctxOf(req))
       }
@@ -298,6 +303,15 @@ export function daemonRoutes(deps: HttpDeps) {
     // gate lives here (and in list).
     const getOrgDaemon = async (req: FastifyRequest, id: string) => {
       const view = await deps.registry.get(orgOf(req), DaemonId(id))
+      if (!view) return null
+      return canView(view, ctxOf(req)) ? view : null
+    }
+
+    // The read twin of the one above: `registry.get` is the ORG-OWNED fleet, so it cannot
+    // see a shared pool member. The fleet reads list those (`listAvailable`), so the point
+    // read has to resolve them too or every Cloud daemon id they hand out 404s here.
+    const getAvailableDaemon = async (req: FastifyRequest, id: string) => {
+      const view = await deps.registry.getAvailable(orgOf(req), DaemonId(id))
       if (!view) return null
       return canView(view, ctxOf(req)) ? view : null
     }
