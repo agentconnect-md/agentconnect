@@ -436,6 +436,36 @@ describe('stream text delta batching', () => {
     ])
   })
 
+  // The daemon builds ONE TranscriptRecorder per turn, so a replacement generation rewrites
+  // the SAME plan row. Appending here instead would leave the live view showing the
+  // discarded plan next to the current one, where a reload shows only the latter.
+  it('rewrites the same plan block across a supersession instead of stacking a second', async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      for (const output of [
+        {
+          agentId: 'agent-1',
+          index: 0,
+          event: { kind: 'plan', entries: [{ content: 'first attempt', status: 'in_progress' }] }
+        },
+        { agentId: 'agent-1', index: 1, event: { kind: 'superseded', generation: 1 } },
+        {
+          agentId: 'agent-1',
+          index: 2,
+          event: { kind: 'plan', entries: [{ content: 'second attempt', status: 'in_progress' }] }
+        }
+      ]) {
+        socket.onmessage?.({ data: JSON.stringify({ type: 'output', output: { turnId, ...output } }) })
+      }
+    })
+    act(runFrame)
+
+    const blocks = getLiveSteps('s1').filter((step) => step.kind === 'planblock')
+    expect(blocks).toMatchObject([{ plan: [{ content: 'second attempt', status: 'in_progress' }] }])
+  })
+
   it("retires only the streaming lane's notice — a lane still waiting keeps its own", async () => {
     const runFrame = captureAnimationFrames()
     const { socket, turnId } = await openStream()

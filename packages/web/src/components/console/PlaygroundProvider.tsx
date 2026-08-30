@@ -552,16 +552,20 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         }
         if (ev.kind === 'plan') {
           // A snapshot: ACP resends the whole list, so this REPLACES the lane's existing
-          // block instead of appending a second one. Scanned back under the same fences as
-          // tool_update — never across a user message, a foreign turn, or a supersession —
-          // so the block keeps the position it first took, ahead of the work it planned,
-          // exactly as the persisted plan row keeps its `seq`.
+          // block instead of appending a second one, keeping the position it first took —
+          // ahead of the work it planned, exactly as the persisted plan row keeps its `seq`.
+          // Fenced by agent and turn like tool_update, but deliberately NOT by `boundary`:
+          // the daemon builds ONE TranscriptRecorder per turn, so a context-refresh
+          // replacement generation rewrites the SAME row. Stopping at the supersession
+          // marker would append a second checklist and leave the live view showing both the
+          // discarded plan and the current one, where a reload shows only the latter. The
+          // boundary exists to stop streamed TEXT merging across generations; a plan is a
+          // snapshot keyed to the turn, so it crosses.
           for (let i = steps.length - 1; i >= 0; i--) {
             const step = steps[i]!
             if (step.kind === 'msg' && step.agentId === undefined) break
             if ((step.agentId ?? undefined) !== agentId) continue
             if (step.turnId !== turnId) break
-            if (step.boundary) break
             if (step.kind === 'planblock') return replaceAt(i, { ...step, plan: ev.entries, observedAtMs })
           }
           return [...steps, lane({ kind: 'planblock', text: '', plan: ev.entries })]
