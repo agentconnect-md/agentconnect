@@ -84,6 +84,8 @@ describe('the cron / hook target vocabulary (F10)', () => {
       agentId: '00000000-0000-4000-8000-000000000001',
       schedule: '0 9 * * *',
       trigger: 'go',
+      // Required by the tool; this case is about the platform vocabulary, not the clock.
+      timezone: 'UTC',
       targetPlatform
     })
     for (const id of CP_PLATFORM_IDS) expect(tool.schema.safeParse(args(id)).success).toBe(true)

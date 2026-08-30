@@ -58,7 +58,7 @@ const ARGS: Record<string, Record<string, unknown>> = {
   updateAgent: { agentId: AGENT_UUID, model: 'opus' },
   deleteAgent: { agentId: AGENT_UUID, confirm: 'my-agent' },
   renameDaemon: { daemonId: 'daemon-1', name: 'edge-1' },
-  upsertCron: { agentId: AGENT_UUID, schedule: '0 9 * * *', trigger: 'do the thing' },
+  upsertCron: { agentId: AGENT_UUID, schedule: '0 9 * * *', trigger: 'do the thing', timezone: 'Asia/Shanghai' },
   runCron: { cronId: 'cron-1' },
   deleteCron: { cronId: 'cron-1', confirm: 'my-agent' },
   setChannelTrigger: { integrationId: 'integ-1', channelId: 'C123', trigger: 'any' },
@@ -265,6 +265,15 @@ describe('MCP write tools — bodies and upsert semantics', () => {
     const create = await run('upsertCron')
     const minted = create.calls[0]!.path.slice(`/orgs/${ORG_ID}/crons/`.length)
     expect(minted).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+  })
+
+  // A caller that omitted the zone used to inherit the CP process's own, so "every morning at 9"
+  // silently meant 9am somewhere else. There is no zone to guess from here, so the tool asks.
+  it('upsertCron refuses a schedule with no timezone rather than choosing one', async () => {
+    const { timezone: _omitted, ...withoutZone } = ARGS.upsertCron!
+    const tool = findTool('upsertCron')!
+    expect(tool.schema.safeParse(withoutZone).success).toBe(false)
+    expect(tool.schema.safeParse(ARGS.upsertCron).success).toBe(true)
   })
 })
 

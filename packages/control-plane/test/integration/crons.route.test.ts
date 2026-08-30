@@ -103,13 +103,15 @@ describe('cron replication CP→daemon (REST → cron/upsert·remove)', () => {
     })
   })
 
-  it('defaults an omitted timezone to the control-plane timezone and rejects invalid IANA names', async () => {
+  // A schedule fires by its timezone, so the server never picks one: it used to inherit the CP
+  // PROCESS's zone, which is UTC in a container and the developer's laptop zone in a test — so an
+  // omission put the schedule on a clock nobody chose, and it varied with where the CP ran.
+  it('creates an omitted timezone as UTC rather than the control-plane process zone, and rejects invalid IANA names', async () => {
     await seedDaemon(prisma, DAEMON)
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: DAEMON })
     const { app, spy } = withSpy()
     const defaultedId = randomUUID()
-    const expectedTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 
     const defaulted = await app.app.inject({
       method: 'PUT',
@@ -117,9 +119,9 @@ describe('cron replication CP→daemon (REST → cron/upsert·remove)', () => {
       payload: body(agentId, { timezone: undefined })
     })
     expect(defaulted.statusCode).toBe(200)
-    expect((defaulted.json() as { timezone: string }).timezone).toBe(expectedTimezone)
-    expect(spy.upserts[0]!.u.timezone).toBe(expectedTimezone)
-    expect((await prisma.cronDef.findUnique({ where: { id: defaultedId } }))?.timezone).toBe(expectedTimezone)
+    expect((defaulted.json() as { timezone: string }).timezone).toBe('UTC')
+    expect(spy.upserts[0]!.u.timezone).toBe('UTC')
+    expect((await prisma.cronDef.findUnique({ where: { id: defaultedId } }))?.timezone).toBe('UTC')
 
     for (const timezone of ['Mars/Olympus_Mons', '+01:00']) {
       const invalidId = randomUUID()
@@ -132,6 +134,31 @@ describe('cron replication CP→daemon (REST → cron/upsert·remove)', () => {
       expect(await prisma.cronDef.findUnique({ where: { id: invalidId } })).toBeNull()
     }
     expect(spy.upserts).toHaveLength(1)
+  })
+
+  // An edit that omits the zone used to REPLACE the stored one with the process zone, quietly moving
+  // a live schedule off the clock it was authored on. Omitting it now means "leave it alone".
+  it('an edit that omits the timezone keeps the one the schedule was created with', async () => {
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId)
+    const cronId = randomUUID()
+    const { app } = withSpy()
+
+    const created = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/crons/${cronId}`,
+      payload: body(agentId, { timezone: 'America/New_York' })
+    })
+    expect(created.statusCode).toBe(200)
+
+    const edited = await app.app.inject({
+      method: 'PUT',
+      url: `${ORG}/crons/${cronId}`,
+      payload: body(agentId, { timezone: undefined, trigger: 'a different prompt' })
+    })
+    expect(edited.statusCode).toBe(200)
+    expect((edited.json() as { timezone: string }).timezone).toBe('America/New_York')
+    expect((await prisma.cronDef.findUnique({ where: { id: cronId } }))?.timezone).toBe('America/New_York')
   })
 
   it('stamps creator + createdAt on create; an edit never reassigns the creator but advances last-modified', async () => {
