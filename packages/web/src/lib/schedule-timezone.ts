@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { isIanaTimezone } from './cron'
 
 // Which clock the schedule surfaces render instants in. A cron expression is authored IN a timezone
 // and fires by it, so "next run" and a run's start are two readings of one instant; the viewer picks
@@ -40,14 +41,21 @@ export function writeScheduleTimeZoneMode(mode: ScheduleTimeZoneMode): void {
   }
 }
 
-/** The zone to render instants in. A schedule carrying no timezone leaves nothing to switch to. */
-export function displayTimeZone(mode: ScheduleTimeZoneMode, scheduleTimeZone?: string | null): string {
-  return mode === 'schedule' && scheduleTimeZone ? scheduleTimeZone : browserTimeZone()
+// A zone reaches `Intl`, which throws a RangeError on a name it does not know rather than degrading.
+// The API only accepts IANA names, but a legacy or CLI-written row need not hold one, and a throw in
+// a formatter takes the whole view down — so an unusable zone is treated as no zone at all.
+function usableZone(scheduleTimeZone?: string | null): boolean {
+  return !!scheduleTimeZone && isIanaTimezone(scheduleTimeZone)
 }
 
-/** Whether a schedule offers a second clock at all — same zone as the viewer means nothing to switch. */
+/** The zone to render instants in. A schedule carrying no usable timezone leaves nothing to switch to. */
+export function displayTimeZone(mode: ScheduleTimeZoneMode, scheduleTimeZone?: string | null): string {
+  return mode === 'schedule' && usableZone(scheduleTimeZone) ? (scheduleTimeZone as string) : browserTimeZone()
+}
+
+/** Whether a schedule offers a second clock at all — the viewer's own zone means nothing to switch to. */
 export function hasDistinctScheduleZone(scheduleTimeZone?: string | null): boolean {
-  return !!scheduleTimeZone && scheduleTimeZone !== browserTimeZone()
+  return usableZone(scheduleTimeZone) && scheduleTimeZone !== browserTimeZone()
 }
 
 export interface ScheduleTimeZone {

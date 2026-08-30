@@ -56,6 +56,15 @@ describe('displayTimeZone', () => {
     expect(displayTimeZone('schedule', null)).toBe(browserTimeZone())
     expect(displayTimeZone('schedule', '')).toBe(browserTimeZone())
   })
+
+  // `Not/AZone` and `UTC+8` make Intl throw, and a formatter that throws takes the view down; a bare
+  // offset formats fine but is not a zone, which is the line `isIanaTimezone` already drew.
+  it('falls back rather than hand a name Intl would reject to a formatter', () => {
+    for (const zone of ['Not/AZone', 'UTC+8', '+08:00']) {
+      expect(displayTimeZone('schedule', zone)).toBe(browserTimeZone())
+      expect(() => new Intl.DateTimeFormat('en-CA', { timeZone: displayTimeZone('schedule', zone) })).not.toThrow()
+    }
+  })
 })
 
 describe('hasDistinctScheduleZone', () => {
@@ -67,5 +76,10 @@ describe('hasDistinctScheduleZone', () => {
 
   it('is true for a schedule kept on another clock than the viewer', () => {
     expect(hasDistinctScheduleZone(browserTimeZone() === 'UTC' ? 'Asia/Tokyo' : 'UTC')).toBe(true)
+  })
+
+  it('is false for a zone no formatter could use, so the switch is not offered for one', () => {
+    expect(hasDistinctScheduleZone('Not/AZone')).toBe(false)
+    expect(hasDistinctScheduleZone('+08:00')).toBe(false)
   })
 })

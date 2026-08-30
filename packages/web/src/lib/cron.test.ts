@@ -27,20 +27,28 @@ describe('fmtNextRun', () => {
   // decided in the zone being rendered rather than in the viewer's.
   const evening = new Date('2026-01-01T20:30:00.000Z')
 
+  // The wall clock is derived, not spelled out: `fmtNextRun` formats with the runtime's own locale,
+  // so a literal "8:30 PM" would fail on a 24-hour runner for a reason these tests are not about.
+  // The zone axis they ARE about stays real — each pair asserts the two zones differ first.
+  const wall = (d: Date, timeZone: string) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone })
+
   it("names the calendar day of the zone it renders in, not the viewer's", () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T12:00:00.000Z'))
 
-    expect(fmtNextRun(evening, 'UTC')).toBe('Today 8:30 PM')
-    expect(fmtNextRun(evening, 'Asia/Tokyo')).toBe('Tomorrow 5:30 AM')
+    expect(wall(evening, 'UTC')).not.toBe(wall(evening, 'Asia/Tokyo'))
+    expect(fmtNextRun(evening, 'UTC')).toBe(`Today ${wall(evening, 'UTC')}`)
+    expect(fmtNextRun(evening, 'Asia/Tokyo')).toBe(`Tomorrow ${wall(evening, 'Asia/Tokyo')}`)
   })
 
   it('renders the same instant at the wall clock of each zone', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    const morning = new Date('2026-01-01T09:00:00.000Z')
 
-    expect(fmtNextRun(new Date('2026-01-01T09:00:00.000Z'), 'UTC')).toBe('Today 9:00 AM')
-    expect(fmtNextRun(new Date('2026-01-01T09:00:00.000Z'), 'Asia/Shanghai')).toBe('Today 5:00 PM')
+    expect(wall(morning, 'UTC')).not.toBe(wall(morning, 'Asia/Shanghai'))
+    expect(fmtNextRun(morning, 'UTC')).toBe(`Today ${wall(morning, 'UTC')}`)
+    expect(fmtNextRun(morning, 'Asia/Shanghai')).toBe(`Today ${wall(morning, 'Asia/Shanghai')}`)
   })
 
   it('stays relative inside the hour, where a duration reads the same in every zone', () => {

@@ -155,13 +155,12 @@ export function cronTimezoneInput(
   return isIanaTimezone(value) ? { timezone: value } : null
 }
 
-/** Short next-run label: "in 14 min" / "Today 3:00 AM" / "Mon 9:00 AM" / "—". */
 /** The calendar day an instant falls on IN `timeZone`, as `YYYY-MM-DD`, so "Today" means today there. */
 export function zonedDay(d: Date, timeZone?: string): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
 }
 
-/** `timeZone` omitted renders in the viewer's own zone, which is what every caller wanted before it existed. */
+/** Short next-run label: "in 14 min" / "Today 3:00 AM" / "Mon 9:00 AM" / "—", in `timeZone` or the viewer's own. */
 export function fmtNextRun(d: Date | null, timeZone?: string): string {
   if (!d) return '—'
   const now = Date.now()
