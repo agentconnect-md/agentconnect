@@ -649,10 +649,19 @@ export async function applySlackAction<TTurn extends SlackTurn>(
       return
     }
     case 'plan':
-      if (p.chrome.planTs) await conn.updateMessage(p.plan.channel, p.chrome.planTs, action.text, true)
+      // Block Kit, not text: the checklist is a native checkbox list (slack/render.ts
+      // renderPlan). Same post-once/edit-thereafter contract as `progress` — `action.text`
+      // rides along as the notification/fallback string only.
+      if (p.chrome.planTs) await conn.updateBlocks(p.plan.channel, p.chrome.planTs, action.blocks, action.text, true)
       else if (!p.chrome.planAttempted) {
         p.chrome.planAttempted = true
-        p.chrome.planTs = await conn.postMessage(p.plan.channel, action.text, p.plan.thread, chromeOptions)
+        p.chrome.planTs = await conn.postBlocks(
+          p.plan.channel,
+          action.blocks,
+          action.text,
+          p.plan.thread,
+          chromeOptions
+        )
       }
       return
     case 'reasoning':

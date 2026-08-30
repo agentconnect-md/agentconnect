@@ -70,7 +70,7 @@ export type SlackAction =
   | { kind: 'set-title'; text: string }
   | { kind: 'progress'; text: string }
   | { kind: 'reasoning'; text: string }
-  | { kind: 'plan'; text: string }
+  | { kind: 'plan'; text: string; blocks: unknown[] }
   // `tool-output` posts a finished tool's output (code block) but is NOT recorded — same
   // post-but-don't-record contract as `notice`.
   | { kind: 'tool-output'; text: string }
@@ -314,17 +314,58 @@ export function buildAttributionBlocks(info: SlackAttributionInfo): { text: stri
 
 type PlanEntry = { content?: string; status?: 'pending' | 'in_progress' | 'completed' }
 
-function planIcon(status?: string): string {
-  if (status === 'completed') return ':white_check_mark:'
-  if (status === 'in_progress') return ':hourglass_flowing_sand:'
-  return ':white_large_square:'
-}
+/** A plan entry is a task title, not a paragraph. Slack imposes no length on a rich-text
+ *  list item (200 items of 3,000 characters all post fine), so this cap is editorial: it
+ *  keeps one runaway entry from swallowing the message. */
+const MAX_PLAN_LABEL = 150
 
-/** Render an ACP plan (full entry list, resent on every update) as a compact summary.
- *  Posted as a `markdown` block, so emphasis is CommonMark (`**bold**`), not mrkdwn. */
-function renderPlan(entries: PlanEntry[]): string {
-  const lines = entries.map((e) => `${planIcon(e.status)} ${clampLabel(e.content ?? '')}`)
-  return [':clipboard: **Plan**', ...lines].join('\n')
+/** Render an ACP plan (full entry list, resent on every update) as a native bulleted list:
+ *  completed entries struck through, the entry in flight bolded, the rest plain, under a
+ *  `Plan · n/m` heading and ruled top and bottom so it reads as the turn's own artifact
+ *  rather than one more chrome message in the thread.
+ *
+ *  Deliberately NOT Block Kit `checkboxes`, which is the prettier first instinct: that
+ *  element is an INPUT with no read-only variant, so it offers a click that can do nothing —
+ *  the plan belongs to the agent, and a reader ticking a box states nothing the daemon should
+ *  believe. It also caps at 10 options and 150 characters per label, both ENFORCED rather
+ *  than truncated. A struck-through line says "done" just as plainly and promises nothing.
+ *
+ *  `text` is the notification/fallback string, never displayed when the blocks render. */
+function renderPlan(entries: PlanEntry[]): { text: string; blocks: unknown[] } {
+  const done = entries.filter((e) => e.status === 'completed').length
+  const item = (entry: PlanEntry) => ({
+    type: 'rich_text_section',
+    elements: [
+      {
+        type: 'text',
+        text: clampTo(entry.content ?? '', MAX_PLAN_LABEL),
+        ...(entry.status === 'completed'
+          ? { style: { strike: true } }
+          : entry.status === 'in_progress'
+            ? { style: { bold: true } }
+            : {})
+      }
+    ]
+  })
+  // The fallback is NOT dead weight beside the blocks: Slack routes top-level `text` to screen
+  // readers and to the notification preview, and reads neither from the interior blocks. Left
+  // as the bare count it would be the one place the plan does not exist for those two readers,
+  // which is a regression against the text renderer this replaces. Statuses spell out as words
+  // rather than glyphs, because that is the form being read ALOUD.
+  const spoken = (status?: string) =>
+    status === 'completed' ? 'done' : status === 'in_progress' ? 'in progress' : 'to do'
+  return {
+    text: [
+      `Plan · ${done}/${entries.length}`,
+      ...entries.map((e) => `${spoken(e.status)}: ${clampTo(e.content ?? '', MAX_PLAN_LABEL)}`)
+    ].join('\n'),
+    blocks: [
+      { type: 'divider' },
+      { type: 'context', elements: [{ type: 'mrkdwn', text: `*Plan* · ${done}/${entries.length}` }] },
+      { type: 'rich_text', elements: [{ type: 'rich_text_list', style: 'bullet', elements: entries.map(item) }] },
+      { type: 'divider' }
+    ]
+  }
 }
 
 /** Render the accumulated reasoning trace (high mode) as one in-place message. Posted as
@@ -1531,7 +1572,7 @@ export class OutputConverger {
         // minimal keeps the reply intact and shows planning only as transient status.
         if (this.mode === 'minimal') return this.pushActivity('planning…')
         if (this.mode === 'low' || this.mode === 'none') return [...this.flush(), ...this.pushActivity('planning…')]
-        return [...this.flush(), { kind: 'plan', text: renderPlan(entries) }]
+        return [...this.flush(), { kind: 'plan', ...renderPlan(entries) }]
       }
       case 'usage_update':
         return [] // dropped (goes to telemetry, not the channel)
