@@ -254,8 +254,7 @@ jobs:
     needs: windows-scope
     if: ${{ needs.windows-scope.outputs.changed == 'true' }}
     runs-on: windows-latest
-    # Both packages split the same way, so a shard is a whole runner's worth of either. Vitest
-    # chunks the file list rather than balancing it by duration, so the two halves are uneven.
+    # The daemon balances its halves by file size (`scripts/vitest-shard-sequencer.ts`); the CLI is 6 s, so it keeps Vitest's own split.
     strategy:
       fail-fast: false
       matrix:
