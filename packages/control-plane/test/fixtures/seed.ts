@@ -48,6 +48,11 @@ export async function seedDaemon(
   return DaemonId(id)
 }
 
+/** `seedAgent`'s derived name — the WHOLE id, so two agents seeded into one org can never collide on (orgId, name). */
+export function defaultAgentName(id: string): string {
+  return `agent-${id}`
+}
+
 export async function seedAgent(
   prisma: PrismaClient,
   id: string,
@@ -77,7 +82,7 @@ export async function seedAgent(
     data: {
       id,
       orgId: opts.orgId ?? DEFAULT_ORG_ID,
-      name: opts.name ?? `agent-${id.slice(0, 4)}`,
+      name: opts.name ?? defaultAgentName(id),
       runtime: opts.runtime ?? 'claude',
       daemonId: opts.daemonId,
       ...(opts.setId ? { placementKind: 'set' as const, setId: opts.setId } : {}),

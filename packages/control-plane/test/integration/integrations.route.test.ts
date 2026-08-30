@@ -14,7 +14,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, seedDutyGroup, defaultAgentName } from '../fixtures/seed.js'
 import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
@@ -518,7 +518,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       payload: { platform: 'discord', agentId: agentId2, discord: { botToken: 'MTA1-bot.token.abc' } }
     })
     expect(unreachable.statusCode).toBe(201)
-    expect((unreachable.json() as { name: string }).name).toBe(`agent-${agentId2.slice(0, 4)}`)
+    expect((unreachable.json() as { name: string }).name).toBe(defaultAgentName(agentId2))
   })
 
   it('POST feishu defaults omitted region to Lark, stores the credential pair, and pushes a feishu-shaped upsert', async () => {
@@ -882,7 +882,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
       payload: { platform: 'feishu', agentId: agentId2, feishu: { appId: 'cli_b', appSecret: 's' } }
     })
     expect(unreachable.statusCode).toBe(201)
-    expect((unreachable.json() as { name: string }).name).toBe(`agent-${agentId2.slice(0, 4)}`)
+    expect((unreachable.json() as { name: string }).name).toBe(defaultAgentName(agentId2))
   })
 
   it('POST rejects a mismatched credential block (platform telegram + slack tokens) with 400', async () => {
@@ -899,7 +899,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
   it('POST without a name falls back to the owning agent name (no resolver wired)', async () => {
     const agentId = await placedAgent()
     const { app } = withSpy() // buildHttpApp wires no resolveSlackBotName ⇒ offline fallback
-    const agentName = `agent-${agentId.slice(0, 4)}` // seedAgent's naming
+    const agentName = defaultAgentName(agentId)
 
     const res = await app.app.inject({
       method: 'POST',
@@ -1049,7 +1049,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     })
     expect(res.statusCode).toBe(201)
     // Name falls back to the owning agent when auth.test couldn't derive one.
-    expect((res.json() as { name: string }).name).toBe(`agent-${agentId.slice(0, 4)}`)
+    expect((res.json() as { name: string }).name).toBe(defaultAgentName(agentId))
   })
 
   it('POST on an UNPLACED agent is refused with 409 and stores nothing', async () => {
@@ -1128,7 +1128,7 @@ describe('integration install flow (REST → integration/upsert·remove)', () =>
     // The bot SURVIVES with its tokens, stamped with the freed-from hints.
     const bot = await prisma.bot.findUnique({ where: { id: created.botId } })
     expect(bot?.lastUsedAt).not.toBeNull()
-    expect(bot?.lastAgentName).toBe(`agent-${agentId.slice(0, 4)}`)
+    expect(bot?.lastAgentName).toBe(defaultAgentName(agentId))
     expect(await prisma.botSecret.findUnique({ where: { botId: created.botId } })).not.toBeNull()
     // The org rides every removal now: the payload is a bare id, so the send has
     // nothing else to scope on when the connection is install-wide.
