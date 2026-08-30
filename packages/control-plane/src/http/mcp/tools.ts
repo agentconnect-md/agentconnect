@@ -380,7 +380,15 @@ export const MCP_TOOLS: McpToolDef[] = [
         agentId: z.string().uuid().describe('The agent this schedule drives (from listAgents)'),
         name: z.string().trim().min(1).max(120).optional().describe('Display name shown in the console'),
         schedule: z.string().min(1).describe('Cron expression, croner syntax (e.g. "0 9 * * MON-FRI")'),
-        timezone: z.string().min(1).optional().describe('IANA timezone name (e.g. "Asia/Shanghai")'),
+        // Required, and deliberately so: the schedule fires by this, and a caller that omitted it used
+        // to inherit whatever zone the control plane process happened to run in — UTC in a container.
+        // "Every morning at 9" then meant 9am somewhere the user has never been.
+        timezone: z
+          .string()
+          .min(1)
+          .describe(
+            'IANA timezone the schedule is interpreted in, e.g. "Asia/Shanghai". Use the timezone the person asking lives in — ask them if you do not know it. There is no default. When editing an existing schedule, pass back its current timezone (from getCron) unless the user is changing it: this is a full replace, so a guess here MOVES the schedule.'
+          ),
         trigger: z.string().min(1).describe('The prompt sent to the agent on each firing'),
         // Same cron target vocabulary the REST body accepts (`dto/index.ts`
         // `Platform`), from the one registry declaration rather than a fourth copy.

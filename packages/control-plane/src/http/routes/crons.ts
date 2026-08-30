@@ -183,7 +183,10 @@ export function cronRoutes(deps: HttpDeps) {
             agentId: agent.id,
             ...(req.body.name ? { name: req.body.name } : {}),
             schedule: req.body.schedule,
-            timezone: req.body.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+            // The server never guesses a zone. This used to fall back to the CP PROCESS's own zone —
+            // UTC in a container — so an omission put a schedule on a clock nobody chose, and an edit
+            // that omitted it moved an existing schedule off the one it was authored on.
+            timezone: req.body.timezone ?? existing?.timezone ?? 'UTC',
             targetPlatform,
             ...(req.body.targetChannel ? { targetChannel: req.body.targetChannel } : {}),
             ...(targetIntegrationId ? { targetIntegrationId } : {}),
