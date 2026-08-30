@@ -188,20 +188,10 @@ file join `WINDOWS_EXCLUDED` in that package's `vitest.config.ts`, which is appl
 alone so `vitest run` is green for a Windows contributor too.
 
 **That runner charges for creating files** — not for bandwidth, CPU, or fsync. Every change that
-made the job faster removed file creations, and every one that targeted something else measured
-nothing. The temp root moved to the host-local disk because `os.tmpdir()` resolved onto the
-network-attached OS drive (−39%); `LocalStore` creates its schema in one transaction because a
-multi-statement script commits, and flushes, per statement (−51%); the secondary-roots fixture
-copies a bare repository instead of rebuilding it through six git subprocesses; and the job does
-not cache the pnpm store, because restoring one writes 554 packages' files at once and costs more
-than fetching them (−26 s). Against that, `PRAGMA synchronous = NORMAL` measured 24% while the
-temp root was still on the network drive and exactly nothing after it moved, an in-memory store
-was faster in one run of three, and excluding the job's Defender scanning was inside the noise.
-
-Two habits follow. Measure a candidate with a matrix — both arms, three samples, one run — because
-this job's `tests` total has come back anywhere from 873 s to 1951 s on identical content, so a
-single before/after pair cannot see anything smaller than it. And re-measure after the ground
-moves: three of those dead ends were live findings before the temp root changed drives.
+made the job faster removed file creations; everything aimed elsewhere measured nothing. Measure a
+candidate with a matrix — both arms, three samples, one run — because the `tests` total has come
+back anywhere from 873 s to 1951 s on identical content, and re-measure after an earlier change
+lands, which has killed live findings before. Each step's own comment carries its result.
 
 ### Prisma
 
