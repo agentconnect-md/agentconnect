@@ -97,11 +97,6 @@ new tool surface, no new mount, no reach problem.
   of the upload is "commit this", the agent moves it and commits it; if not, it stays
   untracked and dies with the worktree. Magic exclusions would hide exactly the file the
   user just asked the agent to handle.
-- **Writes are atomic.** Staged beside the target and published by one rename —
-  `WorkspaceFs.writeFile`'s existing discipline — so an aborted turn leaves no partial
-  file. The seam gains a **`writeFileBytes`** sibling of `readFileBytes`; the shim channel
-  already stages chunked appends and publishes by rename, so the pod side is the same
-  pattern with a base64 leg.
 
 ### 2.2 Timing and scope
 
