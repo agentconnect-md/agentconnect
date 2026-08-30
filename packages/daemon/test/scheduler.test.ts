@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildSyntheticMessage, missedOccurrence, scheduleFingerprint, Scheduler } from '../src/scheduler/scheduler.js'
+import {
+  buildSyntheticMessage,
+  missedOccurrence,
+  scheduleFingerprint,
+  scheduledRunContext,
+  Scheduler
+} from '../src/scheduler/scheduler.js'
 import type { ScheduleDefinition } from '../src/scheduler/scheduler.js'
 import type { CronDef } from '../src/agents/agent-schema.js'
 
@@ -12,23 +18,61 @@ const cron = (id: string, over: Partial<CronDef> = {}): CronDef => ({
   ...over
 })
 
+// 17:58 UTC is already the NEXT day in Shanghai — the straddle that dated a nightly digest to
+// yesterday, because the host clock and the schedule's clock disagreed about what day it was.
+const FIRED_AT = new Date('2026-08-29T17:58:10.000Z')
+
 describe('buildSyntheticMessage', () => {
   it('builds a cron-sourced NormalizedMessage targeting the cron channel', () => {
-    const { agentId, msg } = buildSyntheticMessage('bot-a', cron('daily'), 'trace-1')
+    const { agentId, msg } = buildSyntheticMessage('bot-a', cron('daily'), 'trace-1', FIRED_AT)
     expect(agentId).toBe('bot-a')
     expect(msg.source).toBe('cron')
     expect(msg.trigger).toBe('cron')
     expect(msg.channel).toBe('C1')
-    expect(msg.text).toBe('post health report')
     expect(msg.sender.isBot).toBe(false)
     expect(msg.headless).toBeUndefined()
   })
 
+  it('leads with the firing clock and keeps the operator’s prompt intact below it', () => {
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily', { timezone: 'Asia/Shanghai' }), 't', FIRED_AT)
+    expect(msg.text).toBe(
+      "Scheduled run: 2026-08-30 01:58 Asia/Shanghai — the schedule's own clock; this host's may differ.\n\npost health report"
+    )
+  })
+
   it('a target-less cron builds a HEADLESS message with a synthetic channel key', () => {
-    const { msg } = buildSyntheticMessage('bot-a', cron('daily', { target: undefined }), 'trace-1')
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily', { target: undefined }), 'trace-1', FIRED_AT)
     expect(msg.headless).toBe(true)
     expect(msg.channel).toBe('cron:daily')
-    expect(msg.text).toBe('post health report')
+    expect(msg.text.endsWith('post health report')).toBe(true)
+  })
+})
+
+describe('scheduledRunContext', () => {
+  it('reads the fire on the schedule’s clock, which can be a different day than the host’s', () => {
+    expect(scheduledRunContext(cron('d', { timezone: 'Asia/Shanghai' }), FIRED_AT)).toContain('2026-08-30 01:58')
+    expect(scheduledRunContext(cron('d', { timezone: 'UTC' }), FIRED_AT)).toContain('2026-08-29 17:58')
+    expect(scheduledRunContext(cron('d', { timezone: 'America/New_York' }), FIRED_AT)).toContain('2026-08-29 13:58')
+  })
+
+  it('names the zone it read in, so the agent can tell which clock it was given', () => {
+    expect(scheduledRunContext(cron('d', { timezone: 'Asia/Tokyo' }), FIRED_AT)).toContain('Asia/Tokyo')
+  })
+
+  it('falls back to the host clock for a cron that names no zone — croner reads it locally too', () => {
+    const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    expect(scheduledRunContext(cron('d'), FIRED_AT)).toContain(hostZone)
+  })
+
+  // A hand-authored cron is not validated against IANA, and Intl throws on a name it does not know.
+  it('falls back rather than throw on a zone no formatter accepts', () => {
+    const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    expect(scheduledRunContext(cron('d', { timezone: 'Not/AZone' }), FIRED_AT)).toContain(hostZone)
+  })
+
+  it('renders midnight as hour 00, never 24', () => {
+    const midnight = new Date('2026-08-29T16:00:00.000Z')
+    expect(scheduledRunContext(cron('d', { timezone: 'Asia/Shanghai' }), midnight)).toContain('2026-08-30 00:00')
   })
 })
 

@@ -2,10 +2,51 @@ import { Cron } from 'croner'
 import type { CronDef } from '../agents/agent-schema.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 
+/** The zone a fire is read in: the schedule's own, or the host's when it names none or names one no
+ *  formatter accepts — croner reads a zone-less expression in local time, so that IS its clock. */
+function firingZone(timezone?: string): string {
+  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  if (!timezone) return hostZone
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: timezone })
+    return timezone
+  } catch {
+    return hostZone
+  }
+}
+
+/** `YYYY-MM-DD HH:mm` in `timeZone`. Locale-pinned and assembled from parts, so the host's own
+ *  locale cannot reword it and `hourCycle` cannot render midnight as hour 24. */
+function wallClock(now: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(now)
+  const at = (type: string): string => parts.find((part) => part.type === type)?.value ?? ''
+  return `${at('year')}-${at('month')}-${at('day')} ${at('hour')}:${at('minute')}`
+}
+
+/**
+ * The one line of context a scheduled turn needs that its own process cannot tell it: when it fired,
+ * on the clock the schedule fires by. The daemon host runs its own clock — UTC in a container — so an
+ * agent asked for "today's digest" at 01:58 local dates the file to yesterday whenever the two zones
+ * straddle midnight. The timezone is on the CronDef already; it just never reached the turn.
+ */
+export function scheduledRunContext(cron: CronDef, now: Date): string {
+  const zone = firingZone(cron.timezone)
+  return `Scheduled run: ${wallClock(now, zone)} ${zone} — the schedule's own clock; this host's may differ.`
+}
+
 export function buildSyntheticMessage(
   agentId: string,
   cron: CronDef,
-  traceId: string
+  traceId: string,
+  now: Date = new Date()
 ): { agentId: string; msg: NormalizedMessage } {
   // No target ⇒ headless fire: the channel is a synthetic key (transcript/session
   // bookkeeping only) and `headless` suppresses all platform output in dispatch.
@@ -20,7 +61,7 @@ export function buildSyntheticMessage(
     channel: cron.target?.channel ?? `cron:${cron.id}`,
     thread: `cron:${cron.id}:${traceId}`, // fresh thread per fire (replaced by the real anchor ts when posted)
     sender: { id: `cron:${cron.id}`, isBot: false },
-    text: cron.trigger,
+    text: `${scheduledRunContext(cron, now)}\n\n${cron.trigger}`,
     mentionedBots: [],
     isDm: false,
     trigger: 'cron',
