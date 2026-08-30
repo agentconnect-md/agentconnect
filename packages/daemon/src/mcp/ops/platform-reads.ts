@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import type { PlatformThreadMessage } from '../../platforms/contract.js'
+import { platformLabel } from '../../platforms/read-ports.js'
 import type { McpContentResult, MessageGateway, SessionContext } from './context.js'
 import {
   integrationsOnPlatform,
@@ -40,6 +42,19 @@ export const GET_CHANNEL_HISTORY_ARGS = z.object({
   oldest: optionalString('oldest'),
   latest: optionalString('latest')
 })
+
+/** `getThreadHistory` arguments; `channel` defaults to the current one on the same platform. */
+export const GET_THREAD_HISTORY_ARGS = z.object({
+  platform: optionalString('platform'),
+  integrationId: optionalString('integrationId'),
+  channel: optionalString('channel'),
+  thread: requiredString('thread'),
+  limit: optionalBoundedInt('limit', 1, 200),
+  oldest: optionalString('oldest'),
+  latest: optionalString('latest')
+})
+
+const DEFAULT_THREAD_HISTORY_LIMIT = 100
 
 /** Every platform's credentialed attachment read (`readSlackFile`, `readTelegramFile`, …). */
 export const READ_ATTACHMENT_ARGS = z.object({
@@ -179,6 +194,63 @@ export async function getChannelHistory(
     messages: page.messages,
     hasMore: page.hasMore,
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
+  }
+}
+
+/** One thread message, projected for the agent. The provider row carries daemon-internal
+ *  attribution (`chromeOwnerAgentId`, `appId`) that means nothing to a reader. */
+function projectThreadMessage(m: PlatformThreadMessage): unknown {
+  const attachments = m.attachments.flatMap((a) => {
+    const file = a as { name?: string; mimeType?: string; sourceUrl?: string }
+    return file?.name ? [{ name: file.name, mimeType: file.mimeType, url: file.sourceUrl }] : []
+  })
+  return {
+    sender: m.sender,
+    ts: m.ts,
+    text: m.text,
+    isBot: m.isBot,
+    ...(m.agentAuthorId ? { agentId: m.agentAuthorId } : {}),
+    ...(attachments.length > 0 ? { attachments } : {})
+  }
+}
+
+/**
+ * Read one thread's root + replies — the provider read the daemon already uses to rebuild
+ * mid-thread context, handed to the agent for a thread it is NOT answering.
+ *
+ * Status chrome is dropped: it is this daemon's own streaming placeholders, and a reader
+ * asking what a thread says has no use for them. That happens AFTER the provider applied
+ * `limit`, so a chrome-heavy thread returns fewer messages than asked for — `truncated`
+ * still reports whether the provider had more.
+ */
+export async function getThreadHistory(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: PlatformReadDeps
+): Promise<unknown> {
+  const parsed = parseArgs(GET_THREAD_HISTORY_ARGS, args)
+  const platform = parsed.platform ?? ctx.platform
+  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const channel = parsed.channel ?? (sameConvo ? ctx.channel : undefined)
+  if (!channel)
+    throw new Error(`channel is required to read a thread on ${platform} (a different platform than this session)`)
+  if (!gw.getThreadReplies)
+    throw new Error(`thread history is unavailable on this ${platformLabel(platform)} connection`)
+  const readState = { truncated: false }
+  const messages = await gw.getThreadReplies(channel, parsed.thread, parsed.limit ?? DEFAULT_THREAD_HISTORY_LIMIT, {
+    ...(parsed.oldest ? { oldest: parsed.oldest } : {}),
+    ...(parsed.latest ? { latest: parsed.latest } : {}),
+    // A tool call reports the platform's own refusal (not_in_channel, thread_not_found)
+    // rather than the empty list the daemon's own best-effort backfill settles for.
+    throwOnError: true,
+    readState
+  })
+  return {
+    platform,
+    channel,
+    thread: parsed.thread,
+    truncated: readState.truncated,
+    messages: messages.filter((m) => !m.chrome).map(projectThreadMessage)
   }
 }
 

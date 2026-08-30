@@ -49,6 +49,9 @@ const EXEMPT: Record<string, string> = {
   completeUpload: 'private step 3 of the external upload, behind uploadFile',
   completeShare: 'private one-shot completion boundary, behind completeUpload',
   shareMessageTs: 'private share-ts read behind uploadFile',
+  toolFailure: 'private Slack-error sanitizer behind the agent-callable actions',
+  canvasLink: 'private files.info read behind createCanvas',
+  canvasSections: 'private canvases.sections.lookup behind readCanvas',
   // Interactive Slack surfaces (Block Kit actions / modals) are driven by
   // Bolt callbacks the virtual transport never receives; the daemon only
   // invokes them from those callbacks.

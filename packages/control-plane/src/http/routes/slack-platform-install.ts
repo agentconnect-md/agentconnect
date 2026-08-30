@@ -36,7 +36,7 @@ import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { canView, canEdit } from '../../authorization/policy.js'
 import { resolveWebAppUrl } from '../../config/env.js'
-import { checkSlackBotScopes, SLACK_BOT_SCOPES, slackPlatformOAuthRedirectUri } from '../slack-manifest.js'
+import { checkSlackBotScopes, SLACK_MANIFEST_BOT_SCOPES, slackPlatformOAuthRedirectUri } from '../slack-manifest.js'
 import { installNewSlackBot } from '../install-slack.js'
 import { BotWorkspaceClaimed } from '../../persistence/errors.js'
 import { closePageHtml } from './slack-install.js'
@@ -135,7 +135,11 @@ export function slackPlatformInstallRoutes(deps: HttpDeps, slack: SlackRouteSeam
         })
         const url = new URL(SLACK_AUTHORIZE_URL)
         url.searchParams.set('client_id', platform.clientId)
-        url.searchParams.set('scope', SLACK_BOT_SCOPES.join(','))
+        // ASK for everything the manifest declares, including the capability scopes: Slack
+        // grants exactly what this parameter names, so a scope left out here is one no
+        // install ever holds. The health fence stays on the required set — see
+        // `checkSlackBotScopes`, which is what decides whether a grant was short.
+        url.searchParams.set('scope', SLACK_MANIFEST_BOT_SCOPES.join(','))
         url.searchParams.set('state', install.id)
         url.searchParams.set('redirect_uri', redirectUri)
         return reply.code(201).send({ id: install.id, installUrl: url.toString() })

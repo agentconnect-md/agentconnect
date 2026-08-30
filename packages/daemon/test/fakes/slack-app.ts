@@ -41,7 +41,8 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           postMessage: async () => ({ ts: '1700000000.000100' }),
           getPermalink: async () => ({ permalink: 'https://fake.slack.com/archives/C1/p1700000000000100' }),
           update: async () => ({ ts: '1700000000.000100' }),
-          delete: ok
+          delete: ok,
+          scheduleMessage: async () => ({ scheduled_message_id: 'Q_FAKE', channel: 'C1' })
         },
         files: {
           getUploadURLExternal: async () => ({
@@ -55,6 +56,9 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
         conversations: {
           open: async () => ({ channel: { id: 'D_FAKE' } }),
           info: async () => ({ channel: { id: 'C1', name: 'fake' } }),
+          create: async () => ({ channel: { id: 'C_FAKE', name: 'fake' } }),
+          invite: ok,
+          canvases: { create: async () => ({ canvas_id: 'F_FAKE_CANVAS' }) },
           members: async () => ({ members: [] }),
           leave: ok,
           list: async () => ({ channels: [] }),
@@ -65,7 +69,12 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           info: async () => ({}),
           conversations: async () => ({ channels: [] })
         },
-        reactions: { add: ok },
+        reactions: { add: ok, get: async () => ({ message: { reactions: [] } }) },
+        canvases: {
+          create: async () => ({ canvas_id: 'F_FAKE_CANVAS' }),
+          edit: ok,
+          sections: { lookup: async () => ({ sections: [] }) }
+        },
         agents: { sessions: { setStatus: ok, rename: ok } }
       },
       start: async () => {},

@@ -1031,6 +1031,21 @@ alias `listChannelAgents`) and `viewSessionStatus`; channel/user information
 `getUserProfile`; attachment readers `readSlackFile`, `readTelegramFile`;
 memory `readMemory`, `writeMemory`, `searchMemory`; and others.
 
+A second group is gated by a **declared port** rather than by a platform name
+(`platforms/read-ports.ts`, §7.1 of
+[integration-plugin-architecture.md](integration-plugin-architecture.md)): the bounded reads
+`getChannelHistory` and `getThreadHistory`, the reactions `addReaction` / `getReactions`,
+`createConversation`, `scheduleMessage`, and the canvas trio `createCanvas` / `readCanvas` /
+`updateCanvas`. Slack declares all of them today and is the only platform that does, so an
+agent with no Slack integration is injected none of them and each tool's `platform` enum
+narrows to the declaring platforms. Two rules keep this group honest. It is not a second
+delivery path — `sendMessage` and `shareFile` remain the only two, and `scheduleMessage` is
+channel-root only for the same reason `sendMessage` is
+([send-message-routing-rework.md](send-message-routing-rework.md) §2.2). And unlike the turn
+chrome, each of these reports the platform's own refusal verbatim, because the agent asked
+for it: an installation whose grant predates a capability scope must see `missing_scope`, not
+a silent success.
+
 The orchestration triple `startOrchestration` / `getOrchestration` /
 `cancelOrchestration` is **retired from the injected tool surface**: its send half
 duplicated `sendMessage` (fan-out to N workers is N `sendMessage` calls with

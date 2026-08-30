@@ -31,6 +31,23 @@ import {
   type MemoryOpsDeps
 } from './ops/memory.js'
 import { sendMessage, type MessagingDeps } from './ops/messaging.js'
+import {
+  addReaction,
+  ADD_REACTION_ARGS,
+  createCanvas,
+  CREATE_CANVAS_ARGS,
+  createConversation,
+  CREATE_CONVERSATION_ARGS,
+  getReactions,
+  GET_REACTIONS_ARGS,
+  readCanvas,
+  READ_CANVAS_ARGS,
+  scheduleMessage,
+  SCHEDULE_MESSAGE_ARGS,
+  updateCanvas,
+  UPDATE_CANVAS_ARGS,
+  type PlatformActionDeps
+} from './ops/platform-actions.js'
 import { shareFile, type ShareFileDeps } from './ops/share-file.js'
 import {
   cancelOrchestration,
@@ -70,6 +87,8 @@ import {
   getCurrentChannel,
   getChannelHistory,
   GET_CHANNEL_HISTORY_ARGS,
+  getThreadHistory,
+  GET_THREAD_HISTORY_ARGS,
   getUserProfile,
   GET_USER_PROFILE_ARGS,
   listChannelMembers,
@@ -126,7 +145,8 @@ export interface OpsDeps
     CodeHostEffectDeps,
     MemoryOpsDeps,
     ShareFileDeps,
-    PlatformReadDeps {
+    PlatformReadDeps,
+    PlatformActionDeps {
   /** Fail-closed turn gate checked before every daemon bridge tool. Used to make
    *  pause/cancel/loop interrupts terminal even while the runtime is still unwinding. */
   canRun?: (ctx: SessionContext) => boolean | Promise<boolean>
@@ -183,7 +203,15 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['listChannels', listChannels],
   ['listChannelMembers', listChannelMembers],
   ['getUserProfile', getUserProfile],
-  ['getChannelHistory', getChannelHistory]
+  ['getChannelHistory', getChannelHistory],
+  ['getThreadHistory', getThreadHistory],
+  ['addReaction', addReaction],
+  ['getReactions', getReactions],
+  ['createConversation', createConversation],
+  ['scheduleMessage', scheduleMessage],
+  ['createCanvas', createCanvas],
+  ['readCanvas', readCanvas],
+  ['updateCanvas', updateCanvas]
 ])
 
 /**
@@ -227,6 +255,14 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['listChannelMembers', LIST_CHANNEL_MEMBERS_ARGS],
   ['getUserProfile', GET_USER_PROFILE_ARGS],
   ['getChannelHistory', GET_CHANNEL_HISTORY_ARGS],
+  ['getThreadHistory', GET_THREAD_HISTORY_ARGS],
+  ['addReaction', ADD_REACTION_ARGS],
+  ['getReactions', GET_REACTIONS_ARGS],
+  ['createConversation', CREATE_CONVERSATION_ARGS],
+  ['scheduleMessage', SCHEDULE_MESSAGE_ARGS],
+  ['createCanvas', CREATE_CANVAS_ARGS],
+  ['readCanvas', READ_CANVAS_ARGS],
+  ['updateCanvas', UPDATE_CANVAS_ARGS],
   // The session's own conversation is read from trusted context alone — no arguments.
   ['getCurrentChannel', z.object({})],
   // One body serves every platform's credentialed attachment read, so one schema does too.

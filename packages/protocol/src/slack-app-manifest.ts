@@ -12,6 +12,8 @@ export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
 /** Public platform profile copy. Never derive this from an Agent description. */
 export const PLATFORM_APP_DESCRIPTION = 'AI agent powered by AgentConnect.'
 
+/** The bot scopes an installation MUST hold — without one of these the app cannot receive,
+ *  read, or answer a message at all, so a short grant is refused rather than degraded. */
 export const SLACK_BOT_SCOPES = [
   'files:read',
   'app_mentions:read',
@@ -31,6 +33,30 @@ export const SLACK_BOT_SCOPES = [
   'assistant:write',
   'users:read'
 ] as const
+
+/**
+ * Bot scopes that unlock ONE optional capability each and are declared but never fenced on.
+ *
+ * A required scope is load-bearing: an install missing it is broken, so `checkSlackBotScopes`
+ * refuses it and the console asks for a reinstall. These are not — a workspace that granted
+ * the app before the capability existed keeps working, and only the one tool that needs the
+ * scope refuses, with Slack's own `missing_scope`. Fencing on them would mark every existing
+ * installation broken for a feature it never asked for.
+ *
+ * `channels:manage` / `groups:write` also back `conversations.leave`, which has always needed
+ * a write scope this manifest did not declare.
+ */
+export const SLACK_CAPABILITY_BOT_SCOPES = [
+  'reactions:read',
+  'canvases:read',
+  'canvases:write',
+  'channels:manage',
+  'groups:write',
+  'mpim:write'
+] as const
+
+/** Everything the app manifest declares: the required fence plus the optional capabilities. */
+export const SLACK_MANIFEST_BOT_SCOPES = [...SLACK_BOT_SCOPES, ...SLACK_CAPABILITY_BOT_SCOPES] as const
 
 // Both transports advertise the same events: Socket Mode receives them directly, and the relay's
 // HTTP ingress forwards the ones this app acts on to the daemon that owns the conversation.
@@ -129,7 +155,7 @@ export function buildSlackAppManifest(name: string, options: SlackAppManifestOpt
       ]
     },
     oauth_config: {
-      scopes: { bot: [...SLACK_BOT_SCOPES] },
+      scopes: { bot: [...SLACK_MANIFEST_BOT_SCOPES] },
       ...(redirectUrls.length > 0 ? { redirect_urls: redirectUrls } : {}),
       ...(options.pkceEnabled !== undefined ? { pkce_enabled: options.pkceEnabled } : {})
     },
