@@ -8031,7 +8031,9 @@ export class Daemon {
         const due = missedOccurrence(definition, await this.store.cronRun(key), now)
         if (due === undefined || !(await this.store.claimCronCatchUp(key, due, now, fingerprint))) continue
         this.log.info(`cron "${cron.id}" of agent "${agentId}": firing the occurrence a duty handover missed`)
-        const { msg } = buildSyntheticMessage(agentId, cron, randomUUID())
+        // Stamped with the occurrence being REPLAYED, not with now: the grace cap is an hour, so a
+        // 23:59 fire compensated at 00:30 would otherwise date the run to the following day.
+        const { msg } = buildSyntheticMessage(agentId, cron, randomUUID(), new Date(due))
         this.trackCatchUpFire(
           this.onCronFire(agentId, msg, cron).catch((err) =>
             this.log.error(`cron catch-up dispatch failed for agent "${agentId}": ${formatErr(err)}`)

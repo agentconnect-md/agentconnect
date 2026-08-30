@@ -1,12 +1,64 @@
 import { Cron } from 'croner'
 import type { CronDef } from '../agents/agent-schema.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
+import { deriveTitle } from '../session/derive-title.js'
+
+/** The zone a fire is read in, canonically spelled: the schedule's own, or the host's when it names
+ *  none or names one no formatter accepts — croner reads a zone-less expression in local time, so
+ *  that IS its clock. `own` is false wherever the host clock is the answer, since the line then has
+ *  no second clock to warn about. */
+function firingZone(timezone?: string): { zone: string; own: boolean } {
+  const host = Intl.DateTimeFormat().resolvedOptions().timeZone
+  if (!timezone) return { zone: host, own: false }
+  try {
+    // One call both validates the name and hands back its canonical spelling — a def saying `utc`
+    // reads as `UTC` rather than being echoed back as the operator happened to type it.
+    const zone = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).resolvedOptions().timeZone
+    return { zone, own: true }
+  } catch {
+    return { zone: host, own: false }
+  }
+}
+
+/** `YYYY-MM-DD HH:mm` in `timeZone`. Locale-pinned and assembled from parts, so the host's own
+ *  locale cannot reword it and `hourCycle` cannot render midnight as hour 24. */
+function wallClock(now: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(now)
+  const at = (type: string): string => parts.find((part) => part.type === type)?.value ?? ''
+  return `${at('year')}-${at('month')}-${at('day')} ${at('hour')}:${at('minute')}`
+}
+
+/**
+ * The one line of context a scheduled turn needs that its own process cannot tell it: when it fired,
+ * on the clock the schedule fires by. The daemon host runs its own clock — UTC in a container — so an
+ * agent asked for "today's digest" at 01:58 local dates the file to yesterday whenever the two zones
+ * straddle midnight. The timezone is on the CronDef already; it just never reached the turn.
+ */
+export function scheduledRunContext(cron: CronDef, now: Date): string {
+  const { zone, own } = firingZone(cron.timezone)
+  const whose = own ? "the schedule's own clock; this host's may differ" : "this host's own clock"
+  return `Scheduled run: ${wallClock(now, zone)} ${zone} — ${whose}.`
+}
 
 export function buildSyntheticMessage(
   agentId: string,
   cron: CronDef,
-  traceId: string
+  traceId: string,
+  now: Date = new Date()
 ): { agentId: string; msg: NormalizedMessage } {
+  // `msg.text` doubles as the fallback session title, and the stamp leads it — so the title comes
+  // from the TRIGGER instead. Through `deriveTitle`, not raw: `initialSessionTitle` is taken as
+  // written apart from a trim, and a schedule prompt is routinely long and multi-line, so copying
+  // it would persist the whole prompt as the title and push it to platform title surfaces.
+  const title = deriveTitle(cron.trigger)
   // No target ⇒ headless fire: the channel is a synthetic key (transcript/session
   // bookkeeping only) and `headless` suppresses all platform output in dispatch.
   // An anchored fire lives on the TARGET's platform (replies post there);
@@ -20,7 +72,8 @@ export function buildSyntheticMessage(
     channel: cron.target?.channel ?? `cron:${cron.id}`,
     thread: `cron:${cron.id}:${traceId}`, // fresh thread per fire (replaced by the real anchor ts when posted)
     sender: { id: `cron:${cron.id}`, isBot: false },
-    text: cron.trigger,
+    text: `${scheduledRunContext(cron, now)}\n\n${cron.trigger}`,
+    ...(title ? { initialSessionTitle: title } : {}),
     mentionedBots: [],
     isDm: false,
     trigger: 'cron',

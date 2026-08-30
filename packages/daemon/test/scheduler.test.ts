@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
-import { buildSyntheticMessage, missedOccurrence, scheduleFingerprint, Scheduler } from '../src/scheduler/scheduler.js'
+import {
+  buildSyntheticMessage,
+  missedOccurrence,
+  scheduleFingerprint,
+  scheduledRunContext,
+  Scheduler
+} from '../src/scheduler/scheduler.js'
 import type { ScheduleDefinition } from '../src/scheduler/scheduler.js'
 import type { CronDef } from '../src/agents/agent-schema.js'
 
@@ -12,23 +18,100 @@ const cron = (id: string, over: Partial<CronDef> = {}): CronDef => ({
   ...over
 })
 
+// 17:58 UTC is already the NEXT day in Shanghai — the straddle that dated a nightly digest to
+// yesterday, because the host clock and the schedule's clock disagreed about what day it was.
+const FIRED_AT = new Date('2026-08-29T17:58:10.000Z')
+
 describe('buildSyntheticMessage', () => {
   it('builds a cron-sourced NormalizedMessage targeting the cron channel', () => {
-    const { agentId, msg } = buildSyntheticMessage('bot-a', cron('daily'), 'trace-1')
+    const { agentId, msg } = buildSyntheticMessage('bot-a', cron('daily'), 'trace-1', FIRED_AT)
     expect(agentId).toBe('bot-a')
     expect(msg.source).toBe('cron')
     expect(msg.trigger).toBe('cron')
     expect(msg.channel).toBe('C1')
-    expect(msg.text).toBe('post health report')
     expect(msg.sender.isBot).toBe(false)
     expect(msg.headless).toBeUndefined()
   })
 
+  it('leads with the firing clock and keeps the operator’s prompt intact below it', () => {
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily', { timezone: 'Asia/Shanghai' }), 't', FIRED_AT)
+    expect(msg.text).toBe(
+      "Scheduled run: 2026-08-30 01:58 Asia/Shanghai — the schedule's own clock; this host's may differ.\n\npost health report"
+    )
+  })
+
+  // `msg.text` is also the fallback session title (`deriveTitle` takes its first line), so with the
+  // stamp leading, every scheduled run would otherwise be born named after its own timestamp.
+  it('names the session by what the schedule does, not by the stamp that now leads its text', () => {
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily'), 't', FIRED_AT)
+    expect(msg.initialSessionTitle).toBe('post health report')
+    expect(msg.text.split('\n')[0]).toContain('Scheduled run:')
+  })
+
+  // `initialSessionTitle` is taken as written apart from a trim, and a schedule prompt is routinely
+  // long and multi-line — so the trigger goes through the same rule the derived title always used.
+  it('normalizes that title instead of persisting a whole multi-line prompt', () => {
+    const trigger = ['', `  ${'x'.repeat(120)}  `, 'a second line'].join('\n')
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily', { trigger }), 't', FIRED_AT)
+    expect(msg.initialSessionTitle).toBe(`${'x'.repeat(80)}…`)
+    expect(msg.initialSessionTitle).not.toContain('\n')
+    // The prompt itself is untouched — only the title is normalized.
+    expect(msg.text.endsWith(trigger)).toBe(true)
+  })
+
+  it('leaves the session untitled when the trigger is only whitespace', () => {
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily', { trigger: '  \n  ' }), 't', FIRED_AT)
+    expect(msg.initialSessionTitle).toBeUndefined()
+  })
+
   it('a target-less cron builds a HEADLESS message with a synthetic channel key', () => {
-    const { msg } = buildSyntheticMessage('bot-a', cron('daily', { target: undefined }), 'trace-1')
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily', { target: undefined }), 'trace-1', FIRED_AT)
     expect(msg.headless).toBe(true)
     expect(msg.channel).toBe('cron:daily')
-    expect(msg.text).toBe('post health report')
+    expect(msg.text.endsWith('post health report')).toBe(true)
+  })
+})
+
+describe('scheduledRunContext', () => {
+  it('reads the fire on the schedule’s clock, which can be a different day than the host’s', () => {
+    expect(scheduledRunContext(cron('d', { timezone: 'Asia/Shanghai' }), FIRED_AT)).toContain('2026-08-30 01:58')
+    expect(scheduledRunContext(cron('d', { timezone: 'UTC' }), FIRED_AT)).toContain('2026-08-29 17:58')
+    expect(scheduledRunContext(cron('d', { timezone: 'America/New_York' }), FIRED_AT)).toContain('2026-08-29 13:58')
+  })
+
+  it('names the zone it read in, so the agent can tell which clock it was given', () => {
+    expect(scheduledRunContext(cron('d', { timezone: 'Asia/Tokyo' }), FIRED_AT)).toContain('Asia/Tokyo')
+  })
+
+  it('falls back to the host clock for a cron that names no zone — croner reads it locally too', () => {
+    const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    expect(scheduledRunContext(cron('d'), FIRED_AT)).toContain(hostZone)
+  })
+
+  // A hand-authored cron is not validated against IANA, and Intl throws on a name it does not know.
+  it('falls back rather than throw on a zone no formatter accepts', () => {
+    const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    expect(scheduledRunContext(cron('d', { timezone: 'Not/AZone' }), FIRED_AT)).toContain(hostZone)
+  })
+
+  it('canonicalizes the zone it names, rather than echoing how the cron spelled it', () => {
+    expect(scheduledRunContext(cron('d', { timezone: 'utc' }), FIRED_AT)).toContain(' UTC ')
+    expect(scheduledRunContext(cron('d', { timezone: 'asia/shanghai' }), FIRED_AT)).toContain(' Asia/Shanghai ')
+  })
+
+  // On the fallback branches the zone IS the host's, so promising the host may differ would be false.
+  it('claims a second clock only when it actually read the schedule’s own', () => {
+    expect(scheduledRunContext(cron('d', { timezone: 'Asia/Tokyo' }), FIRED_AT)).toContain(
+      "the schedule's own clock; this host's may differ"
+    )
+    for (const timezone of [undefined, 'Not/AZone']) {
+      expect(scheduledRunContext(cron('d', { timezone }), FIRED_AT)).toContain("this host's own clock")
+    }
+  })
+
+  it('renders midnight as hour 00, never 24', () => {
+    const midnight = new Date('2026-08-29T16:00:00.000Z')
+    expect(scheduledRunContext(cron('d', { timezone: 'Asia/Shanghai' }), midnight)).toContain('2026-08-30 00:00')
   })
 })
 
