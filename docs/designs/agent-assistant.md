@@ -215,7 +215,8 @@ Tools **call the CP service layer directly or reuse route-handler logic**, prese
 | `listWorkspaceFiles` / `readWorkspaceFile`                     | GET /agents/:id/workspace/files(file) (proxied, unstored)  | –       |
 | `createAgent` / `updateAgent`                                  | POST /agents · PATCH /agents/:id                           | ✎       |
 | `deleteAgent`                                                  | DELETE /agents/:id                                         | ✎🔥     |
-| `listDaemons` / `renameDaemon`                                 | GET /daemons · PATCH /daemons/:id                          | –/✎     |
+| `listDaemons` / `renameDaemon`                                 | GET /daemons (liveness) · PATCH /daemons/:id               | –/✎     |
+| `listDaemonCapabilities` / `getDaemon`                         | GET /daemons/capabilities · GET /daemons/:id               | –       |
 | `listCrons` / `getCron` / `listCronRuns`                       | GET /crons…                                                | –       |
 | `upsertCron` / `runCron` / `deleteCron`                        | PUT /crons/:id · POST /crons/:id/run · DELETE              | ✎(🔥)   |
 | `listSessions` / `getSession`                                  | GET /sessions(:id) (body policy is Open Question 1 in §15) | –       |

@@ -49,6 +49,7 @@ const AGENT_UUID = '5e0f8a25-31c8-4a1a-bb0e-9a8f6a2b1c22'
 /** Minimal happy-path args per tool (tools with no args pass {}). */
 const ARGS: Record<string, Record<string, unknown>> = {
   getAgent: { agentId: 'agent-1' },
+  getDaemon: { daemonId: 'daemon-1' },
   listWorkspaceFiles: { agentId: 'agent-1', path: 'scripts' },
   readWorkspaceFile: { agentId: 'agent-1', path: 'scripts/build.sh' },
   getCron: { cronId: 'cron-1' },
