@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { BASE_TEST_TIMEOUT } from '../vitest.config.js'
+import { BASE_TEST_TIMEOUT } from '../../../scripts/vitest-test-budget.js'
 
 const testRoot = fileURLToPath(new URL('.', import.meta.url))
 const budget = /^\s*\}, ([0-9_]+)\)$/gm
