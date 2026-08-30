@@ -234,13 +234,27 @@ describe('reconnect state as a combined multi-org snapshot (M4)', () => {
         groupId: GROUP_A,
         orgId: DEFAULT_ORG_ID,
         term: '2',
-        members: [{ kind: 'agent', refId: AGENT_A, configRevision: (await currentRevision(AGENT_A)).toString() }]
+        members: [
+          {
+            kind: 'agent',
+            refId: AGENT_A,
+            configRevision: (await currentRevision(AGENT_A)).toString(),
+            placement: 'set'
+          }
+        ]
       },
       {
         groupId: GROUP_B,
         orgId: ORG_B,
         term: '2',
-        members: [{ kind: 'agent', refId: AGENT_B, configRevision: (await currentRevision(AGENT_B)).toString() }]
+        members: [
+          {
+            kind: 'agent',
+            refId: AGENT_B,
+            configRevision: (await currentRevision(AGENT_B)).toString(),
+            placement: 'set'
+          }
+        ]
       }
     ])
     // Nothing was revoked, and the renewal confirmation closed the exchange.

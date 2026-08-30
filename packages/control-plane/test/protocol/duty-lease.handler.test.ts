@@ -148,7 +148,9 @@ describe('duty lease exchange (protocol level, real Postgres)', () => {
     stub.inject('heartbeat', heartbeat({ held: [], headroom: 4 }))
     const grant = await stub.expectFrame('duty/grant')
     if (!isFrame('duty/grant')(grant)) throw new Error('expected duty/grant')
-    expect(grant.payload.grants[0]?.members).toEqual([{ kind: 'agent', refId: AGENT, configRevision: '9' }])
+    expect(grant.payload.grants[0]?.members).toEqual([
+      { kind: 'agent', refId: AGENT, configRevision: '9', placement: 'set' }
+    ])
   })
 
   it('zero headroom claims nothing', async () => {
