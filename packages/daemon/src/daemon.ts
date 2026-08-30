@@ -14084,14 +14084,13 @@ export class Daemon {
             ...(footer && i === sections.length - 1 ? { trailingBlocks: footer.blocks } : {})
           })
         }
-        if (footer) {
+        // Clear ONLY once the replacement landed: postMessage returns undefined without
+        // throwing when the thread is gone, and stripping the old footer then would leave
+        // the response with no attribution at all — worse than the old footer staying put.
+        if (footer && lastTs) {
           await this.clearMigratedFooter(conn as SlackConnection, agentId, previous)
-          // Track the new holder so a follow-up drain can migrate again; an unknown ts
-          // (a connection that returns none) drops the entry rather than mistracking.
-          if (lastTs)
-            this.lastFooterReply.set(rec.key, { channel: rec.channel, ts: lastTs, text: sections.at(-1) ?? text })
-          else this.lastFooterReply.delete(rec.key)
-        }
+          this.lastFooterReply.set(rec.key, { channel: rec.channel, ts: lastTs, text: sections.at(-1) ?? text })
+        } else if (footer) this.lastFooterReply.delete(rec.key)
       } else {
         await conn.postMessage(rec.channel, text, rec.thread || undefined)
       }
@@ -14123,7 +14122,14 @@ export class Daemon {
       return
     }
     const routing = p.reply.closedRouting ?? p.reply.finalRouting
-    const closed = p.reply.responseId !== '' && p.reply.lastResponse?.ts === lastReply.ts
+    // "Closed" must mean THIS message actually carries final metadata: born-final on this ts,
+    // or a closure edit that ran (`closedRouting` is set only on that path) against this ts.
+    // A no-peers conversation deliberately leaves the reply `streaming` — recording a closure
+    // there would make the clearing edit PROMOTE it to final, minting a routable event for a
+    // message that never had one. A dropped `streaming` block costs nothing: never routed.
+    const closed =
+      p.reply.finalStamped === lastReply.ts ||
+      (p.reply.closedRouting !== undefined && p.reply.lastResponse?.ts === lastReply.ts)
     this.lastFooterReply.set(p.plan.sessionKey, {
       channel: p.plan.channel,
       ts: lastReply.ts,
@@ -14861,6 +14867,7 @@ export class Daemon {
             )
         }
       }
+      this.lastFooterReply.delete(row.key) // the session is gone — release its footer record
       if (!row.acpSessionId) continue
       this.sdkLease.delete(sdkLeaseKey(row.agentId, row.acpSessionId)) // the session is gone — drop its lease
       await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({

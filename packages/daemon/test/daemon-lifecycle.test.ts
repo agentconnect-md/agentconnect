@@ -2052,6 +2052,29 @@ describe('Daemon idle sweep — background-task lease', () => {
         reply: { ...base.reply, lastResponse: { ts: '9.9', text: 'other' } }
       })
       expect((daemon as any).lastFooterReply.get(KEY)?.closure).toBeUndefined()
+      // A no-peers conversation skips the closure edit and stays `streaming` on purpose —
+      // recording one would let the clearing edit PROMOTE the reply to final.
+      ;(daemon as any).recordFooterHolder({
+        ...base,
+        reply: { ...base.reply, closedRouting: undefined }
+      })
+      expect((daemon as any).lastFooterReply.get(KEY)?.closure).toBeUndefined()
+      // Born-final terminal section: closed on this ts, closure metadata from finalRouting.
+      ;(daemon as any).recordFooterHolder({
+        ...base,
+        reply: {
+          ...base.reply,
+          closedRouting: undefined,
+          finalStamped: '5.5',
+          finalRouting: { mentionedAgentIds: ['peer-3'], addressedAnyone: true, hasPeers: true, peerSharesBot: false }
+        }
+      })
+      expect((daemon as any).lastFooterReply.get(KEY)?.closure).toEqual({
+        responseId: 'resp-1',
+        hopCount: 1,
+        mentionedAgentIds: ['peer-3'],
+        addressedAnyone: true
+      })
       // A footerless turn CLEARS the record — a drain must not steal an older response's footer.
       ;(daemon as any).recordFooterHolder({ ...base, reply: { ...base.reply, lastReply: undefined } })
       expect((daemon as any).lastFooterReply.get(KEY)).toBeUndefined()
