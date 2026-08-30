@@ -5,6 +5,8 @@ import {
   mergeManagedSlackManifest,
   slackOAuthRedirectUri,
   SLACK_BOT_SCOPES,
+  SLACK_CAPABILITY_BOT_SCOPES,
+  SLACK_MANIFEST_BOT_SCOPES,
   SLACK_BOT_EVENTS,
   DEFAULT_SLACK_APP_NAME
 } from './slack-manifest.js'
@@ -29,7 +31,7 @@ describe('buildInstallManifest', () => {
       settings: { socket_mode_enabled: boolean; event_subscriptions: { bot_events: string[] } }
     }
     expect(m.settings.socket_mode_enabled).toBe(true)
-    expect(m.oauth_config.scopes.bot).toEqual([...SLACK_BOT_SCOPES])
+    expect(m.oauth_config.scopes.bot).toEqual([...SLACK_MANIFEST_BOT_SCOPES])
     expect(m.settings.event_subscriptions.bot_events).toEqual([...SLACK_BOT_EVENTS])
     expect(m.features.shortcuts).toEqual([
       expect.objectContaining({
@@ -37,6 +39,19 @@ describe('buildInstallManifest', () => {
         type: 'message'
       })
     ])
+  })
+
+  // The manifest asks for more than the install fence checks: a capability scope unlocks one
+  // optional tool, so a workspace that granted the app before it existed must stay healthy.
+  it('declares the capability scopes without making them required', () => {
+    const m = buildInstallManifest('acme-bot', REDIRECT) as { oauth_config: { scopes: { bot: string[] } } }
+    for (const scope of SLACK_CAPABILITY_BOT_SCOPES) {
+      expect(m.oauth_config.scopes.bot).toContain(scope)
+      expect([...SLACK_BOT_SCOPES] as string[]).not.toContain(scope)
+    }
+    // The whole point: an installation holding the required set and none of the capability
+    // scopes is COMPLETE, not short — it keeps working, and only the new tools refuse.
+    expect(checkSlackBotScopes([...SLACK_BOT_SCOPES])).toEqual({ status: 'complete' })
   })
 
   it('http mode: disables Socket Mode and points the Events API request_urls at the relay', () => {

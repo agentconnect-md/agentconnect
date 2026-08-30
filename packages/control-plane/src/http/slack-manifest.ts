@@ -18,6 +18,8 @@ import {
   PLATFORM_APP_DESCRIPTION,
   SLACK_BOT_EVENTS,
   SLACK_BOT_SCOPES,
+  SLACK_CAPABILITY_BOT_SCOPES,
+  SLACK_MANIFEST_BOT_SCOPES,
   slackEventsRequestUrl,
   slackInteractionsRequestUrl
 } from '@agentconnect.md/protocol/slack-app-manifest'
@@ -26,6 +28,8 @@ export {
   DEFAULT_SLACK_APP_NAME,
   SLACK_BOT_EVENTS,
   SLACK_BOT_SCOPES,
+  SLACK_CAPABILITY_BOT_SCOPES,
+  SLACK_MANIFEST_BOT_SCOPES,
   slackEventsRequestUrl,
   slackInteractionsRequestUrl
 }
