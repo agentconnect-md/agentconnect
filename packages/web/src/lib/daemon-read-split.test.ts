@@ -6,6 +6,8 @@
  */
 import { describe, expect, it } from 'vitest'
 import { daemonFromDto, withDaemonCapability, type DaemonCapabilityDto, type DaemonFleetDto } from '@/lib/api'
+import { mergeDaemonCatalogs } from '@/lib/use-daemon-detail'
+import type { DaemonRow } from '@/lib/data'
 
 const fleetRow: DaemonFleetDto = {
   daemonId: 'd-1',
@@ -94,5 +96,37 @@ describe('daemon read split', () => {
   it('leaves the row alone when that daemon has no capability row yet', () => {
     const row = daemonFromDto(fleetRow)
     expect(withDaemonCapability(row, undefined)).toBe(row)
+  })
+})
+
+describe('mergeDaemonCatalogs — the detail read owns catalogs, the fleet row owns the rest', () => {
+  const fleet = [
+    { runtime: 'claude-acp', version: '0.70.0', models: ['opus'], authRequired: true, modelCatalog: null }
+  ] as DaemonRow['runtimeModels']
+  const detail = [
+    {
+      runtime: 'claude-acp',
+      version: '0.70.0',
+      models: ['opus', 'sonnet'],
+      authRequired: false,
+      modelCatalog: { models: [{ id: 'opus' }], source: 'acp', observedAt: '2026-08-30T00:00:00.000Z' }
+    },
+    { runtime: 'codex-acp', version: '1.0.0', models: ['gpt-5'], modelCatalog: null }
+  ] as DaemonRow['runtimeModels']
+
+  it('takes the catalog from detail and everything else from the fleet row', () => {
+    const [merged] = mergeDaemonCatalogs(fleet, detail)
+    expect(merged!.modelCatalog!.models).toEqual([{ id: 'opus' }])
+    // A slower detail response must not resurrect a stale runtime inventory or login state.
+    expect(merged!.models).toEqual(['opus'])
+    expect(merged!.authRequired).toBe(true)
+  })
+
+  it('never adds a runtime the fleet row no longer reports', () => {
+    expect(mergeDaemonCatalogs(fleet, detail).map((p) => p.runtime)).toEqual(['claude-acp'])
+  })
+
+  it('falls back to the detail profiles before the fleet capability read lands', () => {
+    expect(mergeDaemonCatalogs([], detail)).toBe(detail)
   })
 })

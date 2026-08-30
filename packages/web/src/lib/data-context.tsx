@@ -809,8 +809,16 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   // liveness key would show a freshly connected daemon as running nothing until the slow
   // capability backstop, so every existing `mutateDaemons()` refreshes the pair.
   const mutateDaemons = useCallback(
-    () => Promise.all([mutateDaemonLiveness(), mutateDaemonCapabilities()]).then(() => undefined),
-    [mutateDaemonLiveness, mutateDaemonCapabilities]
+    () =>
+      Promise.all([
+        mutateDaemonLiveness(),
+        mutateDaemonCapabilities(),
+        // Every mounted single-daemon read too: an upgrade or re-probe replaces the model
+        // catalogs those hold, and their own interval would otherwise decide when a picker
+        // notices.
+        mutateCache((key) => Array.isArray(key) && key[0] === 'console' && key[2] === 'daemon')
+      ]).then(() => undefined),
+    [mutateDaemonLiveness, mutateDaemonCapabilities, mutateCache]
   )
   const {
     data: realCrons = [],
