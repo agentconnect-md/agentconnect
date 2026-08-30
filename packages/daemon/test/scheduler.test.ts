@@ -40,6 +40,14 @@ describe('buildSyntheticMessage', () => {
     )
   })
 
+  // `msg.text` is also the fallback session title (`deriveTitle` takes its first line), so with the
+  // stamp leading, every scheduled run would otherwise be born named after its own timestamp.
+  it('names the session by what the schedule does, not by the stamp that now leads its text', () => {
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily'), 't', FIRED_AT)
+    expect(msg.initialSessionTitle).toBe('post health report')
+    expect(msg.text.split('\n')[0]).toContain('Scheduled run:')
+  })
+
   it('a target-less cron builds a HEADLESS message with a synthetic channel key', () => {
     const { msg } = buildSyntheticMessage('bot-a', cron('daily', { target: undefined }), 'trace-1', FIRED_AT)
     expect(msg.headless).toBe(true)
@@ -68,6 +76,21 @@ describe('scheduledRunContext', () => {
   it('falls back rather than throw on a zone no formatter accepts', () => {
     const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone
     expect(scheduledRunContext(cron('d', { timezone: 'Not/AZone' }), FIRED_AT)).toContain(hostZone)
+  })
+
+  it('canonicalizes the zone it names, rather than echoing how the cron spelled it', () => {
+    expect(scheduledRunContext(cron('d', { timezone: 'utc' }), FIRED_AT)).toContain(' UTC ')
+    expect(scheduledRunContext(cron('d', { timezone: 'asia/shanghai' }), FIRED_AT)).toContain(' Asia/Shanghai ')
+  })
+
+  // On the fallback branches the zone IS the host's, so promising the host may differ would be false.
+  it('claims a second clock only when it actually read the schedule’s own', () => {
+    expect(scheduledRunContext(cron('d', { timezone: 'Asia/Tokyo' }), FIRED_AT)).toContain(
+      "the schedule's own clock; this host's may differ"
+    )
+    for (const timezone of [undefined, 'Not/AZone']) {
+      expect(scheduledRunContext(cron('d', { timezone }), FIRED_AT)).toContain("this host's own clock")
+    }
   })
 
   it('renders midnight as hour 00, never 24', () => {

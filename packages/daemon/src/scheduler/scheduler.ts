@@ -2,16 +2,20 @@ import { Cron } from 'croner'
 import type { CronDef } from '../agents/agent-schema.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 
-/** The zone a fire is read in: the schedule's own, or the host's when it names none or names one no
- *  formatter accepts — croner reads a zone-less expression in local time, so that IS its clock. */
-function firingZone(timezone?: string): string {
-  const hostZone = Intl.DateTimeFormat().resolvedOptions().timeZone
-  if (!timezone) return hostZone
+/** The zone a fire is read in, canonically spelled: the schedule's own, or the host's when it names
+ *  none or names one no formatter accepts — croner reads a zone-less expression in local time, so
+ *  that IS its clock. `own` is false wherever the host clock is the answer, since the line then has
+ *  no second clock to warn about. */
+function firingZone(timezone?: string): { zone: string; own: boolean } {
+  const host = Intl.DateTimeFormat().resolvedOptions().timeZone
+  if (!timezone) return { zone: host, own: false }
   try {
-    new Intl.DateTimeFormat('en-CA', { timeZone: timezone })
-    return timezone
+    // One call both validates the name and hands back its canonical spelling — a def saying `utc`
+    // reads as `UTC` rather than being echoed back as the operator happened to type it.
+    const zone = new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).resolvedOptions().timeZone
+    return { zone, own: true }
   } catch {
-    return hostZone
+    return { zone: host, own: false }
   }
 }
 
@@ -38,8 +42,9 @@ function wallClock(now: Date, timeZone: string): string {
  * straddle midnight. The timezone is on the CronDef already; it just never reached the turn.
  */
 export function scheduledRunContext(cron: CronDef, now: Date): string {
-  const zone = firingZone(cron.timezone)
-  return `Scheduled run: ${wallClock(now, zone)} ${zone} — the schedule's own clock; this host's may differ.`
+  const { zone, own } = firingZone(cron.timezone)
+  const whose = own ? "the schedule's own clock; this host's may differ" : "this host's own clock"
+  return `Scheduled run: ${wallClock(now, zone)} ${zone} — ${whose}.`
 }
 
 export function buildSyntheticMessage(
@@ -62,6 +67,9 @@ export function buildSyntheticMessage(
     thread: `cron:${cron.id}:${traceId}`, // fresh thread per fire (replaced by the real anchor ts when posted)
     sender: { id: `cron:${cron.id}`, isBot: false },
     text: `${scheduledRunContext(cron, now)}\n\n${cron.trigger}`,
+    // `msg.text` doubles as the fallback session title (`deriveTitle` takes its first line), and the
+    // stamp leads — so name the session by what the schedule DOES, as the hook path does.
+    ...(cron.trigger.trim() ? { initialSessionTitle: cron.trigger } : {}),
     mentionedBots: [],
     isDm: false,
     trigger: 'cron',
