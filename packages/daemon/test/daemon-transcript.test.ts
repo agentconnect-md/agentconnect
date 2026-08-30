@@ -76,6 +76,7 @@ function replyingHost(reply: string) {
 const text = (t: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: t } })
 const thought = (t: string) => ({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: t } })
 const tool = (toolCallId: string, title: string) => ({ sessionUpdate: 'tool_call', toolCallId, title })
+const plan = (entries: { content: string; status: string }[]) => ({ sessionUpdate: 'plan', entries })
 
 function makeRoutable(daemon: Daemon) {
   const a = (daemon as any).agents.get('bot-a')
@@ -932,14 +933,15 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
   const turn = [
     thought('let me think about'),
     thought(' this problem'),
+    plan([{ content: 'read the file', status: 'in_progress' }]),
     tool('t1', 'Read file.ts'),
     text('here is the answer')
   ]
 
-  // The agent's tool calls + reasoning must land in the transcript in EVERY output
-  // mode — output mode only gates what reaches Slack, never what is recorded.
+  // The agent's tool calls, reasoning, and plan must land in the transcript in EVERY
+  // output mode — output mode only gates what reaches Slack, never what is recorded.
   for (const mode of ['low', 'medium', 'high'] as const) {
-    it(`${mode} mode: tool + reasoning + text are all recorded with their kind`, async () => {
+    it(`${mode} mode: tool + reasoning + plan + text are all recorded with their kind`, async () => {
       const { factory } = streamingHost(turn)
       const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root: scaffold(mode), hostFactory: factory })
       await daemon.start()
@@ -950,12 +952,54 @@ describe('Daemon transcript captures the full activity log (mode-independent)', 
       expect(await activity(daemon)).toEqual([
         { kind: 'text', sender: 'U1', text: 'go' },
         { kind: 'reasoning', sender: 'bot-a', text: 'let me think about this problem' },
+        { kind: 'plan', sender: 'bot-a', text: 'Plan · 0/1' },
         { kind: 'tool', sender: 'bot-a', text: 'Read file.ts' },
         { kind: 'text', sender: 'bot-a', text: 'here is the answer' }
       ])
       await daemon.stop()
     })
   }
+
+  // An ACP plan update carries the WHOLE list every time, so a turn that revises its plan
+  // ten times must still read as one plan — the row is rewritten in place, keeping the
+  // position it took when the agent first published it.
+  it('rewrites ONE plan row per turn as the plan is revised', async () => {
+    const { factory } = streamingHost([
+      plan([
+        { content: 'read the file', status: 'in_progress' },
+        { content: 'fix the bug', status: 'pending' }
+      ]),
+      tool('t1', 'Read file.ts'),
+      plan([
+        { content: 'read the file', status: 'completed' },
+        { content: 'fix the bug', status: 'in_progress' }
+      ]),
+      text('done')
+    ])
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root: scaffold('medium'),
+      hostFactory: factory
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+
+    await (daemon as any).dispatch('bot-a', dm('100', 'go'), 'int-a')
+
+    const rows = await (daemon as any).store.threadTranscript(TRANSCRIPT_CHANNEL, 'T1')
+    const plans = rows.filter((r: TranscriptEntry) => r.kind === 'plan')
+    expect(plans).toHaveLength(1)
+    // Still ahead of the tool it planned, and carrying the LATEST statuses.
+    expect(rows.map((r: TranscriptEntry) => r.kind)).toEqual(['text', 'plan', 'tool', 'text'])
+    expect(plans[0].text).toBe('Plan · 1/2')
+    expect(JSON.parse(plans[0].body as string)).toEqual({
+      entries: [
+        { content: 'read the file', status: 'completed' },
+        { content: 'fix the bug', status: 'in_progress' }
+      ]
+    })
+    await daemon.stop()
+  })
 
   it('tool/reasoning rows are excluded from §8.5 catch-up replay', async () => {
     const { factory } = streamingHost(turn)

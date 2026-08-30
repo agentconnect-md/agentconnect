@@ -8,6 +8,7 @@ import type { SessionImageAttachment, WebchatEvent } from '@agentconnect.md/prot
 import type { LocalStore } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
 import { isNoResponsePrefix } from '../session/no-response.js'
+import { planEntriesOf } from '../session/plan-entries.js'
 import { chunkText } from './chunk.js'
 import type { Pending } from '../daemon/turn-types.js'
 
@@ -16,8 +17,8 @@ export type WebchatTurnOutput = NonNullable<Pending['webchat']>
 
 /**
  * Map one ACP SessionUpdate to a WebchatEvent and stream it through the sink (→ relay
- * `rd/chat`, webchat's "send"). Only the streamable chunk kinds map; usage/plan/
- * session_info are handled elsewhere or dropped. A single event whose inline text would
+ * `rd/chat`, webchat's "send"). Only the streamable kinds map; usage and the rest are
+ * handled elsewhere or dropped. A single event whose inline text would
  * blow the 256 KiB frame cap is split across multiple chunks, each with its own `index`.
  */
 export function emitWebchatUpdate(wc: WebchatTurnOutput, update: any): void {
@@ -89,8 +90,17 @@ export function emitWebchatUpdate(wc: WebchatTurnOutput, update: any): void {
       if (title) emit({ kind: 'session_info', title })
       return
     }
+    case 'plan': {
+      // A SNAPSHOT, not a chunk: ACP resends the whole list on each revision, so the browser
+      // replaces its copy rather than appending. Same entries the transcript row records, so
+      // a live turn shows the plan it is working through instead of only revealing it on the
+      // reload that switches the page to history.
+      const entries = planEntriesOf(update)
+      if (entries.length) emit({ kind: 'plan', entries })
+      return
+    }
     default:
-      return // plan/usage/etc. are not part of the webchat reply stream
+      return // usage/etc. are not part of the webchat reply stream
   }
 }
 

@@ -350,7 +350,15 @@ export function createSessionReader(
           text: substituteUserMentions(withoutAttachmentMention(r.text, attachments), names),
           ...(attachments.length ? { attachments } : {})
         }
-        if (r.kind !== 'tool' || !r.body) return base
+        if (!r.body) return base
+        // A plan body is the turn's whole task list and has no full-body fetch behind it, so
+        // it rides inline or not at all — an implausibly large one is dropped rather than
+        // previewed, leaving the row's `Plan · n/m` summary to stand alone.
+        if (r.kind === 'plan') {
+          if (Buffer.byteLength(r.body) <= PREVIEW_CAP) base.body = r.body
+          return base
+        }
+        if (r.kind !== 'tool') return base
         // Enrich a tool row: surface toolCallId/status/kind + an inline body (verbatim
         // when ≤ 32 KiB, else a valid-JSON preview with bodyTruncated + full byte length).
         let full: ToolBody

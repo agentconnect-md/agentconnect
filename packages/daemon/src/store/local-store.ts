@@ -347,10 +347,12 @@ export interface SessionListRow extends SessionRecord {
  *                  the ONLY kind replayed as cross-agent context (§8.5).
  *  - `tool`      — an agent tool invocation (label). Audit/UI only.
  *  - `reasoning` — an agent's coalesced thinking block. Audit/UI only.
- * `tool`/`reasoning` are recorded for EVERY turn regardless of the agent's Slack
+ *  - `plan`      — the turn's task list (one upserted row, `Plan · n/m` label). Audit/UI only.
+ * `tool`/`reasoning`/`plan` are recorded for EVERY turn regardless of the agent's Slack
  * output mode — output mode only gates what reaches the platform, never the transcript.
+ * Only `text` and `tool` rows ever rebuild model context; the other two are read-only history.
  */
-export type TranscriptKind = 'text' | 'tool' | 'reasoning'
+export type TranscriptKind = 'text' | 'tool' | 'reasoning' | 'plan'
 
 export interface TranscriptEntry {
   channel: string
@@ -3907,6 +3909,69 @@ export class LocalStore {
         [e.sender, e.recipient, ...sharedRecipients],
         this.transcriptRevision
       )
+    }
+  }
+
+  /** Write this turn's plan row (summary in `text`, the serialized PlanBody in `body`).
+   *  An ACP plan update replaces the WHOLE list, so this is an upsert rather than an append:
+   *  the insert claims the row on first sight and the update overwrites it on every later
+   *  one, keeping `seq`/`ts` at their first-seen values so the plan holds its place in the
+   *  turn. Shares the tool row's `tool_call_id` column as its identity — `planId` is minted
+   *  per turn and namespaced, and both statements are fenced on kind so a tool id can never
+   *  collide with one. */
+  upsertPlan(e: {
+    channel: string
+    thread: string
+    ts: string
+    sender: string
+    planId: string
+    title: string
+    body: string
+  }): Promise<void> {
+    const orgId = this.orgFor(e.sender)
+    return this.transcriptMutex.run(() => this.upsertPlanLocked(e, orgId))
+  }
+
+  /** The upsert itself, under {@link transcriptMutex} — see {@link appendTranscriptLocked}. */
+  private async upsertPlanLocked(
+    e: { channel: string; thread: string; ts: string; sender: string; planId: string; title: string; body: string },
+    orgId: string
+  ): Promise<void> {
+    const revision = this.transcriptRevision + 1
+    const written = await this.writeTranscriptRows(orgId, e.channel, e.thread, [
+      {
+        kind: 'run',
+        sql: `INSERT OR IGNORE INTO transcript
+           (orgId, channel, thread, ts, sender, kind, text, tool_call_id, body, eventTimeUs, revision)
+         VALUES (@orgId, @channel, @thread, @ts, @sender, 'plan', @text, @planId, @body, @eventTimeUs, @revision)`,
+        params: [
+          {
+            orgId,
+            channel: e.channel,
+            thread: e.thread,
+            ts: e.ts,
+            sender: e.sender,
+            text: e.title,
+            planId: e.planId,
+            body: e.body,
+            eventTimeUs: transcriptEventTimeUs(e.ts),
+            revision
+          }
+        ]
+      },
+      {
+        kind: 'run',
+        sql: `UPDATE transcript SET text = ?, body = ?, revision = ?
+         WHERE orgId = ? AND channel = ? AND thread = ? AND sender = ? AND tool_call_id = ? AND kind = 'plan'
+           AND (text IS NOT ? OR body IS NOT ?)`,
+        params: [e.title, e.body, revision, orgId, e.channel, e.thread, e.sender, e.planId, e.title, e.body]
+      }
+    ])
+    // Either statement changing a row means this thread moved; an unchanged re-send changes
+    // neither and must not bump the revision a live console polls on.
+    if (written.changes.some((changed) => changed > 0)) {
+      this.transcriptRevision = written.revision
+      this.notifyTranscriptMutation(e.channel, e.thread, [e.sender], this.transcriptRevision)
     }
   }
 

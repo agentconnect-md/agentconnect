@@ -1,24 +1,28 @@
+import { randomUUID } from 'node:crypto'
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
-import type { ToolBody } from '@agentconnect.md/protocol'
+import type { PlanBody, ToolBody } from '@agentconnect.md/protocol'
+import { planEntriesOf, planSummary } from './plan-entries.js'
 
 /**
  * A transcript event to persist. Reasoning is a flat coalesced block; tool events
  * carry the full merged ToolBody (as a serialized JSON string, already capped at the
  * single-body write ceiling) plus an `op` telling the daemon whether this is the
  * first sight of the call (INSERT a row) or a later update (UPDATE the same row).
+ * A plan event is a whole-list SNAPSHOT that rewrites this turn's single plan row.
  */
 export type TranscriptEvent =
   | { kind: 'reasoning'; text: string }
   | { kind: 'tool'; op: 'insert' | 'update'; toolCallId: string; text: string; body: string }
+  | { kind: 'plan'; planId: string; text: string; body: string }
 
 /** Single-body write ceiling (protects the daemon DB from a huge rawOutput/content);
  *  separate from the read-side 32 KiB inline preview cap. */
 const MAX_TOOL_BODY_BYTES = 1024 * 1024
 
 /**
- * Turns the raw ACP `session/update` stream into the *full* activity log — tool calls
- * and reasoning — independent of the agent's Slack `output.mode`. (Output mode only
- * decides what reaches the platform; the transcript records everything.)
+ * Turns the raw ACP `session/update` stream into the *full* activity log — tool calls,
+ * reasoning, and the plan — independent of the agent's Slack `output.mode`. (Output mode
+ * only decides what reaches the platform; the transcript records everything.)
  *
  * It deliberately does NOT emit `text`: conversational rows are recorded at the
  * platform-send boundary instead, where the real message `ts` is known (so they sort
@@ -32,6 +36,14 @@ export class TranscriptRecorder {
   private readonly tools = new Map<string, ToolBody>()
   // Last non-null title seen per toolCallId — updates that omit `title` keep the prior one.
   private readonly titles = new Map<string, string>()
+  /** This turn's plan row. A recorder is built per turn, so a per-recorder id gives the
+   *  plan one row per turn — every ACP plan update overwrites it, and the next turn's plan
+   *  is a new row instead of trampling this one. */
+  private readonly planId: string
+
+  constructor(planId = `plan:${randomUUID()}`) {
+    this.planId = planId
+  }
 
   onUpdate(update: SessionUpdate): TranscriptEvent[] {
     switch (update.sessionUpdate) {
@@ -63,6 +75,19 @@ export class TranscriptRecorder {
         return [
           ...flushed,
           { kind: 'tool', op: first ? 'insert' : 'update', toolCallId: id, text: title, body: serializeBody(body) }
+        ]
+      }
+      case 'plan': {
+        // Flush first for the same reason a tool does: the thinking that produced the plan
+        // reads before it. The plan itself is a full-list replace, so every update rewrites
+        // this turn's one row — `text` is the summary an old console (or a control plane that
+        // forwards no body) can still show, `body` the entries this one renders.
+        const entries = planEntriesOf(update)
+        if (entries.length === 0) return this.flushThought()
+        const body: PlanBody = { entries }
+        return [
+          ...this.flushThought(),
+          { kind: 'plan', planId: this.planId, text: planSummary(entries), body: JSON.stringify(body) }
         ]
       }
       // A reply starting means the preceding thinking run is over — close the block.

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { SessionKey } from './route.js'
-import { WebchatImageAttachment } from './webchat.js'
+import { PlanEntry, WebchatImageAttachment } from './webchat.js'
 
 /**
  * Session read-back (C→D REQ → REP) — the console's on-demand pulls.
@@ -90,6 +90,15 @@ export const ToolBody = z.object({
 })
 export type ToolBody = z.infer<typeof ToolBody>
 
+/**
+ * The agent's task list for ONE turn, transported as a JSON STRING in `SessionMessage.body`
+ * on a `plan` row. An ACP plan update carries the WHOLE entry list every time, so this is a
+ * snapshot, not a delta — the daemon rewrites one row per turn rather than appending. The
+ * live webchat stream carries the same entries as they change (`WebchatEvent` kind `plan`).
+ */
+export const PlanBody = z.object({ entries: z.array(PlanEntry) })
+export type PlanBody = z.infer<typeof PlanBody>
+
 /** One bounded webchat image persisted only in the daemon-local transcript. */
 export const SessionImageAttachment = WebchatImageAttachment
 export type SessionImageAttachment = z.infer<typeof SessionImageAttachment>
@@ -112,14 +121,14 @@ export const SessionMessage = z.object({
   // at origin and identical on every participant's copy, independent of a
   // collision-bumped `ts`. Absent on non-webchat rows and pre-upgrade rows.
   postId: z.string().uuid().optional(),
-  kind: z.string(), // "text" / tool / … (daemon transcript kind)
+  kind: z.string(), // "text" / tool / reasoning / plan / … (daemon transcript kind)
   text: z.string(),
   attachments: z.array(SessionImageAttachment).max(1).optional(),
-  // ── tool-body enrichment (optional ⇒ text/reasoning rows and old daemons omit these) ──
+  // ── body enrichment (optional ⇒ text/reasoning rows and old daemons omit these) ──
   toolCallId: z.string().optional(), // parsed from the ToolBody (tool rows only)
   toolStatus: z.string().optional(), // ACP ToolCallStatus, surfaced for the console badge
   toolKind: z.string().optional(), // ACP ToolKind, surfaced for the console icon
-  body: z.string().optional(), // JSON.stringify(ToolBody); may be a truncated-but-VALID-JSON preview
+  body: z.string().optional(), // JSON.stringify(ToolBody) on a tool row, PlanBody on a plan row; a tool body may be a truncated-but-VALID-JSON preview
   bodyTruncated: z.boolean().optional(), // preview was shrunk for the frame; full body via session/tool-body
   bodyBytes: z.number().int().optional() // full (untruncated) body byte length
 })

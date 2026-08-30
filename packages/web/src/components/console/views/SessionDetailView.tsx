@@ -95,13 +95,17 @@ import { useRuntimeCommands } from '@/components/console/useRuntimeCommands'
 import type { AgentIcon } from '@/lib/agent-icon'
 import {
   NOTICE_LANE,
+  PLAN_LANE,
   WORK_LANES,
+  planEntries,
+  planLabel,
   sessionTurnInFlight,
   stripBoldMarks,
   toggleWorkPanel,
   workCounts,
   workPanelOpen,
-  workSummary
+  workSummary,
+  type PlanEntry
 } from '@/components/console/session-work'
 import { ApprovalRequestsCard } from '@/components/console/ApprovalRequestsCard'
 import { SessionVisibilityControl } from '@/components/console/SessionVisibilityControl'
@@ -389,9 +393,25 @@ function ComposerSendButton({
 }
 
 // One agent-turn step rendered from a real transcript message. Maps the daemon
-// transcript kind (text | tool | reasoning) onto the existing lane styling.
+// transcript kind (text | tool | reasoning | plan) onto the existing lane styling.
 function msgStep(m: SessionMessageDto, toolSessionId?: string, platform?: string): FmtStep {
   const k = (m.kind || 'text').toLowerCase()
+  if (k === 'plan') {
+    return {
+      lane: PLAN_LANE,
+      laneColor: 'var(--text-tertiary)',
+      dot: 'var(--text-disabled)',
+      weight: 400,
+      textColor: 'var(--text-secondary)',
+      codeColor: 'var(--text-secondary)',
+      text: m.text,
+      code: '',
+      files: [],
+      plan: planEntries(m.body),
+      time: formatTranscriptRowTime(m),
+      ...(platform ? { platform } : {})
+    }
+  }
   if (k === 'tool') {
     return {
       lane: 'TOOL',
@@ -454,6 +474,9 @@ interface FmtStep {
   code: string
   files: { tag: string; path: string; color: string }[]
   time?: string
+  // The turn's task list — present only on a PLAN_LANE step, and empty when the row
+  // arrived without a readable body.
+  plan?: PlanEntry[]
   // A superseded answer collapsed into this lane — carried so the summary can skip it.
   demoted?: boolean
   // A peer participant's message attachment (rendered like the user bubble's).
@@ -557,6 +580,53 @@ function StepExtras({ step, sessionId, autoOpenTool }: { step: FmtStep; sessionI
       )}
       {step.msg && toolSessionId && <ToolBodyDetail msg={step.msg} sessionId={toolSessionId} autoOpen={autoOpenTool} />}
     </>
+  )
+}
+
+// How one plan entry reads: ACP's three statuses, and an unknown one treated as
+// not-yet-started rather than dropped.
+const PLAN_PENDING = { icon: 'circle', color: 'var(--text-disabled)', text: 'text-(--text-secondary)' }
+const PLAN_MARK: Record<string, typeof PLAN_PENDING> = {
+  completed: { icon: 'circle-check', color: 'var(--green-500)', text: 'text-(--text-tertiary)' },
+  in_progress: { icon: 'circle-dot', color: 'var(--blue-500)', text: 'text-(--text-primary) font-medium' },
+  pending: PLAN_PENDING
+}
+
+/**
+ * The turn's task list, rendered as its own block above the answer — deliberately not
+ * inside the collapsed work panel: the plan is what the agent set out to do, and burying
+ * it under "Thought through N steps" is what the console did by not recording it at all.
+ * A row whose body did not survive the trip shows just its `Plan · n/m` summary.
+ */
+function PlanBlock({ step }: { step: FmtStep }) {
+  const entries = step.plan ?? []
+  if (entries.length === 0) {
+    // No entries survived the trip: show whatever label the row carried, and nothing if it
+    // carried none (a live block always has entries — it is only created by an update).
+    return step.text ? (
+      <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">{step.text}</span>
+    ) : null
+  }
+  return (
+    <div className="overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
+      <div className="flex items-center gap-[6px] px-[14px] py-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
+        <Icon name="list-checks" size={13} color="var(--text-tertiary)" />
+        {planLabel(entries)}
+      </div>
+      <div className="flex flex-col gap-[7px] border-t border-(--border-subtle) px-[14px] py-[10px]">
+        {entries.map((entry, ei) => {
+          const mark = PLAN_MARK[entry.status] ?? PLAN_PENDING
+          return (
+            <div key={ei} className="flex min-w-0 items-start gap-[8px]">
+              <span className="mt-[2px] flex-none">
+                <Icon name={mark.icon} size={13} color={mark.color} />
+              </span>
+              <span className={`min-w-0 font-sans text-[13px] leading-[1.5] ${mark.text}`}>{entry.content}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
@@ -725,6 +795,7 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     code: stp.code ?? '',
     files: (stp.files ?? []).map((f) => ({ tag: f.tag, path: f.path, color: fileColor(f.tag) })),
     time: stp.time ?? '',
+    ...(stp.kind === 'planblock' ? { plan: stp.plan ?? [] } : {}),
     ...(stp.demoted ? { demoted: true } : {}),
     ...(platform ? { platform } : {}),
     // The live wire frame carries no body (kept off the hot path); attach just
@@ -4007,8 +4078,12 @@ export default function SessionDetailView() {
                             // A daemon notice (a sandbox pod coming up) is neither: it renders
                             // as its own standalone line above the answer.
                             const noticeSteps = turn.steps.filter((s) => s.lane === NOTICE_LANE)
+                            // The turn's plan: its own block, so it is neither a spoken answer nor
+                            // collapsed work. A turn carries at most one (the row is upserted), but
+                            // a merged conversation interleaves turns from several sources.
+                            const planSteps = turn.steps.filter((s) => s.lane === PLAN_LANE)
                             const textSteps = turn.steps.filter(
-                              (s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE
+                              (s) => !WORK_LANES.has(s.lane) && s.lane !== NOTICE_LANE && s.lane !== PLAN_LANE
                             )
                             const workSteps = turn.steps.filter((s) => WORK_LANES.has(s.lane))
                             // Reasoning steps / tool commands / edited FILES (distinct paths across
@@ -4108,6 +4183,15 @@ export default function SessionDetailView() {
                                         >
                                           {st.text}
                                         </span>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {planSteps.length > 0 && (
+                                    <div
+                                      className={`flex min-w-0 flex-col gap-2 ${textSteps.length > 0 || workSteps.length > 0 ? 'mb-2' : ''}`}
+                                    >
+                                      {planSteps.map((st, si) => (
+                                        <PlanBlock key={`p:${si}`} step={st} />
                                       ))}
                                     </div>
                                   )}

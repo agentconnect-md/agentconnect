@@ -126,6 +126,7 @@ const toolCall = (toolCallId: string, title: string, status = 'pending') => ({
   title,
   status
 })
+const plan = (entries: { content: string; status: string }[]) => ({ sessionUpdate: 'plan', entries })
 const toolUpdate = (toolCallId: string, status: string) => ({
   sessionUpdate: 'tool_call_update',
   toolCallId,
@@ -204,6 +205,65 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
 
     // The turn closes with exactly one webchat/done carrying the stop reason.
     expect(cp.dones).toEqual([{ conversationId: CONV, turnId, stopReason: 'end_turn' }])
+    await daemon.stop()
+  })
+
+  // Without this the console only learns the plan on the reload that switches the page to
+  // history — the live turn shows tool rows for work whose plan it is hiding.
+  it('streams each plan revision as a whole-list snapshot', async () => {
+    const { factory } = streamingHost([
+      plan([
+        { content: 'read the file', status: 'in_progress' },
+        { content: 'fix the bug', status: 'pending' }
+      ]),
+      // No text and no status: dropped rather than streamed as an empty checklist.
+      plan([{ content: '   ', status: 'pending' }]),
+      plan([
+        { content: 'read the file', status: 'completed' },
+        { content: 'fix the bug', status: 'in_progress' }
+      ]),
+      text('done')
+    ])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as any).cpClient = cp
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    await (daemon as any).dispatch(
+      AGENT_ID,
+      {
+        msgId: `webchat:${CONV}:${turnId}`,
+        traceId: turnId,
+        source: 'user' as const,
+        platform: 'webchat' as const,
+        channel: CONV,
+        sender: { id: 'alice', isBot: false },
+        text: 'go',
+        mentionedBots: [] as string[],
+        isDm: true,
+        trigger: 'dm' as const
+      },
+      undefined,
+      { conversationId: CONV, turnId, sink: cp.sink }
+    )
+
+    expect(cp.outputs.filter((o) => o.event?.kind === 'plan').map((o) => o.event)).toEqual([
+      {
+        kind: 'plan',
+        entries: [
+          { content: 'read the file', status: 'in_progress' },
+          { content: 'fix the bug', status: 'pending' }
+        ]
+      },
+      {
+        kind: 'plan',
+        entries: [
+          { content: 'read the file', status: 'completed' },
+          { content: 'fix the bug', status: 'in_progress' }
+        ]
+      }
+    ])
     await daemon.stop()
   })
 
