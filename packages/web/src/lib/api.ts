@@ -616,10 +616,17 @@ export interface ToolBody {
   truncated?: boolean // daemon capped the stored body at write time
 }
 
+// The agent's task list for one turn (protocol `PlanBody`), transported as a JSON
+// STRING in `SessionMessageDto.body` on a `kind === 'plan'` row. An ACP plan update
+// carries the whole list every time, so one row per turn holds the latest snapshot.
+export interface PlanBody {
+  entries: { content: string; status: string; priority?: string }[]
+}
+
 // One transcript message (`GET /sessions/:id/messages`, proxied live from the
-// owning daemon). `kind` is the daemon transcript kind: text | tool | reasoning.
-// The tool-body fields are present only on `kind === 'tool'` rows from a daemon
-// that captures bodies (all optional ⇒ old daemons / text rows omit them).
+// owning daemon). `kind` is the daemon transcript kind: text | tool | reasoning | plan.
+// `body` carries a ToolBody on a tool row and a PlanBody on a plan row; it is absent
+// on text/reasoning rows, and on plan rows from a daemon or CP predating them.
 export interface SessionMessageDto {
   seq: number
   sender: string

@@ -1,3 +1,5 @@
+import type { PlanBody } from '@/lib/api'
+
 // 2b chat style: an agent turn shows its spoken answer (MSG/DONE lanes) as plain
 // text and collapses its "work" — reasoning (THINK/PLAN), tool calls (TOOL), and
 // file edits (EDIT) — behind a per-turn "Thought through…" toggle.
@@ -7,6 +9,28 @@ export const WORK_LANES = new Set(['THINK', 'PLAN', 'TOOL', 'EDIT'])
  *  it is not something the agent thought or did, so it renders as its own standalone
  *  line instead of being counted and hidden as a reasoning step. */
 export const NOTICE_LANE = 'NOTICE'
+
+/** A persisted ACP plan row — the turn's task list. Also NOT a work lane: the plan is
+ *  what the agent set out to do, not a step it took, so it renders as its own checklist
+ *  above the answer rather than collapsing into "Thought through N steps". The name is
+ *  deliberately not `'PLAN'` — that one is a WORK lane, the playground's live re-tag. */
+export const PLAN_LANE = 'PLAN_BLOCK'
+
+export type PlanEntry = PlanBody['entries'][number]
+
+/** Parse a plan row's `body` into its entries. Everything that is not a readable list —
+ *  no body at all (an older daemon, or a control plane that forwards none), malformed
+ *  JSON, an entry without text — yields nothing, and the caller falls back to the row's
+ *  `Plan · n/m` summary rather than rendering a broken checklist. */
+export function planEntries(body: string | undefined): PlanEntry[] {
+  if (!body) return []
+  try {
+    const parsed = JSON.parse(body) as Partial<PlanBody>
+    return (parsed.entries ?? []).filter((entry) => typeof entry?.content === 'string')
+  } catch {
+    return []
+  }
+}
 
 /** Split an agent turn's collapsed work steps into the counts the summary reports:
  *  reasoning STEPS (THINK/PLAN), tool-command STEPS (TOOL), and edited FILES — the

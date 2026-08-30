@@ -4,7 +4,8 @@
 
 The daemon records the complete evolving body of each ACP tool call for session
 audit and Console display. Tool bodies remain daemon-local and are fetched
-through frame-budgeted, on-demand reads.
+through frame-budgeted, on-demand reads. §8 covers the one other row that
+carries a body — the turn's plan — which reuses this chain end to end.
 
 ---
 
@@ -59,8 +60,9 @@ interface ToolBody {
 }
 ```
 
-Text and reasoning rows leave these columns null. Existing databases add the
-columns and index through the daemon's idempotent local-store migration.
+Text and reasoning rows leave these columns null; a plan row reuses both (§8).
+Existing databases add the columns and index through the daemon's idempotent
+local-store migration.
 
 ---
 
@@ -200,7 +202,40 @@ control channel unless requested.
 
 ---
 
-## 8. Compatibility
+## 8. The plan row
+
+The turn's task list rides the same machinery, with one difference that shapes
+everything else: an ACP `plan` update carries the WHOLE entry list every time,
+so a plan is a snapshot, not a stream of deltas.
+
+- **One row per turn, rewritten in place.** `TranscriptRecorder` mints a
+  namespaced `plan:<uuid>` id per turn — a recorder is built per turn — and the
+  store's `upsertPlan` claims the row on first sight and overwrites it on every
+  later update. `seq` and `ts` keep their first-seen values, so the plan holds
+  the position it took when the agent first published it, ahead of the work it
+  planned. Both statements are fenced on `kind = 'plan'`, so a session-local
+  tool id can never address a plan row.
+- **`text` is the summary, `body` is the list.** The row's text is
+  `Plan · <completed>/<total>`; `body` is serialized `PlanBody`
+  (`{ entries: { content, status, priority? }[] }`, protocol
+  `frames/session.ts`). A reader that has only the text — an older Console, or a
+  Control Plane that forwards no plan body — still shows that a plan existed and
+  how far it got.
+- **Inline or not at all.** A plan body has no complete-body fetch behind it, so
+  the reader passes it through verbatim under the 32 KiB preview cap and drops
+  an implausibly larger one rather than serving a truncated list.
+- **Console placement is the point.** The plan renders as its own checklist
+  above the answer, NOT inside the collapsed "Thought through N steps" panel:
+  it is what the agent set out to do, not a step it took. `PLAN_LANE` is
+  deliberately a distinct lane value from the work-lane `PLAN` the playground's
+  live stream uses.
+- Like tool and reasoning rows, plan rows are recorded in every output mode and
+  never replayed into a prompt: only `text` and `tool` rows rebuild model
+  context.
+
+---
+
+## 9. Compatibility
 
 - New transcript columns are nullable, so existing title-only rows continue to
   render.
@@ -211,7 +246,7 @@ control channel unless requested.
 
 ---
 
-## 9. Validation requirements
+## 10. Validation requirements
 
 Tests cover:
 
@@ -222,5 +257,8 @@ Tests cover:
 - frame-budgeted history pagination;
 - UTF-8-safe body chunks and offsets;
 - end-to-end complete-body retrieval;
-- title-only compatibility; and
-- exclusion of tool bodies from transcript replay.
+- title-only compatibility;
+- exclusion of tool bodies from transcript replay;
+- one upserted plan row per turn, holding its position and the latest entries; and
+- a plan row rendering outside the collapsed work panel, and falling back to its
+  summary when no body arrives.

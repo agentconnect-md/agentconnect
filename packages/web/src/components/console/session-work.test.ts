@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  PLAN_LANE,
+  WORK_LANES,
+  planEntries,
   sessionTurnInFlight,
   stripBoldMarks,
   toggleWorkPanel,
@@ -128,5 +131,44 @@ describe('stripBoldMarks', () => {
 
   it('never pairs markers across lines — a stray ** cannot swallow a paragraph', () => {
     expect(stripBoldMarks('a stray ** here\nand ** another line')).toBe('a stray ** here\nand ** another line')
+  })
+})
+
+describe('planEntries', () => {
+  it('reads the entries a plan row carries', () => {
+    const body = JSON.stringify({
+      entries: [
+        { content: 'read the file', status: 'completed' },
+        { content: 'fix the bug', status: 'in_progress', priority: 'high' }
+      ]
+    })
+    expect(planEntries(body)).toEqual([
+      { content: 'read the file', status: 'completed' },
+      { content: 'fix the bug', status: 'in_progress', priority: 'high' }
+    ])
+  })
+
+  // Each of these reaches the console as a row whose `Plan · n/m` text still stands —
+  // the checklist is what is missing, not the fact that the agent planned.
+  it('yields nothing for a body that is absent, malformed, or entry-less', () => {
+    expect(planEntries(undefined)).toEqual([])
+    expect(planEntries('')).toEqual([])
+    expect(planEntries('{"entries":')).toEqual([])
+    expect(planEntries('{}')).toEqual([])
+  })
+
+  it('drops an entry with no text rather than rendering a blank line', () => {
+    const body = JSON.stringify({ entries: [{ status: 'pending' }, { content: 'real', status: 'pending' }] })
+    expect(planEntries(body)).toEqual([{ content: 'real', status: 'pending' }])
+  })
+})
+
+describe('PLAN_LANE', () => {
+  // The plan renders as its own block above the answer. Were it a work lane it would be
+  // counted as a reasoning step and hidden behind the "Thought through…" toggle — which is
+  // the state it was in when the console did not record plans at all.
+  it('is not a work lane, and does not collide with the playground live PLAN lane', () => {
+    expect(WORK_LANES.has(PLAN_LANE)).toBe(false)
+    expect(PLAN_LANE).not.toBe('PLAN')
   })
 })

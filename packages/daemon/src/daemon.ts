@@ -12702,9 +12702,21 @@ export class Daemon {
       await this.recordEvent(p.plan.agentId, p.plan.transcriptChannel, p.plan.statusThread, ev)
   }
 
-  /** Persist one internal activity event (tool/reasoning). Ordered by row `seq`, so its
+  /** Persist one internal activity event (tool/reasoning/plan). Ordered by row `seq`, so its
    *  `ts` is just a wall-clock stamp for display — never used for replay/sorting. */
   private async recordEvent(agentId: string, channel: string, thread: string, ev: TranscriptEvent): Promise<void> {
+    if (ev.kind === 'plan') {
+      await this.store.upsertPlan({
+        channel,
+        thread,
+        ts: String(Date.now()),
+        sender: agentId,
+        planId: ev.planId,
+        title: ev.text,
+        body: ev.body
+      })
+      return
+    }
     if (ev.kind === 'tool') {
       if (ev.op === 'insert') {
         await this.store.insertToolCall({

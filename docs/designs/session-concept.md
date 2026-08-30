@@ -170,7 +170,7 @@ typing, or status. The session is the complete truth; IM is one projection.
 Independent of source `type`, content has a shape:
 
 ```text
-type: 'text' | 'tool' | 'reasoning' | ...
+type: 'text' | 'tool' | 'reasoning' | 'plan' | ...
 ```
 
 - `text` is a text segment.
@@ -178,6 +178,10 @@ type: 'text' | 'tool' | 'reasoning' | ...
   cross-platform sending, and replying to a parent all use the one
   `sendMessage` tool.
 - `reasoning` is reasoning work.
+- `plan` is the turn's task list. An ACP plan update carries the whole list
+  every time, so this is the one shape that is a SNAPSHOT rather than an
+  append: a turn holds exactly one plan row, rewritten in place as the agent
+  revises it, keeping the position it took when first published.
 - More shapes may be added.
 
 A source message with `{ type: agent }` may contain text or a tool call. The
