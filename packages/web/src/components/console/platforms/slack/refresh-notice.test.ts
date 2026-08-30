@@ -45,6 +45,31 @@ describe('slackRefreshNoticeState: optional capabilities', () => {
     expect(state.needsAttention).toBe(false)
   })
 
+  // The gap this fixes: an install predating a release is short on BOTH sets, `reinstall_required`
+  // won the branch, and the capability half was never mentioned — so the operator added the
+  // required scopes, reinstalled, and came back to find the tools still off.
+  it('names both halves when required and optional scopes are missing', () => {
+    const state = slackRefreshNoticeState({
+      ...healthy,
+      authorization: 'reinstall_required',
+      missingScopes: ['commands', 'im:write'],
+      missingCapabilityScopes: ['search:read.public']
+    } as never)
+    expect(state.message).toContain('required and optional')
+    expect(state.needsAttention).toBe(true)
+  })
+
+  it('tells an unsynced both-missing install to add every scope first', () => {
+    const state = slackRefreshNoticeState({
+      ...healthy,
+      manifest: 'manual_update_required',
+      authorization: 'reinstall_required',
+      missingScopes: ['commands'],
+      missingCapabilityScopes: ['canvases:write']
+    } as never)
+    expect(state.message).toContain('every missing scope below')
+  })
+
   it('sends an unsynced manifest to the permissions page instead', () => {
     const state = slackRefreshNoticeState({
       ...healthy,
