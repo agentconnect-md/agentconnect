@@ -719,7 +719,16 @@ describe('OutputConverger', () => {
     expect(posts.every((p) => p.kind === 'post' && p.text.length <= 12000)).toBe(true)
   })
 
-  it('renders a plan summary as an in-place plan action (medium/high)', () => {
+  /** The list items inside a plan action's rich_text block. */
+  type PlanItem = { type: string; text: string; style?: { strike?: boolean; bold?: boolean } }
+  const planItems = (plan: { blocks: unknown[] }): PlanItem[] => {
+    const rich = plan.blocks.find((b) => (b as { type: string }).type === 'rich_text') as {
+      elements: [{ elements: { elements: PlanItem[] }[] }]
+    }
+    return rich.elements[0].elements.map((section) => section.elements[0]!)
+  }
+
+  it('renders a plan as a bulleted list — done struck through, the entry in flight bolded', () => {
     const c = new OutputConverger('medium')
     const actions = c.onUpdate({
       sessionUpdate: 'plan',
@@ -729,11 +738,47 @@ describe('OutputConverger', () => {
         { content: 'run tests', status: 'pending' }
       ]
     } as any)
-    const plan = actions.find((a) => a.kind === 'plan') as { text: string } | undefined
+    const plan = actions.find((a) => a.kind === 'plan') as { text: string; blocks: unknown[] } | undefined
     expect(plan).toBeDefined()
-    expect(plan!.text).toContain('Plan')
-    expect(plan!.text).toContain('gather context')
-    expect(plan!.text).toContain('run tests')
+    // `text` is the notification/fallback only — the blocks carry the display.
+    expect(plan!.text).toBe('Plan · 1/3')
+    // Ruled off top and bottom so the plan reads as its own artifact, not as thread chrome.
+    expect(plan!.blocks[0]).toEqual({ type: 'divider' })
+    expect(plan!.blocks.at(-1)).toEqual({ type: 'divider' })
+    expect(plan!.blocks[1]).toEqual({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '*Plan* · 1/3' }]
+    })
+    expect(planItems(plan!)).toEqual([
+      { type: 'text', text: 'gather context', style: { strike: true } },
+      { type: 'text', text: 'write code', style: { bold: true } },
+      { type: 'text', text: 'run tests' }
+    ])
+  })
+
+  // A rich-text list has no option cap — the reason this is a list rather than Block Kit
+  // `checkboxes`, which rejects (not truncates) anything past ten.
+  it('carries a plan past ten entries in one list', () => {
+    const c = new OutputConverger('medium')
+    const entries = Array.from({ length: 24 }, (_, i) => ({
+      content: `step ${i + 1}`,
+      status: i < 5 ? 'completed' : 'pending'
+    }))
+    const actions = c.onUpdate({ sessionUpdate: 'plan', entries } as any)
+    const plan = actions.find((a) => a.kind === 'plan') as { text: string; blocks: unknown[] }
+    expect(plan.text).toBe('Plan · 5/24')
+    expect(planItems(plan)).toHaveLength(24)
+  })
+
+  // Editorial, not a platform limit: one runaway entry must not swallow the message.
+  it('clamps an over-long entry', () => {
+    const c = new OutputConverger('medium')
+    const actions = c.onUpdate({
+      sessionUpdate: 'plan',
+      entries: [{ content: 'x'.repeat(400), status: 'pending' }]
+    } as any)
+    const plan = actions.find((a) => a.kind === 'plan') as { blocks: unknown[] }
+    expect(planItems(plan)[0]!.text.length).toBeLessThanOrEqual(150)
   })
 
   it('low mode surfaces plan progress on the status bar (no channel post)', () => {
