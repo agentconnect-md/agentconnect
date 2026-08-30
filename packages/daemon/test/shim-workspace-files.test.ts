@@ -197,11 +197,18 @@ describe('the shim read capability', () => {
       return parse(src).root
     }) as unknown as typeof fsp.realpath)
     const listSrc = () => localWorkspaceFiles.list(checkout, { agentId: AGENT, path: 'src', limit: 50 })
+    const readSrc = () => localWorkspaceFiles.read(checkout, { agentId: AGENT, path: 'src', offset: 0, limit: 50 })
+    const escape = { name: 'WorkspaceViolationError', reason: 'path-escape' }
     try {
-      await expect(listSrc()).rejects.toMatchObject({ name: 'WorkspaceViolationError', reason: 'path-escape' })
-      await expect(canonicalWorkspacePath(checkout, 'src')).rejects.toMatchObject({ reason: 'path-escape' })
+      await expect(listSrc()).rejects.toMatchObject(escape)
+      await expect(readSrc()).rejects.toMatchObject(escape)
+      await expect(canonicalWorkspacePath(checkout, 'src')).rejects.toMatchObject(escape)
+      // The stub drops the directory as it resolves it, so put it back for each of the three.
       dropOnResolve = true
       await expect(listSrc()).resolves.toMatchObject({ exists: false, entries: [] })
+      mkdirSync(src)
+      await expect(readSrc()).resolves.toMatchObject({ exists: false })
+      mkdirSync(src)
       expect(await canonicalWorkspacePath(checkout, 'src')).toBeNull()
     } finally {
       spy.mockRestore()

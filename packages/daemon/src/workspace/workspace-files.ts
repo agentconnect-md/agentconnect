@@ -332,13 +332,23 @@ export const localWorkspaceFiles: WorkspaceFiles = {
     // made a `?file=` naming a directory indistinguishable from an offline daemon.
     // Every OTHER non-regular target keeps the violation — a final-component
     // symlink is a containment matter and must not read as an ordinary answer.
+    if (!st.isDirectory() && !st.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
+
+    // Canonicalise FIRST, for BOTH answers, and re-verify (this catches an intermediate component
+    // swapped to a symlink after resolveContained). `lstat` follows intermediate components, so a
+    // symlinked directory inside the workspace would otherwise let the dir branch report the
+    // existence and mtime of a host directory outside it — the same oracle the git-diff seam had,
+    // reopened by making directories an ordinary answer. A target dropped under us here is absence.
+    let target: string
+    try {
+      target = await canonicalUnder(realRoot, resolved)
+    } catch (err) {
+      if (vanished(err)) return notFound
+      throw err
+    }
+
     if (st.isDirectory()) {
-      // Canonicalise FIRST. `lstat` follows intermediate components, so a symlinked
-      // directory inside the workspace would otherwise let this branch report the
-      // existence and mtime of a host directory outside it — the same oracle the
-      // git-diff seam had, reopened by making directories an ordinary answer.
-      const dir = await canonicalUnder(realRoot, resolved)
-      const canonSt = await fs.lstat(dir)
+      const canonSt = await fs.lstat(target)
       return {
         agentId: req.agentId,
         path: req.path,
@@ -347,11 +357,7 @@ export const localWorkspaceFiles: WorkspaceFiles = {
         mtime: canonSt.mtime.toISOString()
       }
     }
-    if (!st.isFile()) throw new WorkspaceViolationError('not a regular file', 'not-a-file')
 
-    // Canonicalise and re-verify (catches an intermediate component swapped to
-    // a symlink after resolveContained), then read the canonical path.
-    const target = await canonicalUnder(realRoot, resolved)
     const size = st.size
     const mtime = st.mtime.toISOString()
     const fh = await fs.open(target, 'r')
