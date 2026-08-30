@@ -11,6 +11,7 @@ import { useRouter } from 'next/navigation'
 import { agentLabel } from '@/lib/data'
 import type { CronDto } from '@/lib/api'
 import { cronHuman, cronNext, cronUpdateInput, fmtNextRun } from '@/lib/cron'
+import { useScheduleTimeZone } from '@/lib/schedule-timezone'
 import { useConsoleData } from '@/lib/data-context'
 import { useModal } from '@/components/console/ModalProvider'
 import { useOrgs } from '@/lib/org-context'
@@ -151,8 +152,10 @@ function CronRow({ c }: { c: CronDto }) {
 
   const owner = agents.find((a) => a.id === c.agentId)
   const agentName = owner ? agentLabel(owner) : c.agentId ? c.agentId.slice(0, 8) : '—'
+  const clock = useScheduleTimeZone()
+  // The expression is never converted, so its reading names the zone it is interpreted in.
   const human = cronHuman(c.schedule)
-  const next = c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone)) : '—'
+  const next = c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone), clock.zoneFor(c.timezone)) : '—'
   const ran = !!c.lastRunAt
 
   const toggle = async (nextOn: boolean) => {
@@ -193,7 +196,7 @@ function CronRow({ c }: { c: CronDto }) {
       <div className="min-w-0">
         <span className="mono text-[12px] text-(--text-primary)">{c.schedule}</span>
         <div className="mt-[2px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
-          {human ?? 'invalid expression'}
+          {human ? `${human} · ${c.timezone}` : 'invalid expression'}
         </div>
       </div>
       <span className="inline-flex items-center gap-[6px]">
@@ -224,9 +227,10 @@ function MobileCronRow({ c, i }: { c: CronDto; i: number }) {
 
   const owner = agents.find((a) => a.id === c.agentId)
   const agentName = owner ? agentLabel(owner) : c.agentId ? c.agentId.slice(0, 8) : '—'
+  const clock = useScheduleTimeZone()
   const human = cronHuman(c.schedule)
-  const meta = `${agentName} · ${human ?? c.schedule}`
-  const next = c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone)) : 'off'
+  const meta = `${agentName} · ${human ? `${human} · ${c.timezone}` : c.schedule}`
+  const next = c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone), clock.zoneFor(c.timezone)) : 'off'
   const ran = !!c.lastRunAt
 
   const toggle = async () => {

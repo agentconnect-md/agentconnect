@@ -13,7 +13,8 @@ import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { agentLabel, platName } from '@/lib/data'
 import { creatorLabel, fetchCronRuns, fmtDate, runCronNow } from '@/lib/api'
-import { cronHuman, cronNext, cronUpdateInput, fmtNextRun } from '@/lib/cron'
+import { cronHuman, cronNext, cronUpdateInput, fmtNextRun, zonedDay } from '@/lib/cron'
+import { useScheduleTimeZone } from '@/lib/schedule-timezone'
 import { useConsoleData } from '@/lib/data-context'
 import { useProfile } from '@/lib/profile'
 import { useModal } from '@/components/console/ModalProvider'
@@ -24,14 +25,14 @@ import { useIsMobile } from '@/lib/use-is-mobile'
 import { consoleKeys } from '@/lib/swr-keys'
 import { AgentIconView, LoadingState, PlatformMark } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
+import { ZoneSwitch } from '../ZoneSwitch'
 
-function fmtStarted(iso: string): string {
+function fmtStarted(iso: string, timeZone?: string): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
-  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-  const today = new Date()
-  if (d.toDateString() === today.toDateString()) return `Today · ${time}`
-  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} · ${time}`
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone })
+  if (zonedDay(d, timeZone) === zonedDay(new Date(), timeZone)) return `Today · ${time}`
+  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric', timeZone })} · ${time}`
 }
 
 function fmtDuration(ms: number | null): string {
@@ -61,6 +62,7 @@ export default function ScheduleDetailView() {
   const [busy, setBusy] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const clock = useScheduleTimeZone()
 
   const c = crons.find((x) => x.id === id)
 
@@ -100,7 +102,10 @@ export default function ScheduleDetailView() {
   const owner = agents.find((a) => a.id === c.agentId)
   const agentName = owner ? agentLabel(owner) : c.agentId ? c.agentId.slice(0, 8) : '—'
   const agentRuntime = owner?.runtime || owner?.model || ''
+  // The expression is never converted, so its reading names the zone it is interpreted in.
   const human = cronHuman(c.schedule)
+  const humanInZone = human ? `${human} · ${c.timezone}` : human
+  const zone = clock.zoneFor(c.timezone)
   const channelName = c.targetChannel
     ? (integrations
         .filter((i) => (c.targetIntegrationId ? i.id === c.targetIntegrationId : i.agentId === c.agentId))
@@ -147,7 +152,7 @@ export default function ScheduleDetailView() {
 
   if (isMobile) {
     // The Shell push bar owns the back arrow + name/agent title + ⋯ — render the body only.
-    const next = c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone)) : '—'
+    const next = c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone), zone) : '—'
     const cardStyle =
       'overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card) shadow-(--shadow-xs)'
     return (
@@ -162,9 +167,12 @@ export default function ScheduleDetailView() {
             <Icon name={c.enabled ? 'alarm-clock' : 'alarm-clock-off'} size={24} />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="font-sans text-[15px] font-semibold leading-normal">{human ?? c.schedule}</div>
+            <div className="font-sans text-[15px] font-semibold leading-normal">{humanInZone ?? c.schedule}</div>
             <div className="mt-[2px] font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
               next run <span className="text-(--text-primary)">{next}</span>
+            </div>
+            <div className="mt-[2px]">
+              <ZoneSwitch clock={clock} scheduleZone={c.timezone} />
             </div>
           </div>
           <span className={`inline-flex flex-none ${busy ? 'opacity-60' : ''}`}>
@@ -313,7 +321,7 @@ export default function ScheduleDetailView() {
                     <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
                       <span className="flex items-center gap-2">
                         <span className="font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
-                          {fmtStarted(r.startedAt)}
+                          {fmtStarted(r.startedAt, zone)}
                         </span>
                         <span className="font-sans text-[11px] font-medium leading-normal" style={{ color: st.color }}>
                           {st.label}
@@ -457,15 +465,16 @@ export default function ScheduleDetailView() {
         <span className="inline-flex items-center gap-[6px]">
           <Icon name="calendar-clock" size={13} color="var(--text-tertiary)" />
           <span className="mono text-[12px] text-(--text-secondary)">{c.schedule}</span>
-          <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">{human}</span>
+          <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">{humanInZone}</span>
         </span>
         <span className="inline-flex items-center gap-[6px]">
           <Icon name="clock" size={13} color="var(--text-tertiary)" />
           <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">next run</span>
           <span className="mono text-[12px] text-(--text-secondary)">
-            {c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone)) : '—'}
+            {c.enabled ? fmtNextRun(cronNext(c.schedule, c.timezone), zone) : '—'}
           </span>
         </span>
+        <ZoneSwitch clock={clock} scheduleZone={c.timezone} />
         {channelName &&
           (c.targetPlatform === 'slack' && c.targetChannel ? (
             <a
@@ -541,7 +550,7 @@ export default function ScheduleDetailView() {
               const st = RUN_STYLE[r.status]
               return (
                 <div key={r.id} className={`row items-center ${RUN_GRID}`}>
-                  <span className="mono text-[12px] text-(--text-primary)">{fmtStarted(r.startedAt)}</span>
+                  <span className="mono text-[12px] text-(--text-primary)">{fmtStarted(r.startedAt, zone)}</span>
                   <div className="min-w-0">
                     <span className="inline-flex items-center gap-[6px]">
                       <span className="dot h-[6px] w-[6px]" style={{ background: st.dot }} />
