@@ -15533,6 +15533,37 @@ export class Daemon {
       }
       return forceAgents
     }
+    // Dreams are in-flight jobs with no dispatch promise, so the promise races below never see
+    // them — yet the duty release loop counts them as busy. Wait them out to the SAME class
+    // cutoffs as turns, cancelling each class at its cutoff, so a lingering dream can never eat
+    // the release reserve that the acknowledged releases need. Duty members only: a set-less
+    // daemon has no release loop parked on dreams, and keeps its fast host-teardown path.
+    const drainDreams = async (): Promise<void> => {
+      const runner = this.dreamRunnerInstance
+      if (!runner || !this.dutyCoordinator.dutyEnforced()) return
+      const cancelDreams = (klass: (agentId: string) => boolean): void => {
+        for (const agentId of runner.inFlightAgents()) {
+          if (klass(agentId)) void runner.cancelInFlight(agentId).catch(() => {})
+        }
+      }
+      const startAt = this.clock.now()
+      const localCutoffAt = startAt + Math.min(this.cfg.limits.shutdownDrainMs, deadlineMs)
+      const finalCutoffAt = startAt + deadlineMs
+      let localCut = false
+      while (runner.inFlightAgents().length > 0) {
+        const now = this.clock.now()
+        if (!localCut && now >= localCutoffAt) {
+          localCut = true
+          cancelDreams((agentId) => !this.poolDrainAgent(agentId))
+        }
+        if (now >= finalCutoffAt) {
+          cancelDreams(() => true)
+          return
+        }
+        await this.sleepUntil(Math.min(now + 1_000, localCut ? finalCutoffAt : localCutoffAt))
+      }
+    }
+    const dreams = drainDreams()
     const work = Promise.all([...active, ...coldStops])
     if (active.length > 0 || coldStops.length > 0) {
       this.log.info(
@@ -15569,6 +15600,7 @@ export class Daemon {
         await Promise.all([...active, ...coldStops, ...forceStops])
       }
     }
+    await dreams
     // §6.9 #390/#353: any messages still queued behind the gate are admitted-but-unrun.
     // Settle them explicitly (reject with a fail-stop notice) rather than dropping them
     // silently and leaving their dispatch() promises unsettled. (A durable inbox — the

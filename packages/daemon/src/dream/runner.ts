@@ -399,6 +399,22 @@ export class DreamRunner {
     return this.backgroundJobs.has(agentId)
   }
 
+  /** Agents with a dream under way — the shutdown drain cuts these at its class cutoffs. */
+  inFlightAgents(): string[] {
+    return [...this.backgroundJobs.keys()]
+  }
+
+  /** Cancel the agent's in-flight dream, if any; racing its completion is not an error. */
+  async cancelInFlight(agentId: string): Promise<void> {
+    const dreamId = this.backgroundJobs.get(agentId)
+    if (dreamId === undefined) return
+    try {
+      await this.cancel(agentId, dreamId)
+    } catch (err) {
+      if (!(err instanceof DreamStateError)) throw err
+    }
+  }
+
   private emitLifecycle(event: DreamLifecycleEvent): void {
     try {
       this.deps.onEvent?.(event)
