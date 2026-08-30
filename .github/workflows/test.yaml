@@ -262,13 +262,17 @@ jobs:
       # every fixture's line endings and diverge golden files from the Linux jobs' bytes.
       - name: Keep line endings as committed
         run: git config --global core.autocrlf false
+      # No history: this job runs two packages' unit suites and one Node script, none of which read
+      # it. `windows-scope` is the only job here that does, for its `git diff BASE...HEAD`.
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
+          # The self-installer runs npm to fetch pnpm and cost 16 s of this job's 40 s setup step;
+          # standalone downloads the binary instead.
+          standalone: true
           cache: true
           # Its own primary key, keyed by the closure it stores rather than by the lockfile alone.
           # Nothing shares this OS today, but the rule is the one the two narrowed Linux jobs
