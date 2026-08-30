@@ -2385,8 +2385,15 @@ export class SlackConnection implements PlatformConnection {
     }
   }
 
-  /** Every addressable section of a canvas, or undefined when the workspace did not grant
-   *  `canvases:read` — the edit anchors are then simply unknown, not an error. */
+  /**
+   * The addressable sections of a canvas, or undefined when the workspace did not grant
+   * `canvases:read` — the edit anchors are then unknown, not an error.
+   *
+   * HEADINGS ONLY, and that is the public API's ceiling rather than a choice: `criteria` is
+   * required and its `section_types` vocabulary is `any_header|h1|h2|h3`, so there is no
+   * request that returns every section. The ids are also invalidated by each edit, which is
+   * why `readCanvas` is documented as a call to make immediately before `updateCanvas`.
+   */
   private async canvasSections(canvasId: string): Promise<{ id: string }[] | undefined> {
     try {
       const res = await this.app.client.canvases.sections.lookup({

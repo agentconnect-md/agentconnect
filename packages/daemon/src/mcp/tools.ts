@@ -637,16 +637,20 @@ function buildCanvasTools(platform: SchemaProp | undefined, integrationId: Schem
     {
       name: 'readCanvas',
       description:
-        'Read a canvas back: its title, link, section ids, and — when the platform serves the body — its markdown. ' +
-        'Call this before `updateCanvas`: the `sections` it returns are what an anchored edit targets. If the body ' +
-        'comes back absent, the canvas exists but the platform exposes no body read for it.',
+        'Read a canvas back: its title, link, markdown body, and the section ids an anchored edit can target. ' +
+        'Always call this immediately before `updateCanvas` — section ids CHANGE every time a canvas is edited, so ' +
+        'one from an earlier turn is stale and must never be reused. Two limits worth knowing: only HEADING ' +
+        'sections get an id, so an anchored edit can address a heading but not an arbitrary paragraph, and the body ' +
+        'is absent (rather than empty) when the platform would not serve it — the canvas still exists.',
       inputSchema: obj({ platform, integrationId, canvasId }, ['canvasId'])
     },
     {
       name: 'updateCanvas',
       description:
         'Edit a canvas in place. Each change is one operation: `replace` with no `sectionId` rewrites the whole ' +
-        'body, and `insert_before`/`insert_after`/`delete` need a `sectionId` from `readCanvas`. ' +
+        'body, and `insert_before`/`insert_after`/`delete` need a `sectionId` from `readCanvas`. Every anchored ' +
+        'edit needs a FRESH `readCanvas` first: section ids change on every edit, so reusing one from an earlier ' +
+        'turn — or from before your own previous `updateCanvas` — targets the wrong place or fails. ' +
         markdownRules,
       inputSchema: obj(
         {
