@@ -1,0 +1,22 @@
+{
+  "private": true,
+  "name": "@agentconnect.md/vmm",
+  "version": "1.0.0-dev",
+  "description": "AgentConnect macOS VM monitor — boots a Linux guest on Virtualization.framework and reports its lifecycle as ND-JSON, so the daemon can run an agent runtime inside a VM",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/darwin-only.mjs build",
+    "clean": "rm -rf .build",
+    "test": "node scripts/darwin-only.mjs test"
+  },
+  "keywords": [
+    "agentconnect",
+    "sandbox",
+    "virtualization",
+    "vm"
+  ],
+  "engines": {
+    "node": ">=24.12.0"
+  }
+}

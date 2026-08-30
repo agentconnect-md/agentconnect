@@ -22,12 +22,29 @@
 #   3. It runs as non-root, with no capability to become root.
 #   4. It mounts no service-account token of its own. The pod template governs that projection,
 #      and the image must not smuggle in an identity of its own.
+#
+# This image's FILESYSTEM is also the payload of the VM guest (packages/vmm, `--vm`), which builds
+# from `docker export` of this image and boots it under systemd. Two consequences worth knowing
+# before editing:
+#   - An export carries the filesystem and NOT the image config, so ENTRYPOINT, USER, WORKDIR,
+#     EXPOSE and every ENV below are dropped there and restated by the guest's systemd unit. Adding
+#     a setting as ENV alone means it does not exist for the VM.
+#   - Anything created under /run is shadowed in the guest: systemd mounts /run as a fresh tmpfs at
+#     boot. The guest recreates /run/agentconnect through RuntimeDirectory.
+# NODE_BASE selects the Debian suite, and trixie is not a preference: bookworm's 6.1 kernel ships
+# virtio_console and virtiofs as MODULES that `MODULES=most` leaves out of the initrd, so a guest
+# built from it boots to a completely silent console and never reaches userspace. Trixie's 6.12
+# compiles both in. It also carries Docker 26 and Compose v2 where bookworm has 20.10 and a
+# Compose v1 with no `docker compose` subcommand at all, which is the feature the VM exists for.
+# All 18 checks in scripts/verify-runtime-image.mjs pass on trixie, including the live ACP probe of
+# all three runtimes. See docs/designs/vm-runtime-plane.md §10.6.
+ARG NODE_BASE=node:24-trixie-slim
 
 # ───────────────────────────── shim builder ─────────────────────────────────
 # The shim's own build (tsdown.shim.config.ts) inlines every dependency so this image installs
 # no node_modules for it. That separation is asserted at build time by the daemon package's
 # assert-self-contained step and re-asserted here against the copied artifact.
-FROM node:24-bookworm-slim AS shim-builder
+FROM ${NODE_BASE} AS shim-builder
 WORKDIR /build
 ENV PNPM_HOME=/pnpm \
   PATH=/pnpm:$PATH
@@ -63,7 +80,7 @@ RUN pnpm --filter "@agentconnect.md/daemon^..." build \
 # layer receives only the verified binary and never sees the curl this needs, so "the shim and nothing the shim
 # does not need" still holds. Pinned by version AND sha256 — an unpinned download would make the contents of an
 # image that runs half-trusted code a function of whatever a mirror served on build day.
-FROM node:24-bookworm-slim AS gh-cli
+FROM ${NODE_BASE} AS gh-cli
 ARG GH_CLI_VERSION=2.97.0
 ARG GH_CLI_SHA256_AMD64=a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112
 ARG GH_CLI_SHA256_ARM64=73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5
@@ -86,7 +103,7 @@ RUN set -eu; \
   /out/gh --version
 
 # ─────────────────────────────── runtime ────────────────────────────────────
-FROM node:24-bookworm-slim AS runtime-sandbox
+FROM ${NODE_BASE} AS runtime-sandbox
 
 # Exact pins keep the published runtime table truthful.
 ARG CLAUDE_ACP_VERSION=0.70.0

@@ -26,6 +26,11 @@ on:
         required: false
         type: boolean
         default: false
+      skip_vmm:
+        description: 'Skip the macOS VM monitor suite (PR runs always keep it)'
+        required: false
+        type: boolean
+        default: false
     outputs:
       build_test_summary:
         description: 'Unit test summary markdown'
@@ -553,3 +558,73 @@ jobs:
             cat "$CAPTURED_JOB_SUMMARY"
             echo '__AGENTCONNECT_INTEGRATION_TEST_SUMMARY__'
           } >> "$GITHUB_OUTPUT"
+
+  vmm-scope:
+    name: VMM Scope
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_vmm }}
+    outputs:
+      changed: ${{ steps.filter.outputs.changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Does this diff reach the VM monitor?
+        id: filter
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          reaches() { echo 'changed=true' >> "$GITHUB_OUTPUT"; exit 0; }
+          [ "${{ github.event_name }}" = 'pull_request' ] || reaches
+          [ -n "$BASE" ] && [ -n "$HEAD" ] || reaches
+          files=$(git diff --name-only "$BASE...$HEAD") || reaches
+          # Narrow by construction: this package is a self-contained Swift target with no
+          # workspace dependencies, so only its own files (or this workflow) can break it.
+          if grep -qE '^(packages/vmm/|.github/workflows/test.yaml$)' <<<"$files"; then
+            reaches
+          fi
+          echo 'changed=false' >> "$GITHUB_OUTPUT"
+
+  # The macOS VM monitor, on a real macOS runner. Nothing about this package can be exercised
+  # elsewhere: Virtualization.framework is macOS-only, and `VZVirtualMachineConfiguration.validate()`
+  # is itself entitlement-gated, so the suite has to run against a codesigned test bundle.
+  #
+  # `AC_VMM_REQUIRE=1` is the point of the job: off macOS the package's build and test scripts skip
+  # themselves so Linux and Windows CI stay green, and that same skip would silently pass here.
+  #
+  # Booting a guest is NOT covered — it needs a multi-gigabyte image and nested virtualization the
+  # runners do not offer. This job covers configuration assembly, the CLI contract, the lifecycle
+  # event shapes, and the vsock relay; the boot path is verified by hand on real hardware.
+  unit-macos:
+    name: Unit Test (macOS)
+    needs: vmm-scope
+    if: ${{ needs.vmm-scope.outputs.changed == 'true' }}
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Swift version
+        run: swift --version
+      - name: Build and sign
+        env:
+          AC_VMM_REQUIRE: '1'
+        run: make -C packages/vmm build
+      - name: Entitlement is actually attached
+        run: |
+          bin="$(cd packages/vmm && swift build -c release --show-bin-path)/agentconnect-vmm"
+          codesign -d --entitlements - "$bin" 2>&1 | tee /tmp/ents.txt
+          grep -q 'com.apple.security.virtualization' /tmp/ents.txt
+      - name: Unit tests
+        env:
+          AC_VMM_REQUIRE: '1'
+        run: make -C packages/vmm test
+      - name: Guest build scripts parse
+        run: |
+          for f in packages/vmm/scripts/*.sh packages/vmm/scripts/guest/*.sh; do bash -n "$f"; done
+          python3 packages/vmm/scripts/guest/test_extract_kernel.py

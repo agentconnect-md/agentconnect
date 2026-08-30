@@ -59,6 +59,7 @@ program
   .option('--max-agents <n>', 'max agents this daemon advertises / enforces')
   .option('--require-sandbox', 'require the Linux SRT sandbox for every agent or refuse daemon startup')
   .option('--k8s', 'run runtimes in cluster sandbox pods instead of on this host (no probing, no local runtimes)')
+  .option('--vm', 'EXPERIMENTAL (macOS/arm64): run each agent runtime in its own Linux VM with Docker available')
   .option('--key-server <url>', 'http(s) endpoint for session-scoped model credentials')
   .option('--key-server-token-path <path>', 'file containing the key-server bearer token')
   .option('--dry-run', 'load + validate config and print the reconcile plan, then exit')
@@ -123,6 +124,7 @@ program
         // that the service layer lives in the CLI (cli-daemon-split.md §7.1).
         supervisor: process.env.AGENTCONNECT_SUPERVISOR,
         k8s: opts.k8s === true,
+        vm: opts.vm === true,
         keyServer: opts.keyServer,
         keyServerTokenPath: opts.keyServerTokenPath,
         overrides: {

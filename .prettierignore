@@ -9,3 +9,5 @@ packages/control-plane/prisma/migrations
 pnpm-lock.yaml
 LICENSE
 packages/control-plane/src/generated
+packages/vmm/.build
+packages/vmm/image

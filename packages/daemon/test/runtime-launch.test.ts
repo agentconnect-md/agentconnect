@@ -56,6 +56,24 @@ describe('prepareRuntimeLaunch', () => {
     expect(existsSync(join(scopeDir, 'home'))).toBe(false)
   })
 
+  // Set for every placement whose runtime is NOT on this host — a sandbox pod or a VM guest.
+  // Inheriting there would leak the daemon host's environment into a half-trusted sandbox and
+  // describe a filesystem that does not exist in it.
+  it("never inherits this host's environment when the runtime runs elsewhere", () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: false,
+      k8s: true,
+      explicitEnv: { AGENT_VALUE: 'yes' },
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+    expect(launch.inheritProcessEnv).toBe(false)
+  })
+
   it('uses a private HOME only for an effective sandboxed launch', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     const customClaudeConfig = join(dirname(hostHome), 'host-claude-config')

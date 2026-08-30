@@ -15,6 +15,8 @@ export interface ForegroundOpts {
   supervisor?: string
   /** `--k8s`: runtimes run in cluster sandbox pods, not on this host. */
   k8s?: boolean
+  /** `--vm`: runtimes run in per-agent VMs on this host. Experimental, macOS/arm64 only. */
+  vm?: boolean
   keyServer?: string
   keyServerTokenPath?: string
 }

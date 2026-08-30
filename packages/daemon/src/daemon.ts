@@ -234,7 +234,11 @@ import {
   RuntimeCommandsCache
 } from './runtimes/runtime-commands.js'
 import { installedRuntimeCatalog, installedRuntimes, resolveCommandPath } from './runtimes/probe.js'
-import { startK8sRuntimePlane, type K8sRuntimePlane } from './k8s/runtime-plane.js'
+import { startK8sRuntimePlane } from './k8s/runtime-plane.js'
+import type { RuntimePlane } from './runtime-plane/contract.js'
+import { startVmRuntimePlane } from './vm/runtime-plane.js'
+import { VmDiskLayout } from './vm/disks.js'
+import { resolveVmSettings, vmPreflight } from './vm/settings.js'
 import { declaredRuntimeCatalog, loadK8sRuntimeTable, type K8sRuntimeAcpSnapshot } from './runtimes/k8s-runtimes.js'
 import {
   K8S_PROBE_CLAIM_TTL_MS,
@@ -1013,7 +1017,10 @@ export class Daemon {
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
   // The k8s execution plane: shim dialer + driver + workspace seam. Undefined outside --k8s.
-  private k8sPlane?: K8sRuntimePlane
+  // Typed on the neutral contract, still named for the only implementer: every truthiness check on
+  // it today also means "this is a cluster daemon", and separating the two needs a second plane.
+  private readonly vm: boolean
+  private k8sPlane?: RuntimePlane
   // The resolved catalog the probed table is projected onto; it supplies command/args, which the
   // table never does — the table only says which ids this image provides.
   private k8sResolvedCatalog?: ResolvedRuntimeCatalog
@@ -1237,6 +1244,10 @@ export class Daemon {
        *  probing, host executable discovery (the image declares its runtimes instead),
        *  the SRT mechanism, and the self-installing upgrade path. */
       k8s?: boolean
+      /** `--vm`: runtimes live in per-agent VMs on this host. Experimental, macOS/arm64 only. */
+      vm?: boolean
+      /** Seam for the VM execution plane, so a test can exercise `--vm` policy without a hypervisor. */
+      startVmPlane?: typeof startVmRuntimePlane
       /** Cloud-only service for session-scoped provider credentials. */
       keyServer?: string
       /** Bearer-token file re-read for every key-server request. */
@@ -1250,6 +1261,10 @@ export class Daemon {
     } = {}
   ) {
     this.k8s = opts.k8s === true
+    this.vm = opts.vm === true
+    // Two placements cannot both own an agent's runtime, and picking one silently would put agent
+    // code somewhere the operator did not ask for.
+    if (this.k8s && this.vm) throw new Error('--k8s and --vm are mutually exclusive: pick one runtime placement')
     // The mount either exists for this pod's whole life or never does, so availability is
     // decided once here; the VALUE is re-read per connect, because the kubelet rotates it.
     this.clusterIdentityToken = this.k8s && readClusterIdentityToken() ? () => readClusterIdentityToken() : undefined
@@ -1688,7 +1703,10 @@ export class Daemon {
   /** Phase 3 — report the host sandbox mechanism and refuse a boot that cannot honor requireSandbox. */
   private sandboxPreflight(cfg: Config): void {
     this.logSandboxPreflight()
-    if (cfg.security.requireSandbox && !this.sandboxMechanism) {
+    // `--vm` satisfies it outright: a hypervisor boundary is a real one, which is exactly what the
+    // in-process SRT mechanism cannot be on this platform, and what `--k8s` cannot claim on the
+    // cluster's default runtimeClass.
+    if (cfg.security.requireSandbox && !this.sandboxMechanism && !this.vm) {
       throw new Error(
         this.k8s
           ? 'daemon startup refused: security.requireSandbox is not supported with --k8s — a k8s runtime is isolated by its own pod, not by the in-process SRT mechanism'
@@ -1769,6 +1787,64 @@ export class Daemon {
       // in-place conversion has no pod-side implementation of its rollback contract.
       this.workspaces.setSandboxMode(true)
       this.log.info('k8s: execution plane ready — daemon-to-sandbox shim dialing enabled')
+    }
+
+    if (this.vm) {
+      const settings = resolveVmSettings(root)
+      // Fail-closed for the same reason `--k8s` is: degrading to a local child process is agent
+      // code on this host with the daemon user's authority, which is what the mode prevents.
+      const refusal = vmPreflight(settings)
+      if (refusal) throw new Error(`daemon startup refused: ${refusal}`)
+      const startPlane = this.opts.startVmPlane ?? startVmRuntimePlane
+      this.k8sPlane = await startPlane({
+        disks: new VmDiskLayout({
+          baseBundlePath: settings.imagePath,
+          root: settings.statePath,
+          cpuCount: settings.cpuPerVm,
+          memoryBytes: settings.memoryBytes,
+          dataDiskBytes: settings.dataDiskBytes,
+          log: { info: (m) => this.log.info(m), warn: (m) => this.log.warn(m) }
+        }),
+        vmm: {
+          binary: settings.binaryPath,
+          log: {
+            info: (m) => this.log.info(m),
+            warn: (m) => this.log.warn(m),
+            debug: (m) => this.log.debug?.(m)
+          }
+        },
+        // Counted in the durable store, not in this process: a restart that began again at 1 would
+        // have its dial refused as a stale generation by a guest that outlived nothing.
+        nextGeneration: (agentId) => this.store.nextSandboxGeneration(agentId),
+        // This host is the only member; the id exists for parity with the pool's probe election.
+        memberId: this.cfg.daemonId ?? 'vm-host',
+        guestImage: async () => settings.imagePath,
+        // The same closed set of sockets a pod gets, for the same reason: both live on this
+        // daemon's filesystem and exist nowhere the guest can reach without a tunnel.
+        tunnelsFor: (agentId) => {
+          const agent = this.agents.get(agentId)
+          if (!agent) return []
+          return this.workspaces.usesManagedCredential(agent) ? ['mcp', 'gitcred'] : ['mcp']
+        },
+        tunnelSocketPath: (tunnel) => (tunnel === 'gitcred' ? gitcredSocketPath(root) : mcpSocketPath(root)),
+        budget: {
+          cpuPerVm: settings.cpuPerVm,
+          ...(settings.maxConcurrentVms === undefined ? {} : { maxConcurrentVms: settings.maxConcurrentVms }),
+          ...(settings.maxTotalVcpus === undefined ? {} : { maxTotalVcpus: settings.maxTotalVcpus })
+        },
+        log: {
+          info: (message) => this.log.info(message),
+          warn: (message) => this.log.warn(message),
+          debug: (message) => this.log.debug?.(message)
+        }
+      })
+      // The same three resolvers the cluster path registers, for the same reason: the workspace is
+      // on a filesystem this daemon cannot see, so git, paths and clearing all have to ask the guest.
+      this.workspaces.setGitRunnerResolver((agentId, cwd, abort) => this.k8sPlane?.gitRunnerFor(agentId, cwd, abort))
+      this.workspaces.setFsResolver((agentId) => this.k8sPlane?.workspaceFsFor(agentId))
+      this.workspaces.setPathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
+      this.workspaces.setSandboxMode(true)
+      this.log.info(`vm: execution plane ready — guests boot from ${settings.imagePath}`)
     }
   }
 
@@ -2047,7 +2123,12 @@ export class Daemon {
         })()
       : this.k8s
         ? this.declaredPoolCatalog(root, resolvedCatalog)
-        : installedRuntimeCatalog(resolvedCatalog)
+        : this.vm
+          ? // Same reason as --k8s: nothing runs on this host, so presence is a DECLARATION by the
+            // image rather than a probe of this machine. The guest build copies the image's own
+            // table beside the bundle, so it cannot drift from the rootfs it describes.
+            this.declaredPoolCatalog(resolveVmSettings(root).imagePath, resolvedCatalog)
+          : installedRuntimeCatalog(resolvedCatalog)
     const { runtimes: installed, entries: installedEntries } = installedCatalog
     this.runtimeCatalog = installedCatalog
     this.refreshAdmittedRuntimes()
@@ -3329,6 +3410,11 @@ export class Daemon {
     // `security.requireSandbox` still forces confinement; a trusted/unsandboxed
     // agent runs (and installs/uses skills) unsandboxed, and the daemon never
     // fails closed on a host with no OS sandbox.
+    // Under --vm the guest IS the boundary, so the in-process SRT mechanism has no local effect —
+    // the same thing --k8s says about a pod. Without this, `requireSandbox` (which --vm is what
+    // satisfies on macOS) would switch on a host sandbox for a runtime that does not run here, and
+    // its boundary check refuses a cwd that legitimately lives in the guest.
+    if (this.vm) return false
     return effectiveRunInSandbox(this.cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
   }
 
@@ -3410,6 +3496,10 @@ export class Daemon {
       acceptedDreamSources: dreamed.length,
       priorRoots: prior?.ledger.roots.length ?? 0
     })
+    // Nothing configured and nothing installed previously: there is no preparation to authorize, so
+    // do not demand the authority to do it. A sandboxed daemon with no control plane holds no duty
+    // ledger, and requiring one here refused every turn for an agent that uses no skills at all.
+    if (!supportRequired && desiredSources === 0) return
     if (!client) {
       if (supportRequired) throw new Error('cluster runtime lacks skill installation support')
       return
@@ -3924,7 +4014,10 @@ export class Daemon {
         allowModelToolUnixSockets: managedCredentials,
         // The pod is the isolation boundary AND a different filesystem, so this daemon's env
         // must not travel with the launch.
-        ...(this.k8s ? { k8s: true as const } : {})
+        // Placement, not cluster: the runtime does not run on this host in EITHER sandboxed mode,
+        // so the daemon's own environment must not travel. It would leak the host's env into a
+        // half-trusted guest and describe a filesystem that does not exist there.
+        ...(this.k8s || this.vm ? { k8s: true as const } : {})
       })
       if (assembled.configFiles) {
         this.queueSpawnNotices(agentId, assembled.configFiles.notices)
@@ -4042,14 +4135,14 @@ export class Daemon {
       TASK_LIST_FEATURE,
       AUTO_MERGE_FEATURE,
       // Only a cluster daemon has a pod to hold; elsewhere every request answers `placement:'daemon'`.
-      ...(this.k8s ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),
+      ...(this.k8s || this.vm ? [SANDBOX_KEEP_ALIVE_FEATURE] : []),
       RUNTIME_COMMANDS_FEATURE,
       // Only a cluster daemon has a sandbox to wake; elsewhere the CP answers `unsupported` unsent.
-      ...(this.k8s ? [AGENT_WAKE_FEATURE] : []),
+      ...(this.k8s || this.vm ? [AGENT_WAKE_FEATURE] : []),
       WORKSPACE_GIT_MESSAGE_FEATURE,
       WORKSPACE_GIT_REVIEW_FEATURE,
       WORKSPACE_GIT_WRITE_FEATURE,
-      ...(this.sandboxMechanism ? ['sandbox'] : []),
+      ...(this.sandboxMechanism || this.vm ? ['sandbox'] : []),
       ...(this.cfg.security.requireSandbox ? ['sandbox-required'] : []),
       'memory-dreaming-v1',
       ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -15052,7 +15145,7 @@ export class Daemon {
     } catch (err) {
       this.log.warn(
         `cluster: could not delete the sandbox for removed agent "${agentId}" (${formatErr(err)}) — ` +
-          `sandboxclaim "${plane.driver.claimName(agentId)}" is left for the orphan reconciler`
+          `${plane.describeResidue?.(agentId) ?? `agent "${agentId}"`} is left for the orphan reconciler`
       )
     }
   }
@@ -16537,7 +16630,7 @@ export class Daemon {
   /** The image the pool's template pins, or undefined when it cannot be read (RBAC, a template
    *  mid-edit). Undefined means this member probes for itself: the old behaviour, always correct,
    *  just not shared. */
-  private async poolRuntimeImageRef(plane: K8sRuntimePlane): Promise<string | undefined> {
+  private async poolRuntimeImageRef(plane: RuntimePlane): Promise<string | undefined> {
     try {
       return await plane.runtimeImage()
     } catch (err) {

@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Backoff, FakeClock } from '@agentconnect.md/connection'
-import {
-  k8sPlaneSettings,
-  startK8sRuntimePlane,
-  type K8sRuntimePlane,
-  sandboxMemoryRoot
-} from '../src/k8s/runtime-plane.js'
+import { k8sPlaneSettings, startK8sRuntimePlane, type K8sRuntimePlane } from '../src/k8s/runtime-plane.js'
+import { sandboxMemoryRoot } from '../src/shim/memory-fs-channel.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, probeAgentId } from '../src/k8s/probe-claim.js'
 import { ShimClient, type ShimTransport } from '../src/shim/client.js'
 import { ShimServer } from '../src/shim/server.js'
@@ -374,5 +370,12 @@ describe('k8s runtime plane assembly', () => {
     // longer exists — a loss report for one would name work nobody is expecting.
     expect(plane.driver.currentLaunch('agent-a')).toBeUndefined()
     expect(plane.launchedAgents()).toEqual([])
+  })
+
+  // A failed discard is logged with what it leaked, and the plane names that resource because the
+  // caller holds the neutral contract and must not know a claim from a disk image.
+  it('names the claim it would leave behind, without the caller knowing what a claim is', async () => {
+    const plane = await planeUnderTest(fakeApi())
+    expect(plane.describeResidue?.('agent-a')).toBe('sandboxclaim "agent-agent-a"')
   })
 })

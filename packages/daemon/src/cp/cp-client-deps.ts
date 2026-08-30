@@ -45,7 +45,7 @@ import type { LocalStore, SessionRecord } from '../store/local-store.js'
 import type { SessionMetadataOutbox } from '../store/session-metadata-outbox.js'
 import type { WebchatMcpRevocations } from '../webchat/mcp-revocations.js'
 import type { WorkspaceManager } from '../workspace/workspace-manager.js'
-import type { K8sRuntimePlane } from '../k8s/runtime-plane.js'
+import type { RuntimePlane } from '../runtime-plane/contract.js'
 import type { AutoMergeWatcher } from '../github/auto-merge/watcher.js'
 import type { SandboxHolds } from '../k8s/sandbox-hold.js'
 import { createSandboxKeepAlive } from './sandbox-keepalive.js'
@@ -138,7 +138,7 @@ export interface CpClientSeamHost {
   store(): LocalStore
   agents(): ReadonlyMap<string, LoadedAgent>
   workspaces(): WorkspaceManager
-  k8sPlane(): K8sRuntimePlane | undefined
+  k8sPlane(): RuntimePlane | undefined
   memory(): AgentMemoryAdminResolver
   dreamRunner(): DreamRunner
   runtimeCommands(): RuntimeCommandsCache

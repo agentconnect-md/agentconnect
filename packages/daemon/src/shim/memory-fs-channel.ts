@@ -31,6 +31,7 @@ import {
   type MemoryFsWriteOptions
 } from '../memory/fs.js'
 import { createFdMemoryFsExecutor } from './fd-memory-fs.js'
+import { DEFAULT_SHIM_WORKSPACE_ROOT } from './protocol.js'
 import type { WorkspaceFsKind } from '../workspace/workspace-fs.js'
 import type { ShimRequester } from './channels.js'
 
@@ -378,4 +379,12 @@ function joinRel(root: string, rel: string): string {
   const parts = rel.split('/').filter((part) => part !== '' && part !== '.')
   if (parts.some((part) => part === '..')) throw new MemoryPathError('path escapes the memory root')
   return parts.length === 0 ? root : `${root.replace(/\/+$/, '')}/${parts.join('/')}`
+}
+
+/** The managed memory root on a sandbox volume: outside the user's checkout, on the same disk.
+ *  Lives here rather than in `sandbox-paths.ts` because that module is imported by `tunnel.ts`,
+ *  which `protocol.ts` needs — reaching back for `DEFAULT_SHIM_WORKSPACE_ROOT` closes a cycle and
+ *  fails at load with a TDZ error rather than at type-check. */
+export function sandboxMemoryRoot(workspaceRoot: string | undefined): string {
+  return `${(workspaceRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT).replace(/\/+$/, '')}/.agentconnect/memory`
 }

@@ -41,6 +41,15 @@ without a host PAT, SSH key, or credential-manager entry. Both App-backed and
 manual workspace URLs remain subject to the daemon operator's exact
 `security.workspaceGitAllowedOrigins` policy.
 
+GitLab already shares this credential plane through the provider-qualified
+gitcred v2 schema. A planned third arm, Bitbucket Cloud, is designed in
+[bitbucket-cloud-integration.md](bitbucket-cloud-integration.md) §13.2 and is
+**not implemented**: it would widen `ManagedCredentialProvider`, add
+`bitbucket.org` to the default allowed origins, add its own
+`GitCredRequest.purpose` values, and reuse GitHub's two-segment `owner/repo`
+path parsing rather than GitLab's nested one. It has no first-party CLI, so it
+adds no shim.
+
 The sign-in and repository-access flows may share one GitHub App while using
 independent credential tracks. Sign-in uses the App's user authorization
 configuration; repository access uses an App JWT and installation access

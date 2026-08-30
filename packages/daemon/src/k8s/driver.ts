@@ -5,14 +5,15 @@ import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/connection.js'
 import { ShimFileSink } from '../shim/channels.js'
 import { ShimSession } from '../shim/session.js'
-import { createRemoteRuntime } from './remote-runtime.js'
+import { createRemoteRuntime } from '../shim/remote-runtime.js'
 import type { SpawnRecord } from '../shim/binding.js'
 import { isSandboxReady, type OperatingMode, type SandboxClaim, type SandboxApi } from './sandbox-api.js'
 import { SandboxLease } from './sandbox-lease.js'
 import { LaunchRegistry, type Launch, type LaunchGenerations } from './launch-registry.js'
 import { ChannelBinder } from './channel-binder.js'
 import { awaitBoundSandbox, awaitReady, readIfPresent, type SandboxWaitDeps } from './sandbox-waits.js'
-import { AC_LABEL_AGENT, AC_LABEL_ORG, LaunchTimeoutError, RUNTIME_GRANTS, resolvePodIp } from './sandbox-identity.js'
+import { AC_LABEL_AGENT, AC_LABEL_ORG, LaunchTimeoutError, resolvePodIp } from './sandbox-identity.js'
+import { RUNTIME_GRANTS } from '../shim/grants.js'
 
 export interface K8sDriverDeps {
   api: SandboxApi

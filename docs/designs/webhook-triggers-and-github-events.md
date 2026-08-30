@@ -19,6 +19,13 @@ the per-kind marks and labels — stops type-checking until it is extended:
 - `gitlab`: the GitLab counterpart, described in
   [gitlab-com-integration.md](gitlab-com-integration.md).
 
+A third code-host kind, `bitbucket`, is designed in
+[bitbucket-cloud-integration.md](bitbucket-cloud-integration.md) and is **not
+implemented**. Its §8.4 is the reason to read it before touching this
+vocabulary: Bitbucket repositories have no numeric id, so adding that kind also
+widens the code-host external identity from a numeric id to an opaque string
+across `HookDef.repoId` and every provider-neutral frame.
+
 Only `webhook` is generic. Every code-host kind is promoted out of the generic
 bucket wherever a session is classified, so a code-host session is never
 filtered, marked, or labelled as a plain webhook. `webhook` is the mapping for

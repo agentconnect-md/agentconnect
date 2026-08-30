@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { TunnelBinder, type TunnelSession } from '../src/k8s/tunnel-binder.js'
+import { TunnelBinder, type TunnelSession } from '../src/shim/tunnel-binder.js'
 
 const log = { info: () => {}, warn: () => {}, debug: () => {} }
 

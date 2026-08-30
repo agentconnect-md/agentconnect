@@ -1,4 +1,4 @@
-import type { ShimCapability } from '../shim/protocol.js'
+import { ShimCapability } from '../shim/protocol.js'
 import type { Sandbox } from './sandbox-api.js'
 
 /** Label domain the claim controller must be configured to allow. */

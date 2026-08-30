@@ -297,6 +297,15 @@ panel, both explicitly scoped out elsewhere). Forcing any of these behind one
 interface would be guessing at an abstraction from two data points that
 disagree.
 
+Bitbucket Cloud is the third data point.
+[bitbucket-cloud-integration.md](bitbucket-cloud-integration.md) §6.5 revisits
+each of those three exclusions: webhook-secret distribution earns a contract
+member once two of three providers agree on a per-binding secret, the bot
+identity and claim lifecycle stays out permanently now that three genuinely
+different primitives are on the table, and the GitHub-only product surfaces are
+unchanged. That document also names the surfaces this one left duplicated across
+two hardcoded arms, which a third implementer collapses rather than copies.
+
 ## 7. Identity and Credential Model
 
 ### 7.1 OAuth Is the Administration Identity

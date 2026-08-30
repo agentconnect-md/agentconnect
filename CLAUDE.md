@@ -18,6 +18,12 @@ adding or reusing a diagram or screenshot, inspect its visible text and verify
 that it still matches the current architecture. Prefer diffable SVG or Mermaid
 source over opaque raster diagrams.
 
+A third, experimental runtime placement exists behind `--vm`: per-agent Linux VMs on
+a macOS/arm64 host, so an agent can run arbitrary code (containers included) behind a
+hypervisor boundary rather than the daemon user's ambient authority. Design:
+[`docs/designs/vm-runtime-plane.md`](docs/designs/vm-runtime-plane.md). The guest image
+is not built yet, so `--vm` refuses to boot today.
+
 The defining architectural choice: **the Control Plane is never on the message hot
 path.** Agent execution always happens inside a daemon on the data plane. Where
 that daemon runs is a deployment choice, not part of the invariant — self-hosted
@@ -62,6 +68,7 @@ public callback endpoint is required; the CP only orchestrates. Concretely:
 | `@agentconnect.md/web`                | Next.js 16 + React 19 + Tailwind 4 | Config / monitoring console.                                                                                                                                                                                 |
 | `@agentconnect.md/memory-plugin-mem0` | TypeScript                         | Memory-plugin profile wrappers for Mem0 Cloud and OSS.                                                                                                                                                       |
 | `@agentconnect.md/k8s-client`         | TypeScript                         | Thin bare-REST in-cluster Kubernetes client (config, HTTP verbs, resumable watch, Lease election) used by the daemon's K8sDriver; ships a fake API server under `./testing`.                                 |
+| `@agentconnect.md/vmm`                | Swift (macOS only)                 | **Experimental.** Boots a Linux guest on Virtualization.framework and reports its lifecycle as ND-JSON, so an agent runtime can run inside a VM. Ships the `agentconnect-vmm` bin; skips itself off macOS.   |
 
 When you change a frame in `protocol`, both daemon and CP consume it — rebuild
 `protocol` (or rely on its `development` export → `./src/index.ts`) and check both sides.
@@ -104,6 +111,14 @@ provider-neutral publication lease and operation ledger behind
 `codehost-review-v1`. Each member was extracted in the change that added its
 second implementer; extracting from one implementer would have been guessing at
 an interface.
+
+Bitbucket Cloud is designed as the third implementer in
+[`bitbucket-cloud-integration.md`](docs/designs/bitbucket-cloud-integration.md)
+but **no Bitbucket code exists yet**. That design is where the seam's open
+arguments get settled: §6.5 there records which of GitLab's three deliberate
+exclusions a third data point resolves, and §8.4 records why a third host forces
+the code-host external identity to widen from a numeric id to an opaque string.
+Read it before adding a provider-shaped branch to any code-host seam.
 
 Two rules this refactor exists to enforce: **a platform name is never core
 knowledge** — core reads a capability, a manifest field, or a registry entry
@@ -176,6 +191,61 @@ I/O). `test:int` boots one `postgres:16-alpine` via Testcontainers
 Vitest pool, and truncates each pool-local database before a test (`test/setup.db.ts`).
 It requires Docker and runs files with four workers by default; set
 `INTEGRATION_TEST_WORKERS` to tune that count for the runner.
+
+### macOS VM monitor (`packages/vmm`)
+
+**Experimental and macOS/arm64 only.** A Swift package, not TypeScript, so it sits outside the
+usual gates: `pnpm build` and `pnpm test` in it call `make` through
+`scripts/darwin-only.mjs`, which **skips with a message** off macOS or without a Swift
+toolchain so Linux and Windows CI stay green. `AC_VMM_REQUIRE=1` turns every skip into an
+error, and CI's `Unit Test (macOS)` job sets it so a real break cannot hide behind a skip.
+That job runs only when the diff reaches `packages/vmm/`, and the release path skips it
+(`skip_vmm`) as it skips the sandbox and Windows suites.
+
+Two facts that cost time if unknown:
+
+- **The binary must be codesigned or nothing works.** Virtualization.framework reports a
+  missing `com.apple.security.virtualization` entitlement as "invalid virtual machine
+  configuration". `make build` signs every time, and `make test` signs the _test bundle_ too
+  because `VZVirtualMachineConfiguration.validate()` is itself entitlement-gated. Ad-hoc
+  signing is enough, so no Apple provisioning profile is involved.
+- **`.build/` and `image/` are prettier-ignored, not just gitignored.** `.prettierignore` is
+  separate from `.gitignore`, and Swift build output contains JSON and YAML that
+  `prettier --check .` will otherwise walk into and fail on.
+
+`packages/vmm/README.md` carries the rest, including the vsock forwarding model, the vCPU
+oversubscription ceiling that is an admission limit rather than a tuning hint, and why the
+guest rootfs must never be reused after an unclean stop.
+
+### Runtime placement (`local` / `--k8s` / `--vm`)
+
+Where an agent's runtime runs is one axis with three values, and two seams carry it:
+
+- `SpawnDriver` (`src/acp/spawn-driver.ts`) is the narrow half: a byte-stream pair plus a
+  lifecycle. `LocalDriver`, `K8sDriver`, `VmDriver`.
+- `RuntimePlane` (`src/runtime-plane/contract.ts`) is the rest: git, workspace fs, memory,
+  skills, adopt/release/suspend. `K8sRuntimePlane extends RuntimePlane` adds only
+  `driver: K8sDriver` and `dialer: ShimDialer`, which nothing outside `src/k8s/` reads.
+
+`--k8s` and `--vm` are mutually exclusive and the constructor throws. `daemon.ts`'s field is
+still named `k8sPlane` while typed `RuntimePlane`: every truthiness check on it today ALSO
+means "not a local daemon", and separating those two meanings is a real audit, not a rename.
+
+**`src/vm/` must not import from `src/k8s/`.** Four neutral pieces moved to `src/shim/` when
+the VM plane became their second consumer (`createRemoteRuntime`, `TunnelBinder`,
+`grants.ts`, `sandboxMemoryRoot`). Adding a `../k8s/` import from `src/vm/` is the signal
+that something else needs the same treatment.
+
+**`sandboxMemoryRoot` lives beside `ShimMemoryFs`, not in `sandbox-paths.ts`.** That module is
+imported by `tunnel.ts`, which `protocol.ts` needs, so reaching back for
+`DEFAULT_SHIM_WORKSPACE_ROOT` closes an import cycle. It fails at load with a TDZ error
+(`Cannot access 'SANDBOX_TUNNEL_PATH_SOURCE' before initialization`), not at type-check, and
+took five unrelated test files down with it.
+
+`--vm` is configured by env (deployment topology, as `--k8s` is): `AC_VM_IMAGE`,
+`AC_VM_BINARY`, `AC_VM_CPUS`, `AC_VM_MEMORY`, `AC_VM_DATA_DISK`, `AC_VM_MAX_GUESTS`,
+`AC_VM_TOTAL_VCPUS`. It is the only placement that advertises the `sandbox` capability
+honestly, and the only way to satisfy `security.requireSandbox` on macOS.
 
 ### Windows
 

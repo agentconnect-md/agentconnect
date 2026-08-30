@@ -36,6 +36,7 @@ jobs:
       defer_summaries: true
       skip_sandbox: true
       skip_windows: true
+      skip_vmm: true
 
   release:
     needs: test
