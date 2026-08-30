@@ -13,6 +13,51 @@ const refreshResult = (overrides: Partial<SlackBotRefreshDto> = {}): SlackBotRef
   ...overrides
 })
 
+// The gap that prompted this: eight tools shipped behind capability scopes, and an install
+// predating them reported "up to date" while every one of those tools answered `missing_scope`.
+describe('slackRefreshNoticeState: optional capabilities', () => {
+  const healthy = {
+    manifest: 'synced' as const,
+    authorization: 'current' as const,
+    missingScopes: [],
+    reinstallUrl: 'https://slack.example.test/reinstall',
+    permissionsUrl: 'https://slack.example.test/permissions',
+    manifestUrl: 'https://slack.example.test/manifest',
+    settingsUrl: 'https://slack.example.test/settings'
+  }
+
+  it('says nothing extra when every capability scope is granted', () => {
+    const state = slackRefreshNoticeState({ ...healthy, missingCapabilityScopes: [] } as never)
+    expect(state.message).toContain('up to date')
+    expect(state.needsAttention).toBe(false)
+    expect(state.action).toBeNull()
+  })
+
+  it('names the gap and offers the reinstall that closes it', () => {
+    const state = slackRefreshNoticeState({
+      ...healthy,
+      missingCapabilityScopes: ['search:read.public', 'canvases:write']
+    } as never)
+    expect(state.message).toContain('2 optional permissions are not')
+    expect(state.message).toContain('Reinstall to enable')
+    expect(state.action).toEqual({ href: healthy.reinstallUrl, label: 'Reinstall workspace' })
+    // Healthy, not broken: the install works, so this must not read as a failure.
+    expect(state.needsAttention).toBe(false)
+  })
+
+  it('sends an unsynced manifest to the permissions page instead', () => {
+    const state = slackRefreshNoticeState({
+      ...healthy,
+      manifest: 'manual_update_required',
+      missingCapabilityScopes: ['reactions:read']
+    } as never)
+    expect(state.message).toContain('1 optional permission is not')
+    // An unsynced manifest cannot be fixed by reinstalling alone — the scopes must be added first.
+    expect(state.message).toContain('OAuth & Permissions')
+    expect(state.action).toEqual({ href: healthy.permissionsUrl, label: 'Update permissions' })
+  })
+})
+
 describe('slackRefreshNoticeState', () => {
   it('does not request manifest review when workspace permissions already match', () => {
     expect(slackRefreshNoticeState(refreshResult({ manifest: 'manual_update_required' }))).toEqual({

@@ -56,6 +56,22 @@ export type SlackBotScopeGrant = { status: 'unknown' } | { status: 'complete' } 
  * app's manifest declares — the app installs cleanly and the shortfall surfaces
  * much later, as a scoped call failing with `missing_scope`.
  */
+/**
+ * The CAPABILITY scopes an installation is missing — informational, never a fence.
+ *
+ * `checkSlackBotScopes` answers "is this install broken?" and must stay on the required set:
+ * a workspace that installed before a capability existed is not broken. But that silence went
+ * one step too far — the console reported "permissions are up to date" for an install whose
+ * every optional tool answers `missing_scope`, and nothing told the operator that one reinstall
+ * would light them up. This is the other half of the question, asked separately so neither
+ * answer distorts the other.
+ */
+export function missingSlackCapabilityScopes(granted: readonly string[] | null | undefined): string[] {
+  if (!granted) return [] // unknown is not a shortfall, same rule as the fence
+  const held = new Set(granted)
+  return SLACK_CAPABILITY_BOT_SCOPES.filter((scope) => !held.has(scope))
+}
+
 export function checkSlackBotScopes(granted: readonly string[] | null | undefined): SlackBotScopeGrant {
   if (!granted) return { status: 'unknown' }
   const held = new Set(granted)
