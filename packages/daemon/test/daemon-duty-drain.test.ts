@@ -420,6 +420,30 @@ describe('shutdown drain of a duty-holding member', () => {
     expect(calls.order.at(-1)).toBe('socket-close')
   })
 
+  it('a set-placed dream with no active dispatch still holds the pool budget', async () => {
+    const { daemon, clock, calls } = await boot()
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant(GROUP, AGENT, 'set')])
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 1_000
+    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 60_000
+    // Busy through the dream path only — no dispatch lease, the release loop's other in-flight kind.
+    const dreamUntil = clock.now() + 40_000
+    ;(daemon as any).dreamRunnerInstance = { inFlight: (id: string) => id === AGENT && clock.now() < dreamUntil }
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) })
+    const info = vi.spyOn((daemon as any).log, 'info')
+
+    const startedAt = clock.now()
+    await runVirtual(clock, daemon.stop(), 70_000)
+    const elapsed = clock.now() - startedAt
+
+    // The dream ran to its own end at 40s — past the short window, inside the pool budget — and
+    // its group still released with an ack instead of being forced at the short deadline.
+    expect(elapsed).toBeGreaterThanOrEqual(40_000)
+    expect(elapsed).toBeLessThan(60_000)
+    expect(calls.releases.flat().sort()).toEqual([GROUP, GROUP_B].sort())
+    const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
+    expect(summary).toMatch(/2 acknowledged, 0 left to lapse/)
+  })
+
   it('a release the CP never acknowledges is retried until the drain deadline, then counted and left to lapse', async () => {
     const { daemon, clock, releaseDuties } = await boot({
       releaseDuties: async () => {

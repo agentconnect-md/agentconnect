@@ -15461,9 +15461,17 @@ export class Daemon {
     return this.k8s || this.duties.setPlacedAgents().has(agentId)
   }
 
+  /** The same per-agent busy categories DutyCoordinator.dutyGroupBusy waits on during the drain. */
+  private agentWorkInFlight(agentId: string): boolean {
+    if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) return true
+    for (const p of this.pending.values()) if (p.plan.agentId === agentId) return true
+    for (const entry of this.activeGateEntries.values()) if (entry.agentId === agentId) return true
+    return this.dreamRunnerInstance?.inFlight(agentId) === true
+  }
+
   private hasPoolDrainWorkInFlight(): boolean {
-    for (const [agentId, runs] of this.activeDispatchesByAgent) {
-      if (runs.size > 0 && this.poolDrainAgent(agentId)) return true
+    for (const agentId of this.duties.setPlacedAgents()) {
+      if (this.agentWorkInFlight(agentId)) return true
     }
     return false
   }
