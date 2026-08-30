@@ -10,7 +10,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent, seedLaunch } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, seedLaunch, defaultAgentName } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgAgentRepo, PgHookRepo, PgSessionRepo, PgWebchatConversationRepo } from '../../src/persistence/index.js'
 import { AgentId, OrgId } from '../../src/domain/ids.js'
@@ -278,8 +278,20 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
         }
       ).childSessions
     ).toEqual([
-      { id: firstChild, agentId: AGENT, agentName: 'agent-a0a0', platform: 'telegram', title: 'Check the database' },
-      { id: secondChild, agentId: AGENT, agentName: 'agent-a0a0', platform: 'discord', title: 'Check the API' }
+      {
+        id: firstChild,
+        agentId: AGENT,
+        agentName: defaultAgentName(AGENT),
+        platform: 'telegram',
+        title: 'Check the database'
+      },
+      {
+        id: secondChild,
+        agentId: AGENT,
+        agentName: defaultAgentName(AGENT),
+        platform: 'discord',
+        title: 'Check the API'
+      }
     ])
     expect((parentRes.json() as { parentSession: unknown }).parentSession).toBeNull()
     expect((parentRes.json() as { siblingSessions: unknown[] }).siblingSessions).toEqual([])
@@ -292,12 +304,18 @@ describe('event/session sync → SessionMeta → GET /sessions/:id', () => {
     ).toEqual({
       id: parent,
       agentId: AGENT,
-      agentName: 'agent-a0a0',
+      agentName: defaultAgentName(AGENT),
       platform: 'slack',
       title: 'Coordinate the rollout'
     })
     expect((childRes.json() as { siblingSessions: unknown[] }).siblingSessions).toEqual([
-      { id: secondChild, agentId: AGENT, agentName: 'agent-a0a0', platform: 'discord', title: 'Check the API' }
+      {
+        id: secondChild,
+        agentId: AGENT,
+        agentName: defaultAgentName(AGENT),
+        platform: 'discord',
+        title: 'Check the API'
+      }
     ])
     expect((childRes.json() as { childSessions: unknown[] }).childSessions).toEqual([])
   })

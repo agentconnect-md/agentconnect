@@ -10,7 +10,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, defaultAgentName } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgAgentRepo, PgHookRepo, PgSessionRepo, PgWebchatConversationRepo } from '../../src/persistence/index.js'
 import { AgentId, OrgId, SessionId } from '../../src/domain/ids.js'
@@ -193,7 +193,7 @@ describe('GET /sessions — grouped conversations', () => {
     expect(facets.statusCode).toBe(200)
     expect(facets.json()).toMatchObject({
       agents: expect.arrayContaining([AGENT_A, AGENT_B]),
-      agentNames: { [AGENT_A]: 'agent-a1a1', [AGENT_B]: 'agent-b1b1' }
+      agentNames: { [AGENT_A]: defaultAgentName(AGENT_A), [AGENT_B]: defaultAgentName(AGENT_B) }
     })
   })
 

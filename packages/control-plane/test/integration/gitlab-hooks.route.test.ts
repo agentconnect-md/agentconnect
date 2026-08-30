@@ -8,7 +8,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
-import { seedDaemon, seedAgent } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, defaultAgentName } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { FakeGitlab, type FakeGitlabOptions } from '../fakes/gitlab-api.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
@@ -297,7 +297,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
         expect(rule.gitlab?.projectId).toBe(PROJECT.toString())
         expect(rule.gitlab?.sessionKeyPrefix).toBe(`gitlab:${PROJECT}`)
         expect(rule.gitlab?.serviceAccountUsername).toBe(
-          gitlabAgentAccountUsername(h.agentId, `agent-${h.agentId.slice(0, 4)}`, 900n)
+          gitlabAgentAccountUsername(h.agentId, defaultAgentName(h.agentId), 900n)
         )
         // §12.1 veto set: every account bound to the project (§7.2).
         expect(rule.gitlab?.boundServiceAccountUserIds).toEqual([rule.gitlab!.serviceAccountUserId])
@@ -324,7 +324,7 @@ describe('gitlab hooks — routes, compile, webhook converge (§8.3/§11.1/§11.
     // own account, so the account has to exist by the time the write happens.
     const account = (await h.accounts.byAgentRoot(DEFAULT_ORG_ID, h.agentId, 900n))!
     expect(account.state).toBe('ready')
-    expect(account.username).toBe(gitlabAgentAccountUsername(h.agentId, `agent-${h.agentId.slice(0, 4)}`, 900n))
+    expect(account.username).toBe(gitlabAgentAccountUsername(h.agentId, defaultAgentName(h.agentId), 900n))
     expect((await h.accounts.membershipsForBinding(h.binding.id)).map((m) => m.accountId)).toEqual([account.id])
     expect(h.fake.members.get(Number(account.serviceAccountUserId))).toBe(30)
   })

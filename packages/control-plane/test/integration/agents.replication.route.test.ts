@@ -16,7 +16,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../setup.db.js'
-import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
+import { seedDaemon, seedAgent, seedDutyGroup, defaultAgentName } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender, NoConnection } from '../../src/orchestrator/outbound.js'
 import type { AgentUpsert, AgentRemove, CollabRoutesSnapshot } from '@agentconnect.md/protocol'
@@ -155,7 +155,7 @@ describe('agent config replication CP→daemon (REST → agent/upsert·remove)',
       spec: {
         agentId,
         orgId: DEFAULT_ORG_ID,
-        name: `agent-${agentId.slice(0, 4)}`, // seeded slug (name is immutable)
+        name: defaultAgentName(agentId), // seeded slug (name is immutable)
         displayName: null,
         // Always shipped value-or-null (like displayName): null here — the agent has no
         // icon and no PUBLIC_CP_URL is configured in the test, so no avatar URL resolves.

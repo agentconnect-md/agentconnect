@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { prisma } from '../setup.db.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
-import { seedAgent } from '../fixtures/seed.js'
+import { seedAgent, defaultAgentName } from '../fixtures/seed.js'
 import { FakeGitlab, type FakeGitlabOptions } from '../fakes/gitlab-api.js'
 import { GitlabOauthService } from '../../src/gitlab/oauth.service.js'
 import { GitlabProvisioner } from '../../src/gitlab/provisioner.js'
@@ -128,7 +128,7 @@ async function harness(
   })
   for (const agent of agents) {
     await seedAgent(prisma, agent.id, {
-      name: agent.name ?? `agent-${agent.id.slice(0, 4)}`,
+      name: agent.name ?? defaultAgentName(agent.id),
       gitlabProjectId: PROJECT,
       ...(agent.gitAccess ? { gitAccess: agent.gitAccess } : {})
     })
