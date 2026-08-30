@@ -31,11 +31,11 @@ function scaffold(): string {
   return root
 }
 
-const grant = (groupId: string, agentId: string): DutyGrantEntry => ({
+const grant = (groupId: string, agentId: string, placement?: 'daemon' | 'set'): DutyGrantEntry => ({
   groupId,
   orgId: ORG,
   term: '1',
-  members: [{ kind: 'agent', refId: agentId }]
+  members: [{ kind: 'agent', refId: agentId, ...(placement ? { placement } : {}) }]
 })
 
 const bundle = (agentId: string, name: string) => ({
@@ -255,7 +255,7 @@ describe('shutdown drain of a duty-holding member', () => {
     // Never confirmed: lapses.
     {
       const { daemon, clock, calls } = await boot()
-      ;(daemon as any).cfg.limits.poolShutdownDrainMs = 1_500
+      ;(daemon as any).cfg.limits.shutdownDrainMs = 1_500
       await (daemon as any).dutyCoordinator.applyDutyRevoke([{ groupId: GROUP_B, reason: 'gone' }])
       await flush()
       ;(daemon as any).runReconcile = () => new Promise<void>(() => {})
@@ -264,8 +264,8 @@ describe('shutdown drain of a duty-holding member', () => {
 
       const stopping = daemon.stop()
       ;(daemon as any).dutyCoordinator.applyDutyGrant([{ ...grant(GROUP, AGENT), term: '2' }])
-      // The 1.5s budget is the thing under test, so it is elapsed in virtual time, not slept.
-      await runVirtual(clock, stopping, 2_000)
+      // The 1.5s budget plus the 30s release reserve is elapsed in virtual time, not slept.
+      await runVirtual(clock, stopping, 40_000)
 
       expect(calls.releases).toEqual([])
       expect(warn.mock.calls.some(([m]) => /late grant .* connection teardown unconfirmed/.test(String(m)))).toBe(true)
@@ -328,14 +328,14 @@ describe('shutdown drain of a duty-holding member', () => {
 
   it('a group whose teardown cannot be confirmed by the deadline is not released — its lease is left to lapse', async () => {
     const { daemon, clock, releaseDuties } = await boot()
-    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 1_500
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 1_500
     // The reconcile that carries the connection convergence never finishes.
     ;(daemon as any).runReconcile = () => new Promise<void>(() => {})
     const info = vi.spyOn((daemon as any).log, 'info')
     const warn = vi.spyOn((daemon as any).log, 'warn')
 
-    // The budget it never confirms within is elapsed in virtual time.
-    await runVirtual(clock, daemon.stop(), 2_000)
+    // The budget it never confirms within (plus the release reserve) is elapsed in virtual time.
+    await runVirtual(clock, daemon.stop(), 40_000)
 
     expect(releaseDuties).not.toHaveBeenCalled()
     expect(warn.mock.calls.some(([m]) => /not released, its lease lapses/.test(String(m)))).toBe(true)
@@ -368,25 +368,175 @@ describe('shutdown drain of a duty-holding member', () => {
     expect(calls.order.at(-1)).toBe('socket-close')
   })
 
+  it("a member's daemon-placed work keeps the local turn-wait window, never the pool budget", async () => {
+    const { daemon, clock, calls } = await boot()
+    // Both agents pinned to this daemon: nothing here can move to a successor.
+    await (daemon as any).dutyCoordinator.admitDutyGrants([
+      grant(GROUP, AGENT, 'daemon'),
+      grant(GROUP_B, AGENT_B, 'daemon')
+    ])
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 1_000
+    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 600_000
+    const warn = vi.spyOn((daemon as any).log, 'warn')
+    // A turn that outlives the local window: it settles at 5s, long before a pool-budget wait would cut it.
+    const settle = (daemon as any).beginActiveDispatch(AGENT, 'slack:C1:T1') as () => void
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) })
+    clock.setTimeout(() => settle(), 5_000)
+
+    const startedAt = clock.now()
+    await runVirtual(clock, daemon.stop(), 40_000)
+    const elapsed = clock.now() - startedAt
+
+    // The wait was cut at the 1s local window — under the pool's 570s wait this warning never fires —
+    // and the straggler's group still released inside the reserve once its turn settled.
+    expect(warn.mock.calls.some(([m]) => /deadline hit with .* still in flight/.test(String(m)))).toBe(true)
+    expect(elapsed).toBeLessThan(31_000)
+    expect(calls.releases.flat().sort()).toEqual([GROUP, GROUP_B].sort())
+    expect(calls.order.at(-1)).toBe('socket-close')
+  })
+
+  it("a member's set-placed work rides the pool drain budget — org sets included", async () => {
+    const { daemon, clock, calls } = await boot()
+    // AGENT is explicitly set-placed; GROUP_B keeps boot()'s unstamped grant, the conservative default.
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant(GROUP, AGENT, 'set')])
+    expect(duties(daemon).setPlacedAgents()).toEqual(new Set([AGENT, AGENT_B]))
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 1_000
+    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 60_000
+    const warn = vi.spyOn((daemon as any).log, 'warn')
+    // A set-placed turn settling well past the local window but inside the pool wait.
+    const settle = (daemon as any).beginActiveDispatch(AGENT, 'slack:C1:T1') as () => void
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) })
+    clock.setTimeout(() => settle(), 10_000)
+
+    const startedAt = clock.now()
+    await runVirtual(clock, daemon.stop(), 70_000)
+    const elapsed = clock.now() - startedAt
+
+    // Never cancelled: the pool budget carried the turn to its own end at 10s.
+    expect(warn.mock.calls.some(([m]) => /deadline hit|local window hit/.test(String(m)))).toBe(false)
+    expect(elapsed).toBeGreaterThanOrEqual(10_000)
+    expect(elapsed).toBeLessThan(31_000)
+    expect(calls.releases.flat().sort()).toEqual([GROUP, GROUP_B].sort())
+    expect(calls.order.at(-1)).toBe('socket-close')
+  })
+
+  it('a set-placed dream with no active dispatch holds the pool budget, then is cut at the turn-wait cutoff', async () => {
+    const { daemon, clock, calls } = await boot()
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant(GROUP, AGENT, 'set')])
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 1_000
+    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 60_000
+    // Busy through the dream path only — no dispatch lease, the release loop's other in-flight kind.
+    let dreaming = true
+    const cancelDream = vi.fn(async () => {
+      dreaming = false
+    })
+    ;(daemon as any).dreamRunnerInstance = {
+      dutyBusy: (id: string) => id === AGENT && dreaming,
+      inFlightAgents: () => (dreaming ? [AGENT] : []),
+      cancelInFlight: cancelDream
+    }
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) })
+    const info = vi.spyOn((daemon as any).log, 'info')
+
+    const startedAt = clock.now()
+    await runVirtual(clock, daemon.stop(), 70_000)
+    const elapsed = clock.now() - startedAt
+
+    // The dream rode past the 1s local window on the pool budget, was cancelled at the 30s
+    // turn-wait cutoff (60s minus the release reserve), and its group still released with an
+    // ack inside the reserve — never forced at the overall deadline.
+    expect(cancelDream).toHaveBeenCalledWith(AGENT)
+    expect(elapsed).toBeGreaterThanOrEqual(30_000)
+    expect(elapsed).toBeLessThan(45_000)
+    expect(calls.releases.flat().sort()).toEqual([GROUP, GROUP_B].sort())
+    const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
+    expect(summary).toMatch(/2 acknowledged, 0 left to lapse/)
+  })
+
+  it("a daemon-placed dream is cut at the local window, not the pool one's", async () => {
+    const { daemon, clock, calls } = await boot()
+    await (daemon as any).dutyCoordinator.admitDutyGrants([
+      grant(GROUP, AGENT, 'daemon'),
+      grant(GROUP_B, AGENT_B, 'daemon')
+    ])
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 1_000
+    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 600_000
+    let dreaming = true
+    const cancelDream = vi.fn(async () => {
+      dreaming = false
+    })
+    ;(daemon as any).dreamRunnerInstance = {
+      dutyBusy: (id: string) => id === AGENT && dreaming,
+      inFlightAgents: () => (dreaming ? [AGENT] : []),
+      cancelInFlight: cancelDream
+    }
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) })
+
+    const startedAt = clock.now()
+    await runVirtual(clock, daemon.stop(), 40_000)
+    const elapsed = clock.now() - startedAt
+
+    // Cut at the 1s local window; releases still ack inside the reserve that follows.
+    expect(cancelDream).toHaveBeenCalledWith(AGENT)
+    expect(elapsed).toBeLessThan(31_000)
+    expect(calls.releases.flat().sort()).toEqual([GROUP, GROUP_B].sort())
+    expect(calls.order.at(-1)).toBe('socket-close')
+  })
+
+  it('a parked adoption that cancellation can never wake still releases its group acked inside the reserve', async () => {
+    const { daemon, clock, calls } = await boot()
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant(GROUP, AGENT, 'set')])
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 1_000
+    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 60_000
+    // The hung-request shape: the abandon flag lands but the job NEVER drains — only its
+    // group hold drops (dutyBusy), exactly the runner's abandoned-job contract.
+    let abandoned = false
+    const cancelDream = vi.fn(async () => {
+      abandoned = true
+    })
+    ;(daemon as any).dreamRunnerInstance = {
+      dutyBusy: (id: string) => id === AGENT && !abandoned,
+      inFlightAgents: () => [AGENT],
+      cancelInFlight: cancelDream
+    }
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) })
+    const info = vi.spyOn((daemon as any).log, 'info')
+
+    const startedAt = clock.now()
+    await runVirtual(clock, daemon.stop(), 70_000)
+    const elapsed = clock.now() - startedAt
+
+    // Cancelled at the 30s turn-wait cutoff; the group stops being busy at once and BOTH
+    // releases are acknowledged inside the reserve — the hung request never consumes it.
+    expect(cancelDream).toHaveBeenCalledWith(AGENT)
+    expect(elapsed).toBeGreaterThanOrEqual(30_000)
+    expect(elapsed).toBeLessThan(45_000)
+    expect(calls.releases.flat().sort()).toEqual([GROUP, GROUP_B].sort())
+    const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
+    expect(summary).toMatch(/2 acknowledged, 0 left to lapse/)
+    expect(calls.order.at(-1)).toBe('socket-close')
+  })
+
   it('a release the CP never acknowledges is retried until the drain deadline, then counted and left to lapse', async () => {
     const { daemon, clock, releaseDuties } = await boot({
       releaseDuties: async () => {
         throw new Error('control plane unreachable (client DEGRADED)')
       }
     })
-    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 2_500
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 2_500
     const info = vi.spyOn((daemon as any).log, 'info')
     const warn = vi.spyOn((daemon as any).log, 'warn')
 
     const startedAt = clock.now()
     // Budget and backoff both run on the injected clock, so the ladder below is exercised in
     // virtual time — and the bound is asserted against that clock, never against the wall one.
-    await runVirtual(clock, daemon.stop(), 3_000)
+    await runVirtual(clock, daemon.stop(), 40_000)
     const elapsed = clock.now() - startedAt
 
-    // Retried (1s backoff, then 2s would overrun) and bounded by the budget, not by the retries.
+    // Retried on the backoff ladder and bounded by the budget plus the release reserve,
+    // not by the retries.
     expect(releaseDuties.mock.calls.length).toBeGreaterThanOrEqual(2)
-    expect(elapsed).toBeLessThan(6_000)
+    expect(elapsed).toBeLessThan(35_000)
     expect(warn.mock.calls.some(([m]) => /not acknowledged before the drain deadline/.test(String(m)))).toBe(true)
     const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
     expect(summary).toMatch(/released 2 group\(s\) covering 2 agent\(s\)/)

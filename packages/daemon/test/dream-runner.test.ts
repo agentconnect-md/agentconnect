@@ -792,6 +792,52 @@ describe('DreamRunner adoption', () => {
     await vi.waitFor(() => expect(runner.inFlight('a1')).toBe(false))
   })
 
+  it('a shutdown abandon bounds a parked auto-adoption — the dream stays completed for review', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
+    const { fs, requester } = pod()
+    await ensureMemory(fs, 'bot')
+    const store = new FakeStore()
+    const runner = new DreamRunner({
+      agentDirByAgent: (id) => (id === 'a1' ? dir : undefined),
+      memoryFsFor: (id) => (id === 'a1' ? fs : undefined),
+      dreamingPolicyFor: () => ({ enabled: true, autoAdopt: true }),
+      operationPolicy: 'test-only',
+      store,
+      extract: async () => ({ output: PROPOSAL }),
+      log: silent
+    })
+    let gate: (() => void) | undefined
+    let dreamId = ''
+    const original = requester.request.bind(requester)
+    requester.request = async (capability, payload, options) => {
+      if (dreamId && store.dreams.get(dreamId)?.status === 'completed' && !gate) {
+        await new Promise<void>((resolve) => {
+          gate = resolve
+        })
+      }
+      return original(capability, payload, options)
+    }
+    const started = await runner.start('a1', { trigger: 'schedule' })
+    dreamId = started.dreamId
+    await settle(store, started.dreamId)
+    await vi.waitFor(() => expect(gate).toBeDefined())
+    expect(runner.inFlight('a1')).toBe(true)
+
+    expect(runner.dutyBusy('a1')).toBe(true)
+
+    // The shutdown cutoff lands while adoption is parked on its first frame: cancel() has
+    // nothing to cancel (the dream is completed), but the abandon flag bounds the phase.
+    await runner.cancelInFlight('a1')
+    // Still parked — the request cannot be aborted mid-flight — yet the job stops holding its
+    // duty group at once: past the flag it can only touch temp paths, never the live store.
+    expect(runner.inFlight('a1')).toBe(true)
+    expect(runner.dutyBusy('a1')).toBe(false)
+    gate!()
+    // The parked frame resolves and the next checkpoint bails: no adoption, job over.
+    await vi.waitFor(() => expect(runner.inFlight('a1')).toBe(false))
+    expect(store.dreams.get(started.dreamId)?.status).toBe('completed')
+  })
+
   it('leaves nothing registered when the home cannot be brought up before the run', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'ac-dream-'))
     await ensureMemory(local(dir), 'bot')

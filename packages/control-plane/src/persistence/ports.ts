@@ -945,9 +945,11 @@ export interface AgentRepo {
   /** Unscoped batch read by id — the duty half of the reconcile roster, whose
    *  agents are named by the ledger rather than by placement. */
   listByIds(agentIds: readonly AgentId[]): Promise<AgentRecord[]>
-  /** The current `configRevision` of each agent — the freshness signal stamped
-   *  onto a duty grant's agent members (orchestrator/dutyLease.ts). */
-  configRevisions(agentIds: readonly AgentId[]): Promise<Map<string, bigint>>
+  /** Per-agent grant stamps — the freshness signal (`configRevision`) and the drain class
+   *  (`placementKind`) stamped onto a duty grant's agent members (orchestrator/dutyLease.ts). */
+  grantStamps(
+    agentIds: readonly AgentId[]
+  ): Promise<Map<string, { configRevision: bigint; placementKind: 'daemon' | 'set' }>>
   /**
    * The org's PEER directory: every agent, with only the fields the collaboration
    * roster filter needs. This is the channel-free discovery/authorization input —

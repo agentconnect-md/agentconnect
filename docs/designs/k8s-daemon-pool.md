@@ -1004,6 +1004,10 @@ most one move per agent (#1016):
   `limits.poolShutdownDrainMs` (5 min by default; the turn wait stops short of
   it by a release reserve so the last acks still land inside it), and ends
   with one log line: groups and agents released, acks, groups left to lapse.
+  An off-cluster member classes the wait per agent: only set-placed work rides
+  this budget; daemon-placed work is cut at `limits.shutdownDrainMs`, and with
+  no set-placed work in flight the whole drain keeps that short window
+  (plus the release reserve) — daemon-detailed-design.md "Draining".
   Deployment side: `terminationGracePeriodSeconds` ≥ that budget plus margin.
 
 Sleeping agents still move by not moving: they wake wherever their duty is

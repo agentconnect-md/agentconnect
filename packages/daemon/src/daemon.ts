@@ -7937,7 +7937,7 @@ export class Daemon {
       activeDispatchCount: (agentId) => this.activeDispatchesByAgent.get(agentId)?.size ?? 0,
       pendingTurnAgentIds: () => [...this.pending.values()].map((p) => p.plan.agentId),
       activeGateAgentIds: () => [...this.activeGateEntries.values()].map((entry) => entry.agentId),
-      dreamInFlight: (agentId) => this.dreamRunnerInstance?.inFlight(agentId) === true
+      dreamInFlight: (agentId) => this.dreamRunnerInstance?.dutyBusy(agentId) === true
     }
   }
 
@@ -15454,12 +15454,36 @@ export class Daemon {
     return undefined
   }
 
-  /** SIGTERM drain budget: a pool member holds duty leases and waits for turns instead of cutting
-   *  them (`poolShutdownDrainMs`); a local daemon keeps the short window its service manager allows. */
+  /** Pool-drain-class work: every turn on a cluster pool member, and a set-placed agent's turn on
+   *  any member — a successor takes the released group, so the turn is worth the pod-eviction wait.
+   *  A daemon-placed agent's work cannot move anywhere, so it gets only the local window. */
+  private poolDrainAgent(agentId: string): boolean {
+    return this.k8s || this.duties.setPlacedAgents().has(agentId)
+  }
+
+  /** The same per-agent busy categories DutyCoordinator.dutyGroupBusy waits on during the drain. */
+  private agentWorkInFlight(agentId: string): boolean {
+    if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) return true
+    for (const p of this.pending.values()) if (p.plan.agentId === agentId) return true
+    for (const entry of this.activeGateEntries.values()) if (entry.agentId === agentId) return true
+    return this.dreamRunnerInstance?.dutyBusy(agentId) === true
+  }
+
+  private hasPoolDrainWorkInFlight(): boolean {
+    for (const agentId of this.duties.setPlacedAgents()) {
+      if (this.agentWorkInFlight(agentId)) return true
+    }
+    return false
+  }
+
+  /** SIGTERM drain budget: a cluster pool member, or any member with pool-drain-class work in
+   *  flight, waits `poolShutdownDrainMs` — the pod-eviction cost, org sets included. Otherwise the
+   *  daemon keeps the short window its service manager allows; a duty holder's release reserve
+   *  extends past that window (turn wait stays the full window) instead of being carved from it. */
   private shutdownDrainBudgetMs(): number {
-    return this.k8s || this.dutyCoordinator.dutyEnforced()
-      ? this.cfg.limits.poolShutdownDrainMs
-      : this.cfg.limits.shutdownDrainMs
+    if (this.k8s || this.hasPoolDrainWorkInFlight()) return this.cfg.limits.poolShutdownDrainMs
+    if (this.dutyCoordinator.dutyEnforced()) return this.cfg.limits.shutdownDrainMs + Daemon.DUTY_RELEASE_RESERVE_MS
+    return this.cfg.limits.shutdownDrainMs
   }
 
   /** §2.5 SIGTERM / daemon shutdown: gate new turns, then await in-flight turns up
@@ -15488,36 +15512,95 @@ export class Daemon {
           return new Promise<void>(() => {})
         })
     const coldStops = [...coldAgents].map(stopFailClosed)
+    // One cancellation pass over the in-flight work of the agents `klass` selects; idempotent.
+    const cancelInFlight = async (klass: (agentId: string) => boolean, reason: string): Promise<Set<string>> => {
+      const forceAgents = new Set<string>()
+      for (const [, entry] of this.activeGateEntries) {
+        if (!klass(entry.agentId)) continue
+        entry.cancelledReason ??= 'shutdown'
+        entry.initAbort.abort(new Error(reason))
+        forceAgents.add(entry.agentId)
+      }
+      for (const p of this.pending.values()) {
+        if (!klass(p.plan.agentId)) continue
+        p.outputSuppressed ??= 'shutdown'
+        this.clearIdle(p)
+        this.turnSurfaces.exact(p.plan.platform)?.onSuppress?.(p)
+        await this.permissions.releaseElicits(p.plan.agentId, p.acpSessionId)
+        await this.permissions.releaseChatPermissions(p.plan.agentId, p.acpSessionId)
+        await this.permissions.releaseEditorPermissions(p.plan.agentId, p.acpSessionId)
+        void (p.selectedHost?.host ?? this.hosts.get(p.plan.agentId))?.cancel(p.acpSessionId).catch(() => {})
+      }
+      return forceAgents
+    }
+    // Dreams are in-flight jobs with no dispatch promise, so the promise races below never see
+    // them — yet the duty release loop counts them as busy. Wait them out to the SAME class
+    // cutoffs as turns, cancelling each class at its cutoff, so a lingering dream can never eat
+    // the release reserve that the acknowledged releases need. Duty members only: a set-less
+    // daemon has no release loop parked on dreams, and keeps its fast host-teardown path.
+    const drainDreams = async (): Promise<void> => {
+      const runner = this.dreamRunnerInstance
+      if (!runner || !this.dutyCoordinator.dutyEnforced()) return
+      const cancelDreams = (klass: (agentId: string) => boolean): void => {
+        for (const agentId of runner.inFlightAgents()) {
+          if (klass(agentId)) void runner.cancelInFlight(agentId).catch(() => {})
+        }
+      }
+      const startAt = this.clock.now()
+      const localCutoffAt = startAt + Math.min(this.cfg.limits.shutdownDrainMs, deadlineMs)
+      const finalCutoffAt = startAt + deadlineMs
+      let localCut = false
+      while (runner.inFlightAgents().length > 0) {
+        const now = this.clock.now()
+        if (!localCut && now >= localCutoffAt) {
+          localCut = true
+          cancelDreams((agentId) => !this.poolDrainAgent(agentId))
+        }
+        if (now >= finalCutoffAt) {
+          cancelDreams(() => true)
+          return
+        }
+        await this.sleepUntil(Math.min(now + 1_000, localCut ? finalCutoffAt : localCutoffAt))
+      }
+    }
+    const dreams = drainDreams()
     const work = Promise.all([...active, ...coldStops])
     if (active.length > 0 || coldStops.length > 0) {
       this.log.info(
         `shutdown: draining ${active.length} active dispatch(es) (deadline ${Math.round(deadlineMs / 1000)}s)`
       )
-      const res = await this.raceDeadline(work, deadlineMs)
+      const forceStops: Array<Promise<void>> = []
+      const forceStop = (agentIds: Iterable<string>): void => {
+        for (const id of agentIds) {
+          if (coldAgents.has(id)) continue
+          coldAgents.add(id)
+          forceStops.push(stopFailClosed(id))
+        }
+      }
+      // Two windows: work that cannot move to a successor is cut at the local one; only
+      // pool-drain-class turns ride out the rest of the budget (see poolDrainAgent).
+      const localWaitMs = Math.min(this.cfg.limits.shutdownDrainMs, deadlineMs)
+      let res = await this.raceDeadline(work, localWaitMs)
+      if (res === 'timeout' && localWaitMs < deadlineMs) {
+        const cut = await cancelInFlight((id) => !this.poolDrainAgent(id), 'daemon shutdown local drain window')
+        if (cut.size > 0) {
+          this.log.warn(
+            `shutdown: local window hit — cancelled work of ${cut.size} agent(s) outside the pool drain class`
+          )
+        }
+        forceStop(cut)
+        res = await this.raceDeadline(Promise.all([...active, ...coldStops, ...forceStops]), deadlineMs - localWaitMs)
+      }
       if (res === 'timeout') {
         this.log.warn(`shutdown: deadline hit with ${this.pending.size} ACP turn(s) still in flight — cancelling`)
-        const forceAgents = new Set<string>()
-        for (const [, entry] of this.activeGateEntries) {
-          entry.cancelledReason ??= 'shutdown'
-          entry.initAbort.abort(new Error('daemon shutdown deadline'))
-          forceAgents.add(entry.agentId)
-        }
-        for (const p of this.pending.values()) {
-          p.outputSuppressed ??= 'shutdown'
-          this.clearIdle(p)
-          this.turnSurfaces.exact(p.plan.platform)?.onSuppress?.(p)
-          await this.permissions.releaseElicits(p.plan.agentId, p.acpSessionId)
-          await this.permissions.releaseChatPermissions(p.plan.agentId, p.acpSessionId)
-          await this.permissions.releaseEditorPermissions(p.plan.agentId, p.acpSessionId)
-          void (p.selectedHost?.host ?? this.hosts.get(p.plan.agentId))?.cancel(p.acpSessionId).catch(() => {})
-        }
-        const forceStops = [...forceAgents].filter((id) => !coldAgents.has(id)).map(stopFailClosed)
+        forceStop(await cancelInFlight(() => true, 'daemon shutdown deadline'))
         // stopHost is the hard deadline backstop, but closing the store underneath an
         // uncooperative callback is worse than waiting. Abortable cold awaits and a
         // successful host stop make these dispatch leases settle promptly.
         await Promise.all([...active, ...coldStops, ...forceStops])
       }
     }
+    await dreams
     // §6.9 #390/#353: any messages still queued behind the gate are admitted-but-unrun.
     // Settle them explicitly (reject with a fail-stop notice) rather than dropping them
     // silently and leaving their dispatch() promises unsettled. (A durable inbox — the

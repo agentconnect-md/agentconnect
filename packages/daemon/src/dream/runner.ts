@@ -304,6 +304,12 @@ export class DreamRunner {
    *  ends before auto-adoption so `adopt` can proceed. */
   private readonly backgroundJobs = new Map<string, string>()
 
+  /** dreamIds whose post-completion phase (auto-adoption) the shutdown cutoff abandoned. */
+  private readonly abandonedJobs = new Set<string>()
+
+  /** dreamIds inside the adoption swap's visible window — the one phase an abandoned job must still finish. */
+  private readonly swappingJobs = new Set<string>()
+
   /** Per-agent serial mutex over the mutating critical sections (snapshot+reserve,
    *  the adopt fence/swap, discard). Ordering matters: the adopt swap must not
    *  interleave with a start snapshot or a discard on the same agent. A rejected
@@ -397,6 +403,42 @@ export class DreamRunner {
   /** Whether a dream job is under way for the agent — from home acquisition through auto-adoption. */
   inFlight(agentId: string): boolean {
     return this.backgroundJobs.has(agentId)
+  }
+
+  /** Agents with a dream under way — the shutdown drain cuts these at its class cutoffs. */
+  inFlightAgents(): string[] {
+    return [...this.backgroundJobs.keys()]
+  }
+
+  /** Cancel the agent's in-flight dream, if any; racing its completion is not an error. A dream
+   *  already past extraction is bounded too: the abandon flag makes its auto-adoption bail at the
+   *  next checkpoint (never inside the swap's visible window), leaving it completed for review. */
+  async cancelInFlight(agentId: string): Promise<void> {
+    const dreamId = this.backgroundJobs.get(agentId)
+    if (dreamId === undefined) return
+    this.abandonedJobs.add(dreamId)
+    try {
+      await this.cancel(agentId, dreamId)
+    } catch (err) {
+      if (!(err instanceof DreamStateError)) throw err
+    }
+  }
+
+  private assertNotAbandoned(dreamId: string): void {
+    if (this.abandonedJobs.has(dreamId)) {
+      throw new DreamStateError('adoption abandoned by daemon shutdown; the dream is left for review')
+    }
+  }
+
+  /** Busy for the duty drain. An abandoned job stops holding its group at once — a parked fs
+   *  operation cannot be aborted, but past the flag it can only touch temp paths and locks, never
+   *  the live store, so releasing the group is safe. A job already inside the swap's visible
+   *  window (it passed the last checkpoint before the flag landed) holds it until the swap ends. */
+  dutyBusy(agentId: string): boolean {
+    const dreamId = this.backgroundJobs.get(agentId)
+    if (dreamId === undefined) return false
+    if (!this.abandonedJobs.has(dreamId)) return true
+    return this.swappingJobs.has(dreamId)
   }
 
   private emitLifecycle(event: DreamLifecycleEvent): void {
@@ -621,6 +663,7 @@ export class DreamRunner {
         // reservation or the job marker registered forever.
         releaseReservation()
         if (this.backgroundJobs.get(agentId) === dream.dreamId) this.backgroundJobs.delete(agentId)
+        this.abandonedJobs.delete(dream.dreamId)
       })
     return dream
   }
@@ -1119,6 +1162,7 @@ export class DreamRunner {
     this.assertStagedContentAllowed()
     const fs = this.fsFor(agentId)
     return this.withLock(agentId, async () => {
+      this.assertNotAbandoned(dreamId)
       const dream = await this.getDream(agentId, dreamId)
       if (dream.status !== 'completed') throw new DreamStateError(`cannot adopt a ${dream.status} dream`)
       if (this.active.has(agentId)) throw new DreamStateError('a dream is in flight for this agent; wait or cancel it')
@@ -1155,6 +1199,7 @@ export class DreamRunner {
       await fs.rm(replacement)
       await fs.mkdir(replacement)
       for (const file of stagedFiles) {
+        this.assertNotAbandoned(dreamId)
         await fs.writeFile(join(replacement, file.name), file.content)
       }
 
@@ -1162,6 +1207,9 @@ export class DreamRunner {
       //    caller can interleave between the digest re-check and the rename.
       try {
         return await withMemoryDirLock(fs, async () => {
+          // Last abandon checkpoint: past here the swap runs to its atomic rename.
+          this.assertNotAbandoned(dreamId)
+          this.swappingJobs.add(dreamId)
           const liveFiles = await this.readLiveStore(fs)
           if (!force) {
             const liveDigest = storeDigest(liveFiles)
@@ -1283,6 +1331,7 @@ export class DreamRunner {
           return adopted
         })
       } finally {
+        this.swappingJobs.delete(dreamId)
         // If the fence refused (or a failure escaped the swap), never leave the
         // temp replacement lying around.
         await fs.rm(replacement).catch(() => {})
@@ -1298,6 +1347,7 @@ export class DreamRunner {
    * still leaves the dream `completed` and awaiting review.
    */
   private async maybeAutoAdopt(agentId: string, dreamId: string): Promise<void> {
+    if (this.abandonedJobs.has(dreamId)) return
     const dream = await this.deps.store.getDream(agentId, dreamId)
     if (dream?.status !== 'completed') return
     const policy = this.deps.dreamingPolicyFor(agentId)
