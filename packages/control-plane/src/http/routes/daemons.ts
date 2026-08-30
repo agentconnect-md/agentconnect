@@ -22,7 +22,8 @@ import { orgOf, denyViewerWrite, ctxOf } from '../rbac.js'
 import { canView, canEdit, canManageSharing, type ViewCtx } from '../../authorization/policy.js'
 import { resolveShareSet } from '../sharing.js'
 import {
-  DaemonListDto,
+  DaemonFleetListDto,
+  DaemonCapabilityListDto,
   DaemonViewDto,
   DaemonLifecycleOpDto,
   UpdateDaemonBody,
@@ -32,7 +33,7 @@ import {
   IdParam,
   ErrorDto
 } from '../dto/index.js'
-import type { DaemonViewDtoT } from '../dto/index.js'
+import type { DaemonViewDtoT, DaemonFleetDtoT, DaemonCapabilityDtoT } from '../dto/index.js'
 import type { DaemonLifecycleOpRecord, DaemonLifecycleOpRepo } from '../../persistence/ports.js'
 import { provisionDaemonConnect } from '../onboarding.js'
 import { detachDaemon } from '../daemon-removal.js'
@@ -179,6 +180,27 @@ function toDto(
   }
 }
 
+// The two halves of a daemon row, split by how often each changes. `toDto` still builds
+// the whole thing once; these decide what a given read is allowed to be about.
+
+/** The liveness half — everything the console's few-second poll is actually watching. */
+function fleetOf(d: DaemonViewDtoT): DaemonFleetDtoT {
+  const { capabilities: _c, runtimeProfiles: _r, mcpServers: _m, ...fleet } = d
+  return fleet
+}
+
+/** The capability half, minus each runtime's per-model matrix: this read answers for the
+ *  WHOLE fleet, and the matrix is the one part every reader wants a single daemon at a
+ *  time — it stays on `GET /daemons/:id`. */
+function capabilityOf(d: DaemonViewDtoT): DaemonCapabilityDtoT {
+  return {
+    daemonId: d.daemonId,
+    capabilities: d.capabilities,
+    runtimeProfiles: d.runtimeProfiles.map(({ modelCatalog: _catalog, ...profile }) => profile),
+    mcpServers: d.mcpServers
+  }
+}
+
 export function daemonRoutes(deps: HttpDeps) {
   // How long after its last heartbeat a disconnected daemon still reads `connecting`
   // rather than `offline` (0 ⇒ disabled — the pre-grace behavior). Set from
@@ -213,9 +235,9 @@ export function daemonRoutes(deps: HttpDeps) {
           tags: [Tag.Daemons],
           summary: 'List daemons',
           description:
-            'The org’s available daemon fleet, including install-wide pool members, overlaid with live connection status.',
+            'The org’s available daemon fleet, including install-wide pool members, overlaid with live connection status. Liveness only — what each daemon can run is GET /daemons/capabilities, and a runtime’s model catalog is GET /daemons/:id.',
           operationId: 'listDaemons',
-          response: { 200: DaemonListDto }
+          response: { 200: DaemonFleetListDto }
         }
       },
       async (req) => {
@@ -224,7 +246,48 @@ export function daemonRoutes(deps: HttpDeps) {
         // One batched latest-op query for the whole fleet (no N+1), grouped by daemon.
         const ops = await deps.repos.daemonLifecycleOp.latestForDaemons(rows.map((d) => DaemonId(d.daemonId)))
         const byDaemon = new Map(ops.map((o) => [o.daemonId as string, o]))
-        return rows.map((d) => dtoWith(d, ctx, byDaemon.get(d.daemonId) ?? null))
+        return rows.map((d) => fleetOf(dtoWith(d, ctx, byDaemon.get(d.daemonId) ?? null)))
+      }
+    )
+
+    // Static segment, so it is matched ahead of `/daemons/:id` whatever the order here.
+    r.get(
+      '/daemons/capabilities',
+      {
+        schema: {
+          tags: [Tag.Daemons],
+          summary: 'List daemon capabilities',
+          description:
+            'What each daemon in the fleet can run: platform/feature capabilities, the installed runtime profiles, and the daemon-configured MCP servers. This half of a daemon row changes only when it connects, upgrades, or re-probes, so it is read separately from the liveness poll. A runtime’s per-model catalog is not here — read one daemon with GET /daemons/:id for that.',
+          operationId: 'listDaemonCapabilities',
+          response: { 200: DaemonCapabilityListDto }
+        }
+      },
+      async (req) => {
+        const ctx = ctxOf(req)
+        const rows = await deps.registry.listAvailable(orgOf(req), ctx)
+        // Capability needs no lifecycle op, so this read skips that query entirely.
+        return rows.map((d) => capabilityOf(toDto(d, deps.liveness, ctx, graceMs, Date.now(), release(), null)))
+      }
+    )
+
+    r.get(
+      '/daemons/:id',
+      {
+        schema: {
+          tags: [Tag.Daemons],
+          summary: 'Get a daemon',
+          description:
+            'One daemon in full: its liveness row plus its capabilities and complete runtime profiles, including each runtime’s discovered model × configuration catalog. This is the only read that carries the catalog — its readers all want a single daemon at a time.',
+          operationId: 'getDaemon',
+          params: IdParam,
+          response: { 200: DaemonViewDto, 404: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        const view = await getOrgDaemon(req, req.params.id)
+        if (!view) return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'daemon not found' })
+        return dto(view, ctxOf(req))
       }
     )
 

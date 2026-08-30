@@ -52,6 +52,7 @@ import {
   type SessionImage
 } from '@/lib/data'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
+import { useDaemonDetail } from '@/lib/use-daemon-detail'
 
 // Design composer selectors: agent/model are "pills" (rounded, with a leading
 // mark), effort/permission are plain "chips". Full literal strings so Tailwind's
@@ -231,7 +232,8 @@ export default function HomeView() {
 
   // What the selected agent RUNS ON supplies the model catalog + defaults — resolved through the
   // placement, so a pool or group agent reads its set's real catalog instead of the static tables.
-  const owningDaemon = agent ? agentCapabilitySource(agent, daemons, memberSets) : undefined
+  // The model catalogs live on the single-daemon read; until it lands this is the fleet row.
+  const owningDaemon = useDaemonDetail(agent ? agentCapabilitySource(agent, daemons, memberSets) : undefined)
   // What to CALL it, and where to send the reader: a set is named and opened as itself, never as
   // the member standing in for it — a pool member is a Pod that no longer exists after a roll.
   const placementKind = agent ? agentPlacementKind(agent, memberSets) : undefined

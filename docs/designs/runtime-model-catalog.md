@@ -82,14 +82,22 @@ flowchart LR
     M[runtime_model_catalog<br/>SQLite last-good cache] --> R[facts/daemon-runtimes<br/>modelCatalog field]
   end
   R --> CP[(CP runtime_profile<br/>modelCatalog JSONB)]
-  CP --> W[Web /daemons<br/>Add/Edit Agent]
+  CP --> W[Web GET /daemons/:id<br/>Add/Edit Agent]
 ```
 
-Key point: **the UI gets no new read channel**. Matrix data follows the existing
-facts push pipeline, is persisted by the CP, and is read through the console's
-normal `GET /daemons` polling (SWR every 15 seconds). "Use the cache table when
-the UI requests before discovery completes" is not a runtime branch; the
-structure guarantees it. The daemon synchronously hydrates the cache at startup,
+Key point: **the matrix rides the existing push pipeline**. It follows the facts
+frames, is persisted by the CP, and is read back through an ordinary console read —
+no side channel, no bespoke fetch protocol. "Use the cache table when the UI
+requests before discovery completes" is not a runtime branch; the structure
+guarantees it.
+
+Which read carries it is a separate question, answered by size: a matrix is per
+`(daemon, runtime)` and does not repeat across daemons, so a fleet-wide read pays
+for every daemon's matrix while its readers — the Add/Edit Agent pickers, the
+session runtime controls — each look at exactly one daemon. It therefore rides
+`GET /daemons/:id`, which the console fetches for the daemon it is configuring,
+and neither `GET /daemons` (polled for liveness) nor `GET /daemons/capabilities`
+(the fleet's runtime inventory) carries it. The daemon synchronously hydrates the cache at startup,
 so its first facts frame includes the last-good matrix. It sends another
 replacement frame after discovery completes. At every moment, the CP contains
 the newest value known by that daemon, and the UI renders whatever it reads.
@@ -563,7 +571,7 @@ sequenceDiagram
   B--)B: Discovery gate matches → phase 2 (driver or enumeration)
   B->>L: Upsert per model / full catalog
   B->>C: Re-emit facts (complete catalog)
-  W->>C: GET /daemons (at any time)
+  W->>C: GET /daemons/:id (when configuring that daemon)
   C-->>W: Latest persisted value (cached or fresh)
 ```
 

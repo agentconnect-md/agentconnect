@@ -1044,6 +1044,18 @@ export interface McpServerDto {
   transport: 'stdio' | 'http' | 'sse'
 }
 
+/** `GET /daemons` — the liveness half, without anything that only moves on connect/upgrade. */
+export type DaemonFleetDto = Omit<DaemonViewDto, 'capabilities' | 'runtimeProfiles' | 'mcpServers'>
+
+/** `GET /daemons/capabilities` — what each daemon can run, minus the per-model matrix. */
+export interface DaemonCapabilityDto {
+  daemonId: string
+  capabilities: DaemonCapabilitiesDto
+  runtimeProfiles: Omit<RuntimeProfileDto, 'modelCatalog'>[]
+  mcpServers: McpServerDto[]
+}
+
+/** `GET /daemons/:id` — both halves, catalog included. */
 export interface DaemonViewDto {
   daemonId: string
   host: string | null
@@ -2077,7 +2089,32 @@ export function mergeSessionDetailUsage(local: Session, detail: Session | null):
   })
 }
 
-export function daemonFromDto(d: DaemonViewDto): DaemonRow {
+/** What a liveness row knows before its capability read lands: nothing yet. Views gate on
+ *  `daemonsLoading` rather than reading this as "the daemon can do nothing". */
+const EMPTY_DAEMON_CAPS: DaemonCapabilitiesDto = { platforms: [], runtimes: [], acp: false, features: [] }
+
+/** Stitch a capability row onto its liveness row. The catalog is deliberately absent —
+ *  `modelCatalog` stays undefined until someone reads that one daemon in full. */
+export function withDaemonCapability(row: DaemonRow, cap: DaemonCapabilityDto | undefined): DaemonRow {
+  if (!cap) return row
+  return {
+    ...row,
+    caps: cap.capabilities,
+    runtimeModels: cap.runtimeProfiles.map((p) => ({
+      runtime: p.runtime,
+      version: p.version,
+      models: p.models,
+      acpProtocolVersion: p.acpProtocolVersion,
+      mcpCapabilities: p.mcpCapabilities ?? null,
+      authRequired: p.authRequired ?? false
+    })),
+    mcpServers: cap.mcpServers
+  }
+}
+
+export function daemonFromDto(
+  d: DaemonFleetDto & Partial<Pick<DaemonViewDto, 'capabilities' | 'runtimeProfiles' | 'mcpServers'>>
+): DaemonRow {
   // `cloud` is the CP DTO's field name (a REST contract); the console's own word is `pool`.
   const pool = d.cloud ?? false
   return {
@@ -2107,7 +2144,7 @@ export function daemonFromDto(d: DaemonViewDto): DaemonRow {
     cpu: d.load ? Math.round(d.load.cpu * 100) : 0,
     mem: d.load ? Math.round(d.load.mem * 100) : 0,
     loadAgents: d.load?.agents ?? 0,
-    caps: d.capabilities,
+    caps: d.capabilities ?? EMPTY_DAEMON_CAPS,
     // Per-runtime available models, observed from the daemon's runtime profiles.
     runtimeModels: (d.runtimeProfiles ?? []).map((p) => ({
       runtime: p.runtime,
@@ -3686,8 +3723,23 @@ export async function updateAgentCallPolicy(agentId: string, body: AgentCallPoli
   return agentFromDto(await apiPut<AgentDto>(`${orgBase()}/agents/${encodeURIComponent(agentId)}/call-policy`, body))
 }
 
+// The fleet reads split by change rate: `/daemons` is polled for liveness, `/daemons/
+// capabilities` moves only when a daemon connects/upgrades/re-probes, and a runtime's
+// model catalog is read one daemon at a time. `DaemonRow` is stitched back together in
+// the data context, so views still see one object.
 export async function fetchDaemons(orgId?: string): Promise<DaemonRow[]> {
-  return (await apiGet<DaemonViewDto[]>(`${orgBase(orgId)}/daemons`)).map(daemonFromDto)
+  return (await apiGet<DaemonFleetDto[]>(`${orgBase(orgId)}/daemons`)).map(daemonFromDto)
+}
+
+/** Fleet-wide capability, keyed by daemon id — merged onto the liveness rows. */
+export async function fetchDaemonCapabilities(orgId?: string): Promise<Map<string, DaemonCapabilityDto>> {
+  const rows = await apiGet<DaemonCapabilityDto[]>(`${orgBase(orgId)}/daemons/capabilities`)
+  return new Map(rows.map((r) => [r.daemonId, r]))
+}
+
+/** One daemon in full — the only read that carries each runtime's model catalog. */
+export async function fetchDaemon(daemonId: string): Promise<DaemonRow> {
+  return daemonFromDto(await apiGet<DaemonViewDto>(`${orgBase()}/daemons/${encodeURIComponent(daemonId)}`))
 }
 
 // Assign a human-friendly display name to a connected daemon.

@@ -109,6 +109,14 @@ type DaemonDto = {
   canManageLifecycle: boolean
 }
 
+/** `GET /daemons/capabilities` row — the capability half, minus each runtime's catalog. */
+type CapabilityDto = Pick<DaemonDto, 'daemonId' | 'capabilities' | 'mcpServers'> & {
+  runtimeProfiles: Omit<DaemonDto['runtimeProfiles'][number], 'modelCatalog'>[]
+}
+
+const listCapabilities = async (): Promise<CapabilityDto[]> =>
+  (await running!.app.inject({ method: 'GET', url: `${ORG}/daemons/capabilities` })).json() as CapabilityDto[]
+
 describe('GET /daemons — live-status overlay', () => {
   it('reads `offline` for a registered daemon with no live connection (the exited-but-connected bug)', async () => {
     await seedDaemon()
@@ -207,16 +215,18 @@ describe('GET /daemons — live-status overlay', () => {
     expect(d.lastModifiedBy).toBeNull()
     expect(Date.parse(d.lastModifiedAt)).not.toBeNaN()
 
-    expect(d.capabilities.runtimes).toEqual(['claude', 'codex'])
-    expect(d.capabilities.platforms).toEqual(['slack'])
-    expect(d.capabilities.acp).toBe(true)
+    // Capability is its own read now; the liveness row carries none of it.
+    expect(d).not.toHaveProperty('capabilities')
+    const caps = (await listCapabilities()).find((r) => r.daemonId === DAEMON)!
+    expect(caps.capabilities.runtimes).toEqual(['claude', 'codex'])
+    expect(caps.capabilities.platforms).toEqual(['slack'])
+    expect(caps.capabilities.acp).toBe(true)
   })
 
   it('defaults runtimeProfiles + mcpServers to [] for a daemon that has reported none', async () => {
     await seedDaemon()
     running = buildHttpApp(prisma)
-    const rows = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
-    const d = rows.find((r) => r.daemonId === DAEMON)!
+    const d = (await listCapabilities()).find((r) => r.daemonId === DAEMON)!
     expect(d.runtimeProfiles).toEqual([])
     expect(d.mcpServers).toEqual([])
   })
@@ -237,9 +247,7 @@ describe('GET /daemons — live-status overlay', () => {
       new Date()
     )
     running = buildHttpApp(prisma)
-    const rows = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
-
-    const d = rows.find((r) => r.daemonId === DAEMON)!
+    const d = (await listCapabilities()).find((r) => r.daemonId === DAEMON)!
     expect(d.runtimeProfiles).toHaveLength(1)
     expect(d.runtimeProfiles[0]!.runtime).toBe('claude')
     expect(d.runtimeProfiles[0]!.models).toEqual(['claude-opus-4', 'claude-sonnet-4-5'])
@@ -247,8 +255,8 @@ describe('GET /daemons — live-status overlay', () => {
     expect(d.runtimeProfiles[0]!.contextWindow).toBe(200000)
     // Never probed for MCP transports ⇒ explicit null (assume stdio-only), not undefined.
     expect(d.runtimeProfiles[0]!.mcpCapabilities).toBeNull()
-    // No catalog reported ⇒ explicit nulls (the console falls back to its static tables).
-    expect(d.runtimeProfiles[0]!.modelCatalog).toBeNull()
+    // The catalog is not on this read at all; an unreported modelsSource is an explicit null.
+    expect(d.runtimeProfiles[0]!).not.toHaveProperty('modelCatalog')
     expect(d.runtimeProfiles[0]!.modelsSource).toBeNull()
     // No login warning reported ⇒ explicit false (older daemons never send it).
     expect(d.runtimeProfiles[0]!.authRequired).toBe(false)
@@ -269,8 +277,7 @@ describe('GET /daemons — live-status overlay', () => {
       new Date()
     )
     running = buildHttpApp(prisma)
-    const rows = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
-    expect(rows.find((r) => r.daemonId === DAEMON)!.runtimeProfiles[0]!.authRequired).toBe(true)
+    expect((await listCapabilities()).find((r) => r.daemonId === DAEMON)!.runtimeProfiles[0]!.authRequired).toBe(true)
   })
 
   it('serves the reported modelCatalog, modelsSource and observedAt per runtime profile', async () => {
@@ -301,11 +308,11 @@ describe('GET /daemons — live-status overlay', () => {
     )
 
     running = buildHttpApp(prisma)
-    const res = await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })
     expect(res.statusCode).toBe(200)
-    const d = (res.json() as DaemonDto[]).find((r) => r.daemonId === DAEMON)!
+    const d = res.json() as DaemonDto
 
-    // One shape wire → JSONB → DTO: the catalog comes back verbatim.
+    // One shape wire → JSONB → DTO: the catalog comes back verbatim, and only from here.
     expect(d.runtimeProfiles[0]!.modelCatalog).toEqual(catalog)
     expect(d.runtimeProfiles[0]!.modelsSource).toBe('cached')
     expect(d.runtimeProfiles[0]!.observedAt).toBe(at.toISOString())
@@ -332,9 +339,7 @@ describe('GET /daemons — live-status overlay', () => {
     ])
 
     running = buildHttpApp(prisma)
-    const res = await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })
-    expect(res.statusCode).toBe(200)
-    const d = (res.json() as DaemonDto[]).find((r) => r.daemonId === DAEMON)!
+    const d = (await listCapabilities()).find((r) => r.daemonId === DAEMON)!
 
     expect(d.runtimeProfiles[0]!.mcpCapabilities).toEqual({ http: true, sse: false })
     expect(d.mcpServers).toEqual([
@@ -355,10 +360,7 @@ describe('GET /daemons — live-status overlay', () => {
       new Date()
     )
     running = buildHttpApp(prisma)
-    const res = await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })
-    expect(res.statusCode).toBe(200)
-    const rows = res.json() as DaemonDto[]
-    expect(rows.find((r) => r.daemonId === DAEMON)!.runtimeProfiles[0]!.contextWindow).toBeNull()
+    expect((await listCapabilities()).find((r) => r.daemonId === DAEMON)!.runtimeProfiles[0]!.contextWindow).toBeNull()
   })
 
   it('groups runtime profiles per daemon (multiple runtimes on one daemon; no cross-daemon bleed)', async () => {
@@ -386,7 +388,7 @@ describe('GET /daemons — live-status overlay', () => {
     )
 
     running = buildHttpApp(prisma)
-    const rows = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
+    const rows = await listCapabilities()
 
     const a = rows.find((r) => r.daemonId === DAEMON)!
     expect(a.runtimeProfiles.map((p) => p.runtime)).toEqual(['claude', 'codex']) // ordered by runtime
@@ -395,6 +397,47 @@ describe('GET /daemons — live-status overlay', () => {
     const b = rows.find((r) => r.daemonId === DAEMON_B)!
     expect(b.runtimeProfiles).toHaveLength(1) // only its own — no bleed from A
     expect(b.runtimeProfiles[0]!.models).toEqual(['claude-haiku-4-5'])
+  })
+
+  // The split's whole point: the poll pays for liveness only, and the per-model matrix —
+  // which every reader wants one daemon at a time — is on neither fleet-wide read.
+  it('keeps capability off the liveness row and the model catalog off both fleet reads', async () => {
+    await seedDaemon()
+    await new PgRuntimeProfileRepo(prisma).record(
+      DaemonId(DAEMON),
+      {
+        runtime: 'claude',
+        version: '1.4.0',
+        models: ['claude-opus-4'],
+        acpSupport: 'full',
+        toolCalling: true,
+        modelCatalog: {
+          models: [{ id: 'claude-opus-4' }],
+          source: 'acp' as const,
+          observedAt: '2026-07-18T00:00:00.000Z'
+        }
+      },
+      new Date()
+    )
+    running = buildHttpApp(prisma)
+
+    const fleet = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons` })).json() as DaemonDto[]
+    const row = fleet.find((r) => r.daemonId === DAEMON)!
+    expect(row.status).toBe('offline') // it IS the liveness row
+    for (const half of ['capabilities', 'runtimeProfiles', 'mcpServers']) expect(row).not.toHaveProperty(half)
+
+    const caps = (await listCapabilities()).find((r) => r.daemonId === DAEMON)!
+    expect(caps.runtimeProfiles[0]!.models).toEqual(['claude-opus-4'])
+    expect(caps.runtimeProfiles[0]!).not.toHaveProperty('modelCatalog')
+
+    const one = (await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${DAEMON}` })).json() as DaemonDto
+    expect(one.runtimeProfiles[0]!.modelCatalog!.models).toEqual([{ id: 'claude-opus-4' }])
+  })
+
+  it('404s the single-daemon read for an unknown id', async () => {
+    running = buildHttpApp(prisma)
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/daemons/${randomUUID()}` })
+    expect(res.statusCode).toBe(404)
   })
 })
 

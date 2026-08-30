@@ -96,6 +96,9 @@ import {
   type AgentCallPolicyInput,
   fetchAgents,
   fetchDaemons,
+  fetchDaemonCapabilities,
+  withDaemonCapability,
+  type DaemonCapabilityDto,
   fetchSessionFacets,
   subscribeSessionEvents,
   fetchCrons,
@@ -291,6 +294,9 @@ interface ConsoleData {
 const Ctx = createContext<ConsoleData | null>(null)
 const SESSION_EVENT_REFRESH_DEBOUNCE_MS = 500
 const DAEMON_REFRESH_MS = 15_000
+/** Capability changes on connect/upgrade/re-probe, all of which already revalidate the
+ *  fleet, so this is a backstop rather than the way a change is noticed. */
+const DAEMON_CAPABILITY_REFRESH_MS = 300_000
 const RESOURCE_REFRESH_MS = 30_000
 const EMPTY_SESSION_FACETS: SessionFacets = {
   agentIds: [],
@@ -786,6 +792,14 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   } = useSWR<DaemonRow[]>(consoleKeys.daemons(orgKey), ([, orgId]) => fetchDaemons(orgId as string), {
     refreshInterval: DAEMON_REFRESH_MS
   })
+  // Capability moves only when a daemon connects, upgrades, or re-probes, so it is read
+  // apart from the liveness poll and stitched back on below. Its own revalidation is slow;
+  // the events that actually change it already refresh the fleet through `mutateDaemons`.
+  const { data: daemonCapabilities, isLoading: capabilitiesIsLoading } = useSWR<Map<string, DaemonCapabilityDto>>(
+    consoleKeys.daemonCapabilities(orgKey),
+    ([, orgId]) => fetchDaemonCapabilities(orgId as string),
+    { refreshInterval: DAEMON_CAPABILITY_REFRESH_MS }
+  )
   const {
     data: realCrons = [],
     error: cronsError,
@@ -996,7 +1010,12 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     })
     return [...realAgents, ...demo]
   }, [realAgents, mockCallPolicy])
-  const daemons = realDaemons
+  // One `DaemonRow` again: views never learn the read was split. `modelCatalog` is absent
+  // here by design — `useDaemonDetail` fetches the one daemon that needs it.
+  const daemons = useMemo(
+    () => realDaemons.map((d) => withDaemonCapability(d, daemonCapabilities?.get(d.daemonId))),
+    [realDaemons, daemonCapabilities]
+  )
 
   // Resolve an agent by id. Falls back to a demo agent only in mock mode; a live
   // console returns undefined for an unknown id (e.g. a stale deep link).
@@ -1530,7 +1549,9 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
   const error = coreError ? (coreError instanceof Error ? coreError.message : String(coreError)) : null
   const agentsLoading = waitingForOrg || agentsIsLoading
   const sessionsLoading = waitingForOrg || sessionsIsLoading || sessionFacetsIsLoading
-  const daemonsLoading = waitingForOrg || daemonsIsLoading
+  // Capability is part of a complete daemon row here, so a view that gates on this never
+  // renders a fleet row as "runs nothing" in the window before that read lands.
+  const daemonsLoading = waitingForOrg || daemonsIsLoading || capabilitiesIsLoading
   const cronsLoading = waitingForOrg || cronsIsLoading
   // Mock mode never waits: the demo registries are always there, so the tiles render
   // immediately instead of sitting on a spinner while a CP that isn't running fails.
@@ -1544,6 +1565,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     sessionsIsLoading ||
     sessionFacetsIsLoading ||
     daemonsIsLoading ||
+    capabilitiesIsLoading ||
     cronsIsLoading ||
     integrationsIsLoading ||
     botsIsLoading ||
