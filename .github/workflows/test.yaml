@@ -250,12 +250,17 @@ jobs:
   #
   # No `prisma:generate` step: neither package imports the generated client.
   unit-windows:
-    name: Unit Test (Windows)
+    name: Unit Test (Windows) (${{ matrix.shard }})
     needs: windows-scope
     if: ${{ needs.windows-scope.outputs.changed == 'true' }}
     runs-on: windows-latest
-    # The daemon suite alone runs ~5 min here against ~3 on Linux — Windows filesystem and
-    # process-spawn cost, not extra work — so the cap is set well clear of it rather than near it.
+    # The daemon balances its halves by file size (`scripts/vitest-shard-sequencer.ts`); the CLI is 6 s, so it keeps Vitest's own split.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['1/2', '2/2']
+    # Half the daemon suite runs ~2.5 min here, against ~3 on Linux for all of it — Windows
+    # filesystem and process-spawn cost, not extra work — so the cap stays well clear of it.
     timeout-minutes: 45
     defaults:
       run:
@@ -314,14 +319,14 @@ jobs:
           GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-        run: pnpm --filter @agentconnect.md/daemon test:unit
+        run: pnpm --filter @agentconnect.md/daemon test:unit --shard=${{ matrix.shard }}
       - name: CLI unit tests
         if: ${{ !cancelled() }}
         env:
           GITHUB_STEP_SUMMARY: ${{ runner.temp }}/windows-unit-test-summary.md
           pnpm_config_enable_pre_post_scripts: false
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
-        run: pnpm --filter @agentconnect.md/cli test:unit
+        run: pnpm --filter @agentconnect.md/cli test:unit --shard=${{ matrix.shard }}
       - name: Merge Windows unit test summaries
         if: ${{ !cancelled() }}
         env:
@@ -329,7 +334,7 @@ jobs:
           VITEST_JOB_SUMMARY_DIR: ${{ runner.temp }}
         run: |
           GITHUB_STEP_SUMMARY="$CAPTURED_JOB_SUMMARY" node scripts/merge-vitest-summaries.mjs \
-            'Windows unit test report' \
+            'Windows unit test report · shard ${{ matrix.shard }}' \
             'daemon=@agentconnect.md/daemon' \
             'cli=@agentconnect.md/cli'
       - name: Publish Windows unit test summary
