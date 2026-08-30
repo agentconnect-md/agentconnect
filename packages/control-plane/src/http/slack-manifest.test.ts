@@ -54,6 +54,17 @@ describe('buildInstallManifest', () => {
     expect(checkSlackBotScopes([...SLACK_BOT_SCOPES])).toEqual({ status: 'complete' })
   })
 
+  // The refresh is the only path that can add a scope to an app created before the
+  // capability existed — union it with the FULL set or a reauthorization can never grant it.
+  it('refresh unions the capability scopes into an app that predates them', () => {
+    const merged = mergeManagedSlackManifest(
+      { oauth_config: { scopes: { bot: [...SLACK_BOT_SCOPES] } } },
+      'acme-bot',
+      REDIRECT
+    ) as { oauth_config: { scopes: { bot: string[] } } }
+    for (const scope of SLACK_CAPABILITY_BOT_SCOPES) expect(merged.oauth_config.scopes.bot).toContain(scope)
+  })
+
   it('http mode: disables Socket Mode and points the Events API request_urls at the relay', () => {
     const m = buildInstallManifest('acme-bot', REDIRECT, { httpRelayBase: 'https://relay.example' }) as {
       settings: {

@@ -11,7 +11,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { provisionPresetAgents } from '../../src/persistence/index.js'
-import { SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
+import { SLACK_BOT_SCOPES, SLACK_MANIFEST_BOT_SCOPES } from '../../src/http/slack-manifest.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import type {
   SlackConfigApi,
@@ -170,7 +170,10 @@ describe('POST /integrations/slack/platform-install', () => {
     expect(url.searchParams.get('client_id')).toBe(PLATFORM.clientId)
     expect(url.searchParams.get('state')).toBe(started.id)
     expect(url.searchParams.get('redirect_uri')).toBe('https://cp.example/v1/integrations/slack/platform/callback')
-    expect(url.searchParams.get('scope')).toContain('chat:write')
+    // Slack grants exactly the scopes this parameter names, so it must carry the FULL
+    // manifest set: a capability scope declared but never requested is one no install
+    // holds, and its tool answers `missing_scope` forever.
+    expect(url.searchParams.get('scope')?.split(',')).toEqual([...SLACK_MANIFEST_BOT_SCOPES])
 
     const row = await prisma.slackPlatformInstall.findUnique({ where: { id: started.id } })
     expect(row).toMatchObject({ orgId: DEFAULT_ORG_ID, agentId: preset!.id, createdByUserId: DEFAULT_OWNER_ID })

@@ -202,7 +202,7 @@ export function mergeManagedSlackManifest(
       scopes: {
         ...managedScopes,
         ...currentScopes,
-        bot: unionStrings(currentScopes.bot, SLACK_BOT_SCOPES)
+        bot: unionStrings(currentScopes.bot, SLACK_MANIFEST_BOT_SCOPES)
       }
     },
     settings: {
