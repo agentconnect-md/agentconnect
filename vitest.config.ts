@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config'
-import { BASE_TEST_TIMEOUT } from './packages/daemon/vitest.config.js'
+import { BASE_TEST_TIMEOUT } from './scripts/vitest-test-budget.js'
 
 // `eval:gates` and its four siblings run daemon test files with `vitest run` from HERE, where
 // nothing set a budget — so the same file got vitest's 5 s default instead of the 30 s its own

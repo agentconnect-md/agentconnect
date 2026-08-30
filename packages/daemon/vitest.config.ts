@@ -1,5 +1,6 @@
 import { defineConfig, configDefaults } from 'vitest/config'
 import { githubActionsReporters } from '../../scripts/vitest-github-reporters.js'
+import { BASE_TEST_TIMEOUT } from '../../scripts/vitest-test-budget.js'
 
 // The files that call `vi.mock`. A mock is registered per FILE but rewires a module in the registry,
 // so under a shared registry it either misses (the real module was already imported by an earlier
@@ -58,11 +59,6 @@ export const WINDOWS_EXCLUDED = [
 ]
 
 const platformExcluded = process.platform === 'win32' ? WINDOWS_EXCLUDED : []
-
-// The budget every test gets before the platform scaling below. A per-test override can only
-// SHORTEN what this grants, never extend it, so one written at or under this value is dead weight
-// that fails first on the slowest platform. `test/no-shortened-test-budget.test.ts` rejects those.
-export const BASE_TEST_TIMEOUT = 30_000
 
 export default defineConfig({
   test: {
