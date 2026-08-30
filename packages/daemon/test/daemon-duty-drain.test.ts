@@ -483,6 +483,40 @@ describe('shutdown drain of a duty-holding member', () => {
     expect(calls.order.at(-1)).toBe('socket-close')
   })
 
+  it('a parked adoption that cancellation can never wake still releases its group acked inside the reserve', async () => {
+    const { daemon, clock, calls } = await boot()
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant(GROUP, AGENT, 'set')])
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 1_000
+    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 60_000
+    // The hung-request shape: the abandon flag lands but the job NEVER drains — only its
+    // group hold drops (dutyBusy), exactly the runner's abandoned-job contract.
+    let abandoned = false
+    const cancelDream = vi.fn(async () => {
+      abandoned = true
+    })
+    ;(daemon as any).dreamRunnerInstance = {
+      dutyBusy: (id: string) => id === AGENT && !abandoned,
+      inFlightAgents: () => [AGENT],
+      cancelInFlight: cancelDream
+    }
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) })
+    const info = vi.spyOn((daemon as any).log, 'info')
+
+    const startedAt = clock.now()
+    await runVirtual(clock, daemon.stop(), 70_000)
+    const elapsed = clock.now() - startedAt
+
+    // Cancelled at the 30s turn-wait cutoff; the group stops being busy at once and BOTH
+    // releases are acknowledged inside the reserve — the hung request never consumes it.
+    expect(cancelDream).toHaveBeenCalledWith(AGENT)
+    expect(elapsed).toBeGreaterThanOrEqual(30_000)
+    expect(elapsed).toBeLessThan(45_000)
+    expect(calls.releases.flat().sort()).toEqual([GROUP, GROUP_B].sort())
+    const summary = info.mock.calls.map(([m]) => String(m)).find((m) => m.startsWith('duty: shutdown drain released'))
+    expect(summary).toMatch(/2 acknowledged, 0 left to lapse/)
+    expect(calls.order.at(-1)).toBe('socket-close')
+  })
+
   it('a release the CP never acknowledges is retried until the drain deadline, then counted and left to lapse', async () => {
     const { daemon, clock, releaseDuties } = await boot({
       releaseDuties: async () => {
