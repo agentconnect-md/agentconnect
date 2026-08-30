@@ -28,6 +28,8 @@ import type {
   IntegrationStatus,
   IntegrationChannelRepo,
   IntegrationChannelRecord,
+  IntegrationChannelNameRecord,
+  ConversationCoordinate,
   ReportedChannel,
   ChannelTrigger,
   ConversationKind,
@@ -923,5 +925,35 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
       where: { integrationId_channelId: { integrationId, channelId } }
     })
     return row ? toChannelRecord(row) : null
+  }
+
+  async namesForOrg(
+    orgId: OrgId,
+    conversations: readonly ConversationCoordinate[]
+  ): Promise<IntegrationChannelNameRecord[]> {
+    if (conversations.length === 0) return []
+    const platforms = [...new Set(conversations.map((c) => c.platform))]
+    const channelIds = [...new Set(conversations.map((c) => c.channelId))]
+    // The org fence rides on the parent integration (§3.6); the platform narrows the
+    // cross-product this coarse `IN` pair admits, and the caller keys on both anyway.
+    const rows = await this.db.integrationChannel.findMany({
+      where: {
+        channelId: { in: channelIds },
+        name: { not: null },
+        integration: { orgId, platform: { in: platforms } }
+      },
+      select: { channelId: true, name: true, integration: { select: { platform: true } } },
+      orderBy: [{ integrationId: 'asc' }, { channelId: 'asc' }]
+    })
+    const wanted = new Set(conversations.map((c) => `${c.platform} ${c.channelId}`))
+    const named = new Map<string, IntegrationChannelNameRecord>()
+    for (const row of rows) {
+      const key = `${row.integration.platform} ${row.channelId}`
+      // Shared-bot siblings repeat the conversation; the ordered first row wins so the
+      // answer is stable across requests rather than whichever row the planner emits.
+      if (!wanted.has(key) || named.has(key)) continue
+      named.set(key, { platform: row.integration.platform, channelId: row.channelId, name: row.name! })
+    }
+    return [...named.values()]
   }
 }

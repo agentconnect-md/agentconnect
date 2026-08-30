@@ -25,6 +25,7 @@ import {
   AutoMergeErrorReason,
   CODE_HOST_PROVIDERS,
   isCodeHostHookKind,
+  isSessionIdentityPlatform,
   SANDBOX_KEEP_ALIVE_FEATURE,
   originKindOf,
   type CodeHostProvider,
@@ -38,7 +39,7 @@ import { ConnectionClosed } from '../../ws/registry.js'
 import { sessionContentReaders } from '../../domain/session-content.js'
 import { visibilityStateOf } from '../../orchestrator/visibilityPush.js'
 import type { PullRequestView } from '../../github/pull-request-view.service.js'
-import type { SessionMetaRecord } from '../../persistence/ports.js'
+import type { ConversationCoordinate, SessionMetaRecord } from '../../persistence/ports.js'
 import { GithubApiError } from '../../github/api.js'
 import { GitCredDeniedError } from '../../github/service.js'
 import { ProtocolError } from '../../domain/errors.js'
@@ -251,9 +252,48 @@ function sessionIntegration(s: HookSessionRow, hook: HookSessionMetadata | undef
  *  GitLab did — adding one to the shared union fails this file's type-check first. */
 const HOOK_KIND_LABEL: Record<HookKind, string> = { webhook: 'Webhook', github: 'GitHub', gitlab: 'GitLab' }
 
+/** A channel id is only unique within its platform, so the label cache keys on both.
+ *  The space is safe: no platform conversation id we store contains one. */
+function conversationNameKey(platform: string | null, channel: string): string {
+  return `${platform ?? 'slack'} ${channel}`
+}
+
+/**
+ * Names for the conversations in these rows the reporting daemon never labeled, read
+ * from the org's channel directory — the same source a schedule's target channel is
+ * named through.
+ *
+ * `channelName` is a snapshot of the daemon's own name cache at the moment it emitted
+ * `event/session`, and that cache learns a channel from the bot's membership listing.
+ * A conversation the agent only ever POSTS into can therefore leave the column null for
+ * good, leaving the console to print a raw platform id. The directory is durable and
+ * already holds the name, so reading it here repairs existing rows too.
+ */
+async function channelNamesForSessions(
+  deps: HttpDeps,
+  sessions: readonly (HookSessionRow & { channelName: string | null })[],
+  orgId: OrgId
+): Promise<Map<string, string>> {
+  const wanted = new Map<string, ConversationCoordinate>()
+  for (const s of sessions) {
+    const platform = s.platform ?? 'slack'
+    // A session-identity platform holds no conversation of its own here — a hook
+    // session's `channel` is its hook id, and webchat's is its conversation id.
+    if (s.channelName || !s.channel || isSessionIdentityPlatform(platform)) continue
+    wanted.set(conversationNameKey(platform, s.channel), { platform, channelId: s.channel })
+  }
+  const names = new Map<string, string>()
+  if (wanted.size === 0) return names
+  for (const row of await deps.repos.integrationChannel.namesForOrg(orgId, [...wanted.values()])) {
+    names.set(conversationNameKey(row.platform, row.channelId), row.name)
+  }
+  return names
+}
+
 function sessionDisplayMetadata(
   s: HookSessionRow & { channelName: string | null; triggeredByName: string | null },
-  hook: HookSessionMetadata | undefined
+  hook: HookSessionMetadata | undefined,
+  channelNames: ReadonlyMap<string, string>
 ) {
   // Hook kind remains valid after reassignment, but the current name only
   // describes historical rows while the hook still belongs to the same agent.
@@ -262,7 +302,11 @@ function sessionDisplayMetadata(
   const kind = sessionHookKind(s, hook)
   const sourceLabel = HOOK_KIND_LABEL[kind ?? 'webhook']
   return {
-    channelName: s.platform === 'hook' ? (hookName ?? s.channelName ?? null) : (s.channelName ?? null),
+    channelName:
+      s.platform === 'hook'
+        ? (hookName ?? s.channelName ?? null)
+        : (s.channelName ??
+          (s.channel ? (channelNames.get(conversationNameKey(s.platform, s.channel)) ?? null) : null)),
     triggeredByName: s.triggeredBy?.startsWith(HOOK_TRIGGER_PREFIX)
       ? (hookName ?? s.triggeredByName ?? sourceLabel)
       : (s.triggeredByName ?? null)
@@ -272,7 +316,8 @@ function sessionDisplayMetadata(
 function sessionFacets(
   index: SessionFacetIndex,
   hookMetadata: Map<string, HookSessionMetadata>,
-  agentNames: ReadonlyMap<string, string>
+  agentNames: ReadonlyMap<string, string>,
+  channelNames: ReadonlyMap<string, string>
 ) {
   const integrations = new Set<string>()
   const facetAgentNames: Record<string, string> = {}
@@ -308,7 +353,7 @@ function sessionFacets(
   for (const session of index.channels) {
     const channel = session.channel!
     const hook = hookMetadataForSession(hookMetadata, session)
-    const display = sessionDisplayMetadata(session, hook)
+    const display = sessionDisplayMetadata(session, hook, channelNames)
     channels.set(channel, {
       value: channel,
       platform: session.platform ?? 'slack',
@@ -320,7 +365,7 @@ function sessionFacets(
   for (const session of index.triggers) {
     const triggeredBy = session.triggeredBy!
     const hook = hookMetadataForSession(hookMetadata, session)
-    const display = sessionDisplayMetadata(session, hook)
+    const display = sessionDisplayMetadata(session, hook, channelNames)
     const githubRepoId = hook?.kind === 'github' ? (hook.repoId?.toString() ?? null) : null
     triggers.set(triggeredBy, {
       value: triggeredBy,
@@ -343,10 +388,11 @@ function sessionFacets(
 function sessionDto(
   s: SessionPageRow,
   hookMetadata: Map<string, HookSessionMetadata>,
-  agentNames: ReadonlyMap<string, string>
+  agentNames: ReadonlyMap<string, string>,
+  channelNames: ReadonlyMap<string, string>
 ) {
   const hook = hookMetadataForSession(hookMetadata, s)
-  const display = sessionDisplayMetadata(s, hook)
+  const display = sessionDisplayMetadata(s, hook, channelNames)
   return {
     sessionId: s.id,
     sessionKey: {
@@ -668,8 +714,11 @@ export function sessionRoutes(deps: HttpDeps) {
         const { viewer } = await viewerForQuery(req, { agentIds: orgAgentIds.map(AgentId) })
         const index = await deps.repos.session.listFacets({ ...query, viewer })
         const metadataRows = [...index.integrations, ...index.channels, ...index.triggers]
-        const hookMetadata = await hookMetadataForSessions(deps, metadataRows, orgOf(req))
-        return sessionFacets(index, hookMetadata, agentNames)
+        const [hookMetadata, channelNames] = await Promise.all([
+          hookMetadataForSessions(deps, metadataRows, orgOf(req)),
+          channelNamesForSessions(deps, metadataRows, orgOf(req))
+        ])
+        return sessionFacets(index, hookMetadata, agentNames, channelNames)
       }
     )
 
@@ -777,7 +826,10 @@ export function sessionRoutes(deps: HttpDeps) {
           )
           const selected = new Set<string>(selectedAgentIds)
           const rows = members.filter((session) => selected.has(session.agentId))
-          const hookMetadata = await hookMetadataForSessions(deps, rows, orgOf(req))
+          const [hookMetadata, channelNames] = await Promise.all([
+            hookMetadataForSessions(deps, rows, orgOf(req)),
+            channelNamesForSessions(deps, rows, orgOf(req))
+          ])
           return {
             conversations:
               rows.length > 0
@@ -787,7 +839,7 @@ export function sessionRoutes(deps: HttpDeps) {
                       platform: conversationKey.platform,
                       channel: conversationKey.channel,
                       thread: conversationKey.thread,
-                      sessions: rows.map((session) => sessionDto(session, hookMetadata, agentNames)),
+                      sessions: rows.map((session) => sessionDto(session, hookMetadata, agentNames, channelNames)),
                       memberSessionIds: members.map((session) => session.id)
                     }
                   ]
@@ -801,10 +853,13 @@ export function sessionRoutes(deps: HttpDeps) {
 
         if (!grouped) {
           const page = await deps.repos.session.listPage({ ...query, viewer })
-          const hookMetadata = await hookMetadataForSessions(deps, page.sessions, orgOf(req))
+          const [hookMetadata, channelNames] = await Promise.all([
+            hookMetadataForSessions(deps, page.sessions, orgOf(req)),
+            channelNamesForSessions(deps, page.sessions, orgOf(req))
+          ])
           const nextCursor = page.hasMore ? encodeSessionCursor(page.sessions[page.sessions.length - 1]!) : null
           return {
-            sessions: page.sessions.map((session) => sessionDto(session, hookMetadata, agentNames)),
+            sessions: page.sessions.map((session) => sessionDto(session, hookMetadata, agentNames, channelNames)),
             total: page.total,
             nextCursor,
             accessSyncDegraded: access.degraded,
@@ -815,7 +870,10 @@ export function sessionRoutes(deps: HttpDeps) {
 
         const page = await deps.repos.session.listConversationPage({ ...query, viewer })
         const allRows = page.conversations.flatMap((c) => c.sessions)
-        const hookMetadata = await hookMetadataForSessions(deps, allRows, orgOf(req))
+        const [hookMetadata, channelNames] = await Promise.all([
+          hookMetadataForSessions(deps, allRows, orgOf(req)),
+          channelNamesForSessions(deps, allRows, orgOf(req))
+        ])
         // The grouped cursor is the last conversation's REPRESENTATIVE row —
         // emit-at-max makes resumption stateless (§5.2).
         const lastRep = page.conversations[page.conversations.length - 1]?.sessions[0]
@@ -826,7 +884,7 @@ export function sessionRoutes(deps: HttpDeps) {
             platform: c.key.platform,
             channel: c.key.channel,
             thread: c.key.thread,
-            sessions: c.sessions.map((session) => sessionDto(session, hookMetadata, agentNames)),
+            sessions: c.sessions.map((session) => sessionDto(session, hookMetadata, agentNames, channelNames)),
             memberSessionIds: c.memberSessionIds
           })),
           total: page.total,
@@ -869,20 +927,22 @@ export function sessionRoutes(deps: HttpDeps) {
         const orgAgentIdSet = new Set<string>(orgAgentIds)
         const agentNames = new Map(orgAgents.map((agent) => [agent.id, agentDisplayName(agent)]))
         const ctx = ctxOf(req)
-        const [parent, children, siblingCandidates, usage, webchatRoster, hookMetadata] = await Promise.all([
-          s.parentSessionId ? deps.repos.session.get(orgOf(req), s.parentSessionId) : Promise.resolve(null),
-          deps.repos.session.listChildren(SessionId(s.id), orgAgentIds),
-          s.parentSessionId ? deps.repos.session.listChildren(s.parentSessionId, orgAgentIds) : Promise.resolve([]),
-          deps.repos.sessionUsage.get(s.agentId, s.id),
-          // A webchat session's channel IS its conversation id; the roster feeds
-          // the adopted-session composer/header, which has no relay socket.
-          s.platform === 'webchat' && s.channel
-            ? deps.repos.webchatConversation.participants(orgOf(req), s.channel)
-            : Promise.resolve([]),
-          hookMetadataForSessions(deps, [s], orgOf(req))
-        ])
+        const [parent, children, siblingCandidates, usage, webchatRoster, hookMetadata, channelNames] =
+          await Promise.all([
+            s.parentSessionId ? deps.repos.session.get(orgOf(req), s.parentSessionId) : Promise.resolve(null),
+            deps.repos.session.listChildren(SessionId(s.id), orgAgentIds),
+            s.parentSessionId ? deps.repos.session.listChildren(s.parentSessionId, orgAgentIds) : Promise.resolve([]),
+            deps.repos.sessionUsage.get(s.agentId, s.id),
+            // A webchat session's channel IS its conversation id; the roster feeds
+            // the adopted-session composer/header, which has no relay socket.
+            s.platform === 'webchat' && s.channel
+              ? deps.repos.webchatConversation.participants(orgOf(req), s.channel)
+              : Promise.resolve([]),
+            hookMetadataForSessions(deps, [s], orgOf(req)),
+            channelNamesForSessions(deps, [s], orgOf(req))
+          ])
         const hook = hookMetadataForSession(hookMetadata, s)
-        const display = sessionDisplayMetadata(s, hook)
+        const display = sessionDisplayMetadata(s, hook, channelNames)
         // Continuation gate (webchat-cross-integration-continuation.md §6.5):
         // the same predicate + state checks the mint route applies, projected as
         // one server-computed flag + bounded product-language reason.
