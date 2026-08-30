@@ -501,9 +501,12 @@ export class DiscordConverger {
       }
       case 'plan': {
         const entries = (update as { entries?: PlanEntry[] }).entries ?? []
+        // `low` posts the plan, like every other integration of the same agent: output mode is
+        // ONE agent-level setting, so the plan cannot be a channel message on one platform and
+        // a typing hint on another. `minimal` (one live-updating reply) and `none` (nothing
+        // reaches the channel) still withhold it.
         if (this.mode === 'minimal') return [{ kind: 'typing' }]
         if (this.mode === 'none') return this.flush()
-        if (this.mode === 'low') return [...this.flush(), { kind: 'typing' }]
         return [...this.flush(), { kind: 'plan', text: renderPlan(entries) }]
       }
       default:
