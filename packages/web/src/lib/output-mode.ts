@@ -17,8 +17,12 @@ export const OUTPUT_MODE_OPTIONS: readonly OutputModeOption[] = [
     label: 'Minimal',
     description: 'One live-updating reply that settles on the final answer; interstitial steps stay in the status.'
   },
-  { key: 'low', label: 'Low', description: 'Replies only; activity stays in the temporary status.' },
-  { key: 'medium', label: 'Medium', description: 'Low plus tool activity and plans.' },
+  {
+    key: 'low',
+    label: 'Low',
+    description: 'Replies and the turn’s plan; other activity stays in the temporary status.'
+  },
+  { key: 'medium', label: 'Medium', description: 'Low plus tool activity.' },
   { key: 'high', label: 'High', description: 'Medium plus reasoning and tool outputs.' },
   {
     key: 'none',

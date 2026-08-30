@@ -152,6 +152,22 @@ describe('TelegramConverger modes', () => {
     const p = out.find((a) => a.kind === 'plan') as { text: string }
     expect(p.text).toBe('📋 <b>Plan</b>\n✅ do &lt;x&gt;\n⏳ do y\n⬜ do z')
   })
+
+  // Output mode is ONE agent-level setting every integration obeys, so the plan cannot be a
+  // channel message on one platform and a typing hint on another at the same rung.
+  it('posts the plan on low too, the default mode', () => {
+    const c = new TelegramConverger('low')
+    const out = c.onUpdate(plan([{ content: 'do y', status: 'in_progress' }]))
+    expect((out.find((a) => a.kind === 'plan') as { text: string } | undefined)?.text).toBe('📋 <b>Plan</b>\n⏳ do y')
+  })
+
+  it('still withholds the plan on minimal and none', () => {
+    for (const mode of ['minimal', 'none'] as const) {
+      const c = new TelegramConverger(mode)
+      const out = c.onUpdate(plan([{ content: 'do y', status: 'in_progress' }]))
+      expect(out.some((a) => a.kind === 'plan')).toBe(false)
+    }
+  })
 })
 
 describe('TelegramConverger minimal mode', () => {
