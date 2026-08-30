@@ -1770,9 +1770,6 @@ export const SlackBotRefreshDto = z.object({
   manifest: z.enum(['synced', 'manual_update_required', 'unknown']),
   authorization: z.enum(['current', 'reinstall_required', 'invalid', 'app_mismatch', 'unknown']),
   missingScopes: z.array(z.string()),
-  /** Optional-capability scopes this install lacks. Never affects `authorization` — the install
-   *  works, but the tools those scopes back will refuse until someone reinstalls. */
-  missingCapabilityScopes: z.array(z.string()).default([]),
   settingsUrl: z.string(),
   manifestUrl: z.string(),
   /** Slack's OAuth & Permissions editor for changing requested scopes. */
