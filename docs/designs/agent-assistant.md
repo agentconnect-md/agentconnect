@@ -212,6 +212,7 @@ Tools **call the CP service layer directly or reuse route-handler logic**, prese
 | -------------------------------------------------------------- | ---------------------------------------------------------- | ------- |
 | `whoami`                                                       | GET /me + GET /orgs/:orgId (credential identity/role)      | –       |
 | `listAgents` / `getAgent`                                      | GET /agents(:id)                                           | –       |
+| `listWorkspaceFiles` / `readWorkspaceFile`                     | GET /agents/:id/workspace/files(file) (proxied, unstored)  | –       |
 | `createAgent` / `updateAgent`                                  | POST /agents · PATCH /agents/:id                           | ✎       |
 | `deleteAgent`                                                  | DELETE /agents/:id                                         | ✎🔥     |
 | `listDaemons` / `renameDaemon`                                 | GET /daemons · PATCH /daemons/:id                          | –/✎     |
