@@ -18,7 +18,11 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { PgAgentRepo } from '../../src/persistence/repositories/agent.repo.js'
 import { PgDaemonRepo } from '../../src/persistence/repositories/daemon.repo.js'
-import { PgBotRepo, PgIntegrationRepo } from '../../src/persistence/repositories/integration.repo.js'
+import {
+  PgBotRepo,
+  PgIntegrationChannelRepo,
+  PgIntegrationRepo
+} from '../../src/persistence/repositories/integration.repo.js'
 import { PgCronRepo } from '../../src/persistence/repositories/cron.repo.js'
 import { PgHookRepo } from '../../src/persistence/repositories/hook.repo.js'
 import { PgMcpProviderRepo } from '../../src/persistence/repositories/mcp.repo.js'
@@ -793,6 +797,16 @@ describe('tenant isolation — Integration and its conversation rows over the RE
     })
     expect(leave.statusCode).toBe(404)
     await foreignIntegrationUnmodified()
+  })
+
+  it('the conversation-name directory answers for the caller’s org only', async () => {
+    const channels = new PgIntegrationChannelRepo(prisma)
+    const coordinates = [{ platform: 'slack', channelId: foreignChannelId }]
+    expect(await channels.namesForOrg(CALLER_ORG, coordinates)).toEqual([])
+    // Proof the row is genuinely there — it is the FENCE that hides it, not a bad id.
+    expect(await channels.namesForOrg(OrgId(foreignOrgId), coordinates)).toEqual([
+      { platform: 'slack', channelId: foreignChannelId, name: 'foreign-channel' }
+    ])
   })
 })
 

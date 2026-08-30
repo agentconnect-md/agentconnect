@@ -98,7 +98,8 @@ function fakeDeps(overrides: {
         listFacets: vi.fn(async () => ({ agents: [], integrations: [], channels: [], triggers: [] }))
       },
       sessionUsage: { get: vi.fn(async () => null) },
-      hook: { getMany: vi.fn(async () => []) }
+      hook: { getMany: vi.fn(async () => []) },
+      integrationChannel: { namesForOrg: vi.fn(async () => []) }
     },
     clock: { now: () => Date.now() },
     ...(overrides.slackIdentityFor

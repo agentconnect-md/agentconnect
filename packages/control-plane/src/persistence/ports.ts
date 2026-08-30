@@ -4620,6 +4620,25 @@ export interface IntegrationChannelRepo {
     agentId: AgentId,
     opts?: { defaultTrigger?: ChannelTrigger; kind?: ConversationKind }
   ): Promise<IntegrationChannelRecord>
+  /**
+   * The org's conversation-name directory for the given coordinates — the read a
+   * surface makes when it holds a platform conversation id and wants the human name
+   * for it. Org-fenced through the owning integration (§3.6), so a foreign org's
+   * conversation is simply absent. Unnamed rows are omitted rather than returned null:
+   * the caller wants a name or nothing.
+   */
+  namesForOrg(orgId: OrgId, conversations: readonly ConversationCoordinate[]): Promise<IntegrationChannelNameRecord[]>
+}
+
+/** One conversation addressed the way a session key addresses it, not by integration. */
+export interface ConversationCoordinate {
+  platform: string
+  channelId: string
+}
+
+/** A named conversation from the org's directory, keyed by its platform coordinates. */
+export interface IntegrationChannelNameRecord extends ConversationCoordinate {
+  name: string
 }
 
 // ───────────────────────────────────────────────────────────────────────────
