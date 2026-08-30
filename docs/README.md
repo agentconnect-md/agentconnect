@@ -69,6 +69,7 @@ the picture it draws.
 - [turn-final-context-refresh.md](designs/turn-final-context-refresh.md) — Turn-final context refresh and answer regeneration on IM turns.
 - [transcript-full-tool-body.md](designs/transcript-full-tool-body.md) — Complete tool-call bodies in transcripts.
 - [agent-authored-attachments.md](designs/agent-authored-attachments.md) — Outbound agent-authored files across platforms.
+- [inbound-file-attachments.md](designs/inbound-file-attachments.md) — Inbound user files: the workspace landing zone and the web-console upload.
 
 ### Authorization, identity, and visibility
 
