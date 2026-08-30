@@ -332,6 +332,9 @@ jobs:
       - uses: pnpm/action-setup@v6
         if: matrix.verify == 'runtime-sandbox'
         with:
+          # Pinned so the action installs this once; unpinned it fetches npm's latest first.
+          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
           cache: true
       - uses: actions/setup-node@v6
         if: matrix.verify == 'runtime-sandbox'
