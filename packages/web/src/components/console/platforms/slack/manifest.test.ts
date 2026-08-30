@@ -38,10 +38,7 @@ describe('manifest parity with the Control Plane', () => {
       'canvases:write',
       'channels:manage',
       'groups:write',
-      'mpim:write',
-      'search:read.public',
-      'search:read.files',
-      'search:read.users'
+      'mpim:write'
     ])
   })
 

@@ -48,13 +48,10 @@ export const SLACK_BOT_SCOPES = [
   // `conversations.leave` has always needed one of these two; the manifest never asked.
   'channels:manage',
   'groups:write',
-  'mpim:write',
-  // Search reaches PUBLIC channels only. `search:read.private` / `.im` / `.mpim` are grantable
-  // to a bot despite Slack's reference saying otherwise, and measurably return nothing, so
-  // asking an admin to approve searching private channels and DMs would buy exactly zero.
-  'search:read.public',
-  'search:read.files',
-  'search:read.users'
+  'mpim:write'
+  // No `search:read.*` here: the tool that needs them is not on main yet. A scope in this list
+  // makes every existing install incomplete, so it may only arrive WITH the capability that
+  // uses it — otherwise operators reinstall to grant permissions nothing can call.
 ] as const
 
 // Both transports advertise the same events: Socket Mode receives them directly, and the relay's
