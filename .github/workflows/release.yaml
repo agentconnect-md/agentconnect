@@ -74,6 +74,9 @@ jobs:
       # placeholder that setup-node writes to .npmrc); 11.9.0 satisfies this.
       - uses: pnpm/action-setup@v6
         with:
+          # Pinned so the action installs this once; unpinned it fetches npm's latest first.
+          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
           cache: true
       # registry-url makes pnpm publish target npmjs; no token is set, so pnpm
       # authenticates via the OIDC id-token granted above.

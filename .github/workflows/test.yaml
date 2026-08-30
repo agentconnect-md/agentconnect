@@ -55,6 +55,10 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
+          # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
+          # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
+          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
           cache: true
       - uses: actions/setup-node@v6
         with:
@@ -89,6 +93,10 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
+          # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
+          # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
+          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
           cache: true
       - uses: actions/setup-node@v6
         with:
@@ -140,6 +148,10 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
+          # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
+          # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
+          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
           cache: true
       - uses: actions/setup-node@v6
         with:
@@ -269,6 +281,10 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
+          # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
+          # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
+          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
           cache: true
           # Its own primary key, keyed by the closure it stores rather than by the lockfile alone.
           # Nothing shares this OS today, but the rule is the one the two narrowed Linux jobs
@@ -352,6 +368,10 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
+          # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
+          # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
+          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
           cache: true
       - uses: actions/setup-node@v6
         with:
@@ -387,6 +407,10 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
+          # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
+          # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
+          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
           cache: true
           # Its own PRIMARY key. The default one is shared by every job on this runner OS, so the
           # filtered subset this job stores would otherwise be what `build`, `check` and `unit`
@@ -449,6 +473,10 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
+          # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
+          # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
+          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
           cache: true
           # Its own primary key, for the reason the sandbox job gives.
           cache_dependency_path: |
@@ -490,6 +518,10 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
+          # Pinned so the action installs this once. Unpinned it fetches npm's latest, then reads
+          # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
+          # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
+          version: 11.19.0
           cache: true
       - uses: actions/setup-node@v6
         with:
