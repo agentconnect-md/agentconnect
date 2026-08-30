@@ -307,6 +307,9 @@ export class DreamRunner {
   /** dreamIds whose post-completion phase (auto-adoption) the shutdown cutoff abandoned. */
   private readonly abandonedJobs = new Set<string>()
 
+  /** dreamIds inside the adoption swap's visible window — the one phase an abandoned job must still finish. */
+  private readonly swappingJobs = new Set<string>()
+
   /** Per-agent serial mutex over the mutating critical sections (snapshot+reserve,
    *  the adopt fence/swap, discard). Ordering matters: the adopt swap must not
    *  interleave with a start snapshot or a discard on the same agent. A rejected
@@ -425,6 +428,17 @@ export class DreamRunner {
     if (this.abandonedJobs.has(dreamId)) {
       throw new DreamStateError('adoption abandoned by daemon shutdown; the dream is left for review')
     }
+  }
+
+  /** Busy for the duty drain. An abandoned job stops holding its group at once — a parked fs
+   *  operation cannot be aborted, but past the flag it can only touch temp paths and locks, never
+   *  the live store, so releasing the group is safe. A job already inside the swap's visible
+   *  window (it passed the last checkpoint before the flag landed) holds it until the swap ends. */
+  dutyBusy(agentId: string): boolean {
+    const dreamId = this.backgroundJobs.get(agentId)
+    if (dreamId === undefined) return false
+    if (!this.abandonedJobs.has(dreamId)) return true
+    return this.swappingJobs.has(dreamId)
   }
 
   private emitLifecycle(event: DreamLifecycleEvent): void {
@@ -1195,6 +1209,7 @@ export class DreamRunner {
         return await withMemoryDirLock(fs, async () => {
           // Last abandon checkpoint: past here the swap runs to its atomic rename.
           this.assertNotAbandoned(dreamId)
+          this.swappingJobs.add(dreamId)
           const liveFiles = await this.readLiveStore(fs)
           if (!force) {
             const liveDigest = storeDigest(liveFiles)
@@ -1316,6 +1331,7 @@ export class DreamRunner {
           return adopted
         })
       } finally {
+        this.swappingJobs.delete(dreamId)
         // If the fence refused (or a failure escaped the swap), never leave the
         // temp replacement lying around.
         await fs.rm(replacement).catch(() => {})

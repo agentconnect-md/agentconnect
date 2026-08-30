@@ -7937,7 +7937,7 @@ export class Daemon {
       activeDispatchCount: (agentId) => this.activeDispatchesByAgent.get(agentId)?.size ?? 0,
       pendingTurnAgentIds: () => [...this.pending.values()].map((p) => p.plan.agentId),
       activeGateAgentIds: () => [...this.activeGateEntries.values()].map((entry) => entry.agentId),
-      dreamInFlight: (agentId) => this.dreamRunnerInstance?.inFlight(agentId) === true
+      dreamInFlight: (agentId) => this.dreamRunnerInstance?.dutyBusy(agentId) === true
     }
   }
 
@@ -15466,7 +15466,7 @@ export class Daemon {
     if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) return true
     for (const p of this.pending.values()) if (p.plan.agentId === agentId) return true
     for (const entry of this.activeGateEntries.values()) if (entry.agentId === agentId) return true
-    return this.dreamRunnerInstance?.inFlight(agentId) === true
+    return this.dreamRunnerInstance?.dutyBusy(agentId) === true
   }
 
   private hasPoolDrainWorkInFlight(): boolean {

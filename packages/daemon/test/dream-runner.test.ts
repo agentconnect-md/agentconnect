@@ -823,9 +823,15 @@ describe('DreamRunner adoption', () => {
     await vi.waitFor(() => expect(gate).toBeDefined())
     expect(runner.inFlight('a1')).toBe(true)
 
+    expect(runner.dutyBusy('a1')).toBe(true)
+
     // The shutdown cutoff lands while adoption is parked on its first frame: cancel() has
     // nothing to cancel (the dream is completed), but the abandon flag bounds the phase.
     await runner.cancelInFlight('a1')
+    // Still parked — the request cannot be aborted mid-flight — yet the job stops holding its
+    // duty group at once: past the flag it can only touch temp paths, never the live store.
+    expect(runner.inFlight('a1')).toBe(true)
+    expect(runner.dutyBusy('a1')).toBe(false)
     gate!()
     // The parked frame resolves and the next checkpoint bails: no adoption, job over.
     await vi.waitFor(() => expect(runner.inFlight('a1')).toBe(false))

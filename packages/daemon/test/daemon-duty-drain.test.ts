@@ -431,7 +431,7 @@ describe('shutdown drain of a duty-holding member', () => {
       dreaming = false
     })
     ;(daemon as any).dreamRunnerInstance = {
-      inFlight: (id: string) => id === AGENT && dreaming,
+      dutyBusy: (id: string) => id === AGENT && dreaming,
       inFlightAgents: () => (dreaming ? [AGENT] : []),
       cancelInFlight: cancelDream
     }
@@ -466,7 +466,7 @@ describe('shutdown drain of a duty-holding member', () => {
       dreaming = false
     })
     ;(daemon as any).dreamRunnerInstance = {
-      inFlight: (id: string) => id === AGENT && dreaming,
+      dutyBusy: (id: string) => id === AGENT && dreaming,
       inFlightAgents: () => (dreaming ? [AGENT] : []),
       cancelInFlight: cancelDream
     }

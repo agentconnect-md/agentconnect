@@ -108,6 +108,7 @@ export interface DutyDrainHost {
   activeDispatchCount(agentId: string): number
   pendingTurnAgentIds(): Iterable<string>
   activeGateAgentIds(): Iterable<string>
+  /** A dream job that still holds the group — an adoption the shutdown cutoff abandoned does not. */
   dreamInFlight(agentId: string): boolean
 }
 
