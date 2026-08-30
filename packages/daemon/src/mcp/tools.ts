@@ -1,11 +1,12 @@
 import type { Integration } from '../agents/agent-schema.js'
-import { obj, unionOf, type ToolDescriptor } from '../tool-schema/descriptor.js'
+import { obj, unionOf, type JsonValue, type ToolDescriptor } from '../tool-schema/descriptor.js'
 import { SESSION_TITLE_TOOL_NAME } from './session-title-tool.js'
 import {
   allAttachmentReadTools,
-  allChannelHistoryPlatforms,
+  allPortPlatforms,
   attachmentReadToolsFor,
-  channelHistoryPlatformsFor
+  platformsWithPort,
+  type PlatformToolPort
 } from '../platforms/read-ports.js'
 import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
 import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
@@ -365,9 +366,16 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
     type: 'string',
     description: 'Optional. Pick a specific bot when the agent has multiple integrations on the target platform.'
   }
-  // History has no target selector, so only the current session platform may enable it.
+  // Channel history has no target selector, so only the current session platform may enable it.
   const historyPlatform = currentPlatform ?? (platforms.length === 1 ? platforms[0] : undefined)
-  const hasChannelHistory = historyPlatform !== undefined && channelHistoryPlatformsFor([historyPlatform]).length > 0
+  const hasChannelHistory =
+    historyPlatform !== undefined && platformsWithPort('channelHistory', [historyPlatform]).length > 0
+  // Everything else routes by `platform`, so the gate is "any of this agent's platforms
+  // declares the port" and the enum narrows to exactly those. No declarer ⇒ no tool.
+  const portPlatform = (port: PlatformToolPort) => {
+    const declaring = platformsWithPort(port, platforms)
+    return declaring.length === 0 ? undefined : { ...platform, enum: declaring }
+  }
   return [
     {
       name: 'getCurrentChannel',
@@ -451,6 +459,221 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
           user: { type: 'string', description: 'Platform user id (Slack U0123ABC, Telegram/Discord numeric id).' }
         },
         ['user']
+      )
+    },
+    ...buildThreadHistoryTool(portPlatform('threadHistory'), integrationId),
+    ...buildReactionTools(portPlatform('reactions'), integrationId),
+    ...buildConversationCreateTool(portPlatform('conversationCreate'), integrationId),
+    ...buildScheduleMessageTool(portPlatform('scheduledMessages'), integrationId),
+    ...buildCanvasTools(portPlatform('canvas'), integrationId)
+  ]
+}
+
+/** One property schema inside a tool's `inputSchema` — what the shared `platform` /
+ *  `integrationId` selectors are, and what a port gate hands the builders below. */
+type SchemaProp = Record<string, JsonValue>
+
+/** The channel selector shared by every platform-routed tool below: the current
+ *  conversation's channel by default, and required once `platform` names another one. */
+const targetChannel = {
+  type: 'string',
+  description:
+    'Channel/chat id. Defaults to this conversation’s channel; required when `platform` names a different platform.'
+}
+
+/** `getThreadHistory` — the same provider thread read the daemon already uses to rebuild
+ *  mid-thread context, handed to the agent. Reads a thread the agent is NOT answering,
+ *  which is the one thing the ordinary turn context cannot show it. */
+function buildThreadHistoryTool(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!platform) return []
+  return [
+    {
+      name: 'getThreadHistory',
+      description:
+        'Read one thread in full — its root message and every reply. Use it to catch up on a discussion you are not ' +
+        'part of: `getChannelHistory` reports each message’s `threadTs` and `replyCount`, and this opens one of ' +
+        'them. `thread` is the root message’s id (Slack thread_ts). Results are oldest-first; `truncated` is true ' +
+        'when the thread is longer than `limit`. Your own status chrome is filtered out.',
+      inputSchema: obj(
+        {
+          platform,
+          integrationId,
+          channel: targetChannel,
+          thread: { type: 'string', description: 'Root message id of the thread (Slack thread_ts).' },
+          limit: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 200,
+            description: 'Maximum messages to return, oldest-first (default 100, max 200).'
+          },
+          oldest: { type: 'string', description: 'Inclusive oldest message timestamp bound.' },
+          latest: { type: 'string', description: 'Inclusive latest message timestamp bound.' }
+        },
+        ['thread']
+      )
+    }
+  ]
+}
+
+/** `addReaction` / `getReactions` — the emoji comes from the MODEL, which knows what platform
+ *  it is on, unlike the turn-chrome `react` intent core names for it. */
+function buildReactionTools(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!platform) return []
+  const messageTs = { type: 'string', description: 'Id of the message to act on (Slack ts).' }
+  return [
+    {
+      name: 'addReaction',
+      description:
+        'Put an emoji reaction on one message — the lightweight acknowledgement that needs no reply. `emoji` is the ' +
+        'platform’s own name for it WITHOUT colons (`thumbsup`, `eyes`, `white_check_mark`). Reacting twice with ' +
+        'the same emoji is not an error. This reacts as the bot, not under your agent identity.',
+      inputSchema: obj(
+        {
+          platform,
+          integrationId,
+          channel: targetChannel,
+          messageTs,
+          emoji: { type: 'string', description: 'Emoji name without colons, e.g. `thumbsup`.' }
+        },
+        ['messageTs', 'emoji']
+      )
+    },
+    {
+      name: 'getReactions',
+      description:
+        'List the emoji reactions already on one message, each with its count and — where the platform reports them ' +
+        '— the users who reacted. Use it to read a poll or a lightweight approval someone ran with emoji.',
+      inputSchema: obj({ platform, integrationId, channel: targetChannel, messageTs }, ['messageTs'])
+    }
+  ]
+}
+
+/** `createConversation` — the one tool here that creates durable workspace state. */
+function buildConversationCreateTool(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!platform) return []
+  return [
+    {
+      name: 'createConversation',
+      description:
+        'Create a channel, or open the direct conversation with a set of people, and return its id for ' +
+        '`sendMessage`. Two shapes: pass `name` for a channel (optionally `isPrivate`, and `users` to invite), or ' +
+        'pass `users` ALONE for a direct message (one user) or group direct message (two or more). This makes ' +
+        'workspace state that outlives the task and everyone can see, so only do it when someone asked for it — ' +
+        'to reach people who already share a channel with you, post there instead.',
+      inputSchema: obj({
+        platform,
+        integrationId,
+        name: {
+          type: 'string',
+          description: 'Channel name (lowercase, hyphens). Omit to open a direct conversation with `users`.'
+        },
+        isPrivate: { type: 'boolean', description: 'Create the channel private. Only meaningful with `name`.' },
+        users: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 100,
+          description: 'Platform user ids: the invitees with `name`, or the conversation members without it.'
+        }
+      })
+    }
+  ]
+}
+
+/** `scheduleMessage` — a channel-root post the PLATFORM delivers later. Deliberately has no
+ *  thread form, for the same reason `sendMessage` has none (send-message-routing-rework.md §2.2). */
+function buildScheduleMessageTool(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!platform) return []
+  return [
+    {
+      name: 'scheduleMessage',
+      description:
+        'Hand the platform a message to post at a FUTURE time. Nothing is posted now. Use it for something that ' +
+        'must land at a wall-clock moment; for work that has to run later, an AgentConnect cron wakes you instead ' +
+        'and can decide what to say then. `postAt` is an ISO-8601 instant WITH an offset (`2026-09-01T09:00:00+08:00`), ' +
+        'at least 2 minutes out and at most 120 days. The post lands at the channel root under the bare bot ' +
+        'identity — the platform will not carry your agent name or icon on it — and it opens no conversation you ' +
+        'can be replied into; a reply reaches you as an ordinary new message.',
+      inputSchema: obj(
+        {
+          platform,
+          integrationId,
+          channel: targetChannel,
+          message: { type: 'string', minLength: 1, description: 'The message body, as CommonMark/GFM.' },
+          postAt: { type: 'string', description: 'ISO-8601 instant with offset, e.g. `2026-09-01T09:00:00+08:00`.' }
+        },
+        ['message', 'postAt']
+      )
+    }
+  ]
+}
+
+/** `createCanvas` / `readCanvas` / `updateCanvas` — the platform's own rich-text page, which
+ *  outlives a message and can be edited in place (Slack Canvas). */
+function buildCanvasTools(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!platform) return []
+  const canvasId = { type: 'string', description: 'Id of the canvas (Slack F0123ABC).' }
+  const markdownRules =
+    'Markdown is the platform’s own dialect: headings `#`/`##`/`###` only, no headings or code blocks inside list ' +
+    'items, `![](@U0123ABC)` for a user and `![](#C0123ABC)` for a channel, `:tada:` for emoji.'
+  return [
+    {
+      name: 'createCanvas',
+      description:
+        'Create a canvas — a rich-text page the platform hosts, for something that outlives a message and gets ' +
+        'edited rather than reposted: a running plan, a spec, a report the team keeps returning to. Returns its id ' +
+        'and link; post the link yourself. Pass `channel` to tab it onto a conversation. ' +
+        markdownRules,
+      inputSchema: obj(
+        {
+          platform,
+          integrationId,
+          title: { type: 'string', minLength: 1, maxLength: 255, description: 'Canvas title.' },
+          markdown: { type: 'string', minLength: 1, description: 'Canvas body.' },
+          channel: { type: 'string', description: 'Optional conversation to tab the canvas onto.' }
+        },
+        ['title', 'markdown']
+      )
+    },
+    {
+      name: 'readCanvas',
+      description:
+        'Read a canvas back: its title, link, section ids, and — when the platform serves the body — its markdown. ' +
+        'Call this before `updateCanvas`: the `sections` it returns are what an anchored edit targets. If the body ' +
+        'comes back absent, the canvas exists but the platform exposes no body read for it.',
+      inputSchema: obj({ platform, integrationId, canvasId }, ['canvasId'])
+    },
+    {
+      name: 'updateCanvas',
+      description:
+        'Edit a canvas in place. Each change is one operation: `replace` with no `sectionId` rewrites the whole ' +
+        'body, and `insert_before`/`insert_after`/`delete` need a `sectionId` from `readCanvas`. ' +
+        markdownRules,
+      inputSchema: obj(
+        {
+          platform,
+          integrationId,
+          canvasId,
+          edits: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 20,
+            items: {
+              type: 'object',
+              properties: {
+                operation: {
+                  type: 'string',
+                  enum: ['replace', 'insert_at_start', 'insert_at_end', 'insert_before', 'insert_after', 'delete']
+                },
+                sectionId: { type: 'string', description: 'Required by the anchored operations and by `delete`.' },
+                markdown: { type: 'string', description: 'Required by everything except `delete`.' }
+              },
+              required: ['operation'],
+              additionalProperties: false
+            },
+            description: 'The changes to apply, in order.'
+          }
+        },
+        ['canvasId', 'edits']
       )
     }
   ]
@@ -891,7 +1114,10 @@ export const ALL_TOOL_NAMES = [
       // are stable and belong in the permission auto-allow set.
       buildSendMessageTool([]),
       buildShareFileTool(),
-      ...buildReadTools(allChannelHistoryPlatforms(), allChannelHistoryPlatforms().at(0)),
+      // Built against EVERY registered platform so every port gate opens: the auto-allow
+      // set is about names, and a name some platform can inject must be listed even for
+      // an agent that will never see it.
+      ...buildReadTools(allPortPlatforms(), platformsWithPort('channelHistory').at(0)),
       // Every platform's credentialed attachment tool, whatever this agent has:
       // the auto-allow set is about NAMES, and a name a platform can inject must
       // be listed even for an agent that will never see it.

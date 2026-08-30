@@ -439,6 +439,26 @@ member. `container` is the message's NATIVE container rather than the
 normalized `channel` — a Discord message inside a thread reports its parent
 there, and only the native pair can address the message at all.
 
+Its counterpart `addReaction(channel, messageTs, emoji)` looks like the same member and is
+deliberately not: there the glyph comes from the MODEL, which already knows which platform it
+is speaking on, so no core-side vocabulary exists to translate and none is invented. The two
+coexist because they answer different questions — `react` is chrome core places, `addReaction`
+is an action the agent asked for.
+
+That difference sets the failure rule for the whole agent-callable group below. Chrome
+degrades to nothing visible when a workspace's grant is short; an agent-callable port reports
+the platform's own code, because an installation that predates a capability scope has to be
+told `missing_scope` rather than handed a silent success.
+
+The optional facets an AGENT can reach are declared per platform in
+`platforms/read-ports.ts`, the same pre-connection registry that decides which attachment tool
+to inject: `channelHistory`, `threadHistory`, `reactions`, `conversationCreate`,
+`scheduledMessages`, `canvas`. A declaration gates tool INJECTION (before any connection
+exists) and narrows the tool's `platform` enum; the live `typeof conn.x === 'function'` probe
+still decides whether this connection can serve the call. Fail-closed by absence, so a
+platform that declares nothing is injected nothing. Slack declares all six today; adding a
+second implementer is a registry line plus the adapter members, not a core edit.
+
 ### 7.2 Host services
 
 Enumerated from the union of the four existing `Deps` shapes rather than

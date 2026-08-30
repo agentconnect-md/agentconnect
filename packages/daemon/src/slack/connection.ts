@@ -30,10 +30,16 @@ import {
 } from './render.js'
 import type {
   InteractionActor,
+  PlatformCanvas,
+  PlatformCanvasEdit,
   PlatformChannelHistoryOptions,
   PlatformChannelHistoryPage,
+  PlatformChannelInfo,
   PlatformConnection,
-  PlatformReactionIntent
+  PlatformConversationSpec,
+  PlatformReactionIntent,
+  PlatformReactionSummary,
+  PlatformScheduledMessage
 } from '../platforms/contract.js'
 
 /** Core names the intent; Slack's alphabet is emoji shortcodes. */
@@ -396,6 +402,9 @@ export type AppLike = {
       // Native tool-call chrome (slack-streaming-turn-output.md §3). Optional because
       // absence IS one of the capability refusals §7 latches on — which is also what keeps
       // every inert test app on the legacy path without edits.
+      // Delivery the platform performs later, with no daemon involvement and no agent
+      // identity — Slack takes no username/icon_url here.
+      scheduleMessage: (a: unknown) => Promise<{ scheduled_message_id?: string; channel?: string }>
       startStream?: (a: unknown) => Promise<{ ts?: string }>
       appendStream?: (a: unknown) => Promise<unknown>
       stopStream?: (a: unknown) => Promise<unknown>
@@ -407,11 +416,25 @@ export type AppLike = {
       completeUploadExternal: (a: unknown) => Promise<unknown>
       uploadV2: (a: unknown) => Promise<unknown>
       info: (a: unknown) => Promise<{
-        file?: { shares?: { public?: SlackFileShares; private?: SlackFileShares } }
+        file?: {
+          shares?: { public?: SlackFileShares; private?: SlackFileShares }
+          // A canvas is a file: its title, link, and private body URL all come from here,
+          // because Slack publishes no full canvas read of its own.
+          title?: string
+          permalink?: string
+          url_private?: string
+        }
       }>
     }
     conversations: {
-      open: (a: unknown) => Promise<{ channel?: { id?: string } }>
+      open: (a: unknown) => Promise<{
+        channel?: { id?: string; name?: string; is_im?: boolean; is_mpim?: boolean }
+      }>
+      // `conversations.create` + `invite` back the agent's createConversation
+      // (`channels:manage` / `groups:write`); both are capability scopes, not required ones.
+      create: (a: unknown) => Promise<{ channel?: { id?: string; name?: string; is_private?: boolean } }>
+      invite: (a: unknown) => Promise<unknown>
+      canvases: { create: (a: unknown) => Promise<{ canvas_id?: string }> }
       info: (a: unknown) => Promise<{
         channel?: {
           id?: string
@@ -472,6 +495,15 @@ export type AppLike = {
     }
     reactions: {
       add: (a: unknown) => Promise<unknown>
+      // reactions.get needs `reactions:read`, a capability scope — an installation that
+      // predates it fails here with missing_scope rather than being marked broken.
+      get: (a: unknown) => Promise<{ message?: { reactions?: { name?: string; count?: number; users?: string[] }[] } }>
+    }
+    // Slack Canvas (`canvases:write`, plus `canvases:read` for the section anchors).
+    canvases: {
+      create: (a: unknown) => Promise<{ canvas_id?: string }>
+      edit: (a: unknown) => Promise<unknown>
+      sections: { lookup: (a: unknown) => Promise<{ sections?: { id?: string }[] }> }
     }
     agents: {
       sessions: {
@@ -2176,6 +2208,196 @@ export class SlackConnection implements PlatformConnection {
       realName: u.real_name ?? u.profile?.real_name,
       isBot: u.is_bot,
       avatarUrl: u.profile?.image_72 ?? u.profile?.image_48
+    }
+  }
+
+  // ── MCP MessageGateway: the agent-callable ACTIONS (mcp/ops/platform-actions.ts) ──
+  //
+  // Unlike the chrome above, every one of these is something the AGENT asked for, so each
+  // reports Slack's own refusal instead of degrading quietly: `missing_scope` on a workspace
+  // that installed before the capability scopes existed is the message the agent must see.
+
+  /** Slack's error code for one agent-visible failure, sanitized before it reaches a model. */
+  private toolFailure(err: unknown, what: string): Error {
+    this.rememberMissingScopes(err)
+    const code = slackApiErrorCode(err)
+    const safeCode = code && /^[a-z0-9._:-]{1,64}$/i.test(code) ? code : undefined
+    this.deps.log?.debug(`slack: ${what} failed: ${safeCode ?? (err as Error).message}`)
+    return new Error(safeCode ? `Slack ${what} failed: ${safeCode}` : `Slack ${what} failed`)
+  }
+
+  /** An arbitrary reaction the agent chose, as opposed to {@link react}'s turn-start intent.
+   *  Needs `reactions:write`, which every installation already grants. */
+  async addReaction(channel: string, messageTs: string, emoji: string): Promise<void> {
+    try {
+      await this.queue.enqueue(() => this.app.client.reactions.add({ channel, timestamp: messageTs, name: emoji }))
+    } catch (err) {
+      // The queue abandoning a still-running call means the reaction MAY have landed, so
+      // this must not read as "nothing happened" — the same rule uploadFile follows.
+      if (isSendQueueTimeout(err)) throw new Error('Slack did not answer in time — the reaction may still have landed')
+      // A repeat of the same emoji is the state the caller asked for, not a failure.
+      if (slackApiErrorCode(err) === 'already_reacted') return
+      throw this.toolFailure(err, 'adding a reaction')
+    }
+  }
+
+  /** The reactions on one message (`reactions.get`, `reactions:read`). */
+  async getReactions(channel: string, messageTs: string): Promise<PlatformReactionSummary[]> {
+    try {
+      const res = await this.app.client.reactions.get({ channel, timestamp: messageTs, full: true })
+      const reactions = res.message?.reactions ?? []
+      return reactions.flatMap((r) =>
+        r.name ? [{ name: r.name, count: r.count ?? 0, ...(r.users ? { users: r.users } : {}) }] : []
+      )
+    } catch (err) {
+      throw this.toolFailure(err, 'reading reactions')
+    }
+  }
+
+  /**
+   * Create a channel, or open the direct conversation with a set of users.
+   *
+   * Two Slack methods behind one member: `conversations.create` for a named channel
+   * (`channels:manage` / `groups:write`) and `conversations.open` for a 1:1 or group DM
+   * (`im:write` / `mpim:write`). Inviting people into a NEW channel is a second call, and it
+   * is best-effort on purpose — the channel exists either way, and reporting it as a failure
+   * would invite a retry that then trips `name_taken`.
+   */
+  async createConversation(spec: PlatformConversationSpec): Promise<PlatformChannelInfo> {
+    const users = spec.users ?? []
+    if (!spec.name) {
+      try {
+        const res = await this.app.client.conversations.open({ users: users.join(','), return_im: true })
+        const c = res.channel ?? {}
+        if (!c.id) throw new Error('Slack conversations.open returned no conversation')
+        return { id: c.id, ...(c.name ? { name: c.name } : {}), isIm: c.is_im, isMpim: c.is_mpim }
+      } catch (err) {
+        throw this.toolFailure(err, 'opening a conversation')
+      }
+    }
+    let created: { id?: string; name?: string; is_private?: boolean }
+    try {
+      const res = await this.app.client.conversations.create({
+        name: spec.name,
+        ...(spec.isPrivate !== undefined ? { is_private: spec.isPrivate } : {})
+      })
+      created = res.channel ?? {}
+    } catch (err) {
+      throw this.toolFailure(err, 'creating a channel')
+    }
+    if (!created.id) throw new Error('Slack conversations.create returned no channel')
+    if (users.length > 0) {
+      try {
+        await this.app.client.conversations.invite({ channel: created.id, users: users.join(',') })
+      } catch (err) {
+        this.deps.log?.debug(`slack: conversations.invite failed (ch=${created.id}): ${(err as Error).message}`)
+      }
+    }
+    return { id: created.id, ...(created.name ? { name: created.name } : {}), isPrivate: created.is_private }
+  }
+
+  /** Hand Slack a message to post later (`chat.scheduleMessage`, `chat:write`). Slack takes no
+   *  `username`/`icon_url` here, so the post wears the bare app identity, not the agent's. */
+  async scheduleMessage(channel: string, text: string, postAt: number): Promise<PlatformScheduledMessage> {
+    try {
+      const res = await this.queue.enqueue(() =>
+        this.app.client.chat.scheduleMessage({ channel, text, post_at: postAt })
+      )
+      const id = res.scheduled_message_id
+      if (!id) throw new Error('Slack chat.scheduleMessage returned no scheduled_message_id')
+      return { id, channel: res.channel ?? channel, postAt }
+    } catch (err) {
+      if (isSendQueueTimeout(err))
+        throw new Error('Slack did not answer in time — the message may still have been scheduled; do not retry')
+      throw this.toolFailure(err, 'scheduling a message')
+    }
+  }
+
+  /** Create a canvas (`canvases:write`). With a channel it is tabbed onto that conversation,
+   *  which is also the only shape a free workspace can create at all. */
+  async createCanvas(title: string, markdown: string, channel?: string): Promise<PlatformCanvas> {
+    const document_content = { type: 'markdown' as const, markdown }
+    try {
+      const res = channel
+        ? await this.app.client.conversations.canvases.create({ channel_id: channel, title, document_content })
+        : await this.app.client.canvases.create({ title, document_content })
+      const id = res.canvas_id
+      if (!id) throw new Error('Slack canvas creation returned no canvas_id')
+      return { id, title, ...(await this.canvasLink(id)) }
+    } catch (err) {
+      throw this.toolFailure(err, 'creating a canvas')
+    }
+  }
+
+  /**
+   * Read a canvas back.
+   *
+   * Slack publishes NO full-content read: `canvases:read` buys `canvases.sections.lookup`,
+   * which answers with section ids and no text. So the body is fetched the way any other
+   * Slack file is — `files.info` for the private URL, then the credentialed download this
+   * connection already performs — and is simply ABSENT when that path does not serve text.
+   * The metadata and the section anchors an edit needs are always returned.
+   */
+  async readCanvas(canvasId: string): Promise<PlatformCanvas> {
+    let file: { title?: string; permalink?: string; url_private?: string }
+    try {
+      const res = await this.app.client.files.info({ file: canvasId })
+      file = res.file ?? {}
+    } catch (err) {
+      throw this.toolFailure(err, 'reading a canvas')
+    }
+    const sections = await this.canvasSections(canvasId)
+    const bytes = file.url_private ? await this.downloadFile(file.url_private) : null
+    return {
+      id: canvasId,
+      ...(file.title ? { title: file.title } : {}),
+      ...(file.permalink ? { url: file.permalink } : {}),
+      ...(bytes ? { markdown: bytes.toString('utf8') } : {}),
+      ...(sections ? { sections } : {})
+    }
+  }
+
+  /** Apply edits to a canvas (`canvases.edit`, `canvases:write`). */
+  async updateCanvas(canvasId: string, edits: PlatformCanvasEdit[]): Promise<void> {
+    const changes = edits.map((edit) => ({
+      operation: edit.operation,
+      ...(edit.sectionId ? { section_id: edit.sectionId } : {}),
+      ...(edit.markdown !== undefined
+        ? { document_content: { type: 'markdown' as const, markdown: edit.markdown } }
+        : {})
+    }))
+    try {
+      await this.app.client.canvases.edit({ canvas_id: canvasId, changes })
+    } catch (err) {
+      throw this.toolFailure(err, 'updating a canvas')
+    }
+  }
+
+  /** A canvas's shareable link, from the file record Slack creates for it. Best-effort: a
+   *  canvas that exists is still worth returning without one. */
+  private async canvasLink(canvasId: string): Promise<{ url?: string }> {
+    try {
+      const res = await this.app.client.files.info({ file: canvasId })
+      return res.file?.permalink ? { url: res.file.permalink } : {}
+    } catch (err) {
+      this.deps.log?.debug(`slack: files.info for canvas ${canvasId} failed: ${(err as Error).message}`)
+      return {}
+    }
+  }
+
+  /** Every addressable section of a canvas, or undefined when the workspace did not grant
+   *  `canvases:read` — the edit anchors are then simply unknown, not an error. */
+  private async canvasSections(canvasId: string): Promise<{ id: string }[] | undefined> {
+    try {
+      const res = await this.app.client.canvases.sections.lookup({
+        canvas_id: canvasId,
+        criteria: { section_types: ['any_header'] }
+      })
+      return (res.sections ?? []).flatMap((s) => (s.id ? [{ id: s.id }] : []))
+    } catch (err) {
+      this.rememberMissingScopes(err)
+      this.deps.log?.debug(`slack: canvases.sections.lookup failed (${canvasId}): ${(err as Error).message}`)
+      return undefined
     }
   }
 

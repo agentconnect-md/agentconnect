@@ -142,6 +142,49 @@ export interface PlatformChannelHistoryPage {
   nextCursor?: string
 }
 
+/** One emoji tally on a message (`getReactions`). `users` is present where the platform
+ *  reports who reacted and the caller asked for the full list. */
+export interface PlatformReactionSummary {
+  name: string
+  count: number
+  users?: string[]
+}
+
+/** What `createConversation` was asked to make. `name` present ⇒ a channel; `users` alone ⇒
+ *  the 1:1 or group conversation with exactly those people. */
+export interface PlatformConversationSpec {
+  name?: string
+  isPrivate?: boolean
+  users?: string[]
+}
+
+/** A message accepted for LATER delivery (`scheduleMessage`). `id` is the platform's own
+ *  handle for the pending send, kept so a future cancel has something to name. */
+export interface PlatformScheduledMessage {
+  id: string
+  channel: string
+  postAt: number
+}
+
+/** A platform-hosted rich-text document page (Slack Canvas). `markdown` is present only on
+ *  a read that could actually retrieve the body; `sections` are the addressable anchors an
+ *  edit targets. */
+export interface PlatformCanvas {
+  id: string
+  title?: string
+  url?: string
+  markdown?: string
+  sections?: { id: string }[]
+}
+
+/** One edit against a {@link PlatformCanvas}. `replace` with no anchor rewrites the whole
+ *  document; the anchored operations need a `sectionId` from a prior read. */
+export interface PlatformCanvasEdit {
+  operation: 'replace' | 'insert_at_start' | 'insert_at_end' | 'insert_before' | 'insert_after' | 'delete'
+  sectionId?: string
+  markdown?: string
+}
+
 /**
  * The Layer-1 contract every chat-platform connection satisfies.
  *
@@ -210,4 +253,24 @@ export interface PlatformConnection {
    *  normalized `channel`: only the native pair addresses a Discord message inside a
    *  thread, whose normalized channel is the parent. */
   react?(container: string, messageId: string, intent: PlatformReactionIntent): Promise<void>
+  /** Place an ARBITRARY reaction, for the agent-callable tool rather than turn chrome.
+   *
+   *  Distinct from {@link react} on purpose: that one takes an INTENT because core names it
+   *  and the module owns the glyph. Here the glyph comes from the model, which already knows
+   *  which platform it is speaking on, so `emoji` is the platform's own token (Slack's
+   *  shortcode without colons) and no core-side vocabulary exists to translate. */
+  addReaction?(channel: string, messageTs: string, emoji: string): Promise<void>
+  /** The reactions already on one message. */
+  getReactions?(channel: string, messageTs: string): Promise<PlatformReactionSummary[]>
+  /** Create a channel, or open the direct conversation with a set of users. */
+  createConversation?(spec: PlatformConversationSpec): Promise<PlatformChannelInfo>
+  /** Hand the platform a message to deliver at `postAt` (epoch seconds). The daemon is not
+   *  involved in the eventual delivery, so nothing anchors a session to it. */
+  scheduleMessage?(channel: string, text: string, postAt: number, thread?: string): Promise<PlatformScheduledMessage>
+  /** Create a platform-hosted document page; `channel` tabs it into a conversation. */
+  createCanvas?(title: string, markdown: string, channel?: string): Promise<PlatformCanvas>
+  /** Read one back. A platform whose API exposes no body read returns the metadata it has. */
+  readCanvas?(canvasId: string): Promise<PlatformCanvas>
+  /** Apply edits to one. */
+  updateCanvas?(canvasId: string, edits: PlatformCanvasEdit[]): Promise<void>
 }

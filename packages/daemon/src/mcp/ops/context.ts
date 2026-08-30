@@ -1,7 +1,18 @@
 import type { MemoryWriteSource } from '../../memory/store.js'
 import type { MemoryScope } from '../../memory/types.js'
 import type { ToolDescriptor } from '../../tool-schema/descriptor.js'
-import type { PlatformChannelHistoryOptions, PlatformChannelHistoryPage } from '../../platforms/contract.js'
+import type {
+  PlatformCanvas,
+  PlatformCanvasEdit,
+  PlatformChannelHistoryOptions,
+  PlatformChannelHistoryPage,
+  PlatformChannelInfo,
+  PlatformConversationSpec,
+  PlatformReactionSummary,
+  PlatformScheduledMessage,
+  PlatformThreadMessage,
+  PlatformThreadWindow
+} from '../../platforms/contract.js'
 
 /**
  * The platform-neutral slice a session's tools need. `SlackConnection` and
@@ -75,6 +86,25 @@ export interface MessageGateway {
   getUserProfile(user: string): Promise<{ id: string; name?: string; realName?: string; isBot?: boolean }>
   /** Read one bounded page from the conversation bound to the current session. */
   getChannelHistory?(channel: string, options?: PlatformChannelHistoryOptions): Promise<PlatformChannelHistoryPage>
+  /** Root + replies of one thread. Long a daemon-internal context read; the `getThreadHistory`
+   *  tool is the same port handed to the agent. */
+  getThreadReplies?(
+    channel: string,
+    thread: string,
+    maxMessages?: number,
+    window?: PlatformThreadWindow
+  ): Promise<PlatformThreadMessage[]>
+  /** Arbitrary reactions — the agent-callable pair, not the turn-chrome `react` intent. */
+  addReaction?(channel: string, messageTs: string, emoji: string): Promise<void>
+  getReactions?(channel: string, messageTs: string): Promise<PlatformReactionSummary[]>
+  /** Create a channel, or open the direct conversation with a set of users. */
+  createConversation?(spec: PlatformConversationSpec): Promise<PlatformChannelInfo>
+  /** Hand the platform a message to deliver later; the daemon sees nothing at delivery. */
+  scheduleMessage?(channel: string, text: string, postAt: number, thread?: string): Promise<PlatformScheduledMessage>
+  /** Platform-hosted document pages (Slack Canvas). */
+  createCanvas?(title: string, markdown: string, channel?: string): Promise<PlatformCanvas>
+  readCanvas?(canvasId: string): Promise<PlatformCanvas>
+  updateCanvas?(canvasId: string, edits: PlatformCanvasEdit[]): Promise<void>
   /** Download an auth-gated file (Slack url_private / Telegram file_id) with the
    *  bot credentials; null on failure / over-cap. Backs the `read*File` tools so
    *  the agent can read attachments without ever holding the token. */

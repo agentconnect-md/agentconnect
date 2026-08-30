@@ -74,6 +74,43 @@ describe('toolsForIntegrations', () => {
     expect(sendPlatformEnum([slackInt])).toEqual(['slack'])
   })
 
+  it('injects each port-gated tool for exactly the platforms that declare the port', () => {
+    const PORT_GATED = [
+      'getThreadHistory',
+      'addReaction',
+      'getReactions',
+      'createConversation',
+      'scheduleMessage',
+      'createCanvas',
+      'readCanvas',
+      'updateCanvas'
+    ]
+    const slackNames = toolsForIntegrations([slackInt]).map((t) => t.name)
+    expect(slackNames).toEqual(expect.arrayContaining(PORT_GATED))
+    // Telegram/Discord/Feishu declare none of them, so an agent without Slack sees none —
+    // the gate is the DECLARATION, not the platform name.
+    for (const other of [telegramInt, discordInt, feishuInt]) {
+      const names = toolsForIntegrations([other]).map((t) => t.name)
+      for (const gated of PORT_GATED) expect(names).not.toContain(gated)
+    }
+  })
+
+  it('narrows a port-gated tool to the declaring platform even on a bridged agent', () => {
+    const bridged = toolsForIntegrations([slackInt, telegramInt])
+    const enumOf = (name: string) =>
+      (
+        (bridged.find((t) => t.name === name)!.inputSchema as Record<string, unknown>).properties as Record<
+          string,
+          { enum?: string[] }
+        >
+      ).platform?.enum
+    // The neutral reads span both; a port only Slack declares must not offer Telegram.
+    expect(enumOf('listChannels')).toEqual(['slack', 'telegram'])
+    expect(enumOf('getThreadHistory')).toEqual(['slack'])
+    expect(enumOf('addReaction')).toEqual(['slack'])
+    expect(enumOf('createCanvas')).toEqual(['slack'])
+  })
+
   it('injects the platform-neutral read tools + the unified send tool for a Telegram integration', () => {
     const names = toolsForIntegrations([telegramInt]).map((t) => t.name)
     expect(names).toEqual(
@@ -401,6 +438,16 @@ describe('toolsForIntegrations', () => {
         'sendMessage',
         'listChannels',
         'getChannelHistory',
+        // Port-gated names are reserved too: the auto-allow set is about names some platform
+        // CAN inject, not about what this agent happens to have.
+        'getThreadHistory',
+        'addReaction',
+        'getReactions',
+        'createConversation',
+        'scheduleMessage',
+        'createCanvas',
+        'readCanvas',
+        'updateCanvas',
         'readTelegramFile',
         'searchMemory',
         'saveMemory',

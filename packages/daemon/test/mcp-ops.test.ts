@@ -1075,6 +1075,241 @@ describe('executeTool: read tools', () => {
   })
 })
 
+describe('executeTool: getThreadHistory', () => {
+  const reply = (over: Record<string, unknown> = {}) => ({
+    sender: 'U1',
+    ts: '100.1',
+    text: 'hello',
+    isBot: false,
+    chrome: false,
+    attachments: [],
+    ...over
+  })
+
+  it('reads the bound channel by default and forwards the window', async () => {
+    const getThreadReplies = vi.fn(async () => [reply()])
+    const { deps: d } = deps(fakeGateway({ getThreadReplies }))
+
+    const res = (await executeTool(
+      ctx,
+      'getThreadHistory',
+      { thread: '99.9', limit: 25, oldest: '100.0', latest: '200.0' },
+      d
+    )) as Record<string, unknown>
+
+    expect(getThreadReplies).toHaveBeenCalledWith('C_CURRENT', '99.9', 25, {
+      oldest: '100.0',
+      latest: '200.0',
+      throwOnError: true,
+      readState: { truncated: false }
+    })
+    expect(res).toMatchObject({ platform: 'slack', channel: 'C_CURRENT', thread: '99.9', truncated: false })
+  })
+
+  // Status chrome is this daemon's own streaming placeholders — noise to a reader, and the
+  // one thing the provider read cannot filter for us.
+  it('drops chrome rows and projects attachments the agent can then fetch', async () => {
+    const getThreadReplies = vi.fn(
+      async (_c: string, _t: string, _m?: number, w?: { readState?: { truncated: boolean } }) => {
+        if (w?.readState) w.readState.truncated = true
+        return [
+          reply({ chrome: true, text: 'thinking…' }),
+          reply({
+            ts: '100.2',
+            agentAuthorId: 'agent-7',
+            appId: 'A123',
+            chromeOwnerAgentId: 'agent-7',
+            attachments: [
+              { id: 'F1', name: 'chart.png', mimeType: 'image/png', sourceUrl: 'https://files.slack.com/x' }
+            ]
+          })
+        ]
+      }
+    )
+    const { deps: d } = deps(fakeGateway({ getThreadReplies }))
+
+    const res = (await executeTool(ctx, 'getThreadHistory', { thread: '99.9' }, d)) as {
+      truncated: boolean
+      messages: Record<string, unknown>[]
+    }
+
+    expect(res.truncated).toBe(true)
+    expect(res.messages).toEqual([
+      {
+        sender: 'U1',
+        ts: '100.2',
+        text: 'hello',
+        isBot: false,
+        agentId: 'agent-7',
+        attachments: [{ name: 'chart.png', mimeType: 'image/png', url: 'https://files.slack.com/x' }]
+      }
+    ])
+  })
+
+  it('needs an explicit channel across platforms, and refuses a connection without the port', async () => {
+    const tgGw = fakeGateway()
+    const { deps: base } = deps(fakeGateway({ getThreadReplies: vi.fn(async () => []) }))
+    const d: OpsDeps = {
+      ...base,
+      gatewayFor: (id) => (id === 'int-tg' ? tgGw : fakeGateway({ getThreadReplies: vi.fn(async () => []) }))
+    }
+    const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
+
+    await expect(executeTool(dual, 'getThreadHistory', { platform: 'telegram', thread: '1' }, d)).rejects.toThrow(
+      /channel is required/
+    )
+    await expect(
+      executeTool(dual, 'getThreadHistory', { platform: 'telegram', channel: '-100', thread: '1' }, d)
+    ).rejects.toThrow(/thread history is unavailable/)
+  })
+})
+
+describe('executeTool: reactions', () => {
+  it('adds a reaction, tolerating the colons a model may wrap it in', async () => {
+    const addReaction = vi.fn(async () => {})
+    const { deps: d } = deps(fakeGateway({ addReaction }))
+
+    const res = (await executeTool(ctx, 'addReaction', { messageTs: '100.1', emoji: ':eyes:' }, d)) as Record<
+      string,
+      unknown
+    >
+
+    expect(addReaction).toHaveBeenCalledWith('C_CURRENT', '100.1', 'eyes')
+    expect(res).toEqual({ platform: 'slack', channel: 'C_CURRENT', messageTs: '100.1', emoji: 'eyes', added: true })
+  })
+
+  it('reads reactions off another channel when told which', async () => {
+    const getReactions = vi.fn(async () => [{ name: 'tada', count: 2, users: ['U1', 'U2'] }])
+    const { deps: d } = deps(fakeGateway({ getReactions }))
+
+    const res = (await executeTool(ctx, 'getReactions', { channel: 'C_OTHER', messageTs: '100.1' }, d)) as Record<
+      string,
+      unknown
+    >
+
+    expect(getReactions).toHaveBeenCalledWith('C_OTHER', '100.1')
+    expect(res).toMatchObject({ channel: 'C_OTHER', reactions: [{ name: 'tada', count: 2, users: ['U1', 'U2'] }] })
+  })
+
+  it('refuses on a connection that does not offer them', async () => {
+    const { deps: d } = deps(fakeGateway())
+    await expect(executeTool(ctx, 'addReaction', { messageTs: '1', emoji: 'eyes' }, d)).rejects.toThrow(
+      /reactions is unavailable/
+    )
+  })
+})
+
+describe('executeTool: createConversation', () => {
+  it('creates a channel and opens a direct conversation from the same tool', async () => {
+    const createConversation = vi.fn(async (spec: { name?: string }) => ({ id: spec.name ? 'C_NEW' : 'D_NEW' }))
+    const { deps: d } = deps(fakeGateway({ createConversation }))
+
+    await executeTool(ctx, 'createConversation', { name: 'plans', isPrivate: true, users: ['U1'] }, d)
+    expect(createConversation).toHaveBeenLastCalledWith({ name: 'plans', isPrivate: true, users: ['U1'] })
+
+    const dm = (await executeTool(ctx, 'createConversation', { users: ['U1', 'U2'] }, d)) as Record<string, unknown>
+    expect(createConversation).toHaveBeenLastCalledWith({ users: ['U1', 'U2'] })
+    expect(dm).toEqual({ platform: 'slack', conversation: { id: 'D_NEW' } })
+  })
+
+  it('rejects a call that names neither a channel nor anyone to talk to', async () => {
+    const { deps: d } = deps(fakeGateway({ createConversation: vi.fn(async () => ({ id: 'C_NEW' })) }))
+    await expect(executeTool(ctx, 'createConversation', {}, d)).rejects.toThrow(/pass `name`.*or `users`/)
+    await expect(executeTool(ctx, 'createConversation', { users: ['U1'], isPrivate: true }, d)).rejects.toThrow(
+      /`isPrivate` describes a channel/
+    )
+  })
+})
+
+describe('executeTool: scheduleMessage', () => {
+  const iso = (msFromNow: number) => new Date(Date.now() + msFromNow).toISOString()
+
+  it('resolves an ISO instant to the epoch second the platform wants', async () => {
+    const scheduleMessage = vi.fn(async (channel: string, _t: string, postAt: number) => ({
+      id: 'Q1',
+      channel,
+      postAt
+    }))
+    const { deps: d } = deps(fakeGateway({ scheduleMessage }))
+    const at = iso(10 * 60 * 1000)
+
+    const res = (await executeTool(ctx, 'scheduleMessage', { message: 'standup', postAt: at }, d)) as Record<
+      string,
+      unknown
+    >
+
+    const expected = Math.floor(Date.parse(at) / 1000)
+    expect(scheduleMessage).toHaveBeenCalledWith('C_CURRENT', 'standup', expected)
+    expect(res).toMatchObject({ platform: 'slack', id: 'Q1', channel: 'C_CURRENT', postAt: expected })
+  })
+
+  // The platform's own bounds, checked here so the agent gets something it can repair from
+  // rather than a bare `time_in_past`.
+  it('rejects a time it cannot schedule, before calling the platform', async () => {
+    const scheduleMessage = vi.fn(async () => ({ id: 'Q1', channel: 'C_CURRENT', postAt: 0 }))
+    const { deps: d } = deps(fakeGateway({ scheduleMessage }))
+
+    await expect(executeTool(ctx, 'scheduleMessage', { message: 'x', postAt: 'tomorrow' }, d)).rejects.toThrow(
+      /not an ISO-8601 instant/
+    )
+    await expect(executeTool(ctx, 'scheduleMessage', { message: 'x', postAt: iso(30 * 1000) }, d)).rejects.toThrow(
+      /at least 2 minutes/
+    )
+    await expect(
+      executeTool(ctx, 'scheduleMessage', { message: 'x', postAt: iso(200 * 24 * 3600 * 1000) }, d)
+    ).rejects.toThrow(/at most 120 days/)
+    expect(scheduleMessage).not.toHaveBeenCalled()
+  })
+})
+
+describe('executeTool: canvases', () => {
+  it('creates and reads one back', async () => {
+    const createCanvas = vi.fn(async () => ({ id: 'F1', title: 'Plan', url: 'https://x/canvas' }))
+    const readCanvas = vi.fn(async () => ({ id: 'F1', title: 'Plan', sections: [{ id: 's1' }] }))
+    const { deps: d } = deps(fakeGateway({ createCanvas, readCanvas }))
+
+    await executeTool(ctx, 'createCanvas', { title: 'Plan', markdown: '# Plan', channel: 'C1' }, d)
+    expect(createCanvas).toHaveBeenCalledWith('Plan', '# Plan', 'C1')
+
+    const read = (await executeTool(ctx, 'readCanvas', { canvasId: 'F1' }, d)) as Record<string, unknown>
+    expect(readCanvas).toHaveBeenCalledWith('F1')
+    expect(read).toEqual({ platform: 'slack', canvas: { id: 'F1', title: 'Plan', sections: [{ id: 's1' }] } })
+  })
+
+  it('applies edits, and rejects one the platform would only refuse later', async () => {
+    const updateCanvas = vi.fn(async () => {})
+    const { deps: d } = deps(fakeGateway({ updateCanvas }))
+
+    const res = (await executeTool(
+      ctx,
+      'updateCanvas',
+      {
+        canvasId: 'F1',
+        edits: [
+          { operation: 'replace', markdown: '# New' },
+          { operation: 'insert_after', sectionId: 's1', markdown: 'more' },
+          { operation: 'delete', sectionId: 's2' }
+        ]
+      },
+      d
+    )) as Record<string, unknown>
+
+    expect(updateCanvas).toHaveBeenCalledWith('F1', [
+      { operation: 'replace', markdown: '# New' },
+      { operation: 'insert_after', sectionId: 's1', markdown: 'more' },
+      { operation: 'delete', sectionId: 's2' }
+    ])
+    expect(res).toEqual({ platform: 'slack', canvasId: 'F1', applied: 3 })
+
+    await expect(
+      executeTool(ctx, 'updateCanvas', { canvasId: 'F1', edits: [{ operation: 'insert_after', markdown: 'x' }] }, d)
+    ).rejects.toThrow(/needs a sectionId/)
+    await expect(
+      executeTool(ctx, 'updateCanvas', { canvasId: 'F1', edits: [{ operation: 'replace' }] }, d)
+    ).rejects.toThrow(/needs markdown/)
+  })
+})
+
 describe('executeTool: readSlackFile', () => {
   it('returns an image as native MCP image content (base64) for image/* urls', async () => {
     const png = Buffer.from('PNGDATA')

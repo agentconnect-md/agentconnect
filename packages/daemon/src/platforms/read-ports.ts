@@ -74,6 +74,16 @@ export interface PlatformReadPorts {
   readonly openDirectMessage?: boolean
   /** The agent-facing channel history tool backed by this platform's cursor API. */
   readonly channelHistory?: boolean
+  /** `getThreadReplies`: the root + replies of one thread can be read on demand. */
+  readonly threadHistory?: boolean
+  /** `addReaction` / `getReactions`: arbitrary emoji, not just the turn-chrome intent. */
+  readonly reactions?: boolean
+  /** `createConversation`: the bot may create a channel or open a group conversation. */
+  readonly conversationCreate?: boolean
+  /** `scheduleMessage`: the platform accepts a message for later delivery. */
+  readonly scheduledMessages?: boolean
+  /** `createCanvas` / `readCanvas` / `updateCanvas`: a platform-hosted rich-text page. */
+  readonly canvas?: boolean
   /** The agent-facing tool that surfaces this platform's CREDENTIALED attachment
    *  read. Present when the platform's file references cannot be fetched without
    *  the bot token, so the agent needs a tool instead of its own network access.
@@ -102,6 +112,11 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       label: 'Slack',
       openDirectMessage: true,
       channelHistory: true,
+      threadHistory: true,
+      reactions: true,
+      conversationCreate: true,
+      scheduledMessages: true,
+      canvas: true,
       attachmentReadTool: SLACK_ATTACHMENT_TOOL
     }
   ],
@@ -188,15 +203,24 @@ export function attachmentReadToolsFor(platforms: Iterable<string>): ToolDescrip
   )
 }
 
-/** The platforms in the input list that expose the bounded channel-history port. */
-export function channelHistoryPlatformsFor(platforms: Iterable<string>): string[] {
-  const wanted = new Set(platforms)
-  return [...READ_PORTS.values()].filter((d) => d.channelHistory && wanted.has(d.platform)).map((d) => d.platform)
+/** The declaration flags that gate ONE agent-facing tool each — the ports whose only
+ *  question is "does this platform have it?", answered before a connection exists. */
+export type PlatformToolPort =
+  'channelHistory' | 'threadHistory' | 'reactions' | 'conversationCreate' | 'scheduledMessages' | 'canvas'
+
+/** The platforms declaring `port`, in registry order — every one when `platforms` is
+ *  omitted (the permission auto-allow set needs the names an agent will never see). */
+export function platformsWithPort(port: PlatformToolPort, platforms?: Iterable<string>): string[] {
+  const wanted = platforms === undefined ? undefined : new Set(platforms)
+  return [...READ_PORTS.values()]
+    .filter((d) => d[port] && (wanted === undefined || wanted.has(d.platform)))
+    .map((d) => d.platform)
 }
 
-/** Every platform that exposes the bounded channel-history port, in registry order. */
-export function allChannelHistoryPlatforms(): string[] {
-  return [...READ_PORTS.values()].filter((d) => d.channelHistory).map((d) => d.platform)
+/** Every registered platform, in registry order. Building the tool list against this
+ *  passes every port gate, which is what the permission auto-allow set needs. */
+export function allPortPlatforms(): string[] {
+  return [...READ_PORTS.keys()]
 }
 
 /** Is `name` some platform's attachment-read tool? The MCP dispatcher runs ONE
