@@ -786,14 +786,38 @@ describe('OutputConverger', () => {
     expect(planItems(plan)[0]!.text.length).toBeLessThanOrEqual(150)
   })
 
-  it('low mode surfaces plan progress on the status bar (no channel post)', () => {
+  // low is the DEFAULT rung, and it renders the plan: excluding it left most agents in the
+  // product with no plan in the channel at all, while the console had one.
+  it('low mode posts the plan like medium does', () => {
     const c = new OutputConverger('low')
+    const actions = c.onUpdate({
+      sessionUpdate: 'plan',
+      entries: [{ content: 'do thing', status: 'pending' }]
+    } as any)
+    const plan = actions.find((a) => a.kind === 'plan') as { text: string } | undefined
+    expect(plan?.text).toBe('Plan · 0/1\nto do: do thing')
+  })
+
+  // The two rungs that still withhold it, and why: `minimal` promises one live reply for the
+  // whole turn, so it shows planning as transient status instead; `none` sends nothing to the
+  // channel at all, status included.
+  it('minimal mode keeps planning as transient status, with no channel post', () => {
+    const c = new OutputConverger('minimal')
     const actions = c.onUpdate({
       sessionUpdate: 'plan',
       entries: [{ content: 'do thing', status: 'pending' }]
     } as any)
     expect(actions.some((a) => a.kind === 'plan' || a.kind === 'post')).toBe(false)
     expect(actions.some((a) => a.kind === 'set-status')).toBe(true)
+  })
+
+  it('none mode posts nothing at all for a plan', () => {
+    const c = new OutputConverger('none')
+    const actions = c.onUpdate({
+      sessionUpdate: 'plan',
+      entries: [{ content: 'do thing', status: 'pending' }]
+    } as any)
+    expect(actions.some((a) => a.kind === 'plan' || a.kind === 'post')).toBe(false)
   })
 
   it('drops unknown update kinds (no throw, no actions)', () => {

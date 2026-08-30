@@ -976,13 +976,14 @@ Goal: **channel contains only start / plan / problem / finish + link**, while de
 | `usage_update`                   | Do not render; send usage telemetry.                                                                                                                                                                                                                                                                                                                                                                                      |
 | `stopReason`                     | Completion message + Web App session link.                                                                                                                                                                                                                                                                                                                                                                                |
 
-**`low` default:** Keep only agent body text and final result as channel messages. All activity signals use the transient agent-session working state ([`agents.sessions.setStatus`](https://docs.slack.dev/reference/methods/agents.sessions.setStatus)), not chat messages. The enum carries no custom text: a non-empty status maps to `processing` (Slack renders "is working…" plus the native Stop control in the DM container), a clear maps to `active`.
+**`low` default:** Keep only agent body text, the plan, and the final result as channel messages — the plan is the shortest statement of what the turn is for, and low being the DEFAULT is why it is not withheld here. All other activity signals use the transient agent-session working state ([`agents.sessions.setStatus`](https://docs.slack.dev/reference/methods/agents.sessions.setStatus)), not chat messages. The enum carries no custom text: a non-empty status maps to `processing` (Slack renders "is working…" plus the native Stop control in the DM container), a clear maps to `active`.
 
 | ACP update                       | Low-mode action                                                                      |
 | -------------------------------- | ------------------------------------------------------------------------------------ |
 | `agent_message_chunk`            | Buffer body text.                                                                    |
 | `tool_call` / `tool_call_update` | Flush body as post, then set status to tool title.                                   |
 | `agent_thought_chunk`            | Set status `"is thinking…"`.                                                         |
+| `plan`                           | Same in-place list as `medium`/`high` — the one activity signal low does post.       |
 | `usage_update`                   | Ignore for rendering.                                                                |
 | `onFinal`                        | Flush remaining body as result post, clear status with `''`; no done/details footer. |
 

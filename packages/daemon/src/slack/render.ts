@@ -1569,9 +1569,14 @@ export class OutputConverger {
       }
       case 'plan': {
         const entries = (update as { entries?: PlanEntry[] }).entries ?? []
-        // minimal keeps the reply intact and shows planning only as transient status.
+        // `minimal` promises the turn is ONE live reply and `none` sends nothing at all, so
+        // both keep planning as transient status. `low` renders it: that rung means "body and
+        // result only, activity goes to the status row", and the plan was excluded when its
+        // only shape was a six-line emoji block. As a ruled, struck-through list it is neither
+        // activity nor noise — it is the shortest statement of what the turn is for — and low
+        // is the DEFAULT, so excluding it hid the plan from most agents in the product.
         if (this.mode === 'minimal') return this.pushActivity('planning…')
-        if (this.mode === 'low' || this.mode === 'none') return [...this.flush(), ...this.pushActivity('planning…')]
+        if (this.mode === 'none') return [...this.flush(), ...this.pushActivity('planning…')]
         return [...this.flush(), { kind: 'plan', ...renderPlan(entries) }]
       }
       case 'usage_update':
