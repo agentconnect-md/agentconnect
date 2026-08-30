@@ -469,6 +469,49 @@ export class VirtualSlackConnection implements PlatformConnection {
     return null
   }
 
+  /**
+   * The agent-callable ACTIONS refuse, deterministically, for the reason the turn stream
+   * refuses: the Arena models a room of messages and nothing else, and a half-modelled
+   * reaction, canvas, or future delivery would change what the Arena counts.
+   *
+   * This is the line between them and `react` above, which accepts silently. That one is
+   * chrome CORE places and no participant scores; these are actions an AGENT chose, so
+   * swallowing one would let it believe it signalled something no participant can see —
+   * exactly the divergence the surface guard exists to prevent. Refusing says so, and the
+   * agent reads the reason.
+   */
+  private unmodelled(what: string): never {
+    throw new Error(`${what} are not modelled in the Collaboration Arena`)
+  }
+
+  async addReaction(): Promise<void> {
+    this.unmodelled('reactions')
+  }
+
+  async getReactions(): Promise<never> {
+    this.unmodelled('reactions')
+  }
+
+  async createConversation(): Promise<never> {
+    this.unmodelled('new conversations')
+  }
+
+  async scheduleMessage(): Promise<never> {
+    this.unmodelled('scheduled messages')
+  }
+
+  async createCanvas(): Promise<never> {
+    this.unmodelled('canvases')
+  }
+
+  async readCanvas(): Promise<never> {
+    this.unmodelled('canvases')
+  }
+
+  async updateCanvas(): Promise<never> {
+    this.unmodelled('canvases')
+  }
+
   /** The Arena world hosts no files, so a forward is recorded for the ONE part of it a
    *  participant can see: the caption, as an ordinary reply. It reports delivery but no
    *  `messageId`, because the real Slack share answers with the file and no message ts — a
