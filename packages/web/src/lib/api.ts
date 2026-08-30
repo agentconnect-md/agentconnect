@@ -685,7 +685,7 @@ export interface UpsertCronInput {
   agentId: string // the agent this cron drives — required
   name?: string // console display name
   schedule: string
-  timezone?: string // omitted on create ⇒ control-plane process timezone
+  timezone?: string // omitted ⇒ UTC on create, the schedule's existing zone on an edit
   targetPlatform: string // §6.8 open id — derived from the anchor integration
   targetChannel?: string // optional — absent ⇒ headless fire
   targetIntegrationId?: string // the agent integration posting the anchor (platform derives from it)

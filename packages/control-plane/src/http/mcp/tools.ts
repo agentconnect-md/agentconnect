@@ -387,7 +387,7 @@ export const MCP_TOOLS: McpToolDef[] = [
           .string()
           .min(1)
           .describe(
-            'IANA timezone the schedule is interpreted in, e.g. "Asia/Shanghai". Use the timezone the person asking lives in — ask them if you do not know it. There is no default.'
+            'IANA timezone the schedule is interpreted in, e.g. "Asia/Shanghai". Use the timezone the person asking lives in — ask them if you do not know it. There is no default. When editing an existing schedule, pass back its current timezone (from getCron) unless the user is changing it: this is a full replace, so a guess here MOVES the schedule.'
           ),
         trigger: z.string().min(1).describe('The prompt sent to the agent on each firing'),
         // Same cron target vocabulary the REST body accepts (`dto/index.ts`

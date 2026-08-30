@@ -2368,8 +2368,9 @@ export const UpsertCronBody = z.object({
   // never delivered to the daemon. Optional for API/legacy compatibility.
   name: z.string().trim().min(1).max(120).optional(),
   schedule: cronerSchedule,
-  // Omitted on create ⇒ the CP process timezone; edits from the console always
-  // resend the stored value so a non-default timezone is never reset silently.
+  // Omitted ⇒ UTC on create, and on an edit the zone the schedule already has. The server never
+  // guesses one: a caller states the zone its user lives in, and omission is never a way to move a
+  // live schedule. Required by the MCP tool, where the caller has a person to ask.
   timezone: ianaTimezone.optional(),
   // The MEMBERS track the registry; the DEFAULT does not, and must not. A cron
   // created before `targetPlatform` existed reads back as Slack, so `'slack'`

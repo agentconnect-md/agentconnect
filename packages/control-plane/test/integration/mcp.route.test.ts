@@ -701,7 +701,7 @@ describe('POST /api/v1/mcp — tools act with the caller’s own authority', () 
       updateAgent: { agentId: randomUUID(), model: 'm' },
       deleteAgent: { agentId: randomUUID(), confirm: 'x' },
       renameDaemon: { daemonId: randomUUID(), name: 'edge' },
-      upsertCron: { agentId: randomUUID(), schedule: '0 9 * * *', trigger: 't' },
+      upsertCron: { agentId: randomUUID(), schedule: '0 9 * * *', timezone: 'UTC', trigger: 't' },
       runCron: { cronId: randomUUID() },
       deleteCron: { cronId: randomUUID(), confirm: 'x' },
       setChannelTrigger: { integrationId: randomUUID(), channelId: 'C1', trigger: 'any' },
@@ -794,19 +794,29 @@ describe('POST /api/v1/mcp — write tools (P1, §6.2 ✎)', () => {
       agentId,
       name: 'daily-digest',
       schedule: '0 9 * * *',
+      // Required: the tool refuses to let a schedule inherit a clock nobody chose.
+      timezone: 'Asia/Shanghai',
       trigger: 'post the digest',
       enabled: false
     })
     expect(created.isError).toBeUndefined()
-    const cron = JSON.parse(toolText(created)) as { id: string; name: string | null; enabled: boolean }
+    const cron = JSON.parse(toolText(created)) as {
+      id: string
+      name: string | null
+      enabled: boolean
+      timezone: string
+    }
     expect(cron.name).toBe('daily-digest')
     expect(cron.enabled).toBe(false)
+    // The zone the caller stated is the zone that gets stored — never the CP process's own.
+    expect(cron.timezone).toBe('Asia/Shanghai')
 
     const edited = await callTool(app, key, 'upsertCron', {
       cronId: cron.id,
       agentId,
       name: 'daily-digest',
       schedule: '0 10 * * *',
+      timezone: 'Asia/Shanghai',
       trigger: 'post the digest',
       enabled: true
     })
