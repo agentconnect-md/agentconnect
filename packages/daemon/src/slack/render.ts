@@ -16,6 +16,7 @@ export {
 } from '@agentconnect.md/protocol'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
 import { flattenUnsafeLinks } from '../messages/agent-links.js'
+import { AgentMessageRun } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
 import { splitIntoSections } from './formatter.js'
@@ -909,6 +910,8 @@ export class OutputConverger {
   // isn't re-pushed to chat.update every idle window).
   private segmentReset = false
   private recordDirty = false
+  // The runtime's own message identity, which is the only boundary a speak-only run offers.
+  private readonly messages = new AgentMessageRun()
   // ── Native tool-call chrome (slack-streaming-turn-output.md §3) ──────────────
   // The axis, plus the one stream's card bookkeeping. Nothing here touches the body.
   private streaming = false
@@ -1408,6 +1411,9 @@ export class OutputConverger {
       case 'agent_message_chunk': {
         const content = (update as { content?: { type?: string; text?: string } }).content
         const text = content?.type === 'text' ? (content.text ?? '') : ''
+        // A new message closes the one before it exactly as a tool boundary would — same mode
+        // semantics, same actions. Without this the two arrive as one post, run together.
+        const closed = this.messages.opens(update) ? (this.mode === 'minimal' ? this.closeSegment() : this.flush()) : []
         // minimal: a chunk arriving after a tool boundary opens a new segment that REPLACES
         // the previous one in the single live message (the previous was already recorded).
         if (this.mode === 'minimal' && this.segmentReset && text) {
@@ -1416,7 +1422,7 @@ export class OutputConverger {
         }
         this.buf += text
         if (this.mode === 'minimal' && text.trim()) this.recordDirty = true
-        return []
+        return closed
       }
       case 'agent_thought_chunk': {
         // high: accumulate the streamed thought into the reasoning buffer and mark it

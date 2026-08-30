@@ -1,6 +1,7 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import { permissionModeDisplayLabel } from '../acp/permission-modes.js'
 import { flattenUnsafeLinks } from '../messages/agent-links.js'
+import { AgentMessageRun } from '../messages/message-boundary.js'
 import { splitAtParagraphBoundary } from '../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
 import { extractToolOutput } from '../session/tool-output.js'
@@ -305,6 +306,8 @@ export class DiscordConverger {
   // minimal mode only — see the OutputConverger (Slack) for the segment/record contract.
   private segmentReset = false
   private recordDirty = false
+  // The runtime's own message identity, which is the only boundary a speak-only run offers.
+  private readonly messages = new AgentMessageRun()
 
   constructor(private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high') {}
 
@@ -447,13 +450,16 @@ export class DiscordConverger {
       case 'agent_message_chunk': {
         const content = (update as { content?: { type?: string; text?: string } }).content
         const text = content?.type === 'text' ? (content.text ?? '') : ''
+        // A new message closes the one before it exactly as a tool boundary would — same mode
+        // semantics, same actions. Without this the two arrive as one post, run together.
+        const closed = this.messages.opens(update) ? (this.mode === 'minimal' ? this.closeSegment() : this.flush()) : []
         if (this.mode === 'minimal' && this.segmentReset && text) {
           this.buf = ''
           this.segmentReset = false
         }
         this.buf += text
         if (this.mode === 'minimal' && text.trim()) this.recordDirty = true
-        return []
+        return closed
       }
       case 'agent_thought_chunk': {
         if (this.mode === 'high') {
