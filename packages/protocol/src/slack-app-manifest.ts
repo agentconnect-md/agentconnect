@@ -12,8 +12,18 @@ export const SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID = 'ac_manage_session'
 /** Public platform profile copy. Never derive this from an Agent description. */
 export const PLATFORM_APP_DESCRIPTION = 'AI agent powered by AgentConnect.'
 
-/** The bot scopes an installation MUST hold — without one of these the app cannot receive,
- *  read, or answer a message at all, so a short grant is refused rather than degraded. */
+/**
+ * Every bot scope the app requests, and the exact set an installation must hold.
+ *
+ * There was briefly a required/capability split here, on the theory that a scope backing one
+ * optional tool should not mark an older installation broken. It did not survive contact: the
+ * "required" half was not required either — the app receives and answers messages without
+ * several of them — so the line was invented rather than observed, and it bought a second
+ * constant, an extra API field, extra console branches, and a message that said six permissions
+ * were missing without naming them. One list is both simpler and more honest: these are the
+ * scopes AgentConnect needs, an install short of any of them is incomplete, and the console
+ * says exactly which to add.
+ */
 export const SLACK_BOT_SCOPES = [
   'files:read',
   'app_mentions:read',
@@ -29,34 +39,20 @@ export const SLACK_BOT_SCOPES = [
   'im:write',
   'mpim:history',
   'mpim:read',
+  'reactions:read',
   'reactions:write',
   'assistant:write',
-  'users:read'
-] as const
-
-/**
- * Bot scopes that unlock ONE optional capability each and are declared but never fenced on.
- *
- * A required scope is load-bearing: an install missing it is broken, so `checkSlackBotScopes`
- * refuses it and the console asks for a reinstall. These are not — a workspace that granted
- * the app before the capability existed keeps working, and only the one tool that needs the
- * scope refuses, with Slack's own `missing_scope`. Fencing on them would mark every existing
- * installation broken for a feature it never asked for.
- *
- * `channels:manage` / `groups:write` also back `conversations.leave`, which has always needed
- * a write scope this manifest did not declare.
- */
-export const SLACK_CAPABILITY_BOT_SCOPES = [
-  'reactions:read',
+  'users:read',
   'canvases:read',
   'canvases:write',
+  // `conversations.leave` has always needed one of these two; the manifest never asked.
   'channels:manage',
   'groups:write',
   'mpim:write'
+  // No `search:read.*` here: the tool that needs them is not on main yet. A scope in this list
+  // makes every existing install incomplete, so it may only arrive WITH the capability that
+  // uses it — otherwise operators reinstall to grant permissions nothing can call.
 ] as const
-
-/** Everything the app manifest declares: the required fence plus the optional capabilities. */
-export const SLACK_MANIFEST_BOT_SCOPES = [...SLACK_BOT_SCOPES, ...SLACK_CAPABILITY_BOT_SCOPES] as const
 
 // Both transports advertise the same events: Socket Mode receives them directly, and the relay's
 // HTTP ingress forwards the ones this app acts on to the daemon that owns the conversation.
@@ -155,7 +151,7 @@ export function buildSlackAppManifest(name: string, options: SlackAppManifestOpt
       ]
     },
     oauth_config: {
-      scopes: { bot: [...SLACK_MANIFEST_BOT_SCOPES] },
+      scopes: { bot: [...SLACK_BOT_SCOPES] },
       ...(redirectUrls.length > 0 ? { redirect_urls: redirectUrls } : {}),
       ...(options.pkceEnabled !== undefined ? { pkce_enabled: options.pkceEnabled } : {})
     },

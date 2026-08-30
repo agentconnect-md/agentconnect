@@ -5,8 +5,6 @@ import {
   mergeManagedSlackManifest,
   slackOAuthRedirectUri,
   SLACK_BOT_SCOPES,
-  SLACK_CAPABILITY_BOT_SCOPES,
-  SLACK_MANIFEST_BOT_SCOPES,
   SLACK_BOT_EVENTS,
   DEFAULT_SLACK_APP_NAME
 } from './slack-manifest.js'
@@ -31,7 +29,7 @@ describe('buildInstallManifest', () => {
       settings: { socket_mode_enabled: boolean; event_subscriptions: { bot_events: string[] } }
     }
     expect(m.settings.socket_mode_enabled).toBe(true)
-    expect(m.oauth_config.scopes.bot).toEqual([...SLACK_MANIFEST_BOT_SCOPES])
+    expect(m.oauth_config.scopes.bot).toEqual([...SLACK_BOT_SCOPES])
     expect(m.settings.event_subscriptions.bot_events).toEqual([...SLACK_BOT_EVENTS])
     expect(m.features.shortcuts).toEqual([
       expect.objectContaining({
@@ -41,28 +39,21 @@ describe('buildInstallManifest', () => {
     ])
   })
 
-  // The manifest asks for more than the install fence checks: a capability scope unlocks one
-  // optional tool, so a workspace that granted the app before it existed must stay healthy.
-  it('declares the capability scopes without making them required', () => {
+  // One list, so the manifest and the fence cannot disagree: everything the app asks for is
+  // everything an install must hold, and a short grant is short.
+  it('declares exactly the scopes it fences on', () => {
     const m = buildInstallManifest('acme-bot', REDIRECT) as { oauth_config: { scopes: { bot: string[] } } }
-    for (const scope of SLACK_CAPABILITY_BOT_SCOPES) {
-      expect(m.oauth_config.scopes.bot).toContain(scope)
-      expect([...SLACK_BOT_SCOPES] as string[]).not.toContain(scope)
-    }
-    // The whole point: an installation holding the required set and none of the capability
-    // scopes is COMPLETE, not short — it keeps working, and only the new tools refuse.
+    expect([...m.oauth_config.scopes.bot].sort()).toEqual([...SLACK_BOT_SCOPES].sort())
     expect(checkSlackBotScopes([...SLACK_BOT_SCOPES])).toEqual({ status: 'complete' })
   })
 
-  // The refresh is the only path that can add a scope to an app created before the
-  // capability existed — union it with the FULL set or a reauthorization can never grant it.
-  it('refresh unions the capability scopes into an app that predates them', () => {
+  it('refresh unions the full scope list into an app that predates it', () => {
     const merged = mergeManagedSlackManifest(
-      { oauth_config: { scopes: { bot: [...SLACK_BOT_SCOPES] } } },
+      { oauth_config: { scopes: { bot: ['chat:write'] } } },
       'acme-bot',
       REDIRECT
     ) as { oauth_config: { scopes: { bot: string[] } } }
-    for (const scope of SLACK_CAPABILITY_BOT_SCOPES) expect(merged.oauth_config.scopes.bot).toContain(scope)
+    for (const scope of SLACK_BOT_SCOPES) expect(merged.oauth_config.scopes.bot).toContain(scope)
   })
 
   it('http mode: disables Socket Mode and points the Events API request_urls at the relay', () => {
@@ -126,9 +117,15 @@ describe('buildInstallManifest', () => {
       'im:write',
       'mpim:history',
       'mpim:read',
+      'reactions:read',
       'reactions:write',
       'assistant:write',
-      'users:read'
+      'users:read',
+      'canvases:read',
+      'canvases:write',
+      'channels:manage',
+      'groups:write',
+      'mpim:write'
     ])
   })
 

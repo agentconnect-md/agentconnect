@@ -3,7 +3,6 @@ import {
   buildSlackManifest,
   slackCreateAppUrl,
   SLACK_BOT_SCOPES,
-  SLACK_CAPABILITY_BOT_SCOPES,
   SLACK_BOT_EVENTS,
   SLACK_MANAGE_SESSION_SHORTCUT_CALLBACK_ID,
   PLATFORM_APP_DESCRIPTION
@@ -31,17 +30,10 @@ describe('manifest parity with the Control Plane', () => {
       'im:write',
       'mpim:history',
       'mpim:read',
+      'reactions:read',
       'reactions:write',
       'assistant:write',
-      'users:read'
-    ])
-  })
-
-  // Declared but never fenced on: an app created by hand must still ASK for these, or the
-  // optional tools answer `missing_scope` on a workspace that has no way to grant them.
-  it('pins the exact capability bot scopes (drift guard)', () => {
-    expect([...SLACK_CAPABILITY_BOT_SCOPES]).toEqual([
-      'reactions:read',
+      'users:read',
       'canvases:read',
       'canvases:write',
       'channels:manage',

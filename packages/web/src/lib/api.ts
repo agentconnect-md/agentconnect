@@ -916,9 +916,6 @@ export interface SlackBotRefreshDto {
   manifest: 'synced' | 'manual_update_required' | 'unknown'
   authorization: 'current' | 'reinstall_required' | 'invalid' | 'app_mismatch' | 'unknown'
   missingScopes: string[]
-  /** Optional-capability scopes this install lacks. The integration is healthy without them;
-   *  the agent tools they back stay unavailable until someone reinstalls. */
-  missingCapabilityScopes?: string[]
   settingsUrl: string
   manifestUrl: string
   /** Slack's OAuth & Permissions editor for changing requested scopes. */

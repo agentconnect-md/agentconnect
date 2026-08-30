@@ -272,10 +272,6 @@ function SlackRefreshNotice({
     builtin && result.authorization === 'invalid'
       ? 'Slack rejected this workspace authorization. Reinstall the app to reconnect it.'
       : defaultMessage
-  // ONE list. Required and capability scopes are separate fields because they mean different
-  // things to `authorization`, but an operator adding them in Slack does it in a single pass —
-  // and reporting only the required half sent them back for a second round.
-  const missingScopes = [...result.missingScopes, ...(result.missingCapabilityScopes ?? [])]
 
   return (
     <div
@@ -287,7 +283,9 @@ function SlackRefreshNotice({
     >
       <span className="min-w-0">
         <span>{message}</span>
-        {missingScopes.length > 0 && <span className="mono ml-1 text-[11px]">Missing: {missingScopes.join(', ')}</span>}
+        {result.missingScopes.length > 0 && (
+          <span className="mono ml-1 text-[11px]">Missing: {result.missingScopes.join(', ')}</span>
+        )}
       </span>
       {action?.label === 'Reinstall workspace' && onReinstall ? (
         <button

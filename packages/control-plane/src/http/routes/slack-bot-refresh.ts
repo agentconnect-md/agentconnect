@@ -27,12 +27,7 @@ import { BotId } from '../../domain/ids.js'
 import { denyViewerWrite, orgOf } from '../rbac.js'
 import { SlackBotRefreshDto, ErrorDto, IdParam, type SlackBotRefreshDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
-import {
-  checkSlackBotScopes,
-  mergeManagedSlackManifest,
-  missingSlackCapabilityScopes,
-  slackOAuthRedirectUri
-} from '../slack-manifest.js'
+import { checkSlackBotScopes, mergeManagedSlackManifest, slackOAuthRedirectUri } from '../slack-manifest.js'
 import { relayHttpBase } from '../relay-ingress.js'
 
 /** Slack errors from the manifest export/update that mean "this app is not
@@ -171,10 +166,6 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
 
         let authorization: SlackBotRefreshDtoT['authorization'] = 'unknown'
         let missingScopes: string[] = []
-        // Reported alongside, never folded into `authorization`: a missing capability scope
-        // does not make an install broken, but silence let the console say "up to date" while
-        // every optional tool answered `missing_scope`.
-        let missingCapabilityScopes: string[] = []
         if (checked?.status === 'invalid') {
           authorization = 'invalid'
         } else if (checked?.status === 'ok' && checked.appId && checked.appId !== bot.slackAppId) {
@@ -182,7 +173,6 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
         } else if (checked?.status === 'ok') {
           // The same shared diff both install funnels fence on. A grant Slack
           // declined to report stays `unknown` — silence is not a shortfall.
-          missingCapabilityScopes = missingSlackCapabilityScopes(checked.scopes)
           const grant = checkSlackBotScopes(checked.scopes)
           if (grant.status === 'short') {
             missingScopes = grant.missing
@@ -196,7 +186,6 @@ export function slackBotRefreshRoutes(deps: HttpDeps, slack: SlackRouteSeams) {
           manifest,
           authorization,
           missingScopes,
-          missingCapabilityScopes,
           ...slackAppLinks(bot.slackAppId, appIdentityMatches && checked?.status === 'ok' ? checked.teamId : null)
         }
       }
