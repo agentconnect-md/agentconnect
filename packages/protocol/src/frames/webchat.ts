@@ -103,6 +103,18 @@ export type WebchatPost = z.infer<typeof WebchatPost>
 
 // One structured chunk of the agent's reply stream. Ordered per-connection (TCP);
 // 'index' is a per-turn monotonic counter for client-side assembly (NOT a global fence).
+/**
+ * One entry of an agent's task list, as ACP `plan` sends it. Defined HERE rather than
+ * beside `PlanBody` in session.ts because both the live stream and the persisted row carry
+ * it and session.ts already imports this module — the other direction would be a cycle.
+ */
+export const PlanEntry = z.object({
+  content: z.string(),
+  status: z.string(), // ACP PlanEntryStatus: pending|in_progress|completed
+  priority: z.string().optional() // ACP PlanEntryPriority: high|medium|low
+})
+export type PlanEntry = z.infer<typeof PlanEntry>
+
 export const WebchatEvent = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('message'), text: z.string() }), // from agent_message_chunk
   z.object({ kind: z.literal('thinking'), text: z.string() }), // from agent_thought_chunk
@@ -132,7 +144,18 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('superseded'), generation: z.number().int() }),
   // Live-only chrome for a wait the user cannot otherwise see (a cluster sandbox pod coming up).
   // Never persisted — a refresh rebuilds from the transcript, which does not record it.
-  z.object({ kind: z.literal('notice'), text: z.string() })
+  z.object({ kind: z.literal('notice'), text: z.string() }),
+  // The turn's task list (ACP `plan`). Unlike every other kind here it is a SNAPSHOT: ACP
+  // resends the whole list on each revision, so the client keeps the latest and never
+  // appends. Streamed because the same block already lands in the persisted transcript
+  // (transcript-full-tool-body.md §8) — without it a live turn hides its plan until the
+  // page is re-read from history, which is exactly the gap this closes.
+  // COMPAT: a relay predating this kind fails that ONE frame's decode and drops the chunk.
+  // Non-fatal by construction — the relay answers with an error frame and keeps the
+  // connection, so every other chunk still flows and the turn degrades to showing its plan
+  // only after the fact. There is no relay capability echo to gate on (`rd/hello/ok` carries
+  // only `relayId`), so this is the tradeoff rather than an oversight.
+  z.object({ kind: z.literal('plan'), entries: z.array(PlanEntry) })
 ])
 export type WebchatEvent = z.infer<typeof WebchatEvent>
 

@@ -18,6 +18,13 @@ export const PLAN_LANE = 'PLAN_BLOCK'
 
 export type PlanEntry = PlanBody['entries'][number]
 
+/** The plan block's one-line label. Computed from the entries wherever they are present —
+ *  live and persisted alike — so the two surfaces can never disagree about the count; the
+ *  daemon writes the same string onto the row for readers that get no entries at all. */
+export function planLabel(entries: PlanEntry[]): string {
+  return `Plan · ${entries.filter((entry) => entry.status === 'completed').length}/${entries.length}`
+}
+
 /** Parse a plan row's `body` into its entries. Everything that is not a readable list —
  *  no body at all (an older daemon, or a control plane that forwards none), malformed
  *  JSON, an entry without text — yields nothing, and the caller falls back to the row's
@@ -26,7 +33,7 @@ export function planEntries(body: string | undefined): PlanEntry[] {
   if (!body) return []
   try {
     const parsed = JSON.parse(body) as Partial<PlanBody>
-    return (parsed.entries ?? []).filter((entry) => typeof entry?.content === 'string')
+    return (parsed.entries ?? []).filter((entry) => typeof entry?.content === 'string' && entry.content.trim() !== '')
   } catch {
     return []
   }

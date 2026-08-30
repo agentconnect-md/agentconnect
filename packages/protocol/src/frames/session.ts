@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { SessionKey } from './route.js'
-import { WebchatImageAttachment } from './webchat.js'
+import { PlanEntry, WebchatImageAttachment } from './webchat.js'
 
 /**
  * Session read-back (C→D REQ → REP) — the console's on-demand pulls.
@@ -93,17 +93,10 @@ export type ToolBody = z.infer<typeof ToolBody>
 /**
  * The agent's task list for ONE turn, transported as a JSON STRING in `SessionMessage.body`
  * on a `plan` row. An ACP plan update carries the WHOLE entry list every time, so this is a
- * snapshot, not a delta — the daemon rewrites one row per turn rather than appending.
+ * snapshot, not a delta — the daemon rewrites one row per turn rather than appending. The
+ * live webchat stream carries the same entries as they change (`WebchatEvent` kind `plan`).
  */
-export const PlanBody = z.object({
-  entries: z.array(
-    z.object({
-      content: z.string(),
-      status: z.string(), // ACP PlanEntryStatus: pending|in_progress|completed
-      priority: z.string().optional() // ACP PlanEntryPriority: high|medium|low
-    })
-  )
-})
+export const PlanBody = z.object({ entries: z.array(PlanEntry) })
 export type PlanBody = z.infer<typeof PlanBody>
 
 /** One bounded webchat image persisted only in the daemon-local transcript. */

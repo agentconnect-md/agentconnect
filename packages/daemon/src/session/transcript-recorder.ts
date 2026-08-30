@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import type { PlanBody, ToolBody } from '@agentconnect.md/protocol'
+import { planEntriesOf, planSummary } from './plan-entries.js'
 
 /**
  * A transcript event to persist. Reasoning is a flat coalesced block; tool events
@@ -17,10 +18,6 @@ export type TranscriptEvent =
 /** Single-body write ceiling (protects the daemon DB from a huge rawOutput/content);
  *  separate from the read-side 32 KiB inline preview cap. */
 const MAX_TOOL_BODY_BYTES = 1024 * 1024
-
-/** One entry of an ACP `plan` update, as the runtimes send it (Claude's TodoWrite and
- *  Codex's update_plan both land here). Every field is optional on the wire. */
-type PlanEntry = { content?: string; status?: string; priority?: string }
 
 /**
  * Turns the raw ACP `session/update` stream into the *full* activity log — tool calls,
@@ -85,17 +82,12 @@ export class TranscriptRecorder {
         // reads before it. The plan itself is a full-list replace, so every update rewrites
         // this turn's one row — `text` is the summary an old console (or a control plane that
         // forwards no body) can still show, `body` the entries this one renders.
-        const entries = ((update as { entries?: PlanEntry[] }).entries ?? []).map((entry) => ({
-          content: entry.content ?? '',
-          status: entry.status ?? 'pending',
-          ...(entry.priority ? { priority: entry.priority } : {})
-        }))
+        const entries = planEntriesOf(update)
         if (entries.length === 0) return this.flushThought()
-        const done = entries.filter((entry) => entry.status === 'completed').length
         const body: PlanBody = { entries }
         return [
           ...this.flushThought(),
-          { kind: 'plan', planId: this.planId, text: `Plan · ${done}/${entries.length}`, body: JSON.stringify(body) }
+          { kind: 'plan', planId: this.planId, text: planSummary(entries), body: JSON.stringify(body) }
         ]
       }
       // A reply starting means the preceding thinking run is over — close the block.

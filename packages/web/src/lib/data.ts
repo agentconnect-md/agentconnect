@@ -4,7 +4,7 @@
 import type { AgentIcon } from '@/lib/agent-icon'
 import { gitRepoHostname, managedGitlabRepoPath } from './git-url-tile'
 import { isCodeHostHookKind, type HookKind } from '@agentconnect.md/protocol/code-host'
-import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig } from '@/lib/api'
+import type { DaemonSessionRetention, ManagedMemoryScope, MemoryDreamingConfig, PlanBody } from '@/lib/api'
 import { featureFlagEnabled } from '@/lib/feature-flags'
 import { platformLabel } from '@/lib/platform-labels'
 import { randomUuid } from '@/lib/random-uuid'
@@ -273,7 +273,10 @@ export function agentIsPlaced(agent: Pick<Agent, 'daemon' | 'runtime' | 'placeme
   return (isPoolPlacementKind(agent.placementKind) || agent.daemon !== '—') && agent.runtime !== ''
 }
 
-export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done' | 'notice'
+// `plan` is REASONING, for historical reasons — the ACP task list is `planblock`, which is
+// not a work lane at all. Renaming `plan` to `think` would be the honest fix; it is left
+// alone here so this change stays about the task list.
+export type LaneKind = 'msg' | 'plan' | 'tool' | 'edit' | 'done' | 'notice' | 'planblock'
 
 export interface LaneInfo {
   lane: string
@@ -328,6 +331,18 @@ const LANE_MAP: Record<LaneKind, LaneInfo> = {
     weight: 400,
     textColor: 'var(--text-tertiary)',
     codeColor: 'var(--text-tertiary)'
+  },
+  // The turn's ACP task list. Like `notice` and for the same reason, NOT a work lane: it is
+  // what the agent set out to do, so it renders as its own checklist above the answer rather
+  // than being counted and hidden as a reasoning step. The row colors are unused — PlanBlock
+  // paints each entry from its status.
+  planblock: {
+    lane: 'PLAN_BLOCK', // = session-work.ts PLAN_LANE (kept literal here, as NOTICE is)
+    laneColor: 'var(--text-tertiary)',
+    dot: 'var(--text-disabled)',
+    weight: 400,
+    textColor: 'var(--text-secondary)',
+    codeColor: 'var(--text-secondary)'
   },
   // An assistant's completed reply — rendered neutrally, identical to a real transcript
   // text row (see SessionDetailView.msgStep). Keeping this in sync means a live playground
@@ -1041,6 +1056,9 @@ export interface SessionStep {
   /** Display timestamp for live/mock-only steps. Persisted transcripts use their raw ts. */
   time?: string
   text: string
+  /** The turn's task list — present only on a `planblock` step, replaced wholesale on each
+   *  ACP plan revision (never merged). */
+  plan?: PlanBody['entries']
   code?: string
   files?: SessionFile[]
   image?: SessionImage

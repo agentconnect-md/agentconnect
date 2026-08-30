@@ -381,6 +381,61 @@ describe('stream text delta batching', () => {
     ])
   })
 
+  // ACP resends the WHOLE list on every revision, so a live plan must be one block that is
+  // rewritten — appending would stack a fresh checklist per keystroke of progress.
+  it("replaces the lane's plan block on each revision instead of appending another", async () => {
+    const runFrame = captureAnimationFrames()
+    const { socket, turnId } = await openStream()
+
+    act(() => {
+      for (const output of [
+        {
+          agentId: 'agent-1',
+          index: 0,
+          event: {
+            kind: 'plan',
+            entries: [
+              { content: 'read the file', status: 'in_progress' },
+              { content: 'fix the bug', status: 'pending' }
+            ]
+          }
+        },
+        {
+          agentId: 'agent-1',
+          index: 1,
+          event: { kind: 'tool_call', toolCallId: 't1', title: 'cat a.ts', status: 'pending' }
+        },
+        {
+          agentId: 'agent-1',
+          index: 2,
+          event: {
+            kind: 'plan',
+            entries: [
+              { content: 'read the file', status: 'completed' },
+              { content: 'fix the bug', status: 'in_progress' }
+            ]
+          }
+        }
+      ]) {
+        socket.onmessage?.({ data: JSON.stringify({ type: 'output', output: { turnId, ...output } }) })
+      }
+    })
+    act(runFrame)
+
+    // One block, holding the position it first took — ahead of the tool it planned — and
+    // carrying the latest statuses.
+    expect(getLiveSteps('s1').filter((step) => step.agentId === 'agent-1')).toMatchObject([
+      {
+        kind: 'planblock',
+        plan: [
+          { content: 'read the file', status: 'completed' },
+          { content: 'fix the bug', status: 'in_progress' }
+        ]
+      },
+      { kind: 'tool', text: 'cat a.ts' }
+    ])
+  })
+
   it("retires only the streaming lane's notice — a lane still waiting keeps its own", async () => {
     const runFrame = captureAnimationFrames()
     const { socket, turnId } = await openStream()

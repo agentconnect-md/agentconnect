@@ -236,6 +236,7 @@ type WebchatEvent =
   | { kind: 'session_info'; title: string }
   | { kind: 'superseded'; generation: number }
   | { kind: 'notice'; text: string }
+  | { kind: 'plan'; entries: { content: string; status: string; priority?: string }[] }
 
 /** The session status snapshot carried in a relay `rd/chat` WebchatOutput payload
  *  (mirrors protocol WebchatStatus). Partial: context/cost stream live, token
@@ -548,6 +549,22 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
             ...collapsed,
             lane({ kind: 'plan', text: 'The conversation moved on — updating this answer…', boundary: true })
           ]
+        }
+        if (ev.kind === 'plan') {
+          // A snapshot: ACP resends the whole list, so this REPLACES the lane's existing
+          // block instead of appending a second one. Scanned back under the same fences as
+          // tool_update — never across a user message, a foreign turn, or a supersession —
+          // so the block keeps the position it first took, ahead of the work it planned,
+          // exactly as the persisted plan row keeps its `seq`.
+          for (let i = steps.length - 1; i >= 0; i--) {
+            const step = steps[i]!
+            if (step.kind === 'msg' && step.agentId === undefined) break
+            if ((step.agentId ?? undefined) !== agentId) continue
+            if (step.turnId !== turnId) break
+            if (step.boundary) break
+            if (step.kind === 'planblock') return replaceAt(i, { ...step, plan: ev.entries, observedAtMs })
+          }
+          return [...steps, lane({ kind: 'planblock', text: '', plan: ev.entries })]
         }
         if (ev.kind === 'notice') {
           // Daemon chrome for a wait with nothing else to show (a sandbox pod coming up).

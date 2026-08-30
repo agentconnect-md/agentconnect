@@ -233,6 +233,22 @@ so a plan is a snapshot, not a stream of deltas.
   never replayed into a prompt: only `text` and `tool` rows rebuild model
   context.
 
+**The live stream carries the same list.** Recording alone would surface the plan
+only on the read that switches a page to history — a live turn would show tool
+rows for work whose plan it was hiding. `WebchatEvent` therefore has a `plan`
+kind carrying the same entries, emitted from the same normalizer the transcript
+row uses (`daemon/src/session/plan-entries.ts`), so the two can never disagree.
+It is the one event kind in that union that is a snapshot: the client REPLACES
+its block rather than appending, keeping the position the block first took.
+
+The compatibility cost is real and deliberate. A relay predating the kind fails
+that one frame's decode, answers with an error frame, and keeps the connection —
+so the chunk is dropped, every other chunk still flows, and the turn degrades to
+showing its plan only after the fact. There is no relay capability echo to gate
+on: `rd/hello` advertises the DAEMON's capabilities and `rd/hello/ok` returns
+only `relayId`. Gating would mean adding that echo first, which buys nothing
+until relays upgrade anyway.
+
 ---
 
 ## 9. Compatibility
@@ -259,6 +275,8 @@ Tests cover:
 - end-to-end complete-body retrieval;
 - title-only compatibility;
 - exclusion of tool bodies from transcript replay;
-- one upserted plan row per turn, holding its position and the latest entries; and
+- one upserted plan row per turn, holding its position and the latest entries;
 - a plan row rendering outside the collapsed work panel, and falling back to its
-  summary when no body arrives.
+  summary when no body arrives; and
+- each live plan revision streaming as a whole-list snapshot that replaces the
+  browser's block in place rather than appending a second one.

@@ -98,6 +98,7 @@ import {
   PLAN_LANE,
   WORK_LANES,
   planEntries,
+  planLabel,
   sessionTurnInFlight,
   stripBoldMarks,
   toggleWorkPanel,
@@ -600,15 +601,17 @@ const PLAN_MARK: Record<string, typeof PLAN_PENDING> = {
 function PlanBlock({ step }: { step: FmtStep }) {
   const entries = step.plan ?? []
   if (entries.length === 0) {
-    return (
+    // No entries survived the trip: show whatever label the row carried, and nothing if it
+    // carried none (a live block always has entries — it is only created by an update).
+    return step.text ? (
       <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">{step.text}</span>
-    )
+    ) : null
   }
   return (
     <div className="overflow-hidden rounded-md border border-(--border-subtle) bg-(--surface-app)">
       <div className="flex items-center gap-[6px] px-[14px] py-2 font-sans text-[12.5px] font-medium leading-normal text-(--text-secondary)">
         <Icon name="list-checks" size={13} color="var(--text-tertiary)" />
-        {step.text}
+        {planLabel(entries)}
       </div>
       <div className="flex flex-col gap-[7px] border-t border-(--border-subtle) px-[14px] py-[10px]">
         {entries.map((entry, ei) => {
@@ -792,6 +795,7 @@ function fmtStep(stp: SessionStep, platform?: string): FmtStep {
     code: stp.code ?? '',
     files: (stp.files ?? []).map((f) => ({ tag: f.tag, path: f.path, color: fileColor(f.tag) })),
     time: stp.time ?? '',
+    ...(stp.kind === 'planblock' ? { plan: stp.plan ?? [] } : {}),
     ...(stp.demoted ? { demoted: true } : {}),
     ...(platform ? { platform } : {}),
     // The live wire frame carries no body (kept off the hot path); attach just

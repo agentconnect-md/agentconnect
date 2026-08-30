@@ -3,6 +3,7 @@ import {
   PLAN_LANE,
   WORK_LANES,
   planEntries,
+  planLabel,
   sessionTurnInFlight,
   stripBoldMarks,
   toggleWorkPanel,
@@ -157,9 +158,29 @@ describe('planEntries', () => {
     expect(planEntries('{}')).toEqual([])
   })
 
-  it('drops an entry with no text rather than rendering a blank line', () => {
-    const body = JSON.stringify({ entries: [{ status: 'pending' }, { content: 'real', status: 'pending' }] })
+  it('drops an entry with no text of its own rather than rendering a blank line', () => {
+    const body = JSON.stringify({
+      entries: [{ status: 'pending' }, { content: '   ', status: 'pending' }, { content: 'real', status: 'pending' }]
+    })
     expect(planEntries(body)).toEqual([{ content: 'real', status: 'pending' }])
+  })
+})
+
+describe('planLabel', () => {
+  // Computed from the entries on BOTH surfaces — a live block and the same block re-read
+  // from history must never disagree about the count.
+  it('counts the completed entries', () => {
+    expect(
+      planLabel([
+        { content: 'a', status: 'completed' },
+        { content: 'b', status: 'in_progress' },
+        { content: 'c', status: 'pending' }
+      ])
+    ).toBe('Plan · 1/3')
+  })
+
+  it('reads n/n once every entry is done', () => {
+    expect(planLabel([{ content: 'a', status: 'completed' }])).toBe('Plan · 1/1')
   })
 })
 

@@ -15,6 +15,23 @@ describe('WebchatOutput — event / status framing', () => {
     expect(r.success).toBe(true)
   })
 
+  it('accepts a plan snapshot, priority and all', () => {
+    const r = WebchatOutput.safeParse({
+      conversationId: CONV,
+      turnId: TURN,
+      index: 2,
+      event: {
+        kind: 'plan',
+        entries: [
+          { content: 'read the file', status: 'completed' },
+          { content: 'fix the bug', status: 'in_progress', priority: 'high' }
+        ]
+      }
+    })
+    expect(r.success).toBe(true)
+    if (r.success && r.data.event?.kind === 'plan') expect(r.data.event.entries).toHaveLength(2)
+  })
+
   it('accepts a status-only frame (no event)', () => {
     const r = WebchatOutput.safeParse({
       conversationId: CONV,
