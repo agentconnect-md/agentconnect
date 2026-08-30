@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { promises as fsp, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, parse } from 'node:path'
 import {
   LocalMemoryFs,
   MemoryConflictError,
@@ -74,6 +74,30 @@ describe('LocalMemoryFs (the port over this disk)', () => {
       await expect(fs.writeFile('linked/x', 'y')).rejects.toBeInstanceOf(MemoryPathError)
     }
   )
+
+  // A cancel-wins dream drops its staging while the review screen is listing it, and Windows resolves
+  // the already-unlinked directory to a path OUTSIDE the root instead of failing with ENOENT. The
+  // realpath stub stands in for that, with and without the rm, since only the still-present one escaped.
+  it('reads a component dropped mid-walk as absent, and still refuses one that resolves outside the root', async () => {
+    const root = tempRoot()
+    const fs = new LocalMemoryFs(root)
+    await fs.writeFile('staged/memory/MEMORY.md', '# idx')
+    const staged = join(await fsp.realpath(root), 'staged')
+    let dropOnResolve = false
+    const realpath = fsp.realpath
+    const spy = vi.spyOn(fsp, 'realpath').mockImplementation((async (path: string) => {
+      if (path !== staged) return realpath(path)
+      if (dropOnResolve) rmSync(staged, { recursive: true, force: true })
+      return parse(staged).root
+    }) as unknown as typeof fsp.realpath)
+    try {
+      await expect(fs.readdir('staged/memory')).rejects.toBeInstanceOf(MemoryPathError)
+      dropOnResolve = true
+      expect(await fs.readdir('staged/memory')).toEqual([])
+    } finally {
+      spy.mockRestore()
+    }
+  })
 
   it('renames (false when absent), removes recursively, sets mtimes, and round-trips bytes as base64', async () => {
     const fs = new LocalMemoryFs(tempRoot())

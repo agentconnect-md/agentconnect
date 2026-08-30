@@ -127,6 +127,21 @@ function sameFileVersion(a: Stats, b: Stats): boolean {
 }
 
 /**
+ * A failed containment check is an escape only when the path is still there. Windows resolves a
+ * component a concurrent rm already unlinked to a path outside the root, so re-probe before calling
+ * a benign race a violation; a dropped component is absence, which is data on the read side.
+ */
+async function rejectEscape(path: string, create: boolean): Promise<null> {
+  try {
+    await fsp.lstat(path)
+  } catch (err) {
+    if (!vanished(err) || create) throw err
+    return null
+  }
+  throw new MemoryPathError('path resolves outside the memory root')
+}
+
+/**
  * Canonicalise `parts` under `root` one component at a time, refusing symlink components; with
  * `create` missing components are made along the way. `null` when a component is absent (read side).
  */
@@ -167,7 +182,7 @@ async function walkContained(root: string, parts: string[], create: boolean): Pr
       if (!vanished(err) || create) throw err
       return null
     }
-    if (!under(realRoot, parent)) throw new MemoryPathError('path resolves outside the memory root')
+    if (!under(realRoot, parent)) return rejectEscape(candidate, create)
   }
   return parent
 }
@@ -232,7 +247,7 @@ export async function atomicWriteContainedMemoryFile(
   }
   const temp = join(parent, `.agentconnect-memory-${randomUUID()}.tmp`)
   try {
-    if ((await fsp.realpath(parent)) !== parent) throw new MemoryPathError('path resolves outside the memory root')
+    if ((await fsp.realpath(parent)) !== parent) await rejectEscape(parent, true)
     await fsp.writeFile(temp, content, { encoding: 'utf8', flag: 'wx', ...(mode === undefined ? {} : { mode }) })
     if (ifMatchMtime && current.stat) {
       let latest: Stats
@@ -248,7 +263,7 @@ export async function atomicWriteContainedMemoryFile(
         throw new MemoryConflictError('the memory file changed since it was read; reload and retry')
       }
     }
-    if ((await fsp.realpath(parent)) !== parent) throw new MemoryPathError('path resolves outside the memory root')
+    if ((await fsp.realpath(parent)) !== parent) await rejectEscape(parent, true)
     await publishOverTarget(temp, target)
   } finally {
     await fsp.rm(temp, { force: true }).catch(() => {})
