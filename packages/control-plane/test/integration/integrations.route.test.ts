@@ -22,7 +22,12 @@ import type { IntegrationUpsert, IntegrationRemove } from '@agentconnect.md/prot
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { OrgId } from '../../src/domain/ids.js'
 import type { SlackConfigApi } from '../../src/http/slack-config-api.js'
-import { SLACK_BOT_EVENTS, SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
+import {
+  SLACK_BOT_EVENTS,
+  SLACK_BOT_SCOPES,
+  SLACK_CAPABILITY_BOT_SCOPES,
+  SLACK_MANIFEST_BOT_SCOPES
+} from '../../src/http/slack-manifest.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import { SlackBotIdentityReconciler } from '../../src/orchestrator/slackBotIdentityReconciler.js'
 import { systemClock } from '../../src/domain/clock.js'
@@ -1410,7 +1415,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       appId: 'A0TESTAPP1',
       teamId: 'T0TESTTEAM1',
       teamName: 'Acme',
-      scopes: [...SLACK_BOT_SCOPES]
+      scopes: [...SLACK_MANIFEST_BOT_SCOPES]
     })
 
     const res = await app.app.inject({ method: 'POST', url: `${ORG}/bots/${created.botId}/slack/refresh` })
@@ -1419,6 +1424,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       manifest: 'synced',
       authorization: 'current',
       missingScopes: [],
+      missingCapabilityScopes: [],
       settingsUrl: 'https://api.slack.com/apps/A0TESTAPP1',
       manifestUrl: 'https://app.slack.com/app-settings/T0TESTTEAM1/A0TESTAPP1/app-manifest',
       permissionsUrl: 'https://app.slack.com/app-settings/T0TESTTEAM1/A0TESTAPP1/oauth',
@@ -1456,7 +1462,7 @@ describe('bot roster (GET/DELETE /bots)', () => {
       appId: 'A0MANUAL01',
       teamId: 'T0MANUAL01',
       teamName: 'Acme',
-      scopes: [...SLACK_BOT_SCOPES]
+      scopes: [...SLACK_MANIFEST_BOT_SCOPES]
     })
 
     const res = await app.app.inject({ method: 'POST', url: `${ORG}/bots/${created.botId}/slack/refresh` })
@@ -1465,11 +1471,47 @@ describe('bot roster (GET/DELETE /bots)', () => {
       manifest: 'manual_update_required',
       authorization: 'current',
       missingScopes: [],
+      missingCapabilityScopes: [],
       settingsUrl: 'https://api.slack.com/apps/A0MANUAL01',
       manifestUrl: 'https://app.slack.com/app-settings/T0MANUAL01/A0MANUAL01/app-manifest',
       permissionsUrl: 'https://app.slack.com/app-settings/T0MANUAL01/A0MANUAL01/oauth',
       reinstallUrl: 'https://api.slack.com/apps/A0MANUAL01/install-on-team?'
     })
+  })
+
+  // The console used to report an install like this as fully up to date, while every tool
+  // behind a capability scope answered `missing_scope`. The install IS healthy — `authorization`
+  // must stay `current` — but the gap has to be visible, which is the whole point of the split.
+  it('reports missing capability scopes without calling the install broken', async () => {
+    const agentId = await placedAgent()
+    const { app } = withSpy()
+    const created = (
+      await app.app.inject({
+        method: 'POST',
+        url: `${ORG}/integrations`,
+        payload: {
+          name: 'capability-gap',
+          platform: 'slack',
+          agentId,
+          slack: { botToken: SLACK.botToken, appToken: 'xapp-1-A0CAPGAP01-123-abcdef' }
+        }
+      })
+    ).json() as { botId: string }
+    app.platformStubs.verifySlackBot = async () => ({
+      status: 'ok',
+      name: 'capability-gap',
+      appId: 'A0CAPGAP01',
+      teamId: 'T0CAPGAP01',
+      teamName: 'Acme',
+      scopes: [...SLACK_BOT_SCOPES]
+    })
+
+    const res = await app.app.inject({ method: 'POST', url: `${ORG}/bots/${created.botId}/slack/refresh` })
+    expect(res.statusCode).toBe(200)
+    const body = res.json() as { authorization: string; missingScopes: string[]; missingCapabilityScopes: string[] }
+    expect(body.authorization).toBe('current')
+    expect(body.missingScopes).toEqual([])
+    expect(body.missingCapabilityScopes).toEqual([...SLACK_CAPABILITY_BOT_SCOPES])
   })
 
   it('POST Slack refresh never updates an app when the stored bot token belongs to another app', async () => {
