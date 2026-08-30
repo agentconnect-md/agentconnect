@@ -187,6 +187,12 @@ suite. A test case that cannot work there goes on
 file join `WINDOWS_EXCLUDED` in that package's `vitest.config.ts`, which is applied on Windows
 alone so `vitest run` is green for a Windows contributor too.
 
+**That runner charges for creating files** — not for bandwidth, CPU, or fsync. Every change that
+made the job faster removed file creations; everything aimed elsewhere measured nothing. Measure a
+candidate with a matrix — both arms, three samples, one run — because the `tests` total has come
+back anywhere from 873 s to 1951 s on identical content, and re-measure after an earlier change
+lands, which has killed live findings before. Each step's own comment carries its result.
+
 ### Prisma
 
 ```bash

@@ -112,6 +112,11 @@ function isErrno(err: unknown, code: string): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === code
 }
 
+/** Dropped by a concurrent rm: ENOENT, or EPERM while Windows holds the directory in delete-pending. */
+function vanished(err: unknown): boolean {
+  return isErrno(err, 'ENOENT') || (process.platform === 'win32' && isErrno(err, 'EPERM'))
+}
+
 function under(root: string, path: string): boolean {
   const rel = relative(root, path)
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
@@ -142,8 +147,11 @@ async function walkContained(root: string, parts: string[], create: boolean): Pr
     try {
       stat = await fsp.lstat(candidate)
     } catch (err) {
+      if (!create) {
+        if (!vanished(err)) throw err
+        return null
+      }
       if (!isErrno(err, 'ENOENT')) throw err
-      if (!create) return null
       try {
         await fsp.mkdir(candidate)
       } catch (mkdirErr) {
@@ -156,7 +164,7 @@ async function walkContained(root: string, parts: string[], create: boolean): Pr
       parent = await fsp.realpath(candidate)
     } catch (err) {
       // A concurrent rm can drop the component between lstat and realpath; absent stays data on the read side.
-      if (!isErrno(err, 'ENOENT') || create) throw err
+      if (!vanished(err) || create) throw err
       return null
     }
     if (!under(realRoot, parent)) throw new MemoryPathError('path resolves outside the memory root')

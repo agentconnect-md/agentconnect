@@ -285,14 +285,11 @@ jobs:
           # `packageManager` and downloads the pinned one too — 11 s and 13 s of a 26 s step.
           # `scripts/pnpm-version.test.mjs` fails if this drifts from package.json.
           version: 11.19.0
-          cache: true
-          # Its own primary key, keyed by the closure it stores rather than by the lockfile alone.
-          # Nothing shares this OS today, but the rule is the one the two narrowed Linux jobs
-          # follow: a job that installs a subset never saves under the shared key.
-          cache_dependency_path: |
-            pnpm-lock.yaml
-            packages/daemon/package.json
-            packages/cli/package.json
+          # No store cache here. Restoring one means writing 554 packages' files at once, and this
+          # runner charges for creating files: three samples per arm put restore+install at 82 s
+          # against 56 s for installing from the registry with none, ranges disjoint. The Linux
+          # jobs keep theirs — there the trade runs the other way.
+          cache: false
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
