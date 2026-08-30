@@ -53,6 +53,14 @@ export function slackRefreshNoticeState(result: SlackBotRefreshDto): SlackRefres
       'Slack rejected the stored bot token. Reinstall the app if needed, then recreate this integration with the current Bot User OAuth Token.'
   } else if (result.authorization === 'app_mismatch') {
     message = 'The stored bot token belongs to a different Slack app. Recreate this integration with matching tokens.'
+  } else if (result.authorization === 'reinstall_required' && capabilityGap) {
+    // Both halves missing — the common case for an install predating a release. Ahead of the
+    // plain reinstall branches so it actually wins, and worded so the required scopes do not
+    // read as the whole list: the scope line beside this message now carries the union.
+    message =
+      result.manifest === 'synced'
+        ? 'Slack app configuration is synced. Reinstall it to grant every missing scope, required and optional.'
+        : 'Add every missing scope below in Slack’s OAuth & Permissions page, then reinstall the app.'
   } else if (result.authorization === 'reinstall_required' && result.manifest === 'synced') {
     message = 'Slack app configuration is synced. Reinstall it to grant the missing scopes.'
   } else if (result.authorization === 'reinstall_required') {
