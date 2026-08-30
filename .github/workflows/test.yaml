@@ -238,10 +238,20 @@ jobs:
   #
   # No `prisma:generate` step: neither package imports the generated client.
   unit-windows:
-    name: Unit Test (Windows)
+    # MEASUREMENT ONLY — not for merge. On a cache hit this job spends 22 s restoring the store
+    # and 22 s installing from it; on a miss it spends 35 s installing from the registry and
+    # nothing restoring. Extracting 554 packages' files costs more here than fetching them does,
+    # which is the same thing every other finding on this runner has said: Windows charges for
+    # creating files. Three samples per arm, because 9 s is inside a single run's noise.
+    name: Unit Test (Windows) ${{ matrix.cache }}-${{ matrix.sample }}
     needs: windows-scope
     if: ${{ needs.windows-scope.outputs.changed == 'true' }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cache: ['on', 'off']
+        sample: [1, 2, 3]
     # The daemon suite alone runs ~20 min here against ~3 on Linux — Windows filesystem and
     # process-spawn cost, not extra work — so the cap is set well clear of it rather than near it.
     timeout-minutes: 45
@@ -269,7 +279,7 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
-          cache: true
+          cache: ${{ matrix.cache == 'on' }}
           # Its own primary key, keyed by the closure it stores rather than by the lockfile alone.
           # Nothing shares this OS today, but the rule is the one the two narrowed Linux jobs
           # follow: a job that installs a subset never saves under the shared key.
