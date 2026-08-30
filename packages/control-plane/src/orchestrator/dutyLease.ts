@@ -60,9 +60,11 @@ function agentIdsOf(groups: readonly { members: DutyMemberKey[] }[]): string[] {
   return [...new Set(groups.flatMap((g) => g.members.filter((m) => m.kind === 'agent').map((m) => m.refId)))]
 }
 
-/** The freshness signal's source: the CP's current spec revision per agent. */
+/** The grant stamps' source: the CP's spec revision and placement kind per agent. */
 export interface AgentRevisionReader {
-  configRevisions(agentIds: readonly AgentId[]): Promise<Map<string, bigint>>
+  grantStamps(
+    agentIds: readonly AgentId[]
+  ): Promise<Map<string, { configRevision: bigint; placementKind: 'daemon' | 'set' }>>
 }
 
 function toGrantEntry(g: Pick<DutyGrantRecord, 'groupId' | 'orgId' | 'term' | 'members'>): DutyGrantEntry {
@@ -152,7 +154,8 @@ export class DutyLeaseService {
    * duty it has since lost, then edited while it was not a delivery target — must
    * be able to tell a frozen replica from a current one and refetch only the
    * frozen ones. An agent with no row (deleted under the projection, or a
-   * synthetic ref) is simply left unstamped.
+   * synthetic ref) is simply left unstamped. The placement kind rides along:
+   * it is the member's shutdown-drain class, and absent means the long one.
    */
   private async stamp(entries: DutyGrantEntry[]): Promise<DutyGrantEntry[]> {
     if (!this.agentRevisions || entries.length === 0) return entries
@@ -160,12 +163,14 @@ export class DutyLeaseService {
       ...new Set(entries.flatMap((e) => e.members.filter((m) => m.kind === 'agent').map((m) => m.refId)))
     ] as AgentId[]
     if (agentIds.length === 0) return entries
-    const revisions = await this.agentRevisions.configRevisions(agentIds)
+    const stamps = await this.agentRevisions.grantStamps(agentIds)
     return entries.map((entry) => ({
       ...entry,
       members: entry.members.map((member) => {
-        const revision = member.kind === 'agent' ? revisions.get(member.refId) : undefined
-        return revision === undefined ? member : { ...member, configRevision: revision.toString() }
+        const stamp = member.kind === 'agent' ? stamps.get(member.refId) : undefined
+        return stamp === undefined
+          ? member
+          : { ...member, configRevision: stamp.configRevision.toString(), placement: stamp.placementKind }
       })
     }))
   }

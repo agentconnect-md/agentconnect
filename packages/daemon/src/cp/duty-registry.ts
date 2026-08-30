@@ -11,6 +11,8 @@ export interface HeldDuty {
   /** The CP-minted fencing term, as the decimal string the wire carries. */
   term: string
   agentIds: string[]
+  /** The subset of `agentIds` whose work can move to a successor — everything not stamped `placement: 'daemon'`. */
+  setPlacedAgentIds: string[]
   botIds: string[]
 }
 
@@ -51,6 +53,13 @@ export class DutyRegistry {
     return out
   }
 
+  /** Held agents whose group can move to a successor — the pool-drain class of the shutdown wait. */
+  setPlacedAgents(): Set<string> {
+    const out = new Set<string>()
+    for (const d of this.held.values()) for (const id of d.setPlacedAgentIds) out.add(id)
+    return out
+  }
+
   groupIds(): string[] {
     return [...this.held.keys()].sort()
   }
@@ -83,11 +92,14 @@ export class DutyRegistry {
     const updated: string[] = []
     for (const g of grants) {
       ;(this.held.has(g.groupId) ? updated : added).push(g.groupId)
+      const agentMembers = g.members.filter((m) => m.kind === 'agent')
       this.held.set(g.groupId, {
         groupId: g.groupId,
         orgId: g.orgId,
         term: g.term,
-        agentIds: g.members.filter((m) => m.kind === 'agent').map((m) => m.refId),
+        agentIds: agentMembers.map((m) => m.refId),
+        // Only an explicit 'daemon' stamp opts out of the pool-drain class (absent = older CP = long).
+        setPlacedAgentIds: agentMembers.filter((m) => m.placement !== 'daemon').map((m) => m.refId),
         botIds: g.members.filter((m) => m.kind === 'bot').map((m) => m.refId)
       })
     }
@@ -108,10 +120,11 @@ export class DutyRegistry {
       if (!held) continue
       const kept = new Set(g.members.map((m) => `${m.kind}:${m.refId}`))
       const agentIds = held.agentIds.filter((id) => kept.has(`agent:${id}`))
+      const setPlacedAgentIds = held.setPlacedAgentIds.filter((id) => kept.has(`agent:${id}`))
       const botIds = held.botIds.filter((id) => kept.has(`bot:${id}`))
       if (agentIds.length === held.agentIds.length && botIds.length === held.botIds.length) continue
       updated.push(g.groupId)
-      this.held.set(g.groupId, { ...held, agentIds, botIds })
+      this.held.set(g.groupId, { ...held, agentIds, setPlacedAgentIds, botIds })
     }
     return this.diff(before, { added: [], updated })
   }

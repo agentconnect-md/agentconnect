@@ -1035,13 +1035,15 @@ export class PgAgentRepo implements AgentRepo {
     return rows.map(toRecord)
   }
 
-  async configRevisions(agentIds: readonly AgentId[]): Promise<Map<string, bigint>> {
+  async grantStamps(
+    agentIds: readonly AgentId[]
+  ): Promise<Map<string, { configRevision: bigint; placementKind: 'daemon' | 'set' }>> {
     if (agentIds.length === 0) return new Map()
     const rows = await this.db.agent.findMany({
       where: { id: { in: [...agentIds] } },
-      select: { id: true, configRevision: true }
+      select: { id: true, configRevision: true, placementKind: true }
     })
-    return new Map(rows.map((r) => [r.id, r.configRevision]))
+    return new Map(rows.map((r) => [r.id, { configRevision: r.configRevision, placementKind: r.placementKind }]))
   }
 
   // The placement relation read from the MEMBER's side, and deliberately the row-wise mirror of

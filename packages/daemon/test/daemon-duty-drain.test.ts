@@ -31,11 +31,11 @@ function scaffold(): string {
   return root
 }
 
-const grant = (groupId: string, agentId: string): DutyGrantEntry => ({
+const grant = (groupId: string, agentId: string, placement?: 'daemon' | 'set'): DutyGrantEntry => ({
   groupId,
   orgId: ORG,
   term: '1',
-  members: [{ kind: 'agent', refId: agentId }]
+  members: [{ kind: 'agent', refId: agentId, ...(placement ? { placement } : {}) }]
 })
 
 const bundle = (agentId: string, name: string) => ({
@@ -368,8 +368,13 @@ describe('shutdown drain of a duty-holding member', () => {
     expect(calls.order.at(-1)).toBe('socket-close')
   })
 
-  it('an off-cluster member of an organization set keeps the local turn-wait window, never the pool budget', async () => {
+  it("a member's daemon-placed work keeps the local turn-wait window, never the pool budget", async () => {
     const { daemon, clock, calls } = await boot()
+    // Both agents pinned to this daemon: nothing here can move to a successor.
+    await (daemon as any).dutyCoordinator.admitDutyGrants([
+      grant(GROUP, AGENT, 'daemon'),
+      grant(GROUP_B, AGENT_B, 'daemon')
+    ])
     ;(daemon as any).cfg.limits.shutdownDrainMs = 1_000
     ;(daemon as any).cfg.limits.poolShutdownDrainMs = 600_000
     const warn = vi.spyOn((daemon as any).log, 'warn')
@@ -385,6 +390,31 @@ describe('shutdown drain of a duty-holding member', () => {
     // The wait was cut at the 1s local window — under the pool's 570s wait this warning never fires —
     // and the straggler's group still released inside the reserve once its turn settled.
     expect(warn.mock.calls.some(([m]) => /deadline hit with .* still in flight/.test(String(m)))).toBe(true)
+    expect(elapsed).toBeLessThan(31_000)
+    expect(calls.releases.flat().sort()).toEqual([GROUP, GROUP_B].sort())
+    expect(calls.order.at(-1)).toBe('socket-close')
+  })
+
+  it("a member's set-placed work rides the pool drain budget — org sets included", async () => {
+    const { daemon, clock, calls } = await boot()
+    // AGENT is explicitly set-placed; GROUP_B keeps boot()'s unstamped grant, the conservative default.
+    await (daemon as any).dutyCoordinator.admitDutyGrants([grant(GROUP, AGENT, 'set')])
+    expect(duties(daemon).setPlacedAgents()).toEqual(new Set([AGENT, AGENT_B]))
+    ;(daemon as any).cfg.limits.shutdownDrainMs = 1_000
+    ;(daemon as any).cfg.limits.poolShutdownDrainMs = 60_000
+    const warn = vi.spyOn((daemon as any).log, 'warn')
+    // A set-placed turn settling well past the local window but inside the pool wait.
+    const settle = (daemon as any).beginActiveDispatch(AGENT, 'slack:C1:T1') as () => void
+    ;(daemon as any).hosts.set(AGENT, { stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) })
+    clock.setTimeout(() => settle(), 10_000)
+
+    const startedAt = clock.now()
+    await runVirtual(clock, daemon.stop(), 70_000)
+    const elapsed = clock.now() - startedAt
+
+    // Never cancelled: the pool budget carried the turn to its own end at 10s.
+    expect(warn.mock.calls.some(([m]) => /deadline hit|local window hit/.test(String(m)))).toBe(false)
+    expect(elapsed).toBeGreaterThanOrEqual(10_000)
     expect(elapsed).toBeLessThan(31_000)
     expect(calls.releases.flat().sort()).toEqual([GROUP, GROUP_B].sort())
     expect(calls.order.at(-1)).toBe('socket-close')

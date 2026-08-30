@@ -23,7 +23,10 @@ export type DutyTerm = z.infer<typeof DutyTerm>
 export const DutyMemberRef = z.object({
   kind: z.enum(['agent', 'bot']),
   refId: z.string().uuid(),
-  configRevision: z.string().regex(/^\d+$/).optional()
+  configRevision: z.string().regex(/^\d+$/).optional(),
+  // Agent members only: the CP's placement kind — 'set' work can move to a successor and earns
+  // the pool drain wait; readers treat absent (older CP, row gone) as 'set', the long class.
+  placement: z.enum(['daemon', 'set']).optional()
 })
 export type DutyMemberRef = z.infer<typeof DutyMemberRef>
 
