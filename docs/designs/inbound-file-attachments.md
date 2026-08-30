@@ -21,7 +21,9 @@ of the way:
   content, and nothing here changes that.
 - `attachmentToBlock` then hands the bytes to the runtime: an `image` block for images, an
   embedded `resource` (UTF-8 text or base64 blob) when the runtime advertises
-  `embeddedContext`, a `resource_link` otherwise or when the download was refused.
+  `embeddedContext`, a `resource_link` when there is a `sourceUrl` to point at — and, on
+  the webchat arm, whose attachments have no source URL, a plain text block naming the
+  attachment as unavailable.
 
 And that is where it dead-ends, three ways:
 
@@ -52,7 +54,7 @@ platforms:    provider ──(metadata)──▶ daemon ──(credentialed down
                                                                                     ▼
                                                        <session working root>/uploads/spec.pdf
                                                                                     │
-              prompt: [attached: spec.pdf (application/pdf, 1.2 MB) — saved to uploads/spec.pdf]
+              prompt: [attached: spec.pdf (application/pdf, 1.2 MB, saved to uploads/spec.pdf)]
 ```
 
 The workspace — not a daemon-side attachment store with a read tool — because the
@@ -65,18 +67,31 @@ new tool surface, no new mount, no reach problem.
 
 - **Directory:** `uploads/` at the session's **working root** — the per-session worktree
   when one exists, the agent's primary checkout otherwise. The file lands where the agent
-  is already working, so relative paths in the prompt resolve without ceremony, and the
-  file's lifetime is the conversation's: a reclaimed worktree takes its uploads with it,
-  so no separate retention machinery exists.
+  is already working, so relative paths in the prompt resolve without ceremony. Retention
+  splits by arm: a reclaimed worktree takes its uploads with it, while the primary
+  checkout has no reclamation event, so `uploads/` there grows with use — accepted for
+  phase 1, in plain sight (the Workspace browser lists it; the user or the agent deletes),
+  with a cleanup knob deferred alongside §7's other follow-ups.
 - **Names are hostile input.** The stored name is derived from the platform-supplied one
-  by sanitization: path separators, `..`, control characters, and leading dots are
-  stripped or replaced; an empty survivor gets a generated name from the sniffed type. The
-  resolved path must stay under `uploads/` — the same containment discipline the console
-  workspace channel already enforces.
-- **Never overwrite.** Creation is exclusive; a name collision appends a numeric suffix
-  (`report.pdf`, `report-2.pdf`). One exception makes redelivery idempotent: if the target
-  exists with byte-identical content (digest match), it is reused rather than suffixed, so
-  a replayed inbox message does not litter.
+  by sanitization: path separators, `..`, control characters, leading dots, and
+  parentheses (the marker's entry delimiters, §3) are stripped or replaced; an empty
+  survivor gets a generated name from the sniffed type. The resolved path must stay under
+  `uploads/` — the same containment discipline the console workspace channel already
+  enforces.
+- **Never overwrite.** A name collision appends a numeric suffix (`report.pdf`,
+  `report-2.pdf`) — and the exclusivity is the primitive's, not a stat's. Rename-publish
+  **replaces** its destination (that is what makes `writeFile` atomic), so stat-then-rename
+  would be a TOCTOU hole; instead, `writeFileBytes` publishes its staged temp with
+  `link(temp, target)`, which fails `EEXIST` rather than clobbering, then unlinks the
+  temp — retrying the next suffix on collision. One exception makes redelivery idempotent:
+  a target whose size and then digest match the incoming bytes is reused rather than
+  suffixed, so a replayed inbox message does not litter (the size check short-circuits the
+  up-to-8 MB read-back for nearly every ordinary collision).
+- **Writes are atomic and exclusive.** Staged beside the target and published in one step
+  by the hard link above, so an aborted turn leaves no partial file and no clobbered one.
+  The seam gains **`writeFileBytes`** as the binary sibling of `readFileBytes`; the shim
+  channel already stages chunked appends on the pod, and only its publish step changes
+  shape to the same link-then-unlink.
 - **Git workspaces are allowed, plainly.** The upload is an ordinary untracked file —
   visible in the git status panel, no hidden directory, no automatic exclude. If the point
   of the upload is "commit this", the agent moves it and commits it; if not, it stays
@@ -110,13 +125,21 @@ for.
 ## 3. Prompt representation
 
 The `[attached: …]` marker (the string `sendMessage`'s forwarding contract already keys
-on) gains the saved path:
+on) gains the saved path — **inside the parentheses**, because the marker has parsers and
+an entry's shape is `name (details)`:
 
 ```
-[attached: spec.pdf (application/pdf, 1.2 MB) — saved to uploads/spec.pdf]
+[attached: spec.pdf (application/pdf, 1.2 MB, saved to uploads/spec.pdf)]
 ```
 
-Around it, `attachmentToBlock`'s ladder changes rung by rung:
+The consumers that move with the format, checked rather than assumed: `attachmentMention`
+itself (the builder); `withoutAttachmentMention` in the daemon's session reader, whose
+per-entry strip matches `name ([^()]*)` and would orphan any clause placed outside the
+parens as a dangling `— saved to …`; and the session manager's marker separator
+normalizer. Keeping the path inside the parens (and parens out of sanitized names, §2.1)
+means the strip regex and the name-keyed forwarding lookup both survive unchanged.
+
+Around the marker, `attachmentToBlock`'s ladder changes rung by rung:
 
 - **Images keep their block.** The full-resolution bytes still become an ACP `image` block
   when the runtime supports one — the model should _see_ the image — and now the same
@@ -128,8 +151,10 @@ Around it, `attachmentToBlock`'s ladder changes rung by rung:
   agent cannot predict.
 - **Failure falls back to today.** If the workspace write fails (no workspace mount, disk
   refusal, suspended pod), the block ladder runs exactly as it does now — embedded
-  resource or `resource_link` — so the feature degrades to the current behavior, never
-  below it.
+  resource, `resource_link`, or on the webchat arm (which has no `sourceUrl` to link) the
+  plain unavailable-attachment text block — so each path degrades to its own current
+  behavior. That floor is per-path: webchat's is the lowest, and this design does not
+  raise it, only makes reaching it rarer.
 - **Over-cap stays a `resource_link`.** A file the daemon refused to download is unchanged
   by this design. Raising the materialization cap above `maxAttachmentBytes` (streaming to
   disk does not hold bytes in RSS the way prompt embedding does) is a natural follow-up
@@ -180,8 +205,10 @@ original. With the file channel in place, webchat aligns to the platform model:
 - The **original** bytes (≤ cap) ride the upload channel and land in `uploads/`; the
   `image` block is built from them, full resolution.
 - The browser still produces the ≤ 160 KB WebP — demoted from sole payload to **transcript
-  preview**, carried in the existing image slot so the console render path and the
-  ≤ 160 KB bound are untouched.
+  preview**, riding the seam built for exactly this split: the original lands in
+  `inlineData` (what `attachmentToBlock` reads), the WebP in `transcriptThumbnail` (which
+  `transcriptImageAttachments` already prefers). Not full-res bytes into `inlineData`
+  alone — the ≤ 160 KB transcript refine would silently drop the row.
 - An image too large for the cap falls back to exactly today's behavior: preview-only,
   no file. A non-image file too large is refused outright (§4.2) — there is no lossy
   projection of a zip.
