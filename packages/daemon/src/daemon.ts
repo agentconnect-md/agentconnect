@@ -791,6 +791,21 @@ export class Daemon {
    *  daemon drain cannot leave a timer behind. The callback re-validates everything it
    *  needs, so a lease dropped by stopHost simply makes the wake a no-op. */
   private bgWakeTimers = new Set<TimerHandle>()
+  /** Per-session footer holder — the reply the attribution footer currently sits on,
+   *  captured at turn teardown so a drain narration (§5.2) can migrate the footer onto
+   *  itself the way an in-turn reply section does. `closure` re-supplies the §5.5 response
+   *  metadata a clearing edit must not drop (chat.update replaces it wholesale); absent ⇒
+   *  an authorship-only re-stamp suffices. In-memory on purpose: a restart loses it and
+   *  the old footer simply stays put — a cosmetic, not a correctness, loss. */
+  private lastFooterReply = new Map<
+    string,
+    {
+      channel: string
+      ts: string
+      text: string
+      closure?: { responseId: string; hopCount: number; mentionedAgentIds: string[]; addressedAnyone: boolean }
+    }
+  >()
   // §7.5 platform connection lifecycle: pools, openers, the prune pass and the Slack startup retries.
   private readonly connections: ConnectionReconciler
   /**
@@ -11166,6 +11181,7 @@ export class Daemon {
     // fence, so release them only after the exact selected cleanup.
     const cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, p.selectedHost)
     if (!cleanupOutcome.blocked) {
+      this.recordFooterHolder(p)
       this.pending.delete(pendingTurnKey(agentId, sessionId))
       // §7.3 prompting/cancelling → idle: the turn is over (cleanly, on error, or
       // cancelled), so the session is idle again. Without this the row stayed
@@ -11623,6 +11639,8 @@ export class Daemon {
       prepared?.mentionedAgentIds ??
       resolveSlackMentionedAgents(p.reply.text, mentionDir).filter((id) => id !== p.plan.agentId)
     const addressedAnyone = prepared?.addressedAnyone ?? slackTextAddressesAnyone(p.reply.text)
+    // Recorded for §5.2's footer migration, which must re-supply this closure on any later edit.
+    p.reply.closedRouting = { mentionedAgentIds: recipients, addressedAnyone }
     // What this response RESOLVED to, at the one place the author still knows it.
     // Everything downstream (relay arbitration, the target's ladder) sees only the
     // outcome, so without this a response that addressed a peer but resolved to no
@@ -14053,8 +14071,26 @@ export class Daemon {
         ...(agent?.iconUrl ? { iconUrl: agent.iconUrl } : {})
       })
       if (options) {
-        for (const section of splitIntoSections(text))
-          await (conn as SlackConnection).postMessage(rec.channel, section, rec.thread || undefined, options)
+        // Footer migration: the narration is the response's newest words, so its last section
+        // is born with the attribution footer and the previous holder's footer is cleared —
+        // exactly what a new in-turn reply section does, carried over the turn boundary.
+        const footer = await this.drainAttributionBlocks(agentId, rec, integrationId)
+        const previous = footer ? this.lastFooterReply.get(rec.key) : undefined
+        const sections = splitIntoSections(text)
+        let lastTs: string | undefined
+        for (const [i, section] of sections.entries()) {
+          lastTs = await (conn as SlackConnection).postMessage(rec.channel, section, rec.thread || undefined, {
+            ...options,
+            ...(footer && i === sections.length - 1 ? { trailingBlocks: footer.blocks } : {})
+          })
+        }
+        // Clear ONLY once the replacement landed: postMessage returns undefined without
+        // throwing when the thread is gone, and stripping the old footer then would leave
+        // the response with no attribution at all — worse than the old footer staying put.
+        if (footer && lastTs) {
+          await this.clearMigratedFooter(conn as SlackConnection, agentId, previous)
+          this.lastFooterReply.set(rec.key, { channel: rec.channel, ts: lastTs, text: sections.at(-1) ?? text })
+        } else if (footer) this.lastFooterReply.delete(rec.key)
       } else {
         await conn.postMessage(rec.channel, text, rec.thread || undefined)
       }
@@ -14073,6 +14109,97 @@ export class Daemon {
     }
     lease.drainDeliveries += 1
     lease.drainDeliveredAt = this.clock.now()
+  }
+
+  /** Capture the turn's footer-carrying reply at teardown (§5.2 footer migration). Slack-only
+   *  by construction — `footerKey` is set by the Slack applier. A turn whose reply carried no
+   *  footer CLEARS the entry: the previous response's footer belongs to that response forever,
+   *  and a drain continuing THIS turn must not steal it. */
+  private recordFooterHolder(p: Pending): void {
+    const lastReply = p.reply.lastReply
+    if (!lastReply?.footerKey) {
+      this.lastFooterReply.delete(p.plan.sessionKey)
+      return
+    }
+    const routing = p.reply.closedRouting ?? p.reply.finalRouting
+    // "Closed" must mean THIS message actually carries final metadata: born-final on this ts,
+    // or a closure edit that ran (`closedRouting` is set only on that path) against this ts.
+    // A no-peers conversation deliberately leaves the reply `streaming` — recording a closure
+    // there would make the clearing edit PROMOTE it to final, minting a routable event for a
+    // message that never had one. A dropped `streaming` block costs nothing: never routed.
+    const closed =
+      p.reply.finalStamped === lastReply.ts ||
+      (p.reply.closedRouting !== undefined && p.reply.lastResponse?.ts === lastReply.ts)
+    this.lastFooterReply.set(p.plan.sessionKey, {
+      channel: p.plan.channel,
+      ts: lastReply.ts,
+      text: lastReply.text,
+      ...(closed
+        ? {
+            closure: {
+              responseId: p.reply.responseId,
+              hopCount: p.plan.sourceHopCount ?? 0,
+              mentionedAgentIds: routing?.mentionedAgentIds ?? [],
+              addressedAnyone: routing?.addressedAnyone ?? false
+            }
+          }
+        : {})
+    })
+  }
+
+  /** Attribution footer for a drain narration — the turn builder without a Pending: agent
+   *  identity, runtime display name, the session's last observed model, and the console
+   *  session link. Undefined when footers are off for the agent or absent on the platform. */
+  private async drainAttributionBlocks(
+    agentId: string,
+    rec: SessionRecord,
+    integrationId: string | undefined
+  ): Promise<{ text: string; blocks: unknown[] } | undefined> {
+    const agent = this.agents.get(agentId)
+    if (!agent || !agent.output.showFooter || !turnChromeFor(rec.platform).attributionFooter) return undefined
+    return buildAttributionBlocks({
+      botName: agent.name,
+      botUrl: this.agentLink(agentId),
+      runtime: this.runtimeFacts.runtimeNames()[agent.runtime] ?? agent.runtime,
+      model: (await this.store.getObservedModel(rec.key)) ?? 'default',
+      sessionUrl: rec.sessionId
+        ? this.sessionLink(rec.sessionId, this.sessionLinkSource(rec.platform, integrationId))
+        : ''
+    })
+  }
+
+  /** Clear the previous footer holder behind the migrated one — best-effort, like the
+   *  in-turn stale-footer sweep. A closure-stamped terminal message is re-finalized with
+   *  the SAME §5.5 metadata (chat.update replaces it wholesale — dropping it would unroute
+   *  the closed response); anything else takes the authorship-only re-stamp. Duck-typed:
+   *  a connection without the edit surface simply leaves the old footer standing. */
+  private async clearMigratedFooter(
+    conn: SlackConnection,
+    agentId: string,
+    previous?: {
+      channel: string
+      ts: string
+      text: string
+      closure?: { responseId: string; hopCount: number; mentionedAgentIds: string[]; addressedAnyone: boolean }
+    }
+  ): Promise<void> {
+    if (!previous) return
+    const body = [{ type: 'markdown', text: previous.text }]
+    try {
+      if (previous.closure && typeof conn.finalizeResponse === 'function') {
+        await conn.finalizeResponse(previous.channel, previous.ts, body, previous.text, agentId, {
+          responseId: previous.closure.responseId,
+          deliveryState: 'final',
+          hopCount: previous.closure.hopCount,
+          mentionedAgentIds: previous.closure.mentionedAgentIds,
+          ...(previous.closure.addressedAnyone ? { addressedAnyone: true } : {})
+        })
+      } else if (typeof conn.updateBlocks === 'function') {
+        await conn.updateBlocks(previous.channel, previous.ts, body, undefined, false, agentId)
+      }
+    } catch (err) {
+      this.log.debug(`drain footer clear failed (ts=${previous.ts}): ${(err as Error).message}`)
+    }
   }
 
   /** Arm the deferred wake for a settled background task. Deliberately NOT immediate: the
@@ -14740,6 +14867,7 @@ export class Daemon {
             )
         }
       }
+      this.lastFooterReply.delete(row.key) // the session is gone — release its footer record
       if (!row.acpSessionId) continue
       this.sdkLease.delete(sdkLeaseKey(row.agentId, row.acpSessionId)) // the session is gone — drop its lease
       await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
