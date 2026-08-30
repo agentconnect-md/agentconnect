@@ -254,6 +254,16 @@ updates (usage, session titles) are deliberately not boundaries, so the closing
 segment — the text after the model's last tool or thinking step — stays staged
 until the final context fence.
 
+A **staged segment is not always one message.** Those four boundaries are
+boundaries in the WORK, and a run that only speaks has none of them — a runtime
+composing several messages back to back stays inside one segment. The convergers
+therefore carry a second, finer boundary of their own: the runtime's `messageId`,
+which changes where one message ends and the next begins. Since a commit replays
+the original updates through the converger, that boundary applies identically to
+a live turn and to a replayed staged one, and a segment can commit as more than
+one message. A runtime that names no message is unaffected — its reply stays one
+message however many chunks it streams in.
+
 Discard semantics narrow accordingly: a segment committed at a boundary is
 already said, exactly like any other message in the thread that precedes a
 late-arriving event; only the closing segment is regenerable. Token-by-token

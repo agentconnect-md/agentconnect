@@ -1,5 +1,6 @@
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import type { WireFeishuCardActionTarget } from '@agentconnect.md/protocol'
+import { AgentMessageRun } from '../messages/message-boundary.js'
 import { flattenUnsafeLinks } from '../messages/agent-links.js'
 import { renderAttributionMessage, type ReplyAttributionInfo } from '../messages/attribution.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../session/no-response.js'
@@ -409,6 +410,8 @@ export class FeishuConverger {
   // minimal mode only — see OutputConverger (Slack) for the segment/record contract.
   private segmentReset = false
   private recordDirty = false
+  // The runtime's own message identity, which is the only boundary a speak-only run offers.
+  private readonly messages = new AgentMessageRun()
 
   constructor(private mode: 'none' | 'minimal' | 'low' | 'medium' | 'high') {}
 
@@ -530,6 +533,13 @@ export class FeishuConverger {
       case 'agent_message_chunk': {
         const content = (update as { content?: { type?: string; text?: string } }).content
         const text = content?.type === 'text' ? (content.text ?? '') : ''
+        // A new message closes the one before it exactly as a tool boundary would — same mode
+        // semantics, same actions. Without this the two arrive as one post, run together.
+        const closed = this.messages.opens(update)
+          ? this.mode === 'minimal'
+            ? this.closeSegment()
+            : this.flush(true)
+          : []
         if (this.mode === 'minimal' && this.segmentReset && text) {
           this.buf = ''
           this.cardText = ''
@@ -541,7 +551,7 @@ export class FeishuConverger {
         this.buf += text
         this.cardText += text
         if (this.mode === 'minimal' && text.trim()) this.recordDirty = true
-        return []
+        return closed
       }
       case 'agent_thought_chunk': {
         if (this.mode === 'high') {

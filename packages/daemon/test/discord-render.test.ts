@@ -96,3 +96,30 @@ describe('DiscordConverger minimal mode', () => {
     expect(c.onFinal()).toEqual([])
   })
 })
+
+// A run that speaks more than once has no tool/thought/plan boundary between its messages, so the
+// runtime's own `messageId` is the only thing separating them — see test/message-boundary.test.ts.
+describe('DiscordConverger message boundaries', () => {
+  const named = (messageId: string, text: string): SessionUpdate =>
+    ({ sessionUpdate: 'agent_message_chunk', messageId, content: { type: 'text', text } }) as unknown as SessionUpdate
+
+  const postsOf = (c: DiscordConverger, updates: SessionUpdate[]): string[] => {
+    const out: string[] = []
+    const take = (actions: { kind: string; text?: string }[]): void => {
+      for (const a of actions) if (a.kind === 'post' && a.text !== undefined) out.push(a.text)
+    }
+    for (const u of updates) take(c.onUpdate(u))
+    take(c.onFinal())
+    return out
+  }
+
+  it('delivers each named message on its own', () => {
+    const posts = postsOf(new DiscordConverger('low'), [named('m1', 'first thing'), named('m2', 'second thing')])
+    expect(posts).toEqual(['first thing', 'second thing'])
+  })
+
+  it('keeps an unnamed run one message, however many chunks it streams in', () => {
+    const posts = postsOf(new DiscordConverger('low'), [chunk('Hello '), chunk('there.')])
+    expect(posts).toEqual(['Hello there.'])
+  })
+})

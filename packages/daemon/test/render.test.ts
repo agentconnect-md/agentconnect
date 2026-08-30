@@ -112,6 +112,71 @@ describe('OutputConverger', () => {
     expect(c.onFinal().find((a) => a.kind === 'post')?.text).toBe(text)
   })
 
+  // The shape this exists for: a run that speaks three times with NO tool call between, so none of
+  // the boundaries the converger already flushes on (tool, thought, plan) is there to separate them.
+  describe('a run that speaks more than once', () => {
+    const posts = (c: OutputConverger, runs: Array<[string | undefined, string]>): string[] => {
+      const out: string[] = []
+      const take = (actions: SlackAction[]): void => {
+        for (const a of actions) if (a.kind === 'post') out.push(a.text)
+      }
+      for (const [messageId, text] of runs) {
+        take(
+          c.onUpdate({
+            sessionUpdate: 'agent_message_chunk',
+            ...(messageId ? { messageId } : {}),
+            content: { type: 'text', text }
+          } as any)
+        )
+      }
+      take(c.onFinal())
+      return out
+    }
+
+    it('delivers each named message on its own instead of running them together', () => {
+      expect(
+        posts(new OutputConverger('low'), [
+          ['m1', 'I’ll run the collector.'],
+          ['m2', 'It returned 46 candidates.'],
+          ['m3', 'Created the digest.']
+        ])
+      ).toEqual(['I’ll run the collector.', 'It returned 46 candidates.', 'Created the digest.'])
+    })
+
+    // The damage beyond the run-on sentence: a `#` swallowed into the previous paragraph stops
+    // being a heading at all, which is how a digest lost its title.
+    it('leaves a heading at the START of its own message, where it still parses as one', () => {
+      const out = posts(new OutputConverger('low'), [
+        ['m1', 'so the drafts stay non-promotional.'],
+        ['m2', '# Reddit Engagement Digest\n\nThese are drafts.']
+      ])
+      expect(out[0]).toBe('so the drafts stay non-promotional.')
+      expect(out[1]?.startsWith('# Reddit Engagement Digest')).toBe(true)
+    })
+
+    it('joins the chunks of ONE message, however many arrive', () => {
+      expect(
+        posts(new OutputConverger('low'), [
+          ['m1', 'Hello '],
+          ['m1', 'there '],
+          ['m1', 'friend.']
+        ])
+      ).toEqual(['Hello there friend.'])
+    })
+
+    // §323: a reply that merely streams in pieces is one message. A runtime naming nothing keeps
+    // exactly the old behavior — this pass must never be what splits a reply mid-sentence.
+    it('still delivers an unnamed run as one message', () => {
+      expect(
+        posts(new OutputConverger('low'), [
+          [undefined, 'Hello '],
+          [undefined, 'there '],
+          [undefined, 'friend.']
+        ])
+      ).toEqual(['Hello there friend.'])
+    })
+  })
+
   it('low mode: tool_call with no title falls back to the toolCallId', () => {
     const c = new OutputConverger('low')
     const actions = c.onUpdate({ sessionUpdate: 'tool_call', toolCallId: 't9', status: 'pending' } as any)
