@@ -270,9 +270,6 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@v6
         with:
-          # The self-installer runs npm to fetch pnpm and cost 16 s of this job's 40 s setup step;
-          # standalone downloads the binary instead.
-          standalone: true
           cache: true
           # Its own primary key, keyed by the closure it stores rather than by the lockfile alone.
           # Nothing shares this OS today, but the rule is the one the two narrowed Linux jobs
