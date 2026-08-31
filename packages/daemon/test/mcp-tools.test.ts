@@ -83,7 +83,13 @@ describe('toolsForIntegrations', () => {
       'scheduleMessage',
       'createCanvas',
       'readCanvas',
-      'updateCanvas'
+      'updateCanvas',
+      'listBookmarks',
+      'addBookmark',
+      'removeBookmark',
+      'readList',
+      'addListItem',
+      'updateListItem'
     ]
     const slackNames = toolsForIntegrations([slackInt]).map((t) => t.name)
     expect(slackNames).toEqual(expect.arrayContaining(PORT_GATED))
@@ -448,6 +454,12 @@ describe('toolsForIntegrations', () => {
         'createCanvas',
         'readCanvas',
         'updateCanvas',
+        'listBookmarks',
+        'addBookmark',
+        'removeBookmark',
+        'readList',
+        'addListItem',
+        'updateListItem',
         'readTelegramFile',
         'searchMemory',
         'saveMemory',

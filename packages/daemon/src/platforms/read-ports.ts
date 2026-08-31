@@ -84,6 +84,10 @@ export interface PlatformReadPorts {
   readonly scheduledMessages?: boolean
   /** `createCanvas` / `readCanvas` / `updateCanvas`: a platform-hosted rich-text page. */
   readonly canvas?: boolean
+  /** `listBookmarks` / `addBookmark` / `removeBookmark`: the platform pins links in a channel. */
+  readonly bookmarks?: boolean
+  /** `readList` / `addListItem` / `updateListItem`: the platform hosts structured lists. */
+  readonly lists?: boolean
   /** The agent-facing tool that surfaces this platform's CREDENTIALED attachment
    *  read. Present when the platform's file references cannot be fetched without
    *  the bot token, so the agent needs a tool instead of its own network access.
@@ -117,6 +121,8 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       conversationCreate: true,
       scheduledMessages: true,
       canvas: true,
+      bookmarks: true,
+      lists: true,
       attachmentReadTool: SLACK_ATTACHMENT_TOOL
     }
   ],
@@ -206,7 +212,14 @@ export function attachmentReadToolsFor(platforms: Iterable<string>): ToolDescrip
 /** The declaration flags that gate ONE agent-facing tool each — the ports whose only
  *  question is "does this platform have it?", answered before a connection exists. */
 export type PlatformToolPort =
-  'channelHistory' | 'threadHistory' | 'reactions' | 'conversationCreate' | 'scheduledMessages' | 'canvas'
+  | 'channelHistory'
+  | 'threadHistory'
+  | 'reactions'
+  | 'conversationCreate'
+  | 'scheduledMessages'
+  | 'canvas'
+  | 'bookmarks'
+  | 'lists'
 
 /** The platforms declaring `port`, in registry order — every one when `platforms` is
  *  omitted (the permission auto-allow set needs the names an agent will never see). */

@@ -8,6 +8,10 @@ import type {
   PlatformChannelHistoryPage,
   PlatformChannelInfo,
   PlatformConversationSpec,
+  PlatformBookmark,
+  PlatformListFieldWrite,
+  PlatformListItem,
+  PlatformListPage,
   PlatformReactionSummary,
   PlatformScheduledMessage,
   PlatformThreadMessage,
@@ -99,6 +103,12 @@ export interface MessageGateway {
   getReactions?(channel: string, messageTs: string): Promise<PlatformReactionSummary[]>
   /** Create a channel, or open the direct conversation with a set of users. */
   createConversation?(spec: PlatformConversationSpec): Promise<PlatformChannelInfo>
+  listBookmarks?(channel: string): Promise<PlatformBookmark[]>
+  addBookmark?(channel: string, spec: { title: string; link: string; emoji?: string }): Promise<PlatformBookmark>
+  removeBookmark?(channel: string, bookmarkId: string): Promise<void>
+  readList?(listId: string, options?: { cursor?: string; limit?: number }): Promise<PlatformListPage>
+  addListItem?(listId: string, fields: PlatformListFieldWrite[]): Promise<PlatformListItem>
+  updateListItem?(listId: string, itemId: string, fields: PlatformListFieldWrite[]): Promise<void>
   /** Hand the platform a message to deliver later; the daemon sees nothing at delivery. */
   scheduleMessage?(channel: string, text: string, postAt: number, thread?: string): Promise<PlatformScheduledMessage>
   /** Platform-hosted document pages (Slack Canvas). */

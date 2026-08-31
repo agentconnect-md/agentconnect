@@ -18,7 +18,7 @@ import type { PlatformCanvasEdit } from '../../platforms/contract.js'
 import { platformLabel } from '../../platforms/read-ports.js'
 import type { SessionContext } from './context.js'
 import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
-import { optionalBoolean, optionalString, parseArgs, requiredEnum, requiredString } from './args.js'
+import { optionalBoolean, optionalBoundedInt, optionalString, parseArgs, requiredEnum, requiredString } from './args.js'
 
 /** Slack's own bounds on a scheduled send, and the only ones any platform states. */
 const MIN_SCHEDULE_LEAD_MS = 2 * 60 * 1000
@@ -54,6 +54,53 @@ export const SCHEDULE_MESSAGE_ARGS = z.object({
   channel: optionalString('channel'),
   message: requiredString('message'),
   postAt: requiredString('postAt')
+})
+
+export const LIST_BOOKMARKS_ARGS = z.object({ ...platformTarget, channel: optionalString('channel') })
+
+export const ADD_BOOKMARK_ARGS = z.object({
+  ...platformTarget,
+  channel: optionalString('channel'),
+  title: requiredString('title'),
+  link: requiredString('link'),
+  emoji: optionalString('emoji')
+})
+
+export const REMOVE_BOOKMARK_ARGS = z.object({
+  ...platformTarget,
+  channel: optionalString('channel'),
+  bookmarkId: requiredString('bookmarkId')
+})
+
+export const READ_LIST_ARGS = z.object({
+  ...platformTarget,
+  listId: requiredString('listId'),
+  cursor: optionalString('cursor'),
+  limit: optionalBoundedInt('limit', 1, 200)
+})
+
+const listFields = z
+  .array(
+    z.object({
+      columnId: requiredString('columnId'),
+      type: requiredString('type'),
+      value: z.unknown()
+    }),
+    'fields must be an array of { columnId, type, value }'
+  )
+  .min(1, 'fields must name at least one column')
+
+export const ADD_LIST_ITEM_ARGS = z.object({
+  ...platformTarget,
+  listId: requiredString('listId'),
+  fields: listFields
+})
+
+export const UPDATE_LIST_ITEM_ARGS = z.object({
+  ...platformTarget,
+  listId: requiredString('listId'),
+  itemId: requiredString('itemId'),
+  fields: listFields
 })
 
 export const CREATE_CANVAS_ARGS = z.object({
@@ -136,6 +183,106 @@ export async function getReactions(
   const { platform, gw, channel } = resolveTarget(ctx, deps, parsed, 'read reactions')
   if (!gw.getReactions) throw unsupported(platform, 'reactions')
   return { platform, channel, messageTs: parsed.messageTs, reactions: await gw.getReactions(channel, parsed.messageTs) }
+}
+
+/**
+ * The conversation a bookmark tool acts on.
+ *
+ * `ctx.channel` is a default ONLY for this session's own integration. A Telegram session whose
+ * agent also has Slack can call these with `platform: 'slack'`, and handing Slack a Telegram
+ * channel id just fails with `channel_not_found` — the shared selector contract already says a
+ * different platform must name its channel, and `sameConvo` is how the resolver reports it.
+ */
+function bookmarkChannel(ctx: SessionContext, named: string | undefined, sameConvo: boolean): string {
+  if (named) return named
+  if (!sameConvo) throw new Error('channel is required when the bookmark is on another platform or bot')
+  return ctx.channel
+}
+
+export async function listBookmarks(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: PlatformActionDeps
+): Promise<unknown> {
+  const parsed = parseArgs(LIST_BOOKMARKS_ARGS, args)
+  const platform = parsed.platform ?? ctx.platform
+  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  if (!gw.listBookmarks) throw unsupported(platform, 'bookmarks')
+  const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
+  return { platform, channel, bookmarks: await gw.listBookmarks(channel) }
+}
+
+export async function addBookmark(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: PlatformActionDeps
+): Promise<unknown> {
+  const parsed = parseArgs(ADD_BOOKMARK_ARGS, args)
+  const platform = parsed.platform ?? ctx.platform
+  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  if (!gw.addBookmark) throw unsupported(platform, 'bookmarks')
+  const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
+  const bookmark = await gw.addBookmark(channel, {
+    title: parsed.title,
+    link: parsed.link,
+    ...(parsed.emoji ? { emoji: parsed.emoji } : {})
+  })
+  return { platform, channel, bookmark }
+}
+
+export async function removeBookmark(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: PlatformActionDeps
+): Promise<unknown> {
+  const parsed = parseArgs(REMOVE_BOOKMARK_ARGS, args)
+  const platform = parsed.platform ?? ctx.platform
+  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  if (!gw.removeBookmark) throw unsupported(platform, 'bookmarks')
+  const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
+  await gw.removeBookmark(channel, parsed.bookmarkId)
+  return { platform, channel, removed: parsed.bookmarkId }
+}
+
+export async function readList(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: PlatformActionDeps
+): Promise<unknown> {
+  const parsed = parseArgs(READ_LIST_ARGS, args)
+  const platform = parsed.platform ?? ctx.platform
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  if (!gw.readList) throw unsupported(platform, 'lists')
+  const page = await gw.readList(parsed.listId, {
+    ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
+    ...(parsed.limit !== undefined ? { limit: parsed.limit } : {})
+  })
+  return { platform, listId: parsed.listId, ...page }
+}
+
+export async function addListItem(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: PlatformActionDeps
+): Promise<unknown> {
+  const parsed = parseArgs(ADD_LIST_ITEM_ARGS, args)
+  const platform = parsed.platform ?? ctx.platform
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  if (!gw.addListItem) throw unsupported(platform, 'lists')
+  return { platform, listId: parsed.listId, item: await gw.addListItem(parsed.listId, parsed.fields) }
+}
+
+export async function updateListItem(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: PlatformActionDeps
+): Promise<unknown> {
+  const parsed = parseArgs(UPDATE_LIST_ITEM_ARGS, args)
+  const platform = parsed.platform ?? ctx.platform
+  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  if (!gw.updateListItem) throw unsupported(platform, 'lists')
+  await gw.updateListItem(parsed.listId, parsed.itemId, parsed.fields)
+  return { platform, listId: parsed.listId, itemId: parsed.itemId, updated: true }
 }
 
 export async function createConversation(

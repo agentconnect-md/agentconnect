@@ -38,9 +38,114 @@ import type {
   PlatformConnection,
   PlatformConversationSpec,
   PlatformReactionIntent,
+  PlatformBookmark,
+  PlatformListColumn,
+  PlatformListFieldWrite,
+  PlatformListItem,
+  PlatformListPage,
   PlatformReactionSummary,
   PlatformScheduledMessage
 } from '../platforms/contract.js'
+
+/**
+ * A List column's schema `type` is NOT always the key a write uses, so everything crosses this
+ * table before an agent sees it.
+ *
+ * The case that matters most is the one every list has: the primary column is always a text
+ * column, and Slack is explicit that "you may see the `text` property appear in a response as a
+ * fallback, but it is not accepted in the request payload" — a write to it must be `rich_text`.
+ * Reporting the schema type verbatim therefore handed the agent the one key the write endpoints
+ * reject, on the column it would reach for first.
+ *
+ * `null` marks a column Slack computes and no request may set. Those are reported read-only
+ * rather than given a key that would be refused.
+ */
+export const LIST_WRITE_KEY_BY_TYPE: Record<string, string | null> = {
+  text: 'rich_text',
+  rich_text: 'rich_text',
+  message: 'message',
+  number: 'number',
+  select: 'select',
+  date: 'date',
+  user: 'user',
+  attachment: 'attachment',
+  checkbox: 'checkbox',
+  email: 'email',
+  phone: 'phone',
+  channel: 'channel',
+  rating: 'rating',
+  reference: 'reference',
+  link: 'link',
+  timestamp: 'timestamp',
+  // Task columns, which every todo-mode list has. Slack names them semantically in the schema
+  // and writes them as the ordinary field they are made of, so a task list — the common case —
+  // is exactly where reporting the schema name would fail.
+  assignee: 'user',
+  todo_assignee: 'user',
+  due_date: 'date',
+  todo_due_date: 'date',
+  completed: 'checkbox',
+  todo_completed: 'checkbox',
+  created_by: null,
+  last_edited_by: null,
+  created_time: null,
+  last_edited_time: null,
+  vote: null,
+  canvas: null
+}
+
+/** Every column `type` Slack's List schema documents. Exported so a test can assert the table
+ *  above answers for ALL of them — the gap that kept reaching review was always a type nobody
+ *  had enumerated, not a mapping anyone got wrong. */
+export const LIST_SCHEMA_TYPES = [
+  'text',
+  'message',
+  'number',
+  'select',
+  'date',
+  'user',
+  'attachment',
+  'checkbox',
+  'email',
+  'phone',
+  'channel',
+  'rating',
+  'created_by',
+  'last_edited_by',
+  'created_time',
+  'last_edited_time',
+  'vote',
+  'canvas',
+  'reference',
+  'link',
+  'assignee',
+  'due_date',
+  'completed',
+  'todo_assignee',
+  'todo_due_date',
+  'todo_completed'
+] as const
+
+/** The keys a RESPONSE field may carry its value under. `text` is here to be read and is
+ *  deliberately absent from the write side above's value set — it is a fallback, never a key. */
+const LIST_FIELD_TYPES = [
+  'rich_text',
+  'text',
+  'message',
+  'number',
+  'select',
+  'date',
+  'user',
+  'channel',
+  'attachment',
+  'checkbox',
+  'email',
+  'phone',
+  'rating',
+  'timestamp',
+  'link',
+  'reference'
+] as const
 
 /** Core names the intent; Slack's alphabet is emoji shortcodes. */
 const SLACK_REACTION_NAMES: Record<PlatformReactionIntent, string> = { seen: 'eyes' }
@@ -504,6 +609,22 @@ export type AppLike = {
       create: (a: unknown) => Promise<{ canvas_id?: string }>
       edit: (a: unknown) => Promise<unknown>
       sections: { lookup: (a: unknown) => Promise<{ sections?: { id?: string }[] }> }
+    }
+    bookmarks: {
+      list: (a: unknown) => Promise<{ bookmarks?: { id?: string; title?: string; link?: string; emoji?: string }[] }>
+      add: (a: unknown) => Promise<{ bookmark?: { id?: string; title?: string; link?: string; emoji?: string } }>
+      remove: (a: unknown) => Promise<unknown>
+    }
+    slackLists: {
+      items: {
+        list: (a: unknown) => Promise<{
+          items?: { id?: string; fields?: { column_id?: string; [k: string]: unknown }[] }[]
+          list?: { columns?: { id?: string; key?: string; name?: string; type?: string }[] }
+          response_metadata?: { next_cursor?: string }
+        }>
+        create: (a: unknown) => Promise<{ item?: { id?: string } }>
+        update: (a: unknown) => Promise<unknown>
+      }
     }
     agents: {
       sessions: {
@@ -2216,6 +2337,136 @@ export class SlackConnection implements PlatformConnection {
   // Unlike the chrome above, every one of these is something the AGENT asked for, so each
   // reports Slack's own refusal instead of degrading quietly: `missing_scope` on a workspace
   // that installed before the capability scopes existed is the message the agent must see.
+
+  // ── bookmarks ───────────────────────────────────────────────────────────────────
+  async listBookmarks(channel: string): Promise<PlatformBookmark[]> {
+    try {
+      const res = await this.app.client.bookmarks.list({ channel_id: channel })
+      return (res.bookmarks ?? []).map((b) => ({
+        id: b.id ?? '',
+        title: b.title ?? '',
+        ...(b.link ? { link: b.link } : {}),
+        ...(b.emoji ? { emoji: b.emoji } : {})
+      }))
+    } catch (err) {
+      throw this.toolFailure(err, 'listing bookmarks')
+    }
+  }
+
+  async addBookmark(channel: string, spec: { title: string; link: string; emoji?: string }): Promise<PlatformBookmark> {
+    try {
+      // `type: 'link'` is the only kind an agent can meaningfully create; the others name
+      // existing Slack entities and would need an id the model has no way to hold.
+      const res = await this.app.client.bookmarks.add({
+        channel_id: channel,
+        title: spec.title,
+        type: 'link',
+        link: spec.link,
+        ...(spec.emoji ? { emoji: spec.emoji } : {})
+      })
+      const b = res.bookmark ?? {}
+      return {
+        id: b.id ?? '',
+        title: b.title ?? spec.title,
+        ...((b.link ?? spec.link) ? { link: b.link ?? spec.link } : {}),
+        ...(b.emoji ? { emoji: b.emoji } : {})
+      }
+    } catch (err) {
+      throw this.toolFailure(err, 'adding a bookmark')
+    }
+  }
+
+  async removeBookmark(channel: string, bookmarkId: string): Promise<void> {
+    try {
+      await this.app.client.bookmarks.remove({ channel_id: channel, bookmark_id: bookmarkId })
+    } catch (err) {
+      throw this.toolFailure(err, 'removing a bookmark')
+    }
+  }
+
+  // ── lists ───────────────────────────────────────────────────────────────────────
+  /**
+   * One page of a list, WITH its columns.
+   *
+   * Slack publishes no schema read for a list, and a write needs `column_id` plus a value
+   * keyed by that column's TYPE. Both are only observable on rows that already exist, so the
+   * columns are derived from the page and returned alongside it — same shape as the canvas
+   * section ids, and for the same reason: the write is unusable without the read.
+   */
+  async readList(listId: string, options: { cursor?: string; limit?: number } = {}): Promise<PlatformListPage> {
+    try {
+      const res = await this.app.client.slackLists.items.list({
+        list_id: listId,
+        // `include_list` returns the parent's COLUMN SCHEMA — authoritative, and the only view
+        // that shows a column no row has filled in yet.
+        include_list: true,
+        ...(options.cursor ? { cursor: options.cursor } : {}),
+        ...(options.limit !== undefined ? { limit: options.limit } : {})
+      })
+      const rows = res.items ?? []
+      const columns = new Map<string, PlatformListColumn>()
+      for (const c of res.list?.columns ?? []) {
+        const id = c.id ?? c.key
+        if (!id || !c.type) continue
+        const write = LIST_WRITE_KEY_BY_TYPE[c.type]
+        columns.set(id, {
+          id,
+          type: write ?? c.type,
+          ...(c.name ? { name: c.name } : {}),
+          ...(write === null ? { readOnly: true } : {})
+        })
+      }
+      const items: PlatformListItem[] = rows.map((row) => {
+        const fields: Record<string, unknown> = {}
+        for (const f of row.fields ?? []) {
+          const id = f.column_id
+          if (!id) continue
+          // A field carries `key`, `value` and often `text` ALONGSIDE the typed property, so the
+          // type is the one key that is a known type name. Taking the first non-`column_id`
+          // property returns `key` and reports a type the write endpoints reject.
+          const seen = LIST_FIELD_TYPES.find((t) => f[t] !== undefined)
+          // Through the same table: a `text` value read off a response still means the column
+          // is written as `rich_text`.
+          const type = seen ? (LIST_WRITE_KEY_BY_TYPE[seen] ?? seen) : undefined
+          if (type && !columns.has(id)) columns.set(id, { id, type })
+          fields[id] = seen ? f[seen] : f.value
+        }
+        return { id: row.id ?? '', fields }
+      })
+      return {
+        columns: [...columns.values()],
+        items,
+        ...(res.response_metadata?.next_cursor?.trim() ? { nextCursor: res.response_metadata.next_cursor.trim() } : {})
+      }
+    } catch (err) {
+      throw this.toolFailure(err, 'reading a list')
+    }
+  }
+
+  async addListItem(listId: string, fields: PlatformListFieldWrite[]): Promise<PlatformListItem> {
+    try {
+      const res = await this.app.client.slackLists.items.create({
+        list_id: listId,
+        initial_fields: fields.map((f) => ({ column_id: f.columnId, [f.type]: f.value }))
+      })
+      return { id: res.item?.id ?? '', fields: Object.fromEntries(fields.map((f) => [f.columnId, f.value])) }
+    } catch (err) {
+      throw this.toolFailure(err, 'adding a list item')
+    }
+  }
+
+  async updateListItem(listId: string, itemId: string, fields: PlatformListFieldWrite[]): Promise<void> {
+    try {
+      await this.app.client.slackLists.items.update({
+        // The row is named PER CELL: `slackLists.items.update` takes no top-level id, and a cell
+        // without `row_id` is refused with `row_id_not_provided`.
+        list_id: listId,
+        cells: fields.map((f) => ({ row_id: itemId, column_id: f.columnId, [f.type]: f.value }))
+      })
+    } catch (err) {
+      throw this.toolFailure(err, 'updating a list item')
+    }
+  }
 
   /** Slack's error code for one agent-visible failure, sanitized before it reaches a model. */
   private toolFailure(err: unknown, what: string): Error {

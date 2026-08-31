@@ -496,6 +496,30 @@ export class VirtualSlackConnection implements PlatformConnection {
     this.unmodelled('new conversations')
   }
 
+  async listBookmarks(): Promise<never> {
+    this.unmodelled('bookmarks')
+  }
+
+  async addBookmark(): Promise<never> {
+    this.unmodelled('bookmarks')
+  }
+
+  async removeBookmark(): Promise<never> {
+    this.unmodelled('bookmarks')
+  }
+
+  async readList(): Promise<never> {
+    this.unmodelled('lists')
+  }
+
+  async addListItem(): Promise<never> {
+    this.unmodelled('lists')
+  }
+
+  async updateListItem(): Promise<never> {
+    this.unmodelled('lists')
+  }
+
   async scheduleMessage(): Promise<never> {
     this.unmodelled('scheduled messages')
   }

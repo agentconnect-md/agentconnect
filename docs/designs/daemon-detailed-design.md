@@ -1047,6 +1047,24 @@ chrome, each of these reports the platform's own refusal verbatim, because the a
 for it: an installation whose grant predates a capability scope must see `missing_scope`, not
 a silent success.
 
+Two more families join on the same port mechanism. **Bookmarks** (`listBookmarks` /
+`addBookmark` / `removeBookmark`) pin links at the top of a conversation; the write tool says
+plainly that a bookmark outlives the task, because it is channel-visible state an agent can
+create and the model needs that in view. Only `type: 'link'` is offered — Slack's other
+bookmark kinds name existing entities by an id a model has no way to hold.
+
+**Lists** (`readList` / `addListItem` / `updateListItem`) reach Slack's structured lists, and
+they repeat the canvas lesson exactly: a value is addressed by `column_id` and keyed by that
+column's TYPE, and Slack publishes no schema endpoint for a list. So the columns are derived
+from the rows a read returns and handed back with them — the read is not a convenience before
+the write, it is the only source of the ids and types the write needs.
+
+Three scopes in that same change have NO caller and say so: `channels:join`, `team:read`, and
+`users:read.email`. That is a deliberate exception to the scope-arrives-with-its-feature rule,
+taken because one list means every scope addition costs a reinstall of every installation —
+batching the ones already in view is one reinstall instead of three. The exception is worth
+making once, with the reason recorded, and is not a precedent for declaring scopes speculatively.
+
 The orchestration triple `startOrchestration` / `getOrchestration` /
 `cancelOrchestration` is **retired from the injected tool surface**: its send half
 duplicated `sendMessage` (fan-out to N workers is N `sendMessage` calls with

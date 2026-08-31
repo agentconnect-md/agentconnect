@@ -54,7 +54,20 @@ export const SLACK_BOT_SCOPES = [
   // `conversations.leave` has always needed one of these two; the manifest never asked.
   'channels:manage',
   'groups:write',
-  'mpim:write'
+  'mpim:write',
+  'bookmarks:read',
+  'bookmarks:write',
+  'lists:read',
+  'lists:write',
+  // RESERVED — declared deliberately ahead of a caller, which the rule above otherwise forbids.
+  // Every scope added later costs a reinstall of every installation, so the ones we know are
+  // coming ride along with these and cost nothing extra: `channels:join` lets a future agent
+  // add itself to a channel instead of waiting to be invited, and the two directory reads are
+  // for console-side operator screens. Nothing calls them yet; that is the point of naming them
+  // here rather than discovering them one reinstall at a time.
+  'channels:join',
+  'team:read',
+  'users:read.email'
   // No `search:read.*` here: the tool that needs them is not on main yet. A scope in this list
   // makes every existing install incomplete, so it may only arrive WITH the capability that
   // uses it — otherwise operators reinstall to grant permissions nothing can call.

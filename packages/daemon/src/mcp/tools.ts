@@ -464,6 +464,8 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
     ...buildThreadHistoryTool(portPlatform('threadHistory'), integrationId),
     ...buildReactionTools(portPlatform('reactions'), integrationId),
     ...buildConversationCreateTool(portPlatform('conversationCreate'), integrationId),
+    ...buildBookmarkTools(portPlatform('bookmarks'), integrationId),
+    ...buildListTools(portPlatform('lists'), integrationId),
     ...buildScheduleMessageTool(portPlatform('scheduledMessages'), integrationId),
     ...buildCanvasTools(portPlatform('canvas'), integrationId)
   ]
@@ -544,6 +546,141 @@ function buildReactionTools(platform: SchemaProp | undefined, integrationId: Sch
         'List the emoji reactions already on one message, each with its count and — where the platform reports them ' +
         '— the users who reacted. Use it to read a poll or a lightweight approval someone ran with emoji.',
       inputSchema: obj({ platform, integrationId, channel: targetChannel, messageTs }, ['messageTs'])
+    }
+  ]
+}
+
+/**
+ * `listBookmarks` / `addBookmark` / `removeBookmark` — the links pinned at the top of a
+ * conversation. Small, durable, and visible to everyone in the channel, which is why the write
+ * says so: a bookmark outlives the task the way a canvas does, not the way a reply does.
+ */
+function buildBookmarkTools(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!platform) return []
+  const channel = {
+    type: 'string',
+    description:
+      'Channel id. Defaults to the conversation you are in — but REQUIRED when `platform` or ' +
+      '`integrationId` names anything else, since this conversation’s id means nothing there.'
+  }
+  return [
+    {
+      name: 'listBookmarks',
+      description:
+        'List the links pinned at the top of a conversation, each with its id, title and URL. Read this before ' +
+        'changing anything: `removeBookmark` needs an id, and it is also how you tell whether the link you were ' +
+        'about to pin is already there.',
+      inputSchema: obj({ platform, integrationId, channel })
+    },
+    {
+      name: 'addBookmark',
+      description:
+        'Pin a link at the top of a conversation, where everyone in it will see it and it stays until someone ' +
+        'removes it. That permanence is the point and the caution: pin a thing the channel will want again — a ' +
+        'dashboard, a runbook, the PR everyone is waiting on — not a link that matters only to the task in hand. ' +
+        'Slack allows 100 per channel.',
+      inputSchema: obj(
+        {
+          platform,
+          integrationId,
+          channel,
+          title: { type: 'string', minLength: 1, description: 'Short label shown on the bookmark.' },
+          link: { type: 'string', minLength: 1, description: 'The URL to pin.' },
+          emoji: { type: 'string', description: 'Optional emoji shortcode, e.g. `:books:`.' }
+        },
+        ['title', 'link']
+      )
+    },
+    {
+      name: 'removeBookmark',
+      description:
+        'Unpin a link, by the `id` from `listBookmarks`. Removing one someone else pinned is a visible change to ' +
+        'a shared channel — do it when asked, not as tidying.',
+      inputSchema: obj(
+        {
+          platform,
+          integrationId,
+          channel,
+          bookmarkId: { type: 'string', minLength: 1, description: 'Bookmark id from `listBookmarks`.' }
+        },
+        ['bookmarkId']
+      )
+    }
+  ]
+}
+
+/**
+ * `readList` / `addListItem` / `updateListItem` — the platform's structured lists.
+ *
+ * The read carries the COLUMNS, not because it is convenient but because a write is impossible
+ * without them: a value is addressed by `columnId` and keyed by that column's type, and the
+ * platform publishes no schema endpoint. Same shape as the canvas section ids.
+ */
+function buildListTools(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!platform) return []
+  const listId = { type: 'string', minLength: 1, description: 'List id (a Slack List `F…` id).' }
+  const fields = {
+    type: 'array',
+    minItems: 1,
+    description:
+      'Values to write. Each entry is `{ columnId, type, value }` taken straight from `readList`: use its ' +
+      '`columns` verbatim — the `type` it reports is already the key a write must use, which is not always the ' +
+      'name the column displays (a text column is written as `rich_text`). Skip any column marked `readOnly`; ' +
+      'the platform computes those. `value` matches the type — `rich_text` a rich-text block array, `user` an ' +
+      'array of user ids, `date` an array like ["2026-08-31"], `select` an array of option ids, `number` an ' +
+      'array of numbers, `checkbox` a boolean, `message` an array of message permalinks.',
+    items: {
+      type: 'object',
+      properties: {
+        columnId: { type: 'string', minLength: 1, description: 'Column id from `readList`.' },
+        type: { type: 'string', minLength: 1, description: 'Column type from `readList`.' },
+        value: { description: 'The value, shaped by the column type.' }
+      },
+      required: ['columnId', 'type', 'value'],
+      additionalProperties: false
+    }
+  }
+  return [
+    {
+      name: 'readList',
+      description:
+        'Read one page of a structured list: its rows AND its columns. Always read before writing — a write ' +
+        'addresses a value by column id and keys it by the `type` this reports, and there is no other way to ' +
+        'learn either. The columns include ones no row has filled in yet, and mark the ones the platform ' +
+        'computes as `readOnly`. Page with `cursor`.',
+      inputSchema: obj(
+        {
+          platform,
+          integrationId,
+          listId,
+          cursor: { type: 'string', description: 'Cursor from a previous page.' },
+          limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Rows per page.' }
+        },
+        ['listId']
+      )
+    },
+    {
+      name: 'addListItem',
+      description:
+        'Append a row to a list. Get `columns` from `readList` first; a column id this list does not have is ' +
+        'refused rather than guessed at. The row is visible to everyone with access to the list.',
+      inputSchema: obj({ platform, integrationId, listId, fields }, ['listId', 'fields'])
+    },
+    {
+      name: 'updateListItem',
+      description:
+        'Change fields on an existing row. `itemId` comes from `readList`, and so do the column ids — only the ' +
+        'columns you name are touched, the rest of the row is left alone.',
+      inputSchema: obj(
+        {
+          platform,
+          integrationId,
+          listId,
+          itemId: { type: 'string', minLength: 1, description: 'Row id from `readList`.' },
+          fields
+        },
+        ['listId', 'itemId', 'fields']
+      )
     }
   ]
 }
