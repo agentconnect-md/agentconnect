@@ -36,6 +36,12 @@ export const SLACK_BOT_SCOPES = [
   'groups:history',
   'groups:read',
   'im:history',
+  // `conversations.info` needs one of channels/groups/im/mpim `:read` PER CONVERSATION TYPE,
+  // and this one was the gap: the other three were declared and the DM arm was not. It is not
+  // cosmetic — `sendMessage` into a DM asks `getChannelInfo` whether the target is one, and a
+  // refused lookup falls back to "not a DM", which keys the outbound session as a channel
+  // thread while the inbound messages key it as a DM, so the conversation forks.
+  'im:read',
   'im:write',
   'mpim:history',
   'mpim:read',
