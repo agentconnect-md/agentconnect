@@ -222,7 +222,7 @@ conventions, the monorepo layout, and the deeper design documentation.
 Thanks to everyone who has already contributed:
 
 <a href="https://github.com/agentconnect-md/agentconnect/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=agentconnect-md/agentconnect" height="40" alt="AgentConnect contributors" />
+  <img src="https://stg.contrib.rocks/image?repo=agentconnect-md/agentconnect" height="40" alt="AgentConnect contributors" />
 </a>
 
 ## Architecture
