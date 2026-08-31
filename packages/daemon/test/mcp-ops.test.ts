@@ -1199,6 +1199,84 @@ describe('executeTool: reactions', () => {
   })
 })
 
+describe('executeTool: bookmarks', () => {
+  it('defaults to the session conversation and returns what is pinned', async () => {
+    const list = vi.fn(async () => [{ id: 'Bk1', title: 'Runbook', link: 'https://x.test/rb' }])
+    const { deps: d } = deps(fakeGateway({ listBookmarks: list }))
+
+    const res = (await executeTool(ctx, 'listBookmarks', {}, d)) as Record<string, unknown>
+    expect(list).toHaveBeenCalledWith('C_CURRENT')
+    expect(res).toMatchObject({ channel: 'C_CURRENT', bookmarks: [{ id: 'Bk1', title: 'Runbook' }] })
+  })
+
+  it('pins a link in a channel the model named', async () => {
+    const add = vi.fn(async () => ({ id: 'Bk2', title: 'Dash', link: 'https://x.test/d' }))
+    const { deps: d } = deps(fakeGateway({ addBookmark: add }))
+
+    await executeTool(ctx, 'addBookmark', { channel: 'C_OTHER', title: 'Dash', link: 'https://x.test/d' }, d)
+    expect(add).toHaveBeenCalledWith('C_OTHER', { title: 'Dash', link: 'https://x.test/d' })
+  })
+
+  it('removes by the id a read returned', async () => {
+    const remove = vi.fn(async () => undefined)
+    const { deps: d } = deps(fakeGateway({ removeBookmark: remove }))
+
+    const res = (await executeTool(ctx, 'removeBookmark', { bookmarkId: 'Bk1' }, d)) as Record<string, unknown>
+    expect(remove).toHaveBeenCalledWith('C_CURRENT', 'Bk1')
+    expect(res).toMatchObject({ removed: 'Bk1' })
+  })
+
+  it('refuses on a platform that does not pin links', async () => {
+    const { deps: d } = deps(fakeGateway())
+    await expect(executeTool(ctx, 'addBookmark', { title: 't', link: 'l' }, d)).rejects.toThrow(
+      /bookmarks is unavailable/
+    )
+  })
+})
+
+describe('executeTool: lists', () => {
+  // A write is addressed by column id and keyed by column type, and Slack publishes no schema
+  // endpoint — so the read has to carry the columns or the write tools are unusable.
+  it('returns rows together with the columns a write needs', async () => {
+    const page = {
+      columns: [{ id: 'Col1', type: 'rich_text' }],
+      items: [{ id: 'Rec1', fields: { Col1: 'ship it' } }],
+      nextCursor: 'p2'
+    }
+    const read = vi.fn(async () => page)
+    const { deps: d } = deps(fakeGateway({ readList: read }))
+
+    const res = (await executeTool(ctx, 'readList', { listId: 'F1', limit: 50 }, d)) as Record<string, unknown>
+    expect(read).toHaveBeenCalledWith('F1', { limit: 50 })
+    expect(res).toMatchObject({ listId: 'F1', columns: page.columns, items: page.items, nextCursor: 'p2' })
+  })
+
+  it('appends a row from column ids the read handed back', async () => {
+    const add = vi.fn(async () => ({ id: 'Rec2', fields: {} }))
+    const { deps: d } = deps(fakeGateway({ addListItem: add }))
+    const fields = [{ columnId: 'Col1', type: 'rich_text', value: ['x'] }]
+
+    await executeTool(ctx, 'addListItem', { listId: 'F1', fields }, d)
+    expect(add).toHaveBeenCalledWith('F1', fields)
+  })
+
+  it('refuses a write that names no column', async () => {
+    const { deps: d } = deps(fakeGateway({ addListItem: vi.fn() }))
+    await expect(executeTool(ctx, 'addListItem', { listId: 'F1', fields: [] }, d)).rejects.toThrow(
+      /at least one column/
+    )
+  })
+
+  it('updates only the named fields of a row', async () => {
+    const update = vi.fn(async () => undefined)
+    const { deps: d } = deps(fakeGateway({ updateListItem: update }))
+    const fields = [{ columnId: 'Col1', type: 'checkbox', value: true }]
+
+    await executeTool(ctx, 'updateListItem', { listId: 'F1', itemId: 'Rec1', fields }, d)
+    expect(update).toHaveBeenCalledWith('F1', 'Rec1', fields)
+  })
+})
+
 describe('executeTool: createConversation', () => {
   it('creates a channel and opens a direct conversation from the same tool', async () => {
     const createConversation = vi.fn(async (spec: { name?: string }) => ({ id: spec.name ? 'C_NEW' : 'D_NEW' }))

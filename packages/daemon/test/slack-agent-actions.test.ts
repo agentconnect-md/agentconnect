@@ -243,3 +243,86 @@ describe('SlackConnection canvases', () => {
     })
   })
 })
+
+describe('SlackConnection bookmarks', () => {
+  it('creates a link bookmark and reads the pinned set back', async () => {
+    const add = vi.fn(async () => ({ bookmark: { id: 'Bk1', title: 'Runbook', link: 'https://x.test/rb' } }))
+    const list = vi.fn(async () => ({ bookmarks: [{ id: 'Bk1', title: 'Runbook', link: 'https://x.test/rb' }] }))
+    const conn = connWith({ bookmarks: { add, list, remove: async () => ({}) } })
+
+    const made = await conn.addBookmark('C1', { title: 'Runbook', link: 'https://x.test/rb' })
+    // `type: 'link'` is the only kind an agent can create — the others need an entity id.
+    expect(add).toHaveBeenCalledWith({
+      channel_id: 'C1',
+      title: 'Runbook',
+      type: 'link',
+      link: 'https://x.test/rb'
+    })
+    expect(made).toEqual({ id: 'Bk1', title: 'Runbook', link: 'https://x.test/rb' })
+    expect(await conn.listBookmarks('C1')).toEqual([made])
+  })
+
+  it('surfaces Slack’s own code when a pin is refused', async () => {
+    const conn = connWith({
+      bookmarks: {
+        list: async () => ({}),
+        remove: async () => ({}),
+        add: async () => {
+          throw slackError('missing_scope')
+        }
+      }
+    })
+    await expect(conn.addBookmark('C1', { title: 't', link: 'l' })).rejects.toThrow(
+      'Slack adding a bookmark failed: missing_scope'
+    )
+  })
+})
+
+describe('SlackConnection lists', () => {
+  // Slack has no schema endpoint for a list, so the columns are derived from the rows — and
+  // the value key IS the column type, which is how a write must address it too.
+  it('derives the columns and their types from the rows it read', async () => {
+    const list = vi.fn(async () => ({
+      items: [
+        {
+          id: 'Rec1',
+          fields: [
+            { column_id: 'Col1', rich_text: [{ type: 'text', text: 'ship it' }] },
+            { column_id: 'Col2', checkbox: true }
+          ]
+        }
+      ],
+      response_metadata: { next_cursor: 'p2' }
+    }))
+    const conn = connWith({ slackLists: { items: { list, create: async () => ({}), update: async () => ({}) } } })
+
+    const page = await conn.readList('F1', { limit: 10 })
+    expect(page.columns).toEqual([
+      { id: 'Col1', type: 'rich_text' },
+      { id: 'Col2', type: 'checkbox' }
+    ])
+    expect(page.items).toEqual([{ id: 'Rec1', fields: { Col1: [{ type: 'text', text: 'ship it' }], Col2: true } }])
+    expect(page.nextCursor).toBe('p2')
+  })
+
+  it('writes a value keyed by its column type', async () => {
+    const create = vi.fn(async () => ({ item: { id: 'Rec2' } }))
+    const update = vi.fn(async () => ({}))
+    const conn = connWith({
+      slackLists: { items: { create, update, list: async () => ({ items: [] }) } }
+    })
+
+    await conn.addListItem('F1', [{ columnId: 'Col2', type: 'checkbox', value: true }])
+    expect(create).toHaveBeenCalledWith({
+      list_id: 'F1',
+      initial_fields: [{ column_id: 'Col2', checkbox: true }]
+    })
+
+    await conn.updateListItem('F1', 'Rec1', [{ columnId: 'Col1', type: 'date', value: ['2026-08-31'] }])
+    expect(update).toHaveBeenCalledWith({
+      list_id: 'F1',
+      id: 'Rec1',
+      cells: [{ column_id: 'Col1', date: ['2026-08-31'] }]
+    })
+  })
+})

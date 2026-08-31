@@ -38,6 +38,11 @@ import type {
   PlatformConnection,
   PlatformConversationSpec,
   PlatformReactionIntent,
+  PlatformBookmark,
+  PlatformListColumn,
+  PlatformListFieldWrite,
+  PlatformListItem,
+  PlatformListPage,
   PlatformReactionSummary,
   PlatformScheduledMessage
 } from '../platforms/contract.js'
@@ -504,6 +509,21 @@ export type AppLike = {
       create: (a: unknown) => Promise<{ canvas_id?: string }>
       edit: (a: unknown) => Promise<unknown>
       sections: { lookup: (a: unknown) => Promise<{ sections?: { id?: string }[] }> }
+    }
+    bookmarks: {
+      list: (a: unknown) => Promise<{ bookmarks?: { id?: string; title?: string; link?: string; emoji?: string }[] }>
+      add: (a: unknown) => Promise<{ bookmark?: { id?: string; title?: string; link?: string; emoji?: string } }>
+      remove: (a: unknown) => Promise<unknown>
+    }
+    slackLists: {
+      items: {
+        list: (a: unknown) => Promise<{
+          items?: { id?: string; fields?: { column_id?: string; [k: string]: unknown }[] }[]
+          response_metadata?: { next_cursor?: string }
+        }>
+        create: (a: unknown) => Promise<{ item?: { id?: string } }>
+        update: (a: unknown) => Promise<unknown>
+      }
     }
     agents: {
       sessions: {
@@ -2216,6 +2236,116 @@ export class SlackConnection implements PlatformConnection {
   // Unlike the chrome above, every one of these is something the AGENT asked for, so each
   // reports Slack's own refusal instead of degrading quietly: `missing_scope` on a workspace
   // that installed before the capability scopes existed is the message the agent must see.
+
+  // ── bookmarks ───────────────────────────────────────────────────────────────────
+  async listBookmarks(channel: string): Promise<PlatformBookmark[]> {
+    try {
+      const res = await this.app.client.bookmarks.list({ channel_id: channel })
+      return (res.bookmarks ?? []).map((b) => ({
+        id: b.id ?? '',
+        title: b.title ?? '',
+        ...(b.link ? { link: b.link } : {}),
+        ...(b.emoji ? { emoji: b.emoji } : {})
+      }))
+    } catch (err) {
+      throw this.toolFailure(err, 'listing bookmarks')
+    }
+  }
+
+  async addBookmark(channel: string, spec: { title: string; link: string; emoji?: string }): Promise<PlatformBookmark> {
+    try {
+      // `type: 'link'` is the only kind an agent can meaningfully create; the others name
+      // existing Slack entities and would need an id the model has no way to hold.
+      const res = await this.app.client.bookmarks.add({
+        channel_id: channel,
+        title: spec.title,
+        type: 'link',
+        link: spec.link,
+        ...(spec.emoji ? { emoji: spec.emoji } : {})
+      })
+      const b = res.bookmark ?? {}
+      return {
+        id: b.id ?? '',
+        title: b.title ?? spec.title,
+        ...((b.link ?? spec.link) ? { link: b.link ?? spec.link } : {}),
+        ...(b.emoji ? { emoji: b.emoji } : {})
+      }
+    } catch (err) {
+      throw this.toolFailure(err, 'adding a bookmark')
+    }
+  }
+
+  async removeBookmark(channel: string, bookmarkId: string): Promise<void> {
+    try {
+      await this.app.client.bookmarks.remove({ channel_id: channel, bookmark_id: bookmarkId })
+    } catch (err) {
+      throw this.toolFailure(err, 'removing a bookmark')
+    }
+  }
+
+  // ── lists ───────────────────────────────────────────────────────────────────────
+  /**
+   * One page of a list, WITH its columns.
+   *
+   * Slack publishes no schema read for a list, and a write needs `column_id` plus a value
+   * keyed by that column's TYPE. Both are only observable on rows that already exist, so the
+   * columns are derived from the page and returned alongside it — same shape as the canvas
+   * section ids, and for the same reason: the write is unusable without the read.
+   */
+  async readList(listId: string, options: { cursor?: string; limit?: number } = {}): Promise<PlatformListPage> {
+    try {
+      const res = await this.app.client.slackLists.items.list({
+        list_id: listId,
+        ...(options.cursor ? { cursor: options.cursor } : {}),
+        ...(options.limit !== undefined ? { limit: options.limit } : {})
+      })
+      const rows = res.items ?? []
+      const columns = new Map<string, PlatformListColumn>()
+      const items: PlatformListItem[] = rows.map((row) => {
+        const fields: Record<string, unknown> = {}
+        for (const f of row.fields ?? []) {
+          const id = f.column_id
+          if (!id) continue
+          // The value key IS the column type — that is how a write must address it too.
+          const [type, value] = Object.entries(f).find(([k]) => k !== 'column_id') ?? []
+          if (type && !columns.has(id)) columns.set(id, { id, type })
+          fields[id] = value
+        }
+        return { id: row.id ?? '', fields }
+      })
+      return {
+        columns: [...columns.values()],
+        items,
+        ...(res.response_metadata?.next_cursor?.trim() ? { nextCursor: res.response_metadata.next_cursor.trim() } : {})
+      }
+    } catch (err) {
+      throw this.toolFailure(err, 'reading a list')
+    }
+  }
+
+  async addListItem(listId: string, fields: PlatformListFieldWrite[]): Promise<PlatformListItem> {
+    try {
+      const res = await this.app.client.slackLists.items.create({
+        list_id: listId,
+        initial_fields: fields.map((f) => ({ column_id: f.columnId, [f.type]: f.value }))
+      })
+      return { id: res.item?.id ?? '', fields: Object.fromEntries(fields.map((f) => [f.columnId, f.value])) }
+    } catch (err) {
+      throw this.toolFailure(err, 'adding a list item')
+    }
+  }
+
+  async updateListItem(listId: string, itemId: string, fields: PlatformListFieldWrite[]): Promise<void> {
+    try {
+      await this.app.client.slackLists.items.update({
+        list_id: listId,
+        id: itemId,
+        cells: fields.map((f) => ({ column_id: f.columnId, [f.type]: f.value }))
+      })
+    } catch (err) {
+      throw this.toolFailure(err, 'updating a list item')
+    }
+  }
 
   /** Slack's error code for one agent-visible failure, sanitized before it reaches a model. */
   private toolFailure(err: unknown, what: string): Error {

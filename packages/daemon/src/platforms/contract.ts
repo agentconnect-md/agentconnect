@@ -166,6 +166,44 @@ export interface PlatformScheduledMessage {
   postAt: number
 }
 
+/** One pinned link in a conversation. */
+export interface PlatformBookmark {
+  id: string
+  title: string
+  link?: string
+  emoji?: string
+}
+
+/** A column of a structured list, and the shape a value for it must take. `type` is the
+ *  provider's own vocabulary (`rich_text`, `user`, `date`, `select`, `number`, `checkbox`,
+ *  `phone`), because a written value is keyed BY it and translating would lose the mapping. */
+export interface PlatformListColumn {
+  id: string
+  name?: string
+  type: string
+}
+
+/** One row. `fields` maps a column id to whatever the provider stored there. */
+export interface PlatformListItem {
+  id: string
+  fields: Record<string, unknown>
+}
+
+/** A page of a list, WITH its columns — an agent cannot write a row without the column ids,
+ *  and the provider offers no schema read, so the read carries them. */
+export interface PlatformListPage {
+  columns: PlatformListColumn[]
+  items: PlatformListItem[]
+  nextCursor?: string
+}
+
+/** A value to write into one column, in the provider's type-keyed shape. */
+export interface PlatformListFieldWrite {
+  columnId: string
+  type: string
+  value: unknown
+}
+
 /** A platform-hosted rich-text document page (Slack Canvas). `markdown` is present only on
  *  a read that could actually retrieve the body; `sections` are the addressable anchors an
  *  edit targets. */
@@ -264,6 +302,18 @@ export interface PlatformConnection {
   getReactions?(channel: string, messageTs: string): Promise<PlatformReactionSummary[]>
   /** Create a channel, or open the direct conversation with a set of users. */
   createConversation?(spec: PlatformConversationSpec): Promise<PlatformChannelInfo>
+  /** The links pinned in a conversation. */
+  listBookmarks?(channel: string): Promise<PlatformBookmark[]>
+  /** Pin a link in a conversation. */
+  addBookmark?(channel: string, spec: { title: string; link: string; emoji?: string }): Promise<PlatformBookmark>
+  /** Unpin one, by the id a read returned. */
+  removeBookmark?(channel: string, bookmarkId: string): Promise<void>
+  /** One page of a structured list, with the columns needed to write to it. */
+  readList?(listId: string, options?: { cursor?: string; limit?: number }): Promise<PlatformListPage>
+  /** Append a row. */
+  addListItem?(listId: string, fields: PlatformListFieldWrite[]): Promise<PlatformListItem>
+  /** Change fields on an existing row. */
+  updateListItem?(listId: string, itemId: string, fields: PlatformListFieldWrite[]): Promise<void>
   /** Hand the platform a message to deliver at `postAt` (epoch seconds). The daemon is not
    *  involved in the eventual delivery, so nothing anchors a session to it. */
   scheduleMessage?(channel: string, text: string, postAt: number, thread?: string): Promise<PlatformScheduledMessage>

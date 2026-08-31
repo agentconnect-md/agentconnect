@@ -75,6 +75,10 @@ export function fakeSlackAppFactory(identity: FakeSlackIdentity = {}): SlackAppF
           edit: ok,
           sections: { lookup: async () => ({ sections: [] }) }
         },
+        bookmarks: { list: async () => ({ bookmarks: [] }), add: async () => ({ bookmark: {} }), remove: ok },
+        slackLists: {
+          items: { list: async () => ({ items: [] }), create: async () => ({ item: {} }), update: ok }
+        },
         agents: { sessions: { setStatus: ok, rename: ok } }
       },
       start: async () => {},
