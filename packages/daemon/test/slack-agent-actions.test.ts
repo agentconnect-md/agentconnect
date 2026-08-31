@@ -288,10 +288,14 @@ describe('SlackConnection lists', () => {
     const list = vi.fn(async () => ({
       list: {
         columns: [
-          { id: 'Col1', key: 'rich_text_notes', name: 'Notes', type: 'rich_text' },
+          // The PRIMARY column: Slack's schema calls it `text`, and a write must use
+          // `rich_text` — the one key `text` would have been rejected for.
+          { id: 'Col1', key: 'rich_text_notes', name: 'Notes', type: 'text' },
           { id: 'Col2', key: 'done', name: 'Done', type: 'checkbox' },
           // A column no row has filled in: only `include_list` can see it.
-          { id: 'Col3', key: 'estimate', name: 'Estimate', type: 'number' }
+          { id: 'Col3', key: 'estimate', name: 'Estimate', type: 'number' },
+          // Slack computes this one; no request may set it.
+          { id: 'Col4', key: 'created', name: 'Created', type: 'created_time' }
         ]
       },
       items: [
@@ -319,7 +323,8 @@ describe('SlackConnection lists', () => {
     expect(page.columns).toEqual([
       { id: 'Col1', type: 'rich_text', name: 'Notes' },
       { id: 'Col2', type: 'checkbox', name: 'Done' },
-      { id: 'Col3', type: 'number', name: 'Estimate' }
+      { id: 'Col3', type: 'number', name: 'Estimate' },
+      { id: 'Col4', type: 'created_time', name: 'Created', readOnly: true }
     ])
     expect(page.items).toEqual([{ id: 'Rec1', fields: { Col1: [{ type: 'rich_text', block_id: 'b1' }], Col2: true } }])
     expect(page.nextCursor).toBe('p2')
@@ -345,5 +350,21 @@ describe('SlackConnection lists', () => {
       list_id: 'F1',
       cells: [{ row_id: 'Rec1', column_id: 'Col1', date: ['2026-08-31'] }]
     })
+  })
+})
+
+describe('SlackConnection lists: schema types are normalized to write keys', () => {
+  // Slack: "you may see the `text` property appear in a response as a fallback, but it is not
+  // accepted in the request payload". A response-only `text` must still report `rich_text`,
+  // or the agent copies the read straight into a write that is refused.
+  it('reports rich_text for a column whose value arrived as a text fallback', async () => {
+    const list = vi.fn(async () => ({
+      items: [{ id: 'Rec1', fields: [{ key: 'title', value: 'ship it', text: 'ship it', column_id: 'Col1' }] }]
+    }))
+    const conn = connWith({ slackLists: { items: { list, create: async () => ({}), update: async () => ({}) } } })
+
+    const page = await conn.readList('F1')
+    expect(page.columns).toEqual([{ id: 'Col1', type: 'rich_text' }])
+    expect(page.items[0]!.fields.Col1).toBe('ship it')
   })
 })

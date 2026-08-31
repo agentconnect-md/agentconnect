@@ -623,10 +623,12 @@ function buildListTools(platform: SchemaProp | undefined, integrationId: SchemaP
     type: 'array',
     minItems: 1,
     description:
-      'Values to write. Each entry is `{ columnId, type, value }` taken from `readList`: `columnId` and `type` ' +
-      'must come from its `columns`, and `value` matches the type — text is a rich-text block array, `user` an ' +
+      'Values to write. Each entry is `{ columnId, type, value }` taken straight from `readList`: use its ' +
+      '`columns` verbatim — the `type` it reports is already the key a write must use, which is not always the ' +
+      'name the column displays (a text column is written as `rich_text`). Skip any column marked `readOnly`; ' +
+      'the platform computes those. `value` matches the type — `rich_text` a rich-text block array, `user` an ' +
       'array of user ids, `date` an array like ["2026-08-31"], `select` an array of option ids, `number` an ' +
-      'array of numbers, `checkbox` a boolean.',
+      'array of numbers, `checkbox` a boolean, `message` an array of message permalinks.',
     items: {
       type: 'object',
       properties: {
@@ -643,8 +645,9 @@ function buildListTools(platform: SchemaProp | undefined, integrationId: SchemaP
       name: 'readList',
       description:
         'Read one page of a structured list: its rows AND its columns. Always read before writing — a write ' +
-        'addresses a value by column id and keys it by that column’s type, and there is no other way to learn ' +
-        'either. Page with `cursor`.',
+        'addresses a value by column id and keys it by the `type` this reports, and there is no other way to ' +
+        'learn either. The columns include ones no row has filled in yet, and mark the ones the platform ' +
+        'computes as `readOnly`. Page with `cursor`.',
       inputSchema: obj(
         {
           platform,

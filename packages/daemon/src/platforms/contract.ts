@@ -180,7 +180,12 @@ export interface PlatformBookmark {
 export interface PlatformListColumn {
   id: string
   name?: string
+  /** The key a WRITE must use for this column — not necessarily the provider's schema type.
+   *  Slack's primary column reads as `text` and is written as `rich_text`, so the two are
+   *  normalized here rather than at each call site. */
   type: string
+  /** Set when the provider computes this column and no request may set it. */
+  readOnly?: boolean
 }
 
 /** One row. `fields` maps a column id to whatever the provider stored there. */

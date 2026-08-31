@@ -47,11 +47,50 @@ import type {
   PlatformScheduledMessage
 } from '../platforms/contract.js'
 
-/** The typed value keys a List field may carry (`slackLists.items.list`). A field also holds
- *  `key`, `value` and often `text`, so the type has to be recognized, never guessed positionally. */
+/**
+ * A List column's schema `type` is NOT always the key a write uses, so everything crosses this
+ * table before an agent sees it.
+ *
+ * The case that matters most is the one every list has: the primary column is always a text
+ * column, and Slack is explicit that "you may see the `text` property appear in a response as a
+ * fallback, but it is not accepted in the request payload" — a write to it must be `rich_text`.
+ * Reporting the schema type verbatim therefore handed the agent the one key the write endpoints
+ * reject, on the column it would reach for first.
+ *
+ * `null` marks a column Slack computes and no request may set. Those are reported read-only
+ * rather than given a key that would be refused.
+ */
+const LIST_WRITE_KEY_BY_TYPE: Record<string, string | null> = {
+  text: 'rich_text',
+  rich_text: 'rich_text',
+  message: 'message',
+  number: 'number',
+  select: 'select',
+  date: 'date',
+  user: 'user',
+  attachment: 'attachment',
+  checkbox: 'checkbox',
+  email: 'email',
+  phone: 'phone',
+  channel: 'channel',
+  rating: 'rating',
+  reference: 'reference',
+  link: 'link',
+  timestamp: 'timestamp',
+  created_by: null,
+  last_edited_by: null,
+  created_time: null,
+  last_edited_time: null,
+  vote: null,
+  canvas: null
+}
+
+/** The keys a RESPONSE field may carry its value under. `text` is here to be read and is
+ *  deliberately absent from the write side above's value set — it is a fallback, never a key. */
 const LIST_FIELD_TYPES = [
   'rich_text',
   'text',
+  'message',
   'number',
   'select',
   'date',
@@ -2327,7 +2366,14 @@ export class SlackConnection implements PlatformConnection {
       const columns = new Map<string, PlatformListColumn>()
       for (const c of res.list?.columns ?? []) {
         const id = c.id ?? c.key
-        if (id && c.type) columns.set(id, { id, type: c.type, ...(c.name ? { name: c.name } : {}) })
+        if (!id || !c.type) continue
+        const write = LIST_WRITE_KEY_BY_TYPE[c.type]
+        columns.set(id, {
+          id,
+          type: write ?? c.type,
+          ...(c.name ? { name: c.name } : {}),
+          ...(write === null ? { readOnly: true } : {})
+        })
       }
       const items: PlatformListItem[] = rows.map((row) => {
         const fields: Record<string, unknown> = {}
@@ -2337,9 +2383,12 @@ export class SlackConnection implements PlatformConnection {
           // A field carries `key`, `value` and often `text` ALONGSIDE the typed property, so the
           // type is the one key that is a known type name. Taking the first non-`column_id`
           // property returns `key` and reports a type the write endpoints reject.
-          const type = LIST_FIELD_TYPES.find((t) => f[t] !== undefined)
+          const seen = LIST_FIELD_TYPES.find((t) => f[t] !== undefined)
+          // Through the same table: a `text` value read off a response still means the column
+          // is written as `rich_text`.
+          const type = seen ? (LIST_WRITE_KEY_BY_TYPE[seen] ?? seen) : undefined
           if (type && !columns.has(id)) columns.set(id, { id, type })
-          fields[id] = type ? f[type] : f.value
+          fields[id] = seen ? f[seen] : f.value
         }
         return { id: row.id ?? '', fields }
       })
