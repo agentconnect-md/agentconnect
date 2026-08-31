@@ -114,6 +114,7 @@ describe('buildInstallManifest', () => {
       'groups:history',
       'groups:read',
       'im:history',
+      'im:read',
       'im:write',
       'mpim:history',
       'mpim:read',
