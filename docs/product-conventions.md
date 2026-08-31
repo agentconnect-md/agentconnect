@@ -80,13 +80,14 @@ that safe move is unavailable and name the daemon the operator needs to bring on
 The target picker must not lead to a request that can only fail without explaining this
 first.
 
-A force reassign is disaster recovery, not another ordinary move mode. Offer it
-only after the operator chooses an online, compatible target while the current daemon
-is offline. It bypasses only confirmation from the source; target readiness, capacity,
-runtime, model, MCP, and managed-skill compatibility remain mandatory. Before enabling
-the destructive action, require the operator to confirm that the source machine is
-permanently stopped and cannot reconnect, and warn that two copies may process messages
-if that assertion is wrong.
+A force reassign is disaster recovery, not another ordinary move mode. It becomes the
+move's behavior only when the operator chooses an online, compatible target while the
+current daemon is offline — there is no separate control to arm it. It bypasses only
+confirmation from the source; target readiness, capacity, runtime, model, MCP, and
+managed-skill compatibility remain mandatory. Before the operator commits, the editor
+must say the move will force reassign, warn that two copies may process messages if the
+source machine is in fact still running, and label the commit action as a force
+reassign rather than a plain move.
 
 Both paths preserve the Agent identity and its centrally managed settings. Neither
 copies daemon-local workspace, memory, transcripts, or attachments. A source that later
