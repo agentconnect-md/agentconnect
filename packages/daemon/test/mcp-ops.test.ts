@@ -1226,6 +1226,34 @@ describe('executeTool: bookmarks', () => {
     expect(res).toMatchObject({ removed: 'Bk1' })
   })
 
+  // `ctx.channel` belongs to the SESSION's platform. Defaulting to it for a cross-platform call
+  // hands Slack a Telegram id, which fails as `channel_not_found` well away from the cause.
+  it('requires an explicit channel when the target is not this conversation', async () => {
+    const add = vi.fn(async () => ({ id: 'Bk1', title: 't' }))
+    const { deps: d } = deps(fakeGateway({ addBookmark: add }))
+    // A Telegram session whose agent also has Slack: the resolved target is a different
+    // integration, so `ctx.channel` is a Telegram id that Slack would reject.
+    const elsewhere: SessionContext = {
+      ...ctx,
+      platform: 'telegram',
+      integrationId: 'int-tg',
+      channel: '-100123',
+      integrations: [
+        { id: 'int-tg', platform: 'telegram' },
+        { id: 'int-1', platform: 'slack' }
+      ]
+    }
+
+    await expect(
+      executeTool(elsewhere, 'addBookmark', { platform: 'slack', title: 't', link: 'https://x.test' }, d)
+    ).rejects.toThrow(/channel is required/)
+    expect(add).not.toHaveBeenCalled()
+
+    // Naming one is all it takes.
+    await executeTool(elsewhere, 'addBookmark', { platform: 'slack', channel: 'C_SLACK', title: 't', link: 'l' }, d)
+    expect(add).toHaveBeenCalledWith('C_SLACK', { title: 't', link: 'l' })
+  })
+
   it('refuses on a platform that does not pin links', async () => {
     const { deps: d } = deps(fakeGateway())
     await expect(executeTool(ctx, 'addBookmark', { title: 't', link: 'l' }, d)).rejects.toThrow(

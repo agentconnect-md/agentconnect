@@ -47,6 +47,26 @@ import type {
   PlatformScheduledMessage
 } from '../platforms/contract.js'
 
+/** The typed value keys a List field may carry (`slackLists.items.list`). A field also holds
+ *  `key`, `value` and often `text`, so the type has to be recognized, never guessed positionally. */
+const LIST_FIELD_TYPES = [
+  'rich_text',
+  'text',
+  'number',
+  'select',
+  'date',
+  'user',
+  'channel',
+  'attachment',
+  'checkbox',
+  'email',
+  'phone',
+  'rating',
+  'timestamp',
+  'link',
+  'reference'
+] as const
+
 /** Core names the intent; Slack's alphabet is emoji shortcodes. */
 const SLACK_REACTION_NAMES: Record<PlatformReactionIntent, string> = { seen: 'eyes' }
 
@@ -519,6 +539,7 @@ export type AppLike = {
       items: {
         list: (a: unknown) => Promise<{
           items?: { id?: string; fields?: { column_id?: string; [k: string]: unknown }[] }[]
+          list?: { columns?: { id?: string; key?: string; name?: string; type?: string }[] }
           response_metadata?: { next_cursor?: string }
         }>
         create: (a: unknown) => Promise<{ item?: { id?: string } }>
@@ -2296,20 +2317,29 @@ export class SlackConnection implements PlatformConnection {
     try {
       const res = await this.app.client.slackLists.items.list({
         list_id: listId,
+        // `include_list` returns the parent's COLUMN SCHEMA — authoritative, and the only view
+        // that shows a column no row has filled in yet.
+        include_list: true,
         ...(options.cursor ? { cursor: options.cursor } : {}),
         ...(options.limit !== undefined ? { limit: options.limit } : {})
       })
       const rows = res.items ?? []
       const columns = new Map<string, PlatformListColumn>()
+      for (const c of res.list?.columns ?? []) {
+        const id = c.id ?? c.key
+        if (id && c.type) columns.set(id, { id, type: c.type, ...(c.name ? { name: c.name } : {}) })
+      }
       const items: PlatformListItem[] = rows.map((row) => {
         const fields: Record<string, unknown> = {}
         for (const f of row.fields ?? []) {
           const id = f.column_id
           if (!id) continue
-          // The value key IS the column type — that is how a write must address it too.
-          const [type, value] = Object.entries(f).find(([k]) => k !== 'column_id') ?? []
+          // A field carries `key`, `value` and often `text` ALONGSIDE the typed property, so the
+          // type is the one key that is a known type name. Taking the first non-`column_id`
+          // property returns `key` and reports a type the write endpoints reject.
+          const type = LIST_FIELD_TYPES.find((t) => f[t] !== undefined)
           if (type && !columns.has(id)) columns.set(id, { id, type })
-          fields[id] = value
+          fields[id] = type ? f[type] : f.value
         }
         return { id: row.id ?? '', fields }
       })
@@ -2338,9 +2368,10 @@ export class SlackConnection implements PlatformConnection {
   async updateListItem(listId: string, itemId: string, fields: PlatformListFieldWrite[]): Promise<void> {
     try {
       await this.app.client.slackLists.items.update({
+        // The row is named PER CELL: `slackLists.items.update` takes no top-level id, and a cell
+        // without `row_id` is refused with `row_id_not_provided`.
         list_id: listId,
-        id: itemId,
-        cells: fields.map((f) => ({ column_id: f.columnId, [f.type]: f.value }))
+        cells: fields.map((f) => ({ row_id: itemId, column_id: f.columnId, [f.type]: f.value }))
       })
     } catch (err) {
       throw this.toolFailure(err, 'updating a list item')

@@ -185,9 +185,18 @@ export async function getReactions(
   return { platform, channel, messageTs: parsed.messageTs, reactions: await gw.getReactions(channel, parsed.messageTs) }
 }
 
-/** The conversation a bookmark tool acts on: the model may name one, else the session's own. */
-function bookmarkChannel(ctx: SessionContext, named: string | undefined): string {
-  return named ?? ctx.channel
+/**
+ * The conversation a bookmark tool acts on.
+ *
+ * `ctx.channel` is a default ONLY for this session's own integration. A Telegram session whose
+ * agent also has Slack can call these with `platform: 'slack'`, and handing Slack a Telegram
+ * channel id just fails with `channel_not_found` — the shared selector contract already says a
+ * different platform must name its channel, and `sameConvo` is how the resolver reports it.
+ */
+function bookmarkChannel(ctx: SessionContext, named: string | undefined, sameConvo: boolean): string {
+  if (named) return named
+  if (!sameConvo) throw new Error('channel is required when the bookmark is on another platform or bot')
+  return ctx.channel
 }
 
 export async function listBookmarks(
@@ -197,9 +206,9 @@ export async function listBookmarks(
 ): Promise<unknown> {
   const parsed = parseArgs(LIST_BOOKMARKS_ARGS, args)
   const platform = parsed.platform ?? ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.listBookmarks) throw unsupported(platform, 'bookmarks')
-  const channel = bookmarkChannel(ctx, parsed.channel)
+  const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
   return { platform, channel, bookmarks: await gw.listBookmarks(channel) }
 }
 
@@ -210,9 +219,9 @@ export async function addBookmark(
 ): Promise<unknown> {
   const parsed = parseArgs(ADD_BOOKMARK_ARGS, args)
   const platform = parsed.platform ?? ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.addBookmark) throw unsupported(platform, 'bookmarks')
-  const channel = bookmarkChannel(ctx, parsed.channel)
+  const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
   const bookmark = await gw.addBookmark(channel, {
     title: parsed.title,
     link: parsed.link,
@@ -228,9 +237,9 @@ export async function removeBookmark(
 ): Promise<unknown> {
   const parsed = parseArgs(REMOVE_BOOKMARK_ARGS, args)
   const platform = parsed.platform ?? ctx.platform
-  const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
+  const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.removeBookmark) throw unsupported(platform, 'bookmarks')
-  const channel = bookmarkChannel(ctx, parsed.channel)
+  const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
   await gw.removeBookmark(channel, parsed.bookmarkId)
   return { platform, channel, removed: parsed.bookmarkId }
 }

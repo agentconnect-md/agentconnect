@@ -559,7 +559,9 @@ function buildBookmarkTools(platform: SchemaProp | undefined, integrationId: Sch
   if (!platform) return []
   const channel = {
     type: 'string',
-    description: 'Channel id. Defaults to the conversation you are in.'
+    description:
+      'Channel id. Defaults to the conversation you are in — but REQUIRED when `platform` or ' +
+      '`integrationId` names anything else, since this conversation’s id means nothing there.'
   }
   return [
     {

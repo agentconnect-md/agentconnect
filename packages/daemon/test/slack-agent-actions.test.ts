@@ -281,14 +281,31 @@ describe('SlackConnection bookmarks', () => {
 describe('SlackConnection lists', () => {
   // Slack has no schema endpoint for a list, so the columns are derived from the rows — and
   // the value key IS the column type, which is how a write must address it too.
-  it('derives the columns and their types from the rows it read', async () => {
+  // Slack's real field carries `key`, `value` and often `text` BESIDE the typed property, and
+  // its own examples put `key` first — so reading "the first property that is not column_id"
+  // yields `key` and a type the write endpoints reject. This fixture is the documented shape.
+  it('reads the typed field past the metadata Slack puts in front of it', async () => {
     const list = vi.fn(async () => ({
+      list: {
+        columns: [
+          { id: 'Col1', key: 'rich_text_notes', name: 'Notes', type: 'rich_text' },
+          { id: 'Col2', key: 'done', name: 'Done', type: 'checkbox' },
+          // A column no row has filled in: only `include_list` can see it.
+          { id: 'Col3', key: 'estimate', name: 'Estimate', type: 'number' }
+        ]
+      },
       items: [
         {
           id: 'Rec1',
           fields: [
-            { column_id: 'Col1', rich_text: [{ type: 'text', text: 'ship it' }] },
-            { column_id: 'Col2', checkbox: true }
+            {
+              key: 'rich_text_notes',
+              value: '[{"type":"rich_text"}]',
+              text: 'ship it',
+              rich_text: [{ type: 'rich_text', block_id: 'b1' }],
+              column_id: 'Col1'
+            },
+            { key: 'done', value: true, checkbox: true, column_id: 'Col2' }
           ]
         }
       ],
@@ -297,11 +314,14 @@ describe('SlackConnection lists', () => {
     const conn = connWith({ slackLists: { items: { list, create: async () => ({}), update: async () => ({}) } } })
 
     const page = await conn.readList('F1', { limit: 10 })
+    expect(list).toHaveBeenCalledWith({ list_id: 'F1', include_list: true, limit: 10 })
+    // The schema wins, including the column with no rows — a write needs it as much as the rest.
     expect(page.columns).toEqual([
-      { id: 'Col1', type: 'rich_text' },
-      { id: 'Col2', type: 'checkbox' }
+      { id: 'Col1', type: 'rich_text', name: 'Notes' },
+      { id: 'Col2', type: 'checkbox', name: 'Done' },
+      { id: 'Col3', type: 'number', name: 'Estimate' }
     ])
-    expect(page.items).toEqual([{ id: 'Rec1', fields: { Col1: [{ type: 'text', text: 'ship it' }], Col2: true } }])
+    expect(page.items).toEqual([{ id: 'Rec1', fields: { Col1: [{ type: 'rich_text', block_id: 'b1' }], Col2: true } }])
     expect(page.nextCursor).toBe('p2')
   })
 
@@ -318,11 +338,12 @@ describe('SlackConnection lists', () => {
       initial_fields: [{ column_id: 'Col2', checkbox: true }]
     })
 
+    // The row is named per cell — there is no top-level id, and a cell without `row_id` is
+    // refused with `row_id_not_provided`, so every update would have failed.
     await conn.updateListItem('F1', 'Rec1', [{ columnId: 'Col1', type: 'date', value: ['2026-08-31'] }])
     expect(update).toHaveBeenCalledWith({
       list_id: 'F1',
-      id: 'Rec1',
-      cells: [{ column_id: 'Col1', date: ['2026-08-31'] }]
+      cells: [{ row_id: 'Rec1', column_id: 'Col1', date: ['2026-08-31'] }]
     })
   })
 })
