@@ -262,6 +262,12 @@ export const RdMsgIm = z.object({
   integrationId: z.string().uuid(),
   chatId: z.string().optional(), // platform channel id (observability)
   payload: WireNormalizedMessage,
+  // Slack's ephemeral proof that a USER ACTION triggered a search — the only way a bot token
+  // may call the Data Access API. It rides OUTSIDE `payload` for the reason the `trusted*`
+  // block does, and one more: the target persists `payload` to its durable inbox and replays
+  // it after a restart, and a credential must never be written there. The target parks it in
+  // memory, scoped to the message it arrived with, and forwards it to nobody.
+  searchActionToken: z.string().min(1).optional(),
   // The author the relay VERIFIED after checking the provider event, the sending app's
   // AgentConnect ownership in this org+conversation, and that the claimed author is one
   // of the agents that identity represents. Absent ⇒ not an agent-authored message, or

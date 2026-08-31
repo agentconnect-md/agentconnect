@@ -329,10 +329,23 @@ function isRoutableEvent(event: SlackMessageEvent): boolean {
   )
 }
 
+/**
+ * Per-message values the relay must forward but must NOT normalize onto the message.
+ *
+ * `searchActionToken` is Slack's ephemeral proof that a user action triggered a search — the
+ * only way a bot token may call the Data Access API. It is a credential, and the normalized
+ * message is what the owning daemon persists to its durable inbox and replays after a
+ * restart, so it travels beside the payload rather than inside it (the same reason §8.2 keeps
+ * the relay's `trusted*` assertions out of `payload`).
+ */
+export interface SlackIngestSidecar {
+  searchActionToken?: string
+}
+
 export interface SlackHttpIngestDeps {
   /** Hand a normalized message to the router/forwarder; resolves once the delivery
    *  outcome is known (delivered or dropped). NEVER throws — runs after the HTTP 200. */
-  onMessage: (msg: WireNormalizedMessage) => Promise<void>
+  onMessage: (msg: WireNormalizedMessage, sidecar?: SlackIngestSidecar) => Promise<void>
   /** Report the resolved bot user id (from auth.test) for arbitration. */
   onBotUserId: (botUserId: string) => void
   /** Report the bot's complete Slack channel-membership snapshot after an event
@@ -518,7 +531,8 @@ export class SlackHttpIngest {
       if (ownMessage || !isRoutableEvent(event)) return
       if (event.type !== 'message' && event.type !== 'app_mention') return
       const msg = normalizeSlackMessage(event)
-      if (msg) await this.deps.onMessage(msg)
+      if (msg)
+        await this.deps.onMessage(msg, event.action_token ? { searchActionToken: event.action_token } : undefined)
     } catch (err) {
       this.deps.log.warn(`slack-http-ingest(${this.botId}): event handler error: ${(err as Error).message}`)
     }

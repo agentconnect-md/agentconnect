@@ -453,7 +453,7 @@ told `missing_scope` rather than handed a silent success.
 The optional facets an AGENT can reach are declared per platform in
 `platforms/read-ports.ts`, the same pre-connection registry that decides which attachment tool
 to inject: `channelHistory`, `threadHistory`, `reactions`, `conversationCreate`,
-`scheduledMessages`, `canvas`, `bookmarks`, `lists`. A declaration gates tool INJECTION
+`publicMessageSearch`, `scheduledMessages`, `canvas`, `bookmarks`, `lists`. A declaration gates tool INJECTION
 (before any connection exists) for a session ON that platform — the tools carry no `platform`
 selector and never appear in the same agent's sessions elsewhere; the live
 `typeof conn.x === 'function'` probe still decides whether this connection can serve the call.

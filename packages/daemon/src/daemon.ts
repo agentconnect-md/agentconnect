@@ -2556,6 +2556,10 @@ export class Daemon {
       // shareFile (agent-authored-attachments.md): the trusted target, the fenced read, the
       // synchronous budget, and the provenance row. All coordinates come from the active
       // turn — the model supplies only a workspace-relative path and a caption.
+      searchOrigin: (ctx): string | undefined =>
+        this.activeTurnSearchOrigin.get(
+          sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        ),
       shareTarget: (ctx): ShareTargetResult => {
         const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
         const t = this.activeTurnShare.get(key)
@@ -6431,6 +6435,10 @@ export class Daemon {
     // Mirror the lookup here so session metadata/history can label the sender.
     const conn = this.connByIntegration.get(msg.integrationId)
     if (conn) this.nameResolver?.noteMessage(conn, normalized)
+    // The relay saw the provider event, so it forwarded the ephemeral search credential
+    // beside the payload. Hand it to the adapter and keep no copy — it is never persisted,
+    // logged, or reported onward, and `normalized` (which IS persisted) never carries it.
+    if (msg.searchActionToken) conn?.rememberInboundSearchToken?.(normalized.msgId, msg.searchActionToken)
     // Restore the trusted activation cause the relay path loses: the wire schema
     // carries `trigger`, and direct ingress stamps 'mention' from its own router
     // (onInbound → routeRules), but relay arbitration never populates it. Recompute
@@ -10657,6 +10665,11 @@ export class Daemon {
     // anchor Telegram places by. Installed per turn because headless-ness and the reply
     // target are TURN facts, not session facts.
     const shareReplyTo = this.telegramReplyTarget(entry.msg)
+    // The search authorization for this turn: the inbound message's OWN id, and nothing more.
+    // The credential it stands for stays in the platform adapter, because `entry.msg` is
+    // persisted to the durable inbox and replayed after a restart.
+    if (entry.msg.source === 'user') this.activeTurnSearchOrigin.set(key, entry.msg.msgId)
+    else this.activeTurnSearchOrigin.delete(key)
     this.activeTurnShare.set(key, {
       platform: plan.platform,
       ...(plan.integrationId !== undefined ? { integrationId: plan.integrationId } : {}),
@@ -11676,6 +11689,7 @@ export class Daemon {
     // the map is keyed by sessionKey and the gate guarantees one active turn per key.
     if (callMeta) this.activeTurnCallMeta.delete(key)
     this.activeTurnShare.delete(key)
+    this.activeTurnSearchOrigin.delete(key)
     this.shareBudgetByTurn.delete(key)
     this.activeTurnCodeHost.delete(key)
     const activeGithub = activeTurn.github
@@ -12783,6 +12797,11 @@ export class Daemon {
       synthetic: boolean
     }
   >()
+
+  /** The inbound message id this turn is answering, by logical sessionKey — what `searchPublicMessages`
+   *  is authorized by. Only a real user message installs one: a cron or agent-to-agent wake has
+   *  no triggering message, so its turn cannot search, and the tool says which. */
+  private activeTurnSearchOrigin = new Map<string, string>()
 
   /** Bytes `shareFile` has uploaded this turn, by the same key — the synchronous per-turn
    *  reservation of agent-authored-attachments.md §5. */

@@ -41,6 +41,7 @@ import type {
   HandledDelivery,
   RelayBotIngress,
   RelayIngressHost,
+  RelayIngressSidecar,
   RelayPlatformIngressPlugin
 } from './platforms/contract.js'
 import { SlackEventDedup } from './slack-event-dedup.js'
@@ -169,7 +170,7 @@ export class RelayIngressManager {
   private ingressHostMemo?: RelayIngressHost
   private buildIngressHost(): RelayIngressHost {
     return {
-      forward: (botId, message) => this.forward(botId, message),
+      forward: (botId, message, sidecar) => this.forward(botId, message, sidecar),
       forwardAction: async (msg, route) => {
         // An interaction is as pre-addressed as an `rd/msg` and its recorded member is
         // as likely to have handed the duty on, so it takes the SAME rendezvous path:
@@ -733,7 +734,8 @@ export class RelayIngressManager {
    */
   private async forwardVerifiedAgentMessage(
     botId: string,
-    msg: import('@agentconnect.md/protocol').WireNormalizedMessage
+    msg: import('@agentconnect.md/protocol').WireNormalizedMessage,
+    sidecar?: RelayIngressSidecar
   ): Promise<void> {
     const claim = msg.agentAuthorship
     const drop = (why: string): void => {
@@ -839,6 +841,9 @@ export class RelayIngressManager {
         integrationId: route.integrationId,
         chatId: msg.channel,
         payload: msg,
+        // Beside the payload, never inside it: the target persists `payload` to its durable
+        // inbox, and this is a credential (see RelayIngressSidecar).
+        ...(sidecar?.searchActionToken ? { searchActionToken: sidecar.searchActionToken } : {}),
         // §8.2: the relay's MINTED assertions, outside `payload` so the target can always
         // tell them apart from the provider fields it must not trust.
         trustedFromAgentId: claim.authorAgentId,
@@ -869,13 +874,17 @@ export class RelayIngressManager {
   /** Arbitrate + forward one message to its daemon (never throws — bounded loss).
    *  Reports a first-route/changed affinity to the CP, and on a genuine un-mentioned
    *  thread follow-up with no local affinity, pulls the persisted owner from the CP. */
-  private async forward(botId: string, msg: import('@agentconnect.md/protocol').WireNormalizedMessage): Promise<void> {
+  private async forward(
+    botId: string,
+    msg: import('@agentconnect.md/protocol').WireNormalizedMessage,
+    sidecar?: RelayIngressSidecar
+  ): Promise<void> {
     // send-message-routing-rework.md §2.3/§6: agent-authored traffic takes its OWN
     // ladder and never continues into the human one. Handled BEFORE arbitration for the
     // same reason the blanket filter used to be: an agent's platform copy must not mutate
     // thread affinity or produce a CP assignment report on its way through.
     if (this.isAgentBotMessage(botId, msg)) {
-      await this.forwardVerifiedAgentMessage(botId, msg)
+      await this.forwardVerifiedAgentMessage(botId, msg, sidecar)
       return
     }
     const sessionKey = sessionKeyOf(msg)
@@ -1017,6 +1026,7 @@ export class RelayIngressManager {
         integrationId: participant.integrationId,
         chatId: msg.channel,
         payload: msg,
+        ...(sidecar?.searchActionToken ? { searchActionToken: sidecar.searchActionToken } : {}),
         trustedRouteVia: via
       }
       try {

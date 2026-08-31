@@ -110,12 +110,24 @@ export interface RelayBotIngress {
  * PRE-ADDRESSED (the plugin resolved its bot; arbitration resolves the agent),
  * and every report rides core's pending queues + fencing.
  */
+/**
+ * Per-message values a plugin forwards BESIDE the normalized payload, never inside it.
+ *
+ * The one member today is Slack's ephemeral search credential. It travels outside `payload`
+ * for the reason §8.2 keeps the relay's `trusted*` assertions outside it, plus a stronger
+ * one: the owning daemon persists the payload to its durable inbox and replays it after a
+ * restart, and a credential must not be written there.
+ */
+export interface RelayIngressSidecar {
+  searchActionToken?: string
+}
+
 export interface RelayIngressHost {
   /** Forward one NORMALIZED inbound message. Core owns arbitration: it resolves
    *  the owning agent/daemon and constructs the pre-addressed `rd/msg` — the
    *  plugin supplies conversation content, never target identity. The promise
    *  is the delivery attempt's completion (drop counting rides it). */
-  forward(botId: string, message: WireNormalizedMessage): Promise<void>
+  forward(botId: string, message: WireNormalizedMessage, sidecar?: RelayIngressSidecar): Promise<void>
   /** Forward one platform interaction as a §6.6 platform_action and return the
    *  daemon's ack — the sync-response race (see the module doc) awaits this.
    *  `msgId` is the DEDUP IDENTITY, and the plugin mints it (it derives from

@@ -209,6 +209,34 @@ export interface PlatformListFieldWrite {
   value: unknown
 }
 
+/** Bounded workspace search (`searchPublicMessages`). `channel` narrows to one conversation. */
+export interface PlatformSearchOptions {
+  limit?: number
+  cursor?: string
+  channel?: string
+  includeBots?: boolean
+  /** Epoch-second bounds, as the provider takes them. */
+  before?: number
+  after?: number
+}
+
+/** One search hit, already flattened out of the provider's own result envelope. */
+export interface PlatformSearchHit {
+  channel: string
+  channelName?: string
+  messageTs: string
+  text: string
+  author?: string
+  authorId?: string
+  isBot?: boolean
+  permalink?: string
+}
+
+export interface PlatformSearchResults {
+  messages: PlatformSearchHit[]
+  nextCursor?: string
+}
+
 /** A platform-hosted rich-text document page (Slack Canvas). `markdown` is present only on
  *  a read that could actually retrieve the body; `sections` are the addressable anchors an
  *  edit targets. */
@@ -319,6 +347,18 @@ export interface PlatformConnection {
   addListItem?(listId: string, fields: PlatformListFieldWrite[]): Promise<PlatformListItem>
   /** Change fields on an existing row. */
   updateListItem?(listId: string, itemId: string, fields: PlatformListFieldWrite[]): Promise<void>
+  /** Park the ephemeral search credential that arrived with one inbound message, for the
+   *  HTTP arm where the RELAY saw the event and this connection did not. Core hands over the
+   *  message id and the opaque token and keeps neither: the credential lives only in the
+   *  adapter, because the normalized message is persisted and replayed. */
+  rememberInboundSearchToken?(msgId: string, token: string): void
+  /** Search the workspace. `originMsgId` names the inbound message the turn is answering,
+   *  which some platforms require as the proof that a user action triggered the search. */
+  searchPublicMessages?(
+    query: string,
+    options: PlatformSearchOptions,
+    originMsgId: string | undefined
+  ): Promise<PlatformSearchResults>
   /** Hand the platform a message to deliver at `postAt` (epoch seconds). The daemon is not
    *  involved in the eventual delivery, so nothing anchors a session to it. */
   scheduleMessage?(channel: string, text: string, postAt: number, thread?: string): Promise<PlatformScheduledMessage>

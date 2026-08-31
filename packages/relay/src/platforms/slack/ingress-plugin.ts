@@ -255,7 +255,7 @@ export const slackIngressPlugin: RelayPlatformIngressPlugin<SlackHttpIngest, Sla
       botId,
       { botToken: a.secrets.botToken, signingSecret: a.secrets.signingSecret },
       {
-        onMessage: (msg) => host.forward(botId, msg),
+        onMessage: (msg, sidecar) => host.forward(botId, msg, sidecar),
         onBotUserId: (uid) => host.reportBotUserId(botId, uid),
         onChannelsChanged: (channels) => host.reportChannels({ botId, channels }),
         agents: () => host.directory.agents(botId),

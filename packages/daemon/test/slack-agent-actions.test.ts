@@ -416,3 +416,97 @@ describe('List schema vocabulary', () => {
     }
   })
 })
+
+describe('SlackConnection.searchPublicMessages', () => {
+  // The whole point of the design: the credential is lifted at ingress and lives only here,
+  // so core hands over a message ID and never touches the token.
+  it('authorizes the call with the credential parked for that message', async () => {
+    const context = vi.fn(async () => ({
+      results: {
+        messages: [
+          {
+            channel_id: 'C1',
+            channel_name: 'general',
+            message_ts: '100.1',
+            content: 'we shipped it',
+            author_name: 'alice',
+            author_user_id: 'U1',
+            is_author_bot: false,
+            permalink: 'https://x/p1'
+          }
+        ]
+      },
+      response_metadata: { next_cursor: 'page-2' }
+    }))
+    const conn = connWith({ assistant: { search: { context } } })
+    conn.rememberInboundSearchToken('slack:C1:99.9', 'xoxa-action')
+
+    const res = await conn.searchPublicMessages('what shipped', { channel: 'C1', limit: 5 }, 'slack:C1:99.9')
+
+    expect(context).toHaveBeenCalledWith({
+      query: 'what shipped',
+      action_token: 'xoxa-action',
+      limit: 5,
+      context_channel_id: 'C1',
+      // Public is all a bot token reaches; `context_channel_id` rides as a relevance hint,
+      // measured NOT to filter.
+      channel_types: ['public_channel']
+    })
+    expect(res).toEqual({
+      messages: [
+        {
+          channel: 'C1',
+          channelName: 'general',
+          messageTs: '100.1',
+          text: 'we shipped it',
+          author: 'alice',
+          authorId: 'U1',
+          isBot: false,
+          permalink: 'https://x/p1'
+        }
+      ],
+      nextCursor: 'page-2'
+    })
+  })
+
+  // Measured against a real workspace: with the private/DM scopes granted and the bot a member
+  // of the private channel, NO combination of `channel_types` returned private content. So the
+  // adapter asks for the only surface that answers, and the manifest stopped requesting the
+  // three scopes that bought nothing.
+  it('asks for public channels only, whatever conversation it was called from', async () => {
+    for (const channel of ['D1', 'G1', 'C2', 'C3']) {
+      const context = vi.fn(async () => ({ results: { messages: [] } }))
+      const conn = connWith({ assistant: { search: { context } } })
+      conn.rememberInboundSearchToken('m-1', 'xoxa-action')
+      await conn.searchPublicMessages('q', { channel }, 'm-1')
+      expect(context).toHaveBeenCalledWith(expect.objectContaining({ channel_types: ['public_channel'] }))
+    }
+  })
+
+  // Slack issues the credential only for a message that addresses the app, so these turns
+  // structurally cannot search. The refusal has to say that, not read as an outage.
+  it('refuses, naming the cause, when the turn has no originating message', async () => {
+    const context = vi.fn()
+    const conn = connWith({ assistant: { search: { context } } })
+
+    await expect(conn.searchPublicMessages('q', {}, undefined)).rejects.toThrow(/this turn has none/)
+    await expect(conn.searchPublicMessages('q', {}, 'slack:C1:never-seen')).rejects.toThrow(/this turn has none/)
+    expect(context).not.toHaveBeenCalled()
+  })
+
+  it('surfaces Slack’s own code on a refusal', async () => {
+    const conn = connWith({
+      assistant: {
+        search: {
+          context: async () => {
+            throw slackError('missing_scope')
+          }
+        }
+      }
+    })
+    conn.rememberInboundSearchToken('m-1', 'xoxa-action')
+    await expect(conn.searchPublicMessages('q', {}, 'm-1')).rejects.toThrow(
+      'Slack searching messages failed: missing_scope'
+    )
+  })
+})
