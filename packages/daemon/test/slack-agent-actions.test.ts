@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { SlackConnection } from '../src/slack/connection.js'
+import { LIST_SCHEMA_TYPES, LIST_WRITE_KEY_BY_TYPE, SlackConnection } from '../src/slack/connection.js'
 
 /**
  * The Slack half of the agent-callable ACTIONS (`mcp/ops/platform-actions.ts`): reactions,
@@ -366,5 +366,53 @@ describe('SlackConnection lists: schema types are normalized to write keys', () 
     const page = await conn.readList('F1')
     expect(page.columns).toEqual([{ id: 'Col1', type: 'rich_text' }])
     expect(page.items[0]!.fields.Col1).toBe('ship it')
+  })
+})
+
+describe('List schema vocabulary', () => {
+  // Four rounds of review found the same shape of bug: a schema type nobody had enumerated,
+  // passed through as if it were a write key. Enumeration is the fix — this asserts the table
+  // answers for EVERY documented type, so the next one Slack adds fails here instead of in a
+  // refused write.
+  it('maps every documented schema type to a write key or to read-only', () => {
+    const unmapped = LIST_SCHEMA_TYPES.filter((t) => !(t in LIST_WRITE_KEY_BY_TYPE))
+    expect(unmapped).toEqual([])
+  })
+
+  // The write keys are the item endpoints' vocabulary, not the schema's — nothing may map to
+  // a name a request would be refused for, and `text` is the one Slack calls out by name.
+  it('never maps a column to a key the write endpoints reject', () => {
+    const WRITABLE = [
+      'rich_text',
+      'message',
+      'number',
+      'select',
+      'date',
+      'user',
+      'attachment',
+      'checkbox',
+      'email',
+      'phone',
+      'channel',
+      'rating',
+      'timestamp',
+      'link',
+      'reference'
+    ]
+    const bad = Object.entries(LIST_WRITE_KEY_BY_TYPE).filter(([, key]) => key !== null && !WRITABLE.includes(key))
+    expect(bad).toEqual([])
+  })
+
+  it('writes a task list’s three columns as the fields they are made of', () => {
+    for (const [schema, write] of [
+      ['assignee', 'user'],
+      ['todo_assignee', 'user'],
+      ['due_date', 'date'],
+      ['todo_due_date', 'date'],
+      ['completed', 'checkbox'],
+      ['todo_completed', 'checkbox']
+    ]) {
+      expect(LIST_WRITE_KEY_BY_TYPE[schema!]).toBe(write)
+    }
   })
 })

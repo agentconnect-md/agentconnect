@@ -60,7 +60,7 @@ import type {
  * `null` marks a column Slack computes and no request may set. Those are reported read-only
  * rather than given a key that would be refused.
  */
-const LIST_WRITE_KEY_BY_TYPE: Record<string, string | null> = {
+export const LIST_WRITE_KEY_BY_TYPE: Record<string, string | null> = {
   text: 'rich_text',
   rich_text: 'rich_text',
   message: 'message',
@@ -77,6 +77,15 @@ const LIST_WRITE_KEY_BY_TYPE: Record<string, string | null> = {
   reference: 'reference',
   link: 'link',
   timestamp: 'timestamp',
+  // Task columns, which every todo-mode list has. Slack names them semantically in the schema
+  // and writes them as the ordinary field they are made of, so a task list — the common case —
+  // is exactly where reporting the schema name would fail.
+  assignee: 'user',
+  todo_assignee: 'user',
+  due_date: 'date',
+  todo_due_date: 'date',
+  completed: 'checkbox',
+  todo_completed: 'checkbox',
   created_by: null,
   last_edited_by: null,
   created_time: null,
@@ -84,6 +93,38 @@ const LIST_WRITE_KEY_BY_TYPE: Record<string, string | null> = {
   vote: null,
   canvas: null
 }
+
+/** Every column `type` Slack's List schema documents. Exported so a test can assert the table
+ *  above answers for ALL of them — the gap that kept reaching review was always a type nobody
+ *  had enumerated, not a mapping anyone got wrong. */
+export const LIST_SCHEMA_TYPES = [
+  'text',
+  'message',
+  'number',
+  'select',
+  'date',
+  'user',
+  'attachment',
+  'checkbox',
+  'email',
+  'phone',
+  'channel',
+  'rating',
+  'created_by',
+  'last_edited_by',
+  'created_time',
+  'last_edited_time',
+  'vote',
+  'canvas',
+  'reference',
+  'link',
+  'assignee',
+  'due_date',
+  'completed',
+  'todo_assignee',
+  'todo_due_date',
+  'todo_completed'
+] as const
 
 /** The keys a RESPONSE field may carry its value under. `text` is here to be read and is
  *  deliberately absent from the write side above's value set — it is a fallback, never a key. */
