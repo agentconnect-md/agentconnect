@@ -184,8 +184,6 @@ export default function EditAgentModal({
   const [sandboxSupported, setSandboxSupported] = useState(agent.sandboxSupported)
   const [sandboxRequired, setSandboxRequired] = useState(agent.sandboxRequired)
   const [repairPlacement, setRepairPlacement] = useState(false)
-  const [forceReassign, setForceReassign] = useState(false)
-  const [forceConfirmed, setForceConfirmed] = useState(false)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const fetched = useRef(false)
@@ -465,8 +463,8 @@ export default function EditAgentModal({
   ]
   const sourceUnavailable = !!sourceDaemon && !moveReady(sourceDaemon)
   const sourceOffline = sourceDaemon?.status === 'offline'
-  const forceEligible = daemonChanged && !initialPlacement && sourceOffline && moveReady(daemon)
-  const forceMove = forceReassign && forceEligible
+  // Offline source + ready destination ⇒ the move is a force reassign; the banner says so.
+  const forceMove = daemonChanged && !initialPlacement && sourceOffline && moveReady(daemon)
   const sourceBlocksSafeMove = daemonChanged && sourceUnavailable && !forceMove
 
   // Runtime options come from the SELECTED daemon's reported profiles (same source as
@@ -613,10 +611,6 @@ export default function EditAgentModal({
             ? `To move safely, bring ${sourceDaemon.name} online, then retry.`
             : `Upgrade ${sourceDaemon.name} before moving this agent.`
         )
-        return
-      }
-      if (forceMove && !forceConfirmed) {
-        setErr(`Confirm that ${sourceDaemon?.name ?? 'the source daemon'} is permanently stopped.`)
         return
       }
       // A set is a target, not a member: ready when any live member could serve it.
@@ -779,8 +773,6 @@ export default function EditAgentModal({
                           className="font-sans text-[11.5px] font-medium leading-normal text-(--accent) hover:underline"
                           onClick={() => {
                             setRepairPlacement((value) => !value)
-                            setForceReassign(false)
-                            setForceConfirmed(false)
                             setErr(null)
                           }}
                         >
@@ -801,8 +793,6 @@ export default function EditAgentModal({
                         }
                         setDaemonId(nextDaemonId)
                         setRepairPlacement(false)
-                        setForceReassign(false)
-                        setForceConfirmed(false)
                         setErr(null)
                       }}
                     />
@@ -855,7 +845,7 @@ export default function EditAgentModal({
                       )}
                     </div>
                   </div>
-                  {/* Wide prose plus its confirmations — it spans the row under the three pickers. */}
+                  {/* Wide prose — it spans the row under the three pickers. */}
                   {sourceDaemon && sourceUnavailable && (
                     <div className="desktop:col-span-3 flex items-start gap-[9px] rounded-md border border-(--amber-500) bg-(--status-paused-soft) px-3 py-[10px]">
                       <Icon name="triangle-alert" size={15} color="var(--amber-500)" className="mt-[1px] flex-none" />
@@ -864,7 +854,13 @@ export default function EditAgentModal({
                           Safe move unavailable
                         </div>
                         <div className="mt-[3px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
-                          {sourceOffline ? (
+                          {forceMove ? (
+                            <>
+                              <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span> is
+                              offline and cannot confirm the handover, so this move force reassigns. If it is still
+                              running, both copies may process messages — bring it online first to move safely.
+                            </>
+                          ) : sourceOffline ? (
                             <>
                               To move safely, bring{' '}
                               <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span> online,
@@ -879,42 +875,7 @@ export default function EditAgentModal({
                         </div>
                         {sourceOffline && !daemonChanged && (
                           <div className="mt-[5px] font-sans text-[11.5px] font-normal leading-[1.5] text-(--text-tertiary)">
-                            Select an online destination to see the force reassign option.
-                          </div>
-                        )}
-                        {forceEligible && (
-                          <div className="mt-[9px] flex flex-col gap-2">
-                            <Button
-                              variant={forceReassign ? 'ghost' : 'secondary'}
-                              size="xs"
-                              onClick={() => {
-                                setForceReassign((value) => !value)
-                                setForceConfirmed(false)
-                                setErr(null)
-                              }}
-                            >
-                              <Icon name={forceReassign ? 'x' : 'triangle-alert'} size={13} />
-                              {forceReassign ? 'Cancel force reassign' : 'Force reassign'}
-                            </Button>
-                            {forceReassign && (
-                              <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-(--status-error) bg-(--status-error-soft) px-3 py-[10px]">
-                                <input
-                                  type="checkbox"
-                                  className="mt-[2px] flex-none accent-(--brand)"
-                                  checked={forceConfirmed}
-                                  onChange={(e) => {
-                                    setForceConfirmed(e.target.checked)
-                                    setErr(null)
-                                  }}
-                                />
-                                <span className="font-sans text-[12px] font-normal leading-[1.5] text-(--text-secondary)">
-                                  I confirm that{' '}
-                                  <span className="font-semibold text-(--text-primary)">{sourceDaemon.name}</span> is
-                                  permanently stopped and cannot reconnect. If it is still running, both copies may
-                                  process messages.
-                                </span>
-                              </label>
-                            )}
+                            Select an online destination to force reassign this agent there.
                           </div>
                         )}
                       </div>
@@ -1165,7 +1126,7 @@ export default function EditAgentModal({
         </Button>
         <Button
           variant={forceMove ? 'danger' : 'primary'}
-          disabled={saving || !loaded || sourceBlocksSafeMove || (forceMove && !forceConfirmed)}
+          disabled={saving || !loaded || sourceBlocksSafeMove}
           onClick={() => void save()}
         >
           <Icon name={forceMove ? 'triangle-alert' : 'check'} size={15} />
