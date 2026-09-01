@@ -8,8 +8,14 @@
  * Linear `POST /oauth/revoke` acts on the app↔workspace grant, not on one tenant's copy of it. An
  * org-keyed lock would let two organizations answer that question at the same time and both act.
  *
- * TWO HOLDERS, and they must derive the key identically or the fence does not exist:
+ * THREE HOLDERS, and they must derive the key identically or the fence does not exist:
  *
+ *  - the broker's refresh write ({@link LinearTokenStore.rotate}, §7.3), which is a compare-and-set
+ *    rather than an upsert precisely because it cannot hold this lock across its upstream call: the
+ *    refresh is on a daemon-driven path that fans out with the fleet, and pinning a pool connection
+ *    per refreshing workspace across a call to Linear would turn a slow provider into control-plane
+ *    connection starvation. It takes the lock only for the write, and the write is safe on its own
+ *    terms — an UPDATE cannot create a row;
  *  - the connect callback's §7.1 STEP 1 token upsert ({@link LinearTokenStore.put}), which is the
  *    first durable trace of an organization laying claim to an identity — and, because §7.1 fixes
  *    that write BEFORE the create tail, locking it also fences bot admission: no Bot can exist for

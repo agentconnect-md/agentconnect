@@ -798,10 +798,19 @@ export const LinearCredGrant = z.object({
 ```
 
 The CP handler follows the `gitcred` shape — core owns the frame family and
-the placement scope check (`agent.daemonId === conn.daemonId`); the
+the scope check, which is `gitcred`'s own service-scope predicate rather than
+a placement equality: a pool member serves agents its row does not name, so
+"may this connection act for that agent?" is placement OR a duty it holds; the
 provider's token service owns the work: single-flight refresh when the stored
 token is near expiry, durable persist of the rotated pair **before**
-replying, then a spec re-push so `agent.json` converges.
+replying, then a spec re-push so `agent.json` converges. That re-push is the
+SHARED integration converge, not a new mechanism: the token service reports
+whether the answer it returned is newer than the stored pair the caller read,
+and a rotated grant runs the same converge a visibility flip runs, whose
+http-bot arm re-syncs the workspace bot — so every member's spec is re-pushed,
+not only the requesting agent's. It is best-effort and follows the reply: a
+grant that already landed must not fail on a fan-out, and the reconcile roster
+carries the spec to any daemon the push missed.
 
 ### 7.4 Membership, disconnect, revocation
 

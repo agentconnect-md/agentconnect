@@ -26,6 +26,7 @@ import type {
   LinearOrphanTokenRow,
   LinearTokenMaterial,
   LinearTokenRecord,
+  LinearTokenRotation,
   LinearTokenStore
 } from '../ports.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
@@ -119,6 +120,54 @@ export class PgLinearTokenStore implements LinearTokenStore {
       },
       IDENTITY_WAIT_TX
     )
+  }
+
+  /**
+   * The refresh path's compare-and-set (§7.3), under the same lock and the same waiter budget as
+   * {@link PgLinearTokenStore.put} — it is one short write that may queue behind a sweep, not a
+   * holder that keeps others waiting.
+   *
+   * `updateMany`, deliberately NOT `upsert`: an UPDATE cannot create a row, so this is safe against
+   * a disconnect that completed while the rotation was in flight EVEN IF that remover never took
+   * the lock. The lock still matters — it makes the "what is there instead?" read below part of the
+   * same decision rather than a second, already-stale question — but the no-resurrection property
+   * does not depend on it.
+   *
+   * Cipher work stays outside the transaction on both sides (seal before, open after), for the
+   * reason {@link PgLinearTokenStore.put} spells out: the cipher may be a remote round trip.
+   */
+  async rotate(
+    identity: LinearConnectionIdentity,
+    expectedUpdatedAt: Date,
+    material: LinearTokenMaterial
+  ): Promise<LinearTokenRotation> {
+    const scope = orgScope(identity.orgId)
+    const tokens = {
+      accessToken: await this.cipher.seal(material.accessToken, scope),
+      refreshToken: material.refreshToken ? await this.cipher.seal(material.refreshToken, scope) : null,
+      expiresAt: material.expiresAt
+    }
+    const found = await withAmbientTx(
+      this.prisma,
+      async (tx) => {
+        await lockLinearIdentity(tx, identity.clientId, identity.organizationId)
+        const applied = await tx.linearToken.updateMany({
+          where: {
+            orgId: identity.orgId,
+            clientId: identity.clientId,
+            organizationId: identity.organizationId,
+            updatedAt: expectedUpdatedAt
+          },
+          data: tokens
+        })
+        if (applied.count > 0) return 'rotated' as const
+        return tx.linearToken.findUnique({ where: PgLinearTokenStore.key(identity) })
+      },
+      IDENTITY_WAIT_TX
+    )
+    if (found === 'rotated') return { outcome: 'rotated' }
+    if (!found) return { outcome: 'gone' }
+    return { outcome: 'superseded', current: await this.toRecord(identity, found) }
   }
 
   async delete(identity: LinearConnectionIdentity): Promise<void> {

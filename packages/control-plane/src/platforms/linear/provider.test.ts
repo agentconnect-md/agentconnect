@@ -35,6 +35,7 @@ import type {
   LinearIdentitySection,
   LinearTokenMaterial,
   LinearTokenRecord,
+  LinearTokenRotation,
   LinearTokenStore
 } from '../../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../domain/ids.js'
@@ -58,6 +59,21 @@ class MemoryTokens implements LinearTokenStore {
   put(identity: LinearConnectionIdentity, material: LinearTokenMaterial): Promise<void> {
     this.rows.set(MemoryTokens.key(identity), { ...identity, ...material, updatedAt: new Date() })
     return Promise.resolve()
+  }
+  /** The broker's CAS write. Never reached from this suite — no provider member refreshes — but it
+   *  is the store's contract, so the fake honors it rather than pretending. */
+  rotate(
+    identity: LinearConnectionIdentity,
+    expectedUpdatedAt: Date,
+    material: LinearTokenMaterial
+  ): Promise<LinearTokenRotation> {
+    const current = this.rows.get(MemoryTokens.key(identity))
+    if (!current) return Promise.resolve({ outcome: 'gone' })
+    if (current.updatedAt.getTime() !== expectedUpdatedAt.getTime()) {
+      return Promise.resolve({ outcome: 'superseded', current })
+    }
+    this.rows.set(MemoryTokens.key(identity), { ...identity, ...material, updatedAt: new Date() })
+    return Promise.resolve({ outcome: 'rotated' })
   }
   delete(identity: LinearConnectionIdentity): Promise<void> {
     this.rows.delete(MemoryTokens.key(identity))
