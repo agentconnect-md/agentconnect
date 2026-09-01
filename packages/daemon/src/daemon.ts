@@ -934,15 +934,15 @@ export class Daemon {
       registry.register({
         platform: 'linear',
         createConverger: (ctx) => createLinearConverger(ctx),
-        initialTurnState: () => initialLinearTurnState(),
-        // The connection IS the egress port (§4.6 single writer): it owns the send queue,
-        // the brokered token and the retry ladder, so the surface needs nothing from core.
-        apply: (p, action) =>
-          applyLinearAction(
-            { conn: this.lnConnByIntegration.get(p.entry.integrationId ?? ''), plan: p.plan },
-            turnState<LinearTurnState>(p),
-            action as LinearAction
-          )
+        // The connection IS the egress port (§4.6 single writer): it owns the send queue, the
+        // brokered token and the retry ladder. Captured HERE, at turn start, and held by the
+        // turn's lease — so reconciliation dropping the binding mid-turn cannot strand the
+        // settling activity that ends the Linear session.
+        initialTurnState: (ctx): LinearTurnState => {
+          const conn = ctx.integrationId ? this.lnConnByIntegration.get(ctx.integrationId) : undefined
+          return { ...initialLinearTurnState(), ...(conn ? { conn } : {}) }
+        },
+        apply: (p, action) => applyLinearAction({ plan: p.plan }, turnState<LinearTurnState>(p), action as LinearAction)
       })
       return registry
     })()
@@ -6482,32 +6482,54 @@ export class Daemon {
     // §7.4 ingress strategy: the platform's own module shapes the prompt, records its session
     // metadata, and may settle the delivery itself. Absent ⇒ the shared path, byte for byte.
     const ingress = this.relayIngressStrategies.get(normalized.platform)
-    if (ingress && (await ingress.prepare(msg, normalized)) === 'settled') {
-      return { msgId: msg.msgId, accepted: true }
-    }
+    const prepared = ingress ? await ingress.prepare(msg, normalized) : 'dispatch'
+    // `settled` ⇒ the platform answered it itself. `refused` ⇒ it could not record the
+    // delivery, so nothing ran and the provider must send it again.
+    if (prepared === 'settled') return { msgId: msg.msgId, accepted: true }
+    if (prepared === 'refused') return { msgId: msg.msgId, accepted: false, reason: 'durability' }
     // Read BEFORE the dispatch that would claim it: whether the session is already working is
     // what an admission hook reports, and the entry this delivery creates is not that work.
     const onAdmitted = ingress?.onAdmitted
     const busy = onAdmitted ? this.inflight.has(muteKey) : false
     // A platform contributing no admission hook keeps the shared call exactly as it was.
-    // §10.1: the hook runs on the FIRST admission only — `onAdmission` fires once the durable
-    // row is owned, so a replay or a concurrent same-`msgId` delivery reads back as `duplicate`
-    // and can never write a second row into an append-only feed. `requireDurable` is what makes
-    // that a guarantee rather than a hope: the hook's whole dedup argument is the durable row,
-    // so a swallowed write would let a redelivery double-post an append-only feed. Refusing the
-    // delivery instead is the correct trade — the provider's retry ladder covers it.
-    const dispatched = onAdmitted
-      ? this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, undefined, {
-          ...(ingress?.requireDurable ? { requireDurable: true } : {}),
-          onAdmission: (result) => {
-            if (result.accepted && !result.duplicate) onAdmitted(msg, normalized, busy)
-          }
-        })
-      : this.dispatch(msg.agentId, normalized, msg.integrationId)
-    void dispatched.catch((err) =>
-      this.log.error(`relay im dispatch failed for agent "${msg.agentId}": ${formatErr(err)}`)
-    )
-    return { msgId: msg.msgId, accepted: true }
+    if (!onAdmitted) {
+      void this.dispatch(msg.agentId, normalized, msg.integrationId).catch((err) =>
+        this.log.error(`relay im dispatch failed for agent "${msg.agentId}": ${formatErr(err)}`)
+      )
+      return { msgId: msg.msgId, accepted: true }
+    }
+    // §10.1: the hook runs on the FIRST admission only — a replay or a concurrent same-`msgId`
+    // delivery reads back as `duplicate` — and it runs INSIDE dispatch's own durable fence, so
+    // whatever permanent record it writes is admitted with the delivery or not at all. This ACK
+    // therefore waits for admission rather than outrunning it: a delivery whose record could
+    // not be written is refused here, and the provider's retry ladder is what recovers it.
+    let report!: (ack: RdAck) => void
+    const admitted = new Promise<RdAck>((resolve) => (report = resolve))
+    const dispatched = this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, undefined, {
+      ...(ingress?.requireDurable ? { requireDurable: true } : {}),
+      onAdmission: async (result) => {
+        if (result.accepted && !result.duplicate) await onAdmitted(msg, normalized, busy)
+        // A durability refusal is the ONE outcome the provider must send again: nothing was
+        // recorded, so nothing will replay it either. Every other non-acceptance is a
+        // deliberate local gate — paused, draining, loop protection — whose delivery is
+        // consumed exactly as it always was.
+        report(
+          result.accepted || result.reason !== 'durability'
+            ? { msgId: msg.msgId, accepted: true }
+            : { msgId: msg.msgId, accepted: false, reason: 'durability' }
+        )
+      }
+    })
+    // Admission that never settles positively — a durability refusal, or a hook that could not
+    // record the delivery — surfaces as the dispatch promise rejecting instead. A rejection
+    // AFTER a settled admission (an ordinary turn failure) finds this already resolved.
+    void dispatched
+      .then(() => report({ msgId: msg.msgId, accepted: true }))
+      .catch((err) => {
+        this.log.error(`relay im dispatch failed for agent "${msg.agentId}": ${formatErr(err)}`)
+        report({ msgId: msg.msgId, accepted: false, reason: 'durability' })
+      })
+    return await admitted
   }
 
   /**
@@ -6521,10 +6543,12 @@ export class Daemon {
   private readonly relayIngressStrategies = new Map<
     string,
     {
-      /** Shape the delivery. `settled` ⇒ the platform answered it and no ACP turn follows. */
-      prepare(msg: RdMsgIm, normalized: NormalizedMessage): Promise<'dispatch' | 'settled'>
-      /** Run once, after the durable inbox has admitted this delivery for the first time. */
-      onAdmitted?(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): void
+      /** Shape the delivery. `settled` ⇒ the platform answered it and no ACP turn follows;
+       *  `refused` ⇒ it could not be recorded, so the provider must deliver it again. */
+      prepare(msg: RdMsgIm, normalized: NormalizedMessage): Promise<'dispatch' | 'settled' | 'refused'>
+      /** Run once, INSIDE dispatch's durable admission fence, the first time this delivery is
+       *  admitted. Rejecting refuses the delivery — nothing runs that could not be recorded. */
+      onAdmitted?(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): Promise<void>
       /** Refuse the delivery when the durable row cannot be written, rather than running it
        *  best-effort — for a platform whose admission hook USES that row as its dedup. */
       requireDurable?: boolean
@@ -6534,7 +6558,7 @@ export class Daemon {
       'linear',
       {
         prepare: async (msg, normalized) => await this.prepareLinearDelivery(msg, normalized),
-        onAdmitted: (msg, normalized, busy) => this.postLinearAck(msg, normalized, busy),
+        onAdmitted: async (msg, normalized, busy) => await this.admitLinearDelivery(msg, normalized, busy),
         requireDurable: true
       }
     ]
@@ -6547,7 +6571,10 @@ export class Daemon {
    * text is still their instruction, and inventing a header from nothing would be worse than
    * shipping the turn without one.
    */
-  private async prepareLinearDelivery(msg: RdMsgIm, normalized: NormalizedMessage): Promise<'dispatch' | 'settled'> {
+  private async prepareLinearDelivery(
+    msg: RdMsgIm,
+    normalized: NormalizedMessage
+  ): Promise<'dispatch' | 'settled' | 'refused'> {
     const ext = readLinearExt(normalized)
     if (!ext) {
       this.log.warn(`linear: delivery ${msg.msgId} carries no adapter bag — dispatching the raw text`)
@@ -6566,9 +6593,16 @@ export class Daemon {
     // turn — and answer only AFTER the durable receipt is minted, exactly like the
     // acknowledgement (§10.1).
     if (isLinearIssuelessSurface(normalized, ext)) {
-      const minted = await this.mintLinearDeliveryReceipt(msg, normalized)
-      // Fail CLOSED on a store failure, and on a lost race: with no receipt of our own, a
-      // redelivery would stack a second answer onto an append-only feed.
+      let minted: boolean
+      try {
+        minted = await this.mintLinearDeliveryReceipt(msg, normalized)
+      } catch (err) {
+        // Nothing ran and nothing was recorded, so ask for the delivery again rather than
+        // answering an append-only feed with no way to recognize the redelivery.
+        this.log.warn(`linear: unsupported-surface receipt failed for ${msg.msgId}: ${formatErr(err)}`)
+        return 'refused'
+      }
+      // Lost the race: a sibling delivery owns the one answer this surface gets.
       if (!minted) return 'settled'
       const conn = this.lnConnByIntegration.get(msg.integrationId)
       await conn
@@ -6606,6 +6640,10 @@ export class Daemon {
    *
    * The row is born completed: nothing will ever run it, so startup replay skips it by
    * construction and it ages out under its own retention rule rather than living forever.
+   *
+   * THROWS when the store cannot record it. Every caller is inside a fence that refuses the
+   * delivery on that: work whose permanent dedup record does not exist must not run, or the
+   * provider's next redelivery runs it a second time.
    */
   private async mintLinearDeliveryReceipt(msg: RdMsgIm, normalized: NormalizedMessage): Promise<boolean> {
     const key = sessionKey(
@@ -6615,21 +6653,31 @@ export class Daemon {
       msg.agentId,
       normalized.transportScope
     )
-    try {
-      return await this.store.appendInbox({
-        id: linearDeliveryReceiptId(stableMessageId(normalized)),
-        sessionKey: key,
-        agentId: msg.agentId,
-        msg: JSON.stringify(normalized),
-        integrationId: msg.integrationId,
-        completedAt: this.clock.now(),
-        loopGuardCounted: 1,
-        enqueuedAt: monotonicTs()
-      })
-    } catch (err) {
-      this.log.warn(`linear: receipt write failed for ${msg.msgId}: ${formatErr(err)}`)
-      return false
-    }
+    return await this.store.appendInbox({
+      id: linearDeliveryReceiptId(stableMessageId(normalized)),
+      sessionKey: key,
+      agentId: msg.agentId,
+      msg: JSON.stringify(normalized),
+      integrationId: msg.integrationId,
+      completedAt: this.clock.now(),
+      loopGuardCounted: 1,
+      enqueuedAt: monotonicTs()
+    })
+  }
+
+  /**
+   * Admit one Linear delivery, INSIDE dispatch's durable fence (§10.1).
+   *
+   * The receipt is the delivery's permanent dedup record and is written here, with the
+   * ordinary admission, precisely so the two share one fate: a receipt the store refuses
+   * rejects out of this hook, which refuses the delivery, so no turn runs that a later
+   * redelivery would be unable to recognize and would therefore run again.
+   */
+  private async admitLinearDelivery(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): Promise<void> {
+    // Losing the CAS means a sibling delivery of the same event owns the acknowledgement;
+    // that is a collapse, not a failure, so the delivery stays admitted and silent.
+    if (!(await this.mintLinearDeliveryReceipt(msg, normalized))) return
+    this.postLinearAck(msg, normalized, busy)
   }
 
   /**
@@ -6637,9 +6685,9 @@ export class Daemon {
    * converger, and the reason a suppressed turn can still be ack-only. Fire-and-forget: it is
    * chrome, and the turn it precedes must never wait on a Linear write.
    *
-   * The receipt is minted BEFORE the post and gates it, so the strict order §10.1 asks for
-   * holds twice: the ordinary durable row is already owned when this runs, and the receipt is
-   * a second durable record written before the feed ever sees a row.
+   * Reached only once {@link admitLinearDelivery} has won the receipt CAS, so the strict order
+   * §10.1 asks for holds twice over: the ordinary durable row is owned AND the permanent
+   * receipt is written before the feed ever sees a row.
    */
   private postLinearAck(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): void {
     const conn = this.lnConnByIntegration.get(msg.integrationId)
@@ -6648,7 +6696,6 @@ export class Daemon {
     const agent = this.agents.get(msg.agentId)
     const agentName = agent?.displayName?.trim() || agent?.name || msg.agentId
     void (async () => {
-      if (!(await this.mintLinearDeliveryReceipt(msg, normalized))) return
       const key = sessionKey(
         normalized.platform,
         normalized.channel,
@@ -8473,6 +8520,16 @@ export class Daemon {
    * without an entry here a cold failure is silent and the provider-side session is left
    * looking busy forever.
    */
+  /**
+   * §7.5 per-platform TURN EGRESS transports: the connection a turn writes through when that
+   * is not `replyConn`. Core holds a lease on it for the turn's lifetime, so the connection
+   * reconciler drains it before stopping the client — the same protection every other
+   * platform gets for free by owning its reply connection.
+   */
+  private readonly platformTurnEgress = new Map<string, (integrationId?: string) => PlatformConnection | undefined>([
+    ['linear', (integrationId) => (integrationId ? this.lnConnByIntegration.get(integrationId) : undefined)]
+  ])
+
   private readonly platformFailureSinks = new Map<
     string,
     (ctx: { reason: string; integrationId?: string; thread?: string; channel: string }) => Promise<void>
@@ -9030,9 +9087,11 @@ export class Daemon {
       deliveryId?: string
       /** Startup replay deliberately adopts the row already read from SQLite. */
       adoptExistingInbox?: boolean
-      /** Synchronous admission barrier: called after the durable row is owned,
-       * or with a rejection before any turn can start. */
-      onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void
+      /** Admission barrier: called after the durable row is owned, or with a rejection before
+       * any turn can start. AWAITED, and a rejection REFUSES the delivery — the caller's own
+       * durable bookkeeping is part of the same fence `requireDurable` protects, so work it
+       * could not record is never run. */
+      onAdmission?: (result: { accepted: boolean; reason?: string; duplicate?: boolean }) => void | Promise<void>
       /** Hold an admitted entry before execution; false drops only that entry. */
       admissionWait?: Promise<boolean>
       /** Delay observed-inbound persistence until admissionWait succeeds. */
@@ -9111,7 +9170,7 @@ export class Daemon {
               await this.store.releaseActivation(activationKey)
             }
           }
-          opts?.onAdmission?.(result)
+          await opts?.onAdmission?.(result)
         }
         // Drain gate for the dispatch entry itself — covers cron fires and `!queue`
         // that bypass onInbound's gate (§5.3: a draining unit starts no turn). Applied
@@ -9410,6 +9469,10 @@ export class Daemon {
           }
           await settleAdmission({ accepted: true })
         } catch (error) {
+          // Never reaches runLoop, so the durable row must not survive to be replayed — the
+          // caller is being told this delivery was refused, and a row left behind would run it
+          // anyway at the next startup. Same discipline as the queued branch above.
+          if (!this.draining) await this.removeInbox(entry).catch(() => undefined)
           // An unexpected rejection also hands the gate to any follower that queued behind
           // this claim while the admission steps were awaiting — never strand the queue.
           await this.releaseDispatchClaim(key)
@@ -9683,9 +9746,7 @@ export class Daemon {
     })
   }
 
-  private holdReplyConnection(
-    conn: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined
-  ): () => void {
+  private holdReplyConnection(conn: PlatformConnection | undefined): () => void {
     if (!conn) return () => {}
     let resolveDone!: () => void
     const done = new Promise<void>((resolve) => (resolveDone = resolve))
@@ -9911,7 +9972,17 @@ export class Daemon {
     this.showActivity(replyConn, msg.channel, plan.statusThread, plan.startupActivityLabel, plan.statusOptions)
     this.acknowledgeTrigger(run)
     if (plan.clusterPodBootstrap) this.announceSandboxBootstrap(run, pendingWebchat)
-    const releaseReplyConn = this.holdReplyConnection(replyConn)
+    // Two holds, one release. A platform whose output does NOT go through `replyConn` still
+    // needs the reconciler to drain before it stops that transport (§7.5): without a lease the
+    // prune pass can stop the client mid-turn and the settling activity is simply lost.
+    const releaseReplyTransport = this.holdReplyConnection(replyConn)
+    const releaseEgressTransport = this.holdReplyConnection(
+      this.platformTurnEgress.get(msg.platform)?.(plan.integrationId)
+    )
+    const releaseReplyConn = (): void => {
+      releaseReplyTransport()
+      releaseEgressTransport()
+    }
     const opened = await this.openSession(run, releaseReplyConn)
     if (opened.kind === 'cancelled') return null
     const { handled, restoreDeliveryBinding } = opened

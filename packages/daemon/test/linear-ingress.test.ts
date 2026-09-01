@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { sessionKey } from '../src/store/local-store.js'
-import { initialLinearTurnState, type LinearActivityInput } from '../src/platforms/linear/turn-output.js'
+import type { LinearActivityInput } from '../src/platforms/linear/turn-output.js'
 import {
   linearFailureBody,
   LINEAR_STOP_RESPONSE_BODY,
@@ -119,15 +119,42 @@ async function boot(opts: BootOpts = {}) {
   }
   ;(daemon as any).lnConnByIntegration.set(INTEGRATION, conn)
   /** Rows for work still owed. A born-completed receipt is excluded — outliving the turn is
-   *  exactly its job, so counting it would never let a settlement barrier resolve. */
+   *  exactly its job, so counting it would never reach zero. */
   const pendingRows = async (): Promise<number> =>
     (await store.listInboxBySessionKeyFifo()).filter((row: { completedAt: number | null }) => row.completedAt === null)
       .length
-  /** Wait until this delivery's turn has been admitted AND has fully settled. The order is
-   *  load-bearing: polling for zero alone passes instantly, before the row is ever written. */
+  // `dispatch` resolves (or rejects) when THAT message's turn has fully ended, so holding the
+  // promise is a signal that cannot be missed — unlike sampling the durable row, which exists
+  // only between admission and teardown and can be inserted and removed between two polls.
+  const turns: Promise<unknown>[] = []
+  const realDispatch = (daemon as any).dispatch.bind(daemon)
+  ;(daemon as any).dispatch = (...args: unknown[]) => {
+    const settled = realDispatch(...args)
+    // Store a CAUGHT copy: the fake host's turn legitimately fails, and the barrier waits for
+    // the turn to be over, not to have succeeded.
+    turns.push(Promise.resolve(settled).catch(() => undefined))
+    return settled
+  }
+  /**
+   * Wait until everything this delivery can do has happened — no polling anywhere.
+   *
+   * Two halves, because the turn and the acknowledgement are separate lifetimes:
+   *
+   *  - the TURN: `runLoop` awaits `removeInbox(entry)` BEFORE settling the entry's own promise
+   *    on both the success and the failure path, so awaiting that promise is strictly stronger
+   *    than watching the row disappear — once it resolves the dispatch row is already gone.
+   *  - the ACKNOWLEDGEMENT: fire-and-forget, so no promise covers it. It is STARTED
+   *    synchronously inside `onAdmission`, hence before the turn promise settles, and it then
+   *    performs a bounded number of store operations before the feed write. This store
+   *    serializes every operation through one mutex, so round-trips issued here queue BEHIND
+   *    the ones the acknowledgement already enqueued — draining it instead of racing it.
+   */
   const turnSettled = async (): Promise<void> => {
-    await vi.waitFor(async () => expect(await pendingRows()).toBe(1), { timeout: 10_000 })
-    await vi.waitFor(async () => expect(await pendingRows()).toBe(0), { timeout: 10_000 })
+    await Promise.all(turns)
+    // The acknowledgement path is receipt CAS → output-mode read → postActivity's own read;
+    // one extra round-trip beyond those three leaves no room for it to land later.
+    for (let i = 0; i < 4; i += 1) await pendingRows()
+    expect(await pendingRows()).toBe(0)
   }
   return { daemon, posted, store, pendingRows, turnSettled }
 }
@@ -196,9 +223,10 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     // proves nothing: the dispatch row is still there to dedup against, so any ordering
     // works. Linear's ladder is 1 min / 1 h / 6 h, so the settled state is the real one.
     await turnSettled()
+    // Each redelivery is answered from the receipt inside `prepare`, which `im()` awaits in
+    // full — there is no fire-and-forget work left, so no settle window is needed here.
     await im(daemon, delivery())
     await im(daemon, delivery())
-    await new Promise((resolve) => setTimeout(resolve, 20))
     expect(acks(posted).length).toBe(1)
     await daemon.stop()
   })
@@ -213,27 +241,76 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     const dispatch = vi.fn(async () => null)
     ;(daemon as any).dispatch = dispatch
     expect(await im(daemon, delivery())).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
-    await new Promise((resolve) => setTimeout(resolve, 20))
     expect(dispatch).not.toHaveBeenCalled()
     expect(posted.filter((entry) => entry.activity.type === 'thought')).toHaveLength(1)
     await daemon.stop()
   })
 
+  it('acknowledges once even if the admission hook itself runs twice', async () => {
+    // The last guard, and the only one the redelivery tests cannot reach: a delivery arriving
+    // while the first one's ack has admitted but not yet minted its receipt passes the
+    // `prepare` gate AND gets a fresh dispatch row. The receipt CAS is what stops the second
+    // feed row, so drive the hook directly rather than trying to hit that window by timing.
+    const { daemon, posted, turnSettled } = await boot()
+    const normalized = { ...delivery().payload, transportScope: transportScope(daemon) }
+    const relayMsg = delivery()
+    await (daemon as any).admitLinearDelivery(relayMsg, normalized, false)
+    await (daemon as any).admitLinearDelivery(relayMsg, normalized, false)
+    await turnSettled()
+    expect(acks(posted)).toHaveLength(1)
+    await daemon.stop()
+  })
+
   it('refuses the delivery rather than acking when the durable row cannot be written', async () => {
-    const { daemon, posted, store } = await boot()
+    const { daemon, posted, store, turnSettled } = await boot()
     // §10.1's dedup fence IS the durable row, so a swallowed write would let a redelivery
     // double-post an append-only feed. Refusing is the correct trade — the relay retries.
     vi.spyOn(store, 'appendInbox').mockRejectedValue(new Error('disk is gone'))
-    await im(daemon, delivery())
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(await im(daemon, delivery())).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: false,
+      reason: 'durability'
+    })
+    await turnSettled()
     expect(posted).toEqual([])
     await daemon.stop()
   })
 
+  it('refuses the delivery — and runs NO turn — when only the permanent receipt fails', async () => {
+    // The receipt is what a redelivery is recognized by, and it is written inside the same
+    // admission fence as the ordinary row precisely so the two share one fate. Fail only the
+    // receipt: the delivery must be refused whole, or the ordinary row is removed at
+    // settlement and the provider's next redelivery runs the very same turn again.
+    const { daemon, posted, store, turnSettled } = await boot()
+    const dispatched: unknown[] = []
+    const realAppend = store.appendInbox.bind(store)
+    vi.spyOn(store, 'appendInbox').mockImplementation(async (...args: unknown[]) => {
+      const row = args[0] as { id: string }
+      if (row.id.includes('linear-served')) throw new Error('disk is gone')
+      return (await realAppend(row)) as boolean
+    })
+    const prompt = vi.fn()
+    ;(daemon as any).sessions.handle = vi.fn(async (...args: unknown[]) => {
+      dispatched.push(args)
+      prompt()
+      throw new Error('should never be reached')
+    })
+
+    expect(await im(daemon, delivery())).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: false,
+      reason: 'durability'
+    })
+    await turnSettled()
+    expect(posted).toEqual([])
+    expect(prompt).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
   it('collapses CONCURRENT deliveries of the same msgId onto ONE acknowledgement', async () => {
-    const { daemon, posted } = await boot()
+    const { daemon, posted, turnSettled } = await boot()
     await Promise.all([im(daemon, delivery()), im(daemon, delivery()), im(daemon, delivery())])
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await turnSettled()
     expect(acks(posted).length).toBe(1)
     await daemon.stop()
   })
@@ -249,9 +326,9 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
   })
 
   it('stays silent in `none` mode — no acknowledgement, no activities', async () => {
-    const { daemon, posted } = await boot({ outputMode: 'none' })
+    const { daemon, posted, turnSettled } = await boot({ outputMode: 'none' })
     await im(daemon, delivery())
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await turnSettled()
     expect(posted).toEqual([])
     await daemon.stop()
   })
@@ -279,13 +356,12 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
 })
 
 describe('§5 the Layer-2 surface', () => {
-  it("resolves its egress port from the turn's own integration binding", async () => {
+  it("captures its egress port at turn start, from the turn's own integration", async () => {
     const { daemon, posted } = await boot()
     const surface = (daemon as any).turnSurfaces.for('linear')
     const turn = {
-      entry: { integrationId: INTEGRATION },
       plan: { thread: SESSION, platform: 'linear', agentId: AGENT, sessionKey: 'k' },
-      turnState: initialLinearTurnState()
+      turnState: surface.initialTurnState({ integrationId: INTEGRATION })
     }
     await surface.apply(turn, { kind: 'activity', type: 'response', body: 'done' })
     expect(responses(posted).map((p) => p.activity.body)).toEqual(['done'])
@@ -293,13 +369,28 @@ describe('§5 the Layer-2 surface', () => {
     await daemon.stop()
   })
 
+  it('keeps posting through the captured port after the binding is dropped mid-turn', async () => {
+    // Reconciliation unbinds an integration BEFORE the prune pass stops its client. A turn
+    // that re-resolved the map per action would go silent right there and leave the Linear
+    // session active forever; the captured port is what still settles it.
+    const { daemon, posted } = await boot()
+    const surface = (daemon as any).turnSurfaces.for('linear')
+    const turn = {
+      plan: { thread: SESSION, platform: 'linear', agentId: AGENT, sessionKey: 'k' },
+      turnState: surface.initialTurnState({ integrationId: INTEGRATION })
+    }
+    ;(daemon as any).lnConnByIntegration.delete(INTEGRATION)
+    await surface.apply(turn, { kind: 'activity', type: 'error', body: 'boom' })
+    expect(posted.map((p) => p.activity.body)).toEqual(['boom'])
+    await daemon.stop()
+  })
+
   it('no-ops when no Linear connection is bound to the turn', async () => {
     const { daemon, posted } = await boot()
     const surface = (daemon as any).turnSurfaces.for('linear')
     const turn = {
-      entry: { integrationId: 'int-unbound' },
       plan: { thread: SESSION, platform: 'linear', agentId: AGENT, sessionKey: 'k' },
-      turnState: initialLinearTurnState()
+      turnState: surface.initialTurnState({ integrationId: 'int-unbound' })
     }
     await surface.apply(turn, { kind: 'activity', type: 'response', body: 'done' })
     expect(posted).toEqual([])
@@ -514,6 +605,73 @@ describe('§4.4 the brokered token', () => {
     })
     expect(await conn.token()).toBe('brokered')
     expect(requestLinearCred).toHaveBeenCalledWith({ integrationId: INTEGRATION })
+    await daemon.stop()
+  })
+})
+
+describe('§7.5 the turn holds its egress transport', () => {
+  it('makes reconciliation wait for the settling activity before stopping the client', async () => {
+    // Removing the integration mid-turn must not cut the turn's only reply surface. Without a
+    // lease the prune pass stops the client while the model is still running, and the settling
+    // activity — the one that ends the Linear session — is simply lost.
+    let releasePrompt!: () => void
+    let reachedPrompt!: () => void
+    const blocked = new Promise<void>((release) => (releasePrompt = release))
+    const promptReached = new Promise<void>((resolve) => (reachedPrompt = resolve))
+    const { daemon, posted } = await boot({
+      host: () => ({
+        __started: true,
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => 'acp-1'),
+        prompt: vi.fn(async () => {
+          reachedPrompt()
+          await blocked
+          return 'end_turn'
+        }),
+        cancel: vi.fn(),
+        stop: vi.fn()
+      })
+    })
+    // The pooled client and the bound one must be the SAME object: the lease is keyed by the
+    // connection the turn holds, and the prune pass waits on the connection it is stopping.
+    const pool = (daemon as any).connections.linearPool
+    for (const live of pool.all()) pool.remove(live)
+    let stoppedAfter = -1
+    const bound = (daemon as any).lnConnByIntegration.get(INTEGRATION)
+    const conn = {
+      integrationId: bound.integrationId,
+      botUserId: bound.botUserId,
+      workspaceId: bound.workspaceId,
+      postActivity: bound.postActivity,
+      updateSession: bound.updateSession,
+      stop: async () => {
+        stoppedAfter = posted.length
+      }
+    }
+    ;(daemon as any).lnConnByIntegration.set(INTEGRATION, conn)
+    pool.add(conn)
+
+    await im(daemon, delivery())
+    await promptReached
+
+    // The roster no longer references this integration, so reconciliation wants it gone.
+    ;(daemon as any).agents.get(AGENT).integrations = []
+    let reconciled = false
+    const closing = (daemon as any).connections.closeUnusedPlatformConnections().then(() => {
+      reconciled = true
+    })
+
+    // Give the prune pass every chance to run ahead of the turn.
+    for (let i = 0; i < 20; i += 1) await Promise.resolve()
+    expect(reconciled).toBe(false)
+    expect(stoppedAfter).toBe(-1)
+
+    releasePrompt()
+    await closing
+    expect(reconciled).toBe(true)
+    // The client was stopped only after the turn had posted its settling activity through it.
+    expect(posted.length).toBeGreaterThan(0)
+    expect(stoppedAfter).toBe(posted.length)
     await daemon.stop()
   })
 })

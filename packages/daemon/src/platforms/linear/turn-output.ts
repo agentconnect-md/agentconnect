@@ -89,6 +89,10 @@ export interface LinearTurnState {
   /** Remaining non-settling activities; a settling `response`/`error` never draws on it. */
   activityBudget: number
   lastPlanHash?: string
+  /** The egress transport CAPTURED at turn start. Held rather than looked up per action
+   *  because reconciliation can drop the integration's binding mid-turn, and a turn that
+   *  cannot reach Linear can never post the settling activity that ends its session. */
+  conn?: LinearEgressPort
 }
 
 /** Raw attribution identity for the response footer. Structurally the same record the
@@ -597,16 +601,16 @@ function isSettlingActivity(action: Extract<LinearAction, { kind: 'activity' }>)
 /**
  * Apply one converger action to Linear, through the connection's own send queue.
  *
- * Routed here only for the `linear` platform, so the turn's connection is a Linear egress
- * port (or a test fake) — cast, not instanceof, matching the other surfaces. A headless turn
- * or a session with no AgentSession coordinate no-ops.
+ * The port is the one CAPTURED on the turn state at turn start, falling back to whatever the
+ * turn carries — so an integration unbound mid-turn still settles through the transport this
+ * turn holds a lease on. A headless turn or a session with no AgentSession coordinate no-ops.
  */
 export async function applyLinearAction<TTurn extends LinearTurn>(
   turn: TTurn,
   state: LinearTurnState,
   action: LinearAction
 ): Promise<void> {
-  const port = turn.conn as LinearEgressPort | undefined
+  const port = state.conn ?? (turn.conn as LinearEgressPort | undefined)
   const sessionId = turn.plan.thread
   if (!port || !sessionId) return
   switch (action.kind) {
