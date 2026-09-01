@@ -13,10 +13,20 @@
 >
 > Second 2026-08 revision: the identity model flipped from **one OAuth app per
 > agent** to **one deployment-owned Linear app** fronting every agent — the
-> GitHub-App model. An issue behaves like a channel with several agents bound
-> to it: delegation reaches the workspace's default agent, `@<agent-name>` in
-> the mention text addresses a specific one (GitHub-events semantics), and
-> per-agent identity renders as in-content attribution (§4.3, §5).
+> GitHub-App model. Several agents share that one app: a bare delegation reaches
+> the workspace's dispatch default, `@<agent-name>` in the mention text
+> addresses a specific one (GitHub-events semantics), and per-agent identity
+> renders as in-content attribution (§4.3, §5).
+>
+> Third revision, 2026-09: **a connected Linear workspace is one channel** — the
+> analog of a single Slack channel, not of a Slack workspace — and the issue is
+> display metadata rather than a channel of its own. Coordinates become `channel`
+> = the Linear `organizationId`, `thread` = the AgentSession UUID (§4.5); the
+> workspace's dispatch default is the ordinary per-conversation owner, carried
+> into the shared-bot ladder's addressed-gated default rung, so the bot-level
+> persisted preferred default this doc previously asked core for is
+> **withdrawn** (§9.2); and Linear carries no per-conversation trigger control
+> at all (§4.3). §15 records the reasoning.
 >
 > Related documents:
 > [architecture.md](architecture.md),
@@ -52,7 +62,7 @@ rather than inventing a Linear-shaped side channel.
 
 | Linear agent experience                             | This design                                                  | Phase |
 | --------------------------------------------------- | ------------------------------------------------------------ | ----- |
-| Assign/delegate an issue to the app                 | `AgentSessionEvent created` → session with the default agent | P1    |
+| Assign/delegate an issue to the app                 | `created` → session with the workspace's dispatch default    | P1    |
 | Address a specific agent with instructions          | Same webhook; `@<agent-name>` in the mention text routes     | P1    |
 | Instant acknowledgement in the feed                 | Daemon-side auto-ack `thought` before the turn starts        | P1    |
 | Real-time activity feed (commands, files, progress) | `LinearConverger` → `agentActivityCreate`                    | P1    |
@@ -70,8 +80,8 @@ rather than inventing a Linear-shaped side channel.
 issue (they receive a bounded unsupported-surface response, §4.5 — never a
 crash or silence),
 proactive session creation (`agentSessionCreateOnIssue`) as a cron/sendMessage
-target, marketplace/public-app distribution, per-team configuration (default
-agents are per workspace; a per-team mapping is P3), and **dedicated
+target, marketplace/public-app distribution, per-team configuration (the
+dispatch default is per workspace; a per-team mapping is P3), and **dedicated
 per-agent Linear apps** — every agent fronts through the one deployment app
 with in-content attribution; §4.3 records why the per-agent-app model of
 earlier revisions was dropped.
@@ -136,8 +146,9 @@ Linear is a **chat-kind platform module** (`PlatformId` `'linear'`,
 transport and Feishu callbacks) and whose _egress_ is daemon-direct GraphQL
 (like every other platform's outbound path). Its Linear-side identity is the
 **deployment's one OAuth app** (§4.3); a connected workspace is a shared bot
-whose members are the enabled agents. The Control Plane stays off the
-message hot path.
+whose members are the enabled agents, and that workspace is also the bot's
+**one conversation** (§4.5), so its dispatch default is an ordinary
+conversation owner. The Control Plane stays off the message hot path.
 
 Adding it is close to the checklist-shaped task the plugin architecture
 exists for: implement the four host contracts in each host's
@@ -213,10 +224,10 @@ Linear has chat ingress in all but name. Its product hands us the platform
 shape natively: the deployment's OAuth app is the identity users delegate to
 and mention (§4.3), a connected workspace is a `Bot` row with `Integration`
 rows as its enabled-agent members — the same tables every chat platform uses.
-Its sessions are conversations (channel = issue, thread = agent session) with
-follow-ups and a streaming reply surface. Linear therefore implements all four
-platform contracts and renders in the console as ordinary conversations
-(`platform: 'linear'`).
+Its sessions are conversations (channel = the connected workspace, thread =
+agent session) with follow-ups and a streaming reply surface. Linear therefore
+implements all four platform contracts and renders in the console as ordinary
+conversations (`platform: 'linear'`).
 
 What the earlier revision "borrowed from hooks" — signed relay-terminated
 ingress, an in-memory assign table with CP replay, dispatch retry toward the
@@ -262,22 +273,27 @@ The mapping onto existing tables — the Slack shared-bot shape, not a new one:
   constant it sets.
 - **`Integration`** = one **enabled agent** on that workspace
   (`Integration.botId` is deliberately non-unique — the shared-bot
-  precedent). The workspace records a **default agent** among its members —
-  a durable choice, which is why it rides the generic persisted preferred
-  default of §9.2 (the orchestrator's compile today has no such input and
-  falls back to the earliest non-gated member) rather than anything the
-  provider could smuggle through its opaque assign bags.
+  precedent). The workspace's **dispatch default** is not a Linear-shaped
+  field at all: the workspace IS the bot's one conversation (§4.5), so the
+  default is the ordinary per-conversation owner (`IntegrationChannel.agentId`,
+  [shared-bot-relay.md §10.1](shared-bot-relay.md)) — the row is its storage
+  and its console control, edited through the generic
+  `PATCH /integrations/:id/channels/:channelId`, and the compile carries it
+  into the ladder's addressed-gated **default rung** rather than into a
+  channel-scoped route (§6.2).
 - The cross-org `workspaceClaim` fence refuses a workspace another
   organization already holds — every workspace's events verify against the
   same deployment signing secret, so the tenant composite is the only thing
   standing between two organizations' attributions.
 
-**Trigger model — GitHub-events semantics.** An issue behaves like a channel
-with several agents bound to it:
+**Trigger model — one channel, GitHub-events semantics.** A connected
+workspace behaves like a single channel several agents sit in, and every agent
+session in it is a thread (§4.5):
 
 - **Delegating an issue to the app** (no text) starts a session with the
-  workspace's **default agent**. Linear-side automations that auto-delegate
-  land here too.
+  workspace conversation's **dispatch default** — the row's owner, reaching
+  the ladder as `defaultAgentId` on its last rung (§6.2). Linear-side
+  automations that auto-delegate land here too.
 - **Mentioning the app with text** starts a session with the agent the text
   names — `@<agent-name>` anywhere in the instruction, matched against the
   workspace's enabled members, exactly as a GitHub comment addresses one
@@ -285,14 +301,36 @@ with several agents bound to it:
   are not Linear entities; only the app is mentionable), matched by
   the per-member keyword routes the HTTP-bot orchestrator's compile
   **already emits** — one unscoped `{ kind: 'keyword', value: agent.name }`
-  rule per placed non-gated member (§6.2) — with `defaultAgentId` as the
-  fallback.
+  rule per placed non-gated member (§6.2) — and outranking the row's owner,
+  which sits one rung below on the default (§6.2).
 - **One AgentSession binds to one agent at creation** and never changes
   hands: follow-ups and stop go to that agent. Addressing a _different_
   agent is a new mention on the issue → a new session → another thread in
-  the same channel. Naming several agents in one mention selects the first;
-  Linear mints exactly one session per mention, so there is nothing to
-  broadcast to (unlike GitHub's `@app-slug` fan-out).
+  the workspace channel. Naming several agents in one mention selects the
+  **first**, silently and on purpose: member names are ordinary words in
+  issue prose, so an ambiguity error would fire on text that never meant to
+  address anybody, while the ≤10 s ack and the response's attribution footer
+  already say which agent took the turn. Linear mints exactly one session per
+  mention, so there is nothing to broadcast to (unlike GitHub's `@app-slug`
+  fan-out).
+- **No trigger control, and no Off state.** Slack needs a per-conversation
+  trigger because its integration granularity (the workspace) and its
+  conversation granularity (the channel) differ, and because a bot enters
+  channels without the agent owner's consent — the row is where that missing
+  consent is repaired. For Linear the two granularities **coincide** (one
+  connected workspace is exactly one conversation) and linking the workspace
+  to an agent IS the consent act, so a trigger could only restate the link.
+  Muting is unlinking. Linear conversation rows are therefore born enabled
+  (`mention`) for every member, **including a private agent's**, whose rows
+  every other platform seeds `off` (§9.2) — and, for the same reason, a
+  private member here is not conversation-gated at all, so it keeps its
+  `@<agent-name>` rung and can hold the workspace default (§6.2). The write
+  surfaces refuse it too — silencing a workspace is unlinking, so a `trigger`
+  write is rejected with a message naming that path, while the same route's
+  owner change keeps working (§9.1). Slack's
+  `any` has no Linear meaning either: the platform emits no unaddressed
+  traffic to opt into — every event is a delegation, an app mention, a
+  follow-up inside a session the agent already owns, or a stop.
 - **Identity renders in content**, not in the sender: the feed shows the one
   app's name and icon, the ≤10 s ack opens with the acting agent's name, and
   the final `response` carries the attribution footer — the GitHub comment
@@ -350,25 +388,39 @@ install.
 
 - One Linear **AgentSession** ↔ one AgentConnect session, through the
   ordinary normalized coordinates — no Linear-shaped keying:
-  - `channel` = Linear issue **UUID** when the session is attached to an
-    issue (immutable; the human identifier `TEAM-123` changes when an issue
-    moves teams, so it is display metadata only — session `channelName`
-    carries `TEAM-123 · <title>` and the normalized message's `threadUrl`
-    carries the issue URL for console deep links). `app:mentionable` also
-    covers documents and other editor surfaces, and Linear's schema makes the
-    session's issue nullable, so a session **without** an issue is defined,
-    not an error: `channel` falls back to the AgentSession UUID and
-    `channelName` to the session/source title. Never `linear:undefined:…`.
-    **v1 behavior for no-issue sessions:** after durable admission/dedup, the
-    daemon posts one bounded `response` ("mention me on an issue — this
-    surface isn't supported yet") and does **not** start an ACP turn; the key
-    fallback exists so this path, and any future generic support, stays
-    well-keyed.
-  - `thread` = the AgentSession UUID. A second delegation or a new comment
-    mention on the same issue is a new Linear session → a new AgentConnect
-    session in the same channel, matching Slack's thread model — and the
-    natural way to bring a **different agent** onto the same issue (§4.3):
-    each session is bound to one agent at creation and never changes hands.
+  - `channel` = the Linear **`organizationId`**: the connected workspace,
+    which is what a channel means here (§15) — the mount point every
+    configuration fact already hangs on. It is stable for the life of the
+    connection and always present, including on the issueless surfaces below.
+  - `thread` = the AgentSession UUID. Every session in the workspace is a
+    thread in that one channel, matching Slack's thread model: two
+    delegations on the same issue, a mention on a different issue, and a
+    document mention are four threads side by side. Each is bound to one
+    agent at creation and never changes hands, which is the natural way to
+    bring a **different agent** onto the same issue (§4.3).
+  - **`channelName` is the workspace name, full stop.** It is the display
+    slot of the `channel` coordinate — one label shared by every session in
+    the channel — so an issue-derived name is not merely imprecise there, it
+    **relabels the siblings**: each event would rewrite the one field and the
+    sessions from other issues would start reading as if they belonged to the
+    latest one.
+  - **The issue is display metadata, not a coordinate.** `TEAM-123` is a
+    human identifier that changes when an issue moves teams, and its
+    immutable UUID would be stable but buys nothing, because nothing is ever
+    configured per issue. It surfaces in exactly two per-session slots plus
+    the prompt: the **session title** (`TEAM-123 · <title>`), the normalized
+    message's **`threadUrl`** (the issue URL, for console deep links), and
+    the prompt's trusted header (§8).
+  - `app:mentionable` also covers documents and other editor surfaces, and
+    Linear's schema makes the session's issue nullable, so a session
+    **without** an issue is defined, not an error — and needs no key fallback
+    now that neither coordinate mentions the issue: it is one more thread in
+    the workspace channel, under the same `channelName`, with the session
+    title falling back to the session/source title and no `threadUrl`. Never
+    `linear:undefined:…`. **v1 behavior for
+    no-issue sessions:** after durable admission/dedup, the daemon posts one
+    bounded `response` ("mention me on an issue — this surface isn't
+    supported yet") and does **not** start an ACP turn.
   - The relay computes its session key from `(channel, thread)` exactly as it
     does for every shared bot; the daemon's local key adds the agent id as
     usual.
@@ -376,7 +428,9 @@ install.
   coordinates → the daemon resumes the same ACP session.
 - Dedup `msgId` is **content-derived**, not delivery-derived, so Linear's
   1 min/1 h/6 h redeliveries and relay-internal retries converge regardless of
-  whether `Linear-Delivery` is stable across attempts:
+  whether `Linear-Delivery` is stable across attempts — and, being derived
+  from the event rather than from the coordinates, it is untouched by the
+  workspace-is-the-channel correction:
   - `created` → `linear:<agentSessionId>:created`
   - `prompted` → `linear:<agentActivityId>`
 
@@ -529,9 +583,12 @@ idle window).
     a mention matches the per-member **name routes** the shipped HTTP-bot
     compile already emits for every placed non-gated member
     (`@<agent-name>` in the text, §4.3/§6.2); anything
-    else — bare delegation, automation delegation, no name matched — falls
-    to `defaultAgentId`. Every event is explicitly addressed by
-    construction.
+    else — bare delegation, automation delegation, no name matched — reaches
+    the ladder's last rung, `defaultAgentId`, which carries the workspace
+    row's owner (§6.2) or, before that row exists, the compile's
+    earliest-non-gated derivation. Every event is explicitly addressed by
+    construction, which is what keeps that rung — and the keyword one above
+    it — reachable at all.
   - `prompted` + `signal: "stop"` → `host.forwardAction` with a
     `platform_action` envelope (§6.3) routed via the directory — an
     interaction, not a message, exactly like a Slack cancel button.
@@ -575,17 +632,64 @@ workspace bot's secret row at connect; the client secret and the refresh
 token never reach the relay. Everything else on the frame stays
 core-assembled as for every platform — and for Linear the shared-bot members
 are doing real work: `members`/`agents` list the workspace's enabled agents,
-`routes` carries the per-member name rules (§6.1), `defaultAgentId` the
-workspace default, and `credentialRevision` fences signing-secret rotation
-(§10.6). Routing is assembled by the HTTP-bot orchestrator's core compile —
-`projectBotAssign` deliberately carries **no routing**, only the two opaque
-bags — and that compile **already emits the member-name rules Linear
-needs**: one unscoped `{ kind: 'keyword', value: agent.name }` route per
-placed non-gated member (its keyword-disambiguation loop), which is exactly
-the `@<agent-name>` path, reused with zero new code. The one input the
-compiler lacks is the default: it derives `defaultAgentId` as the earliest
-non-gated member, so the bot row gains a generic **persisted preferred
-default** it prefers when set and still routable (§9.2). The
+`routes` carries the per-member name rules (§6.1), `defaultAgentId` **is the
+workspace conversation's owner**, and `credentialRevision` fences
+signing-secret rotation (§10.6). Routing is assembled by the HTTP-bot
+orchestrator's core compile — `projectBotAssign` deliberately carries **no
+routing**, only the two opaque bags — and that compile already emits the
+member-name rules Linear needs: one unscoped
+`{ kind: 'keyword', value: agent.name }` route per placed non-gated member
+(its keyword-disambiguation loop), which is exactly the `@<agent-name>` path,
+reused with zero new code.
+
+**The conversation row is the carrier of the dispatch default, not a route.**
+It is where the default is stored, edited, and displayed (§4.3, §9.5); what
+the compile does with it is map its owner onto the group's `defaultAgentId` —
+the ladder's **last, addressed-gated rung** — and emit **no channel-scoped
+route** for it. Which of the two an owner compiles to is the platform's
+`soleConversation` manifest axis (§9.1), read where routes are projected, not
+a Linear branch in the compiler.
+
+That distinction is the whole correctness argument, because channel ownership
+is the ladder's **first** rung and outranks everything below it. A
+channel-scoped owner route would therefore win ahead of thread continuity and
+ahead of the unscoped keyword slug: it would shadow `@<agent-name>` on every
+mention and drag an already-bound session onto whoever the row currently
+names. Mapping the owner to the default rung instead leaves the order Linear
+needs:
+
+| Linear event                                       | Rung that decides it  | Target                                                           |
+| -------------------------------------------------- | --------------------- | ---------------------------------------------------------------- |
+| `created` from a mention naming a member           | unscoped keyword slug | the named member                                                 |
+| `prompted` follow-up in a bound session            | thread continuity     | the session's agent — an owner change never moves a live session |
+| bare `created` (delegation, automation delegation) | `defaultAgentId`      | the row's owner                                                  |
+| any of these before the row exists                 | `defaultAgentId`      | earliest non-gated member — the backstop (§9.4)                  |
+
+Both the keyword rung and the default rung are gated on the bot actually being
+addressed — which every Linear event is by construction (§6.1), so the gate
+never costs a delivery here, and thread continuity in between needs no such
+gate. `defaultAgentId` keeps its generic earliest-non-gated derivation as the
+backstop above, and the earlier revision's persisted bot-level preferred
+default is withdrawn (§9.2, §15).
+
+**A restricted member of such a bot is not conversation-gated at all.**
+Conversation gating (resource-visibility.md §14) exists to keep a private agent
+out of conversations nobody granted it; where the install names the only
+conversation there is, linking the agent WAS that grant, so the gate has
+nothing left to guard and its fail-open worry presumes conversations that do
+not exist. This is the axis's third read, and it is deliberately **one**
+predicate — `gatesNewConversations(platform, agent)`, computed where the
+compile builds its `placed` set — rather than a patch at each fence, because
+the four things it decides have to move together: the member's unscoped
+keyword rung (§4.3's `@<agent-name>`), its eligibility to hold the default,
+its treatment under continuity gating, and its attribution as a relay target.
+De-gating is per bot and derived from that bot's platform, so the same agent
+stays fully gated on its other bots and its name routes nowhere else.
+
+Rejected there: giving gated members **channel-scoped keyword routes**
+instead. Scoped keyword sits above thread affinity, so a follow-up that merely
+names another member would hijack the bound session — the same rung-order bug
+as the owner route, arriving through a different door. The
 earlier revision's `RcLinearAssign` / `RcLinearRemove` frames and the
 relay-local Linear rule table are gone — replay-on-register, placement
 re-broadcast, and lifecycle edges are the shared machinery.
@@ -595,9 +699,9 @@ re-broadcast, and lifecycle edges are the shared machinery.
 No new `rd/msg` union member. Events ride `RdMsgIm` with a
 `WireNormalizedMessage`:
 
-- `platform: 'linear'`, `channel` = issue UUID (or session UUID fallback,
-  §4.5), `thread` = AgentSession UUID, `threadUrl` = issue URL,
-  `sender.id = linear:<actorId>`, `isDm: false`.
+- `platform: 'linear'`, `channel` = the workspace `organizationId` (§4.5),
+  `thread` = AgentSession UUID, `threadUrl` = the issue URL when the session
+  has an issue, `sender.id = linear:<actorId>`, `isDm: false`.
 - `text` = the member's instruction — the delegation line, the triggering
   comment's own text for a mention-created session (extracted so it is
   **never only inside fenced context**), or the follow-up
@@ -634,9 +738,13 @@ receives them as its config slice (`envSchema` / deployment document — the
 `SLACK_PLATFORM_*` precedent), and the console's Linear surface stays hidden
 until they exist, the platform-app funnel's self-disable pattern.
 
-**Once per workspace — connect it (org console).** An org admin picks
-**Connect Linear**, chooses the workspace's **default agent**, and is sent
-to
+**Once per workspace — connect it.** The flow starts where every other
+integration does: an agent's integrations page, from the Linear card's
+**Connect another workspace…** hand-off (§9.5). There is **no default-agent
+step** — the agent the flow started from becomes the workspace's first member
+and, being its only member, its initial dispatch default; moving the default
+later is the conversation row's selector (§6.2), not an install decision. The
+admin is sent to
 
 ```text
 https://linear.app/oauth/authorize?client_id=…&redirect_uri=…&response_type=code
@@ -645,7 +753,7 @@ https://linear.app/oauth/authorize?client_id=…&redirect_uri=…&response_type=
 
 with a one-shot `state` nonce persisted in `linear_install_state`
 (TTL-reaped via `pendingInstalls`; it carries the nonce, the initiating
-org/user, and the chosen default agent — **no secrets**, unlike the earlier
+org/user, and the **linking agent** — **no secrets**, unlike the earlier
 per-agent revision's funnel). The row **survives its callback** rather than
 being deleted, carrying the terminal outcome the console polls: the OAuth
 tab is a throwaway, so a tail refusal below has no other channel back. That
@@ -681,7 +789,10 @@ between):
    into the workspace bot's `BotSecret` row (which is what the shipped
    assign machinery projects and revision-fences); the D6 composite
    pre-check and the cross-org `workspaceClaim` fence run; the Integration
-   for the chosen default agent (`active` from birth) is written; and the
+   for the **linking agent** (`active` from birth) is written; the
+   **workspace conversation row** is written with that agent as owner and
+   `trigger: 'mention'` (§9.2), so the dispatch default is durable before the
+   first delegation can arrive; and the
    tail's normal `syncBot` hand-off broadcasts `rc/bot-assign` +
    `integration/upsert`.
    `projectIntegrationConfig` resolves the token by the bot's D6 identity —
@@ -690,9 +801,12 @@ between):
 
 **Per agent — enable it on the workspace.** Adding an agent is one more
 member Integration on the workspace bot (the generic existing-bot path — no
-reuse fence exists or is needed under this model); the workspace card also
-moves the default among members (persisted, §9.2 — the compiler's
-earliest-member fallback alone cannot honor a choice). Every enabled agent's
+reuse fence exists or is needed under this model), plus its sibling
+conversation row, written by the same path (§9.2) and repeating the
+conversation's state without taking the owner from the member that holds it.
+Moving the dispatch
+default is a separate and entirely generic act: the workspace row's owner
+selector (§6.2), offered on any member's Linear card. Every enabled agent's
 name already compiles into a member keyword route (the shipped compile,
 §6.2), which is what makes `@<agent-name>` addressing work.
 
@@ -768,7 +882,7 @@ attempts (the funnel row carries no secrets in this model, §7.1).
 | Client Secret                               | `BotSecret.botToken` slot (`secretShape.slots` labels it)                                                                                       | CP only (code exchange + refresh)                               |
 | Webhook signing secret                      | `BotSecret.signingSecret` slot; `httpAssignRequires: ['signingSecret']`                                                                         | relay only, via the `rc/bot-assign` secrets bag                 |
 | Access + refresh token, expiry              | provider-owned `linear_token` table, keyed by the connection identity `(orgId, clientId, organizationId)` (§4.4), values through `SecretCipher` | access token → daemon (spec + broker); refresh token → CP only  |
-| `state` nonce + default agent + outcome     | provider-owned `linear_install_state` funnel table (TTL-reaped; carries no secrets; claimed once, then settled with the round trip's outcome)   | CP only                                                         |
+| `state` nonce + linking agent + outcome     | provider-owned `linear_install_state` funnel table (TTL-reaped; carries no secrets; claimed once, then settled with the round trip's outcome)   | CP only                                                         |
 
 The opaque `IntegrationSpec.config` payload the provider projects (validated
 on the daemon by the linear module's schema in `CONFIG_SCHEMAS`):
@@ -820,10 +934,15 @@ identity (§4.4), not any agent binding:
 - **Remove an agent** — `DELETE /integrations/:id` drops one member from the
   workspace bot (standard broadcast: assign rebuild + `integration/remove`)
   and touches nothing else; its keyword route disappears, the workspace and
-  its token stay live. Removing the default agent requires naming a new
-  default first (or the workspace card blocks it) — a workspace with members
-  but no default would strand bare delegations.
-- **Disconnect the workspace** — deleting the **Bot** is the real teardown:
+  its token stay live. Removing the member that currently owns the workspace
+  conversation needs no Linear-specific guard rail: the shipped ownership
+  convergence re-homes the row to a remaining member, and "no default" is not
+  an operator state ([shared-bot-relay.md §10.1](shared-bot-relay.md)).
+  Removing the **last** member leaves a connected workspace nobody is in —
+  inert, not broken, and repaired by linking an agent again; tearing the
+  workspace down is Disconnect, below.
+- **Disconnect the workspace** — deleting the **Bot** is the real teardown,
+  offered as a row action in the org-level Bots card and nowhere else (§9.5):
   best-effort `POST /oauth/revoke` at Linear plus deletion of the identity's
   `linear_token` row — both inside ONE hold of the identity's advisory lock,
   for the same reason the sweep's claim is (§7.1). Released between the
@@ -910,10 +1029,47 @@ tile.
   landed with the rows it needs (`slack: true`, `linear: true`;
   `DEFAULT_MANIFEST` stays `false`) and retired the predicate at its two
   call sites — an install-time, pre-dispatch read, per the manifest's own
-  rule. Every other axis keeps the fail-closed defaults (observed
+  rule. Apart from the axis below, every other one keeps the fail-closed
+  defaults (observed
   membership, no bot-sender routing, conversation-granularity leave); the
   refusal copy `sharing.ts` still owns now names the refused platform
   instead of enumerating the supported set.
+  - **One new axis this design earns: `soleConversation`** (`linear: true`,
+    `DEFAULT_MANIFEST` `false`) — one install **names the single conversation
+    it can reach**, so a connected account IS one conversation (§4.3). It
+    carries **four co-varying reads** — three pre-dispatch, one on the
+    trigger-write surfaces — all in CP core and all today's platform branches
+    waiting to happen:
+    1. **Route projection** — the conversation row's owner maps to the group's
+       `defaultAgentId`, and the compile emits **no** channel-scoped route for
+       it (§6.2).
+    2. **The trigger seed** — rows are born `mention`, written synchronously by
+       the install paths, because link-is-consent overrides §14's
+       restricted-agent `off` seed. Every seat that seeds, re-derives, or
+       projects a row's trigger reads the **one** predicate
+       `gatesNewConversations(platform, agent)`: the compile's
+       `ensureConversationOwners`, the read-side `GET /integrations`
+       projection, the daemon channels-report handler, and the install paths
+       themselves. One predicate rather than four patched fences is what keeps
+       the console from showing a conversation Off while the compile publishes
+       its enabled route.
+    3. **Gating itself** — a restricted member of such a bot is not
+       conversation-gated (§6.2), from that same predicate at the compile's
+       single `placed` seat.
+    4. **The write-surface guard** — the generic per-conversation `PATCH` and
+       the `setChannelTrigger` MCP tool **refuse a `trigger` write** on such a
+       platform, answering with the unlink path instead of storing a value
+       nothing reads. The **owner** change rides the same `PATCH` untouched,
+       because that is the one setting the conversation really has (§9.5).
+       Without this the seed and the gating read would be quietly editable
+       back into the state they exist to prevent; Slack and every other
+       platform keep both writes.
+
+    The four co-vary by construction: the seed is only right if gating is
+    vacuous, gating is only vacuous because the install granted the one
+    conversation, and a trigger nobody may write is the only honest end of
+    that argument. Fail-closed `false` keeps every other platform on the
+    ordinary §10/§14 arms.
 - The opaque integration-config payload shape (§7.2) is documented beside its
   peers in `frames/integration.ts`.
 - `frames/cron.ts` — **not** extended in v1 (no cron target).
@@ -937,11 +1093,21 @@ tile.
     `externalIdentity` `(clientId, organizationId)` + the `workspaceClaim`.
   - `secretShape` (§7.2); `projectBotIdentity` (clientId / organizationId +
     workspace display metadata in `platformConfig`).
+  - **The install paths write the workspace conversation row**, synchronously
+    and before any traffic: the connect tail (§7.1) creates
+    `(integrationId, organizationId)` with the linking agent as owner, and
+    each add-member writes its sibling row, the shared-bot shape where every
+    active integration repeats the conversation's state and exactly one row
+    carries the owner. `trigger: 'mention'` at birth, from the
+    `soleConversation` axis (§9.1) rather than a Linear branch. No new
+    broadcast is needed: both paths already end in `syncBot`, which publishes
+    the routes the new row changes.
   - `installRoutes('org')` — connect-workspace funnel start (records the
-    chosen default agent), connect status, reconnect (§7.4), member/default
-    management for the workspace card;
-    `installRoutes('public-callback')` — the OAuth callback (§7.1). Repo
-    OpenAPI conventions on every route.
+    **linking agent**, §7.1), connect status, reconnect (§7.4), and member
+    management; `installRoutes('public-callback')` — the OAuth callback
+    (§7.1). The dispatch default is deliberately **not** a provider route:
+    it is the generic per-conversation owner PATCH (§6.2). Repo OpenAPI
+    conventions on every route.
   - `pendingInstalls` — `linear_install_state` + TTL reaper.
   - `projectIntegrationConfig` (async, loads `linear_token` by the bot's D6
     identity — write-before-create ordering per §7.1) and `projectBotAssign`
@@ -961,11 +1127,16 @@ tile.
     inspection: the shipped compile's keyword-disambiguation loop already
     emits exactly the member-name routes §4.3 needs, so member addressing
     costs no contract change at all.)
-  - **One generic core change**: a persisted bot-level **preferred default
-    agent** (nullable), preferred by the orchestrator's compile over its
-    earliest-non-gated fallback and settable from the workspace card —
-    platform-free (Slack shared bots gain the same knob), and the only way
-    "move the default" can actually move bare delegations (§6.2).
+  - **No generic core change.** An earlier revision asked core for one — a
+    persisted bot-level **preferred default agent** (`Bot.preferredAgentId`),
+    preferred by the orchestrator's compile over its earliest-non-gated
+    fallback. It is **withdrawn** (§15): it existed only because
+    issue-as-channel left a connected workspace with no standing conversation
+    row, and therefore nowhere durable to keep a default. Once the workspace
+    IS the conversation, that row is the carrier, the compile needs no new
+    input, and the console's dispatch selector is the generic
+    conversation-owner PATCH. Where the column or its DTO field has already
+    landed, it comes back out.
 - Prisma: new `linear_token` and `linear_install_state` tables only — Bot
   identity rides the existing D6 columns, and `platform` columns are already
   text.
@@ -1001,6 +1172,16 @@ tile.
     (§8); no-issue unsupported-surface response (§4.5); stop decoder for the
     `platform_action` payload → `interruptTurn` + settling response.
   - The ≤10 s ack at `rd/msg` admission, after inbox dedup (§10.1).
+  - **The conversation report is a name refresh, not the seeder.** The
+    connection reports the workspace as its single conversation — one
+    `integration/channels` row, `id` = the `organizationId`, `name` = the
+    workspace name, `kind: 'channel'`, non-authoritative — but the row it
+    reports already exists: the **CP writes it synchronously in the install
+    paths** (§9.2), so the report only refreshes the workspace name and
+    re-asserts a row that somehow went missing. Seeding the dispatch default
+    from a daemon report would have made it depend on a live daemon and on
+    report timing, and the window that opens is exactly the one a bare
+    delegation arrives in.
 - `platforms/integration-config.ts` — the `linear` `CONFIG_SCHEMAS` line
   (+ the schema in `agents/agent-schema.ts`). This line flips
   `capabilities.platforms` — the **advertisement**, not the wiring.
@@ -1018,11 +1199,18 @@ tile.
   these maps into the §7.5 key-driven `ConnectionPool` registry is the parent
   design's remaining daemon stage and deliberately **not** a prerequisite
   here.
-- Session metadata: `channelName`/`threadUrl` from issue identifier/URL.
-- Tests: normalize (created/prompted/stop, mention-comment `text`
-  extraction, no-issue created event → session-UUID channel + bounded
-  unsupported-surface `response` with **no ACP turn**), converger
-  translation table per mode, coalescing caps, no-response **ack-only**
+- Session metadata: `channelName` = the workspace name on every session; the
+  issue identifier and URL reach the **session title** and `threadUrl` and
+  stop there (§4.5).
+- Tests: normalize (created/prompted/stop → the workspace `organizationId` as
+  `channel` and the workspace name as `channelName` — two sessions from
+  different issues agree on it — mention-comment `text` extraction, no-issue
+  created event → the same channel and `channelName`, no issue-derived
+  session title, no `threadUrl`, and a bounded
+  unsupported-surface `response` with **no ACP turn**), the one-row
+  conversation report as a name refresh, converger translation table per
+  mode, coalescing caps,
+  no-response **ack-only**
   (nothing posted after the pre-spawn ack; `none` mode remains
   zero-activity since it never acks), dedup-key derivation,
   **dedup-before-ack ordering including concurrent same-`msgId` deliveries
@@ -1033,19 +1221,38 @@ tile.
 - `src/components/console/platforms/linear/` implementing
   `WebPlatformModule` + one `registry.ts` line:
   - `Mark` — Linear brand SVG (60 % box, `fillPct` convention).
-  - `wizard` — for an agent, "enable on a connected workspace": the
-    connected-workspace bots are the existing-bot list (`freeBotFilter`
-    offers any of the org's connected workspaces, `buildReuseInput` adds the
-    agent as a member — unfenced, §7.4), with a "connect a workspace first"
-    hand-off to the org-level connect flow when none exists. Tile
+  - `wizard` — for an agent, "link a connected workspace": a **single-select
+    list of the org's connected workspaces**, names only, shaped like the
+    GitHub repo picker — one add links one workspace (`freeBotFilter` offers
+    the org's connected workspaces, `buildReuseInput` adds the agent as a
+    member — unfenced, §7.4) — with a **Connect another workspace…**
+    hand-off to the OAuth funnel (§7.1) that doubles as the empty state.
+    There is no default-agent step and no member counts in the rows: the
+    linking agent becomes a member, and the first member of a freshly
+    connected workspace is its dispatch default by construction. Tile
     availability = daemon capability ∧ `relayCapability.available` ∧ the
     deployment app being configured.
-  - `apiBindings` — connect-funnel, connect-status, reconnect, and
-    member/default management calls.
-  - `settingsFragments` — the workspace card: workspace name, connect
-    status, member agents + default, reconnect action when the token is
-    dead (§7.4).
-  - `channelList` — `roomNoun: 'issue'`, no leave affordance.
+  - `apiBindings` — connect-funnel, connect-status, reconnect, and member
+    calls. The dispatch default is the generic conversation-owner PATCH, not
+    a Linear binding.
+  - `settingsFragments` — the agent's **Linear card**: one row per linked
+    workspace, carrying the workspace name, the **dispatch selector** (the
+    conversation row's owner, over any member — §6.2), connection status
+    with an inline **Reconnect** when the grant is dead or deliveries have
+    gone silent (§7.4, §15), and **unlink this agent**, which removes
+    exactly one membership and nothing else. No issue list and no
+    member-management panel: there is one conversation per row and no
+    per-issue state to show (§4.3).
+  - **Whole-workspace teardown lives in the org-level Bots card
+    (`IntegrationsView`), not on the agent card.** A connected workspace is
+    an **ordinary bot row** there — no Linear-shaped panel — with
+    **Reconnect** and **Disconnect** as row actions; Disconnect is
+    §7.4's teardown (revoke + token deletion + bot delete) and takes the
+    workspace away from every member. Keeping it off the agent card is what
+    makes "unlink" and "disconnect" impossible to confuse.
+  - `channelList` — `roomNoun: 'workspace'`, no leave affordance. The
+    generic conversation card has nothing Linear-specific left to render
+    (one row, no trigger, §4.3), which is why the module draws its own.
   - `messageIdentity` — agent-activity id, else `null` (never dedupes).
   - `transcriptOrdering` — default `'seq'`.
 
@@ -1120,23 +1327,27 @@ tile.
 ## 13. Phasing
 
 - **P1 — the core loop.** `linearcred` frames; deployment-app configuration
-  (Setup Server document + `envSchema` slice); CP provider (connect funnel +
-  callback, member/default management, token service + broker, projectors,
-  the persisted preferred default, the `onBotDelete` contract extension) +
-  registry
-  line; relay ingress plugin + registry line; daemon module (connection,
-  ack with agent attribution, converger
+  (Setup Server document + `envSchema` slice); the `soleConversation`
+  manifest axis and its two core reads (§9.1); CP provider (connect funnel +
+  callback, the install-path conversation row, member management, token
+  service + broker, projectors, the
+  `onBotDelete` contract extension) + registry line; relay ingress plugin +
+  registry line; daemon module (connection, the workspace-conversation
+  report, ack with agent attribution, converger
   `thought`/`action`/`response`/`error`, follow-ups, stop, config schema) +
-  the §9.4 composition lines; web module (workspace connect + agent enable,
-  mark, settings, session display) + registry line. Exit criteria: delegate
-  an issue → default agent acknowledges ≤10 s (named in the ack) → streamed
-  activities → response; `@<agent-name>` routes to the named member; reply
-  and stop work; sessions render in the console.
+  the §9.4 composition lines; web module (workspace link + connect hand-off,
+  mark, the Linear card, session display) + registry line. Exit criteria:
+  delegate an issue → the workspace's dispatch default acknowledges ≤10 s
+  (named in the ack) → streamed activities → response; `@<agent-name>` routes
+  to the named member; moving the row's selector moves the next bare
+  delegation; reply and stop work; sessions render in the console.
 - **P2 — workflow polish.** Plan sync; `externalUrls` (PR + console links);
   issue auto-start transition; daemon-local Linear read tool (bounded
   `getIssue`/comments via the connection token); elicitation deep-link card.
-- **P3 — breadth.** Label → skill playbook mapping; per-team default-agent
-  mapping (the delegation-granularity upgrade §4.3 defers); proactive
+- **P3 — breadth.** Label → skill playbook mapping; per-team dispatch
+  defaults — the one upgrade that would split a workspace into several
+  conversations, so it reopens §15's granularity argument rather than merely
+  extending this design; proactive
   sessions (`agentSessionCreateOnIssue`) as a cron/sendMessage target
   (extends `frames/cron.ts`); `issueRepositorySuggestions` for multi-repo
   agents; interactive permission approval over activities.
@@ -1150,9 +1361,13 @@ tile.
   verified-but-unmatched workspace → no candidate, sibling-install
   isolation), truncation budgets, dedup-identity derivation, stop →
   `platform_action`, revoked doorbell, route-mounts row.
-- **Daemon unit:** normalize (created/prompted/stop, mention-comment `text`
-  extraction, no-issue created event → session-UUID channel + bounded
-  unsupported-surface `response` with **no ACP turn**), converger
+- **Daemon unit:** normalize (created/prompted/stop → the workspace
+  `organizationId` as `channel` and the workspace name as `channelName` —
+  two sessions from different issues agree on it, and issue text reaches only
+  the session title and `threadUrl` — mention-comment `text` extraction,
+  no-issue created event → the same channel and `channelName` and a bounded
+  unsupported-surface `response` with **no ACP turn**), the one-row
+  conversation report as a name refresh, converger
   translation table per mode, coalescing caps, no-response **ack-only**
   (nothing posted after the pre-spawn ack; `none` mode remains
   zero-activity since it never acks), dedup-key derivation,
@@ -1170,9 +1385,22 @@ tile.
   is created `shareable: true` and a second member Integration is admitted
   (the manifest's `multiAgentShareable` row, §9.1); member add/remove
   recompiles the compile's existing member-name keyword routes without
-  touching the token; the compile prefers the persisted default over the
-  earliest member; removing the default
-  agent is blocked until a new default is named; reconnect replaces a dead
+  touching the token; **the connect tail and each add-member create the
+  conversation row themselves** — `mention` even for a gated (private)
+  member, owner on the linking agent, no daemon involved — and the compile
+  turns that owner into `defaultAgentId` while emitting **no channel-scoped
+  route**, so a named mention still reaches the named member and a bound
+  session survives an owner change; with no row, `defaultAgentId` falls back
+  to the earliest non-gated member; a **restricted** member of the workspace
+  bot keeps its keyword route and may hold the default, while the same agent
+  stays gated on an ordinary bot, and the console projection and the compile
+  agree on its trigger (one predicate, §9.1); a `trigger` write is **refused**
+  on both generic surfaces (the per-conversation `PATCH` and the
+  `setChannelTrigger` tool) with the unlink path named, an owner change
+  through the same `PATCH` **succeeds**, and a Slack conversation still
+  accepts both; moving the row's owner moves bare
+  delegations; removing the owning member re-homes the row instead of
+  stranding the workspace; reconnect replaces a dead
   token in place; broker scope denial for a foreign daemon; workspace
   disconnect (bot delete) revoke convergence.
 - **Live checklist:** real OAuth app in a scratch Linear workspace —
@@ -1249,6 +1477,91 @@ sharpen the design:
   issue **assignee** to the delegating user (assignee and delegate are distinct
   fields); the `created` event also mints a Linear-authored anchor comment
   ("This thread is for an agent session with …") whose id rides `agentSession.commentId`.
+
+### Decision — the workspace is the channel (2026-09)
+
+Earlier revisions mapped a Linear **issue** to a channel and treated a connected
+workspace as the Slack-**workspace** analog — a shared bot with member
+management and a bot-level default of its own. That is wrong, and the
+correction is: **a connected Linear workspace is the analog of ONE Slack
+channel.** `channel` is the `organizationId`, `thread` stays the AgentSession
+UUID, and the issue is display metadata (§4.5).
+
+**The criterion is what a channel is FOR.** A channel here is not merely a
+container of threads — it is the **configuration mount point**: the granularity
+at which a dispatch default and conversation gating are stored, edited, and
+read — for Linear, on the ladder's addressed-gated **default rung** (§6.2, and
+deliberately not the channel-ownership rung, which would outrank the very
+addressing it exists to serve). Judged as a container, an issue does
+look like a channel — it holds sessions the way a channel holds threads, which
+is how the earlier mapping was arrived at. Judged as a mount point it fails
+every part of the test. Issues are unbounded and born with their traffic, so a
+row would exist before anyone could configure it and nobody would ever return
+to it; and every configuration fact we actually have — which agents are
+enabled, which one takes a bare delegation, which credential signs the events —
+is a property of the workspace. The tell is what the console would have had to
+render: a conversation list of thousands of dead issue rows, each with a
+selector nobody ever set. Under the correction that list holds exactly one row,
+and it is the row an operator does configure.
+
+Nothing is lost in the flattening. One issue holding several sessions becomes
+several threads in the workspace channel — the shape a busy Slack channel
+already has — and the issue survives everywhere it was doing real work: the
+session title, the `threadUrl` deep link, and the prompt's trusted header. It
+does **not** survive in `channelName`, which is the display slot of the
+`channel` coordinate and therefore one label shared by every session in the
+workspace: writing an issue into it would relabel the siblings on each event
+(§4.5).
+
+**The granularity coincidence removes the trigger control.** Slack needs a
+per-conversation Off because integration granularity (the workspace) and
+conversation granularity (the channel) differ there, and because a bot is added
+to channels by people who are not the agent's owner — the row is where that
+absent consent is repaired. For Linear the two coincide, one connected
+workspace being exactly one conversation, and the link IS the consent act, so a
+trigger could only restate it; muting is unlinking. Linear conversation rows
+are therefore born `mention` for every member, private agents included — and
+born in the **install paths**, written by the CP as the link is made rather
+than seeded from a daemon report, because a default that waits on a live
+daemon is a default that is missing exactly when the first delegation lands
+(§9.2, §9.4). Slack's
+`any` has no Linear meaning either: the platform emits no unaddressed traffic
+to opt into — only delegations, app mentions, follow-ups inside a session the
+agent already owns, and stops. And a setting nobody reads must be a setting
+nobody can write: the generic trigger-write surfaces refuse it and name the
+unlink path instead, while the owner change on the same route goes through, so
+the console and the tool surface offer exactly the one control this
+conversation has.
+
+The same argument settles what a **private member** means here, and it settles
+it once rather than fence by fence. Conversation gating guards a restricted
+agent against conversations nobody granted it; on a bot whose install names the
+only conversation there is, that grant already happened, so such a member is
+not conversation-gated at all — one predicate at the compile's `placed` seat
+restores its `@<agent-name>` rung, its eligibility to hold the default, its
+continuity gating, and its relay attribution together, and only on that bot.
+The alternative considered was scoped keyword routes for gated members, which
+fails for the reason the owner route fails: scoped keyword outranks thread
+affinity, so a follow-up naming another member would hijack a bound session.
+
+**Multi-name mentions keep the silent first-pick.** An ambiguity error was
+considered and rejected: member names are ordinary words in issue prose, so the
+error would fire on text that never meant to address anybody, and the ≤10 s ack
+plus the response's attribution footer already say which agent took the turn.
+
+**Consequence: `Bot.preferredAgentId` is reverted.** §9.2's "one generic core
+change" — a persisted bot-level preferred default — existed only because
+issue-as-channel left the workspace with no conversation row of its own, and so
+no standing place to keep a default. Once the workspace IS the conversation,
+the per-conversation owner the ladder already reads on its default rung is the
+right carrier, and the new column has nothing to do: core gains no field, the
+compile gains no per-bot input, and the console's dispatch selector is the
+generic conversation-owner PATCH. What core does gain is one manifest axis,
+`soleConversation` (§9.1) — how an owner compiles, how a new row seeds, and
+whether gating applies at all — which is a statement about the platform, not a
+second place to store a default.
+The compile's earliest non-gated member derivation survives, demoted to the
+backstop covering the window before the row exists at all (§9.4).
 
 ## References
 
