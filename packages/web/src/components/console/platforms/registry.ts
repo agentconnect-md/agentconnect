@@ -98,7 +98,23 @@ export function botCardCopy(platformId?: string): Required<WebBotCardCopy> {
  * platforms that do not declare it here.
  */
 export function platformSupportsSharing(platformId?: string): boolean {
-  return (platformId ? platformRegistry.get(platformId)?.wizard.affordances.share : undefined) === true
+  const share = platformId ? platformRegistry.get(platformId)?.wizard.affordances.share : undefined
+  return share === true || share === 'fixed'
+}
+
+/**
+ * Whether multi-agent is STRUCTURAL here rather than an operator's opt-in
+ * (`share: 'fixed'`) — the provider stamps `shareable` itself and no console
+ * surface may move it.
+ *
+ * A second lookup rather than a second declaration: both read the one
+ * `affordances.share` value, so "supports sharing" and "the operator chooses it"
+ * cannot drift apart the way a mirrored flag would. Callers use it to SUPPRESS a
+ * control, never to grant one — a platform that answers true here already answers
+ * true to {@link platformSupportsSharing}.
+ */
+export function platformSharingFixed(platformId?: string): boolean {
+  return (platformId ? platformRegistry.get(platformId)?.wizard.affordances.share : undefined) === 'fixed'
 }
 
 /**
@@ -116,8 +132,15 @@ export function platformSupportsSharing(platformId?: string): boolean {
  * toggle was transport-gated only, the PATCH accepted the flip, so rows on a
  * non-sharing platform may already carry `shareable: true`. The CP still honors
  * turning those OFF, so the console must keep the control that does it.
+ *
+ * A `share: 'fixed'` platform is refused BEFORE that hatch, and the order is the
+ * whole point: its rows all carry `shareable: true` structurally, so the hatch
+ * would hand every one of them a live control for a flag the provider owns. The
+ * CP would accept a lone-member `shareable: false` PATCH, and the only way back
+ * is re-running the OAuth funnel.
  */
 export function botSharingEditable(bot: Pick<BotDto, 'platform' | 'transport' | 'shareable'>): boolean {
+  if (platformSharingFixed(bot.platform)) return false
   if (bot.shareable) return true
   return platformSupportsSharing(bot.platform) && (bot.transport ?? 'socket') === 'http'
 }

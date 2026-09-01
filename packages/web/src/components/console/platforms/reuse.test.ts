@@ -180,8 +180,11 @@ describe('affordances', () => {
     }
   })
 
-  it('slack and linear offer multi-agent bots, nobody else does', () => {
-    for (const id of ['slack', 'linear']) expect(wizardOf(id).affordances.share, id).toBe(true)
+  it('slack and linear offer multi-agent bots, nobody else does — and differ in how', () => {
+    // Slack's is an opt-in the operator makes; Linear's is structural, stamped by the
+    // provider on every connected workspace, so no surface offers a control for it.
+    expect(wizardOf('slack').affordances.share).toBe(true)
+    expect(wizardOf('linear').affordances.share).toBe('fixed')
     for (const id of ['telegram', 'discord', 'feishu']) {
       expect(wizardOf(id).affordances.share, id).toBeUndefined()
     }

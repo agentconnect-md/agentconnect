@@ -286,20 +286,33 @@ export interface WebWizardAffordances {
   /**
    * The platform supports multi-agent bots — the console's mirror of the §5
    * manifest's `multiAgentShareable`, which is what the CP's two gates read.
-   * The host still applies the http-only gate itself — create mode on the
-   * chosen transport, reuse mode on the reused bot's own (:1321-1326).
+   *
+   * THREE VALUES, because "supported" and "chosen by the operator" are different
+   * facts and collapsing them shipped a control for a decision that does not exist:
+   *  - absent ⇒ the platform has no multi-agent bot at all (Telegram, Discord,
+   *    Feishu). Neither surface offers sharing.
+   *  - `true` ⇒ multi-agent is an OPT-IN the operator makes (Slack). The host
+   *    still applies the http-only gate itself — create mode on the chosen
+   *    transport, reuse mode on the reused bot's own (:1321-1326).
+   *  - `'fixed'` ⇒ multi-agent is STRUCTURAL: the provider stamps `shareable`
+   *    itself and the flag is not a caller's to move (Linear — a Bot row IS one
+   *    connected workspace, and a workspace is definitionally multi-agent,
+   *    linear-integration.md §4.3). Reuse still admits members, but neither the
+   *    wizard opt-in nor the Settings toggle renders, because flipping it OFF is
+   *    a state the provider contract does not have and whose only recovery would
+   *    be re-running the OAuth funnel.
    *
    * Nested under `wizard` for where it is DECLARED, not for where it may be
-   * read: it is a platform fact, and the Settings → Bots Sharable toggle reads
-   * the same one through `platformSupportsSharing` (registry.ts). That toggle
-   * shipped gated on transport ALONE, which left a Feishu HTTP bot — the one
-   * non-shareable platform whose bots can be `transport: 'http'` — offering a
-   * live control for a capability the CP refuses. The fix is this member, not a
-   * second one on {@link WebBotSettingsFragments}: a Settings-side mirror could
-   * disagree with the wizard's about the same platform, and one declaration
-   * cannot.
+   * read: it is a platform fact, and the Settings → Bots Sharable cell reads the
+   * same one through `platformSupportsSharing` / `platformSharingFixed`
+   * (registry.ts). That toggle shipped gated on transport ALONE, which left a
+   * Feishu HTTP bot — a non-shareable platform whose bots can be
+   * `transport: 'http'` — offering a live control for a capability the CP
+   * refuses. The fix is this member, not a second one on
+   * {@link WebBotSettingsFragments}: a Settings-side mirror could disagree with
+   * the wizard's about the same platform, and one declaration cannot.
    */
-  share?: boolean
+  share?: boolean | 'fixed'
 }
 
 /**

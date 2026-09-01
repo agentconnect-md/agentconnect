@@ -39,7 +39,11 @@ import {
   type FooterView,
   type IdentityChromeView
 } from '@/components/console/platforms/publish'
-import { platformRegistry, platformSupportsSharing } from '@/components/console/platforms/registry'
+import {
+  platformRegistry,
+  platformSharingFixed,
+  platformSupportsSharing
+} from '@/components/console/platforms/registry'
 import { BOT_PLATFORMS, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
 import { agentCapabilitySource, agentLabel, MOCK_MODE, workspaceSourceOf, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
@@ -714,9 +718,12 @@ export default function AddIntegrationModal({
   // transport. Existing: gate on the reused bot's own transport (the selector
   // isn't shown for reuse), so a socket bot never offers it. The platform half
   // goes through `platformSupportsSharing` (registry.ts), the same lookup the
-  // Settings → Bots toggle makes, so the two surfaces cannot disagree.
+  // Settings → Bots cell makes, so the two surfaces cannot disagree — including
+  // on a `share: 'fixed'` platform, where the provider stamps the flag and there
+  // is no opt-in to offer on either surface.
   const shareToggleAvailable =
     platformSupportsSharing(platform) &&
+    !platformSharingFixed(platform) &&
     (mode === 'existing' ? (selectedBot?.transport ?? 'socket') === 'http' : transport === 'http')
   // Reusing an already-shared bot is implicitly a shared install.
   const wantShared = shareToggleAvailable && (shared || (mode === 'existing' && !!selectedBot?.shareable))

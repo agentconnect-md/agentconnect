@@ -16,7 +16,9 @@ const mocks = vi.hoisted(() => ({
   setBotPreferredAgent: vi.fn(),
   deleteIntegration: vi.fn(),
   refresh: vi.fn(),
-  integrations: [] as { id?: string; botId?: string; agentId?: string }[]
+  integrations: [] as { id?: string; botId?: string; agentId?: string }[],
+  // Per-agent placement/visibility, which is what the default derivation reads.
+  agents: {} as Record<string, { visibility?: string; placementKind?: string; setId?: string | null; daemon?: string }>
 }))
 
 vi.mock('@/lib/api', async (importOriginal) => ({
@@ -35,12 +37,22 @@ vi.mock('@/lib/data-context', () => ({
       id,
       name: id,
       runtime: 'claude',
-      icon: { kind: 'glyph', glyph: 'bot', color: '#333' }
+      icon: { kind: 'glyph', glyph: 'bot', color: '#333' },
+      visibility: 'org',
+      placementKind: 'daemon',
+      setId: null,
+      daemon: 'daemon-1',
+      ...mocks.agents[id]
     })
   })
 }))
 
-import { linearDefaultAgentId, linearSettingsFragments, LINEAR_DEFAULT_REMOVE_BLOCKED } from './settings'
+import {
+  linearSettingsFragments,
+  LINEAR_DEFAULT_REMOVE_BLOCKED,
+  LINEAR_INELIGIBLE_DEFAULT,
+  LINEAR_MAYBE_DEFAULT_REMOVE_BLOCKED
+} from './settings'
 
 const fragments = linearSettingsFragments.lifecycleActions!
 const { CardProvider, RowActions } = fragments
@@ -102,6 +114,7 @@ beforeEach(() => {
   mocks.setBotPreferredAgent.mockReset()
   mocks.deleteIntegration.mockReset()
   mocks.refresh.mockReset()
+  mocks.agents = {}
   mocks.getLinearConnect.mockResolvedValue({ id: 'c1', status: 'pending', failureReason: null, botId: null })
   mocks.integrations = [
     { id: 'int-a', botId: 'bot-9', agentId: 'agent-a' },
@@ -120,19 +133,6 @@ afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
   vi.unstubAllGlobals()
-})
-
-describe('linearDefaultAgentId', () => {
-  it('honours the persisted pointer', () => {
-    expect(linearDefaultAgentId({ preferredAgentId: 'agent-b', agentIds: ['agent-a', 'agent-b'] })).toBe('agent-b')
-  })
-
-  it('falls back to the earliest member, which is what the compile does', () => {
-    expect(linearDefaultAgentId({ preferredAgentId: null, agentIds: ['agent-a', 'agent-b'] })).toBe('agent-a')
-    // A pointer at an agent that left degrades to the derivation rather than to nothing.
-    expect(linearDefaultAgentId({ preferredAgentId: 'agent-gone', agentIds: ['agent-a'] })).toBe('agent-a')
-    expect(linearDefaultAgentId({ preferredAgentId: null, agentIds: [] })).toBeNull()
-  })
 })
 
 describe('the workspace card, live', () => {
@@ -228,10 +228,48 @@ describe('removing a member', () => {
   })
 
   it('blocks whichever member is the EFFECTIVE default, pointer or not', async () => {
-    // With no persisted pointer the earliest member catches bare delegations, so it
-    // is the one that must not be removable.
+    // With no persisted pointer the earliest ELIGIBLE member catches bare delegations,
+    // so it is the one that must not be removable.
     await renderCard(bot({ preferredAgentId: null }))
     expect(buttonWithLabel('Remove agent-a')!.disabled).toBe(true)
     expect(buttonWithLabel('Remove agent-b')!.disabled).toBe(false)
+  })
+
+  it('follows the compiler past a member it would skip, and protects the real default', async () => {
+    // The regression: a membership-order read marks the restricted first member and
+    // leaves the routable one removable — deleting the workspace's actual default.
+    mocks.agents = { 'agent-a': { visibility: 'restricted' } }
+    await renderCard(bot({ preferredAgentId: 'agent-a' }))
+
+    expect(buttonWithLabel('Remove agent-a')!.disabled).toBe(false)
+    const realDefault = buttonWithLabel('Remove agent-b')!
+    expect(realDefault.disabled).toBe(true)
+    expect(realDefault.getAttribute('title')).toBe(LINEAR_DEFAULT_REMOVE_BLOCKED)
+  })
+
+  it('protects every member that could be the default while a duty hold is unknowable', async () => {
+    // A set placement is routable only while some member holds the duty, which the
+    // console cannot see — so both A and the member behind it stay protected.
+    mocks.agents = { 'agent-a': { placementKind: 'set', setId: 'set-1', daemon: 'pool' } }
+    await renderCard(bot({ preferredAgentId: null }))
+
+    expect(buttonWithLabel('Remove agent-a')!.disabled).toBe(true)
+    const behind = buttonWithLabel('Remove agent-b')!
+    expect(behind.disabled).toBe(true)
+    expect(behind.getAttribute('title')).toBe(LINEAR_MAYBE_DEFAULT_REMOVE_BLOCKED)
+  })
+})
+
+describe('naming a default', () => {
+  it('refuses a member the compile would ignore anyway', async () => {
+    // Persisting a pointer at a restricted agent writes a preference nothing honors.
+    mocks.agents = { 'agent-b': { visibility: 'restricted' } }
+    await renderCard(bot({ preferredAgentId: 'agent-a' }))
+    const make = buttonWithText('Make default') as HTMLButtonElement
+
+    expect(make.disabled).toBe(true)
+    expect(make.getAttribute('title')).toBe(LINEAR_INELIGIBLE_DEFAULT)
+    await act(async () => make.click())
+    expect(mocks.setBotPreferredAgent).not.toHaveBeenCalled()
   })
 })

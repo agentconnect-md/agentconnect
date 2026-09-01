@@ -29,7 +29,12 @@ import {
   type MeDto
 } from '@/lib/api'
 import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/data'
-import { botCardCopy, botSharingEditable, platformRegistry } from '@/components/console/platforms/registry'
+import {
+  botCardCopy,
+  botSharingEditable,
+  platformRegistry,
+  platformSharingFixed
+} from '@/components/console/platforms/registry'
 import { BOT_PLATFORM_TABS, botMatchesPlatformTab } from '@/components/console/platforms/host-projections'
 import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
@@ -505,11 +510,20 @@ function BotsCard({
                   }
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <Toggle
-                    checked={b.shareable}
-                    disabled={!canWrite || botBusyId === b.id || !botSharingEditable(b)}
-                    onChange={(next) => void flipShareable(b, next)}
-                  />
+                  {/* Structural sharing is not a control at all: the provider stamps
+                      the flag, so the cell states it rather than offering a toggle
+                      the CP would accept and the provider contract does not have. */}
+                  {platformSharingFixed(b.platform) ? (
+                    <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                      Always
+                    </span>
+                  ) : (
+                    <Toggle
+                      checked={b.shareable}
+                      disabled={!canWrite || botBusyId === b.id || !botSharingEditable(b)}
+                      onChange={(next) => void flipShareable(b, next)}
+                    />
+                  )}
                 </span>
                 <div className="flex min-w-0 items-center">
                   {b.agentIds.length > 0 ? (

@@ -33,10 +33,10 @@ export const linearModule: WebPlatformModule<LinearApi> = {
     affordances: {
       // No transport CHOICE: `http` is the platform's single fixed transport, which
       // is a different thing from offering two (contract: absent ⇒ fixed).
-      // A connected workspace is definitionally multi-agent — the §5 manifest's
-      // `multiAgentShareable`, mirrored here for the wizard's opt-in and the
-      // Settings toggle to read one declaration.
-      share: true
+      // Multi-agent is STRUCTURAL, not an opt-in: the provider stamps
+      // `shareable: true` on every workspace bot (§4.3), so reuse admits members
+      // while neither the wizard nor Settings offers a flag to move.
+      share: 'fixed'
     },
     identityCards: () => ({ create: 'Connect a Linear workspace', existing: 'A connected Linear workspace' }),
     // Not `inviteBotHint`: nobody invites the app to an issue. A Linear session starts

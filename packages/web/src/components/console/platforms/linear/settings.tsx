@@ -19,21 +19,20 @@ import { agentLabel } from '@/lib/data'
 import type { WebBotSettingsFragments } from '../contract'
 import { linearApi } from './api'
 import { useLinearConnect } from './connect'
-
-/**
- * The member a bare delegation reaches: the workspace's persisted pointer, or —
- * while none is set — the earliest member, which is what the orchestrator's compile
- * falls back to. Null on a workspace with no members left.
- */
-export function linearDefaultAgentId(bot: Pick<BotDto, 'preferredAgentId' | 'agentIds'>): string | null {
-  const preferred = bot.preferredAgentId
-  if (preferred && bot.agentIds.includes(preferred)) return preferred
-  return bot.agentIds[0] ?? null
-}
+import { linearDefaultAgents, linearMemberEligibility } from './default-agent'
 
 /** Why the default member's Remove control is inert (§7.4): a workspace with members
  *  but no default would strand every bare delegation. */
 export const LINEAR_DEFAULT_REMOVE_BLOCKED = 'Make another agent the default first'
+
+/** Why a member that is not MARKED default still cannot be removed: with a set-placed
+ *  member in the list the console cannot tell which one the compiler picks, so every
+ *  member that could be it is protected until a definite default is named. */
+export const LINEAR_MAYBE_DEFAULT_REMOVE_BLOCKED =
+  'This agent may be the workspace default — make a placed agent the default first'
+
+/** Why "Make default" is inert on a member the compiler would ignore anyway. */
+export const LINEAR_INELIGIBLE_DEFAULT = 'A restricted or unplaced agent cannot catch a bare delegation'
 
 interface LinearCardState {
   /** The workspace whose reconnect round trip is open, if any. */
@@ -171,7 +170,9 @@ function LinearCardNotice({ bot }: { bot: BotDto }) {
   // staleness signal not yet exposed — the CP publishes no `lastDeliveryAt`, so a
   // webhook-silent workspace is reachable only through the always-offered CTA below.
   const dead = !!bot.revokedAt
-  const defaultAgentId = linearDefaultAgentId(bot)
+  // The compiler's own eligibility, not membership order — and every member that could
+  // be the default while a set placement's duty holder is unknowable from here.
+  const { marked, candidates } = linearDefaultAgents(bot, getAgent)
   const open = card.reconnectingBotId === bot.id
   const busy = card.busyBotId === bot.id
   // Live rows carry an id; a demo row does not, and its member cannot be removed.
@@ -204,8 +205,17 @@ function LinearCardNotice({ bot }: { bot: BotDto }) {
         <div className="mt-[10px] overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card)">
           {bot.agentIds.map((agentId) => {
             const agent = getAgent(agentId)
-            const isDefault = agentId === defaultAgentId
+            const isDefault = agentId === marked
+            // Blocked for the marked default AND for every other member that could
+            // still turn out to be it — removing the real one strands bare delegations.
+            const blocked = candidates.includes(agentId)
+            const eligible = linearMemberEligibility(agent) !== 'ineligible'
             const integrationId = integrationIdOf(agentId)
+            const removeTitle = isDefault
+              ? LINEAR_DEFAULT_REMOVE_BLOCKED
+              : blocked
+                ? LINEAR_MAYBE_DEFAULT_REMOVE_BLOCKED
+                : 'Remove this agent from the workspace'
             return (
               <div
                 key={agentId}
@@ -225,21 +235,24 @@ function LinearCardNotice({ bot }: { bot: BotDto }) {
                 ) : (
                   <button
                     type="button"
-                    disabled={busy}
+                    // A restricted or unplaced agent is one the compile skips, so naming
+                    // it would persist a pointer nothing honors.
+                    disabled={busy || !eligible}
+                    title={eligible ? 'Bare delegations start a session with this agent' : LINEAR_INELIGIBLE_DEFAULT}
                     onClick={() => card.moveDefault(bot, agentId)}
-                    className={`chip flex-none px-[9px] py-[3px] text-[11.5px] ${busy ? 'cursor-default opacity-55' : 'cursor-pointer'}`}
+                    className={`chip flex-none px-[9px] py-[3px] text-[11.5px] ${busy || !eligible ? 'cursor-not-allowed opacity-55' : 'cursor-pointer'}`}
                   >
                     Make default
                   </button>
                 )}
                 <button
                   type="button"
-                  disabled={isDefault || busy || !integrationId}
-                  title={isDefault ? LINEAR_DEFAULT_REMOVE_BLOCKED : 'Remove this agent from the workspace'}
+                  disabled={blocked || busy || !integrationId}
+                  title={removeTitle}
                   aria-label={`Remove ${agent ? agentLabel(agent) : agentId} from the workspace`}
                   onClick={() => integrationId && card.removeMember(bot, integrationId)}
                   className={`iconbtn h-7 w-7 flex-none ${
-                    isDefault || busy || !integrationId ? 'cursor-not-allowed opacity-45' : 'cursor-pointer'
+                    blocked || busy || !integrationId ? 'cursor-not-allowed opacity-45' : 'cursor-pointer'
                   }`}
                 >
                   <Icon name="user-minus" size={13} />

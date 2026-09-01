@@ -7,7 +7,13 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { PLATFORM_MARK_IDS } from '../marks'
 import { BOT_PLATFORMS, INTEGRATION_BLURB, isCoreTriggerKind } from '../host-projections'
-import { channelListSemantics, platformRegistry, platformSupportsSharing } from '../registry'
+import {
+  botSharingEditable,
+  channelListSemantics,
+  platformRegistry,
+  platformSharingFixed,
+  platformSupportsSharing
+} from '../registry'
 import { LinearMark } from './mark'
 import { linearApi } from './api'
 import { linearModule } from '.'
@@ -34,9 +40,13 @@ describe('the linear registry row', () => {
     expect(INTEGRATION_BLURB.linear).toBeTruthy()
   })
 
-  it('declares multi-agent bots — a connected workspace serves every member', () => {
+  it('declares multi-agent bots as STRUCTURAL — a workspace is not opted into sharing', () => {
+    // Reuse must still admit members, so the platform supports sharing; but the
+    // provider stamps the flag (§4.3), so neither surface offers a control for it.
+    expect(module().wizard.affordances.share).toBe('fixed')
     expect(platformSupportsSharing('linear')).toBe(true)
-    expect(module().wizard.affordances.share).toBe(true)
+    expect(platformSharingFixed('linear')).toBe(true)
+    expect(botSharingEditable({ platform: 'linear', transport: 'http', shareable: true })).toBe(false)
   })
 })
 
