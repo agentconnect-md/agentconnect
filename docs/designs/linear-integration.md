@@ -821,19 +821,20 @@ tile.
   only new frames.** `Platform` is already an open string with tolerant
   readers (`platform-tolerance.test.ts`); `rd/msg` and `rc/bot-assign` carry
   Linear without change.
-- `platform-manifest.ts` — Linear becomes a manifest row, and it is
-  **earned**: multi-agent sharing is gated today by a core interim predicate
+- `platform-manifest.ts` — **landed.** Linear is a manifest row, and it was
+  **earned**: multi-agent sharing was gated by a core interim predicate
   (`control-plane/src/platforms/sharing.ts#supportsMultiAgentBots`,
-  Slack-only — without a change here, `validateShareableInstall` refuses a
+  Slack-only — without this, `validateShareableInstall` would refuse a
   second Linear member before `addBotMembership` runs), and that module's
-  own doc names the §5 `multiAgentShareable` manifest field as its
-  replacement once a second platform needs it. Linear is that second
-  platform, so the field lands with the rows it needs (`slack: true`,
-  `linear: true`; `DEFAULT_MANIFEST` stays `false`) and retires the
-  predicate at its two call sites — an install-time, pre-dispatch read, per
-  the manifest's own rule. Every other axis keeps the fail-closed defaults
-  (observed membership, no bot-sender routing, conversation-granularity
-  leave).
+  own doc named the §5 `multiAgentShareable` field as its replacement once a
+  second platform needed it. Linear is that second platform, so the field
+  landed with the rows it needs (`slack: true`, `linear: true`;
+  `DEFAULT_MANIFEST` stays `false`) and retired the predicate at its two
+  call sites — an install-time, pre-dispatch read, per the manifest's own
+  rule. Every other axis keeps the fail-closed defaults (observed
+  membership, no bot-sender routing, conversation-granularity leave); the
+  refusal copy `sharing.ts` still owns now names the refused platform
+  instead of enumerating the supported set.
 - The opaque integration-config payload shape (§7.2) is documented beside its
   peers in `frames/integration.ts`.
 - `frames/cron.ts` — **not** extended in v1 (no cron target).

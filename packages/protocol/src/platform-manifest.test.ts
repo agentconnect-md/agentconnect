@@ -53,6 +53,27 @@ describe('platform manifest', () => {
     expect(DEFAULT_MANIFEST.botSenderRouting).toBe(false)
   })
 
+  it('declares multi-agent bots on Slack and Linear, and nowhere else', () => {
+    // The CP's two install-time gates read this before a bot is reused or a
+    // daemon is reached; it retired a core `platform === 'slack'` predicate, so
+    // the Slack arm is an equivalence and Linear is the whole new behavior.
+    for (const p of ['slack', 'linear']) expect(manifestFor(p).multiAgentShareable, p).toBe(true)
+    for (const p of ['telegram', 'discord', 'feishu']) expect(manifestFor(p).multiAgentShareable, p).toBe(false)
+    expect(manifestFor('some-future-platform').multiAgentShareable).toBe(false)
+    expect(DEFAULT_MANIFEST.multiAgentShareable).toBe(false)
+  })
+
+  it('keeps Linear on the fail-closed arm of every axis it did not earn', () => {
+    // Linear's row exists for `multiAgentShareable` alone: no membership
+    // snapshot API, no bot-sender admission, nothing but a conversation to
+    // leave. Pin it so the row cannot pick up a Slack-shaped path in passing.
+    const m = manifestFor('linear')
+    expect(m.membershipEnumeration).toBe(DEFAULT_MANIFEST.membershipEnumeration)
+    expect(m.botSenderRouting).toBe(DEFAULT_MANIFEST.botSenderRouting)
+    expect(m.leaveGranularity).toBe(DEFAULT_MANIFEST.leaveGranularity)
+    expect(m.dmChannelPattern).toBeUndefined()
+  })
+
   it('composes with origin kind for arms whose fall-through serves non-chat origins', () => {
     // backfillChannelNames and the first-seen-chat refresh both gate on BOTH axes:
     // hook / dream / webchat have no manifest and must keep the core path, so a
@@ -71,5 +92,8 @@ describe('platform manifest', () => {
     // originKindOf returns undefined for an id this build does not know, so every
     // rewritten conjunction evaluates exactly as the old platform-literal OR did.
     expect(originKindOf('some-future-platform')).toBeUndefined()
+    // Linear too: a manifest row is not a wire-vocabulary entry, and an
+    // unclassified id is read as `chat` — the kind Linear wants (§3).
+    expect(originKindOf('linear')).toBeUndefined()
   })
 })

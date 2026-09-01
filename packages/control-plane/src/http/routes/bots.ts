@@ -10,6 +10,7 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { manifestFor } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { type BotRecord, isSyntheticEmail } from '../../persistence/ports.js'
@@ -18,7 +19,7 @@ import { BotId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
 import { BotDto, BotListDto, UpdateBotBody, ErrorDto, IdParam, type BotDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
-import { MULTI_AGENT_UNSUPPORTED_MESSAGE, supportsMultiAgentBots } from '../../platforms/sharing.js'
+import { multiAgentUnsupportedMessage } from '../../platforms/sharing.js'
 
 function toDto(b: BotRecord): BotDtoT {
   return {
@@ -127,10 +128,9 @@ export function botRoutes(deps: HttpDeps) {
 
     // Flip the HTTP bot's multi-agent capacity (`Bot.shareable`,
     // shared-bot-relay.md §4.1). Transport is immutable: relay ingress remains in
-    // place either way. Enabling needs BOTH a platform that supports multi-agent
-    // bots (`supportsMultiAgentBots` — the same precondition the shareable
-    // install checks) and the http transport; disabling is refused while >1 agent
-    // uses the bot.
+    // place either way. Enabling needs BOTH a platform whose manifest declares
+    // `multiAgentShareable` (the same precondition the shareable install checks)
+    // and the http transport; disabling is refused while >1 agent uses the bot.
     r.patch(
       '/bots/:id',
       {
@@ -138,7 +138,7 @@ export function botRoutes(deps: HttpDeps) {
           tags: [Tag.Bots],
           summary: 'Update a bot',
           description:
-            'Allow or disallow this HTTP bot from serving multiple agents. Allowing requires a platform that supports multi-agent bots (Slack today); relay ingress is unchanged either way.',
+            'Allow or disallow this HTTP bot from serving multiple agents. Allowing requires a platform that supports multi-agent bots; relay ingress is unchanged either way.',
           operationId: 'updateBot',
           params: IdParam,
           body: UpdateBotBody,
@@ -165,8 +165,10 @@ export function botRoutes(deps: HttpDeps) {
         // 400 for the same rule — there the platform is the CLIENT's assertion
         // in the request body, here it is the stored row's, exactly like the
         // transport refusal this sits beside.
-        if (req.body.shareable && !supportsMultiAgentBots(bot.platform)) {
-          return reply.code(409).send({ error: 'Conflict', statusCode: 409, message: MULTI_AGENT_UNSUPPORTED_MESSAGE })
+        if (req.body.shareable && !manifestFor(bot.platform).multiAgentShareable) {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: multiAgentUnsupportedMessage(bot.platform) })
         }
         const observedAgentIds = [...bot.agentIds].sort()
         const release = deps.agentMutations.tryBeginMutation(observedAgentIds)

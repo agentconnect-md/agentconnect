@@ -37,7 +37,7 @@ import { integrationPlatformAvailability } from '../daemon-platform-capability.j
 import { relayIngress } from '../relay-ingress.js'
 import { buildCreateIntegrationBody, credentialBlockOf } from '../dto/create-integration-body.js'
 import type { CpConfigRefusal } from '../../platforms/provider.js'
-import { MULTI_AGENT_UNSUPPORTED_MESSAGE, supportsMultiAgentBots } from '../../platforms/sharing.js'
+import { multiAgentUnsupportedMessage } from '../../platforms/sharing.js'
 import {
   UpdateIntegrationChannelBody,
   LeaveIntegrationConversationBody,
@@ -121,18 +121,18 @@ export function integrationRoutes(deps: HttpDeps) {
       })
     }
 
-    // Shareable-install preconditions (shared-bot-relay.md §6): Slack-only for now, a
-    // relay must be connected to host the ingest, and one agent installs a bot once.
-    // Returns an error envelope to send, or null when the install may proceed.
+    // Shareable-install preconditions (shared-bot-relay.md §6): the platform must
+    // declare multi-agent bots, a relay must be connected to host the ingest, and one
+    // agent installs a bot once. Returns an error envelope, or null to proceed.
     const validateShareableInstall = async (
       bot: { agentIds: string[] },
       agentId: string,
       platform: string
     ): Promise<{ code: 400 | 409; body: { error: string; statusCode: number; message: string } } | null> => {
-      if (!supportsMultiAgentBots(platform)) {
+      if (!manifestFor(platform).multiAgentShareable) {
         return {
           code: 400,
-          body: { error: 'Bad Request', statusCode: 400, message: MULTI_AGENT_UNSUPPORTED_MESSAGE }
+          body: { error: 'Bad Request', statusCode: 400, message: multiAgentUnsupportedMessage(platform) }
         }
       }
       const ingress = relayIngress(deps)

@@ -4,12 +4,12 @@
  * Who may share a bot, and therefore who gets a live Sharable toggle.
  *
  * The Settings → Bots toggle shipped gated on TRANSPORT alone
- * (`(bot.transport ?? 'socket') === 'socket'`), while multi-agent bots are
- * Slack-only at the server ("multi-agent bots currently support Slack only",
- * control-plane `platforms/sharing.ts`). Feishu is the one non-Slack platform
- * whose bots can be `transport: 'http'` — it declares a transport affordance of
- * its own — so a Feishu HTTP bot presented a fully clickable toggle for a
- * capability the CP refuses.
+ * (`(bot.transport ?? 'socket') === 'socket'`), while the server admits only the
+ * platforms whose §5 manifest declares `multiAgentShareable` — Slack, of the
+ * ones this console ships. Feishu is the one platform outside that set whose
+ * bots can be `transport: 'http'` — it declares a transport affordance of its
+ * own — so a Feishu HTTP bot presented a fully clickable toggle for a capability
+ * the CP refuses.
  *
  * Nothing renders these predicates, so these assertions are the only thing that
  * notices when the platform fact and its two readers drift apart again.

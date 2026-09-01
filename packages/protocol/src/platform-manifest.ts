@@ -23,10 +23,10 @@
  * FAIL-CLOSED DEFAULTS ARE THE POINT. Lookup is total: an id this build does
  * not know gets `DEFAULT_MANIFEST`, whose every value is the conservative arm —
  * no authoritative enumeration API is assumed, no bot-sender admission is
- * granted. That reproduces the behavior of every branch being replaced (each
- * was written as "Slack does X, everyone else does Y"), and it means an unknown
- * platform degrades quietly instead of taking a Slack-shaped path it cannot
- * serve.
+ * granted, no bot serves more than one agent. That reproduces the behavior of
+ * every branch being replaced (each was written as "Slack does X, everyone else
+ * does Y"), and it means an unknown platform degrades quietly instead of taking
+ * a Slack-shaped path it cannot serve.
  */
 
 /** How a host can learn which conversations a bot can reach (§5).
@@ -78,6 +78,14 @@ export interface PlatformManifest {
    *  `WebChannelListSemantics.leave`; this is the declaration all three read
    *  instead of re-spelling "Discord is the one with servers". */
   readonly leaveGranularity: LeaveGranularity
+  /** Whether ONE bot identity here may serve SEVERAL agents (`Bot.shareable`,
+   *  shared-bot-relay.md §4.1). A PRE-DISPATCH read: the control plane decides
+   *  it from the platform alone at INSTALL time — `POST /integrations` refuses a
+   *  shareable install and `PATCH /bots/:id` refuses the sharing toggle before a
+   *  bot is reused, an integration row exists, or any daemon is reached.
+   *  Fail-closed: an unknown platform serves one agent per bot, so a flag no
+   *  install path honors can never be set. */
+  readonly multiAgentShareable: boolean
 }
 
 /** The conservative arm of every axis — see the fail-closed note above. */
@@ -87,7 +95,9 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   // The arm the retired branch took for every non-Discord id: an unknown
   // platform is assumed to have no space to leave, so a space-targeted request
   // is refused rather than dispatched at a platform that cannot serve it.
-  leaveGranularity: 'conversation'
+  leaveGranularity: 'conversation',
+  // The arm the retired Slack-only predicate took for every other id: one agent per bot.
+  multiAgentShareable: false
 }
 
 /**
@@ -107,14 +117,50 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       membershipEnumeration: 'authoritative',
       dmChannelPattern: /^D/,
       botSenderRouting: true,
-      leaveGranularity: 'conversation'
+      leaveGranularity: 'conversation',
+      multiAgentShareable: true
     }
   ],
-  ['telegram', { membershipEnumeration: 'observed', botSenderRouting: false, leaveGranularity: 'conversation' }],
+  [
+    'telegram',
+    {
+      membershipEnumeration: 'observed',
+      botSenderRouting: false,
+      leaveGranularity: 'conversation',
+      multiAgentShareable: false
+    }
+  ],
   // A Discord bot is added to a GUILD, not to a channel — there is no
   // per-channel membership to drop, so the only withdrawal is the whole server.
-  ['discord', { membershipEnumeration: 'observed', botSenderRouting: false, leaveGranularity: 'space' }],
-  ['feishu', { membershipEnumeration: 'observed', botSenderRouting: false, leaveGranularity: 'conversation' }]
+  [
+    'discord',
+    {
+      membershipEnumeration: 'observed',
+      botSenderRouting: false,
+      leaveGranularity: 'space',
+      multiAgentShareable: false
+    }
+  ],
+  [
+    'feishu',
+    {
+      membershipEnumeration: 'observed',
+      botSenderRouting: false,
+      leaveGranularity: 'conversation',
+      multiAgentShareable: false
+    }
+  ],
+  // A connected Linear workspace IS a shared bot: the deployment's one OAuth app
+  // is the identity and each enabled agent is a member (linear-integration.md §4.3).
+  [
+    'linear',
+    {
+      membershipEnumeration: 'observed',
+      botSenderRouting: false,
+      leaveGranularity: 'conversation',
+      multiAgentShareable: true
+    }
+  ]
 ])
 
 /** The manifest for `platform`. Total by construction: an unregistered id gets
