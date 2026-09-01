@@ -1996,10 +1996,16 @@ export function agentRoutes(deps: HttpDeps) {
             .send({ error: 'Service Unavailable', statusCode: 503, message: 'agent has no live daemon' })
         }
         try {
+          // Stamp the decider server-side (slack-approval-dm.md §6.2) — never client-supplied.
+          const me = ctxOf(req)
+          const profile = await deps.repos.user.getProfile(me.userId).catch(() => null)
+          const decidedByName = profile?.displayName ?? profile?.email ?? undefined
           const ack = await deps.control.agentPermissionDecision(agent.daemonId, {
             agentId: agent.id,
             requestId: req.params.requestId,
-            decision: req.body.decision
+            decision: req.body.decision,
+            decidedBy: `user:${me.userId}`,
+            ...(decidedByName ? { decidedByName } : {})
           })
           if (!ack.ok) {
             return reply.code(409).send({

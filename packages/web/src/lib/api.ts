@@ -3617,6 +3617,8 @@ export interface AgentPermissionRequestDto {
   command: string
   status: 'pending' | 'allowed' | 'denied' | 'expired'
   resolvedAt: string | null
+  resolvedBy?: string | null
+  resolvedByName?: string | null
 }
 
 /** Live daemon-owned approval queue. The CP proxies it and never persists the rows. */

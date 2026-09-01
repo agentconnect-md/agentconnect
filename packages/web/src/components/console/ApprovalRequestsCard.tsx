@@ -114,7 +114,10 @@ export function ApprovalRequestsCard({
                       {formatApprovalTime(request.createdAt)}
                     </span>
                     {request.status !== 'pending' && (
-                      <span className="badge bg-(--surface-active) text-(--text-tertiary)">{request.status}</span>
+                      <span className="badge bg-(--surface-active) text-(--text-tertiary)">
+                        {request.status}
+                        {request.resolvedByName ? ` · ${request.resolvedByName}` : ''}
+                      </span>
                     )}
                   </div>
                   <div

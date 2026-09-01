@@ -1939,7 +1939,7 @@ describe('Slack interactive status bar', () => {
       sessionId: 'acp-1',
       params: { options: [{ optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' }] },
       evaluationParams: {},
-      conn: { updateBlocks },
+      conn: { updateBlocks, workspaceId: () => 'T1' },
       channel: 'C1',
       ts: 'card-1',
       resolve: permissionResolved
@@ -1963,7 +1963,7 @@ describe('Slack interactive status bar', () => {
       propName: 'language',
       kind: 'enum',
       approval: false,
-      conn: { updateBlocks },
+      conn: { updateBlocks, workspaceId: () => 'T1' },
       channel: 'C1',
       ts: 'card-2',
       resolve: elicitationResolved
@@ -1981,6 +1981,39 @@ describe('Slack interactive status bar', () => {
       action: 'accept',
       content: { language: 'TypeScript' }
     })
+
+    // A DM approval card's click (slack-approval-dm.md §5.3) bypasses the in-conversation
+    // session gate — its origin session may be webchat — and authorizes in the coordinator.
+    // With no CP verify available in this harness it fails closed: admitted, not decided.
+    const dmResolved = vi.fn()
+    const dmRequestId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    ;(daemon as any).permissions.pendingEditorPermissions.set(dmRequestId, {
+      kind: 'permission',
+      agentId: 'bot-a',
+      sessionId: 'acp-2',
+      params: { options: [{ optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' }] },
+      evaluationParams: {},
+      resolve: dmResolved,
+      notify: {
+        target: { integrationId: 'int-a', teamId: 'T1', userId: 'U1', consoleUserId: 'cu-1' },
+        conn: { updateBlocks, workspaceId: () => 'T1' },
+        channel: 'D1',
+        ts: 'dm-card-1'
+      }
+    })
+    expect(
+      await (daemon as any).handleRelayMsg(
+        action({
+          sessionKey: 'webchat:conv-1',
+          msgId: 'action-dm-permission',
+          userId: 'U1',
+          payload: { kind: 'permission-choice', requestId: dmRequestId, optionId: 'allow_once' }
+        }),
+        () => {}
+      )
+    ).toEqual({ msgId: 'action-dm-permission', accepted: true })
+    expect(dmResolved).not.toHaveBeenCalled()
+
     const [triggerId, openedSessionKey, privateMetadata] = openStatusModal.mock.calls[0]!
     expect(triggerId).toBe('trig-1')
     expect(openedSessionKey).toBe(KEY)

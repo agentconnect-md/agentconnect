@@ -605,7 +605,11 @@ export const AgentPermissionRequestRecord = z.object({
   requesterName: z.string().nullable(),
   command: z.string().max(240),
   status: z.enum(['pending', 'allowed', 'denied', 'expired']),
-  resolvedAt: z.string().datetime().nullable()
+  resolvedAt: z.string().datetime().nullable(),
+  // Who decided (slack-approval-dm.md §6.1): `user:<id>` for console decisions,
+  // `slack:<teamId>:<userId>` for card decisions. Optional for rolling compatibility.
+  resolvedBy: z.string().nullable().optional(),
+  resolvedByName: z.string().nullable().optional()
 })
 export type AgentPermissionRequestRecord = z.infer<typeof AgentPermissionRequestRecord>
 
@@ -624,7 +628,10 @@ export type AgentPermissionRequestPage = z.infer<typeof AgentPermissionRequestPa
 export const AgentPermissionDecision = z.object({
   agentId: z.string().uuid(),
   requestId: z.string().uuid(),
-  decision: z.enum(['allow', 'deny'])
+  decision: z.enum(['allow', 'deny']),
+  // CP-stamped decider (slack-approval-dm.md §6.2) — never client-supplied.
+  decidedBy: z.string().min(1).optional(),
+  decidedByName: z.string().min(1).optional()
 })
 export type AgentPermissionDecision = z.infer<typeof AgentPermissionDecision>
 

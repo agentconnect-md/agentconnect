@@ -1115,10 +1115,13 @@ describe('C2 BFF REST — agents/daemons/workspaces/crons over app.inject', () =
       payload: { decision: 'deny' }
     })
     expect(decided.statusCode).toBe(200)
+    // The decider is stamped server-side from the authenticated caller (slack-approval-dm.md §6.2).
     expect(agentPermissionDecision).toHaveBeenCalledWith(daemonId, {
       agentId,
       requestId,
-      decision: 'deny'
+      decision: 'deny',
+      decidedBy: expect.stringMatching(/^user:/),
+      decidedByName: expect.any(String)
     })
   })
 

@@ -734,7 +734,9 @@ export async function listAgentPermissionRequests(
         requesterName: request.requesterName,
         command: request.command,
         status: request.status,
-        resolvedAt: request.resolvedAt === null ? null : new Date(request.resolvedAt).toISOString()
+        resolvedAt: request.resolvedAt === null ? null : new Date(request.resolvedAt).toISOString(),
+        resolvedBy: request.resolvedBy ?? null,
+        resolvedByName: request.resolvedByName ?? null
       }))
     )
   }

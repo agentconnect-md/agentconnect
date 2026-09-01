@@ -417,8 +417,8 @@ export interface SlackDeps {
   onPermissionChoice?: (a: { requestId: string; optionId: string; actor?: InteractionActor }) => void
   /** Fired when a user taps a button on an interactive elicitation card
    *  (render.buildElicitationCard). `value` is the chosen option's wire value, or null
-   *  for the Dismiss button (decline). */
-  onElicitChoice?: (a: { requestId: string; value: string | null }) => void
+   *  for the Dismiss button (decline). `actor` gates DM-card clicks (slack-approval-dm.md §6.4). */
+  onElicitChoice?: (a: { requestId: string; value: string | null; actor?: InteractionActor }) => void
   newTraceId: () => string
   log?: Logger
   /** When true, hand Bolt LogLevel.DEBUG so socket-mode internals are visible. */
@@ -1146,14 +1146,15 @@ export class SlackConnection implements PlatformConnection {
     // Interactive elicitation card (buildElicitationCard): option buttons share the
     // `ac_elicit:<index>` prefix (value = `<requestId>|<optionValue>`); the Dismiss button
     // is `ac_elicit_dismiss` (value = bare requestId → decline).
-    this.app.action(new RegExp(`^${ELICIT_ACTION_PREFIX}:`), async ({ ack, action }) => {
+    this.app.action(new RegExp(`^${ELICIT_ACTION_PREFIX}:`), async ({ ack, action, body }) => {
       await ack()
       const decoded = action.value ? decodePermValue(action.value) : null
-      if (decoded) this.deps.onElicitChoice?.({ requestId: decoded.requestId, value: decoded.optionId })
+      if (decoded)
+        this.deps.onElicitChoice?.({ requestId: decoded.requestId, value: decoded.optionId, actor: actorOf(body) })
     })
-    this.app.action(ELICIT_DISMISS_ACTION, async ({ ack, action }) => {
+    this.app.action(ELICIT_DISMISS_ACTION, async ({ ack, action, body }) => {
       await ack()
-      if (action.value) this.deps.onElicitChoice?.({ requestId: action.value, value: null })
+      if (action.value) this.deps.onElicitChoice?.({ requestId: action.value, value: null, actor: actorOf(body) })
     })
     log?.debug('slack: app.start → opening Socket Mode WebSocket (wss://…slack.com)…')
     await this.app.start()
