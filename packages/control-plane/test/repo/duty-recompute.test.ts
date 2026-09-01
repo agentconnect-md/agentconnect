@@ -7,6 +7,7 @@ import { PgDutyGroupRepo } from '../../src/persistence/index.js'
 import { DutyRecomputeSweep } from '../../src/orchestrator/dutyRecompute.js'
 import type { DutyReconcilePlan } from '../../src/domain/duty.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_DAEMON_CAPABILITIES } from '../fixtures/seed.js'
 import { joinPool, poolSetId } from '../fakes/member-set.js'
 import { AgentId, DaemonId, OrgId } from '../../src/domain/ids.js'
 import { FakeClock } from '../fakes/fake-clock.js'
@@ -63,11 +64,13 @@ function sweep(clock = new FakeClock(1_700_000_000_000)) {
   }
 }
 
+// Registered stock daemons: the capability list is load-bearing now, because the claim paths gate
+// on it — a member advertising no platform may claim nothing whose integrations name one.
 async function seedDaemons(): Promise<void> {
   await prisma.daemon.createMany({
     data: [
-      { id: M1, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' },
-      { id: M2, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready' }
+      { id: M1, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready', capabilities: DEFAULT_DAEMON_CAPABILITIES },
+      { id: M2, orgId: DEFAULT_ORG_ID, maxAgents: 8, status: 'ready', capabilities: DEFAULT_DAEMON_CAPABILITIES }
     ]
   })
 }
@@ -89,8 +92,8 @@ async function seedPoolAgent(id: string, name: string): Promise<void> {
 async function seedMembers(): Promise<void> {
   await prisma.daemon.createMany({
     data: [
-      { id: POOL_A, orgId: null, maxAgents: 8, status: 'ready' },
-      { id: POOL_B, orgId: null, maxAgents: 8, status: 'ready' }
+      { id: POOL_A, orgId: null, maxAgents: 8, status: 'ready', capabilities: DEFAULT_DAEMON_CAPABILITIES },
+      { id: POOL_B, orgId: null, maxAgents: 8, status: 'ready', capabilities: DEFAULT_DAEMON_CAPABILITIES }
     ]
   })
   await joinPool(prisma, POOL_A, POOL_B)

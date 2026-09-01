@@ -6,6 +6,7 @@ import { Prisma, type PrismaClient } from '../../generated/prisma/client.js'
 import type { DutyMemberKey, DutyReconcilePlan, DutyEdge, AgentSeed } from '../../domain/duty.js'
 import type {
   AgentHomeClaim,
+  CapabilityBlockedVacancy,
   DutyDigestEntry,
   DutyGrantRecord,
   DutyGroupRecord,
@@ -67,6 +68,49 @@ function noIneligibleAgent(group: Prisma.Sql, holder: Prisma.Sql): Prisma.Sql {
     JOIN "agent" a ON a.id = m."refId"
     WHERE m."groupId" = ${group} AND m."kind" = 'agent'
       AND NOT ${eligibleAgent(Prisma.sql`a`, holder)}
+  )`
+}
+
+/** One member's advertised `capabilities.platforms`, as jsonb. NULL for a row that never
+ *  registered, or one whose capabilities carry no list — every caller reads that as fail-closed. */
+function advertisedPlatforms(holder: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`(SELECT d."capabilities"->'platforms' FROM "daemon" d WHERE d.id = ${holder})`
+}
+
+/**
+ * The CAPABILITY gate — the row-wise mirror of `domain/platform-capability.ts#servesPlatforms`,
+ * and the claim-time half of the install-time gate in `http/daemon-platform-capability.ts`.
+ *
+ * May `holder` serve every platform this agent's active integrations name? A daemon reads an
+ * integration's config through its own platform-module registry and fails CLOSED on an id it has
+ * no module for — it skips the integration silently — so a member of an older image that claims an
+ * agent using a newly added platform takes that agent's whole surface there dark until the group
+ * moves again. That window opens on EVERY platform's rollout, which is why this rides the claim
+ * rather than the install alone.
+ *
+ * Fail-closed on the daemon read too: a missing row, or capabilities carrying no `platforms` list,
+ * yields NULL, `COALESCE` reads it as "does not advertise", and the claim is refused. An agent
+ * with no active integration requires nothing and is claimable by anyone, which is what keeps
+ * botless agents (webchat, cron, A2A) out of the gate entirely.
+ */
+function servesAgentPlatforms(agentId: Prisma.Sql, holder: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`NOT EXISTS (
+    SELECT 1 FROM "integration" i
+    WHERE i."agentId" = ${agentId} AND i."status" = 'active'
+      AND NOT COALESCE(${advertisedPlatforms(holder)} @> to_jsonb(i."platform"), false)
+  )`
+}
+
+/** The group-wise reading of the capability gate, stated like {@link noIneligibleAgent}: a group is
+ *  claimable only when EVERY agent in it is one the holder can serve. Deliberately NOT folded into
+ *  the placement predicate — placement says who MAY hold, capability says who CAN serve, and only
+ *  the second may be answered by a stale image. Keeping them apart is also what keeps
+ *  `vacateIneligible` from tearing down live service over a capability read. */
+function servesGroupPlatforms(group: Prisma.Sql, holder: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`NOT EXISTS (
+    SELECT 1 FROM "duty_group_member" m
+    WHERE m."groupId" = ${group} AND m."kind" = 'agent'
+      AND NOT ${servesAgentPlatforms(Prisma.sql`m."refId"`, holder)}
   )`
 }
 
@@ -320,6 +364,11 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
     // left: what a member may claim follows from the agents' placement, not from where their state
     // happens to already be.
     const eligibilityGate = Prisma.sql`AND ${noIneligibleAgent(Prisma.sql`"duty_group".id`, Prisma.sql`${holder}::uuid`)}`
+    // The capability gate: placement says this member MAY hold the group, this says it CAN serve
+    // it. Fail-closed by design — a group needing a platform no live member advertises simply
+    // stays vacant, and the pool gauges report it under its own series rather than as scale-up
+    // demand nothing could satisfy.
+    const capabilityGate = Prisma.sql`AND ${servesGroupPlatforms(Prisma.sql`"duty_group".id`, Prisma.sql`${holder}::uuid`)}`
     // The caller's refusal backoff: a group this member has just failed to install is skipped so
     // it can reach one that can serve it, instead of being re-taken on the very next beat.
     const backoffGate =
@@ -340,7 +389,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       const granted = await tx.$queryRaw<Row[]>(Prisma.sql`
         WITH picked AS (
           SELECT id FROM "duty_group"
-          WHERE ("holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now}) ${sizeGate} ${eligibilityGate} ${backoffGate} ${generationGate}
+          WHERE ("holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now}) ${sizeGate} ${eligibilityGate} ${capabilityGate} ${backoffGate} ${generationGate}
           ORDER BY "orgId", id
           LIMIT ${max}
           FOR UPDATE SKIP LOCKED
@@ -365,6 +414,45 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
         members: members.get(r.id) ?? []
       }))
     })
+  }
+
+  async capabilityBlockedVacancies(
+    holder: DaemonId,
+    now: Date,
+    opts: { maxMembers?: number; excludeGroupIds?: readonly string[]; limit?: number } = {}
+  ): Promise<CapabilityBlockedVacancy[]> {
+    // The claim's own gates, minus the capability one — which is negated instead, so this reports
+    // exactly the groups the claim refused FOR CAPABILITY and nothing else. The generation barrier
+    // is deliberately out: a held-back member still deserves to know what it could not have served.
+    const sizeGate =
+      opts.maxMembers === undefined
+        ? Prisma.empty
+        : Prisma.sql`AND (SELECT count(*) FROM "duty_group_member" m WHERE m."groupId" = g.id) <= ${opts.maxMembers}`
+    const backoffGate =
+      opts.excludeGroupIds && opts.excludeGroupIds.length > 0
+        ? Prisma.sql`AND g.id <> ALL(${opts.excludeGroupIds as string[]}::uuid[])`
+        : Prisma.empty
+    const rows = await this.prisma.$queryRaw<{ groupId: string; agentId: string; platform: string }[]>(Prisma.sql`
+      SELECT DISTINCT g.id AS "groupId", m."refId" AS "agentId", i."platform" AS platform
+      FROM "duty_group" g
+      JOIN "duty_group_member" m ON m."groupId" = g.id AND m."kind" = 'agent'
+      JOIN "integration" i ON i."agentId" = m."refId" AND i."status" = 'active'
+      WHERE (g."holder" IS NULL OR g."expiresAt" IS NULL OR g."expiresAt" < ${now})
+        ${sizeGate} ${backoffGate}
+        AND ${noIneligibleAgent(Prisma.sql`g.id`, Prisma.sql`${holder}::uuid`)}
+        AND NOT COALESCE(${advertisedPlatforms(Prisma.sql`${holder}::uuid`)} @> to_jsonb(i."platform"), false)
+      ORDER BY "groupId", "agentId", platform
+      LIMIT ${opts.limit ?? 100}
+    `)
+    // Folded per (group, agent) so the caller logs one line naming every platform it is missing.
+    const byAgent = new Map<string, CapabilityBlockedVacancy>()
+    for (const row of rows) {
+      const key = `${row.groupId}/${row.agentId}`
+      const entry = byAgent.get(key) ?? { groupId: row.groupId, agentId: row.agentId as AgentId, missingPlatforms: [] }
+      entry.missingPlatforms.push(row.platform)
+      byAgent.set(key, entry)
+    }
+    return [...byAgent.values()]
   }
 
   async renewHeld(holder: DaemonId, now: Date, leaseMs: number): Promise<string[]> {
@@ -470,15 +558,35 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
         HAVING count(*) FILTER (WHERE a."placementKind" <> 'set' OR a."setId" IS NULL) = 0
            AND count(DISTINCT a."setId") = 1
       ),
+      -- The capability gate, restated set-wise from the very predicate claimVacant carries: a
+      -- vacancy is blocked when NO live member of its set advertises every platform the group's
+      -- integrations name. Mid-rollout that is a real gap, and it is split out for the same reason
+      -- oversized groups are — scaling the pool cannot clear it, so it must not pin the capacity
+      -- alarm; rolling the image forward is the remediation, and the series says so.
+      -- A set with NO live member at all is a liveness signal, not an image gap: the members gauge
+      -- already reports it, and reading every vacancy as blocked there would mute the claimable
+      -- demand a quiet or scaled-to-zero pool still has. Only members present can prove a gap.
+      blocked AS (
+        SELECT v.*,
+               (EXISTS (SELECT 1 FROM live l WHERE l."setId" = v."setId")
+                AND NOT EXISTS (
+                  SELECT 1 FROM live l
+                  WHERE l."setId" = v."setId" AND ${servesGroupPlatforms(Prisma.sql`v.id`, Prisma.sql`l.id`)}
+                )) AS "capabilityBlocked"
+        FROM vacant v
+      ),
       -- Oversized groups are split out, never folded into the claimable count: they are
       -- undeliverable on this wire at any pool size (§5), so counting them as unmet demand would
       -- pin a capacity alert high forever. They are their own signal — D16, a dedicated daemon.
       vac AS (
         SELECT "setId",
-               count(*) FILTER (WHERE size <= ${maxMembers})::int AS groups,
+               count(*) FILTER (WHERE size <= ${maxMembers} AND NOT "capabilityBlocked")::int AS groups,
                count(*) FILTER (WHERE size > ${maxMembers})::int AS oversized,
-               COALESCE(max(age) FILTER (WHERE size <= ${maxMembers}), 0)::double precision AS oldest
-        FROM vacant GROUP BY "setId"
+               count(*) FILTER (WHERE size <= ${maxMembers} AND "capabilityBlocked")::int AS "capabilityBlocked",
+               COALESCE(
+                 max(age) FILTER (WHERE size <= ${maxMembers} AND NOT "capabilityBlocked"), 0
+               )::double precision AS oldest
+        FROM blocked GROUP BY "setId"
       )
       SELECT s.id AS "setId", s.name AS "setName", (s."orgId" IS NULL) AS "installWide",
              COALESCE(cap.members, 0)::int AS "liveMembers",
@@ -487,6 +595,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
              COALESCE(used.agents, 0)::int AS "dutyAgents",
              COALESCE(vac.groups, 0)::int AS "vacantGroups",
              COALESCE(vac.oversized, 0)::int AS "oversizedVacantGroups",
+             COALESCE(vac."capabilityBlocked", 0)::int AS "capabilityBlockedVacantGroups",
              COALESCE(vac.oldest, 0)::double precision AS "oldestVacancySec"
       FROM "member_set" s
       LEFT JOIN cap ON cap."setId" = s.id
@@ -582,9 +691,13 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       await lockDaemonMembership(tx, holder)
       // The rendezvous is a claim path, so it takes the same eligibility gate — inside the
       // transaction, against the live row, because this path can MINT a group and a check made
-      // before the lock would let a member reach through it for an agent it may not hold.
+      // before the lock would let a member reach through it for an agent it may not hold. The
+      // capability gate rides with it, per agent, exactly as `claimVacant` carries it per group: a
+      // trigger reaching a member of an older image is not authority to serve a platform it has no
+      // module for.
       const [eligible] = await tx.$queryRaw<{ ok: boolean }[]>(Prisma.sql`
-        SELECT ${eligibleAgent(Prisma.sql`a`, Prisma.sql`${holder}::uuid`)} AS ok
+        SELECT (${eligibleAgent(Prisma.sql`a`, Prisma.sql`${holder}::uuid`)}
+                AND ${servesAgentPlatforms(Prisma.sql`a.id`, Prisma.sql`${holder}::uuid`)}) AS ok
         FROM "agent" a WHERE a.id = ${agentId}::uuid
       `)
       if (eligible?.ok !== true) return { granted: false, holder: null }

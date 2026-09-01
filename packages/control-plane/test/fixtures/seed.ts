@@ -11,7 +11,9 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { AgentId, DaemonId, OrgId, type Epoch } from '../../src/domain/ids.js'
 
 export const DEF_ORG = OrgId(DEFAULT_ORG_ID)
-const DEFAULT_DAEMON_CAPABILITIES = {
+/** What a registered stock daemon advertises. Exported because the duty ledger's claim paths gate
+ *  on it now: a fixture daemon with no platform list can claim nothing that has an integration. */
+export const DEFAULT_DAEMON_CAPABILITIES = {
   platforms: ['slack', 'telegram', 'discord'],
   runtimes: ['claude'],
   acp: true,

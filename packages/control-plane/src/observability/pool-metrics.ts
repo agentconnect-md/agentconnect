@@ -35,7 +35,15 @@ export interface PoolMetricsDeps {
 }
 
 export type PoolMetricName =
-  'members' | 'unbounded' | 'capacity' | 'used' | 'headroom' | 'vacantGroups' | 'vacantAge' | 'undeliverable'
+  | 'members'
+  | 'unbounded'
+  | 'capacity'
+  | 'used'
+  | 'headroom'
+  | 'vacantGroups'
+  | 'vacantAge'
+  | 'undeliverable'
+  | 'capabilityBlocked'
 
 export interface PoolObservation {
   metric: PoolMetricName
@@ -63,7 +71,8 @@ export function poolObservations(rows: readonly PoolTelemetryRow[]): PoolObserva
       at('used', row.dutyAgents),
       at('vacantGroups', row.vacantGroups),
       at('vacantAge', row.oldestVacancySec),
-      at('undeliverable', row.oversizedVacantGroups)
+      at('undeliverable', row.oversizedVacantGroups),
+      at('capabilityBlocked', row.capabilityBlockedVacantGroups)
     ]
   })
 }
@@ -126,6 +135,11 @@ function createGauges(): Record<PoolMetricName, ObservableGauge> {
     undeliverable: meter.createObservableGauge('agentconnect.duty.undeliverable.groups', {
       unit: '{group}',
       description: 'Vacant groups over the wire member cap — never claimable at any pool size; needs a dedicated daemon'
+    }),
+    capabilityBlocked: meter.createObservableGauge('agentconnect.duty.capability_blocked.groups', {
+      unit: '{group}',
+      description:
+        'Vacant groups needing a platform no live member of the set advertises — scaling cannot clear it; roll the image forward'
     })
   }
 }

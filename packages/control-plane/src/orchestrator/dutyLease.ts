@@ -299,6 +299,27 @@ export class DutyLeaseService {
         if (nowMs - g.atMs >= this.config.doubleMoveWindowMs) this.lastGrant.delete(id)
   }
 
+  /** One line per (agent, pass) for the agents this member was passed over for on capability
+   *  grounds alone. A capability refusal is silent by construction — the claim statement matches
+   *  fewer rows — so mid-rollout an agent stops placing with nothing naming the platform behind it.
+   *  Best-effort and never fatal: diagnostics for a claim that already happened. */
+  private async reportCapabilityGaps(daemonId: DaemonId, now: Date): Promise<void> {
+    try {
+      const blocked = await this.repo.capabilityBlockedVacancies(daemonId, now, {
+        maxMembers: DUTY_GRANT_MEMBERS_MAX,
+        excludeGroupIds: this.backedOff(daemonId)
+      })
+      for (const entry of blocked) {
+        this.log?.warn(
+          { daemonId, groupId: entry.groupId, agentId: entry.agentId, missingPlatforms: entry.missingPlatforms },
+          'duty vacancy skipped: this member advertises no module for these platforms, so the agent will not place here until it runs an image that has them'
+        )
+      }
+    } catch (err) {
+      this.log?.warn({ daemonId, err }, 'capability-gap diagnostics failed')
+    }
+  }
+
   /** Chain `fn` on the daemon's lane so operations never interleave. */
   private serialize<T>(daemonId: string, fn: () => Promise<T>): Promise<T> {
     const lane = this.lanes.get(daemonId) ?? { pending: 0, tail: Promise.resolve() }
@@ -416,14 +437,15 @@ export class DutyLeaseService {
     ) {
       // Oversized groups are excluded at the claim boundary (the size gate), so
       // a claim never lands on a group it would immediately have to release.
-      granted = await this.repo.claimVacant(
-        daemonId,
-        Math.min(budget, this.config.grantMaxPerTick),
-        now,
-        this.config.leaseMs,
-        { maxMembers: DUTY_GRANT_MEMBERS_MAX, excludeGroupIds: this.backedOff(daemonId) }
-      )
+      const wanted = Math.min(budget, this.config.grantMaxPerTick)
+      granted = await this.repo.claimVacant(daemonId, wanted, now, this.config.leaseMs, {
+        maxMembers: DUTY_GRANT_MEMBERS_MAX,
+        excludeGroupIds: this.backedOff(daemonId)
+      })
       this.noteGranted(granted, daemonId)
+      // Budget left unspent CAN be a capability gap, and a gap is invisible on the wire: the claim
+      // just returns fewer rows. So ask why, once per beat, only when there was room to take more.
+      if (granted.length < wanted) await this.reportCapabilityGaps(daemonId, now)
       // Not a route yet (routable reads confirmations), but a state change: the directory must stop
       // naming the expired holder and carry the agents as PENDING now, or a peer wake in the
       // grant→digest window sees a terminal `offline` instead of the retryable `not_ready` (#987).

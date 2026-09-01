@@ -14,6 +14,7 @@ const row = (over: Partial<PoolTelemetryRow> = {}): PoolTelemetryRow => ({
   dutyAgents: 20,
   vacantGroups: 0,
   oversizedVacantGroups: 0,
+  capabilityBlockedVacantGroups: 0,
   oldestVacancySec: 0,
   ...over
 })
