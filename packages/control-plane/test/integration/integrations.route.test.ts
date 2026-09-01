@@ -21,6 +21,7 @@ import { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { IntegrationUpsert, IntegrationRemove } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { AgentId, BotId, OrgId } from '../../src/domain/ids.js'
+import { BotPreferredAgentMissing } from '../../src/persistence/errors.js'
 import type { SlackConfigApi } from '../../src/http/slack-config-api.js'
 import { SLACK_BOT_EVENTS, SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
@@ -2028,12 +2029,14 @@ describe('preferred default agent (PATCH /bots/:id)', () => {
     const { app } = withRelay()
     const vanished = randomUUID()
 
+    // Typed, not a bare Prisma error: the route turns this into the same 409 a body
+    // naming a non-member gets, so the race never surfaces as a 500.
     await expect(
       app.deps.repos.bot.update(OrgId(DEFAULT_ORG_ID), BotId(botId), {
         shareable: true,
         preferredAgentId: AgentId(vanished)
       })
-    ).rejects.toThrow()
+    ).rejects.toBeInstanceOf(BotPreferredAgentMissing)
 
     const row = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
     expect(row.shareable).toBe(false)

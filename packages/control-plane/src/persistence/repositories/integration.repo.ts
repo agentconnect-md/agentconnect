@@ -12,7 +12,7 @@
 import type { Platform, FeishuRegion } from '@agentconnect.md/protocol'
 import type { Bot, Integration, IntegrationChannel, User } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
-import { BotExternalIdentityTaken, BotMissing, BotStillShared } from '../errors.js'
+import { BotExternalIdentityTaken, BotMissing, BotPreferredAgentMissing, BotStillShared } from '../errors.js'
 import type {
   BotRepo,
   BotIdentityProjector,
@@ -282,13 +282,26 @@ export class PgBotRepo implements BotRepo {
         const active = await tx.integration.count({ where: { botId: id, status: 'active' } })
         if (active > 1) throw new BotStillShared(active)
       }
-      await tx.bot.update({
-        where: { id, orgId },
-        data: {
-          ...(patch.shareable !== undefined ? { shareable: patch.shareable } : {}),
-          ...(patch.preferredAgentId !== undefined ? { preferredAgentId: patch.preferredAgentId } : {})
+      try {
+        await tx.bot.update({
+          where: { id, orgId },
+          data: {
+            ...(patch.shareable !== undefined ? { shareable: patch.shareable } : {}),
+            ...(patch.preferredAgentId !== undefined ? { preferredAgentId: patch.preferredAgentId } : {})
+          }
+        })
+      } catch (err) {
+        // The preferred agent is the only FK this statement writes, so a violation means
+        // it was deleted since the caller checked. Typed so the route can 409; the whole
+        // transaction has already rolled back, so the capacity flip is gone with it.
+        if (
+          (err as { code?: string }).code === 'P2003' &&
+          JSON.stringify((err as { meta?: unknown }).meta ?? '').includes('preferredAgentId')
+        ) {
+          throw new BotPreferredAgentMissing(String(patch.preferredAgentId))
         }
-      })
+        throw err
+      }
     })
   }
 

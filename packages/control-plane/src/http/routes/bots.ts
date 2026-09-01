@@ -14,7 +14,7 @@ import { manifestFor } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { type BotRecord, isSyntheticEmail } from '../../persistence/ports.js'
-import { BotStillShared } from '../../persistence/errors.js'
+import { BotPreferredAgentMissing, BotStillShared } from '../../persistence/errors.js'
 import { AgentId, BotId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
 import { BotDto, BotListDto, UpdateBotBody, ErrorDto, IdParam, type BotDtoT } from '../dto/index.js'
@@ -267,6 +267,15 @@ export function botRoutes(deps: HttpDeps) {
                 error: 'Conflict',
                 statusCode: 409,
                 message: 'bot is shared by multiple agents — uninstall the others before disabling sharing'
+              })
+            }
+            // The agent was deleted since the membership check above, taking its
+            // Integration with it — the same refusal, reached one step later.
+            if (err instanceof BotPreferredAgentMissing) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'default agent must be an agent that uses this bot'
               })
             }
             throw err
