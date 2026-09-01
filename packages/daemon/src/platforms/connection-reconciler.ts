@@ -743,7 +743,6 @@ export class ConnectionReconciler {
    * teardown, because rotation does not change the connection's identity (§7.5).
    */
   async reconcileLinearConnections(): Promise<void> {
-    const cp = this.host.cpClient()
     for (const group of consolidateLinear(this.host.transportAgents(), this.log).values()) {
       const existing = this.linearPool.find(group.key)
       if (existing) {
@@ -760,7 +759,12 @@ export class ConnectionReconciler {
       if (!this.linearPool.beginConnect(group.key)) continue
       const conn = new LinearConnection({
         group,
+        // Resolved at CALL time, never captured: on an ordinary startup this reconcile runs
+        // BEFORE the CP socket connects, so a client captured here would be `undefined` for
+        // the connection's whole life and every renewal would fail once the ≤24 h snapshot
+        // aged out — the one failure that only shows up a day after deploy.
         requestToken: async (payload) => {
+          const cp = this.host.cpClient()
           if (!cp) throw new Error('control plane unavailable — cannot broker a Linear token')
           return await cp.requestLinearCred(payload)
         },
