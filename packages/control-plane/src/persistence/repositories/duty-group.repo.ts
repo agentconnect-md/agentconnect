@@ -28,6 +28,21 @@ async function lockOrgDutyScope(tx: Prisma.TransactionClient, orgId: string): Pr
 type Row = { id: string; orgId: string; holder: string | null; term: bigint; expiresAt: Date | null }
 
 /**
+ * Is this row a LIVE hold — someone is serving it right now? The row-wise complement of the
+ * vacancy predicate every claim statement carries (`holder IS NULL OR expiresAt IS NULL OR
+ * expiresAt < now`), stated once so a read and a write can never disagree about who is serving.
+ *
+ * Both sides fail closed at the exact boundary (`expiresAt = now` is neither vacant nor live), which
+ * is the safe direction on each: a claim refuses rather than double-serves, and a refusal reports no
+ * incumbent rather than a stale one. Only a live holder is ever named as one — a lapsed lease leaves
+ * `holder` standing on the row, and handing that back as a re-route target sends ingress that was
+ * already acknowledged upstream to a member that stopped serving it.
+ */
+function liveHold(row: { holder: string | null; expiresAt: Date | null }, now: Date): boolean {
+  return row.holder !== null && row.expiresAt !== null && row.expiresAt > now
+}
+
+/**
  * The eligibility predicate, once, as SQL — the row-wise mirror of `domain/placement.ts#mayHold`.
  * May `holder` hold the duty of the agent row `agent`? A `set` placement is claimable by the
  * members of that set, which is ONE join to `member_set_member` on `(agent.setId, holder)`; a
@@ -718,7 +733,7 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       }
       const row = await lockDutyRow(tx, member.groupId)
       if (row === null) throw new Error(`duty group ${member.groupId} vanished under its member row`)
-      const live = row.holder !== null && row.expiresAt !== null && row.expiresAt > now
+      const live = liveHold(row, now)
       if (live && row.holder === holder) {
         // Idempotent re-claim: refresh the horizon, never churn the term — ungated on capability,
         // which takes nothing and would only strand a group this member already serves.
@@ -751,12 +766,16 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
         }
       }
       const after = await tx.dutyGroup.findUniqueOrThrow({ where: { id: row.id } })
-      const stillMine = after.holder === holder && after.expiresAt !== null && after.expiresAt > now
+      // `holder` is the LIVE incumbent or nothing, read through the same predicate as `live` above.
+      // A refused take leaves the row's stale holder column standing over a lapsed lease, and
+      // naming that as the incumbent points the relay's one-hop re-route at a member that stopped
+      // serving — a drop, since the ingress it carries was acknowledged upstream and never re-sent.
+      const heldLive = liveHold(after, now)
       return {
-        granted: stillMine,
+        granted: heldLive && after.holder === holder,
         groupId: after.id,
         term: after.term,
-        holder: after.holder as DaemonId | null
+        holder: heldLive ? (after.holder as DaemonId) : null
       }
     })
   }

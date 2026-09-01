@@ -880,6 +880,32 @@ describe('DutyGroupRepo — the platform-capability claim gate (real Postgres)',
     })
   })
 
+  // …and only a LIVE one. A lapsed lease leaves its `holder` column standing, so a refused take
+  // would otherwise hand back a member that has stopped serving as the sole re-route target — and
+  // the relay drops the ingress there, having acknowledged it upstream already.
+  it('a capability-refused vacancy names no incumbent, stale holder column and all', async () => {
+    await member(M1, OLD_IMAGE)
+    await member(M2, NEW_IMAGE)
+    const setId = await joinPool(prisma, M1, M2)
+    await pooledAgent(A1, setId, 'needs-linear')
+    await integrate(I1, A1, B1, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    const won = await repo.claimAgentHome(ORG, AgentId(A1), M2, T0, LEASE_MS)
+    // The lease lapses; the row still carries M2 in `holder`, which is what makes this a trap.
+    const lapsed = after(LEASE_MS + 1)
+    expect(await prisma.dutyGroup.findUniqueOrThrow({ where: { id: won.groupId! } })).toMatchObject({ holder: M2 })
+
+    expect(await repo.claimAgentHome(ORG, AgentId(A1), M1, lapsed, LEASE_MS)).toEqual({
+      granted: false,
+      groupId: won.groupId,
+      term: 1n,
+      holder: null
+    })
+    // The gate is what refused it, not the ledger: the member that carries the platform takes it.
+    expect((await repo.claimAgentHome(ORG, AgentId(A1), M2, lapsed, LEASE_MS)).granted).toBe(true)
+  })
+
   // The claim's own diagnostic — negating the very predicate the claim carries, so it can only
   // ever name groups the claim actually refused, and only the platforms this member is missing.
   it('capabilityBlockedVacancies names the passed-over agent and only the platforms it lacks', async () => {

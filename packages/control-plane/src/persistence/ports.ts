@@ -6306,7 +6306,9 @@ export interface AgentHomeClaim {
    *  claimant, which has no group to name and must not learn of one. */
   groupId?: string
   term?: bigint
-  /** The live holder — the caller when granted, the incumbent for a `not_holder` answer otherwise. */
+  /** The LIVE holder — the caller when granted, the incumbent for a `not_holder` answer otherwise,
+   *  and null when the group has none. Never a lapsed lease's leftover `holder`: the re-route it
+   *  would send acknowledged ingress to is a member that has stopped serving, so a drop. */
   holder: DaemonId | null
 }
 
