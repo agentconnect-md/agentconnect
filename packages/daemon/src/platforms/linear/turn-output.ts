@@ -89,6 +89,10 @@ export interface LinearTurnState {
   /** Remaining non-settling activities; a settling `response`/`error` never draws on it. */
   activityBudget: number
   lastPlanHash?: string
+  /** The egress transport CAPTURED at turn start. Held rather than looked up per action
+   *  because reconciliation can drop the integration's binding mid-turn, and a turn that
+   *  cannot reach Linear can never post the settling activity that ends its session. */
+  conn?: LinearEgressPort
 }
 
 /** Raw attribution identity for the response footer. Structurally the same record the
@@ -99,6 +103,29 @@ export interface LinearAttribution {
   runtime: string
   model: string
   sessionUrl: string
+}
+
+/**
+ * Core's shared per-turn attribution record, as this surface names it.
+ *
+ * A pure rename, and it earns its existence: core calls the identity `bot`, but on Linear the
+ * bot is the deployment's one OAuth app (§4.3), so the footer must name the ACTING AGENT —
+ * which is the same field core already resolves from the agent, not from the app.
+ */
+export function linearAttributionOf(info: {
+  botName: string
+  botUrl: string
+  runtime: string
+  model: string
+  sessionUrl: string
+}): LinearAttribution {
+  return {
+    agentName: info.botName,
+    agentUrl: info.botUrl,
+    runtime: info.runtime,
+    model: info.model,
+    sessionUrl: info.sessionUrl
+  }
 }
 
 export type LinearOutputMode = 'none' | 'minimal' | 'low' | 'medium' | 'high'
@@ -574,16 +601,16 @@ function isSettlingActivity(action: Extract<LinearAction, { kind: 'activity' }>)
 /**
  * Apply one converger action to Linear, through the connection's own send queue.
  *
- * Routed here only for the `linear` platform, so the turn's connection is a Linear egress
- * port (or a test fake) — cast, not instanceof, matching the other surfaces. A headless turn
- * or a session with no AgentSession coordinate no-ops.
+ * The port is the one CAPTURED on the turn state at turn start, falling back to whatever the
+ * turn carries — so an integration unbound mid-turn still settles through the transport this
+ * turn holds a lease on. A headless turn or a session with no AgentSession coordinate no-ops.
  */
 export async function applyLinearAction<TTurn extends LinearTurn>(
   turn: TTurn,
   state: LinearTurnState,
   action: LinearAction
 ): Promise<void> {
-  const port = turn.conn as LinearEgressPort | undefined
+  const port = state.conn ?? (turn.conn as LinearEgressPort | undefined)
   const sessionId = turn.plan.thread
   if (!port || !sessionId) return
   switch (action.kind) {

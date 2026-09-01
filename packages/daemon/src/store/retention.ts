@@ -88,6 +88,21 @@ export const STORE_RETENTION_RULES: readonly StoreRetentionRule[] = [
     horizonMs: DEFAULT_STORE_HORIZON_MS
   },
   {
+    // A born-completed inbox row is a DEDUP RECEIPT, not work: it records that a delivery was
+    // already served, so a provider redelivery arriving long after the turn settled is dropped
+    // instead of re-run (linear-integration.md §4.5). Nothing drains it — the only other prune
+    // is a bounded backstop that fires when a hook report is acknowledged, which a daemon
+    // serving no hooks never reaches — so retention is what keeps it from growing forever. The
+    // default window comfortably outlives Linear's 1 min / 1 h / 6 h redelivery ladder.
+    id: 'delivery-receipt',
+    table: 'inbox',
+    key: ['id'],
+    clock: 'completedAt',
+    where: 'completedAt IS NOT NULL AND terminalReport IS NULL',
+    agentColumn: 'agentId',
+    horizonMs: DEFAULT_STORE_HORIZON_MS
+  },
+  {
     // An outward id minted before its session row exists (§1.1). The turn's insert adopts it and
     // `deleteSession` drops it, so what ages out here is a slot whose turn never dispatched, or an
     // `internal:*` key — dream / memory / commit work that never becomes a session at all. Aging

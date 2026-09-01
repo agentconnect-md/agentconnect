@@ -31,6 +31,7 @@ import type {
 } from '../contract.js'
 import { platformIntegrationConfig } from '../integration-config.js'
 import { PlatformSendQueue } from '../send-queue.js'
+import type { LinearActivityInput } from './turn-output.js'
 
 /** Linear's single GraphQL endpoint (§2). Overridable per connection for tests only. */
 export const LINEAR_GRAPHQL_ENDPOINT = 'https://api.linear.app/graphql'
@@ -301,6 +302,23 @@ export class LinearConnection implements PlatformConnection {
       agentActivityCreate: { agentActivity: { id } }
     }))
     return data.agentActivityCreate?.agentActivity?.id ?? id
+  }
+
+  /** {@link LinearEgressPort}'s half of {@link createActivity}: the Layer-2 surface emits a FLAT
+   *  activity input, and the discriminated content union is this connection's own shape. */
+  async postActivity(agentSessionId: string, activity: LinearActivityInput): Promise<void> {
+    await this.createActivity(
+      agentSessionId,
+      activity.type === 'action'
+        ? {
+            type: 'action',
+            action: activity.action ?? '',
+            parameter: activity.parameter ?? '',
+            ...(activity.result !== undefined ? { result: activity.result } : {})
+          }
+        : { type: activity.type, body: activity.body ?? '' },
+      activity.ephemeral !== undefined ? { ephemeral: activity.ephemeral } : {}
+    )
   }
 
   /** `agentSessionUpdate` — the session-level surfaces (§2). Needs no idempotency key: `plan` and

@@ -54,6 +54,45 @@ describe('LocalStore inbox', () => {
     await s.close()
   })
 
+  it('commits an admission row and its delivery receipt together, or neither', async () => {
+    // The receipt outlives the turn and is what a late redelivery is recognized by; the
+    // ordinary row is deleted at settlement. Written separately, a crash between them leaves
+    // a row that replays with no receipt, and the next redelivery runs the turn again.
+    const s = await store()
+    const k = sessionKey('linear', 'issue-1', 'session-1', 'bot-a')
+    const admission = row('deliver-1', k, '100')
+    const receipt = { ...admission, id: 'served\u001fdeliver-1', completedAt: 1 }
+
+    expect(await s.appendInboxWithReceipt(admission, receipt)).toEqual({ admitted: true })
+    expect((await s.listInboxBySessionKeyFifo()).map((r) => r.id).sort()).toEqual([
+      'deliver-1',
+      'served\u001fdeliver-1'
+    ])
+
+    // A redelivery loses the CAS on the receipt, so it admits NOTHING — not even quietly, and
+    // in particular it does not re-create the admission row a settled turn already removed.
+    await s.removeInbox('deliver-1')
+    expect(await s.appendInboxWithReceipt(admission, receipt)).toEqual({ admitted: false })
+    expect((await s.listInboxBySessionKeyFifo()).map((r) => r.id)).toEqual(['served\u001fdeliver-1'])
+    await s.close()
+  })
+
+  it('rolls the receipt back when the admission row cannot be written', async () => {
+    // The crash window, forced: the receipt inserts and the admission row then fails. Both
+    // must vanish — a surviving receipt would swallow every future redelivery of a message
+    // this daemon never actually admitted.
+    const s = await store()
+    const k = sessionKey('linear', 'issue-1', 'session-2', 'bot-a')
+    const receipt = { ...row('deliver-2', k, '100'), id: 'served\u001fdeliver-2', completedAt: 1 }
+    const unwritable = { ...row('deliver-2', k, '100'), msg: undefined as unknown as string }
+
+    await expect(s.appendInboxWithReceipt(unwritable, receipt)).rejects.toThrow()
+    expect(await s.listInboxBySessionKeyFifo()).toEqual([])
+    // And because nothing was recorded, the retry is a FIRST admission rather than a duplicate.
+    expect(await s.appendInboxWithReceipt(row('deliver-2', k, '100'), receipt)).toEqual({ admitted: true })
+    await s.close()
+  })
+
   it('append preserves the first delivery payload while durably advancing its loop marker', async () => {
     const s = await store()
     const k = sessionKey('slack', 'C1', 'T1', 'bot-a')
