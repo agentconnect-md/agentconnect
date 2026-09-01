@@ -42,9 +42,10 @@ const wizardOf = (id: string) => {
 }
 
 describe('platform registry', () => {
-  it('registers exactly the four chat platforms, in picker order', () => {
-    expect(platformRegistry.ids()).toEqual(['slack', 'telegram', 'discord', 'feishu'])
-    expect(platformRegistry.all().map((m) => m.platformId)).toEqual(['slack', 'telegram', 'discord', 'feishu'])
+  it('registers exactly the five chat platforms, in picker order', () => {
+    const ids = ['slack', 'telegram', 'discord', 'feishu', 'linear']
+    expect(platformRegistry.ids()).toEqual(ids)
+    expect(platformRegistry.all().map((m) => m.platformId)).toEqual(ids)
   })
 
   it('does not register the core trigger kinds — those are chassis fragments', () => {
@@ -77,6 +78,16 @@ describe('freeBotFilter', () => {
     const feishu = wizardOf('feishu')
     expect(feishu.freeBotFilter(bot({ platform: 'feishu', feishuRegion: null }), ctx({ region: 'feishu' }))).toBe(true)
     expect(feishu.freeBotFilter(bot({ platform: 'feishu' }), ctx({ region: 'lark' }))).toBe(false)
+  })
+
+  it('linear offers every connected workspace, unfenced', () => {
+    // The Bot row IS the workspace and `shareable: true` is structural on it, so
+    // adding a member needs no reuse fence — the CP refuses nothing the list shows.
+    const linear = wizardOf('linear')
+    expect(linear.freeBotFilter(bot({ platform: 'linear', transport: 'http', shareable: true }), ctx())).toBe(true)
+    expect(linear.freeBotFilter(bot({ platform: 'linear', transport: 'http', agentIds: ['a', 'b'] }), ctx())).toBe(true)
+    // Not even the Slack-shaped disqualifier: `teamId` is a Slack platform-app column.
+    expect(linear.freeBotFilter(bot({ platform: 'linear', teamId: 'T0EXAMPLE1' }), ctx())).toBe(true)
   })
 
   it('telegram and discord add nothing to the chassis predicate', () => {
@@ -130,6 +141,17 @@ describe('buildReuseInput', () => {
     ).toEqual({ platform: 'feishu', agentId: 'agent-1', botId: 'bot-1', transport: 'http' })
   })
 
+  it('linear pins http and never asks for shareable', () => {
+    // Linear has no dial-out transport, so a workspace bot is only ever http; and
+    // the provider stamps `shareable` structurally, so the caller never sends it.
+    expect(wizardOf('linear').buildReuseInput(bot({ id: 'ws-1', platform: 'linear' }), ctx({ shared: true }))).toEqual({
+      platform: 'linear',
+      agentId: 'agent-1',
+      botId: 'ws-1',
+      transport: 'http'
+    })
+  })
+
   it('telegram and discord carry neither transport nor shareable', () => {
     for (const id of ['telegram', 'discord']) {
       expect(wizardOf(id).buildReuseInput(bot({ id: 'b-2', platform: id }), ctx({ shared: true }))).toEqual({
@@ -151,14 +173,20 @@ describe('affordances', () => {
       labels: { socket: 'Long connection', http: 'HTTP callbacks' },
       httpByDefaultWhenRelayAvailable: false
     })
-    expect(wizardOf('telegram').affordances.transport).toBeUndefined()
-    expect(wizardOf('discord').affordances.transport).toBeUndefined()
+    // A SINGLE FIXED transport is the absent member, not a one-armed choice:
+    // Linear is http-only and Telegram/Discord socket-only.
+    for (const id of ['telegram', 'discord', 'linear']) {
+      expect(wizardOf(id).affordances.transport, id).toBeUndefined()
+    }
   })
 
-  it('only slack offers the shared-bot opt-in', () => {
+  it('slack and linear offer multi-agent bots, nobody else does — and differ in how', () => {
+    // Slack's is an opt-in the operator makes; Linear's is structural, stamped by the
+    // provider on every connected workspace, so no surface offers a control for it.
     expect(wizardOf('slack').affordances.share).toBe(true)
+    expect(wizardOf('linear').affordances.share).toBe('fixed')
     for (const id of ['telegram', 'discord', 'feishu']) {
-      expect(wizardOf(id).affordances.share).toBeUndefined()
+      expect(wizardOf(id).affordances.share, id).toBeUndefined()
     }
   })
 })
@@ -192,5 +220,14 @@ describe('region-parameterised copy', () => {
       create: 'Create with a Slack manifest',
       existing: 'An unused Slack app'
     })
+    // Linear's mode cards name a workspace, not a bot: create CONNECTS one and
+    // existing joins one the org already holds.
+    expect(wizardOf('linear').identityCards(undefined)).toEqual({
+      create: 'Connect a Linear workspace',
+      existing: 'A connected Linear workspace'
+    })
+    expect(wizardOf('linear').inviteHint(undefined)).toBe(
+      'delegate an issue to the app in Linear, or mention it to reach one agent by name.'
+    )
   })
 })

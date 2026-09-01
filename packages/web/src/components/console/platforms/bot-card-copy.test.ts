@@ -7,7 +7,11 @@ import { DEFAULT_BOT_CARD_COPY, botCardCopy, platformRegistry } from './registry
  * EVERY platform's rows, so what these pin is the split: Slack's wording
  * unchanged to the byte, and a provider-free default everywhere else.
  */
-const UNCLAIMED = ['linear', 'hook', 'github', 'playground', 'webchat', 'lark', 'Slack', 'constructor', '__proto__', '']
+const UNCLAIMED = ['zulip', 'hook', 'github', 'playground', 'webchat', 'lark', 'Slack', 'constructor', '__proto__', '']
+
+/** The modules that declare copy of their own — every other registered platform
+ *  falls all the way through to the provider-free defaults. */
+const DECLARES_COPY = ['slack', 'linear']
 
 /** Captured from `SettingsView.tsx` before the member existed. */
 const SLACK_REVOKED = 'The Slack workspace uninstalled this app or revoked its tokens — re-install to reconnect'
@@ -26,8 +30,17 @@ describe('Settings → Bots row copy', () => {
     expect(copy.shareHint.unavailable).toBe(SLACK_SHARE_UNAVAILABLE)
   })
 
+  it('names the revocation Linear can actually reach', () => {
+    // The `OAuthApp revoked` doorbell stamps `revokedAt` and flips every membership,
+    // and reconnecting is what repairs it — a lifecycle Linear can describe, unlike
+    // the platforms that can never reach the state at all.
+    const copy = botCardCopy('linear')
+    expect(copy.revokedHint).toBe('This workspace revoked the Linear app — reconnect to restore delivery')
+    expect(copy.identityNoun).toBe('workspace')
+  })
+
   it('gives every other registered platform the provider-free default', () => {
-    for (const id of platformRegistry.ids().filter((p) => p !== 'slack')) {
+    for (const id of platformRegistry.ids().filter((p) => !DECLARES_COPY.includes(p))) {
       const copy = botCardCopy(id)
       expect(copy.revokedHint, id).toBe(DEFAULT_BOT_CARD_COPY.revokedHint)
       expect(copy.shareHint, id).toEqual(DEFAULT_BOT_CARD_COPY.shareHint)
@@ -38,7 +51,7 @@ describe('Settings → Bots row copy', () => {
         .all()
         .filter((m) => m.settingsFragments?.copy)
         .map((m) => m.platformId)
-    ).toEqual(['slack'])
+    ).toEqual(DECLARES_COPY)
   })
 
   it('names no platform in any default', () => {
@@ -50,13 +63,14 @@ describe('Settings → Bots row copy', () => {
     expect(DEFAULT_BOT_CARD_COPY.identityNoun).not.toMatch(PLATFORM_WORDS)
   })
 
-  it('collapses both share arms for a platform that cannot share at all', () => {
-    // The host still picks an arm by transport, but multi-agent bots are
-    // Slack-only at the CP — so on every other platform the arm the host lands
-    // on is not the reason, and one sentence must serve both rather than
-    // promising that switching transport would help.
+  it('collapses both share arms wherever the transport is not the reason', () => {
+    // The host still picks an arm by transport, but Slack is the only platform
+    // where that is why the toggle is off — Telegram/Discord/Feishu cannot share
+    // at all, and a Linear workspace is shared structurally rather than by a
+    // transport choice. One sentence serves both arms rather than promising that
+    // switching transport would help.
     expect(DEFAULT_BOT_CARD_COPY.shareHint.available).toBe(DEFAULT_BOT_CARD_COPY.shareHint.unavailable)
-    for (const id of ['telegram', 'discord', 'feishu']) {
+    for (const id of ['telegram', 'discord', 'feishu', 'linear']) {
       const { available, unavailable } = botCardCopy(id).shareHint
       expect(available, id).toBe(unavailable)
     }

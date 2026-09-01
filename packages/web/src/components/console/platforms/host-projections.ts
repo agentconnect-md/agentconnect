@@ -84,6 +84,7 @@ export const INTEGRATION_BLURB: Record<string, string> = {
   telegram: 'Reply in groups & chats',
   discord: 'Reply in servers',
   feishu: 'Reply in groups & chats',
+  linear: 'Work delegated issues',
   github: 'React to issues & PRs',
   gitlab: 'React to issues & MRs',
   webhook: 'Trigger by posting a URL'

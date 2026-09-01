@@ -5,6 +5,7 @@ import type { BotDto, SessionMessageDto } from '@/lib/api'
 import type { WebBotCardCopy, WebChannelListSemantics, WebPlatformModule, WebPlatformRegistry } from './contract'
 import { discordModule } from './discord'
 import { feishuModule } from './feishu'
+import { linearModule } from './linear'
 import { slackModule } from './slack'
 import { telegramModule } from './telegram'
 
@@ -20,7 +21,7 @@ import { telegramModule } from './telegram'
  *
  * Order is the picker order.
  */
-const MODULES: readonly WebPlatformModule[] = [slackModule, telegramModule, discordModule, feishuModule]
+const MODULES: readonly WebPlatformModule[] = [slackModule, telegramModule, discordModule, feishuModule, linearModule]
 
 const BY_ID = new Map(MODULES.map((m) => [m.platformId, m]))
 const IDS: readonly string[] = MODULES.map((m) => m.platformId)
@@ -53,9 +54,9 @@ export function channelListSemantics(platformId?: string): WebChannelListSemanti
  * otherwise — provider-free by construction, because the strings these replace
  * described Slack's model on every platform's rows.
  *
- * `shareHint`'s two arms are the SAME sentence here on purpose. The host picks
- * an arm by transport, but multi-agent bots are Slack-only at the CP, so for a
- * platform that declares nothing the transport arm is not the reason sharing is
+ * `shareHint`'s two arms are the SAME sentence here on purpose. The host picks an
+ * arm by transport, but a platform that declares nothing supports no multi-agent
+ * bot at any transport, so the arm it lands on is not the reason sharing is
  * unavailable and a second sentence would promise a fix that does not exist.
  */
 export const DEFAULT_BOT_CARD_COPY: Required<WebBotCardCopy> = {
@@ -97,7 +98,23 @@ export function botCardCopy(platformId?: string): Required<WebBotCardCopy> {
  * platforms that do not declare it here.
  */
 export function platformSupportsSharing(platformId?: string): boolean {
-  return (platformId ? platformRegistry.get(platformId)?.wizard.affordances.share : undefined) === true
+  const share = platformId ? platformRegistry.get(platformId)?.wizard.affordances.share : undefined
+  return share === true || share === 'fixed'
+}
+
+/**
+ * Whether multi-agent is STRUCTURAL here rather than an operator's opt-in
+ * (`share: 'fixed'`) — the provider stamps `shareable` itself and no console
+ * surface may move it.
+ *
+ * A second lookup rather than a second declaration: both read the one
+ * `affordances.share` value, so "supports sharing" and "the operator chooses it"
+ * cannot drift apart the way a mirrored flag would. Callers use it to SUPPRESS a
+ * control, never to grant one — a platform that answers true here already answers
+ * true to {@link platformSupportsSharing}.
+ */
+export function platformSharingFixed(platformId?: string): boolean {
+  return (platformId ? platformRegistry.get(platformId)?.wizard.affordances.share : undefined) === 'fixed'
 }
 
 /**
@@ -115,8 +132,15 @@ export function platformSupportsSharing(platformId?: string): boolean {
  * toggle was transport-gated only, the PATCH accepted the flip, so rows on a
  * non-sharing platform may already carry `shareable: true`. The CP still honors
  * turning those OFF, so the console must keep the control that does it.
+ *
+ * A `share: 'fixed'` platform is refused BEFORE that hatch, and the order is the
+ * whole point: its rows all carry `shareable: true` structurally, so the hatch
+ * would hand every one of them a live control for a flag the provider owns. The
+ * CP would accept a lone-member `shareable: false` PATCH, and the only way back
+ * is re-running the OAuth funnel.
  */
 export function botSharingEditable(bot: Pick<BotDto, 'platform' | 'transport' | 'shareable'>): boolean {
+  if (platformSharingFixed(bot.platform)) return false
   if (bot.shareable) return true
   return platformSupportsSharing(bot.platform) && (bot.transport ?? 'socket') === 'http'
 }

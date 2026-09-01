@@ -138,7 +138,7 @@ const PLATFORM_KEYS = [
   'hook',
   'github',
   'lark',
-  'linear',
+  'zulip',
   'Slack',
   'constructor',
   '__proto__'

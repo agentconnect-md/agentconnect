@@ -56,7 +56,7 @@ describe('platform set', () => {
     // picker names both so a Feishu user recognizes their own tile.
     expect(platformLabel('feishu')).toEqual({ name: 'Lark', picker: 'Lark/Feishu' })
     expect(platformLabel('lark')).toEqual(platformLabel('feishu'))
-    for (const id of ['slack', 'telegram', 'discord']) {
+    for (const id of ['slack', 'telegram', 'discord', 'linear']) {
       const label = platformLabel(id)!
       expect(label.name, id).toBe(label.picker)
     }
@@ -122,7 +122,14 @@ describe('platform set', () => {
         expect(tab.label, tab.key).toBe(larkFeishuBrand(tab.region))
       }
     }
-    expect(BOT_PLATFORM_TABS.map((tab) => tab.label)).toEqual(['Slack', 'Telegram', 'Discord', 'Lark', 'Feishu'])
+    expect(BOT_PLATFORM_TABS.map((tab) => tab.label)).toEqual([
+      'Slack',
+      'Telegram',
+      'Discord',
+      'Lark',
+      'Feishu',
+      'Linear'
+    ])
   })
 
   it('routes each bot to exactly one tab, region rows included', () => {
@@ -154,10 +161,11 @@ describe('platform set', () => {
   it('names the bot identity from the module, not from the tab table', () => {
     // The noun was the tab table's own column ('app' for Slack, 'bot' for the
     // rest). It is module copy now, so the card's heading, delete tooltip and
-    // empty state read one declaration.
-    expect(botCardCopy('slack').identityNoun).toBe('app')
-    for (const id of platformRegistry.ids().filter((p) => p !== 'slack')) {
-      expect(botCardCopy(id).identityNoun, id).toBe('bot')
+    // empty state read one declaration — and a row that is not a bot at all can
+    // say so ('workspace' on Linear, where the row IS one connected workspace).
+    const NOUNS: Record<string, string> = { slack: 'app', linear: 'workspace' }
+    for (const id of platformRegistry.ids()) {
+      expect(botCardCopy(id).identityNoun, id).toBe(NOUNS[id] ?? 'bot')
     }
     expect(botCardCopy('zulip').identityNoun).toBe('bot')
   })

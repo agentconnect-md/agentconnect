@@ -39,7 +39,11 @@ import {
   type FooterView,
   type IdentityChromeView
 } from '@/components/console/platforms/publish'
-import { platformRegistry, platformSupportsSharing } from '@/components/console/platforms/registry'
+import {
+  platformRegistry,
+  platformSharingFixed,
+  platformSupportsSharing
+} from '@/components/console/platforms/registry'
 import { BOT_PLATFORMS, PLATFORMS, isCoreTriggerKind } from '@/components/console/platforms/host-projections'
 import { agentCapabilitySource, agentLabel, MOCK_MODE, workspaceSourceOf, type Agent } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
@@ -661,9 +665,11 @@ export default function AddIntegrationModal({
     setIdentityChrome
   ])
 
-  // Deployment-level public-callback capability. Probed only for platforms that
-  // actually offer a transport choice — the same two panes that read it today.
-  const probe = useDeploymentConfig(wizard?.affordances.transport !== undefined)
+  // Deployment-level public-callback capability, probed for every platform module.
+  // It used to be gated on a transport CHOICE, which left `relayCapability` reading
+  // false for a platform whose single fixed transport is the relay-backed one — the
+  // opposite of the answer that platform needs most.
+  const probe = useDeploymentConfig(wizard !== undefined)
   const relayCapability = useMemo(
     () => ({ available: probe.config?.relayAvailable ?? false, publicUrl: probe.config?.relayPublicUrl ?? null }),
     [probe.config]
@@ -712,9 +718,12 @@ export default function AddIntegrationModal({
   // transport. Existing: gate on the reused bot's own transport (the selector
   // isn't shown for reuse), so a socket bot never offers it. The platform half
   // goes through `platformSupportsSharing` (registry.ts), the same lookup the
-  // Settings → Bots toggle makes, so the two surfaces cannot disagree.
+  // Settings → Bots cell makes, so the two surfaces cannot disagree — including
+  // on a `share: 'fixed'` platform, where the provider stamps the flag and there
+  // is no opt-in to offer on either surface.
   const shareToggleAvailable =
     platformSupportsSharing(platform) &&
+    !platformSharingFixed(platform) &&
     (mode === 'existing' ? (selectedBot?.transport ?? 'socket') === 'http' : transport === 'http')
   // Reusing an already-shared bot is implicitly a shared install.
   const wantShared = shareToggleAvailable && (shared || (mode === 'existing' && !!selectedBot?.shareable))

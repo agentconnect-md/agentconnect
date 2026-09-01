@@ -752,6 +752,10 @@ export type CreateIntegrationInput =
         encryptKey?: string
       }
     })
+  // Linear carries no credential block from the console: a workspace bot only ever
+  // exists after the OAuth callback minted it, so the only create shape here is
+  // "add this agent as a member of a connected workspace" (linear-integration.md §7.1).
+  | (CreateIntegrationBase & { platform: 'linear'; transport?: 'http'; botId: string })
 
 export interface TelegramBotCheckDto {
   status: 'ready' | 'privacy_enabled' | 'invalid' | 'unreachable'
@@ -901,6 +905,9 @@ export interface BotDto {
   // callbacks. Only a Slack http bot may be shared. Missing (older CP) ⇒ socket.
   transport: 'socket' | 'http'
   shareable: boolean // shared-bot opt-in — when true it may serve many agents at once
+  // The member that catches a bare mention / DM / delegation; null ⇒ the compile's
+  // earliest-non-gated-member derivation. Optional while older control planes roll out.
+  preferredAgentId?: string | null
   inUseByAgentId: string | null // classic-bot occupancy; ALWAYS null for a shareable bot
   agentIds: string[] // every agent currently installed on the bot (a shared bot may have many)
   lastUsedAt: string | null // ISO-8601; stamped when last freed; null ⇒ never used
@@ -3932,6 +3939,48 @@ export async function deleteSlackConfig(): Promise<void> {
   await apiDelete<void>(`${orgBase()}/slack/config`)
 }
 
+// ── Linear workspace connect funnel (linear-integration.md §7.1, §7.4) ──
+// A Linear bot IS one connected workspace, and agents are members of it. The
+// funnel mints a one-shot OAuth state bound to this org and the workspace's chosen
+// default agent; no bot or integration row exists until the callback completes.
+
+/** A started connect round trip: the funnel row id (which IS the OAuth `state`)
+ *  and the linear.app authorize URL to open. */
+export interface LinearConnectStartDto {
+  id: string
+  connectUrl: string
+}
+
+/** Poll answer for one connect round trip. `failureReason` is a short server code
+ *  (`denied` / `expired` / `workspace_taken` / `wrong_workspace` /
+ *  `default_agent_required` / `agent_missing` / `error`), never prose. */
+export interface LinearConnectStatusDto {
+  id: string
+  status: 'pending' | 'completed' | 'failed'
+  failureReason: string | null
+  botId: string | null
+}
+
+// Start connecting a workspace. `agentId` becomes its default agent — the member a
+// bare delegation starts a session with. Throws ApiError(404) when the deployment
+// has no Linear app, which is the console's only signal that it is unconfigured.
+export async function startLinearConnect(agentId: string): Promise<LinearConnectStartDto> {
+  return apiPost<LinearConnectStartDto>(`${orgBase()}/integrations/linear/connect`, { agentId })
+}
+
+// Poll one connect row while the user authorizes in the other tab. The ROW's
+// terminal state is the signal: the OAuth tab is a throwaway, so a tail refusal
+// (workspace claimed elsewhere, wrong workspace) has no other channel back.
+export async function getLinearConnect(id: string): Promise<LinearConnectStatusDto> {
+  return apiGet<LinearConnectStatusDto>(`${orgBase()}/integrations/linear/connect/${encodeURIComponent(id)}`)
+}
+
+// Restart the funnel against an already-connected workspace whose grant died. The
+// nonce is bound to this bot, so authorizing a different workspace is refused.
+export async function reconnectLinearWorkspace(botId: string): Promise<LinearConnectStartDto> {
+  return apiPost<LinearConnectStartDto>(`${orgBase()}/bots/${encodeURIComponent(botId)}/linear/reconnect`, {})
+}
+
 // Uninstall an integration (`DELETE /integrations/:id`): drops the CP record and
 // tells the owning daemon to close the connection. The BOT survives (freed) — it
 // shows up in the Add-integration picker for reuse.
@@ -4164,6 +4213,12 @@ export async function leaveIntegrationConversation(
 /** Flip a bot's shared-bot opt-in (PATCH /bots/:id). */
 export async function updateBot(id: string, shareable: boolean): Promise<BotDto> {
   return apiPatch<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}`, { shareable })
+}
+
+/** Move the bot's preferred default agent (PATCH /bots/:id); null restores the
+ *  compile's earliest-member default. The CP 409s an agent that is not a member. */
+export async function setBotPreferredAgent(id: string, agentId: string | null): Promise<BotDto> {
+  return apiPatch<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}`, { preferredAgentId: agentId })
 }
 
 /** Sync one user-managed Slack app's manifest and re-check the scopes granted to

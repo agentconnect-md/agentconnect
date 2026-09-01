@@ -17,7 +17,13 @@
 
 import { describe, expect, it } from 'vitest'
 import type { BotDto } from '@/lib/api'
-import { botCardCopy, botSharingEditable, platformRegistry, platformSupportsSharing } from './registry'
+import {
+  botCardCopy,
+  botSharingEditable,
+  platformRegistry,
+  platformSharingFixed,
+  platformSupportsSharing
+} from './registry'
 
 /** `platform`/`transport`/`shareable` are the only members either predicate
  *  reads; the rest is here so the fixture stays a real `BotDto`. */
@@ -44,12 +50,20 @@ function bot(over: Partial<BotDto> = {}): BotDto {
 /** Ids a bot row can carry that no module claims — core trigger kinds, a
  *  platform not built yet, and the prototype-pollution shapes a `Map` lookup
  *  must not answer for. */
-const UNCLAIMED = ['webhook', 'github', 'playground', 'webchat', 'linear', 'lark', 'Slack', '__proto__', '']
+const UNCLAIMED = ['webhook', 'github', 'playground', 'webchat', 'zulip', 'lark', 'Slack', '__proto__', '']
+
+/** The platforms whose bots may serve several agents — the §5 manifest's
+ *  `multiAgentShareable` set, mirrored one module at a time. */
+const SHARING_PLATFORMS = ['slack', 'linear']
+
+/** …and the ones where that is STRUCTURAL rather than an operator's opt-in: the
+ *  provider stamps `shareable`, so no console surface offers a control for it. */
+const FIXED_SHARING_PLATFORMS = ['linear']
 
 describe('platformSupportsSharing', () => {
-  it('is true for Slack and false for every other registered platform', () => {
-    expect(platformSupportsSharing('slack')).toBe(true)
-    for (const id of platformRegistry.ids().filter((p) => p !== 'slack')) {
+  it('is true for the multi-agent platforms and false for every other registered one', () => {
+    for (const id of SHARING_PLATFORMS) expect(platformSupportsSharing(id), id).toBe(true)
+    for (const id of platformRegistry.ids().filter((p) => !SHARING_PLATFORMS.includes(p))) {
       expect(platformSupportsSharing(id), id).toBe(false)
     }
   })
@@ -62,22 +76,52 @@ describe('platformSupportsSharing', () => {
   })
 
   it('reads the modules’ single declaration of the fact', () => {
-    // ONE declaration, so the wizard's shared opt-in and the Settings toggle
-    // cannot disagree about a platform. Named, so a module that starts declaring
-    // it is a visible diff here — and a reminder that the CP's own predicate has
-    // to move in the same change.
+    // ONE declaration, so the wizard's shared opt-in and the Settings cell cannot
+    // disagree about a platform. Named, so a module that starts declaring it is a
+    // visible diff here — and a reminder that the CP's own predicate has to move in
+    // the same change.
     expect(
       platformRegistry
         .all()
-        .filter((m) => m.wizard.affordances.share === true)
+        .filter((m) => m.wizard.affordances.share !== undefined)
         .map((m) => m.platformId)
-    ).toEqual(['slack'])
+    ).toEqual(SHARING_PLATFORMS)
+  })
+})
+
+describe('platformSharingFixed', () => {
+  it('separates structural sharing from the operator’s opt-in', () => {
+    // Slack's `true` is a decision someone makes; Linear's `'fixed'` is a fact the
+    // provider stamps. Both support sharing — only one is a control.
+    for (const id of FIXED_SHARING_PLATFORMS) {
+      expect(platformSharingFixed(id), id).toBe(true)
+      expect(platformSupportsSharing(id), id).toBe(true)
+    }
+    expect(platformSharingFixed('slack')).toBe(false)
+    expect(platformRegistry.get('slack')?.wizard.affordances.share).toBe(true)
+  })
+
+  it('never grants sharing on its own — it only ever suppresses a control', () => {
+    for (const id of platformRegistry.ids().filter((p) => !FIXED_SHARING_PLATFORMS.includes(p))) {
+      expect(platformSharingFixed(id), id).toBe(false)
+    }
+    for (const id of UNCLAIMED) expect(platformSharingFixed(id), id).toBe(false)
+    expect(platformSharingFixed(undefined)).toBe(false)
   })
 })
 
 describe('botSharingEditable', () => {
   it('lets a Slack HTTP bot be shared', () => {
     expect(botSharingEditable(bot({ platform: 'slack', transport: 'http' }))).toBe(true)
+  })
+
+  it('never lets a Linear workspace’s structural sharing be operated', () => {
+    // The provider stamps `shareable: true` on every workspace bot (§4.3). A live
+    // toggle would let a one-member workspace be PATCHed back to `shareable: false`
+    // — a state the provider contract does not have, recoverable only by re-running
+    // the OAuth funnel. The `shareable` escape hatch must not reach these rows.
+    expect(botSharingEditable(bot({ platform: 'linear', transport: 'http', shareable: true }))).toBe(false)
+    expect(botSharingEditable(bot({ platform: 'linear', transport: 'http', shareable: false }))).toBe(false)
   })
 
   it('refuses a Feishu HTTP bot — the platform, not the transport, is the reason', () => {
@@ -121,7 +165,9 @@ describe('the disabled toggle and its tooltip agree', () => {
     // so a module cannot declare two different share sentences while the toggle
     // it explains is dead for a reason no transport change repairs.
     for (const id of platformRegistry.ids()) {
-      if (platformSupportsSharing(id)) continue
+      // A fixed-sharing platform renders no toggle at all, but its cell still carries
+      // this sentence as its title — so it is held to the same rule, not exempted.
+      if (platformSupportsSharing(id) && !platformSharingFixed(id)) continue
       const { available, unavailable } = botCardCopy(id).shareHint
       expect(available, id).toBe(unavailable)
     }

@@ -57,7 +57,7 @@ describe('duplicateIdentity', () => {
     // the opposite — absent `messageIdentity` ⇒ never dedupe — and dedupe is
     // the only step here that can delete a row, so the guess goes the other
     // way now. A Slack-SHAPED ts under an unknown id is the case that changed.
-    for (const platform of ['linear', 'hook', 'github', 'playground', 'Slack', '']) {
+    for (const platform of ['zulip', 'hook', 'github', 'playground', 'Slack', '']) {
       expect(duplicateIdentity(platform, row({ ts: '1754123456.000200' })), platform).toBeNull()
       expect(duplicateIdentity(platform, row({ postId: POST })), platform).toBeNull()
     }
@@ -207,8 +207,8 @@ describe('mergeConversation', () => {
     // "toward a visible duplicate, never toward data loss" (§6).
     const platformTs = '1754123456.000200'
     const merged = mergeConversation([
-      src(A, 'linear', [row({ sender: 'U-HUMAN', ts: platformTs, text: 'hello' })]),
-      src(B, 'linear', [row({ sender: 'U-HUMAN', ts: platformTs, text: 'hello' })])
+      src(A, 'zulip', [row({ sender: 'U-HUMAN', ts: platformTs, text: 'hello' })]),
+      src(B, 'zulip', [row({ sender: 'U-HUMAN', ts: platformTs, text: 'hello' })])
     ])
     expect(merged).toHaveLength(2)
   })

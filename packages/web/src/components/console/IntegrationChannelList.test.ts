@@ -305,6 +305,9 @@ describe('IntegrationChannelList footer', () => {
   it('names the room with the platform noun throughout', () => {
     expect(footer('telegram')).toContain('A group appears here once the bot is added to it')
     expect(footer('slack')).toContain('A channel appears here once the bot is added to it')
+    // The article follows the module's noun rather than being a literal — one of
+    // them starts with a vowel.
+    expect(footer('linear')).toContain('An issue appears here once the bot is added to it')
   })
 })
 
