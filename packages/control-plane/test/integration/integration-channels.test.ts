@@ -17,6 +17,7 @@ import { prisma } from '../setup.db.js'
 import { seedDaemon, seedAgent, seedDutyGroup } from '../fixtures/seed.js'
 import { seedPoolMember } from '../fakes/member-set.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
+import { installNewBot } from '../../src/http/install-bot.js'
 import {
   PgAgentRepo,
   PgBotRepo,
@@ -61,6 +62,8 @@ const CAROL_SUB = 'oidc-carol'
 const DAEMON = 'd1d1d1d1-dddd-4ddd-8ddd-dddddddddddd'
 const OTHER_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
 const SLACK = { botToken: 'xoxb-abc-123', appToken: 'xapp-1-def-456' }
+/** The connected Linear organization — the channel itself, since the workspace IS the channel. */
+const LINEAR_WORKSPACE = '5f3a0c9e-1c2b-4a7d-9e10-6b5c4d3e2f10'
 
 class SpyControl {
   readonly upserts: Array<{ daemonId: string; u: IntegrationUpsert }> = []
@@ -104,6 +107,35 @@ async function install(app: HttpApp): Promise<string> {
   })
   expect(res.statusCode).toBe(201)
   return (res.json() as { id: string }).id
+}
+
+/** Connect a LINEAR workspace through the REAL create tail the OAuth callback uses
+ *  (`installNewBot`) — that is the seat that seeds the workspace conversation row. */
+async function installLinear(app: HttpApp, opts: { restricted?: boolean } = {}): Promise<string> {
+  const agentId = randomUUID()
+  await seedAgent(prisma, agentId, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID })
+  if (opts.restricted) {
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+    })
+  }
+  const agent = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
+  const { integration } = await installNewBot(app.deps, { debug: () => {} }, {
+    orgId: DEFAULT_ORG_ID as never,
+    agent: agent as never,
+    platform: 'linear',
+    name: 'Acme',
+    transport: 'http',
+    secrets: { botToken: 'client-secret', appToken: null, signingSecret: 'lin_wh_secret' },
+    bot: {
+      shareable: true,
+      workspaceId: LINEAR_WORKSPACE,
+      workspaceName: 'Acme',
+      botUserId: 'lin-app-user'
+    }
+  } as never)
+  return integration.id
 }
 
 /** Install a TELEGRAM integration — the platform whose rows are session-derived, so
@@ -334,6 +366,68 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     ;[dto] = res.json() as { channels: { channelId: string; kind: string; trigger: string }[] }[]
     expect(dto!.channels.find((c) => c.channelId === 'D1')).toMatchObject({ kind: 'im' })
+  })
+
+  it('seeds the Linear workspace row AT INSTALL, born enabled even under a restricted agent', async () => {
+    // Linking the agent to the workspace IS the per-conversation consent, and the workspace is
+    // the only conversation — so nothing is left for an editor to switch on. The row is written
+    // by the install path itself, so the install's own syncBot already publishes the routes: the
+    // daemon's later observed report is a name refresh, never the thing that opens the agent up.
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const restricted = await installLinear(running, { restricted: true })
+    const open = await installLinear(running)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const rows = (res.json() as { id: string; channels: { channelId: string; trigger: string }[] }[]).filter((d) =>
+      [restricted, open].includes(d.id)
+    )
+    expect(rows).toHaveLength(2)
+    for (const dto of rows)
+      expect(dto.channels).toEqual([
+        expect.objectContaining({ channelId: LINEAR_WORKSPACE, name: 'Acme', trigger: 'mention' })
+      ])
+  })
+
+  it("a daemon's observed report refreshes the workspace name without touching the seeded trigger", async () => {
+    // The wire report carries no trigger and `replaceSnapshot` preserves the stored one, so the
+    // backstop cannot fight the seed — including for the restricted agent it would otherwise Off.
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await installLinear(running, { restricted: true })
+
+    await report(DAEMON, id, [{ id: LINEAR_WORKSPACE, name: 'Acme Renamed' }], undefined, undefined, false)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const dto = (res.json() as { id: string; channels: { channelId: string; name: string; trigger: string }[] }[]).find(
+      (d) => d.id === id
+    )
+    expect(dto!.channels).toEqual([
+      expect.objectContaining({ channelId: LINEAR_WORKSPACE, name: 'Acme Renamed', trigger: 'mention' })
+    ])
+  })
+
+  it('still starts a restricted agent OFF on a platform whose install grants nothing', async () => {
+    // The Linear arm above must not have widened the §14 default for everyone else.
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const integration = await prisma.integration.findUniqueOrThrow({ where: { id } })
+    await prisma.agent.update({
+      where: { id: integration.agentId },
+      data: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+    })
+
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const dto = (res.json() as { id: string; channels: { channelId: string; trigger: string }[] }[]).find(
+      (d) => d.id === id
+    )
+    expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'C1', trigger: 'off' })])
   })
 
   /** §14.8 fixture: a private agent shared with `audience`, on a bot in workspace T_ACME.

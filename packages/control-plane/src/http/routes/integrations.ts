@@ -28,8 +28,9 @@ import type { ResolvableAgent } from '../../orchestrator/placementResolver.js'
 import { denyViewerWrite, ctxOf, orgOf } from '../rbac.js'
 import { refreshMutationAgent as refreshAgentUnderMutation } from '../mutation-agent.js'
 import { canView, canEdit } from '../../authorization/policy.js'
-import { integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
+import { gatesNewConversations, integrationToSpec, isGatedAgent } from '../../orchestrator/placement.js'
 import { conversationOwnerRow, pickConversationOwner } from '../../orchestrator/httpBot.js'
+import { seedSoleConversationMember } from '../../orchestrator/soleConversation.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
@@ -356,6 +357,9 @@ export function integrationRoutes(deps: HttpDeps) {
                   message: 'bot sharing was just disabled; refresh and retry the integration change'
                 })
               }
+              // The added member's own row for the conversation this install names (§5),
+              // ownerless so joining never takes the workspace default from the first member.
+              await seedSoleConversationMember(deps.repos.integrationChannel, admission.integration, bot)
               // Relay owns the ingest — (re)assign the bot + push send-only specs to
               // every member daemon (including any that were direct before promotion).
               await deps.httpBot.syncBot(bot.id)
@@ -559,7 +563,9 @@ export function integrationRoutes(deps: HttpDeps) {
               effective.set(`${state.botId}\u0000${channelId}`, {
                 ...channel,
                 agentId: owner.agentId,
-                ...(ownerAgent && isGatedAgent(ownerAgent) ? { trigger: 'off' as const } : {})
+                // The same §14 rule the seeding seats take, so the console never shows a
+                // conversation Off while the compile is emitting its enabled route.
+                ...(ownerAgent && gatesNewConversations(owner.platform, ownerAgent) ? { trigger: 'off' as const } : {})
               })
             }
           }

@@ -420,7 +420,6 @@ import {
   applyLinearMessageStrategy,
   isLinearIssuelessSurface,
   linearAckBody,
-  linearChannelName,
   linearDeliveryReceiptId,
   linearFailureBody,
   readLinearExt,
@@ -1480,6 +1479,8 @@ export class Daemon {
       waitForConnectionUses: (conn) => this.waitForConnectionUses(conn),
       observeTelegramChat: (chat, integrationIds) =>
         this.observedChannelsSync.observeTelegramChat(chat, integrationIds),
+      observePlatformChat: (platform, chat, integrationIds) =>
+        this.observedChannelsSync.observePlatformChat(platform, chat, integrationIds),
       refreshObservedChannels: () => this.observedChannelsSync.refreshObservedChannels(),
       retractChannels: (integrationId, channelIds) =>
         this.observedChannelsSync.retractChannels(integrationId, channelIds),
@@ -6609,10 +6610,10 @@ export class Daemon {
       this.log.info(`linear: delivery ${msg.msgId} was already served — no turn, no activity`)
       return 'settled'
     }
-    // §4.5: no issue, so the channel fell back to the AgentSession UUID. Answer once, start no
-    // turn — and answer only AFTER the durable receipt is minted, exactly like the
-    // acknowledgement (§10.1).
-    if (isLinearIssuelessSurface(normalized, ext)) {
+    // §4.5: the bag carries no issue, so this session sits on a surface v1 cannot serve. Answer
+    // once, start no turn — and answer only AFTER the durable receipt is minted, exactly like
+    // the acknowledgement (§10.1).
+    if (isLinearIssuelessSurface(ext)) {
       let minted: boolean
       try {
         minted = await this.mintLinearDeliveryReceipt(msg, normalized)
@@ -6632,13 +6633,10 @@ export class Daemon {
       return 'settled'
     }
     applyLinearMessageStrategy(normalized)
-    // §4.5 session metadata: `TEAM-123 · <title>` comes straight off the bag, so the console
-    // labels the issue without a provider round-trip. (`threadUrl` already rides the message.)
-    const channelName = linearChannelName(ext)
-    if (channelName) {
-      await this.store.setDisplayName(normalized.channel, channelName, this.clock.now())
-      await this.sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName(normalized.channel)
-    }
+    // No per-event channel name: the channel is the WORKSPACE, so its label is install-scoped and
+    // already written when the connection reported the workspace (§4.5). Writing the issue here
+    // would thrash the one display slot and relabel every sibling session in the workspace; the
+    // issue rides `threadUrl` and the §8 trusted header, which are session-scoped.
     return 'dispatch'
   }
 
@@ -6797,7 +6795,15 @@ export class Daemon {
       return { msgId: msg.msgId, accepted: false, reason: 'unavailable' }
     }
     const transportScope = this.transportScopeForIntegrationIds([msg.integrationId])
-    const rec = await this.store.latestSessionForThread(msg.agentId, 'linear', payload.agentSessionId, transportScope)
+    // The workspace is the channel (§4.5), so the connection's own tenant is the coordinate —
+    // never the relay's `sessionKey`, which this daemon has not verified.
+    const rec = await this.store.latestSessionForThread(
+      msg.agentId,
+      'linear',
+      conn.workspaceId(),
+      payload.agentSessionId,
+      transportScope
+    )
     if (rec) {
       await this.interruptTurn(msg.agentId, rec.key, 'stop', rec.acpSessionId ?? undefined, {
         ...(msg.userId ? { actor: { userId: msg.userId } } : {})

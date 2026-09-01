@@ -209,11 +209,12 @@ function actorId(event: LinearAgentSessionEvent): string {
 }
 
 // One verified `created`/`prompted` event as the message relay core arbitrates: `channel` is the
-// immutable issue UUID, falling back to the session UUID for the issue-less surfaces (§4.5).
+// connected WORKSPACE (§4.5), read off the ingest identity rather than the payload — `decode`
+// already refused every delivery whose `organizationId` differs, so the two cannot disagree.
 export function normalizeLinearEvent(
   event: LinearAgentSessionEvent,
   msgId: string,
-  appUserId: string | undefined
+  identity: LinearIngestIdentity
 ): WireNormalizedMessage {
   const session = event.agentSession
   const issue = session.issue ?? undefined
@@ -238,7 +239,7 @@ export function normalizeLinearEvent(
     traceId: msgId,
     source: 'user',
     platform: 'linear',
-    channel: issue?.id ?? session.id,
+    channel: identity.organizationId,
     thread: session.id,
     ...(issue?.url?.startsWith('https://') ? { threadUrl: issue.url } : {}),
     sender: {
@@ -249,7 +250,7 @@ export function normalizeLinearEvent(
     text: instructionText(event),
     // Every Linear event exists because the app was delegated to or mentioned (§6.1), so the
     // arbitration ladder's "explicitly addressed" gate is satisfied by construction.
-    mentionedBots: appUserId ? [appUserId] : [],
+    mentionedBots: identity.appUserId ? [identity.appUserId] : [],
     isDm: false,
     trigger: 'mention',
     ...(eventAtMs !== undefined && eventAtMs > 0 ? { platformTimeMs: eventAtMs } : {}),

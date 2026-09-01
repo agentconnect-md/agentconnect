@@ -4,7 +4,7 @@ import type { WireNormalizedMessage } from '@agentconnect.md/protocol'
 import { linearIngressPlugin } from './ingress-plugin.js'
 import { LINEAR_CONTEXT_BUDGET_BYTES, type LinearAdapterExt } from './http-ingest.js'
 import type { RelayIngressHost } from '../contract.js'
-import { toBotAssignment } from '../../bot-arbitration.js'
+import { sessionKeyOf, toBotAssignment } from '../../bot-arbitration.js'
 import type { BotAssignment, RouteTarget } from '../../bot-arbitration.js'
 
 const NOW = 1_788_249_909_143
@@ -310,12 +310,12 @@ describe('linear ingress plugin — dedup identity', () => {
 })
 
 describe('linear ingress plugin — normalized message', () => {
-  it('maps a created event onto issue/session coordinates with the adapter bag', async () => {
+  it('maps a created event onto workspace/session coordinates with the adapter bag', async () => {
     const h = host()
     const { forwarded } = await run(h, createdEvent())
     expect(forwarded).toMatchObject({
       platform: 'linear',
-      channel: ISSUE_ID,
+      channel: ORG_ID,
       thread: SESSION_ID,
       threadUrl: issue.url,
       sender: { id: `linear:${USER_ID}`, isBot: false },
@@ -349,14 +349,19 @@ describe('linear ingress plugin — normalized message', () => {
     expect((await run(h, documented)).forwarded?.text).toBe('Documented-shape follow-up')
   })
 
-  it('keys a session with NO issue on the session UUID — never `linear:undefined`', async () => {
+  it('keeps a session with NO issue on the workspace channel, minus the issue metadata', async () => {
+    // The workspace is the channel whatever surface the session sits on, so an issue-less
+    // session is just a thread whose bag and `threadUrl` carry nothing about an issue.
     const h = host()
     const noIssue = createdEvent()
     ;(noIssue.agentSession as Record<string, unknown>).issue = null
     const { forwarded } = await run(h, noIssue)
-    expect(forwarded?.channel).toBe(SESSION_ID)
+    expect(forwarded?.channel).toBe(ORG_ID)
     expect(forwarded?.thread).toBe(SESSION_ID)
     expect(forwarded?.threadUrl).toBeUndefined()
+    const bag = forwarded!.adapterExt!.linear as LinearAdapterExt
+    expect(bag.issueIdentifier).toBeUndefined()
+    expect(bag.issueTitle).toBeUndefined()
     expect(JSON.stringify(forwarded)).not.toContain('undefined')
   })
 
@@ -421,17 +426,22 @@ describe('linear ingress plugin — truncation budget', () => {
 })
 
 describe('linear ingress plugin — stop, revocation, and non-session events', () => {
-  it('routes a stop signal as a platform_action, not a message', async () => {
-    const h = host()
+  it('routes a stop signal as a platform_action on the WORKSPACE coordinates', async () => {
+    const resolveTarget = vi.fn(() => ROUTE)
+    const h = host({ directory: { ...host().directory, resolveTarget } })
     await run(h, promptedEvent({}, { signal: 'stop' }))
     expect(h.forward).not.toHaveBeenCalled()
     expect(h.forwardAction).toHaveBeenCalledTimes(1)
+    // The directory is asked for the workspace channel, never the issue: a stop has to land on
+    // the same conversation the delegation that opened the session routed through.
+    expect(resolveTarget).toHaveBeenCalledWith(expect.any(String), { channelId: ORG_ID, threadTs: SESSION_ID })
     const [msg, route] = vi.mocked(h.forwardAction).mock.calls[0]!
     expect(msg).toMatchObject({
       source: 'platform_action',
       platformId: 'linear',
       agentId: ROUTE.agentId,
       integrationId: ROUTE.integrationId,
+      sessionKey: sessionKeyOf({ channel: ORG_ID, thread: SESSION_ID }),
       msgId: `linear:${ACTIVITY_ID}`,
       userId: USER_ID,
       payload: { kind: 'stop', agentSessionId: SESSION_ID }

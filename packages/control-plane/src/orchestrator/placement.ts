@@ -36,7 +36,7 @@ import type {
   McpServerSpec,
   MemoryConnectionSpec
 } from '@agentconnect.md/protocol'
-import { SessionRetentionSetting } from '@agentconnect.md/protocol'
+import { manifestFor, SessionRetentionSetting } from '@agentconnect.md/protocol'
 import type {
   AgentRepo,
   AgentRecord,
@@ -173,6 +173,13 @@ const DEFAULT_BIND_RULES: IntegrationBindRule[] = [{ match: { kind: 'mention' } 
 /** Conversation gating (resource-visibility.md §14): derived from restricted
  *  visibility at spec-assembly time — no stored toggle, no identities on the wire. */
 export const isGatedAgent = (a: { visibility: AgentRecord['visibility'] }): boolean => a.visibility === 'restricted'
+
+/** Does a NEWLY reported conversation start Off because its owner is gated? Only on a platform
+ *  whose install does not already grant it (§5 `soleConversation`) — where it does,
+ *  linking the agent WAS the per-conversation consent and there is nothing left for an editor
+ *  to enable. Every seat that seeds a fresh conversation's trigger reads this, not `isGatedAgent`. */
+export const gatesNewConversations = (platform: string, agent: { visibility: AgentRecord['visibility'] }): boolean =>
+  isGatedAgent(agent) && !manifestFor(platform).soleConversation
 
 /**
  * Conversation-scoped bind rules for a GATED integration (resource-visibility.md

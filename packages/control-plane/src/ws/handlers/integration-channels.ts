@@ -20,7 +20,7 @@
  */
 import { isFrame } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId, OrgId } from '../../domain/ids.js'
-import { isGatedAgent } from '../../orchestrator/placement.js'
+import { gatesNewConversations } from '../../orchestrator/placement.js'
 import { servedAgents } from '../../orchestrator/servedAgents.js'
 import type { DaemonWsDeps } from '../deps.js'
 import type { AgentRecord, ChannelTrigger, IntegrationRecord } from '../../persistence/ports.js'
@@ -67,10 +67,11 @@ export const handleIntegrationChannels: Handler = async (frame, conn, deps) => {
     }
     // Conversation gating (resource-visibility.md §14): a gated (restricted-agent)
     // integration's fresh conversations start Off — an editor must enable them in
-    // the console. Known rows keep their operator-chosen trigger either way.
+    // the console — unless the platform's install already granted them (§5). Known
+    // rows keep their operator-chosen trigger either way.
     // Fenced on the org of the integration row this daemon just proved it owns.
     owner = await deps.agent.get(OrgId(integration.orgId), AgentId(integration.agentId))
-    const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
+    const defaultTrigger = owner && gatesNewConversations(integration.platform, owner) ? ('off' as const) : undefined
     // §14.8: a gated DM whose counterpart is already in the agent's audience seeds to
     // the ordinary DM default instead. Only the gated arm asks — a public install has
     // no Off to override — and a resolver that answers nothing leaves §14.2 intact.
