@@ -13,6 +13,7 @@
 import {
   isFrame,
   AGENT_EXISTS_FEATURE,
+  APPROVAL_DM_ROUTE_V1_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
   ORGANIZATION_KNOWLEDGE_FEATURE,
@@ -108,7 +109,9 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
       SESSION_PURGE_FEATURE,
       SESSION_VISIBILITY_FEATURE,
       ORGANIZATION_KNOWLEDGE_FEATURE,
-      AGENT_EXISTS_FEATURE
+      AGENT_EXISTS_FEATURE,
+      // slack-approval-dm.md §4.2: this CP resolves and revalidates approval-DM recipients.
+      APPROVAL_DM_ROUTE_V1_FEATURE
     ]
   })
   deps.connReg.markReady(conn.daemonId, conn)

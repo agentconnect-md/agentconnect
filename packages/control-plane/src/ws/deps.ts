@@ -44,6 +44,7 @@ import type { AgentMutationGate } from '../orchestrator/agentMutationGate.js'
 import type { PlacementResolver } from '../orchestrator/placementResolver.js'
 import type { CollabRoutesService } from '../orchestrator/collabRoutes.service.js'
 import type { GatedDmSeedResolver } from '../orchestrator/linkedDm.js'
+import type { ApprovalRouteResolver } from '../orchestrator/approvalRoute.js'
 import type { DutyLeaseService } from '../orchestrator/dutyLease.js'
 import type { AgentId, DaemonId } from '../domain/ids.js'
 import type { WebchatRemoteMcpService } from '../registry/webchatRemoteMcpService.js'
@@ -103,6 +104,9 @@ export interface DaemonWsDeps {
   /** §14.8: which of a gated install's reported DMs seed to the ordinary DM default
    *  because their counterpart is in the agent's own audience; absent ⇒ all stay Off. */
   gatedDmSeeds?: GatedDmSeedResolver
+  /** slack-approval-dm.md §4.2: pick / revalidate a pending approval's DM recipient;
+   *  absent ⇒ `agent/approval-route` fails closed and the daemon keeps today's behavior. */
+  approvalRoute?: ApprovalRouteResolver
   /** Republish the agent's integrations. Needed because §14.8 is the one path where a
    *  daemon REPORT creates an ENABLED row: the reporter is still holding bindRules that
    *  predate it, and it has already cached the conversation, so nothing re-reports and

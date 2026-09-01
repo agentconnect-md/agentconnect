@@ -39,6 +39,7 @@ import { handleSessionActivity } from './event-session-activity.js'
 import { handleSessionPurged } from './event-session-purged.js'
 import { handleGitCredRequest } from './gitcred.js'
 import { handleHookStart } from './hook-start.js'
+import { handleApprovalRoute } from './approval-route.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
 import { handleGithubReviewResult } from './github-review-result.js'
 import { handleCodeHostNoteResult } from './codehost-note-result.js'
@@ -85,6 +86,7 @@ export class FrameRouter {
       'agent/exists': handleAgentExists,
       'hook/report': handleHookReport,
       'hook/start': handleHookStart,
+      'agent/approval-route': handleApprovalRoute,
       'github/review-authorize': handleGithubReviewAuthorize,
       'github/review-result': handleGithubReviewResult,
       'codehost/note-result': handleCodeHostNoteResult,
@@ -132,6 +134,7 @@ export {
   handleCronReport,
   handleHookReport,
   handleHookStart,
+  handleApprovalRoute,
   handleGithubReviewAuthorize,
   handleGithubReviewResult,
   handleCodeHostNoteResult,

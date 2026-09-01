@@ -30,13 +30,13 @@ import type { AgentRecord, BotRecord, ChannelTrigger, ReportedChannel } from '..
 import { isGatedAgent } from './placement.js'
 
 /** Concurrent identity reads per resolve — the audience is small and every lookup is
- *  cached per subject, so this only bounds a cold burst. */
-const AUDIENCE_CONCURRENCY = 8
+ *  cached per subject, so this only bounds a cold burst. Shared with approvalRoute.ts. */
+export const AUDIENCE_CONCURRENCY = 8
 
 /** Audience size past which the scan is refused rather than fanned out upstream. An
  *  agent shared this widely is not the case §14.8 serves, and refusing keeps the
- *  §14.2 default. */
-const MAX_AUDIENCE = 200
+ *  §14.2 default. Shared with approvalRoute.ts (slack-approval-dm.md §4.2). */
+export const MAX_AUDIENCE = 200
 
 export interface LinkedDmDeps {
   users: { getOidcSubject(userId: string): Promise<string | null> }
@@ -46,7 +46,11 @@ export interface LinkedDmDeps {
 }
 
 /** Run `fn` over `values` with at most `limit` in flight, preserving order. */
-async function mapLimited<T, R>(values: readonly T[], limit: number, fn: (value: T) => Promise<R>): Promise<R[]> {
+export async function mapLimited<T, R>(
+  values: readonly T[],
+  limit: number,
+  fn: (value: T) => Promise<R>
+): Promise<R[]> {
   const out = new Array<R>(values.length)
   let next = 0
   const worker = async (): Promise<void> => {

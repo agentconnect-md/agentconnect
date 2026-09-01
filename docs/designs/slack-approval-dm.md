@@ -156,11 +156,14 @@ every Slack integration the agent is connected to (almost always one) and
 lets the CP pick.
 
 The same pair also serves the decision-time revalidation of §6.3:
-`agent/approval-route` with `verify: { integrationId, teamId, userId }` set
-asks not "whom should I DM" but "does this Slack pair, **right now**, map
-to a console user who can edit this agent" — answered by `{ requestId,
-allowed, consoleUserId? }`. Routing is best-effort (§4.3); verification is
-not — it authorizes an action, so an unanswerable verify fails closed.
+`agent/approval-route` with `verify: { integrationId, teamId, userId,
+consoleUserId }` set asks not "whom should I DM" but "is this Slack pair,
+**right now**, still the linked identity of this console user, and can that
+user still edit this agent" — answered by `{ requestId, allowed,
+displayName? }`. Naming the addressed console user makes the check a single
+forward lookup instead of a scan. Routing is best-effort (§4.3);
+verification is not — it authorizes an action, so an unanswerable verify
+fails closed.
 
 The CP evaluates the chain of §3 with the `linkedMemberIds` machinery
 (`packages/control-plane/src/orchestrator/linkedDm.ts`): the same
@@ -309,8 +312,9 @@ gate is replaced by two checks, both required:
   console decision route evaluates at action time. The verify failing,
   answering `allowed: false`, or being unanswerable (CP down) all **fail
   closed**: the click is refused, the card is annotated "decide from the
-  console", and the request stays pending. The `consoleUserId` the verify
-  returns is what lands in `resolvedBy`.
+  console", and the request stays pending. The routed target's
+  `consoleUserId` plus the verify's fresh `displayName` are what land in
+  `resolvedBy` / `resolvedByName`.
 
 In-thread cards keep their existing gate unchanged.
 

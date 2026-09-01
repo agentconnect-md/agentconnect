@@ -367,6 +367,11 @@ export const WORKSPACE_GIT_V1_FEATURE = 'workspace-git-v1'
  *  the gitlab arm of `hook/start` that records the started head and opens `running`. */
 export const CODEHOST_NOTE_PROJECTION_V1_FEATURE = 'codehost-note-projection-v1'
 
+/** CP resolves and revalidates approval-DM recipients (`agent/approval-route`,
+ *  slack-approval-dm.md §4.2). A daemon must not send that REQ before seeing this:
+ *  a new request type is frame-fatal to an older CP. */
+export const APPROVAL_DM_ROUTE_V1_FEATURE = 'approval-dm-route-v1'
+
 /** CP mints the §14.2 broker effect lease — `purpose: 'gitlab_effect'` on a gitcred v2 request,
  *  authorized by the agent's GitLab workspace binding or an enabled gitlab hook and clamped by the
  *  grant's echoed access. A daemon must not name that purpose before seeing this: a new enum value

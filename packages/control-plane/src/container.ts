@@ -148,6 +148,7 @@ import { RelayRoster } from './orchestrator/relayRoster.js'
 import { WebchatMcpOperationReaper } from './orchestrator/webchatMcpOperationReaper.js'
 import { HttpBotOrchestrator } from './orchestrator/httpBot.js'
 import { gatedDmSeeds, type GatedDmSeedResolver } from './orchestrator/linkedDm.js'
+import { resolveApprovalRoute, type ApprovalRouteResolver } from './orchestrator/approvalRoute.js'
 import { convergeIntegrationGating } from './orchestrator/integrationPush.js'
 import { SlackBotIdentityReconciler } from './orchestrator/slackBotIdentityReconciler.js'
 import { slackConfigApi } from './http/slack-config-api.js'
@@ -836,6 +837,23 @@ export function buildContainer(
       ...(logtoIdentity ? { identity: logtoIdentity } : {}),
       log: { debug: (o, m) => http.log.debug(o, m), warn: (o, m) => http.log.warn(o, m) }
     })
+
+  // slack-approval-dm.md §3–§4: pick / revalidate a pending approval's DM recipient.
+  // Lazy over `logtoIdentity` and `http.log` exactly like the gated-DM resolver above.
+  const approvalRoute: ApprovalRouteResolver = (req, expectedOrgId) =>
+    resolveApprovalRoute(
+      req,
+      {
+        agent: repos.agent,
+        session: repos.session,
+        integration: repos.integration,
+        bot: repos.bot,
+        users: repos.user,
+        ...(logtoIdentity ? { identity: logtoIdentity } : {}),
+        log: { debug: (o, m) => http.log.debug(o, m), warn: (o, m) => http.log.warn(o, m) }
+      },
+      expectedOrgId
+    )
 
   // HTTP-bot assignment + attributed-route compilation (shared-bot-relay.md §4.2/§10).
   // Its logger is lazy (a wrapper over `http.log`, which is created below) — only ever
@@ -1806,6 +1824,7 @@ export function buildContainer(
     integrationChannel: repos.integrationChannel,
     slackSessionAccess,
     gatedDmSeeds: gatedDmSeedResolver,
+    approvalRoute,
     // §14.8: the report path can now create an ENABLED row, so it needs the same
     // re-converge a visibility flip performs — the reporter's own bindRules predate it.
     integrationConverge: (agent) =>
