@@ -22,7 +22,6 @@ import type { AgentApprovalRoute, AgentApprovalRouted, ApprovalRouteTarget } fro
 import type { SlackIdentity } from '../github/logto-identity.js'
 import type {
   AgentRepo,
-  BotRecord,
   BotRepo,
   IntegrationRepo,
   OrgMemberRecord,
@@ -66,12 +65,16 @@ export async function resolveApprovalRoute(
 
   const owned = await deps.integration.activeForAgents([req.agentId])
   const slackOwned = new Map(owned.filter((i) => i.platform === 'slack').map((i) => [String(i.id), i]))
-  // A revoked bot cannot open a DM, and its workspace no longer asserts anything.
-  const botFor = async (integrationId: string): Promise<BotRecord | null> => {
+  // The integration's workspace anchor. `teamId` is written by platform-app installs only;
+  // a token-installed (direct) bot carries the same fact as `workspaceId`, reported by the
+  // owning daemon's auth.test — the provenance `ownerIdentity`'s transportScope already has,
+  // and session visibility already matches on. A revoked bot's workspace asserts nothing.
+  const workspaceFor = async (integrationId: string): Promise<string | null> => {
     const integration = slackOwned.get(integrationId)
     if (!integration) return null
     const bot = await deps.bot.get(OrgId(integration.orgId), integration.botId)
-    return bot?.teamId && !bot.revokedAt ? bot : null
+    if (!bot || bot.revokedAt) return null
+    return bot.teamId ?? bot.workspaceId ?? null
   }
   // One member's lookup failing costs that member a match, never the whole answer.
   const pairOf = async (userId: string): Promise<SlackIdentity | null> => {
@@ -86,8 +89,8 @@ export async function resolveApprovalRoute(
 
   if (req.verify) {
     const v = req.verify
-    const bot = await botFor(v.integrationId)
-    if (!bot || bot.teamId !== v.teamId) return none
+    const workspace = await workspaceFor(v.integrationId)
+    if (!workspace || workspace !== v.teamId) return none
     // Membership + role + visibility re-checked live: left org / demoted / unshared all refuse.
     const member = editors.find((m) => m.userId === v.consoleUserId)
     if (!member) return none
@@ -108,9 +111,8 @@ export async function resolveApprovalRoute(
   }
 
   for (const integrationId of req.integrationIds) {
-    const bot = await botFor(integrationId)
-    if (!bot) continue
-    const teamId = bot.teamId!
+    const teamId = await workspaceFor(integrationId)
+    if (!teamId) continue
     // The one forward scan (§3): editors linked to THIS workspace, both directions.
     let bySlackUid: Map<string, OrgMemberRecord> | null = null
     let uidByConsole: Map<string, string> | null = null

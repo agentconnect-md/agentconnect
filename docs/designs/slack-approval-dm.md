@@ -86,8 +86,12 @@ wins (§4.2). Every rung must pass both standing gates before it can win:
 
 - **Authority:** the candidate's console user satisfies `canEdit(agent)`.
 - **Identity:** the candidate has linked a Slack identity **in the bot's own
-  workspace** — `slackIdentityFor(sub).teamId === bot.teamId`, keyed on the
-  `(teamId, userId)` pair per [slack-identity.md](slack-identity.md).
+  workspace** — `slackIdentityFor(sub).teamId` equals the bot's workspace
+  anchor, keyed on the `(teamId, userId)` pair per
+  [slack-identity.md](slack-identity.md). The anchor is `Bot.teamId` when
+  present (platform-app installs) and otherwise the auth.test-reported
+  `Bot.workspaceId` — the provenance `ownerIdentity`'s transport scope
+  already carries; a token-installed bot has no `teamId` at all.
 
 The rungs, in order (from the issue discussion):
 
