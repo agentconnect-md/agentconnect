@@ -3095,6 +3095,10 @@ export interface BotRecord {
   shareable: boolean
   /** Inbound transport: 'http' ⇒ relay callbacks; 'socket' ⇒ daemon long connection. */
   transport: SlackTransport
+  /** The operator's chosen DEFAULT member: the HTTP-bot compile prefers it over its
+   *  earliest-member derivation while it still resolves to a placed, non-gated member
+   *  of this bot. Null ⇒ that derivation. */
+  preferredAgentId: AgentId | null
   /** Creator (WebUI user), joined for the console picker; null for prebuilt/CLI. */
   createdBy: { userId: string; displayName: string | null; email: string } | null
   /** Stamped when the bot's integration is removed ("last used 12d ago"). */
@@ -3109,6 +3113,14 @@ export interface BotRecord {
    *  shareable bot is never "in use" in the reuse-blocking sense. */
   inUseByAgentId: AgentId | null
   createdAt: Date
+}
+
+/** The console-editable bot columns ({@link BotRepo.update}); omitted ⇒ left alone. */
+export interface BotUpdate {
+  /** Shared-bot (multi-agent) opt-in; `false` is recounted under the row lock. */
+  shareable?: boolean
+  /** The preferred default member, or null to restore the compile's derivation. */
+  preferredAgentId?: AgentId | null
 }
 
 export interface BotRepo {
@@ -3147,13 +3159,18 @@ export interface BotRepo {
   /** Stamp the freed-bot display hints when its LAST integration is removed.
    *  Org-fenced: a cross-org id writes nothing. */
   markFreed(orgId: OrgId, id: BotId, at: Date, lastAgentName: string | null): Promise<void>
-  /** Flip the shared-bot (multi-agent) opt-in (console toggle). Serialized on the
-   *  bot row with {@link IntegrationRepo.addBotMembership}; disabling recounts the
-   *  ACTIVE installs under that lock and throws `BotStillShared` when >1 remain,
-   *  so a concurrent admission can never slip past the route's optimistic check.
-   *  Org-fenced: the lock read is filtered, so a cross-org id throws the same
-   *  missing-row error ({@link BotMissing}) as an absent one. */
-  setShareable(orgId: OrgId, id: BotId, shareable: boolean): Promise<void>
+  /** Apply the console-editable bot columns in ONE row-locked transaction — an omitted
+   *  field is left alone. Serialized on the bot row with
+   *  {@link IntegrationRepo.addBotMembership}; `shareable: false` recounts the ACTIVE
+   *  installs under that lock and throws `BotStillShared` when >1 remain, so a
+   *  concurrent admission can never slip past the route's optimistic check. Both
+   *  columns commit together, so a `preferredAgentId` losing its FK to a concurrent
+   *  agent delete rolls the capacity flip back with it rather than half-applying.
+   *  Membership of the preferred agent is the CALLER's check (the route owns that error
+   *  shape); the FK only fences the id's existence. Org-fenced: the lock read is
+   *  filtered, so a cross-org id throws the same missing-row error
+   *  ({@link BotMissing}) as an absent one. */
+  update(orgId: OrgId, id: BotId, patch: BotUpdate): Promise<void>
   /** Every http-transport bot with ≥1 active integration, across all orgs — the
    *  shared-bot orchestrator's convergence worklist (relay register / failover).
    *  System-tier: fleet-wide by design. */
@@ -4441,7 +4458,7 @@ export interface IntegrationRepo {
    * §5.5 refusal (another agent holds a non-shared bot), `'revoked'` refuses
    * admission onto a dead credential (a revoke that won the lock flipped every
    * install; zero-active must not read as "free"). Serialized with
-   * {@link BotRepo.setShareable} and {@link BotCredentialWriter.revoke} on the
+   * {@link BotRepo.update} and {@link BotCredentialWriter.revoke} on the
    * same bot-row lock.
    */
   addBotMembership(

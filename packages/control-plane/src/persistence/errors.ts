@@ -158,7 +158,7 @@ export class AgentMissing extends Error {
 /**
  * Thrown by org-fenced bot mutations whose fence sits on a row-lock read rather
  * than on the write's own `where` (docs/designs/org-scoped-data-layer.md §3) —
- * today `BotRepo.setShareable`, where refusing BEFORE the install recount is
+ * today `BotRepo.update`, where refusing BEFORE the install recount is
  * what keeps a foreign bot's occupancy from leaking as a `BotStillShared` 409.
  * A cross-org id is deliberately indistinguishable from a missing row.
  */
@@ -171,7 +171,7 @@ export class BotMissing extends Error {
 }
 
 /**
- * Thrown by `BotRepo.setShareable(false)` when the row-locked recount still sees
+ * Thrown by `BotRepo.update({ shareable: false })` when the row-locked recount still sees
  * more than one ACTIVE install — disabling sharing then would orphan the others'
  * routes. The recount runs under the same bot-row lock `IntegrationRepo.
  * addBotMembership` takes, so a concurrent admission and a disable serialize:
@@ -207,6 +207,19 @@ export class BotStillShared extends Error {
   constructor(readonly activeInstalls: number) {
     super(`bot is shared by ${activeInstalls} agents — uninstall the others before disabling sharing`)
     this.name = 'BotStillShared'
+  }
+}
+
+/** The preferred default agent lost its foreign key inside `BotRepo.update` — an agent
+ *  deleted between the route's membership check and the write (the in-memory mutation
+ *  gate does not exclude a delete). The cascade takes its Integration too, so it has
+ *  genuinely stopped being a member: the route answers the same 409 as a body that
+ *  named a non-member outright, never a 500. */
+export class BotPreferredAgentMissing extends Error {
+  readonly code = 'BOT_PREFERRED_AGENT_MISSING' as const
+  constructor(readonly agentId: string) {
+    super(`agent ${agentId} is no longer installed on this bot`)
+    this.name = 'BotPreferredAgentMissing'
   }
 }
 

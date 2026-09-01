@@ -30,6 +30,7 @@ function bot(): BotRecord {
     feishuRegion: null,
     shareable: false,
     transport: 'http',
+    preferredAgentId: null,
     createdBy: null,
     lastUsedAt: null,
     lastAgentName: null,

@@ -14,8 +14,8 @@ import { manifestFor } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { type BotRecord, isSyntheticEmail } from '../../persistence/ports.js'
-import { BotStillShared } from '../../persistence/errors.js'
-import { BotId } from '../../domain/ids.js'
+import { BotPreferredAgentMissing, BotStillShared } from '../../persistence/errors.js'
+import { AgentId, BotId } from '../../domain/ids.js'
 import { orgOf, denyViewerWrite } from '../rbac.js'
 import { BotDto, BotListDto, UpdateBotBody, ErrorDto, IdParam, type BotDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
@@ -36,6 +36,7 @@ function toDto(b: BotRecord): BotDtoT {
     createdBy: b.createdBy && !isSyntheticEmail(b.createdBy.email) ? b.createdBy.userId : null,
     shareable: b.shareable,
     transport: b.transport,
+    preferredAgentId: b.preferredAgentId,
     inUseByAgentId: b.inUseByAgentId,
     agentIds: b.agentIds,
     lastUsedAt: b.lastUsedAt?.toISOString() ?? null,
@@ -141,10 +142,11 @@ export function botRoutes(deps: HttpDeps) {
     )
 
     // Flip the HTTP bot's multi-agent capacity (`Bot.shareable`,
-    // shared-bot-relay.md §4.1). Transport is immutable: relay ingress remains in
-    // place either way. Enabling needs BOTH a platform whose manifest declares
-    // `multiAgentShareable` (the same precondition the shareable install checks)
-    // and the http transport; disabling is refused while >1 agent uses the bot.
+    // shared-bot-relay.md §4.1) and/or move its preferred default agent. Transport is
+    // immutable: relay ingress remains in place either way. Enabling sharing needs BOTH
+    // a platform whose manifest declares `multiAgentShareable` (the same precondition
+    // the shareable install checks) and the http transport; disabling is refused while
+    // >1 agent uses the bot.
     r.patch(
       '/bots/:id',
       {
@@ -152,7 +154,7 @@ export function botRoutes(deps: HttpDeps) {
           tags: [Tag.Bots],
           summary: 'Update a bot',
           description:
-            'Allow or disallow this HTTP bot from serving multiple agents. Allowing requires a platform that supports multi-agent bots; relay ingress is unchanged either way.',
+            "Allow or disallow this HTTP bot from serving multiple agents, and/or move the agent that catches a bare mention, a DM, or a delegation. Allowing sharing requires a platform that supports multi-agent bots; relay ingress is unchanged either way. The preferred default agent must be one currently installed on the bot, and null restores the bot's earliest-member default.",
           operationId: 'updateBot',
           params: IdParam,
           body: UpdateBotBody,
@@ -165,7 +167,23 @@ export function botRoutes(deps: HttpDeps) {
         if (!bot) {
           return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
         }
-        if (req.body.shareable === bot.shareable) return toDto(bot) // no-op
+        const preferred = req.body.preferredAgentId
+        // Same rule (and wording) as the per-conversation default agent: only a member may
+        // be named.
+        if (preferred !== undefined && preferred !== null && !bot.agentIds.includes(AgentId(preferred))) {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: 'default agent must be an agent that uses this bot' })
+        }
+        // The requested sharing value only when it actually changes something; undefined ⇒
+        // no flip, which also narrows the value for the write below.
+        const sharingFlip =
+          req.body.shareable !== undefined && req.body.shareable !== bot.shareable ? req.body.shareable : undefined
+        const movesPreferred = preferred !== undefined && preferred !== bot.preferredAgentId
+        if (sharingFlip === undefined && !movesPreferred) return toDto(bot) // no-op
+        // EVERY refusal precedes BOTH writes: a body carrying both fields must never leave
+        // the preference moved and broadcast because the sharing half was then refused.
+        //
         // Multi-agent bots are a per-PLATFORM capability, and this route used to
         // check only the transport — so any HTTP-transport bot on a platform the
         // install path refuses (`validateShareableInstall`) could be flipped
@@ -179,13 +197,15 @@ export function botRoutes(deps: HttpDeps) {
         // 400 for the same rule — there the platform is the CLIENT's assertion
         // in the request body, here it is the stored row's, exactly like the
         // transport refusal this sits beside.
-        if (req.body.shareable && !manifestFor(bot.platform).multiAgentShareable) {
+        if (sharingFlip && !manifestFor(bot.platform).multiAgentShareable) {
           return reply
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: multiAgentUnsupportedMessage(bot.platform) })
         }
+        // Only the capacity flip needs the membership lease — moving the preference just
+        // recompiles routing — but it is taken before either write when it is needed.
         const observedAgentIds = [...bot.agentIds].sort()
-        const release = deps.agentMutations.tryBeginMutation(observedAgentIds)
+        const release = sharingFlip === undefined ? () => {} : deps.agentMutations.tryBeginMutation(observedAgentIds)
         if (!release) {
           return reply.code(409).send({
             error: 'Conflict',
@@ -194,44 +214,53 @@ export function botRoutes(deps: HttpDeps) {
           })
         }
         try {
-          const current = await deps.repos.bot.get(bot.orgId, bot.id)
-          if (
-            !current ||
-            current.shareable !== bot.shareable ||
-            [...current.agentIds].sort().some((agentId, index) => agentId !== observedAgentIds[index]) ||
-            current.agentIds.length !== observedAgentIds.length
-          ) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'bot integrations changed; refresh and retry the bot change'
-            })
+          if (sharingFlip !== undefined) {
+            const current = await deps.repos.bot.get(bot.orgId, bot.id)
+            if (
+              !current ||
+              current.shareable !== bot.shareable ||
+              [...current.agentIds].sort().some((agentId, index) => agentId !== observedAgentIds[index]) ||
+              current.agentIds.length !== observedAgentIds.length
+            ) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'bot integrations changed; refresh and retry the bot change'
+              })
+            }
+            bot = current
+            // `shareable` is now the multi-agent sub-flag of an HTTP-mode bot (the
+            // socket↔http transport axis is immutable post-create — the Slack app's
+            // request_url is set once at app creation). A socket bot is always
+            // single-agent, so it cannot be shared.
+            if (bot.transport !== 'http') {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'only HTTP-mode Slack bots can be shared — recreate the bot in HTTP mode'
+              })
+            }
+            // Disabling multi-agent is refused while >1 agent uses it (the others would
+            // be left without a route). This read is the fast optimistic check; the
+            // authoritative recount happens INSIDE the update under the bot-row lock
+            // (BotStillShared), where a concurrent membership admission cannot race it.
+            if (!sharingFlip && bot.agentIds.length > 1) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'bot is shared by multiple agents — uninstall the others before disabling sharing'
+              })
+            }
           }
-          bot = current
-          // `shareable` is now the multi-agent sub-flag of an HTTP-mode bot (the
-          // socket↔http transport axis is immutable post-create — the Slack app's
-          // request_url is set once at app creation). A socket bot is always
-          // single-agent, so it cannot be shared.
-          if (bot.transport !== 'http') {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'only HTTP-mode Slack bots can be shared — recreate the bot in HTTP mode'
-            })
-          }
-          // Disabling multi-agent is refused while >1 agent uses it (the others would
-          // be left without a route). This read is the fast optimistic check; the
-          // authoritative recount happens INSIDE setShareable under the bot-row lock
-          // (BotStillShared), where a concurrent membership admission cannot race it.
-          if (!req.body.shareable && bot.agentIds.length > 1) {
-            return reply.code(409).send({
-              error: 'Conflict',
-              statusCode: 409,
-              message: 'bot is shared by multiple agents — uninstall the others before disabling sharing'
-            })
-          }
+          // Checks are exhausted. Both columns commit in ONE row-locked transaction, so
+          // neither the locked recount nor a lost FK can leave half the body applied.
           try {
-            await deps.repos.bot.setShareable(bot.orgId, bot.id, req.body.shareable)
+            await deps.repos.bot.update(bot.orgId, bot.id, {
+              ...(sharingFlip !== undefined ? { shareable: sharingFlip } : {}),
+              ...(preferred !== undefined && preferred !== bot.preferredAgentId
+                ? { preferredAgentId: preferred === null ? null : AgentId(preferred) }
+                : {})
+            })
           } catch (err) {
             if (err instanceof BotStillShared) {
               return reply.code(409).send({
@@ -240,10 +269,19 @@ export function botRoutes(deps: HttpDeps) {
                 message: 'bot is shared by multiple agents — uninstall the others before disabling sharing'
               })
             }
+            // The agent was deleted since the membership check above, taking its
+            // Integration with it — the same refusal, reached one step later.
+            if (err instanceof BotPreferredAgentMissing) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'default agent must be an agent that uses this bot'
+              })
+            }
             throw err
           }
-          // Multi-agent capacity change only — recompile the relay pool's routes (no
-          // ingest re-open; the transport, hence the ingest, is unchanged).
+          // One recompile for both halves, after the commit — the relay pool's member set
+          // and its fallback rung ride the same broadcast (the transport is unchanged).
           await deps.httpBot.syncRoutes(bot.id)
           const updated = await deps.repos.bot.get(bot.orgId, bot.id)
           return toDto(updated!)

@@ -297,7 +297,7 @@ export function integrationRoutes(deps: HttpDeps) {
             // — one workspace ⇒ one agent. Its `teamId` is the marker: only the
             // distributed app persists one. Widening it must be a deliberate
             // opt-in (the Settings → Bots sharing toggle), never the silent
-            // `setShareable(true)` promotion the http branch below applies to
+            // `update({ shareable: true })` promotion the http branch below applies to
             // classic bots; once shared it reuses like any shared bot.
             if (bot.teamId && !bot.shareable) {
               return reply.code(409).send({
@@ -314,7 +314,7 @@ export function integrationRoutes(deps: HttpDeps) {
               if (bot.agentIds.length > 0) {
                 const shareableErr = await validateShareableInstall(bot, agent.id, req.body.platform)
                 if (shareableErr) return reply.code(shareableErr.code).send(shareableErr.body)
-                if (!bot.shareable) await deps.repos.bot.setShareable(orgId, bot.id, true)
+                if (!bot.shareable) await deps.repos.bot.update(orgId, bot.id, { shareable: true })
               } else {
                 const ingress = relayIngress(deps)
                 if (!ingress.ok) {
