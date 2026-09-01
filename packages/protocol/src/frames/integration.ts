@@ -122,6 +122,21 @@ export const IntegrationFeishuConfig = z.object({
 })
 export type IntegrationFeishuConfig = z.infer<typeof IntegrationFeishuConfig>
 
+// The Linear config payload (linear-integration.md §7.2) — the one platform whose spec carries a
+// SHORT-LIVED credential rather than a durable bot token. Ingress is relay-terminated, so the daemon
+// gets egress material only: a ≤24 h access token snapshot, refreshed on demand over `linearcred`
+// (§7.3) while the CP alone holds the client secret and the rotating refresh token.
+// `accessToken` is plaintext secret material — NEVER log it. `workspaceId` is the Linear organization
+// id; `appUserId` is the app's own Linear user id, used by the daemon as its self-echo guard.
+export const IntegrationLinearConfig = z.object({
+  workspaceId: z.string(), // Linear organization id (the connected workspace's identity)
+  workspaceName: z.string().optional(), // display label only
+  appUserId: z.string().optional(), // the app's Linear user id — self-echo guard
+  accessToken: z.string(), // ≤24 h snapshot (plaintext — never log); refreshed via linearcred/request
+  accessTokenExpiresAt: z.string().datetime() // ISO expiry of the snapshot above
+})
+export type IntegrationLinearConfig = z.infer<typeof IntegrationLinearConfig>
+
 /**
  * §6.3 core routing ENVELOPE (integration-plugin-architecture.md D4): the knobs CORE
  * reads — routing, gating, ingress mode — platform-independent. This is the ONLY

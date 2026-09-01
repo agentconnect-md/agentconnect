@@ -64,6 +64,7 @@ import {
 import { McpServerUpsert, McpServerRemove } from './frames/mcpserver.js'
 import { MemoryConnectionUpsert, MemoryConnectionRemove, MemoryConnectionFacts } from './frames/memory-connection.js'
 import { GitCredRequest, GitCredGrant } from './frames/gitcred.js'
+import { LinearCredRequest, LinearCredGrant } from './frames/linearcred.js'
 import { SecretsRequest, SecretsGrant, SecretsRenew, SecretsRevoke, ScopeAttestation } from './frames/secrets.js'
 import {
   SessionHistoryReq,
@@ -300,6 +301,9 @@ export const FRAME_SCHEMAS = {
   // ── git credentials (github-app workspaces; token-bearing — never log) ──
   'gitcred/request': GitCredRequest,
   'gitcred/grant': GitCredGrant,
+  // ── Linear access-token broker (linear-integration.md §7.3; token-bearing — never log) ──
+  'linearcred/request': LinearCredRequest,
+  'linearcred/grant': LinearCredGrant,
   // ── secrets ──
   'secrets/request': SecretsRequest,
   'secrets/grant': SecretsGrant,
@@ -580,6 +584,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('memoryconnection/remove', FRAME_SCHEMAS['memoryconnection/remove']),
   frame('gitcred/request', FRAME_SCHEMAS['gitcred/request']),
   frame('gitcred/grant', FRAME_SCHEMAS['gitcred/grant']),
+  frame('linearcred/request', FRAME_SCHEMAS['linearcred/request']),
+  frame('linearcred/grant', FRAME_SCHEMAS['linearcred/grant']),
   frame('secrets/request', FRAME_SCHEMAS['secrets/request']),
   frame('secrets/grant', FRAME_SCHEMAS['secrets/grant']),
   frame('secrets/renew', FRAME_SCHEMAS['secrets/renew']),
