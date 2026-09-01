@@ -110,8 +110,11 @@ export async function installNewFeishuBot(
     deps.repos.integrationChannel.listForIntegration(id),
     deps.repos.bot.get(orgId, botId)
   ])
-  if (secret && botRow) {
-    const spec = await integrationToSpec(deps.platforms, integration, botRow, secret, channels, isGatedAgent(agent))
+  const spec =
+    secret && botRow
+      ? await integrationToSpec(deps.platforms, integration, botRow, secret, channels, isGatedAgent(agent))
+      : null
+  if (spec) {
     await deps.agentDelivery.integrationUpsert(agent, spec, (err, target) => {
       if (!(err instanceof NoConnection)) throw err
       log.debug({ integrationId: id, daemonId: target }, 'integration/upsert skipped: daemon offline')

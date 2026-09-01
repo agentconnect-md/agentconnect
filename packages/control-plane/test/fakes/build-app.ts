@@ -42,6 +42,7 @@ import { createSlackCpProvider } from '../../src/platforms/slack/provider.js'
 import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
+import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { ApiKeyCodec } from '../../src/registry/apiKey.js'
 import { DaemonAuthService } from '../../src/registry/authService.js'
@@ -69,13 +70,15 @@ export interface DaemonApp {
 
 // §9: reconcile projects every `IntegrationSpec.config` through the platform
 // registry, and the bot repo projects every new row's D6 identity through it,
-// so compose the same four providers prod registers. Their verify seams are
-// offline stubs — neither projector calls one.
+// so compose the same providers prod registers. Their verify seams are offline
+// stubs — neither projector calls one — and Linear composes without its
+// deployment app or token store for the same reason.
 const PLATFORMS = buildCpPlatformRegistry([
   createSlackCpProvider({}),
   createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
   createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
-  createFeishuCpProvider({})
+  createFeishuCpProvider({}),
+  createLinearCpProvider({})
 ])
 
 export function buildDaemonApp(prisma: PrismaClient): DaemonApp {

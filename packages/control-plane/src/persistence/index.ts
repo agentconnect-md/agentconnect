@@ -72,6 +72,7 @@ export { PgSlackInstallStore } from './repositories/slack-install.repo.js'
 export { PgSlackPlatformInstallStore } from './repositories/slack-platform-install.repo.js'
 export { PgFeishuAppRegistrationStore } from './repositories/feishu-app-registration.repo.js'
 export { PgSlackUserConfigStore } from './repositories/slack-user-config.repo.js'
+export { PgLinearTokenStore, PgLinearInstallStateStore } from './repositories/linear.repo.js'
 export {
   GENERAL_PRESET,
   PRESET_AGENT_SKILLS,

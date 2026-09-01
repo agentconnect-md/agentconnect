@@ -121,7 +121,21 @@ export function botRoutes(deps: HttpDeps) {
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'bot is installed on an agent — uninstall first' })
         }
+        // Platform-owned teardown the cascade cannot reach (contract §9 `onBotDelete`): read the
+        // secret row BEFORE the delete cascades it away, then run the declared side effect AFTER
+        // the row is gone, so a refused delete never tears down a live install's upstream state.
+        // Best-effort by contract — a failure is logged and the delete stands (Linear's own
+        // backstop is its orphan-token sweep).
+        const onBotDelete = deps.platforms.get(bot.platform)?.sideEffects?.onBotDelete
+        const secrets = onBotDelete ? await deps.repos.botSecret.get(orgOf(req), bot.id) : null
         await deps.repos.bot.delete(orgOf(req), bot.id)
+        if (onBotDelete) {
+          try {
+            await onBotDelete(bot, secrets)
+          } catch (err) {
+            req.log.warn({ err, botId: bot.id, platform: bot.platform }, 'bot delete side effect failed')
+          }
+        }
         return reply.code(204).send(null)
       }
     )

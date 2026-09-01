@@ -906,13 +906,13 @@ export class AgentMoveService {
         if (!secret) throw new AgentMoveConflict(`integration ${integration.id} has no credentials`)
         const isHttp = bot.transport === 'http'
         const gated = isGatedAgent(agent)
-        return {
-          botId: String(bot.id),
-          http: isHttp,
-          spec: isHttp
-            ? await httpIntegrationToSpec(this.deps.platforms, integration, bot, secret, channels, gated)
-            : await integrationToSpec(this.deps.platforms, integration, bot, secret, channels, gated)
-        }
+        const spec = isHttp
+          ? await httpIntegrationToSpec(this.deps.platforms, integration, bot, secret, channels, gated)
+          : await integrationToSpec(this.deps.platforms, integration, bot, secret, channels, gated)
+        // A provider-held credential that is gone is the same blocker as a missing secret row: the
+        // move bundle is atomic, so it must not carry an integration the target cannot serve.
+        if (!spec) throw new AgentMoveConflict(`integration ${integration.id} has no credentials`)
+        return { botId: String(bot.id), http: isHttp, spec }
       })
     )
     specs.sort((a, b) => a.spec.integrationId.localeCompare(b.spec.integrationId))

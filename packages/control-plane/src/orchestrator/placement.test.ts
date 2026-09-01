@@ -6,7 +6,8 @@
  * extra rule; a 1:1 DM's On state uses the unscoped DM default.
  */
 import { describe, it, expect } from 'vitest'
-import { integrationToSpec } from './placement.js'
+import { z } from 'zod'
+import { httpIntegrationToSpec, integrationToSpec } from './placement.js'
 import { agentRecordToSpec } from './agentSpecAssembler.js'
 import type { AgentRecord, BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
@@ -70,12 +71,18 @@ const bot = (over: Partial<BotRecord> = {}): BotRecord =>
 
 /** `integrationToSpec` with the registry + the matching bot row pre-bound, so the
  *  cases below keep reading as the trigger→bindRules fold they are testing. */
-const specOf = (
+const specOf = async (
   i: IntegrationRecord,
   secret: Parameters<typeof integrationToSpec>[3],
   channels: IntegrationChannelRecord[] = [],
   gated = false
-) => integrationToSpec(PLATFORMS, i, bot({ platform: i.platform }), secret, channels, gated)
+) => {
+  // Every platform exercised here always has a deliverable payload; `null` is the
+  // withheld-integration answer, pinned in its own suite below.
+  const spec = await integrationToSpec(PLATFORMS, i, bot({ platform: i.platform }), secret, channels, gated)
+  if (!spec) throw new Error('expected a deliverable spec')
+  return spec
+}
 
 const channel = (
   channelId: string,
@@ -272,6 +279,60 @@ describe('integrationToSpec platform fences (§9)', () => {
     await expect(
       integrationToSpec(PLATFORMS, webchat, bot({ platform: 'webchat' }), SECRET, [], false)
     ).rejects.toThrow(/no control-plane platform provider registered for webchat/)
+  })
+})
+
+/**
+ * A provider whose own credential store has nothing for this row answers
+ * `undefined`, and core must turn that into ABSENCE, not into a spec with an
+ * empty payload.
+ *
+ * The distinction is the whole point: the daemon's reader refuses a config-less
+ * spec and KEEPS the entry it already holds (`CpIntegrationRegistry.converge`
+ * only ever sets), so a config-less spec would leave a revoked credential
+ * running. `null` instead keeps the row out of the deliverable roster, which is
+ * exactly what `drop.integrations` prunes — the same exit a missing secret row
+ * already takes.
+ */
+describe('a provider with no deliverable payload withholds the integration', () => {
+  const withheld = buildCpPlatformRegistry([
+    {
+      platformId: 'slack',
+      installRoutes: () => [],
+      credentialBodySchema: z.object({}),
+      validateConfig: () => Promise.resolve({ ok: true as const, identity: {} }),
+      buildNewBotInstall: () => ({ secrets: { botToken: '', appToken: null, signingSecret: null } }),
+      secretShape: { slots: {}, httpAssignRequires: [] },
+      projectIntegrationConfig: () => Promise.resolve(undefined)
+    }
+  ])
+
+  it('answers null from the direct (socket) assembler', async () => {
+    expect(await integrationToSpec(withheld, INTEGRATION, bot(), SECRET, [], false)).toBeNull()
+  })
+
+  it('answers null from the shared (http) assembler', async () => {
+    expect(await httpIntegrationToSpec(withheld, INTEGRATION, bot({ transport: 'http' }), SECRET, [], false)).toBeNull()
+  })
+
+  it('still emits a spec when the provider returns a payload, including a falsy one', async () => {
+    // `undefined` is the ONLY withholding answer — an empty-object payload is a
+    // legitimate config and must not be mistaken for an absent credential.
+    const empty = buildCpPlatformRegistry([
+      {
+        platformId: 'slack',
+        installRoutes: () => [],
+        credentialBodySchema: z.object({}),
+        validateConfig: () => Promise.resolve({ ok: true as const, identity: {} }),
+        buildNewBotInstall: () => ({ secrets: { botToken: '', appToken: null, signingSecret: null } }),
+        secretShape: { slots: {}, httpAssignRequires: [] },
+        projectIntegrationConfig: () => Promise.resolve({})
+      }
+    ])
+    expect(await integrationToSpec(empty, INTEGRATION, bot(), SECRET, [], false)).toMatchObject({
+      integrationId: INTEGRATION.id,
+      config: {}
+    })
   })
 })
 

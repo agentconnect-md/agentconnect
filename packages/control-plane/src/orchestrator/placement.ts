@@ -223,6 +223,10 @@ function mutedChannelIds(channels: IntegrationChannelRecord[], gated: boolean): 
  * A 'mention' channel needs no extra rule — the unscoped mention default already
  * covers it. Gated (`gated`, derived from the owning agent's restricted
  * visibility): NO unscoped defaults — only {@link gatedBindRules}.
+ *
+ * `null` ⇒ the platform provider has no deliverable payload for this row (see
+ * {@link projectSpec}); every caller withholds the integration instead of
+ * pushing a spec the daemon would refuse and then ignore.
  */
 export async function integrationToSpec(
   platforms: CpPlatformRegistry,
@@ -231,7 +235,7 @@ export async function integrationToSpec(
   secret: BotSecretMaterial,
   channels: IntegrationChannelRecord[] = [],
   gated = false
-): Promise<IntegrationSpec> {
+): Promise<IntegrationSpec | null> {
   // A 1:1 DM's On state is already covered by the unscoped dm default. A group DM
   // set to Any needs its own auto rule; Mention is covered by the default mention rule.
   const channelRules: IntegrationBindRule[] = channels
@@ -274,7 +278,7 @@ export async function httpIntegrationToSpec(
   secret: BotSecretMaterial,
   channels: IntegrationChannelRecord[] = [],
   gated = false
-): Promise<IntegrationSpec> {
+): Promise<IntegrationSpec | null> {
   // §6.4 final shape (see integrationToSpec): envelope + opaque config only.
   // The shared-mode payload's remaining inputs — `shareable` (the daemon's
   // in-thread "Switch agent" control), the provider app id, the bot's own user
@@ -309,6 +313,15 @@ export async function httpIntegrationToSpec(
  * `toDbPlatform` narrowing back to the closed wire union is gone with the
  * union.)
  *
+ * `null` — the provider answered `undefined` — means THERE IS NO DELIVERABLE
+ * SPEC right now, the same fact the roster's `!secret || !bot` guard already
+ * states, and it must be represented as absence rather than as a spec with no
+ * payload. A config-less spec is NOT fail-closed: the daemon's reader refuses
+ * it and keeps whatever entry it already holds (`CpIntegrationRegistry.converge`
+ * never deletes), so a platform whose credential has gone away would keep
+ * operating on the last good one. Absence instead keeps the integration out of
+ * the deliverable roster, which is what `drop.integrations` prunes.
+ *
  * Token-bearing — NEVER log the result.
  */
 async function projectSpec(
@@ -317,10 +330,11 @@ async function projectSpec(
   bot: BotRecord,
   core: IntegrationCoreEnvelope,
   secret: BotSecretMaterial
-): Promise<IntegrationSpec> {
+): Promise<IntegrationSpec | null> {
   const provider = platforms.get(i.platform)
   if (!provider) throw new Error(`no control-plane platform provider registered for ${i.platform}`)
   const config = await provider.projectIntegrationConfig(i, bot, core, secret)
+  if (config === undefined) return null
   return { orgId: i.orgId, integrationId: i.id, agentId: i.agentId, platform: i.platform, core, config }
 }
 
@@ -444,7 +458,9 @@ export class Placement implements ReconcileService {
           // decrypted secret. Either missing ⇒ no deliverable spec, and the roster
           // prunes the replica below. The bot row cannot actually be absent (the
           // integration→bot FK is non-null and `onDelete: Restrict`); the guard is
-          // the fail-closed statement of that, not a live branch.
+          // the fail-closed statement of that, not a live branch. The projector
+          // answering `null` — a provider-held credential that is gone — is the
+          // same fact and takes the same exit.
           if (!secret || !bot) return null
           // An http-transport bot's ingest is on the relay pool — the daemon
           // reconciles it send-only (no Socket Mode). Socket bots reconcile as direct.

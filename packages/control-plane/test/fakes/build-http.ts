@@ -67,6 +67,8 @@ import {
   PgFeishuAppRegistrationStore,
   PgThreadAffinityStore,
   PgSlackUserConfigStore,
+  PgLinearTokenStore,
+  PgLinearInstallStateStore,
   PgPresetAgentStore,
   PgIntegrationChannelRepo,
   PgDutyGroupRepo
@@ -109,6 +111,7 @@ import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.
 import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
 import { createSlackCpProvider, createSlackToolingCredentials } from '../../src/platforms/slack/provider.js'
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
+import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from '../../src/http/routes/slack-install.js'
 import {
   slackPlatformInstallRoutes,
@@ -121,6 +124,7 @@ import type { FeishuRouteSeams, SlackRouteSeams, TelegramRouteSeams } from '../.
 import type { SlackConfigApi } from '../../src/http/slack-config-api.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from '../../src/http/slack-identity.js'
 import type { SlackPlatformAppConfig } from '../../src/config/slack-platform.js'
+import type { LinearPlatformAppConfig } from '../../src/config/linear-platform.js'
 import type { TelegramBotVerifier } from '../../src/http/telegram-identity.js'
 import type { TelegramBotIconSyncer } from '../../src/http/telegram-bot-profile.js'
 import type { DiscordBotVerifier, DiscordMessageContentIntentEnsurer } from '../../src/http/discord-identity.js'
@@ -169,6 +173,7 @@ export interface PlatformStubs {
   configureFeishuHttpApp: FeishuHttpAppConfigurator
   syncFeishuAppIcon?: FeishuAppIconSyncer
   feishuAppRegistration: FeishuAppRegistrationService
+  linearPlatformApp?: LinearPlatformAppConfig
 }
 
 /** The keys `buildHttpApp` peels out of its overrides bag into
@@ -187,7 +192,8 @@ const PLATFORM_STUB_KEYS = [
   'feishuAppTenantGuard',
   'configureFeishuHttpApp',
   'syncFeishuAppIcon',
-  'feishuAppRegistration'
+  'feishuAppRegistration',
+  'linearPlatformApp'
 ] as const satisfies readonly (keyof PlatformStubs)[]
 
 export interface HttpApp {
@@ -274,6 +280,8 @@ export function buildHttpApp(
   const botCredentialWriter = new PgBotCredentialWriter(prisma, cipher)
   const feishuAppRegistrationStore = new PgFeishuAppRegistrationStore(prisma, cipher)
   const slackUserConfigStore = new PgSlackUserConfigStore(prisma, cipher)
+  const linearTokenStore = new PgLinearTokenStore(prisma, cipher)
+  const linearInstallStateStore = new PgLinearInstallStateStore(prisma)
   const integrationChannelRepo = new PgIntegrationChannelRepo(prisma)
   const agentRepo = new PgAgentRepo(prisma)
   const orgRepo = new PgOrgRepo(prisma)
@@ -487,6 +495,8 @@ export function buildHttpApp(
       slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
       feishuAppRegistration: feishuAppRegistrationStore,
       slackUserConfig: slackUserConfigStore,
+      linearToken: linearTokenStore,
+      linearInstallState: linearInstallStateStore,
       presetAgent: presetAgentRepo,
       integrationChannel: integrationChannelRepo,
       audit: auditRepo,
@@ -670,6 +680,14 @@ export function buildHttpApp(
       funnelRoutes: { org: [feishuRegistrationRoutes(deps, feishuSeams)], publicCallback: [] },
       syncAppIcon: async (appId, appSecret, region, agent) =>
         platformStubs.syncFeishuAppIcon?.(appId, appSecret, region, agent)
+    }),
+    // The deployment app is read THROUGH the stub bag per call, so a suite can enable Linear after
+    // the app is built — the same late-binding discipline every seam above uses.
+    createLinearCpProvider({
+      get app() {
+        return platformStubs.linearPlatformApp
+      },
+      tokens: linearTokenStore
     })
   ])
 

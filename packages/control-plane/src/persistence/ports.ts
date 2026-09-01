@@ -4322,6 +4322,81 @@ export interface SlackUserConfigStore {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// The two Linear provider-owned stores (docs/designs/linear-integration.md §7.2).
+// `LinearTokenStore` is the durable home of one connected workspace's rotating
+// OAuth grant, carrying secret material behind the same cipher seam as
+// bot_secret; `LinearInstallStateStore` is the connect funnel's nonce table and
+// carries none.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The CONNECTION identity a `linear_token` row is keyed by (§4.4) — the pair the
+ * workspace Bot's D6 columns mirror (`externalAppId` = the deployment app's
+ * client id, `externalTenantId` = the Linear organization id), org-scoped.
+ *
+ * Deliberately NOT the Bot row id: the grant is the workspace's authorization of
+ * the app, so it is written by the OAuth callback BEFORE any Bot row exists, and
+ * adding or removing a member agent never touches it.
+ */
+export interface LinearConnectionIdentity {
+  orgId: OrgId
+  clientId: string
+  organizationId: string
+}
+
+/** One workspace's OAuth grant. Refresh ROTATES the refresh token, so both
+ *  values are rewritten together on every persist. NEVER logged, never DTO'd. */
+export interface LinearTokenMaterial {
+  accessToken: string // ≤24 h
+  refreshToken: string | null // null ⇒ nothing to rotate with (re-connect required)
+  expiresAt: Date
+}
+
+export interface LinearTokenRecord extends LinearTokenMaterial {
+  orgId: OrgId
+  clientId: string
+  organizationId: string
+  updatedAt: Date
+}
+
+export interface LinearTokenStore {
+  get(identity: LinearConnectionIdentity): Promise<LinearTokenRecord | null>
+  /** Upsert the workspace's grant — the callback's step-1 write and every rotate. */
+  put(identity: LinearConnectionIdentity, material: LinearTokenMaterial): Promise<void>
+  delete(identity: LinearConnectionIdentity): Promise<void>
+}
+
+/** One pending connect-a-workspace funnel row. `id` IS the one-shot OAuth state
+ *  nonce; `defaultAgentId` is the member bare delegations start a session with. */
+export interface LinearInstallStateRecord {
+  id: string
+  orgId: OrgId
+  defaultAgentId: AgentId | null
+  createdByUserId: string | null
+  createdAt: Date
+}
+
+export interface LinearInstallStateStore {
+  create(input: {
+    id: string
+    orgId: OrgId
+    defaultAgentId?: AgentId
+    createdByUserId?: string
+  }): Promise<LinearInstallStateRecord>
+  /**
+   * Redeem the nonce: return the row and delete it in ONE statement, or `null`
+   * when no row is redeemable. Deliberately not a `get` + `delete` pair — the
+   * nonce is one-shot, and two concurrent callbacks (a double-clicked tab, a
+   * retried redirect) would both read the row before either deleted it and both
+   * proceed to mint a workspace. A single `DELETE` takes the row lock, so the
+   * loser re-evaluates against a gone row and gets `null`.
+   */
+  consume(id: string): Promise<LinearInstallStateRecord | null>
+  /** The shared TTL reaper's slice — an abandoned connect tab must not leave a live state nonce. */
+  reapExpired(staleBefore: Date): Promise<number>
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // IntegrationRepo (C6) — platform integration metadata (NO tokens)
 // ───────────────────────────────────────────────────────────────────────────
 

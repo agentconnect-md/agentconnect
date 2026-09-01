@@ -375,6 +375,25 @@ export interface CpInstallSideEffects {
    *  needs is the provider's business — Feishu resolves its app id from
    *  `secrets.appToken ?? bot.feishuAppId` inside and no-ops without one. */
   syncBotProfileIcon?(bot: BotRecord, secrets: BotSecretMaterial, agent: BotProfileIconAgent): Promise<void>
+  /**
+   * Teardown of PLATFORM-OWNED state when the bot row itself is deleted
+   * (linear-integration.md §7.4) — the disconnect edge core has no member for.
+   * Presence IS the capability, like `syncBotProfileIcon`: `http/routes/bots.ts`
+   * consults it only for a platform that declares one, and best-effort by
+   * contract like `postCreate` — a failure is logged and the delete stands.
+   *
+   * Runs AFTER the row is gone, on the snapshot core read before deleting, so a
+   * refused delete (the still-installed 409, the FK Restrict backstop) can never
+   * tear down a live install's upstream grant. `secrets` is that same pre-delete
+   * read of the cascade-deleted `bot_secret` row, `null` when the bot had none.
+   *
+   * NOT for state core already owns: the integration rows, the assign
+   * broadcast, and the secret row are core's, and cascade or are pulled by the
+   * delete itself. This is for what only the provider knows about — Linear's
+   * `linear_token` row, keyed by the connection identity rather than the bot id,
+   * which nothing else would ever collect.
+   */
+  onBotDelete?(bot: BotRecord, secrets: BotSecretMaterial | null): Promise<void>
 }
 
 /**
@@ -540,6 +559,15 @@ export interface CpPlatformProvider<TCredentials = unknown> {
    * `botUserId`) and `bot.transport` is the direct-vs-shared fork itself.
    * Shape validation of the produced payload lives in the same platform's
    * DAEMON module (§6.4), not here. Token-bearing — NEVER log.
+   *
+   * `undefined` is the fail-closed answer for "this row has NO deliverable
+   * payload right now" — a provider-held credential that was revoked or swept.
+   * Core turns it into ABSENCE from the deliverable roster, so the daemon drops
+   * the integration (`drop.integrations`) and the live http path pulls the
+   * send-only bundle. Do NOT return it for a payload that is merely incomplete:
+   * a config-less spec would be refused by the daemon's reader, which keeps the
+   * entry it already holds, so the integration would go on running against the
+   * last good credential.
    */
   projectIntegrationConfig(
     integration: IntegrationRecord,

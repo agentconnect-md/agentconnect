@@ -73,16 +73,15 @@ import { createSlackCpProvider } from '../../src/platforms/slack/provider.js'
 import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
+import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
+import { PgLinearTokenStore } from '../../src/persistence/repositories/linear.repo.js'
 
-// §9: reconcile projects every `IntegrationSpec.config` through the platform
-// registry, so the WS fake composes the same four providers prod registers.
-// Their verify seams are offline stubs — the projectors call none of them.
-const PLATFORMS = buildCpPlatformRegistry([
-  createSlackCpProvider({}),
-  createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
-  createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
-  createFeishuCpProvider({})
-])
+/** The deployment Linear app this harness composes — a test seeds a bot identity matching it. */
+export const TEST_LINEAR_APP = {
+  clientId: 'lin_client_id',
+  clientSecret: 'lin_client_secret',
+  signingSecret: 'lin_signing_secret'
+}
 
 export const TEST_API_KEY_PEPPER = 'test-api-key-pepper-0123456789abcdef'
 
@@ -135,6 +134,17 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const clock = new FakeClock(opts.startMs ?? 1_700_000_000_000)
 
   const cipher = new PlaintextSecretCipher()
+  // §9: reconcile projects every `IntegrationSpec.config` through the platform registry, so the WS
+  // fake composes the same providers prod registers. Their verify seams are offline stubs — the
+  // projectors call none of them — but Linear's projector DOES read its own store, so it gets the
+  // real one over this harness's Postgres.
+  const PLATFORMS = buildCpPlatformRegistry([
+    createSlackCpProvider({}),
+    createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
+    createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
+    createFeishuCpProvider({}),
+    createLinearCpProvider({ app: TEST_LINEAR_APP, tokens: new PgLinearTokenStore(prisma, cipher) })
+  ])
   const repos = {
     daemon: new PgDaemonRepo(prisma),
     daemonLifecycleOp: new PgDaemonLifecycleOpRepo(prisma),
