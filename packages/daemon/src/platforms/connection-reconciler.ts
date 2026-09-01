@@ -1,8 +1,8 @@
 /**
  * The daemon-side PLATFORM CONNECTION RECONCILER: the §7.5 lifecycle that converges the
- * live Slack / Telegram / Discord / Feishu clients onto the credentials the current agent
- * roster asks for — open what is missing, prune what nothing references any more, and
- * re-bind the integrations that moved between them. It owns the five connection pools and
+ * live Slack / Telegram / Discord / Feishu / Linear clients onto the credentials the current
+ * agent roster asks for — open what is missing, prune what nothing references any more, and
+ * re-bind the integrations that moved between them. It owns the six connection pools and
  * the Slack startup-retry timers; the per-integration binding maps stay on the Daemon
  * (twenty-odd other call sites read them) and are written through {@link
  * ConnectionReconcilerHost.bindSlack} and friends / `unbindIntegration`.
@@ -50,10 +50,12 @@ import {
 } from '../telegram/connection.js'
 import { consolidateDiscord, discordConnKey, DiscordConnection, type DiscordDeps } from '../discord/connection.js'
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from '../feishu/connection.js'
+import { consolidateLinear, linearConnKey, LinearConnection } from './linear/connection.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
 
 /** Any live platform client this lifecycle opens, prunes or binds. */
-export type PlatformConnection = SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
+export type PlatformConnection =
+  SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | LinearConnection
 
 /**
  * The UI-action callbacks every platform connection is constructed with — a status-bar tap,
@@ -101,7 +103,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   /** Every integration with a bot identity on record — the eviction pass's roll call. */
   boundIntegrationIds(): string[]
   /**
-   * Read side of the four per-platform binding maps. The reconciler compares against them
+   * Read side of the five per-platform binding maps. The reconciler compares against them
    * and sweeps them; every write goes through the `bind*` methods / `unbindIntegration`.
    */
   bindings(): {
@@ -109,6 +111,7 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
     telegram: ReadonlyMap<string, TelegramConnection>
     discord: ReadonlyMap<string, DiscordConnection>
     feishu: ReadonlyMap<string, FeishuConnection>
+    linear: ReadonlyMap<string, LinearConnection>
   }
   /** Point an integration at a live connection and record the identity mention-routing
    *  matches — the bot user id on Slack/Discord, the @username on Telegram, the open_id on
@@ -117,6 +120,8 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   bindTelegram(integrationId: string, conn: TelegramConnection, botUsername: string): void
   bindDiscord(integrationId: string, conn: DiscordConnection, botUserId: string): void
   bindFeishu(integrationId: string, conn: FeishuConnection, botOpenId: string): void
+  /** Linear's app user IS the bot identity — the id the ingress self-echo guard matches (§7.2). */
+  bindLinear(integrationId: string, conn: LinearConnection, appUserId: string): void
   /** Drop an integration's connection binding, bot identity and channel snapshot together. */
   unbindIntegration(integrationId: string): void
   slackNameResolver(): SlackNameResolver | undefined
@@ -156,6 +161,9 @@ export class ConnectionReconciler {
   readonly telegramPool = new ConnectionPool<TelegramConnection>('telegram', telegramConnKey)
   readonly discordPool = new ConnectionPool<DiscordConnection>('discord', discordConnKey)
   readonly feishuPool = new ConnectionPool<FeishuConnection>('feishu', feishuConnKey)
+  readonly linearPool = new ConnectionPool<LinearConnection>('linear', (conn) =>
+    linearConnKey({ integrationId: conn.integrationId, workspaceId: conn.workspaceId() })
+  )
   // Pending background retry timers for Slack connections that failed to open
   // at startup (keyed by appToken). Cleared on daemon stop.
   private readonly slackRetryTimers = new Map<string, TimerHandle>()
@@ -172,7 +180,7 @@ export class ConnectionReconciler {
 
   /** Every pool, for the whole-set pass at shutdown. */
   private pools(): { all(): PlatformConnection[] }[] {
-    return [this.slackPool, this.slackSharedPool, this.telegramPool, this.discordPool, this.feishuPool]
+    return [this.slackPool, this.slackSharedPool, this.telegramPool, this.discordPool, this.feishuPool, this.linearPool]
   }
 
   /** The deps every Slack SOCKET shares — the action sink, the name-resolver hand-off and
@@ -259,6 +267,7 @@ export class ConnectionReconciler {
     const telegram = consolidateTelegram(agents)
     const discord = consolidateDiscord(agents)
     const feishu = consolidateFeishu(agents)
+    const linear = consolidateLinear(agents, this.log)
 
     const directByIntegration = new Map<string, { appToken: string; botToken: string }>()
     for (const group of direct.values())
@@ -278,13 +287,19 @@ export class ConnectionReconciler {
     const feishuByIntegration = new Map<string, string>()
     for (const group of feishu.values())
       for (const { integrationId } of group.integrations) feishuByIntegration.set(integrationId, feishuConnKey(group))
+    // Linear keys on the INTEGRATION plus its workspace: the token is per-integration and a
+    // re-pointed integration must reconnect rather than keep writing to the old workspace.
+    const linearByIntegration = new Map<string, string>()
+    for (const group of linear.values())
+      for (const { integrationId } of group.integrations) linearByIntegration.set(integrationId, group.key)
 
     const allDesiredIds = new Set([
       ...directByIntegration.keys(),
       ...sharedByIntegration.keys(),
       ...telegramByIntegration.keys(),
       ...discordByIntegration.keys(),
-      ...feishuByIntegration.keys()
+      ...feishuByIntegration.keys(),
+      ...linearByIntegration.keys()
     ])
     const evaluation = this.host.evaluationIntegrationIds()
     const bindings = this.host.bindings()
@@ -322,6 +337,10 @@ export class ConnectionReconciler {
       // never leaves an integration routed at the stopped old-domain client.
       if (feishuConnKey(conn) !== feishuByIntegration.get(integrationId)) this.host.unbindIntegration(integrationId)
     }
+    for (const [integrationId, conn] of bindings.linear) {
+      const key = linearConnKey({ integrationId: conn.integrationId, workspaceId: conn.workspaceId() })
+      if (key !== linearByIntegration.get(integrationId)) this.host.unbindIntegration(integrationId)
+    }
 
     // A startup retry captures only the stable appToken and re-reads the live
     // group when it fires. Cancel timers for keys whose final reference vanished.
@@ -351,6 +370,7 @@ export class ConnectionReconciler {
     await this.prunePool(this.telegramPool, new Set([...telegram.values()].map(telegramConnKey)))
     await this.prunePool(this.discordPool, new Set([...discord.values()].map(discordConnKey)))
     await this.prunePool(this.feishuPool, new Set([...feishu.values()].map(feishuConnKey)))
+    await this.prunePool(this.linearPool, new Set([...linear.values()].map((group) => group.key)))
   }
 
   /** Close every connection in `pool` whose opaque identity consolidation no
@@ -710,6 +730,55 @@ export class ConnectionReconciler {
     // Label existing sessions' channels now that connections are up (per-message
     // resolution otherwise only fires on fresh traffic — see backfillChannelNames).
     await this.backfillChannelNames()
+  }
+
+  /**
+   * Reconcile the Linear egress clients against the live agents (§9.4).
+   *
+   * The simplest of them all: Linear has NO socket — ingress is relay-terminated (§4.2) — so
+   * `start()` only warms the brokered token and a failure is not a connection failure at all.
+   * The client is therefore published BEFORE `start()` resolves: a token warm-up that fails
+   * must still leave the integration bound, or the session's own retry ladder would have
+   * nothing to send through. A re-pushed spec converges through `applySnapshot` rather than a
+   * teardown, because rotation does not change the connection's identity (§7.5).
+   */
+  async reconcileLinearConnections(): Promise<void> {
+    const cp = this.host.cpClient()
+    for (const group of consolidateLinear(this.host.transportAgents(), this.log).values()) {
+      const existing = this.linearPool.find(group.key)
+      if (existing) {
+        // A rotated token rides the SAME identity, so adopt it in place and keep the client.
+        existing.applySnapshot(group.config)
+        for (const { integrationId } of group.integrations) {
+          if (this.host.bindings().linear.get(integrationId) !== existing) {
+            this.host.bindLinear(integrationId, existing, existing.botUserId ?? '')
+            this.log.info(`linear: bound integration ${integrationId} onto existing workspace client`)
+          }
+        }
+        continue
+      }
+      if (!this.linearPool.beginConnect(group.key)) continue
+      const conn = new LinearConnection({
+        group,
+        requestToken: async (payload) => {
+          if (!cp) throw new Error('control plane unavailable — cannot broker a Linear token')
+          return await cp.requestLinearCred(payload)
+        },
+        log: this.log
+      })
+      try {
+        this.linearPool.add(conn)
+        for (const { integrationId } of group.integrations)
+          this.host.bindLinear(integrationId, conn, conn.botUserId ?? '')
+        // Best-effort by contract: a cold token only costs the first activity a broker hop.
+        await conn.start()
+        this.log.info(`linear: workspace client ready for integration ${group.integrationId}`)
+      } catch (err) {
+        this.log.warn(`linear: token warm-up failed for integration ${group.integrationId}: ${formatErr(err)}`)
+      } finally {
+        this.linearPool.endConnect(group.key)
+      }
+    }
   }
 
   /**

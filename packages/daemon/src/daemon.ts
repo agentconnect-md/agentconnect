@@ -404,6 +404,28 @@ import {
 } from './platforms/telegram/turn-output.js'
 import { applyDiscordAction as applyDiscordActionExternal } from './platforms/discord/turn-output.js'
 import { applyFeishuAction as applyFeishuActionExternal, type FeishuTurnState } from './platforms/feishu/turn-output.js'
+import { LinearConnection } from './platforms/linear/connection.js'
+import { linearCommandChrome } from './platforms/linear/command-chrome.js'
+import {
+  applyLinearAction,
+  createLinearConverger,
+  initialLinearTurnState,
+  linearAttributionOf,
+  LinearConverger,
+  type LinearAction,
+  type LinearTurnState
+} from './platforms/linear/turn-output.js'
+import {
+  applyLinearMessageStrategy,
+  isLinearIssuelessSurface,
+  linearAckBody,
+  linearChannelName,
+  readLinearExt,
+  LinearStopActionSchema,
+  type LinearStopAction,
+  LINEAR_STOP_RESPONSE_BODY,
+  LINEAR_UNSUPPORTED_SURFACE_BODY
+} from './platforms/linear/message-strategy.js'
 import {
   canonicalizeTelegramThread as canonicalizeTelegramThreadExternal,
   telegramMessageId as telegramMessageIdExternal,
@@ -828,6 +850,7 @@ export class Daemon {
     registry.register(telegramCommandChrome)
     registry.register(discordCommandChrome)
     registry.register(feishuCommandChrome)
+    registry.register(linearCommandChrome)
     return registry
   })()
 
@@ -906,6 +929,19 @@ export class Daemon {
           this.enqueueApply(p, { kind: 'card-cancel' }, { allowWhenSuppressed: true })
         }
       })
+      registry.register({
+        platform: 'linear',
+        createConverger: (ctx) => createLinearConverger(ctx),
+        initialTurnState: () => initialLinearTurnState(),
+        // The connection IS the egress port (§4.6 single writer): it owns the send queue,
+        // the brokered token and the retry ladder, so the surface needs nothing from core.
+        apply: (p, action) =>
+          applyLinearAction(
+            { conn: this.lnConnByIntegration.get(p.entry.integrationId ?? ''), plan: p.plan },
+            turnState<LinearTurnState>(p),
+            action as LinearAction
+          )
+      })
       return registry
     })()
   // Slack id → display-name resolver (created with the store in start()).
@@ -970,6 +1006,9 @@ export class Daemon {
   // integrationId -> the FeishuConnection that owns it (for replies). Separate from
   // connByIntegration so Slack reconcile (which reads `.appToken`) never sees a Feishu conn.
   private fsConnByIntegration = new Map<string, FeishuConnection>()
+  // integrationId -> the LinearConnection that owns it. Linear's only reply surface is the
+  // agent activity feed (§4.6), so this is the egress port every Linear write resolves through.
+  private lnConnByIntegration = new Map<string, LinearConnection>()
   // agentId → the in-flight (or resolved) host-startup promise. Resolves to the
   // STARTED host (startHostWithRetry may build several across retries — the last,
   // successful one wins). `.has()` doubles as "is this agent starting / started?".
@@ -1126,10 +1165,7 @@ export class Daemon {
   // Connection-specific half of the same lease. Unlike `pending[].conn`, this is
   // acquired immediately when dispatchOne captures replyConn, before its first
   // await, so ordinary config reconciliation cannot close that pre-pending use.
-  private activeReplyConnectionUses = new Map<
-    SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection,
-    Set<Promise<void>>
-  >()
+  private activeReplyConnectionUses = new Map<PlatformConnection, Set<Promise<void>>>()
   private sessionDeliveryBindings = new Map<string, SessionDeliveryBinding>()
   // ACP adapters may emit title/usage metadata before session/new returns, while
   // SessionManager has not committed the local row yet. Buffer only those
@@ -1417,7 +1453,8 @@ export class Daemon {
         slack: this.connByIntegration,
         telegram: this.tgConnByIntegration,
         discord: this.dcConnByIntegration,
-        feishu: this.fsConnByIntegration
+        feishu: this.fsConnByIntegration,
+        linear: this.lnConnByIntegration
       }),
       bindSlack: (integrationId, conn, botUserId) => {
         this.bind(this.connByIntegration, integrationId, conn, botUserId)
@@ -1429,6 +1466,8 @@ export class Daemon {
         this.bind(this.dcConnByIntegration, integrationId, conn, botUserId),
       bindFeishu: (integrationId, conn, botOpenId) =>
         this.bind(this.fsConnByIntegration, integrationId, conn, botOpenId),
+      bindLinear: (integrationId, conn, appUserId) =>
+        this.bind(this.lnConnByIntegration, integrationId, conn, appUserId),
       unbindIntegration: (integrationId) => this.unbindIntegration(integrationId),
       slackNameResolver: () => this.nameResolver,
       channelNameResolver: () => this.channelNameResolver,
@@ -1503,6 +1542,7 @@ export class Daemon {
     this.tgConnByIntegration.delete(integrationId)
     this.dcConnByIntegration.delete(integrationId)
     this.fsConnByIntegration.delete(integrationId)
+    this.lnConnByIntegration.delete(integrationId)
     delete this.botUserIds[integrationId]
     this.channelSnapshots.delete(integrationId)
   }
@@ -2861,6 +2901,9 @@ export class Daemon {
     void this.connections
       .reconcileFeishuConnections()
       .catch((err) => this.log.error(`feishu: initial connect failed: ${formatErr(err)}`))
+    void this.connections
+      .reconcileLinearConnections()
+      .catch((err) => this.log.error(`linear: initial connect failed: ${formatErr(err)}`))
   }
 
   /** Phase 28 — register crons per agent; the same converge reconcile re-runs on change. */
@@ -3257,6 +3300,7 @@ export class Daemon {
       await this.connections.reconcileTelegramConnections()
       await this.connections.reconcileDiscordConnections()
       await this.connections.reconcileFeishuConnections()
+      await this.connections.reconcileLinearConnections()
       // Converged for real: the sockets a duty change invalidated are closed. Publishing the
       // CLAIMED value (not the current one) leaves a duty change that landed mid-pass outstanding,
       // so the trailing re-run still converges it.
@@ -6433,10 +6477,148 @@ export class Daemon {
       await this.commands.setSessionMuted(muteKey, false)
       this.log.info(`relay: agent "${msg.agentId}" un-muted in ch=${normalized.channel} (explicit @mention)`)
     }
-    void this.dispatch(msg.agentId, normalized, msg.integrationId).catch((err) =>
+    // §7.4 ingress strategy: the platform's own module shapes the prompt, records its session
+    // metadata, and may settle the delivery itself. Absent ⇒ the shared path, byte for byte.
+    const ingress = this.relayIngressStrategies.get(normalized.platform)
+    if (ingress && (await ingress.prepare(msg, normalized)) === 'settled') {
+      return { msgId: msg.msgId, accepted: true }
+    }
+    // Read BEFORE the dispatch that would claim it: whether the session is already working is
+    // what an admission hook reports, and the entry this delivery creates is not that work.
+    const onAdmitted = ingress?.onAdmitted
+    const busy = onAdmitted ? this.inflight.has(muteKey) : false
+    // A platform contributing no admission hook keeps the shared call exactly as it was.
+    // §10.1: the hook runs on the FIRST admission only — `onAdmission` fires once the durable
+    // row is owned, so a replay or a concurrent same-`msgId` delivery reads back as `duplicate`
+    // and can never write a second row into an append-only feed.
+    const dispatched = onAdmitted
+      ? this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, undefined, {
+          onAdmission: (result) => {
+            if (result.accepted && !result.duplicate) onAdmitted(msg, normalized, busy)
+          }
+        })
+      : this.dispatch(msg.agentId, normalized, msg.integrationId)
+    void dispatched.catch((err) =>
       this.log.error(`relay im dispatch failed for agent "${msg.agentId}": ${formatErr(err)}`)
     )
     return { msgId: msg.msgId, accepted: true }
+  }
+
+  /**
+   * §7.4 per-platform relay-ingress strategies, one registry entry per platform that needs one.
+   *
+   * Everything before this point on the `rd/msg(im)` path is core policy — arbitration echo,
+   * conversation gating, control commands, the `!stop` mute. What is NOT core is how one
+   * platform turns its delivered event into a prompt, and whether a delivery is something this
+   * build can serve at all. A platform with no entry keeps the shared path untouched.
+   */
+  private readonly relayIngressStrategies = new Map<
+    string,
+    {
+      /** Shape the delivery. `settled` ⇒ the platform answered it and no ACP turn follows. */
+      prepare(msg: RdMsgIm, normalized: NormalizedMessage): Promise<'dispatch' | 'settled'>
+      /** Run once, after the durable inbox has admitted this delivery for the first time. */
+      onAdmitted?(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): void
+    }
+  >([
+    [
+      'linear',
+      {
+        prepare: async (msg, normalized) => await this.prepareLinearDelivery(msg, normalized),
+        onAdmitted: (msg, normalized, busy) => this.postLinearAck(msg, normalized, busy)
+      }
+    ]
+  ])
+
+  /**
+   * Linear's §8 prompt assembly plus the §4.5 unsupported-surface answer.
+   *
+   * A malformed or absent adapter bag fails CLOSED into an ordinary dispatch: the member's own
+   * text is still their instruction, and inventing a header from nothing would be worse than
+   * shipping the turn without one.
+   */
+  private async prepareLinearDelivery(msg: RdMsgIm, normalized: NormalizedMessage): Promise<'dispatch' | 'settled'> {
+    const ext = readLinearExt(normalized)
+    if (!ext) {
+      this.log.warn(`linear: delivery ${msg.msgId} carries no adapter bag — dispatching the raw text`)
+      return 'dispatch'
+    }
+    // §4.5: no issue, so the channel fell back to the AgentSession UUID. Answer once, start no
+    // turn — and answer only AFTER the durable inbox has admitted the delivery, exactly like
+    // the acknowledgement (§10.1). The row is born completed: nothing will ever run it, so it
+    // is a dedup receipt rather than queued work, and startup replay skips it by construction.
+    if (isLinearIssuelessSurface(normalized, ext)) {
+      const key = sessionKey(
+        normalized.platform,
+        normalized.channel,
+        normalized.thread ?? normalized.msgId,
+        msg.agentId,
+        normalized.transportScope
+      )
+      let admitted = false
+      try {
+        admitted = await this.store.appendInbox({
+          id: stableMessageId(normalized),
+          sessionKey: key,
+          agentId: msg.agentId,
+          msg: JSON.stringify(normalized),
+          integrationId: msg.integrationId,
+          completedAt: this.clock.now(),
+          loopGuardCounted: 1,
+          enqueuedAt: monotonicTs()
+        })
+      } catch (err) {
+        // Fail CLOSED: with no durable record a redelivery would stack a second answer.
+        this.log.warn(`linear: unsupported-surface admission failed for ${msg.msgId}: ${formatErr(err)}`)
+        return 'settled'
+      }
+      if (!admitted) return 'settled'
+      const conn = this.lnConnByIntegration.get(msg.integrationId)
+      await conn
+        ?.postActivity(ext.agentSessionId, { type: 'response', body: LINEAR_UNSUPPORTED_SURFACE_BODY })
+        .catch((err: unknown) => this.log.warn(`linear: unsupported-surface reply failed: ${formatErr(err)}`))
+      this.log.info(`linear: session ${ext.agentSessionId} has no issue — answered without starting a turn`)
+      return 'settled'
+    }
+    applyLinearMessageStrategy(normalized)
+    // §4.5 session metadata: `TEAM-123 · <title>` comes straight off the bag, so the console
+    // labels the issue without a provider round-trip. (`threadUrl` already rides the message.)
+    const channelName = linearChannelName(ext)
+    if (channelName) {
+      await this.store.setDisplayName(normalized.channel, channelName, this.clock.now())
+      await this.sessionMetadataOutbox.emitSessionMetadataSnapshotsForDisplayName(normalized.channel)
+    }
+    return 'dispatch'
+  }
+
+  /**
+   * The ≤10 s pre-spawn acknowledgement (§10.1) — the ONE activity posted outside the
+   * converger, and the reason a suppressed turn can still be ack-only. Fire-and-forget: it is
+   * chrome, and the turn it precedes must never wait on a Linear write.
+   */
+  private postLinearAck(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): void {
+    const conn = this.lnConnByIntegration.get(msg.integrationId)
+    const ext = readLinearExt(normalized)
+    if (!conn || !ext) return
+    const agent = this.agents.get(msg.agentId)
+    const agentName = agent?.displayName?.trim() || agent?.name || msg.agentId
+    void (async () => {
+      const key = sessionKey(
+        normalized.platform,
+        normalized.channel,
+        normalized.thread ?? normalized.msgId,
+        msg.agentId,
+        normalized.transportScope
+      )
+      // `none` is truly silent (§5.2): no ack, no activities, transcript only.
+      const mode = (await this.store.getOutputModeOverride(key)) ?? agent?.output?.mode ?? 'low'
+      if (mode === 'none') return
+      await conn.postActivity(ext.agentSessionId, {
+        type: 'thought',
+        body: linearAckBody(agentName, ext, { queued: busy }),
+        ephemeral: true
+      })
+    })().catch((err: unknown) => this.log.warn(`linear: acknowledgement failed: ${formatErr(err)}`))
   }
 
   /** Apply one HTTP-bot interaction after relay routing. Re-check every daemon-owned
@@ -6488,8 +6670,48 @@ export class Daemon {
           payload: payload.data
         })
       }
+    ],
+    [
+      'linear',
+      async (msg) => {
+        const payload = LinearStopActionSchema.safeParse(msg.payload)
+        if (!payload.success) return { msgId: msg.msgId, accepted: false, reason: 'unsupported_action' }
+        return await this.handleRelayLinearStop(msg, payload.data)
+      }
     ]
   ])
+
+  /**
+   * Linear's native Stop (§5.1's stop row): interrupt the turn, then post the settling
+   * `response` — a Linear session left `active` after a stop would look permanently busy, and
+   * only a `response` moves it out. No turn, no arbitration: the session is bound to one agent
+   * at creation (§4.5), so the addressed session IS the target.
+   */
+  private async handleRelayLinearStop(msg: RdMsgPlatformAction, payload: LinearStopAction): Promise<RdAck> {
+    const agent = this.agents.get(msg.agentId)
+    if (!agent) {
+      this.log.warn(`relay: Linear stop for unknown agent ${msg.agentId} — dropping`)
+      return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
+    }
+    const conn = this.lnConnByIntegration.get(msg.integrationId)
+    if (!conn) {
+      this.log.warn(`relay: Linear stop for unavailable integration ${msg.integrationId} — dropping`)
+      return { msgId: msg.msgId, accepted: false, reason: 'unavailable' }
+    }
+    const transportScope = this.transportScopeForIntegrationIds([msg.integrationId])
+    const rec = await this.store.latestSessionForThread(msg.agentId, 'linear', payload.agentSessionId, transportScope)
+    if (rec) {
+      await this.interruptTurn(msg.agentId, rec.key, 'stop', rec.acpSessionId ?? undefined, {
+        ...(msg.userId ? { actor: { userId: msg.userId } } : {})
+      })
+    }
+    // Posted even with no local session: the stop still has to settle the Linear session, and
+    // a stop for work this daemon never held is exactly the case that would otherwise hang.
+    await conn
+      .postActivity(payload.agentSessionId, { type: 'response', body: LINEAR_STOP_RESPONSE_BODY })
+      .catch((err: unknown) => this.log.warn(`linear: stop response failed: ${formatErr(err)}`))
+    return { msgId: msg.msgId, accepted: true }
+  }
 
   private async handleRelayPlatformAction(msg: RdMsgPlatformAction): Promise<RdAck> {
     const decode = this.platformActionDecoders.get(msg.platformId)
@@ -9399,9 +9621,7 @@ export class Daemon {
     }
   }
 
-  private async waitForConnectionUses(
-    conn: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
-  ): Promise<void> {
+  private async waitForConnectionUses(conn: PlatformConnection): Promise<void> {
     // Derived integration mappings are removed before this is called, so no new
     // dispatch can capture `conn`. Loop defensively across the pre-pending lease
     // and Pending.done views until both are empty, then it is safe to stop.
@@ -10881,11 +11101,15 @@ export class Daemon {
     // lifecycle for the compact context already included in the latest reply's
     // initial post and retries any stale-section cleanup.
     const finals =
-      p.conv instanceof FeishuConverger
-        ? p.conv.onFinal(finalAttributionInfo)
-        : p.conv instanceof TelegramConverger || p.conv instanceof DiscordConverger
-          ? p.conv.onFinal(link, plan.hopLimitNotice)
-          : p.conv.onFinal(finalAttributionInfo)
+      // Linear renders the SAME attribution sentence, but names the agent rather than the bot:
+      // every agent posts through the one deployment app, so identity lives in content (§5).
+      p.conv instanceof LinearConverger
+        ? p.conv.onFinal(finalAttributionInfo ? linearAttributionOf(finalAttributionInfo) : undefined)
+        : p.conv instanceof FeishuConverger
+          ? p.conv.onFinal(finalAttributionInfo)
+          : p.conv instanceof TelegramConverger || p.conv instanceof DiscordConverger
+            ? p.conv.onFinal(link, plan.hopLimitNotice)
+            : p.conv.onFinal(finalAttributionInfo)
     for (const action of finals) this.enqueueApply(p, action)
   }
 
@@ -12158,7 +12382,7 @@ export class Daemon {
       return
     }
     // Duck-typed like showActivity, so a connection fake without the optional facet is fine.
-    const react = (replyConn as Partial<PlatformConnection> | undefined)?.react
+    const react = (replyConn as Partial<SlackConnection> | undefined)?.react
     const at = nativeMessageCoordinates(msg)
     if (react && at) void react.call(replyConn, at.channel, at.messageId, 'seen').catch(() => {})
   }
@@ -12166,11 +12390,7 @@ export class Daemon {
   /** Serialize action application per session so in-place edits never race on the
    *  remembered message ts (two concurrent `progress` actions both posting). Routes to
    *  the platform's applier by the Pending's platform tag. */
-  private enqueueApply(
-    p: Pending,
-    action: SlackAction | TelegramAction | DiscordAction | FeishuAction,
-    opts: { allowWhenSuppressed?: boolean } = {}
-  ): void {
+  private enqueueApply(p: Pending, action: DaemonRenderAction, opts: { allowWhenSuppressed?: boolean } = {}): void {
     if (p.outputSuppressed && !opts.allowWhenSuppressed) return
     p.signals.applyChain = p.signals.applyChain.then(() => {
       // Check again at execution time: actions queued before an interrupt must not
@@ -13726,17 +13946,19 @@ export class Daemon {
   }
 
   /** The live platform connection serving `integrationId`, any platform. */
-  /** Every platform's per-integration binding map, in one iterable — the read
-   *  side of the §7.5 registry. An integration id belongs to exactly one
-   *  platform, so first-hit lookup is total and unambiguous; adding a platform
-   *  adds its map here, and no lookup grows a branch. */
-  private readonly integrationBindings: ReadonlyArray<
-    ReadonlyMap<string, SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection>
-  > = [this.connByIntegration, this.tgConnByIntegration, this.dcConnByIntegration, this.fsConnByIntegration]
+  /** Every REPLY-capable platform's per-integration binding map, in one iterable — the read
+   *  side of the §7.5 registry. An integration id belongs to exactly one platform, so
+   *  first-hit lookup is total and unambiguous; adding a platform adds its map here, and no
+   *  lookup grows a branch. Linear is deliberately absent: it has no free-text surface at all
+   *  (§4.6), so its Layer-2 applier resolves `lnConnByIntegration` itself instead. */
+  private readonly integrationBindings: ReadonlyArray<ReadonlyMap<string, ReplyConnection>> = [
+    this.connByIntegration,
+    this.tgConnByIntegration,
+    this.dcConnByIntegration,
+    this.fsConnByIntegration
+  ]
 
-  private connForIntegration(
-    integrationId: string
-  ): SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined {
+  private connForIntegration(integrationId: string): ReplyConnection | undefined {
     for (const bindings of this.integrationBindings) {
       const conn = bindings.get(integrationId)
       if (conn) return conn
@@ -13744,10 +13966,7 @@ export class Daemon {
     return undefined
   }
 
-  private replyConnFor(
-    agentId: string,
-    integrationId?: string
-  ): SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | undefined {
+  private replyConnFor(agentId: string, integrationId?: string): ReplyConnection | undefined {
     const intId = integrationId ?? this.agents.get(agentId)?.integrations[0]?.id
     if (!intId) return undefined
     return this.connForIntegration(intId)

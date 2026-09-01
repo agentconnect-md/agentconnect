@@ -32,19 +32,9 @@ function bareRoot(): string {
   return root
 }
 
-/**
- * Platforms whose Layer-1 connection and config schema have landed but whose Layer-2
- * surface, command chrome and connection pool arrive with a later change
- * (linear-integration.md §9.4 lists the enumerated `daemon.ts` composition lines).
- *
- * NOT a compat gate: the set is asserted exactly, so the moment Linear's wiring lands the
- * drift assertion below starts passing WITHOUT the exemption and this list must be emptied.
- */
-const AWAITING_COMPOSITION = ['linear']
-
 describe('daemon platform registry (audit F16)', () => {
   it('advertises exactly the platforms it has a module for', () => {
-    // The pin on today's true set. A sixth platform makes this fail — deliberately: the
+    // The pin on today's true set. A new platform makes this fail — deliberately: the
     // reviewer should confirm the CP/console gating is what they intended, not discover
     // it from a failed install.
     expect(platformIds()).toEqual(['slack', 'telegram', 'discord', 'feishu', 'linear'])
@@ -62,9 +52,7 @@ describe('daemon platform registry (audit F16)', () => {
     // half-served platform, which is what this catches.
     const daemon = new Daemon({ root: bareRoot() }) as any
     const sorted = (ids: string[]): string[] => [...ids].sort()
-    // The composed set: registered platforms minus the ones still awaiting their
-    // composition lines. Emptying AWAITING_COMPOSITION restores the plain equality.
-    const composed = sorted(platformIds().filter((id) => !AWAITING_COMPOSITION.includes(id)))
+    const composed = sorted(platformIds())
 
     expect(sorted(daemon.turnSurfaces.ids())).toEqual(composed)
     expect(sorted(daemon.commandChrome.ids())).toEqual(composed)
@@ -75,16 +63,10 @@ describe('daemon platform registry (audit F16)', () => {
       daemon.connections.slackSharedPool,
       daemon.connections.telegramPool,
       daemon.connections.discordPool,
-      daemon.connections.feishuPool
+      daemon.connections.feishuPool,
+      daemon.connections.linearPool
     ].map((pool: { name: string }) => pool.name.split('/')[0]!)
     expect(sorted([...new Set(poolPlatforms)])).toEqual(composed)
-  })
-
-  it('names every platform still awaiting its composition lines', () => {
-    // The forcing function: an entry here is a platform the daemon ADVERTISES but cannot
-    // yet render a turn for, so it must be short-lived and visible in review.
-    expect(AWAITING_COMPOSITION).toEqual(['linear'])
-    for (const id of AWAITING_COMPOSITION) expect(platformIds()).toContain(id)
   })
 })
 

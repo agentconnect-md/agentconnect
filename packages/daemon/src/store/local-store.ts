@@ -2032,6 +2032,24 @@ export class LocalStore {
       .get(...args)) as SessionRecord | undefined
   }
 
+  /** The agent's session on one platform THREAD, whatever channel it sits in. Exists for a
+   *  platform action that addresses a session by the provider's own session id (Linear's
+   *  AgentSession) and therefore has no channel coordinate to look up by. */
+  async latestSessionForThread(
+    agentId: string,
+    platform: string,
+    thread: string,
+    transportScope?: string
+  ): Promise<SessionRecord | undefined> {
+    return (await this.db
+      .prepare(
+        `SELECT * FROM sessions
+         WHERE agentId = ? AND platform = ? AND thread = ? AND COALESCE(transportScope, '') = ?
+         ORDER BY updatedAt DESC LIMIT 1`
+      )
+      .get(agentId, platform, thread, transportScope ?? '')) as SessionRecord | undefined
+  }
+
   /** The most recently active addressable session (has an ACP id) in a channel, across
    *  ALL agents — or undefined. Used to resolve which agent a bare command targets when
    *  routing can't (e.g. a group `/status@bot` with no mention entity / thread). */

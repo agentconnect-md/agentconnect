@@ -14,6 +14,7 @@ import type { OutputConverger, SlackAction } from '../slack/render.js'
 import type { TelegramAction, TelegramConverger } from '../telegram/render.js'
 import type { DiscordAction, DiscordConverger } from '../discord/render.js'
 import type { FeishuAction, FeishuConverger } from '../feishu/render.js'
+import type { LinearAction, LinearConverger } from '../platforms/linear/turn-output.js'
 import type { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
@@ -304,7 +305,9 @@ export interface QueueEntry {
   inboxHandedOff?: boolean
 }
 
-/** The platform transport a turn's ordinary output posts through. */
+/** The platform transport a turn's ordinary output posts through. Linear is deliberately
+ *  absent: it has no free-text surface at all (§4.6 — the agent activity feed is its only
+ *  reply channel), so its Layer-2 applier resolves its own egress port instead. */
 export type ReplyConnection = SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
 
 /** What `SessionManager.handle()` hands back to a dispatched turn. */
@@ -388,8 +391,8 @@ export interface MemoryExtractionCollector {
  *  converger. Each surface narrows to its own arm; the unions exist because the
  *  turn record is still core-owned (they dissolve when the convergers move with
  *  their platforms). */
-export type DaemonRenderAction = SlackAction | TelegramAction | DiscordAction | FeishuAction
-export type DaemonConverger = OutputConverger | TelegramConverger | DiscordConverger | FeishuConverger
+export type DaemonRenderAction = SlackAction | TelegramAction | DiscordAction | FeishuAction | LinearAction
+export type DaemonConverger = OutputConverger | TelegramConverger | DiscordConverger | FeishuConverger | LinearConverger
 
 /**
  * §7.3 per-turn platform state. Each shape is owned by exactly one turn-output
@@ -533,7 +536,7 @@ export interface Pending {
   entry: QueueEntry
   // Platform-tagged converger: OutputConverger emits SlackAction[] (slack/webchat),
   // TelegramConverger emits TelegramAction[]. enqueueApply routes by `platform`.
-  conv: OutputConverger | TelegramConverger | DiscordConverger | FeishuConverger
+  conv: DaemonConverger
   /** Captures the full activity log (tool/reasoning) from the raw ACP stream,
    *  independent of output mode. Text/result rows are recorded at send time. */
   rec: TranscriptRecorder

@@ -101,6 +101,29 @@ export interface LinearAttribution {
   sessionUrl: string
 }
 
+/**
+ * Core's shared per-turn attribution record, as this surface names it.
+ *
+ * A pure rename, and it earns its existence: core calls the identity `bot`, but on Linear the
+ * bot is the deployment's one OAuth app (§4.3), so the footer must name the ACTING AGENT —
+ * which is the same field core already resolves from the agent, not from the app.
+ */
+export function linearAttributionOf(info: {
+  botName: string
+  botUrl: string
+  runtime: string
+  model: string
+  sessionUrl: string
+}): LinearAttribution {
+  return {
+    agentName: info.botName,
+    agentUrl: info.botUrl,
+    runtime: info.runtime,
+    model: info.model,
+    sessionUrl: info.sessionUrl
+  }
+}
+
 export type LinearOutputMode = 'none' | 'minimal' | 'low' | 'medium' | 'high'
 
 /** What one output mode lets the converger emit (§5.2). */
