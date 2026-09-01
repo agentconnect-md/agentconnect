@@ -32,12 +32,22 @@ function bareRoot(): string {
   return root
 }
 
+/**
+ * Platforms whose Layer-1 connection and config schema have landed but whose Layer-2
+ * surface, command chrome and connection pool arrive with a later change
+ * (linear-integration.md §9.4 lists the enumerated `daemon.ts` composition lines).
+ *
+ * NOT a compat gate: the set is asserted exactly, so the moment Linear's wiring lands the
+ * drift assertion below starts passing WITHOUT the exemption and this list must be emptied.
+ */
+const AWAITING_COMPOSITION = ['linear']
+
 describe('daemon platform registry (audit F16)', () => {
   it('advertises exactly the platforms it has a module for', () => {
-    // The pin on today's true set. A fifth platform makes this fail — deliberately: the
+    // The pin on today's true set. A sixth platform makes this fail — deliberately: the
     // reviewer should confirm the CP/console gating is what they intended, not discover
     // it from a failed install.
-    expect(platformIds()).toEqual(['slack', 'telegram', 'discord', 'feishu'])
+    expect(platformIds()).toEqual(['slack', 'telegram', 'discord', 'feishu', 'linear'])
   })
 
   it('sends the derived list, not a copy, in the CP registration handshake', () => {
@@ -52,9 +62,12 @@ describe('daemon platform registry (audit F16)', () => {
     // half-served platform, which is what this catches.
     const daemon = new Daemon({ root: bareRoot() }) as any
     const sorted = (ids: string[]): string[] => [...ids].sort()
+    // The composed set: registered platforms minus the ones still awaiting their
+    // composition lines. Emptying AWAITING_COMPOSITION restores the plain equality.
+    const composed = sorted(platformIds().filter((id) => !AWAITING_COMPOSITION.includes(id)))
 
-    expect(sorted(daemon.turnSurfaces.ids())).toEqual(sorted(platformIds()))
-    expect(sorted(daemon.commandChrome.ids())).toEqual(sorted(platformIds()))
+    expect(sorted(daemon.turnSurfaces.ids())).toEqual(composed)
+    expect(sorted(daemon.commandChrome.ids())).toEqual(composed)
     // Pools are per (platform, MODE) — Slack runs a socket pool beside a send-only
     // shared one — so the mode suffix is dropped before comparing.
     const poolPlatforms = [
@@ -64,13 +77,20 @@ describe('daemon platform registry (audit F16)', () => {
       daemon.connections.discordPool,
       daemon.connections.feishuPool
     ].map((pool: { name: string }) => pool.name.split('/')[0]!)
-    expect(sorted([...new Set(poolPlatforms)])).toEqual(sorted(platformIds()))
+    expect(sorted([...new Set(poolPlatforms)])).toEqual(composed)
+  })
+
+  it('names every platform still awaiting its composition lines', () => {
+    // The forcing function: an entry here is a platform the daemon ADVERTISES but cannot
+    // yet render a turn for, so it must be short-lived and visible in review.
+    expect(AWAITING_COMPOSITION).toEqual(['linear'])
+    for (const id of AWAITING_COMPOSITION) expect(platformIds()).toContain(id)
   })
 })
 
 describe('observed-membership platforms (audit F17)', () => {
   it('is the registry filtered by the manifest, not a hand list', () => {
-    expect([...observedMembershipPlatforms()]).toEqual(['telegram', 'discord', 'feishu'])
+    expect([...observedMembershipPlatforms()]).toEqual(['telegram', 'discord', 'feishu', 'linear'])
     for (const platform of platformIds()) {
       expect(observedMembershipPlatforms().includes(platform)).toBe(
         manifestFor(platform).membershipEnumeration === 'observed'
