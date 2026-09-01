@@ -646,8 +646,15 @@ https://linear.app/oauth/authorize?client_id=…&redirect_uri=…&response_type=
 with a one-shot `state` nonce persisted in `linear_install_state`
 (TTL-reaped via `pendingInstalls`; it carries the nonce, the initiating
 org/user, and the chosen default agent — **no secrets**, unlike the earlier
-per-agent revision's funnel). Core's relay-availability 409 applies at
-funnel start. **No Bot or Integration row exists before the callback**:
+per-agent revision's funnel). The row **survives its callback** rather than
+being deleted, carrying the terminal outcome the console polls: the OAuth
+tab is a throwaway, so a tail refusal below has no other channel back. That
+is also where "one-shot" is enforced — the callback CLAIMS the nonce with a
+compare-and-set before it spends the code, so a replayed or concurrent
+delivery of the same `state` never reaches Linear (the Slack platform-app
+funnel's settled-row precedent). Core's relay-availability 409 applies at
+funnel start, and so does the daemon `linear`-capability gate of §4.2.
+**No Bot or Integration row exists before the callback**:
 `IntegrationStatus` has no pending value, and `installNewBot` synchronizes
 an `http` bot immediately, which would drive `projectIntegrationConfig`
 before any `linear_token` exists — the funnel-creates-the-rows shape is the
@@ -704,11 +711,48 @@ winner's Bot is alive:
 - **Select org-scoped:** a row is an orphan when its _own_ organization has
   no Bot for the identity and its last write is older than a grace window
   (long enough to never race a callback between steps 1 and 2, e.g. 1 h).
+  The ownership test belongs **inside** the selection query, not to a filter
+  over its result: the oldest stale rows are overwhelmingly healthy installs,
+  so a batch taken before filtering is spent on them and the orphans behind
+  them are never reached.
+- **Claim, ask and act in ONE hold:** the grace window is a heuristic, not a
+  lock — a retry can re-grant a long-stale identity at any moment. So the
+  whole collection happens inside a single acquisition of the identity lock:
+  the row is deleted under a condition on the `updatedAt` the snapshot saw
+  (zero rows affected ⇒ skip), the ownership question is asked, and the
+  upstream revoke is made, without ever releasing. Splitting those was a bug
+  in both directions — a **same-org** retry could commit a fresh grant in the
+  gap between the claim and the question, and because the question excludes
+  the caller's own organization (so a disconnect does not count the row it is
+  removing) the sweep read "unowned" and revoked the authorization backing
+  that brand-new grant. The revoke uses the token the claim returned, so it
+  can never act on a grant that arrived after the snapshot.
 - **Delete locally, unconditionally:** the row is dead weight in its
   organization regardless of who else holds the identity.
-- **Revoke upstream only when no organization's Bot holds the identity
-  globally:** the same Linear app + workspace backs the winner's live
-  install, so a loser-initiated `POST /oauth/revoke` would tear it down.
+- **Revoke upstream only when no organization relies on this app's
+  authorization of this workspace** — the same Linear app + workspace backs
+  the winner's live install, so a loser-initiated `POST /oauth/revoke` would
+  tear it down. This is the one question here that another organization can
+  falsify **without touching any row the sweep looked at**: it completes a
+  connect for the same `(clientId, organizationId)` and the loser's own stale
+  row is still exactly as the snapshot left it, so every row-level guard
+  passes. It is therefore re-asked durably at the moment of acting, under a
+  **per-identity advisory lock** (`persistence/linear-identity-lock.ts`,
+  keyed on `(clientId, organizationId)` and deliberately **not** org-scoped),
+  with the revoke inside that lock — releasing first would only narrow the
+  window, since a winner admitted in between still loses its grant. The
+  answer is "owned" when any organization's Bot holds the D6 identity **or**
+  any other organization holds a token row for it; the second disjunct
+  catches a winner that is mid-callback, having written its grant but not yet
+  its Bot. §7.1 step 1's upsert takes the same lock, which is what makes the
+  answer stable for the duration — and, because that write always precedes
+  the create tail, locking it fences bot admission too. That upsert is
+  therefore a **waiter**, and its transaction budget must exceed the longest
+  a sweep may hold the lock (one bounded upstream call): expiring while
+  queued would abort a callback that has _already spent its OAuth
+  authorization code_, which Linear will not honour twice. The three
+  constants — API request timeout &lt; maximum hold &lt; waiter budget — live
+  beside the lock and are asserted in a unit test so they cannot drift apart.
 
 The same sweep is the backstop for a failed best-effort `onBotDelete`
 (§7.4). The funnel row's TTL reaper separately bounds stale connect
@@ -724,7 +768,7 @@ attempts (the funnel row carries no secrets in this model, §7.1).
 | Client Secret                               | `BotSecret.botToken` slot (`secretShape.slots` labels it)                                                                                       | CP only (code exchange + refresh)                               |
 | Webhook signing secret                      | `BotSecret.signingSecret` slot; `httpAssignRequires: ['signingSecret']`                                                                         | relay only, via the `rc/bot-assign` secrets bag                 |
 | Access + refresh token, expiry              | provider-owned `linear_token` table, keyed by the connection identity `(orgId, clientId, organizationId)` (§4.4), values through `SecretCipher` | access token → daemon (spec + broker); refresh token → CP only  |
-| `state` nonce + default agent, pre-connect  | provider-owned `linear_install_state` funnel table (TTL-reaped; carries no secrets)                                                             | CP only                                                         |
+| `state` nonce + default agent + outcome     | provider-owned `linear_install_state` funnel table (TTL-reaped; carries no secrets; claimed once, then settled with the round trip's outcome)   | CP only                                                         |
 
 The opaque `IntegrationSpec.config` payload the provider projects (validated
 on the daemon by the linear module's schema in `CONFIG_SCHEMAS`):
@@ -772,8 +816,15 @@ identity (§4.4), not any agent binding:
   but no default would strand bare delegations.
 - **Disconnect the workspace** — deleting the **Bot** is the real teardown:
   best-effort `POST /oauth/revoke` at Linear plus deletion of the identity's
-  `linear_token` row. The shipped `CpPlatformProvider` has no bot-delete
-  lifecycle member, so this design adds one:
+  `linear_token` row — both inside ONE hold of the identity's advisory lock,
+  for the same reason the sweep's claim is (§7.1). Released between the
+  ownership decision and the removal, a `put` queued on that lock publishes a
+  fresh grant the instant the section ends and the unconditional delete then
+  removes _that_ row, leaving the create or reconnect tail behind it believing
+  its grant is durable. The ownership question is asked before the removal on
+  purpose: it excludes the caller's own organization, so it already reads the
+  world as it will be once the row is gone. The shipped `CpPlatformProvider`
+  has no bot-delete lifecycle member, so this design adds one:
   `sideEffects.onBotDelete?(bot, secrets)` — best-effort by contract like
   `postCreate`, called from core's bot-delete path for any platform that
   declares it.
@@ -781,7 +832,16 @@ identity (§4.4), not any agent binding:
   upstream) — the workspace connection flips `error` with a **Reconnect**
   CTA: the org-scoped reconnect route restarts the OAuth funnel against the
   existing bot, and the callback's step-1 upsert (§7.1) replaces the
-  `linear_token` row in place. The `OAuthApp revoked` doorbell (§6.1)
+  `linear_token` row in place. Its nonce is **bound to that bot**, so
+  authorizing a different workspace is refused before anything is written
+  rather than silently rotating the other one's grant. Replacing the grant is
+  only half the repair: the usual cause is the revoked doorbell below, which
+  stamps `Bot.revokedAt` and flips every membership to `revoked`, so the
+  reconnect goes through the shared **credential install** (store, advance
+  `credentialRevision`, restore the memberships revoked with the replaced
+  generation — one transaction) before it re-broadcasts. A bare re-push would
+  instead assign an empty member set and leave a delayed revoke report for the
+  dead grant able to pass the fence. The `OAuthApp revoked` doorbell (§6.1)
   converges the same state when revocation originates on the Linear side —
   re-verified at the CP behind the `credentialRevision` fence, never trusted
   from the payload.

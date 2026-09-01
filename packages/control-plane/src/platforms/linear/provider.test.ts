@@ -32,6 +32,7 @@ import type {
   CreateBotInput,
   IntegrationRecord,
   LinearConnectionIdentity,
+  LinearIdentitySection,
   LinearTokenMaterial,
   LinearTokenRecord,
   LinearTokenStore
@@ -61,6 +62,27 @@ class MemoryTokens implements LinearTokenStore {
   delete(identity: LinearConnectionIdentity): Promise<void> {
     this.rows.delete(MemoryTokens.key(identity))
     return Promise.resolve()
+  }
+  /** The sweeper's selection and its guarded claim are exercised against real Postgres, where their
+   *  whole point (SQL-side filtering, row-level serialization) actually exists. */
+  listOrphans(): Promise<[]> {
+    return Promise.resolve([])
+  }
+  /** No lock without Postgres — the fence is the whole point, so those paths are pinned in the
+   *  integration suite. Here `owned` is the fail-closed answer, nothing is ever claimed, and
+   *  `remove` really does drop the row so the sections that call it can still be exercised. */
+  withIdentityLock<T>(
+    identity: LinearConnectionIdentity,
+    act: (section: LinearIdentitySection) => Promise<T>
+  ): Promise<T> {
+    return act({
+      claim: () => Promise.resolve(null),
+      remove: () => {
+        this.rows.delete(MemoryTokens.key(identity))
+        return Promise.resolve()
+      },
+      owned: () => Promise.resolve(true)
+    })
   }
 }
 
@@ -142,11 +164,13 @@ describe('validateConfig — the credential path is refused, not validated', () 
     }
   })
 
-  it('leaves the create tail unreachable: buildNewBotInstall throws rather than inventing a row', () => {
+  it('leaves the create tail unreachable: the pasted block carries no workspace to install', () => {
+    // `validateConfig` refuses first, so this can only ever be reached with an identity the OAuth
+    // callback derived — and the empty credential block derives none.
     const provider = createLinearCpProvider({ app: APP })
     expect(() =>
       provider.buildNewBotInstall({ credentials: {}, identity: {}, transport: 'http', shareable: true })
-    ).toThrow(/workspace connect flow/)
+    ).toThrow(/organization id/)
   })
 
   it('still contributes the vestigial block, so core’s exactly-one-of rule keeps its shape', () => {
@@ -411,19 +435,114 @@ describe('onBotDelete — the disconnect edge the contract grew for this platfor
   })
 })
 
-describe('the rest of the §9 surface', () => {
-  it('contributes no routes at either scope until the connect funnel lands', () => {
-    const provider = createLinearCpProvider({ app: APP })
-    expect(provider.installRoutes('org')).toEqual([])
-    expect(provider.installRoutes('public-callback')).toEqual([])
+describe('buildNewBotInstall — the rows one connected workspace writes (§7.1 step 2)', () => {
+  const built = () =>
+    createLinearCpProvider({ app: APP }).buildNewBotInstall({
+      credentials: {},
+      identity: { workspaceId: WORKSPACE, workspaceName: 'Acme Engineering', botUserId: 'user_app_1' },
+      transport: 'http',
+      // The caller's request is IGNORED: sharing is structural for this platform.
+      shareable: false
+    })
+
+  it('claims the D6 identity and the workspace off the deployment client id', () => {
+    const install = built()
+    expect(install.externalIdentity).toMatchObject({ externalAppId: APP.clientId, externalTenantId: WORKSPACE })
+    expect(install.workspaceClaim).toMatchObject({ appId: APP.clientId, tenantId: WORKSPACE })
   })
 
-  // Background loops moved out of this list once the §10.6 re-stamp earned one; their
-  // presence-follows-slot-presence pair lives in the dedicated describe above.
-  it('declares no create-body refinement, no tooling credentials and no install funnel', () => {
+  it('is shareable by construction, so the second member Integration is admitted', () => {
+    expect(built().bot?.shareable).toBe(true)
+  })
+
+  it('stamps the deployment app credentials into the workspace bot’s secret row', () => {
+    expect(built().secrets).toEqual({
+      botToken: APP.clientSecret,
+      appToken: null,
+      signingSecret: APP.signingSecret
+    })
+  })
+
+  it('carries the display metadata and the app user id the callback captured', () => {
+    expect(built().bot).toMatchObject({
+      workspaceId: WORKSPACE,
+      workspaceName: 'Acme Engineering',
+      botUserId: 'user_app_1'
+    })
+  })
+
+  it('refuses an identity with no workspace — there would be nothing to key, demux or fence', () => {
+    expect(() =>
+      createLinearCpProvider({ app: APP }).buildNewBotInstall({
+        credentials: {},
+        identity: {},
+        transport: 'http',
+        shareable: true
+      })
+    ).toThrow(/organization id/)
+  })
+})
+
+describe('the rest of the §9 surface', () => {
+  it('contributes exactly the funnel plugins it was composed with, per scope', () => {
+    const org = async () => {}
+    const publicCallback = async () => {}
+    const provider = createLinearCpProvider({
+      app: APP,
+      funnelRoutes: { org: [org], publicCallback: [publicCallback] }
+    })
+    expect(provider.installRoutes('org')).toEqual([org])
+    expect(provider.installRoutes('public-callback')).toEqual([publicCallback])
+  })
+
+  // Composed with NEITHER loop slot there is no `backgroundLoops` member at all; each loop's own
+  // presence-follows-slot-presence pair is covered beside the loop that owns it.
+  it('contributes no routes, funnel state or loops when composed without them', () => {
     const provider = createLinearCpProvider({ app: APP, tokens: new MemoryTokens() })
+    expect(provider.installRoutes('org')).toEqual([])
+    expect(provider.installRoutes('public-callback')).toEqual([])
     expect(provider.refineCreateBody).toBeUndefined()
     expect(provider.providerToolingCredentials).toBeUndefined()
     expect(provider.pendingInstalls).toBeUndefined()
+  })
+
+  it('declares one funnel reaper and one background loop when it owns them', () => {
+    const sweeper = { label: 'linear-orphan-token', start: () => {}, stop: () => {} }
+    const provider = createLinearCpProvider({
+      app: APP,
+      tokens: new MemoryTokens(),
+      pendingInstalls: { installStates: { reapExpired: () => Promise.resolve(0) }, intervalMs: 1000 },
+      orphanTokenSweeper: sweeper
+    })
+    expect(provider.pendingInstalls?.map((d) => d.label)).toEqual(['linear-install-state'])
+    expect(provider.backgroundLoops).toEqual([sweeper])
+  })
+
+  it('publishes BOTH convergence loops when it owns both', () => {
+    // The re-stamp and the orphan sweep arrived independently and each declared `backgroundLoops`.
+    // As two object spreads that reads as additive and is not — the later key replaces the earlier,
+    // so one loop silently never starts. Pinning the pair is what makes that a failing test rather
+    // than a loop nobody notices is missing.
+    const sweeper = { label: 'linear-orphan-token', start: () => {}, stop: () => {} }
+    const provider = createLinearCpProvider({
+      app: APP,
+      tokens: new MemoryTokens(),
+      orphanTokenSweeper: sweeper,
+      credentialReconciler: { start: () => {}, stop: () => {} }
+    })
+    expect(provider.backgroundLoops?.map((l) => l.label)).toEqual(['linear-credential-restamp', 'linear-orphan-token'])
+  })
+
+  it('publishes just the one it owns, either way round', () => {
+    const reconcilerOnly = createLinearCpProvider({
+      app: APP,
+      credentialReconciler: { start: () => {}, stop: () => {} }
+    })
+    expect(reconcilerOnly.backgroundLoops?.map((l) => l.label)).toEqual(['linear-credential-restamp'])
+    const sweeperOnly = createLinearCpProvider({
+      app: APP,
+      orphanTokenSweeper: { label: 'linear-orphan-token', start: () => {}, stop: () => {} }
+    })
+    expect(sweeperOnly.backgroundLoops?.map((l) => l.label)).toEqual(['linear-orphan-token'])
   })
 })

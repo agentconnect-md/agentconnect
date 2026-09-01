@@ -4387,12 +4387,101 @@ export interface LinearTokenRecord extends LinearTokenMaterial {
   updatedAt: Date
 }
 
+/**
+ * A `linear_token` row no Bot in its OWN organization references any more (§7.1) — the sweeper's
+ * unit of work. Selection is org-scoped and revocation is not, so the row carries both answers.
+ */
+/**
+ * One sweep candidate. It carries NO global ownership answer on purpose: whether an upstream revoke
+ * is safe is a question about other organizations, and any answer computed at listing time can be
+ * falsified before the sweeper acts on it — by a connect that never touches this row. That question
+ * has exactly one safe home, {@link LinearTokenStore.withIdentityLock}, and keeping it off this
+ * type is what stops a caller from reaching for the cheap, stale version.
+ */
+/**
+ * What a holder of the identity's advisory lock may do, for as long as it holds it
+ * ({@link LinearTokenStore.withIdentityLock}). Both answers are only sound under that lock, which
+ * is why they are reachable only from inside it.
+ */
+export interface LinearIdentitySection {
+  /**
+   * Delete the row ONLY while it still carries `updatedAt`, returning the material it removed (or
+   * `null` when a concurrent write moved it on). The guard is belt-and-braces under the lock — a
+   * re-grant cannot land while it is held — and remains the load-bearing check against anything
+   * that reaches the row without taking the lock.
+   *
+   * Returning the removed material is what lets an upstream revoke follow safely: it revokes
+   * precisely the token that was collected, never one that arrived after the snapshot.
+   */
+  claim(updatedAt: Date): Promise<LinearTokenMaterial | null>
+  /**
+   * Drop this organization's row for the identity, unconditionally. The disconnect edge's removal:
+   * it has no snapshot to guard against, and needs none, because under this hold no `put` can have
+   * interleaved — so the row removed is exactly the one the decision above was made about.
+   *
+   * That is the whole reason it belongs here rather than after the hold. Released first, a `put`
+   * queued on the lock publishes a fresh grant the instant the section ends, and an unconditional
+   * delete then removes THAT row — the create or reconnect tail behind it carries on believing its
+   * grant is durable.
+   */
+  remove(): Promise<void>
+  /**
+   * Does ANY organization rely on this app's authorization of this workspace? The ONLY safe basis
+   * for an upstream `POST /oauth/revoke`, because that call acts on the app↔workspace grant rather
+   * than on one tenant's copy of it.
+   *
+   * True when any organization's Bot holds the D6 identity, OR any OTHER organization holds a token
+   * row for it. The caller's own organization is excluded so a disconnect does not count the row it
+   * is itself removing; a sweep calls {@link LinearIdentitySection.claim} first, which removes its
+   * own row, so the exclusion costs it nothing.
+   */
+  owned(): Promise<boolean>
+}
+
+export interface LinearOrphanTokenRow {
+  identity: LinearConnectionIdentity
+  /** The snapshot this candidate was selected under. Hand it back to
+   *  {@link LinearIdentitySection.claim}: between the sweep's read and its act, a retried connect
+   *  can re-grant the same identity, and revoking THAT token would kill a live install. */
+  updatedAt: Date
+}
+
 export interface LinearTokenStore {
   get(identity: LinearConnectionIdentity): Promise<LinearTokenRecord | null>
   /** Upsert the workspace's grant — the callback's step-1 write and every rotate. */
   put(identity: LinearConnectionIdentity, material: LinearTokenMaterial): Promise<void>
   delete(identity: LinearConnectionIdentity): Promise<void>
+  /**
+   * Rows of the deployment app older than `staleBefore` whose own organization has no Bot for the
+   * identity. The grace window is the caller's — it exists so a callback between §7.1's steps 1 and
+   * 2 is never swept mid-flight.
+   *
+   * `limit` bounds ORPHANS, not scanned rows: the live-owner exclusion is part of the selection, so
+   * a deployment whose oldest stale rows are all healthy installs cannot starve the orphans behind
+   * them out of every pass.
+   */
+  listOrphans(clientId: string, staleBefore: Date, limit: number): Promise<LinearOrphanTokenRow[]>
+  /**
+   * Run `act` inside ONE hold of the identity's advisory lock
+   * (`persistence/linear-identity-lock.ts`), giving it the two operations that are only sound while
+   * that lock is held. {@link LinearTokenStore.put} takes the same lock, and §7.1 fixes it before
+   * any Bot exists, so nothing can claim this identity for the duration.
+   *
+   * Both operations live behind this one entry point BECAUSE the hold has to be uninterrupted. When
+   * the claim sat outside the lock, a same-org retry could re-grant in the gap between it and the
+   * ownership query — and since that query excludes the caller's own organization (so that {@link
+   * LinearIdentitySection.owned} does not count the very row a disconnect is about to remove), the
+   * sweep read "unowned" and revoked the authorization backing the brand-new grant.
+   */
+  withIdentityLock<T>(
+    identity: LinearConnectionIdentity,
+    act: (section: LinearIdentitySection) => Promise<T>
+  ): Promise<T>
 }
+
+/** Terminal state of one connect round trip. The funnel row SURVIVES its callback — the tab is a
+ *  throwaway, so the row is the console's only channel for "it finished, and how". */
+export type LinearInstallStatus = 'pending' | 'completed' | 'failed'
 
 /** One pending connect-a-workspace funnel row. `id` IS the one-shot OAuth state
  *  nonce; `defaultAgentId` is the member bare delegations start a session with. */
@@ -4400,8 +4489,20 @@ export interface LinearInstallStateRecord {
   id: string
   orgId: OrgId
   defaultAgentId: AgentId | null
+  status: LinearInstallStatus
+  /** The short code the callback's close page showed, so the console can report WHY it failed. */
+  failureReason: string | null
+  /** The connected workspace's Bot, stamped on completion for the console deep link. */
+  botId: string | null
+  /** A RECONNECT nonce's target (§7.4). Set ⇒ the callback refuses any workspace but this bot's;
+   *  null ⇒ a first connect, which has no workspace to match against yet. */
+  expectedBotId: string | null
   createdByUserId: string | null
   createdAt: Date
+  /** When a callback CLAIMED this nonce — the one-shot fence itself, see
+   *  {@link LinearInstallStateStore.consume}. */
+  claimedAt: Date | null
+  settledAt: Date | null
 }
 
 export interface LinearInstallStateStore {
@@ -4409,17 +4510,32 @@ export interface LinearInstallStateStore {
     id: string
     orgId: OrgId
     defaultAgentId?: AgentId
+    expectedBotId?: BotId
     createdByUserId?: string
   }): Promise<LinearInstallStateRecord>
   /**
-   * Redeem the nonce: return the row and delete it in ONE statement, or `null`
-   * when no row is redeemable. Deliberately not a `get` + `delete` pair — the
-   * nonce is one-shot, and two concurrent callbacks (a double-clicked tab, a
-   * retried redirect) would both read the row before either deleted it and both
-   * proceed to mint a workspace. A single `DELETE` takes the row lock, so the
-   * loser re-evaluates against a gone row and gets `null`.
+   * Redeem the one-shot state nonce: the FIRST caller gets the row, every later one gets `null`.
+   * Deliberately not a read followed by a write — the nonce is one-shot, and two concurrent
+   * callbacks (a double-clicked tab, a retried redirect) would both see the same live row and both
+   * go on to mint a workspace. The claim is ONE statement, so the loser blocks on the row lock,
+   * re-evaluates, and matches nothing.
+   *
+   * It CLAIMS rather than deletes, because the row is also the console's only completion signal:
+   * the OAuth tab is a throwaway, so a tail refusal (§7.1's identity/workspace fences, which land
+   * after the grant is already written) has no other channel back. The claimed row survives to be
+   * settled, and the claim itself is what makes redemption exactly-once.
    */
   consume(id: string): Promise<LinearInstallStateRecord | null>
+  /** Record the outcome on the row this callback claimed. Idempotent — a row already settled keeps
+   *  its first outcome. */
+  settle(
+    id: string,
+    outcome: { status: 'completed'; botId: string } | { status: 'failed'; failureReason: string }
+  ): Promise<void>
+  /** STRICTLY READ-ONLY, for the console's status poll. It must NEVER gate redemption: reading a
+   *  row and then acting on it is the exact race {@link LinearInstallStateStore.consume} exists to
+   *  close, and this member is named `peek` so no caller mistakes it for a claim. */
+  peek(id: string): Promise<LinearInstallStateRecord | null>
   /** The shared TTL reaper's slice — an abandoned connect tab must not leave a live state nonce. */
   reapExpired(staleBefore: Date): Promise<number>
 }

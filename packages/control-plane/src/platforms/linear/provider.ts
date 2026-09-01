@@ -15,19 +15,27 @@
  *    workspace's ≤24 h access token from this provider's own `linear_token` table by the bot's D6
  *    identity. That is the case the contract made both projectors async for (§4.4).
  *
- * SCOPE OF THIS MODULE. The connect funnel, its OAuth callback, `buildNewBotInstall`, and the token
- * exchange/refresh service land with the funnel; the `linearcred` broker lands with the WS handler.
- * What is here is the skeleton core reads through the registry today: the deployment config slice,
- * the refusal, the secret shape, the two projectors, the D6 identity projection, and the disconnect
- * side effect.
+ * SCOPE OF THIS MODULE. The `linearcred` broker lands with the WS handler; everything else the
+ * registry reads is here — the deployment config slice, the refusal, the secret shape, the two
+ * projectors, the D6 identity projection, the connect funnel's routes and TTL reaper, the
+ * orphan-token sweep, and the disconnect side effect.
  */
 import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
+import type { FastifyPluginAsync } from 'fastify'
 import type { IntegrationLinearConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial, LinearTokenStore } from '../../persistence/ports.js'
 import type { LinearPlatformAppConfig } from '../../config/linear-platform.js'
 import type { LinearCredentialReconciler } from './credential-reconciler.js'
-import type { CpConfigValidation, CpNewBotInstall, CpPlatformProvider } from '../provider.js'
+import type {
+  CpBackgroundLoop,
+  CpConfigValidation,
+  CpNewBotInstall,
+  CpPendingInstallDecl,
+  CpPlatformProvider,
+  CpValidatedIdentity
+} from '../provider.js'
+import type { LinearTokenService } from './token-service.js'
 
 /**
  * The `linear` credential block of the `POST /integrations` create body — VESTIGIAL by design
@@ -128,8 +136,48 @@ export function linearIntegrationConfig(
   }
 }
 
-/** The provider's injected seams. Both are optional so a focused unit test composes only the facet
- *  it exercises, exactly as the four shipped providers do; member presence follows slot presence. */
+/**
+ * The rows one connected workspace's install writes (§7.1 step 2) — the SHARED implementation the
+ * OAuth callback's finalize and {@link CpPlatformProvider.buildNewBotInstall} both call, so the two
+ * can never drift. Pure, and everything platform-specific about a Linear bot is here:
+ *
+ *  - the D6 identity `(clientId, organizationId)` and the workspace claim, both fenced by core;
+ *  - `shareable: true` STRUCTURALLY (§4.3), not as a caller's request: one deployment app means one
+ *    bot per workspace, and every enabled agent is a member of it, so the shipped multi-integration
+ *    gate has to admit the second one;
+ *  - the deployment app's credentials stamped into the workspace bot's secret row — client secret in
+ *    the `botToken` slot (CP-only) and the webhook signing secret in `signingSecret` (relay-only).
+ */
+export function buildLinearWorkspaceInstall(
+  app: LinearPlatformAppConfig,
+  identity: Pick<CpValidatedIdentity, 'workspaceId' | 'workspaceName' | 'botUserId'>
+): CpNewBotInstall {
+  const organizationId = identity.workspaceId
+  if (!organizationId) throw new Error('linear workspace install requires the Linear organization id')
+  return {
+    bot: {
+      workspaceId: organizationId,
+      ...(identity.workspaceName ? { workspaceName: identity.workspaceName } : {}),
+      ...(identity.botUserId ? { botUserId: identity.botUserId } : {}),
+      shareable: true
+    },
+    secrets: { botToken: app.clientSecret, appToken: null, signingSecret: app.signingSecret },
+    externalIdentity: {
+      externalAppId: app.clientId,
+      externalTenantId: organizationId,
+      conflictMessage:
+        'this Linear workspace is already connected — enable your agent on the existing workspace instead'
+    },
+    workspaceClaim: {
+      appId: app.clientId,
+      tenantId: organizationId,
+      conflictMessage: 'this Linear workspace is already connected to another organization'
+    }
+  }
+}
+
+/** The provider's injected seams. All optional so a focused unit test composes only the facet it
+ *  exercises, exactly as the four shipped providers do; member presence follows slot presence. */
 export interface LinearCpProviderDeps {
   /** The deployment's one OAuth app (§7.1). Absent ⇒ the platform self-disables: no external app
    *  identity is projected onto new rows and no workspace can be connected. READ PER CALL below
@@ -139,13 +187,27 @@ export interface LinearCpProviderDeps {
   /** The provider-owned `linear_token` store (§4.4). Absent ⇒ `projectIntegrationConfig` has no
    *  grant to load and answers fail-closed, and the disconnect side effect has nothing to drop. */
   tokens?: LinearTokenStore
-  /** The §10.6 re-stamp loop. Absent ⇒ no `backgroundLoops` member, exactly as Slack's optional
-   *  identity reconciler works — member presence follows slot presence. */
+  /** The §10.6 re-stamp loop. Absent ⇒ it contributes no `backgroundLoops` entry, exactly as
+   *  Slack's optional identity reconciler works — member presence follows slot presence. */
   credentialReconciler?: Pick<LinearCredentialReconciler, 'start' | 'stop'>
+  /** Token custody (§4.4). Present ⇒ the disconnect edge also revokes upstream before dropping the
+   *  row; absent ⇒ it only drops the row, which is still the whole of the local teardown. */
+  tokenService?: LinearTokenService
+  /** The connect funnel's plugins, injected PRE-BOUND by the composition root (a provider never
+   *  reaches back for a route factory — the Slack/Feishu discipline). */
+  funnelRoutes?: { org: FastifyPluginAsync[]; publicCallback: FastifyPluginAsync[] }
+  /** `linear_install_state`'s reap slice + its sweep parameters (§9.2 `pendingInstalls`). */
+  pendingInstalls?: { installStates: { reapExpired(staleBefore: Date): Promise<number> }; intervalMs: number }
+  /** The §7.1 orphan-token sweeper — the SAME instance `startBackground()`/shutdown drive. */
+  orphanTokenSweeper?: CpBackgroundLoop
 }
 
+/** An abandoned connect tab must not leave a live state nonce; the row holds no secrets, so this
+ *  only has to be shorter than "a human forgot about the tab". */
+export const LINEAR_CONNECT_TTL_MS = 30 * 60 * 1000
+
 export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformProvider<LinearCreateCredentials> {
-  const { tokens, credentialReconciler } = deps
+  const { tokens, tokenService, funnelRoutes, pendingInstalls, orphanTokenSweeper, credentialReconciler } = deps
 
   /** The bot's connection identity (§4.4), or null when the row carries no complete D6 pair. */
   const connectionOf = (bot: BotRecord) =>
@@ -156,9 +218,10 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
   return {
     platformId: 'linear',
 
-    // The connect funnel (org-scoped start/status/reconnect) and its unauthenticated OAuth callback
-    // land with the funnel itself; until then this platform contributes no routes at either scope.
-    installRoutes: () => [],
+    // The connect funnel rides here (contract §9): org-scoped start/status/reconnect, plus the
+    // unauthenticated OAuth callback core mounts twice (internal `/api/v1` + the public `/v1`
+    // alias — the double mount is core's, and the handed-out redirect URL is the public form).
+    installRoutes: (scope) => (scope === 'org' ? (funnelRoutes?.org ?? []) : (funnelRoutes?.publicCallback ?? [])),
 
     credentialBodySchema: LinearCreateCredentials,
 
@@ -178,10 +241,17 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
       })
     },
 
-    /** Unreachable by construction: `validateConfig` refuses before the create tail is reached, and
-     *  the OAuth callback's finalize is the only writer of a Linear bot. Throwing states that. */
-    buildNewBotInstall(): CpNewBotInstall {
-      throw new Error('linear bots are created by the workspace connect flow, not the credential path')
+    /**
+     * The rows a connected workspace writes. Unreachable from the create ROUTE by construction —
+     * `validateConfig` refuses before the tail — but the member is the real one the OAuth callback
+     * runs (§9.2, the Feishu one-click precedent), through the shared
+     * {@link buildLinearWorkspaceInstall} so there is exactly one description of a Linear bot's
+     * rows. `shareable` is ignored: it is structural here, not a caller's request (§4.3).
+     */
+    buildNewBotInstall(input): CpNewBotInstall {
+      const app = deps.app
+      if (!app) throw new Error('linear platform app is not configured')
+      return buildLinearWorkspaceInstall(app, input.identity)
     },
 
     /**
@@ -227,30 +297,74 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
 
     envSchema: LinearCpEnvSchema,
 
+    /** The connect funnel's nonce table (§9.2 `pendingInstalls`) — the shared reaper class, one
+     *  instance, at {@link LINEAR_CONNECT_TTL_MS}. Absent ⇒ no funnel state declared (focused tests). */
+    ...(pendingInstalls
+      ? {
+          pendingInstalls: [
+            {
+              model: 'LinearInstallState',
+              label: 'linear-install-state',
+              store: pendingInstalls.installStates,
+              ttlMs: LINEAR_CONNECT_TTL_MS,
+              intervalMs: pendingInstalls.intervalMs
+            }
+          ] satisfies readonly CpPendingInstallDecl[]
+        }
+      : {}),
+
     /**
-     * The §10.6 re-stamp: rotating the deployment app's credentials moves the source of truth away
-     * from every workspace bot's stamped secret row, and only a provider-owned pass can close that
-     * gap — core has no reason to know that two `BotSecret` slots on this platform are copies of a
-     * deployment credential rather than a per-workspace one. Declared so `startBackground()` and
-     * shutdown drive it without naming platforms.
+     * This platform's convergence loops, declared so `startBackground()` and shutdown drive them
+     * without naming platforms. ONE array, assembled from two independently optional slots — two
+     * spreads would each carry a `backgroundLoops` key and the later one would silently replace the
+     * earlier, dropping a loop with nothing to show for it:
+     *
+     *  - the §10.6 RE-STAMP. Rotating the deployment app's credentials moves the source of truth
+     *    away from every workspace bot's stamped secret row, and only a provider-owned pass can
+     *    close that gap — core has no reason to know that two `BotSecret` slots on this platform
+     *    are copies of a deployment credential rather than a per-workspace one;
+     *  - the §7.1 ORPHAN-TOKEN SWEEP: the only collector of a grant written before a create tail
+     *    that then refused, and the backstop for an `onBotDelete` that failed.
      */
-    ...(credentialReconciler
+    ...(credentialReconciler || orphanTokenSweeper
       ? {
           backgroundLoops: [
-            {
-              label: 'linear-credential-restamp',
-              start: () => credentialReconciler.start(),
-              stop: () => credentialReconciler.stop()
-            }
-          ] as const
+            ...(credentialReconciler
+              ? [
+                  {
+                    label: 'linear-credential-restamp',
+                    start: () => credentialReconciler.start(),
+                    stop: () => credentialReconciler.stop()
+                  }
+                ]
+              : []),
+            ...(orphanTokenSweeper ? [orphanTokenSweeper] : [])
+          ]
         }
       : {}),
 
     /**
      * Disconnecting a workspace is deleting its Bot, and the grant does not hang off that row — it
-     * is keyed by the connection identity — so nothing else would ever collect it (§7.4). Dropping
-     * it here is the whole of this member's job in this stage; the best-effort upstream
-     * `POST /oauth/revoke` joins it with the token service that owns Linear's HTTP surface.
+     * is keyed by the connection identity — so nothing else would ever collect it (§7.4). Two steps,
+     * in this order because the revoke needs the access token the delete is about to drop:
+     *
+     *  1. best-effort `POST /oauth/revoke` at Linear, but ONLY when no organization still relies on
+     *     this app's authorization of the workspace. The fences are global while token rows are
+     *     org-scoped, so a loser's teardown must never revoke the grant backing the WINNER's live
+     *     install (§7.1) — and because a revoke acts on the app↔workspace grant, that question is
+     *     asked DURABLY, under the identity's advisory lock, rather than from a plain read a
+     *     concurrent connect could falsify before the call goes out;
+     *  2. drop the identity's row, unconditionally — it is dead weight in this organization either
+     *     way. The delete runs after core removed the bot, so a refused delete changes nothing.
+     *
+     * BOTH INSIDE ONE HOLD, for the same reason the sweep's claim is. Released between the decision
+     * and the removal, a `put` queued on the lock publishes a fresh grant the instant the section
+     * ends, and this unconditional delete then removes THAT row while the create or reconnect tail
+     * behind it carries on believing its grant is durable. Under one hold nothing can interleave, so
+     * the row removed is exactly the one the revoke decision was made about.
+     *
+     * `owned()` is asked BEFORE the removal on purpose: it deliberately excludes the caller's own
+     * organization, so it reads the world as it will be once this row is gone.
      *
      * Best-effort by contract: core logs a failure and the delete stands, and the orphan-token
      * sweeper (§7.1) is the backstop for a row this misses.
@@ -261,7 +375,10 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
             onBotDelete: async (bot) => {
               const connection = connectionOf(bot)
               if (!connection) return
-              await tokens.delete(connection)
+              await tokens.withIdentityLock(connection, async (section) => {
+                if (tokenService && !(await section.owned())) await tokenService.revoke(connection)
+                await section.remove()
+              })
             }
           }
         }

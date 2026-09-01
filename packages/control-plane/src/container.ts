@@ -236,12 +236,21 @@ import { createSlackCpProvider, createSlackToolingCredentials } from './platform
 import { createFeishuCpProvider } from './platforms/feishu/provider.js'
 import { createLinearCpProvider } from './platforms/linear/provider.js'
 import { LinearCredentialReconciler } from './platforms/linear/credential-reconciler.js'
+import { LinearApiClient } from './platforms/linear/api.js'
+import { LinearTokenService } from './platforms/linear/token-service.js'
+import { LinearOrphanTokenSweeper } from './platforms/linear/orphan-token-sweeper.js'
+import { linearConnectRoutes, linearOauthCallbackRoutes } from './platforms/linear/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
 import { slackBotRefreshRoutes } from './http/routes/slack-bot-refresh.js'
 import { telegramCheckRoutes } from './http/routes/telegram-check.js'
-import type { FeishuRouteSeams, SlackRouteSeams, TelegramRouteSeams } from './http/platform-route-seams.js'
+import type {
+  FeishuRouteSeams,
+  LinearRouteSeams,
+  SlackRouteSeams,
+  TelegramRouteSeams
+} from './http/platform-route-seams.js'
 import { createFeishuAppTenantGuard, verifyFeishuBot } from './http/feishu-identity.js'
 import { createFeishuAppIconSyncer } from './http/feishu-app-icon.js'
 import { FeishuAppRegistrationService } from './http/feishu-registration.js'
@@ -304,6 +313,8 @@ export interface ContainerOpts {
   /** open-connector admin API fetch override — integration tests stub it without
    *  network (absent under NODE_ENV=test ⇒ the connectors client is not assembled). */
   connectorsFetch?: FetchLike
+  /** Linear OAuth/GraphQL fetch override — the connect funnel's suites run a stubbed Linear. */
+  linearFetch?: FetchLike
   /** The at-rest transform every persisted secret VALUE passes through. Absent ⇒
    *  selected from `config.SECRET_CIPHER` (none → identity, vault-transit → Vault). */
   secretCipher?: SecretCipher
@@ -1731,6 +1742,33 @@ export function buildContainer(
     configureHttpApp: configureFeishuHttpApp,
     registrations: new FeishuAppRegistrationService(repos.feishuAppRegistration)
   }
+  // ONE Linear API client and ONE token service, shared by the funnel routes, the provider's
+  // disconnect edge and the orphan sweep — so "which store answers" and "when is a grant stale"
+  // cannot drift between them (linear-integration.md §4.4).
+  const linearApi = new LinearApiClient({ clock, ...(opts.linearFetch ? { fetchImpl: opts.linearFetch } : {}) })
+  const linearTokenService = new LinearTokenService({
+    get app() {
+      return linearPlatformApp
+    },
+    tokens: repos.linearToken,
+    api: linearApi,
+    clock,
+    log: { warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
+  const linearSeams: LinearRouteSeams = {
+    ...(linearPlatformApp ? { app: linearPlatformApp } : {}),
+    api: linearApi,
+    tokens: linearTokenService
+  }
+  const linearOrphanTokenSweeper = new LinearOrphanTokenSweeper({
+    get app() {
+      return linearPlatformApp
+    },
+    tokens: repos.linearToken,
+    service: linearTokenService,
+    clock,
+    log: { info: (obj, msg) => http.log.info(obj, msg), warn: (obj, msg) => http.log.warn(obj, msg) }
+  })
 
   // §9 platform-provider registry (S3): the behavioral CpPlatformProvider
   // instances — all four platforms — constructed with the SAME verify/sync
@@ -1805,7 +1843,17 @@ export function buildContainer(
     createLinearCpProvider({
       ...(linearPlatformApp ? { app: linearPlatformApp } : {}),
       tokens: repos.linearToken,
-      credentialReconciler: linearCredentialReconciler
+      credentialReconciler: linearCredentialReconciler,
+      tokenService: linearTokenService,
+      funnelRoutes: {
+        org: [linearConnectRoutes(httpDeps, linearSeams)],
+        publicCallback: [linearOauthCallbackRoutes(httpDeps, linearSeams)]
+      },
+      pendingInstalls: {
+        installStates: repos.linearInstallState,
+        intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000
+      },
+      orphanTokenSweeper: linearOrphanTokenSweeper
     })
   ])
 

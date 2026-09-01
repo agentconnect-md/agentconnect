@@ -113,6 +113,10 @@ import { createSlackCpProvider, createSlackToolingCredentials } from '../../src/
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
 import { LinearCredentialReconciler } from '../../src/platforms/linear/credential-reconciler.js'
+import { LinearApiClient } from '../../src/platforms/linear/api.js'
+import { LinearTokenService } from '../../src/platforms/linear/token-service.js'
+import { LinearOrphanTokenSweeper } from '../../src/platforms/linear/orphan-token-sweeper.js'
+import { linearConnectRoutes, linearOauthCallbackRoutes } from '../../src/platforms/linear/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from '../../src/http/routes/slack-install.js'
 import {
   slackPlatformInstallRoutes,
@@ -121,11 +125,17 @@ import {
 import { feishuRegistrationRoutes } from '../../src/http/routes/feishu-registration.js'
 import { slackBotRefreshRoutes } from '../../src/http/routes/slack-bot-refresh.js'
 import { telegramCheckRoutes } from '../../src/http/routes/telegram-check.js'
-import type { FeishuRouteSeams, SlackRouteSeams, TelegramRouteSeams } from '../../src/http/platform-route-seams.js'
+import type {
+  FeishuRouteSeams,
+  LinearRouteSeams,
+  SlackRouteSeams,
+  TelegramRouteSeams
+} from '../../src/http/platform-route-seams.js'
 import type { SlackConfigApi } from '../../src/http/slack-config-api.js'
 import type { SlackBotVerifier, SlackAppTokenVerifier } from '../../src/http/slack-identity.js'
 import type { SlackPlatformAppConfig } from '../../src/config/slack-platform.js'
 import type { LinearPlatformAppConfig } from '../../src/config/linear-platform.js'
+import type { FetchLike } from '../../src/github/api.js'
 import type { TelegramBotVerifier } from '../../src/http/telegram-identity.js'
 import type { TelegramBotIconSyncer } from '../../src/http/telegram-bot-profile.js'
 import type { DiscordBotVerifier, DiscordMessageContentIntentEnsurer } from '../../src/http/discord-identity.js'
@@ -175,6 +185,8 @@ export interface PlatformStubs {
   syncFeishuAppIcon?: FeishuAppIconSyncer
   feishuAppRegistration: FeishuAppRegistrationService
   linearPlatformApp?: LinearPlatformAppConfig
+  /** Linear's OAuth/GraphQL edge, stubbed: the whole connect lifecycle runs offline. */
+  linearFetch?: FetchLike
 }
 
 /** The keys `buildHttpApp` peels out of its overrides bag into
@@ -194,7 +206,8 @@ const PLATFORM_STUB_KEYS = [
   'configureFeishuHttpApp',
   'syncFeishuAppIcon',
   'feishuAppRegistration',
-  'linearPlatformApp'
+  'linearPlatformApp',
+  'linearFetch'
 ] as const satisfies readonly (keyof PlatformStubs)[]
 
 export interface HttpApp {
@@ -642,6 +655,39 @@ export function buildHttpApp(
     })
   }
   const telegramSeams: TelegramRouteSeams = { verifyBot: (token) => platformStubs.verifyTelegramBot(token) }
+  // ONE api client + ONE token service, shared by the funnel routes, the provider's disconnect edge
+  // and the sweeper, exactly as `buildContainer` shares them. `fetchImpl` and `app` read THROUGH the
+  // stub bag per call so a suite can install its fake Linear after the app is built.
+  const linearApi = new LinearApiClient({
+    clock,
+    fetchImpl: (url, init) =>
+      platformStubs.linearFetch
+        ? platformStubs.linearFetch(url, init)
+        : Promise.reject(new Error('no linear fetch stub installed'))
+  })
+  const linearTokenService = new LinearTokenService({
+    get app() {
+      return platformStubs.linearPlatformApp
+    },
+    tokens: linearTokenStore,
+    api: linearApi,
+    clock
+  })
+  const linearSeams: LinearRouteSeams = {
+    get app() {
+      return platformStubs.linearPlatformApp
+    },
+    api: linearApi,
+    tokens: linearTokenService
+  }
+  const linearOrphanTokenSweeper = new LinearOrphanTokenSweeper({
+    get app() {
+      return platformStubs.linearPlatformApp
+    },
+    tokens: linearTokenStore,
+    service: linearTokenService,
+    clock
+  })
   const feishuSeams: FeishuRouteSeams = {
     verifyBot: async (appId, appSecret, region) =>
       platformStubs.verifyFeishuBot
@@ -699,14 +745,21 @@ export function buildHttpApp(
       syncAppIcon: async (appId, appSecret, region, agent) =>
         platformStubs.syncFeishuAppIcon?.(appId, appSecret, region, agent)
     }),
-    // The deployment app is read THROUGH the stub bag per call, so a suite can enable Linear after
-    // the app is built — the same late-binding discipline every seam above uses.
+    // The deployment app and the Linear edge are read THROUGH the stub bag per call, so a suite can
+    // enable Linear after the app is built — the same late-binding discipline every seam above uses.
     createLinearCpProvider({
       get app() {
         return platformStubs.linearPlatformApp
       },
       tokens: linearTokenStore,
-      credentialReconciler: linearCredentialReconciler
+      credentialReconciler: linearCredentialReconciler,
+      tokenService: linearTokenService,
+      funnelRoutes: {
+        org: [linearConnectRoutes(deps, linearSeams)],
+        publicCallback: [linearOauthCallbackRoutes(deps, linearSeams)]
+      },
+      pendingInstalls: { installStates: linearInstallStateStore, intervalMs: 60_000 },
+      orphanTokenSweeper: linearOrphanTokenSweeper
     })
   ])
 

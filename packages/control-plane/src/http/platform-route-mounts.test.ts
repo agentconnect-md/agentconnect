@@ -37,12 +37,16 @@ import { createTelegramCpProvider } from '../platforms/telegram/provider.js'
 import { createDiscordCpProvider } from '../platforms/discord/provider.js'
 import { createSlackCpProvider } from '../platforms/slack/provider.js'
 import { createFeishuCpProvider } from '../platforms/feishu/provider.js'
+import { createLinearCpProvider } from '../platforms/linear/provider.js'
+import { LinearApiClient } from '../platforms/linear/api.js'
+import { LinearTokenService } from '../platforms/linear/token-service.js'
+import { linearConnectRoutes, linearOauthCallbackRoutes } from '../platforms/linear/routes.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './routes/feishu-registration.js'
 import { slackBotRefreshRoutes } from './routes/slack-bot-refresh.js'
 import { telegramCheckRoutes } from './routes/telegram-check.js'
-import type { FeishuRouteSeams, SlackRouteSeams, TelegramRouteSeams } from './platform-route-seams.js'
+import type { FeishuRouteSeams, LinearRouteSeams, SlackRouteSeams, TelegramRouteSeams } from './platform-route-seams.js'
 
 /**
  * TODAY'S TABLE — captured from the routing table the pre-refactor `server.ts`
@@ -68,11 +72,17 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
     // pinning them here (both core route sets register into this same scope).
     slackBotRefreshRoutesPlugin: ['POST /bots/:id/slack/refresh'],
     telegramCheckRoutesPlugin: ['POST /integrations/telegram/check'],
-    feishuRegistrationRoutesPlugin: ['POST /integrations/feishu/app', 'GET /integrations/feishu/app/:id']
+    feishuRegistrationRoutesPlugin: ['POST /integrations/feishu/app', 'GET /integrations/feishu/app/:id'],
+    linearConnectRoutesPlugin: [
+      'POST /integrations/linear/connect',
+      'GET /integrations/linear/connect/:id',
+      'POST /bots/:id/linear/reconnect'
+    ]
   },
   'public-callback': {
     slackOauthCallbackRoutesPlugin: ['GET /integrations/slack/oauth/callback'],
-    slackPlatformCallbackRoutesPlugin: ['GET /integrations/slack/platform/callback']
+    slackPlatformCallbackRoutesPlugin: ['GET /integrations/slack/platform/callback'],
+    linearOauthCallbackRoutesPlugin: ['GET /integrations/linear/oauth/callback']
   }
 }
 
@@ -114,6 +124,13 @@ const SLACK_SEAMS = {
 } as unknown as SlackRouteSeams
 const TELEGRAM_SEAMS = { verifyBot: async () => ({ status: 'unreachable' }) } as unknown as TelegramRouteSeams
 const FEISHU_SEAMS = { configureHttpApp: async () => {}, registrations: {} } as unknown as FeishuRouteSeams
+/** Linear's funnel registers only with the deployment app configured — that presence IS its flag. */
+const LINEAR_API = new LinearApiClient()
+const LINEAR_SEAMS: LinearRouteSeams = {
+  app: { clientId: 'lin_client', clientSecret: 'lin_secret', signingSecret: 'lin_signing' },
+  api: LINEAR_API,
+  tokens: {} as unknown as LinearTokenService
+}
 
 /** The production provider set, with the route plugins pre-bound exactly as
  *  `buildContainer` pre-binds them. */
@@ -137,6 +154,13 @@ function productionPlatforms(deps: HttpDeps): CpPlatformRegistry {
     }),
     createFeishuCpProvider({
       funnelRoutes: { org: [feishuRegistrationRoutes(deps, FEISHU_SEAMS)], publicCallback: [] }
+    }),
+    createLinearCpProvider({
+      app: LINEAR_SEAMS.app!,
+      funnelRoutes: {
+        org: [linearConnectRoutes(deps, LINEAR_SEAMS)],
+        publicCallback: [linearOauthCallbackRoutes(deps, LINEAR_SEAMS)]
+      }
     })
   ])
 }
