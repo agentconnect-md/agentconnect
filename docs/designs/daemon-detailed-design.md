@@ -779,7 +779,7 @@ For cron, Scheduler constructs a `source:"cron"` synthetic `NormalizedMessage` a
 | agent -> client | `session/request_permission`              | Dangerous-operation authorization mapped to permissions policy / Web confirmation.                                                                  |
 | agent -> client | `fs/read_text_file`, `fs/write_text_file` | Workspace files with Workspace Manager `PathGuard`.                                                                                                 |
 
-Names and shapes follow ACP and `@agentclientprotocol/claude-agent-acp`. Internally, the adapter implements the wire methods `session/new`, `session/prompt`, and `session/update` as `newSession`, `prompt`, and `sessionUpdate`. Declaring `mcpServers` in `session/new` is the tool-injection point.
+Names and shapes follow ACP and `@agentclientprotocol/claude-agent-acp`. Internally, the adapter implements the wire methods `session/new`, `session/prompt`, and `session/update` as `newSession`, `prompt`, and `sessionUpdate`. Declaring `mcpServers` in `session/new` is the tool-injection point. A RuntimeDef declaring `sessionMcpServers: 'unsupported'` (OpenClaw's bridge rejects any non-empty list on `session/new` and `session/load`) skips the injection at dispatch and is clamped to `[]` inside `AcpHost` for every other session creator — those sessions run without the AgentConnect tool server or configured MCP servers, the same degraded shape as a session with no reachable bridge.
 
 ### 7.6 Built-in Preset Webchat Admin MCP
 

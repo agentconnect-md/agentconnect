@@ -32,7 +32,11 @@ export const RuntimeDefSchema = z.object({
   // and netns isolation would sever the bridge's loopback dial — so the bridge
   // launches like any unsandboxed runtime (admission probes still use a
   // disposable isolated HOME). `security.requireSandbox` refuses it outright.
-  externalExecution: z.boolean().optional()
+  externalExecution: z.boolean().optional(),
+  // 'unsupported': the runtime rejects any non-empty session/new|load mcpServers
+  // list (OpenClaw's bridge does), so the daemon must not inject the AgentConnect
+  // bridge or configured MCP servers — such sessions run without those tools.
+  sessionMcpServers: z.literal('unsupported').optional()
 })
 export type RuntimeDef = z.infer<typeof RuntimeDefSchema>
 

@@ -45,6 +45,18 @@ const acceptsAdditionalDirectories = (id, params) => {
   return false
 }
 
+// `AC_REJECT_MCP_SERVERS=1` mirrors OpenClaw's bridge: any non-empty session
+// mcpServers list is rejected outright on session/new and session/load.
+const acceptsMcpServers = (id, params) => {
+  if (process.env.AC_REJECT_MCP_SERVERS !== '1' || !(params.mcpServers?.length > 0)) return true
+  send({
+    jsonrpc: '2.0',
+    id,
+    error: { code: -32602, message: 'ACP bridge mode does not support per-session MCP servers' }
+  })
+  return false
+}
+
 // Optional MCP transport capabilities advertised at initialize. `AC_MCP_CAPS`
 // (comma list) turns them on; unset ⇒ no mcpCapabilities key at all.
 const mcpCaps = (process.env.AC_MCP_CAPS ?? '')
@@ -101,6 +113,7 @@ rl.on('line', async (line) => {
     send({ jsonrpc: '2.0', id, result: { protocolVersion: 1, agentCapabilities: agentCapabilities() } })
   } else if (method === 'session/new') {
     if (!acceptsAdditionalDirectories(id, params)) return
+    if (!acceptsMcpServers(id, params)) return
     const sessionId = `s${++sessionCounter}`
     sessionModels.set(sessionId, modelList[0])
     sessionPermissionModes.set(sessionId, permissionModeList[0])
@@ -113,6 +126,7 @@ rl.on('line', async (line) => {
     send({ jsonrpc: '2.0', id, result: { configOptions: configOptions(params.sessionId) } })
   } else if (method === 'session/load') {
     if (!acceptsAdditionalDirectories(id, params)) return
+    if (!acceptsMcpServers(id, params)) return
     if (process.env.AC_LOAD_PERMISSION_MODE)
       sessionPermissionModes.set(params.sessionId, process.env.AC_LOAD_PERMISSION_MODE)
     if (process.env.AC_LOAD_UPDATES) {

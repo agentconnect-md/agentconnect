@@ -284,7 +284,14 @@ describe('curated native ACP runtimes', () => {
       },
       openclaw: {
         name: 'OpenClaw',
-        runtime: { command: 'openclaw', args: ['acp'], env: [], skillsAgentId: 'openclaw', externalExecution: true }
+        runtime: {
+          command: 'openclaw',
+          args: ['acp'],
+          env: [],
+          skillsAgentId: 'openclaw',
+          externalExecution: true,
+          sessionMcpServers: 'unsupported'
+        }
       }
     })
   })
