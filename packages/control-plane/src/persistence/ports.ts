@@ -3175,6 +3175,17 @@ export interface BotRepo {
    *  shared-bot orchestrator's convergence worklist (relay register / failover).
    *  System-tier: fleet-wide by design. */
   listHttpActive(): Promise<BotRecord[]>
+  /**
+   * Every bot of ONE platform, across all orgs — a provider's own convergence
+   * worklist (§9 `backgroundLoops`; today the Linear deployment-credential
+   * re-stamp of linear-integration.md §10.6).
+   *
+   * Deliberately unfiltered by install state, unlike {@link BotRepo.listHttpActive}:
+   * a bot whose installs are all removed or revoked still holds the stale
+   * credential its next `syncBot` would broadcast, so skipping it would defer the
+   * drift rather than remove it. System-tier: fleet-wide by design.
+   */
+  listForPlatform(platform: Platform): Promise<BotRecord[]>
   /** Workspace-claim admission predicate (ingress-tenant-fence.md §5): does a
    *  DIFFERENT organization already hold a bot for this app+workspace? The
    *  question is deliberately cross-org — one app installed into one workspace

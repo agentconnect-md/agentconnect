@@ -315,6 +315,17 @@ export class PgBotRepo implements BotRepo {
     return rows.map(toBotRecord)
   }
 
+  async listForPlatform(platform: Platform): Promise<BotRecord[]> {
+    // Every row of the platform, install state included — a provider's re-stamp
+    // must reach a bot whose installs are gone but whose secret row survives.
+    const rows = await this.db.bot.findMany({
+      where: { platform: toDbPlatform(platform) },
+      include: botInclude,
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(toBotRecord)
+  }
+
   async workspaceClaimedElsewhere(
     orgId: OrgId,
     platform: string,

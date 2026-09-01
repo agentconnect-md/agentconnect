@@ -221,6 +221,39 @@ export function slackDeploymentPut(
   })
 }
 
+export interface LinearDeploymentCredentials {
+  clientId: string
+  /** Omitted keeps the sealed secret; Linear shows each value only once. */
+  clientSecret?: string
+  signingSecret?: string
+}
+
+/** Null clears the application. Linear OAuth applications are registered by hand (§7.1). */
+export function linearDeploymentPut(
+  current: CurrentDeploymentConfig,
+  application: LinearDeploymentCredentials | null
+): DeploymentConfigPut {
+  // A different client id is a different application, so both of its write-only
+  // secrets must arrive with it — the store would otherwise keep the old app's.
+  const identityChanged = application !== null && current.values.linear?.clientId !== application.clientId
+  if (application && identityChanged && !(application.clientSecret && application.signingSecret)) {
+    throw new Error('a new Linear application id requires both its client secret and its webhook signing secret')
+  }
+  const secrets = application
+    ? {
+        ...(application.clientSecret ? { 'linear.clientSecret': application.clientSecret } : {}),
+        ...(application.signingSecret ? { 'linear.signingSecret': application.signingSecret } : {})
+      }
+    : { 'linear.clientSecret': null, 'linear.signingSecret': null }
+  return DeploymentConfigPutSchema.parse({
+    values: {
+      ...current.values,
+      linear: application ? { clientId: application.clientId } : null
+    },
+    ...(Object.keys(secrets).length > 0 ? { secrets } : {})
+  })
+}
+
 export interface LogtoGoogleConnectorCredentials {
   clientId: string
   clientSecret?: string

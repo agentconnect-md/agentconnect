@@ -23,6 +23,9 @@ const MANAGED_KEYS = [
   'SLACK_PLATFORM_CLIENT_ID',
   'SLACK_PLATFORM_CLIENT_SECRET',
   'SLACK_PLATFORM_SIGNING_SECRET',
+  'LINEAR_PLATFORM_CLIENT_ID',
+  'LINEAR_PLATFORM_CLIENT_SECRET',
+  'LINEAR_PLATFORM_SIGNING_SECRET',
   'FEISHU_PLATFORM_APP_ID',
   'FEISHU_PLATFORM_APP_SECRET',
   'LARK_PLATFORM_APP_ID',
@@ -70,6 +73,13 @@ export function applyDeploymentEnvironment(
     set('SLACK_PLATFORM_CLIENT_ID', values.slack.clientId)
     set('SLACK_PLATFORM_CLIENT_SECRET', secrets['slack.clientSecret'])
     set('SLACK_PLATFORM_SIGNING_SECRET', secrets['slack.signingSecret'])
+  }
+
+  // All three or none: a partial set fails fast in resolveLinearPlatformAppConfig.
+  if (values.linear) {
+    set('LINEAR_PLATFORM_CLIENT_ID', values.linear.clientId)
+    set('LINEAR_PLATFORM_CLIENT_SECRET', secrets['linear.clientSecret'])
+    set('LINEAR_PLATFORM_SIGNING_SECRET', secrets['linear.signingSecret'])
   }
 
   if (values.feishu) {

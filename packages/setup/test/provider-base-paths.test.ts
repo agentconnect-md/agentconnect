@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { loadDeploymentEnvironment } from '../src/deployment-environment.js'
 import { buildGithubAppManifest, githubConfiguredUrls } from '../src/github-app.js'
 import { gitlabConfiguredUrls } from '../src/gitlab-app.js'
+import { linearConfiguredUrls } from '../src/linear-app.js'
 import { buildSlackDeploymentManifest, slackConfiguredUrls } from '../src/slack-app.js'
 
 const PREFIXED_ENVIRONMENT = {
@@ -89,6 +90,26 @@ describe('provider service base paths', () => {
       adminApplicationsUrl: 'https://gitlab.com/admin/applications'
     })
     expect(() => gitlabConfiguredUrls({ services: { controlPlane: 'http://localhost:8080' } })).toThrow(/HTTPS/)
+  })
+
+  it('publishes the Linear callback and webhook URLs beneath their service prefixes', () => {
+    const config = { services: loadDeploymentEnvironment(PREFIXED_ENVIRONMENT).services }
+
+    expect(linearConfiguredUrls(config)).toEqual({
+      callbackUrl: 'https://gateway.example.test/cp/v1/integrations/linear/oauth/callback',
+      webhookUrl: 'https://gateway.example.test/relay/linear/events',
+      applicationsUrl: 'https://linear.app/settings/api/applications'
+    })
+  })
+
+  it('withholds the Linear endpoints until both services are reachable over HTTPS', () => {
+    const relay = 'https://gateway.example.test/relay'
+    expect(() => linearConfiguredUrls({ services: { controlPlane: 'http://localhost:8080', relay } })).toThrow(
+      /Control Plane/
+    )
+    expect(() => linearConfiguredUrls({ services: { controlPlane: 'https://gateway.example.test/cp' } })).toThrow(
+      /ingress/
+    )
   })
 
   it('targets the application links at a self-managed instance, prefix and port intact (§24.1)', () => {
