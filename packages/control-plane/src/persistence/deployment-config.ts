@@ -152,6 +152,15 @@ const SlackAppSchema = z.preprocess(
   })
 )
 
+const LinearAppSchema = z.preprocess(
+  withoutProviderUrlSnapshot,
+  z.strictObject({
+    // The deployment's one Linear OAuth app (linear-integration.md §7.1); its client
+    // secret and webhook signing secret are write-only 'linear.*' deployment secrets.
+    clientId: z.string().trim().min(1)
+  })
+)
+
 /** Version 1 of the JSONB document persisted in `deployment_config.values`. */
 export const DeploymentConfigValuesV1Schema = z
   .strictObject({
@@ -159,6 +168,7 @@ export const DeploymentConfigValuesV1Schema = z
     github: GithubAppSchema.nullable(),
     gitlab: GitlabAppSchema.nullable().optional(),
     slack: SlackAppSchema.nullable(),
+    linear: LinearAppSchema.nullable().optional(),
     /** Regional Login Apps used as the tenant anchor for Bot App admission. */
     feishu: RegionalLoginAppSchema.nullable().optional(),
     lark: RegionalLoginAppSchema.nullable().optional(),
@@ -232,6 +242,8 @@ export const DEPLOYMENT_SECRET_KEYS = [
   'gitlab.clientSecret',
   'slack.clientSecret',
   'slack.signingSecret',
+  'linear.clientSecret',
+  'linear.signingSecret',
   'feishu.loginAppSecret',
   'lark.loginAppSecret',
   'logto.managementAppSecret',
@@ -417,6 +429,8 @@ export function deploymentSecretsRequiringRefresh(
       (previous != null && effectiveGitlabBaseUrl(previous) !== effectiveGitlabBaseUrl(next)))
   const slackIdentityChanged =
     next.slack && (previous?.slack?.appId !== next.slack.appId || previous?.slack?.clientId !== next.slack.clientId)
+  // A different Linear OAuth app is a different client secret AND a different webhook signing secret.
+  const linearIdentityChanged = next.linear && previous?.linear?.clientId !== next.linear.clientId
   const feishuIdentityChanged = next.feishu && previous?.feishu?.loginAppId !== next.feishu.loginAppId
   const larkIdentityChanged = next.lark && previous?.lark?.loginAppId !== next.lark.loginAppId
   const logtoIdentityChanged = next.logto && previous?.logto?.managementAppId !== next.logto.managementAppId
@@ -432,6 +446,7 @@ export function deploymentSecretsRequiringRefresh(
     ...(githubClientChanged ? (['github.clientSecret'] as const) : []),
     ...(gitlabClientChanged ? (['gitlab.clientSecret'] as const) : []),
     ...(slackIdentityChanged ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
+    ...(linearIdentityChanged ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
     ...(feishuIdentityChanged ? (['feishu.loginAppSecret'] as const) : []),
     ...(larkIdentityChanged ? (['lark.loginAppSecret'] as const) : []),
     ...(logtoIdentityChanged ? (['logto.managementAppSecret'] as const) : []),
@@ -446,6 +461,7 @@ function requiredSecrets(values: DeploymentConfigValuesV1): DeploymentSecretKey[
     ...(values.github && values.github.webhookEnabled !== false ? (['github.webhookSecret'] as const) : []),
     ...(values.gitlab ? (['gitlab.clientSecret'] as const) : []),
     ...(values.slack ? (['slack.clientSecret', 'slack.signingSecret'] as const) : []),
+    ...(values.linear ? (['linear.clientSecret', 'linear.signingSecret'] as const) : []),
     ...(values.feishu ? (['feishu.loginAppSecret'] as const) : []),
     ...(values.lark ? (['lark.loginAppSecret'] as const) : []),
     ...(values.logto ? (['logto.managementAppSecret'] as const) : []),

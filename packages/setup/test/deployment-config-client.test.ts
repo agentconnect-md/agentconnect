@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1 } from '@agentconnect.md/control-plane/deployment-config-store'
-import { gitlabDeploymentPut, localAuthLogtoPut } from '../src/deployment-config-client.js'
+import { gitlabDeploymentPut, linearDeploymentPut, localAuthLogtoPut } from '../src/deployment-config-client.js'
 
 describe('localAuthLogtoPut', () => {
   it('stores an explicit Logto Management API resource', () => {
@@ -75,5 +75,52 @@ describe('gitlabDeploymentPut', () => {
 
     expect(result.values.gitlab).toBeNull()
     expect(result.secrets).toEqual({ 'gitlab.clientSecret': null })
+  })
+})
+
+describe('linearDeploymentPut', () => {
+  const current = { values: DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1 }
+  const saved = { values: { ...DEFAULT_DEPLOYMENT_CONFIG_VALUES_V1, linear: { clientId: 'linear-client-id' } } }
+
+  it('stores the client id as configuration and both secrets as write-only entries', () => {
+    const result = linearDeploymentPut(current, {
+      clientId: 'linear-client-id',
+      clientSecret: 'linear-client-secret',
+      signingSecret: 'linear-signing-secret'
+    })
+
+    expect(result.values.linear).toEqual({ clientId: 'linear-client-id' })
+    expect(result.secrets).toEqual({
+      'linear.clientSecret': 'linear-client-secret',
+      'linear.signingSecret': 'linear-signing-secret'
+    })
+    expect(JSON.stringify(result.values)).not.toContain('linear-client-secret')
+    expect(JSON.stringify(result.values)).not.toContain('linear-signing-secret')
+  })
+
+  it('requires both secrets for a new client id and keeps the sealed ones otherwise', () => {
+    expect(() => linearDeploymentPut(current, { clientId: 'linear-client-id' })).toThrow(/requires both/)
+    expect(() =>
+      linearDeploymentPut(current, { clientId: 'linear-client-id', clientSecret: 'linear-client-secret' })
+    ).toThrow(/requires both/)
+
+    expect(linearDeploymentPut(saved, { clientId: 'linear-client-id' }).secrets).toBeUndefined()
+  })
+
+  it('rotates one secret of the saved application without demanding the other', () => {
+    const result = linearDeploymentPut(saved, { clientId: 'linear-client-id', signingSecret: 'rotated-signing' })
+
+    expect(result.secrets).toEqual({ 'linear.signingSecret': 'rotated-signing' })
+  })
+
+  it('clears the application and both secrets together', () => {
+    const result = linearDeploymentPut(saved, null)
+
+    expect(result.values.linear).toBeNull()
+    expect(result.secrets).toEqual({ 'linear.clientSecret': null, 'linear.signingSecret': null })
+  })
+
+  it('rejects an empty client id through the document schema', () => {
+    expect(() => linearDeploymentPut(current, { clientId: '', clientSecret: 'a', signingSecret: 'b' })).toThrow()
   })
 })

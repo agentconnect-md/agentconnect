@@ -34,6 +34,7 @@ import { LOGTO_GITHUB_CONNECTOR_ID, LOGTO_GOOGLE_CONNECTOR_ID, LOGTO_SLACK_CONNE
 import {
   githubDeploymentPut,
   gitlabDeploymentPut,
+  linearDeploymentPut,
   localAuthLogtoPut,
   logtoGoogleConnectorPut,
   logtoGithubConnectorPut,
@@ -48,6 +49,7 @@ import {
 } from '../github-app.js'
 import { gitlabConfiguredUrls } from '../gitlab-app.js'
 import { probeBlocksSave, probeGitlabInstance } from '../gitlab-probe.js'
+import { linearConfiguredUrls } from '../linear-app.js'
 import {
   auditSlackManifest,
   buildSlackDeploymentManifest,
@@ -123,6 +125,16 @@ const ConfigureGitlabBody = z.strictObject({
       clientSecret: z.string().min(1).max(10_000).optional(),
       /** Empty or absent means GitLab.com — the default value of the axis (§24.1). */
       baseUrl: z.string().trim().max(500).nullable().optional()
+    })
+    .nullable()
+})
+
+const ConfigureLinearBody = z.strictObject({
+  application: z
+    .strictObject({
+      clientId: z.string().trim().min(1).max(500),
+      clientSecret: z.string().min(1).max(10_000).optional(),
+      signingSecret: z.string().min(1).max(10_000).optional()
     })
     .nullable()
 })
@@ -526,10 +538,17 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
     } catch {
       // GitLab needs an HTTPS Control Plane URL before its redirect URI is publishable.
     }
+    let linear: ReturnType<typeof linearConfiguredUrls> | null = null
+    try {
+      linear = linearConfiguredUrls(providerAppConfig(localAuthBootstrap.services))
+    } catch {
+      // Linear needs HTTPS Control Plane and ingress URLs before either endpoint is publishable.
+    }
     return {
       github,
       gitlab,
       slack,
+      linear,
       google: values.logto?.browser
         ? {
             origins: [logtoEndpoint],
@@ -887,6 +906,23 @@ export function buildSetupServer(deps: SetupServerDeps, options: SetupServerOpti
       }
       const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
       return { revision: saved.revision, restartRequired: true as const, ...(probe ? { probe } : {}) }
+    })
+  })
+
+  app.post('/api/v1/configure/linear', { preHandler: requireConfigurationAccess }, async (request, reply) => {
+    const parsed = ConfigureLinearBody.safeParse(request.body)
+    if (!parsed.success) return problem(reply, 400, 'a valid Linear OAuth application client id is required')
+    return serializeMutation(async () => {
+      const current = await deps.store.getAdmin()
+      if (!current) return problem(reply, 409, 'save deployment settings before configuring Linear')
+      let put: ReturnType<typeof linearDeploymentPut>
+      try {
+        put = linearDeploymentPut(current, parsed.data.application)
+      } catch (error) {
+        return problem(reply, 400, error instanceof Error ? error.message : 'invalid Linear OAuth application')
+      }
+      const saved = await deps.store.replace({ expectedRevision: current.revision, ...put })
+      return { revision: saved.revision, restartRequired: true as const }
     })
   })
 

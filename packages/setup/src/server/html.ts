@@ -141,6 +141,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       <a href="#github-section">GitHub</a>
       <a href="#gitlab-section">GitLab</a>
       <a href="#slack-section">Slack</a>
+      <a href="#linear-section">Linear</a>
       <a href="#google-section">Google</a>
       <a href="#feishu-section">Feishu</a>
       <a href="#lark-section">Lark</a>
@@ -302,6 +303,34 @@ export const SETUP_HTML = String.raw`<!doctype html>
           <button id="clear-slack" class="danger" hidden>Clear configuration</button>
           <a id="slack-settings" class="button" target="_blank" rel="noopener" hidden>Open Slack settings</a>
         </div>
+      </section>
+
+      <section id="linear-section" class="panel setup-section" aria-labelledby="linear-heading">
+        <div class="provider-head">
+          <div><h3 id="linear-heading">Linear</h3><p class="muted">One OAuth application for the whole deployment. Every workspace connects through it.</p></div>
+          <span id="linear-match" class="badge">Not configured</span>
+        </div>
+        <dl class="credentials">
+          <dt>Client ID</dt><dd class="value-line"><code id="linear-client-id">Not configured</code><button class="edit-configuration" data-provider="linear">Edit</button></dd>
+          <dt>Client secret</dt><dd class="secret-line"><span id="linear-client-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="linear.clientSecret" data-secret-display="linear-client-secret-display">Edit</button></dd>
+          <dt>Webhook signing secret</dt><dd class="secret-line"><span id="linear-signing-secret-display" class="redacted">Not configured</span><button class="edit-secret" data-secret-key="linear.signingSecret" data-secret-display="linear-signing-secret-display">Edit</button></dd>
+        </dl>
+        <p id="linear-status" class="muted"></p>
+        <div id="linear-drift" class="notice" hidden></div>
+        <p>Callback URL:</p><ul id="linear-callbacks" class="uris"></ul>
+        <p>Webhook URL:</p><ul id="linear-webhooks" class="uris"></ul>
+        <p class="muted">Linear does not expose OAuth application creation through an API. In Settings &rarr; API &rarr; OAuth applications, create one application under the product's own name and icon, add the callback URL above, then save its Client ID, Client secret, and webhook signing secret here.</p>
+        <p class="muted">On the same application, enable webhooks, point them at the webhook URL above, and check the <strong>Agent session events</strong> category.</p>
+        <p class="muted">Until that category is enabled, agent sessions are disabled for the whole application: delegating an issue only sets the delegate badge and no session is created. Enabling it later raises a new scope, so every already-connected workspace must reconnect before webhooks arrive.</p>
+        <div class="row"><a id="linear-applications" class="button" href="https://linear.app/settings/api/applications" target="_blank" rel="noopener">Open Linear OAuth applications</a></div>
+        <div id="linear-config-controls" class="subsection">
+          <label class="field">Client ID<input id="linear-id" autocomplete="off"></label>
+          <div id="linear-initial-secret-fields">
+            <label class="field">Client secret<input id="linear-client-secret" type="password" autocomplete="new-password" placeholder="Required when the Client ID changes"></label>
+            <label class="field">Webhook signing secret<input id="linear-signing-secret" type="password" autocomplete="new-password" placeholder="Required when the Client ID changes"></label>
+          </div>
+        </div>
+        <div class="row"><button id="save-linear">Save Linear application</button><button id="cancel-linear-configuration" hidden>Cancel</button><button id="clear-linear" class="danger" hidden>Clear configuration</button></div>
       </section>
 
       <section id="google-section" class="panel setup-section" aria-labelledby="google-heading">
@@ -582,7 +611,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
       currentStatus = status;
       const byKey = new Map((status.secrets || []).map((item) => [item.key, item]));
       const values = status.values;
-      const expected = status.providerExpectations || { github: null, gitlab: null, slack: null, google: { origins: [], redirects: [] } };
+      const expected = status.providerExpectations || { github: null, gitlab: null, slack: null, linear: null, google: { origins: [], redirects: [] } };
       renderStartupEnvironment();
 
       const logto = values.logto;
@@ -696,6 +725,32 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('slack-settings').href = 'https://api.slack.com/apps/' + encodeURIComponent(slack.appId);
         showDiff('slack-drift', slackDrift);
       } else el('slack-drift').hidden = true;
+
+      const linear = values.linear;
+      const linearSecrets = configured(byKey, 'linear.clientSecret') && configured(byKey, 'linear.signingSecret');
+      const expectedLinear = expected.linear;
+      renderUriList('linear-callbacks', expectedLinear ? [expectedLinear.callbackUrl] : []);
+      renderUriList('linear-webhooks', expectedLinear ? [expectedLinear.webhookUrl] : []);
+      text('linear-client-id', linear && linear.clientId);
+      secretText('linear-client-secret-display', byKey, 'linear.clientSecret', Boolean(linear));
+      secretText('linear-signing-secret-display', byKey, 'linear.signingSecret', Boolean(linear));
+      showIdentityEditors('linear', Boolean(linear));
+      el('linear-id').value = linear ? linear.clientId : '';
+      if (expectedLinear) el('linear-applications').href = expectedLinear.applicationsUrl;
+      el('linear-status').textContent = linear
+        ? linear.clientId + ' is configured.'
+        : expectedLinear
+          ? 'Register the OAuth application in Linear, then save its Client ID and both secrets here.'
+          : 'Publishing the callback and webhook URLs needs HTTPS API and ingress public URLs.';
+      showDiff('linear-drift', linear && !expectedLinear
+        ? [{ field: 'Startup public URLs', current: 'Unavailable', expected: 'HTTPS API and ingress URLs' }]
+        : []);
+      match('linear-match', linear && linearSecrets ? 'warn' : '', !linear ? 'Not configured' : !linearSecrets ? 'Missing secret' : "Can't verify automatically");
+      el('linear-initial-secret-fields').hidden = Boolean(linear) && linearSecrets;
+      el('linear-config-controls').hidden = Boolean(linear);
+      el('save-linear').hidden = Boolean(linear);
+      el('cancel-linear-configuration').hidden = true;
+      el('clear-linear').hidden = !linear;
 
       const google = values.logto && values.logto.googleConnector;
       const googleSecret = configured(byKey, 'logto.googleConnectorClientSecret');
@@ -819,6 +874,17 @@ export const SETUP_HTML = String.raw`<!doctype html>
         el('cancel-gitlab-configuration').hidden = false;
         el('clear-gitlab').hidden = true;
         el('gitlab-id').focus();
+      } else if (provider === 'linear') {
+        if (!values.linear) return;
+        el('linear-id').value = values.linear.clientId;
+        el('linear-client-secret').value = '';
+        el('linear-signing-secret').value = '';
+        el('linear-config-controls').hidden = false;
+        el('linear-initial-secret-fields').hidden = false;
+        el('save-linear').hidden = false;
+        el('cancel-linear-configuration').hidden = false;
+        el('clear-linear').hidden = true;
+        el('linear-id').focus();
       } else if (provider === 'google') {
         const google = values.logto && values.logto.googleConnector;
         if (!google) return;
@@ -966,7 +1032,7 @@ export const SETUP_HTML = String.raw`<!doctype html>
 
     async function clearProvider(provider) {
       if (!currentStatus) throw new Error('Deployment configuration is not loaded');
-      const label = provider === 'github' ? 'GitHub' : provider === 'gitlab' ? 'GitLab' : provider === 'slack' ? 'Slack' : provider === 'google' ? 'Google' : provider === 'feishu' ? 'Feishu' : 'Lark';
+      const label = provider === 'github' ? 'GitHub' : provider === 'gitlab' ? 'GitLab' : provider === 'slack' ? 'Slack' : provider === 'linear' ? 'Linear' : provider === 'google' ? 'Google' : provider === 'feishu' ? 'Feishu' : 'Lark';
       if (!window.confirm('Clear the saved ' + label + ' configuration and secrets?')) return;
       const values = currentStatus.values;
       let next = values;
@@ -1001,6 +1067,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
           : values.logto;
         next = { ...values, slack: null, ...(logto ? { logto } : {}) };
         secrets = { 'slack.clientSecret': null, 'slack.signingSecret': null };
+      } else if (provider === 'linear') {
+        next = { ...values, linear: null };
+        secrets = { 'linear.clientSecret': null, 'linear.signingSecret': null };
       } else if (provider === 'google') {
         if (!values.logto) return;
         next = {
@@ -1266,6 +1335,25 @@ export const SETUP_HTML = String.raw`<!doctype html>
       const line = el('gitlab-probe');
       line.hidden = !probe;
       line.textContent = probe ? probe.message : '';
+    }
+
+    async function saveLinear() {
+      const clientSecret = el('linear-client-secret').value;
+      const signingSecret = el('linear-signing-secret').value;
+      await json(await fetch(api + '/configure/linear', {
+        method: 'POST', headers: { 'content-type': 'application/json', ...bearer() },
+        body: JSON.stringify({
+          application: {
+            clientId: requiredInput('linear-id', 'the Linear Client ID'),
+            ...(clientSecret ? { clientSecret } : {}),
+            ...(signingSecret ? { signingSecret } : {})
+          }
+        })
+      }));
+      el('linear-client-secret').value = '';
+      el('linear-signing-secret').value = '';
+      await load();
+      message('Linear OAuth application saved. Restart AgentConnect to apply it.');
     }
 
     async function saveGoogle() {
@@ -1538,6 +1626,9 @@ export const SETUP_HTML = String.raw`<!doctype html>
     el('save-gitlab').onclick = () => saveGitlab().catch((error) => message(error.message, true));
     el('cancel-gitlab-configuration').onclick = cancelConfigurationEdit;
     el('clear-gitlab').onclick = () => clearProvider('gitlab').catch((error) => message(error.message, true));
+    el('save-linear').onclick = () => saveLinear().catch((error) => message(error.message, true));
+    el('cancel-linear-configuration').onclick = cancelConfigurationEdit;
+    el('clear-linear').onclick = () => clearProvider('linear').catch((error) => message(error.message, true));
     el('save-google').onclick = () => saveGoogle().catch((error) => message(error.message, true));
     el('cancel-google-configuration').onclick = cancelConfigurationEdit;
     el('clear-google').onclick = () => clearProvider('google').catch((error) => message(error.message, true));
