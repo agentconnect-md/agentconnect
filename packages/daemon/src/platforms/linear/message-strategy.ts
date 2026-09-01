@@ -55,6 +55,30 @@ export const LINEAR_STOP_RESPONSE_BODY = 'Stopped — reply here to continue.'
 /** Appended inside the fence when the relay's context budget cut something (§8). */
 export const LINEAR_TRUNCATION_NOTE = '(context truncated)'
 
+/** Cap on the `error` activity a failed turn settles with — a runtime can narrate a very long
+ *  terminal error, and the feed row is chrome, not the transcript (which keeps it in full). */
+export const MAX_FAILURE_BODY = 2000
+
+/** §5.1's failure row: the reason, bounded, as the settling `error` body. */
+export function linearFailureBody(reason: string): string {
+  const text = reason.trim() || 'the turn failed'
+  return text.length > MAX_FAILURE_BODY ? `${text.slice(0, MAX_FAILURE_BODY)}…` : text
+}
+
+/**
+ * The durable receipt id for one delivered Linear event.
+ *
+ * Deliberately NOT the ordinary durable-inbox id: core deletes that row the moment the turn
+ * reaches a terminal state, because it is a replay queue for work in flight. Linear's
+ * redelivery ladder is 1 min / 1 h / 6 h, so every redelivery that matters arrives AFTER the
+ * row is gone — without a record that outlives the turn, a redelivery re-acks an append-only
+ * feed and re-runs the turn. This namespace is that record, and it can never collide with the
+ * dispatch row it outlives.
+ */
+export function linearDeliveryReceiptId(deliveryId: string): string {
+  return `linear-served\u001f${deliveryId}`
+}
+
 /** Header/ack cap on the attacker-authored title — the relay flattens it too, and neither
  *  side may assume the other did (the daemon renders it on its own TRUSTED line). */
 const TITLE_MAX_CHARS = 200

@@ -420,6 +420,8 @@ import {
   isLinearIssuelessSurface,
   linearAckBody,
   linearChannelName,
+  linearDeliveryReceiptId,
+  linearFailureBody,
   readLinearExt,
   LinearStopActionSchema,
   type LinearStopAction,
@@ -1418,7 +1420,7 @@ export class Daemon {
       dispatchQueueCommand: async (agentId, msg, integrationId) => {
         await this.dispatch(agentId, msg, integrationId, undefined, undefined, { isQueueCmd: true })
       },
-      replyConnFor: (agentId, integrationId) => this.replyConnFor(agentId, integrationId),
+      replyConnFor: (agentId, integrationId) => this.commandConnFor(agentId, integrationId),
       sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
       outwardSessionId: (agentId, acpSessionId) => this.outwardSessionIdForAcp(agentId, acpSessionId),
       sessionLinkSource: (platform, integrationId) => this.sessionLinkSource(platform, integrationId),
@@ -6490,9 +6492,13 @@ export class Daemon {
     // A platform contributing no admission hook keeps the shared call exactly as it was.
     // §10.1: the hook runs on the FIRST admission only — `onAdmission` fires once the durable
     // row is owned, so a replay or a concurrent same-`msgId` delivery reads back as `duplicate`
-    // and can never write a second row into an append-only feed.
+    // and can never write a second row into an append-only feed. `requireDurable` is what makes
+    // that a guarantee rather than a hope: the hook's whole dedup argument is the durable row,
+    // so a swallowed write would let a redelivery double-post an append-only feed. Refusing the
+    // delivery instead is the correct trade — the provider's retry ladder covers it.
     const dispatched = onAdmitted
       ? this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, undefined, {
+          ...(ingress?.requireDurable ? { requireDurable: true } : {}),
           onAdmission: (result) => {
             if (result.accepted && !result.duplicate) onAdmitted(msg, normalized, busy)
           }
@@ -6519,13 +6525,17 @@ export class Daemon {
       prepare(msg: RdMsgIm, normalized: NormalizedMessage): Promise<'dispatch' | 'settled'>
       /** Run once, after the durable inbox has admitted this delivery for the first time. */
       onAdmitted?(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): void
+      /** Refuse the delivery when the durable row cannot be written, rather than running it
+       *  best-effort — for a platform whose admission hook USES that row as its dedup. */
+      requireDurable?: boolean
     }
   >([
     [
       'linear',
       {
         prepare: async (msg, normalized) => await this.prepareLinearDelivery(msg, normalized),
-        onAdmitted: (msg, normalized, busy) => this.postLinearAck(msg, normalized, busy)
+        onAdmitted: (msg, normalized, busy) => this.postLinearAck(msg, normalized, busy),
+        requireDurable: true
       }
     ]
   ])
@@ -6543,36 +6553,23 @@ export class Daemon {
       this.log.warn(`linear: delivery ${msg.msgId} carries no adapter bag — dispatching the raw text`)
       return 'dispatch'
     }
+    // §4.5's "the daemon's durable inbox absorbs the rest": a delivery this daemon already
+    // served is dropped here, before anything reaches the feed. The ordinary dispatch row
+    // cannot answer that question — core deletes it the moment the turn settles, while
+    // Linear's 1 min / 1 h / 6 h ladder always redelivers well after — so the receipt below is
+    // the record that outlives the turn.
+    if (await this.linearDeliveryServed(normalized)) {
+      this.log.info(`linear: delivery ${msg.msgId} was already served — no turn, no activity`)
+      return 'settled'
+    }
     // §4.5: no issue, so the channel fell back to the AgentSession UUID. Answer once, start no
-    // turn — and answer only AFTER the durable inbox has admitted the delivery, exactly like
-    // the acknowledgement (§10.1). The row is born completed: nothing will ever run it, so it
-    // is a dedup receipt rather than queued work, and startup replay skips it by construction.
+    // turn — and answer only AFTER the durable receipt is minted, exactly like the
+    // acknowledgement (§10.1).
     if (isLinearIssuelessSurface(normalized, ext)) {
-      const key = sessionKey(
-        normalized.platform,
-        normalized.channel,
-        normalized.thread ?? normalized.msgId,
-        msg.agentId,
-        normalized.transportScope
-      )
-      let admitted = false
-      try {
-        admitted = await this.store.appendInbox({
-          id: stableMessageId(normalized),
-          sessionKey: key,
-          agentId: msg.agentId,
-          msg: JSON.stringify(normalized),
-          integrationId: msg.integrationId,
-          completedAt: this.clock.now(),
-          loopGuardCounted: 1,
-          enqueuedAt: monotonicTs()
-        })
-      } catch (err) {
-        // Fail CLOSED: with no durable record a redelivery would stack a second answer.
-        this.log.warn(`linear: unsupported-surface admission failed for ${msg.msgId}: ${formatErr(err)}`)
-        return 'settled'
-      }
-      if (!admitted) return 'settled'
+      const minted = await this.mintLinearDeliveryReceipt(msg, normalized)
+      // Fail CLOSED on a store failure, and on a lost race: with no receipt of our own, a
+      // redelivery would stack a second answer onto an append-only feed.
+      if (!minted) return 'settled'
       const conn = this.lnConnByIntegration.get(msg.integrationId)
       await conn
         ?.postActivity(ext.agentSessionId, { type: 'response', body: LINEAR_UNSUPPORTED_SURFACE_BODY })
@@ -6591,10 +6588,58 @@ export class Daemon {
     return 'dispatch'
   }
 
+  /** Has this daemon already served this exact Linear delivery? A read failure answers NO:
+   *  re-running a turn is recoverable, dropping the member's message is not. */
+  private async linearDeliveryServed(normalized: NormalizedMessage): Promise<boolean> {
+    try {
+      return await this.store.hasInbox(linearDeliveryReceiptId(stableMessageId(normalized)))
+    } catch (err) {
+      this.log.warn(`linear: receipt read failed for ${normalized.msgId}: ${formatErr(err)}`)
+      return false
+    }
+  }
+
+  /**
+   * Mint the durable "already served" receipt for one delivery, and report whether THIS call
+   * is the one that minted it. `INSERT OR IGNORE` is the CAS, so concurrent deliveries of the
+   * same `msgId` resolve to exactly one winner and only the winner may write to the feed.
+   *
+   * The row is born completed: nothing will ever run it, so startup replay skips it by
+   * construction and it ages out under its own retention rule rather than living forever.
+   */
+  private async mintLinearDeliveryReceipt(msg: RdMsgIm, normalized: NormalizedMessage): Promise<boolean> {
+    const key = sessionKey(
+      normalized.platform,
+      normalized.channel,
+      normalized.thread ?? normalized.msgId,
+      msg.agentId,
+      normalized.transportScope
+    )
+    try {
+      return await this.store.appendInbox({
+        id: linearDeliveryReceiptId(stableMessageId(normalized)),
+        sessionKey: key,
+        agentId: msg.agentId,
+        msg: JSON.stringify(normalized),
+        integrationId: msg.integrationId,
+        completedAt: this.clock.now(),
+        loopGuardCounted: 1,
+        enqueuedAt: monotonicTs()
+      })
+    } catch (err) {
+      this.log.warn(`linear: receipt write failed for ${msg.msgId}: ${formatErr(err)}`)
+      return false
+    }
+  }
+
   /**
    * The ≤10 s pre-spawn acknowledgement (§10.1) — the ONE activity posted outside the
    * converger, and the reason a suppressed turn can still be ack-only. Fire-and-forget: it is
    * chrome, and the turn it precedes must never wait on a Linear write.
+   *
+   * The receipt is minted BEFORE the post and gates it, so the strict order §10.1 asks for
+   * holds twice: the ordinary durable row is already owned when this runs, and the receipt is
+   * a second durable record written before the feed ever sees a row.
    */
   private postLinearAck(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): void {
     const conn = this.lnConnByIntegration.get(msg.integrationId)
@@ -6603,6 +6648,7 @@ export class Daemon {
     const agent = this.agents.get(msg.agentId)
     const agentName = agent?.displayName?.trim() || agent?.name || msg.agentId
     void (async () => {
+      if (!(await this.mintLinearDeliveryReceipt(msg, normalized))) return
       const key = sessionKey(
         normalized.platform,
         normalized.channel,
@@ -8363,6 +8409,8 @@ export class Daemon {
       isDm: boolean
       webchat?: WebchatTurnContext
       replyConn?: SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection
+      /** The turn's integration, for a platform whose failure sink resolves its own transport. */
+      integrationId?: string
       channel: string
       sessionKey: string
       transcriptChannel: string
@@ -8396,6 +8444,11 @@ export class Daemon {
         })
       else void ctx.replyConn.postMessage(ctx.channel, notice, ctx.thread)
     }
+    // A platform with no free-text reply transport surfaces the failure through its own sink
+    // instead. Registry-driven, so this stays one lookup rather than a platform-name branch.
+    await this.platformFailureSinks
+      .get(ctx.platform)?.({ reason, integrationId: ctx.integrationId, thread: ctx.thread, channel: ctx.channel })
+      .catch((err2: unknown) => this.log.warn(`${ctx.platform}: failure notice failed: ${formatErr(err2)}`))
     // Record the failure in the transcript too — the direct post above bypasses the
     // recorded apply path, which previously left the console session view showing an
     // empty reply for a failed turn.
@@ -8410,6 +8463,34 @@ export class Daemon {
       })
     }
   }
+
+  /**
+   * §7.4 per-platform TERMINAL-FAILURE sinks, one registry entry per platform that needs one.
+   *
+   * A turn can die before `Pending` exists — a failed agent spawn or ACP handshake — and that
+   * path has no converger to settle through, only `replyConn.postMessage`. A platform whose
+   * only surface is its own API (Linear's activity feed, §4.6) has no such transport, so
+   * without an entry here a cold failure is silent and the provider-side session is left
+   * looking busy forever.
+   */
+  private readonly platformFailureSinks = new Map<
+    string,
+    (ctx: { reason: string; integrationId?: string; thread?: string; channel: string }) => Promise<void>
+  >([
+    [
+      'linear',
+      async (ctx) => {
+        const conn = ctx.integrationId ? this.lnConnByIntegration.get(ctx.integrationId) : undefined
+        // `thread` is the AgentSession UUID (§4.5); the channel fallback covers the issue-less
+        // key shape, where the two coordinates are the same id anyway.
+        const session = ctx.thread ?? ctx.channel
+        if (!conn || !session) return
+        // `error`, not `response`: it is what drives the Linear session to `error` rather than
+        // leaving it active, and it is the same row the warm converger would have emitted.
+        await conn.postActivity(session, { type: 'error', body: linearFailureBody(ctx.reason) })
+      }
+    ]
+  ])
 
   /** Queue user-visible warnings produced while (re)building an agent's host
    *  (config-file secret conflicts / write failures — shim/config-file-env.ts).
@@ -10142,6 +10223,7 @@ export class Daemon {
             isDm: msg.isDm,
             webchat,
             replyConn,
+            ...(plan.integrationId !== undefined ? { integrationId: plan.integrationId } : {}),
             channel: msg.channel,
             sessionKey: plan.sessionKey,
             transcriptChannel: plan.transcriptChannel,
@@ -11260,6 +11342,7 @@ export class Daemon {
         isDm: msg.isDm,
         webchat,
         replyConn,
+        ...(plan.integrationId !== undefined ? { integrationId: plan.integrationId } : {}),
         channel: msg.channel,
         sessionKey: plan.sessionKey,
         transcriptChannel: plan.transcriptChannel,
@@ -11316,6 +11399,13 @@ export class Daemon {
       if (p.conv instanceof FeishuConverger) {
         const attribution = plan.showFooter ? await currentAttributionInfo() : undefined
         for (const action of p.conv.onFailure(reason, attribution)) this.enqueueApply(p, action)
+      } else if (p.conv instanceof LinearConverger) {
+        // The settling `error` is what moves the Linear session out of `active` (§15-2), so it
+        // cannot fall through to the Slack-shaped `post` notice below — `applyLinearAction`
+        // has no arm for that kind and would silently drop it, leaving the session busy
+        // forever. The converger flushes its own buffer and de-duplicates a runtime that
+        // already narrated the same reason.
+        for (const action of p.conv.onFailure(linearFailureBody(reason))) this.enqueueApply(p, action)
       } else {
         let covered = false
         for (const action of p.conv.flushTerminal()) {
@@ -13736,6 +13826,7 @@ export class Daemon {
     for (const [id, c] of this.tgConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.dcConnByIntegration) if (c === conn) out.push(id)
     for (const [id, c] of this.fsConnByIntegration) if (c === conn) out.push(id)
+    for (const [id, c] of this.lnConnByIntegration) if (c === conn) out.push(id)
     return out
   }
 
@@ -13970,6 +14061,22 @@ export class Daemon {
     const intId = integrationId ?? this.agents.get(agentId)?.integrations[0]?.id
     if (!intId) return undefined
     return this.connForIntegration(intId)
+  }
+
+  /**
+   * The connection an in-conversation COMMAND replies through (§7.4).
+   *
+   * Wider than {@link replyConnFor} by exactly one platform: a command reply is not free text
+   * on a message surface, it is whatever that platform's command-chrome surface renders — and
+   * Linear's renders activities through the connection itself. Without this the daemon would
+   * register a Linear chrome surface it could never reach a connection for, so `/status` and,
+   * worse, `!resume` — the only way out of an open loop-guard circuit — would be consumed in
+   * silence.
+   */
+  private commandConnFor(agentId: string, integrationId?: string): PlatformConnection | undefined {
+    const intId = integrationId ?? this.agents.get(agentId)?.integrations[0]?.id
+    if (!intId) return undefined
+    return this.connForIntegration(intId) ?? this.lnConnByIntegration.get(intId)
   }
 
   /** CP-owned cron ids currently held in memory. */

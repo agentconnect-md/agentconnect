@@ -13,7 +13,12 @@ import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { initialLinearTurnState, type LinearActivityInput } from '../src/platforms/linear/turn-output.js'
-import { LINEAR_STOP_RESPONSE_BODY, LINEAR_UNSUPPORTED_SURFACE_BODY } from '../src/platforms/linear/message-strategy.js'
+import {
+  linearFailureBody,
+  LINEAR_STOP_RESPONSE_BODY,
+  LINEAR_UNSUPPORTED_SURFACE_BODY,
+  MAX_FAILURE_BODY
+} from '../src/platforms/linear/message-strategy.js'
 
 const AGENT = 'review-bot'
 const INTEGRATION = 'int-linear'
@@ -31,7 +36,7 @@ interface Posted {
   inboxAdmitted: boolean
 }
 
-function scaffold(outputMode: 'none' | 'low' = 'low'): string {
+function scaffold(outputMode: 'none' | 'low' = 'low', expiresAt: string = FAR_FUTURE): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-linear-ingress-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -62,7 +67,7 @@ function scaffold(outputMode: 'none' | 'low' = 'low'): string {
             workspaceName: 'Example Workspace',
             appUserId: 'app-user-1',
             accessToken: 'snapshot-token',
-            accessTokenExpiresAt: FAR_FUTURE
+            accessTokenExpiresAt: expiresAt
           }
         }
       ],
@@ -81,8 +86,19 @@ const fakeHost = () => ({
   stop: vi.fn()
 })
 
-async function boot(outputMode: 'none' | 'low' = 'low') {
-  const daemon = new Daemon({ root: scaffold(outputMode), hostFactory: () => fakeHost() as any })
+interface BootOpts {
+  outputMode?: 'none' | 'low'
+  /** Swap the ACP host to drive a turn failure — a rejecting `prompt` fails WARM (a Pending
+   *  exists), a rejecting `newSession` fails COLD (it never does). */
+  host?: () => unknown
+  expiresAt?: string
+}
+
+async function boot(opts: BootOpts = {}) {
+  const daemon = new Daemon({
+    root: scaffold(opts.outputMode ?? 'low', opts.expiresAt ?? FAR_FUTURE),
+    hostFactory: () => (opts.host ? opts.host() : fakeHost()) as any
+  })
   await daemon.start()
   // Converge the pool deterministically instead of racing the fire-and-forget boot call,
   // then take the binding over with a recording fake — no GraphQL leaves this test.
@@ -102,7 +118,18 @@ async function boot(outputMode: 'none' | 'low' = 'low') {
     async updateSession() {}
   }
   ;(daemon as any).lnConnByIntegration.set(INTEGRATION, conn)
-  return { daemon, posted, store }
+  /** Rows for work still owed. A born-completed receipt is excluded — outliving the turn is
+   *  exactly its job, so counting it would never let a settlement barrier resolve. */
+  const pendingRows = async (): Promise<number> =>
+    (await store.listInboxBySessionKeyFifo()).filter((row: { completedAt: number | null }) => row.completedAt === null)
+      .length
+  /** Wait until this delivery's turn has been admitted AND has fully settled. The order is
+   *  load-bearing: polling for zero alone passes instantly, before the row is ever written. */
+  const turnSettled = async (): Promise<void> => {
+    await vi.waitFor(async () => expect(await pendingRows()).toBe(1), { timeout: 10_000 })
+    await vi.waitFor(async () => expect(await pendingRows()).toBe(0), { timeout: 10_000 })
+  }
+  return { daemon, posted, store, pendingRows, turnSettled }
 }
 
 const transportScope = (daemon: Daemon): string | undefined =>
@@ -162,13 +189,44 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
   })
 
   it('collapses a redelivery of the same msgId onto ONE acknowledgement', async () => {
-    const { daemon, posted } = await boot()
+    const { daemon, posted, turnSettled } = await boot()
     await im(daemon, delivery())
     await vi.waitFor(() => expect(acks(posted).length).toBe(1))
+    // Redeliver only once the turn has SETTLED. Redelivering while it is still in flight
+    // proves nothing: the dispatch row is still there to dedup against, so any ordering
+    // works. Linear's ladder is 1 min / 1 h / 6 h, so the settled state is the real one.
+    await turnSettled()
     await im(daemon, delivery())
     await im(daemon, delivery())
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(acks(posted).length).toBe(1)
+    await daemon.stop()
+  })
+
+  it('runs no second TURN for a redelivery that arrives after the first turn settled', async () => {
+    const { daemon, posted, turnSettled } = await boot()
+    await im(daemon, delivery())
+    await vi.waitFor(() => expect(acks(posted).length).toBe(1))
+    await turnSettled()
+    // The dispatch row is gone by now — core deletes it at terminal state — so only the
+    // durable receipt can absorb this. Without it the whole turn re-runs, not just the ack.
+    const dispatch = vi.fn(async () => null)
+    ;(daemon as any).dispatch = dispatch
+    expect(await im(daemon, delivery())).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(posted.filter((entry) => entry.activity.type === 'thought')).toHaveLength(1)
+    await daemon.stop()
+  })
+
+  it('refuses the delivery rather than acking when the durable row cannot be written', async () => {
+    const { daemon, posted, store } = await boot()
+    // §10.1's dedup fence IS the durable row, so a swallowed write would let a redelivery
+    // double-post an append-only feed. Refusing is the correct trade — the relay retries.
+    vi.spyOn(store, 'appendInbox').mockRejectedValue(new Error('disk is gone'))
+    await im(daemon, delivery())
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(posted).toEqual([])
     await daemon.stop()
   })
 
@@ -191,7 +249,7 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
   })
 
   it('stays silent in `none` mode — no acknowledgement, no activities', async () => {
-    const { daemon, posted } = await boot('none')
+    const { daemon, posted } = await boot({ outputMode: 'none' })
     await im(daemon, delivery())
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(posted).toEqual([])
@@ -352,6 +410,110 @@ describe('§6.3 the stop decoder', () => {
   it('is registered at all — the payload does not fall through to unsupported_action', async () => {
     const { daemon } = await boot()
     expect((daemon as any).platformActionDecoders.has('linear')).toBe(true)
+    await daemon.stop()
+  })
+})
+
+describe('§5.1 turn failure settles the Linear session', () => {
+  const errors = (posted: Posted[]) => posted.filter((p) => p.activity.type === 'error')
+
+  it('posts the settling `error` when the turn fails WARM (a Pending exists)', async () => {
+    const { daemon, posted } = await boot({
+      host: () => ({
+        __started: true,
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => 'acp-1'),
+        prompt: vi.fn(async () => {
+          throw new Error('provider quota exhausted')
+        }),
+        cancel: vi.fn(),
+        stop: vi.fn()
+      })
+    })
+    await im(daemon, delivery())
+    // Without the Linear arm this enqueues a Slack-shaped `post`, which `applyLinearAction`
+    // has no arm for — the session would stay `active` forever with nothing in the feed.
+    await vi.waitFor(() => expect(errors(posted).length).toBe(1), { timeout: 10_000 })
+    expect(errors(posted)[0]!.activity.body).toContain('provider quota exhausted')
+    expect(errors(posted)[0]!.sessionId).toBe(SESSION)
+    await daemon.stop()
+  })
+
+  it('posts a bounded `error` when the turn fails COLD, before any Pending exists', async () => {
+    const { daemon, posted } = await boot({
+      host: () => ({
+        __started: true,
+        start: vi.fn(async () => {}),
+        newSession: vi.fn(async () => {
+          throw new Error('acp handshake never completed')
+        }),
+        prompt: vi.fn(async () => 'end_turn'),
+        cancel: vi.fn(),
+        stop: vi.fn()
+      })
+    })
+    await im(daemon, delivery())
+    // A cold failure has no converger to settle through and no reply connection of its own,
+    // so only the registered failure sink can reach the feed at all.
+    await vi.waitFor(() => expect(errors(posted).length).toBe(1), { timeout: 10_000 })
+    expect(errors(posted)[0]!.activity.body).toContain('acp handshake never completed')
+    expect(errors(posted)[0]!.sessionId).toBe(SESSION)
+    await daemon.stop()
+  })
+
+  it('bounds a runaway failure body rather than posting the whole thing', async () => {
+    expect(linearFailureBody('x'.repeat(MAX_FAILURE_BODY * 3))).toHaveLength(MAX_FAILURE_BODY + 1)
+    expect(linearFailureBody('  ')).toBe('the turn failed')
+  })
+})
+
+describe('§7.4 in-conversation commands', () => {
+  it('resolves a Linear connection for the command seat, which the reply path excludes', async () => {
+    const { daemon } = await boot()
+    // The turn REPLY path deliberately excludes Linear (it has no free-text surface); the
+    // COMMAND seat must not, or the registered chrome surface could never be reached.
+    expect((daemon as any).replyConnFor(AGENT, INTEGRATION)).toBeUndefined()
+    expect((daemon as any).commandConnFor(AGENT, INTEGRATION)).toBe(
+      (daemon as any).lnConnByIntegration.get(INTEGRATION)
+    )
+    await daemon.stop()
+  })
+
+  it('answers `/status` on the activity feed instead of consuming it silently', async () => {
+    const { daemon, posted } = await boot()
+    const dispatch = vi.fn(async () => null)
+    ;(daemon as any).dispatch = dispatch
+    await im(daemon, delivery({ text: '/status' }))
+    await vi.waitFor(() => expect(responses(posted).length).toBe(1), { timeout: 10_000 })
+    // A command is not a prompt: it must not reach the agent as one.
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(responses(posted)[0]!.sessionId).toBe(SESSION)
+    await daemon.stop()
+  })
+})
+
+describe('§4.4 the brokered token', () => {
+  it('resolves the control-plane client at CALL time, not at connection construction', async () => {
+    // Reconcile runs before the CP socket connects on an ordinary startup, so a client
+    // captured at construction would be `undefined` for the connection's whole life.
+    const nearExpiry = new Date(Date.now() + 30 * 60 * 1000).toISOString()
+    const { daemon } = await boot({ expiresAt: nearExpiry })
+    const conn = [...(daemon as any).connections.linearPool.all()][0] as {
+      token(): Promise<string>
+      applySnapshot(config: Record<string, unknown>): void
+    }
+    expect(conn).toBeDefined()
+    // The CP arrives only now — after the connection was built and its warm-up already failed.
+    const requestLinearCred = vi.fn(async () => ({ accessToken: 'brokered', expiresAt: FAR_FUTURE }))
+    ;(daemon as any).cpClient = { requestLinearCred, stop: vi.fn() }
+    // Clear the renewal backoff the failed warm-up armed, without leaving the margin.
+    conn.applySnapshot({
+      workspaceId: WORKSPACE,
+      accessToken: 'snapshot-token',
+      accessTokenExpiresAt: new Date(Date.now() + 45 * 60 * 1000).toISOString()
+    })
+    expect(await conn.token()).toBe('brokered')
+    expect(requestLinearCred).toHaveBeenCalledWith({ integrationId: INTEGRATION })
     await daemon.stop()
   })
 })

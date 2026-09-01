@@ -51,6 +51,18 @@ async function seedEveryTable(s: LocalStore, agentId: string, tag: string, at: n
     enqueuedAt: String(at)
   })
   expect(await s.completeHookInbox(hookId, JSON.stringify({ id: hookId }), at, owner)).toBe('completed')
+  // A born-completed inbox row: the dedup RECEIPT proving a provider delivery was already
+  // served. It carries no terminal report, so it ages under its own rule rather than the
+  // hook-report one — and nothing else ever drains it.
+  await s.appendInbox({
+    id: `served-${tag}`,
+    sessionKey: sessionKey('linear', 'issue-1', `session-${tag}`, agentId),
+    agentId,
+    msg: '{}',
+    completedAt: at,
+    loopGuardCounted: 1,
+    enqueuedAt: String(at)
+  })
   await s.upsertSession({
     key: tag,
     agentId,
@@ -177,6 +189,7 @@ describe('store retention rule table', () => {
 
     expect(summary!.byRule).toMatchObject({
       'hook-report': 1,
+      'delivery-receipt': 1,
       'session-metadata': 1,
       'outward-id': 1,
       'webchat-grant': 1,
@@ -186,8 +199,8 @@ describe('store retention rule table', () => {
       'catalog-meta': 0,
       'catalog-models': 0
     })
-    expect(summary).toMatchObject({ horizon: 6, agentGone: 0, deleted: 6, failed: 0 })
-    expect(logs.at(-1)).toContain('collected=6 deleted=6')
+    expect(summary).toMatchObject({ horizon: 7, agentGone: 0, deleted: 7, failed: 0 })
+    expect(logs.at(-1)).toContain('collected=7 deleted=7')
     expect(await remaining(s, 'hook-report')).toBe(0)
     expect(await remaining(s, 'session-purge')).toBe(1)
 
@@ -308,7 +321,7 @@ describe('store retention rule table', () => {
     const summary = await instance.sweep()
 
     expect(cp.asked).toEqual([[LIVE, GONE]])
-    expect(summary).toMatchObject({ agentGone: 6, horizon: 0, deleted: 6, failed: 0 })
+    expect(summary).toMatchObject({ agentGone: 7, horizon: 0, deleted: 7, failed: 0 })
     // Only the rules that name an agent; the agent-free ones are untouched by this proof.
     expect(summary!.byRule).toMatchObject({
       'hook-report': 1,
@@ -331,7 +344,7 @@ describe('store retention rule table', () => {
     const { instance, logs } = sweeper(b, AT + 1_000, { liveAgents: fakeCp().liveAgents })
     const summary = await instance.sweep()
 
-    expect(summary).toMatchObject({ agentGone: 6, collected: 6, deleted: 0 })
+    expect(summary).toMatchObject({ agentGone: 7, collected: 7, deleted: 0 })
     expect(logs.at(-1)).toContain('(orphan dry run)')
     expect(await remaining(b, 'hook-report')).toBe(1)
     await a.close()
@@ -346,7 +359,7 @@ describe('store retention rule table', () => {
     expect(fresh).toMatchObject({ agentGone: 0, collected: 0 })
 
     const aged = await sweeper(s, AT + DEFAULT_STORE_HORIZON_MS).instance.sweep()
-    expect(aged).toMatchObject({ agentGone: 0, horizon: 6, deleted: 6 })
+    expect(aged).toMatchObject({ agentGone: 0, horizon: 7, deleted: 7 })
     await s.close()
   })
 
@@ -448,7 +461,7 @@ describe('store retention rule table', () => {
     const { instance } = sweeper(s, AT + 30 * DAY)
     const summary = await instance.sweepAgeOnly()
 
-    expect(summary).toMatchObject({ agentGone: 0, horizon: 9, deleted: 9, failed: 0 })
+    expect(summary).toMatchObject({ agentGone: 0, horizon: 10, deleted: 10, failed: 0 })
     expect(await remaining(s, 'catalog-meta')).toBe(0)
     await s.close()
   })
