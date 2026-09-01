@@ -322,10 +322,12 @@ session in it is a thread (§4.5):
   to an agent IS the consent act, so a trigger could only restate the link.
   Muting is unlinking. Linear conversation rows are therefore born enabled
   (`mention`) for every member, **including a private agent's**, whose rows
-  every other platform seeds `off` (§9.4). Slack's `any` has no Linear
-  meaning either: the platform emits no unaddressed traffic to opt into —
-  every event is a delegation, an app mention, a follow-up inside a session
-  the agent already owns, or a stop.
+  every other platform seeds `off` (§9.2) — and, for the same reason, a
+  private member here is not conversation-gated at all, so it keeps its
+  `@<agent-name>` rung and can hold the workspace default (§6.2). Slack's
+  `any` has no Linear meaning either: the platform emits no unaddressed
+  traffic to opt into — every event is a delegation, an app mention, a
+  follow-up inside a session the agent already owns, or a stop.
 - **Identity renders in content**, not in the sender: the feed shows the one
   app's name and icon, the ≤10 s ack opens with the acting agent's name, and
   the final `response` carries the attribution footer — the GitHub comment
@@ -665,7 +667,26 @@ addressed — which every Linear event is by construction (§6.1), so the gate
 never costs a delivery here, and thread continuity in between needs no such
 gate. `defaultAgentId` keeps its generic earliest-non-gated derivation as the
 backstop above, and the earlier revision's persisted bot-level preferred
-default is withdrawn (§9.2, §15). The
+default is withdrawn (§9.2, §15).
+
+**A restricted member of such a bot is not conversation-gated at all.**
+Conversation gating (resource-visibility.md §14) exists to keep a private agent
+out of conversations nobody granted it; where the install names the only
+conversation there is, linking the agent WAS that grant, so the gate has
+nothing left to guard and its fail-open worry presumes conversations that do
+not exist. This is the axis's third read, and it is deliberately **one**
+predicate — `gatesNewConversations(platform, agent)`, computed where the
+compile builds its `placed` set — rather than a patch at each fence, because
+the four things it decides have to move together: the member's unscoped
+keyword rung (§4.3's `@<agent-name>`), its eligibility to hold the default,
+its treatment under continuity gating, and its attribution as a relay target.
+De-gating is per bot and derived from that bot's platform, so the same agent
+stays fully gated on its other bots and its name routes nowhere else.
+
+Rejected there: giving gated members **channel-scoped keyword routes**
+instead. Scoped keyword sits above thread affinity, so a follow-up that merely
+names another member would hijack the bound session — the same rung-order bug
+as the owner route, arriving through a different door. The
 earlier revision's `RcLinearAssign` / `RcLinearRemove` frames and the
 relay-local Linear rule table are gone — replay-on-register, placement
 re-broadcast, and lifecycle edges are the shared machinery.
@@ -1011,14 +1032,31 @@ tile.
   refusal copy `sharing.ts` still owns now names the refused platform
   instead of enumerating the supported set.
   - **One new axis this design earns: `soleConversation`** (`linear: true`,
-    `DEFAULT_MANIFEST` `false`) — the platform's conversation granularity
-    coincides with the integration, so a connected account IS one
-    conversation (§4.3). Two pre-dispatch reads justify it, both in CP core
-    and both today's platform branches waiting to happen: the route compile
-    maps such a conversation's owner to the group's `defaultAgentId` instead
-    of emitting a channel-scoped route (§6.2), and the install paths seed its
-    row `mention` instead of applying the restricted-agent `off` seed, since
-    linking is the consent that seed exists to wait for.
+    `DEFAULT_MANIFEST` `false`) — one install **names the single conversation
+    it can reach**, so a connected account IS one conversation (§4.3). It
+    carries **three co-varying pre-dispatch reads**, all in CP core and all
+    today's platform branches waiting to happen:
+    1. **Route projection** — the conversation row's owner maps to the group's
+       `defaultAgentId`, and the compile emits **no** channel-scoped route for
+       it (§6.2).
+    2. **The trigger seed** — rows are born `mention`, written synchronously by
+       the install paths, because link-is-consent overrides §14's
+       restricted-agent `off` seed. Every seat that seeds, re-derives, or
+       projects a row's trigger reads the **one** predicate
+       `gatesNewConversations(platform, agent)`: the compile's
+       `ensureConversationOwners`, the read-side `GET /integrations`
+       projection, the daemon channels-report handler, and the install paths
+       themselves. One predicate rather than four patched fences is what keeps
+       the console from showing a conversation Off while the compile publishes
+       its enabled route.
+    3. **Gating itself** — a restricted member of such a bot is not
+       conversation-gated (§6.2), from that same predicate at the compile's
+       single `placed` seat.
+
+    The three co-vary by construction: the seed is only right if gating is
+    vacuous, and gating is only vacuous because the install granted the one
+    conversation. Fail-closed `false` keeps every other platform on the
+    ordinary §10/§14 arms.
 - The opaque integration-config payload shape (§7.2) is documented beside its
   peers in `frames/integration.ts`.
 - `frames/cron.ts` — **not** extended in v1 (no cron target).
@@ -1340,7 +1378,10 @@ tile.
   turns that owner into `defaultAgentId` while emitting **no channel-scoped
   route**, so a named mention still reaches the named member and a bound
   session survives an owner change; with no row, `defaultAgentId` falls back
-  to the earliest non-gated member; moving the row's owner moves bare
+  to the earliest non-gated member; a **restricted** member of the workspace
+  bot keeps its keyword route and may hold the default, while the same agent
+  stays gated on an ordinary bot, and the console projection and the compile
+  agree on its trigger (one predicate, §9.1); moving the row's owner moves bare
   delegations; removing the owning member re-homes the row instead of
   stranding the workspace; reconnect replaces a dead
   token in place; broker scope denial for a foreign daemon; workspace
@@ -1471,6 +1512,17 @@ daemon is a default that is missing exactly when the first delegation lands
 to opt into — only delegations, app mentions, follow-ups inside a session the
 agent already owns, and stops.
 
+The same argument settles what a **private member** means here, and it settles
+it once rather than fence by fence. Conversation gating guards a restricted
+agent against conversations nobody granted it; on a bot whose install names the
+only conversation there is, that grant already happened, so such a member is
+not conversation-gated at all — one predicate at the compile's `placed` seat
+restores its `@<agent-name>` rung, its eligibility to hold the default, its
+continuity gating, and its relay attribution together, and only on that bot.
+The alternative considered was scoped keyword routes for gated members, which
+fails for the reason the owner route fails: scoped keyword outranks thread
+affinity, so a follow-up naming another member would hijack a bound session.
+
 **Multi-name mentions keep the silent first-pick.** An ambiguity error was
 considered and rejected: member names are ordinary words in issue prose, so the
 error would fire on text that never meant to address anybody, and the ≤10 s ack
@@ -1484,8 +1536,9 @@ the per-conversation owner the ladder already reads on its default rung is the
 right carrier, and the new column has nothing to do: core gains no field, the
 compile gains no per-bot input, and the console's dispatch selector is the
 generic conversation-owner PATCH. What core does gain is one manifest axis,
-`soleConversation` (§9.1) — how an owner compiles, and how a new row seeds —
-which is a statement about the platform, not a second place to store a default.
+`soleConversation` (§9.1) — how an owner compiles, how a new row seeds, and
+whether gating applies at all — which is a statement about the platform, not a
+second place to store a default.
 The compile's earliest non-gated member derivation survives, demoted to the
 backstop covering the window before the row exists at all (§9.4).
 
