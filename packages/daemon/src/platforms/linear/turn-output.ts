@@ -83,9 +83,10 @@ export interface LinearTurn {
   }
 }
 
-/** Linear's opaque per-turn state (§5): the hard activity budget and the last plan
+/** Linear's opaque per-turn state (§5): the hard chrome budget and the last plan
  *  actually pushed, so an unchanged plan costs no `agentSessionUpdate`. */
 export interface LinearTurnState {
+  /** Remaining non-settling activities; a settling `response`/`error` never draws on it. */
   activityBudget: number
   lastPlanHash?: string
 }
@@ -134,7 +135,8 @@ export const MAX_ACTION_RESULT = 2800
 export const MAX_ACTION_PARAMETER = 500
 /** Soft per-turn action cap; the overflow is reported once as "… and N more". */
 export const MAX_TURN_ACTIONS = 40
-/** Hard per-turn activity budget enforced at the egress edge, under every soft cap. */
+/** Hard per-turn CHROME budget enforced at the egress edge, under every soft cap. The settling
+ *  `response`/`error` is exempt: the cap bounds progress noise, never the turn's one answer. */
 export const MAX_TURN_ACTIVITIES = 200
 /** Message-text tail kept for sentinel detection — far more than the sentinel's own line needs. */
 const SENTINEL_TAIL_CHARS = 512
@@ -515,10 +517,14 @@ export class LinearConverger {
     return [...this.takePending(), { kind: 'activity', type: 'thought', body: text.trim() }]
   }
 
+  /** Emit the reasoning accumulated SINCE THE LAST FLUSH. The in-place renderers keep a
+   *  cumulative buffer because they edit one message; an append-only feed must send deltas,
+   *  or every flush re-posts the whole turn's thinking. */
   private drainReasoning(): LinearAction[] {
     if (!this.reasoningDirty) return []
     this.reasoningDirty = false
     const trimmed = this.reasoning.trim()
+    this.reasoning = ''
     if (!trimmed) return []
     const tail = trimmed.length > MAX_REASONING ? `…${trimmed.slice(-MAX_REASONING)}` : trimmed
     return [{ kind: 'activity', type: 'thought', body: tail, ephemeral: true }]
@@ -560,6 +566,11 @@ function toActivityInput(action: Extract<LinearAction, { kind: 'activity' }>): L
   }
 }
 
+/** The two activities that drive the Linear session out of `active` — a turn owes exactly one. */
+function isSettlingActivity(action: Extract<LinearAction, { kind: 'activity' }>): boolean {
+  return action.type === 'response' || action.type === 'error'
+}
+
 /**
  * Apply one converger action to Linear, through the connection's own send queue.
  *
@@ -578,9 +589,12 @@ export async function applyLinearAction<TTurn extends LinearTurn>(
   switch (action.kind) {
     case 'activity': {
       // The hard backstop under every soft cap: a runaway turn cannot exhaust the workspace's
-      // hourly budget on one session's feed.
-      if (state.activityBudget <= 0) return
-      state.activityBudget -= 1
+      // hourly budget on one session's feed. It bounds CHROME only — a settling activity is
+      // exempt, because dropping it would lose the answer and leave the session active forever.
+      if (!isSettlingActivity(action)) {
+        if (state.activityBudget <= 0) return
+        state.activityBudget -= 1
+      }
       await port.postActivity(sessionId, toActivityInput(action))
       return
     }

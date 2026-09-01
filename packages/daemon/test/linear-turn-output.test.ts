@@ -61,6 +61,23 @@ describe('LinearConverger — §5.1 event translation', () => {
     expect(action.body.length).toBe(MAX_REASONING + 1)
   })
 
+  it('emits only the delta since the last flush, so consecutive windows never overlap', () => {
+    const c = conv('medium')
+    c.onUpdate(thought('first window '))
+    c.onUpdate(thought('of thinking'))
+    expect(c.flushBuffered()).toEqual([
+      { kind: 'activity', type: 'thought', body: 'first window of thinking', ephemeral: true }
+    ])
+    // Nothing new arrived, so the window that follows costs no activity at all.
+    expect(c.hasBuffered()).toBe(false)
+    expect(c.flushBuffered()).toEqual([])
+    c.onUpdate(thought('second window'))
+    const second = c.flushBuffered()
+    expect(second).toEqual([{ kind: 'activity', type: 'thought', body: 'second window', ephemeral: true }])
+    const body = second[0]?.kind === 'activity' && second[0].type === 'thought' ? second[0].body : ''
+    expect(body).not.toContain('first window')
+  })
+
   it('turns intermediate message text into a NON-ephemeral thought at a tool boundary', () => {
     const c = conv('low')
     expect(c.onUpdate(chunk('reading the failing test'))).toEqual([])
@@ -533,6 +550,29 @@ describe('applyLinearAction', () => {
       await applyLinearAction(turn, state, { kind: 'activity', type: 'thought', body: `n${i}` })
     }
     expect(port.activities).toHaveLength(2)
+    expect(state.activityBudget).toBe(0)
+  })
+
+  it('still posts the settling response once the hard cap is exhausted, and nothing else', async () => {
+    const port = new FakePort()
+    const turn = linearTurn(port)
+    const state = { ...initialLinearTurnState(), activityBudget: 0 }
+    await applyLinearAction(turn, state, { kind: 'activity', type: 'thought', body: 'chrome' })
+    await applyLinearAction(turn, state, { kind: 'activity', type: 'action', action: 'Bash', parameter: 'ls' })
+    await applyLinearAction(turn, state, { kind: 'activity', type: 'elicitation', body: 'approve me' })
+    await applyLinearAction(turn, state, { kind: 'activity', type: 'response', body: 'the answer' })
+    expect(port.activities.map((a) => a.activity)).toEqual([{ type: 'response', body: 'the answer' }])
+    // The settle draws nothing from the budget, so the cap can never be what drops it.
+    expect(state.activityBudget).toBe(0)
+  })
+
+  it('still posts the settling error once the hard cap is exhausted', async () => {
+    const port = new FakePort()
+    const turn = linearTurn(port)
+    const state = { ...initialLinearTurnState(), activityBudget: 0 }
+    await applyLinearAction(turn, state, { kind: 'activity', type: 'thought', body: 'chrome' })
+    await applyLinearAction(turn, state, { kind: 'activity', type: 'error', body: 'quota exhausted' })
+    expect(port.activities.map((a) => a.activity)).toEqual([{ type: 'error', body: 'quota exhausted' }])
     expect(state.activityBudget).toBe(0)
   })
 
