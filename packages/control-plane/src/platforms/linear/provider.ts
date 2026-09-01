@@ -15,8 +15,8 @@
  *    workspace's ≤24 h access token from this provider's own `linear_token` table by the bot's D6
  *    identity. That is the case the contract made both projectors async for (§4.4).
  *
- * SCOPE OF THIS MODULE. The `linearcred` broker lands with the WS handler; everything else the
- * registry reads is here — the deployment config slice, the refusal, the secret shape, the two
+ * SCOPE OF THIS MODULE. The `linearcred` broker is core's (`ws/handlers/linearcred.ts`), reading
+ * the token service and {@link linearConnectionIdentity}; everything else the registry reads is here — the deployment config slice, the refusal, the secret shape, the two
  * projectors, the D6 identity projection, the connect funnel's routes and TTL reaper, the
  * orphan-token sweep, and the disconnect side effect.
  */
@@ -24,7 +24,12 @@ import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
 import type { IntegrationLinearConfig } from '@agentconnect.md/protocol'
-import type { BotRecord, BotSecretMaterial, LinearTokenStore } from '../../persistence/ports.js'
+import type {
+  BotRecord,
+  BotSecretMaterial,
+  LinearConnectionIdentity,
+  LinearTokenStore
+} from '../../persistence/ports.js'
 import type { LinearPlatformAppConfig } from '../../config/linear-platform.js'
 import type { LinearCredentialReconciler } from './credential-reconciler.js'
 import type {
@@ -206,14 +211,21 @@ export interface LinearCpProviderDeps {
  *  only has to be shorter than "a human forgot about the tab". */
 export const LINEAR_CONNECT_TTL_MS = 30 * 60 * 1000
 
+/**
+ * The workspace bot's connection identity (§4.4), or null when the row carries no complete D6 pair.
+ * Exported because the `linearcred` broker resolves the same identity from the same columns (§7.3),
+ * and "what a Linear grant is keyed by" must have exactly one description.
+ */
+export function linearConnectionIdentity(
+  bot: Pick<BotRecord, 'orgId' | 'externalAppId' | 'externalTenantId'>
+): LinearConnectionIdentity | null {
+  return bot.externalAppId && bot.externalTenantId
+    ? { orgId: bot.orgId, clientId: bot.externalAppId, organizationId: bot.externalTenantId }
+    : null
+}
+
 export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformProvider<LinearCreateCredentials> {
   const { tokens, tokenService, funnelRoutes, pendingInstalls, orphanTokenSweeper, credentialReconciler } = deps
-
-  /** The bot's connection identity (§4.4), or null when the row carries no complete D6 pair. */
-  const connectionOf = (bot: BotRecord) =>
-    bot.externalAppId && bot.externalTenantId
-      ? { orgId: bot.orgId, clientId: bot.externalAppId, organizationId: bot.externalTenantId }
-      : null
 
   return {
     platformId: 'linear',
@@ -373,7 +385,7 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
       ? {
           sideEffects: {
             onBotDelete: async (bot) => {
-              const connection = connectionOf(bot)
+              const connection = linearConnectionIdentity(bot)
               if (!connection) return
               await tokens.withIdentityLock(connection, async (section) => {
                 if (tokenService && !(await section.owned())) await tokenService.revoke(connection)
@@ -392,7 +404,7 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
      * this runs the row is already durable. Token-bearing — NEVER log.
      */
     async projectIntegrationConfig(_integration, bot) {
-      const connection = connectionOf(bot)
+      const connection = linearConnectionIdentity(bot)
       if (!connection || !tokens) return undefined
       const token = await tokens.get(connection)
       if (!token) return undefined

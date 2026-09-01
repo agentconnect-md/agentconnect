@@ -1941,6 +1941,9 @@ export function buildContainer(
           })
         }
       : {}),
+    // The SAME token service the funnel, the disconnect edge and the sweep hold — the `linearcred`
+    // broker must not become a second opinion on when a grant is stale (linear-integration.md §4.4).
+    linearTokens: linearTokenService,
     ...(githubReviewBroker ? { githubReviewBroker } : {}),
     ...(codeHostReviewBroker ? { codeHostReviewBroker } : {}),
     ...(githubRunCoordinator ? { githubRunCoordinator } : {}),

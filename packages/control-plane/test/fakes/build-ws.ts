@@ -74,7 +74,12 @@ import { createTelegramCpProvider } from '../../src/platforms/telegram/provider.
 import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js'
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
+import { LinearApiClient } from '../../src/platforms/linear/api.js'
+import { LinearTokenService } from '../../src/platforms/linear/token-service.js'
 import { PgLinearTokenStore } from '../../src/persistence/repositories/linear.repo.js'
+import { AgentDelivery } from '../../src/orchestrator/agentDelivery.js'
+import { convergeIntegrationGating } from '../../src/orchestrator/integrationPush.js'
+import type { FetchLike } from '../../src/github/api.js'
 
 /** The deployment Linear app this harness composes — a test seeds a bot identity matching it. */
 export const TEST_LINEAR_APP = {
@@ -96,6 +101,10 @@ export interface WsHarness {
   visibilityReplays: string[]
   /** Every relay-facing collab-routes push, in order — the peer directory as a relay would hold it. */
   collabSnapshots: CollabRoutesSnapshot[]
+  /** Bots the integration converge re-synced, in order — the http-bot spec re-push as an effect. */
+  httpBotSyncs: string[]
+  /** Linear's OAuth edge, stubbed. Read THROUGH on every call, so a suite swaps it after building. */
+  linearStubs: { fetch?: FetchLike }
   /** The resolver the projections read through — lets a test ask what the peer directory would
    *  publish right now without reaching through the orchestrator. */
   placement: PlacementResolver
@@ -134,6 +143,21 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
   const clock = new FakeClock(opts.startMs ?? 1_700_000_000_000)
 
   const cipher = new PlaintextSecretCipher()
+  const linearTokenStore = new PgLinearTokenStore(prisma, cipher)
+  // Read THROUGH on every call rather than captured, so a suite can script Linear after building.
+  const linearStubs: { fetch?: FetchLike } = {}
+  // ONE token service over the harness's own store, as the container composes one (§4.4).
+  const linearTokens = new LinearTokenService({
+    app: TEST_LINEAR_APP,
+    tokens: linearTokenStore,
+    api: new LinearApiClient({
+      clock,
+      fetchImpl: (url, init) =>
+        linearStubs.fetch ? linearStubs.fetch(url, init) : Promise.reject(new Error('linear is not stubbed'))
+    }),
+    clock,
+    log: { warn: () => undefined }
+  })
   // §9: reconcile projects every `IntegrationSpec.config` through the platform registry, so the WS
   // fake composes the same providers prod registers. Their verify seams are offline stubs — the
   // projectors call none of them — but Linear's projector DOES read its own store, so it gets the
@@ -143,7 +167,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
     createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
     createFeishuCpProvider({}),
-    createLinearCpProvider({ app: TEST_LINEAR_APP, tokens: new PgLinearTokenStore(prisma, cipher) })
+    createLinearCpProvider({ app: TEST_LINEAR_APP, tokens: linearTokenStore, tokenService: linearTokens })
   ])
   const repos = {
     daemon: new PgDaemonRepo(prisma),
@@ -229,6 +253,18 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     dutyGroupRepo,
     clock
   )
+  const specs = new AgentSpecAssembler(
+    repos.agentSecret,
+    {},
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    new PgAgentRepoAuthorizationRepo(prisma),
+    opts.gitlabBaseUrl,
+    repos.hook
+  )
   const orchestrator = new Placement(
     repos.daemon,
     repos.agent,
@@ -237,18 +273,7 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     repos.lease,
     repos.integration,
     repos.botSecret,
-    new AgentSpecAssembler(
-      repos.agentSecret,
-      {},
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      new PgAgentRepoAuthorizationRepo(prisma),
-      opts.gitlabBaseUrl,
-      repos.hook
-    ),
+    specs,
     repos.integrationChannel,
     repos.bot,
     PLATFORMS,
@@ -289,10 +314,14 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     } as unknown as RelayControlSender,
     placementResolver
   )
+  // The http-bot converge as an observable effect: `syncBot` is where a Linear workspace's specs
+  // are re-pushed, so a test asserts on the bot ids rather than on an internal seam.
+  const httpBotSyncs: string[] = []
+  const httpBot = { syncBot: async (botId: string) => void httpBotSyncs.push(botId) }
   const agentRouting = new AgentRoutingConverger({
     hooks: hookService,
     collabRoutes,
-    httpBot: { syncBot: async () => {} },
+    httpBot,
     agents: repos.agent,
     integrations: repos.integration,
     bots: repos.bot,
@@ -339,6 +368,24 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     usageWriter: new SessionUsageWriter(repos.sessionUsage),
     integration: repos.integration,
     integrationChannel: repos.integrationChannel,
+    bot: repos.bot,
+    linearTokens,
+    // The REAL converge a rotated `linearcred` grant rides — its http-bot arm reaches `syncBot`.
+    integrationConverge: (agent) =>
+      convergeIntegrationGating(
+        {
+          repos: {
+            integration: repos.integration,
+            bot: repos.bot,
+            botSecret: repos.botSecret,
+            integrationChannel: repos.integrationChannel
+          },
+          agentDelivery: new AgentDelivery({ control: sender, specs, placement: placementResolver }),
+          httpBot,
+          platforms: PLATFORMS
+        },
+        agent
+      ),
     agentMutations: new AgentMutationGate(),
     recoverStagedAgent: async () => {},
     collabRoutes,
@@ -365,6 +412,8 @@ export function buildWsHarness(prisma: PrismaClient, opts: HarnessOpts = {}): Ws
     hookRemovals,
     visibilityReplays,
     collabSnapshots,
+    httpBotSyncs,
+    linearStubs,
     placement: placementResolver,
     codec,
     mintPoolMember: async (daemonId: string) => {

@@ -33,7 +33,15 @@ import type { LinearApiClient, LinearGrant, LinearViewer } from './api.js'
 export const LINEAR_REFRESH_MARGIN_MS = 2 * 60 * 60 * 1000
 
 export type LinearTokenResolution =
-  | { ok: true; accessToken: string; expiresAt: Date }
+  | {
+      ok: true
+      accessToken: string
+      expiresAt: Date
+      /** True when this call reached the refresh path and it produced a pair NEWER than the one the
+       *  stored row held on entry — either this rotate's or a peer's. The `linearcred` broker reads
+       *  it as "every spec projecting this grant is now stale" and re-pushes (§7.3). */
+      rotated: boolean
+    }
   | {
       ok: false
       /** `not_connected` — no grant for this identity (never connected, or swept).
@@ -97,7 +105,7 @@ export class LinearTokenService {
   async accessToken(identity: LinearConnectionIdentity): Promise<LinearTokenResolution> {
     const row = await this.deps.tokens.get(identity)
     if (!row) return { ok: false, reason: 'not_connected' }
-    if (this.fresh(row)) return { ok: true, accessToken: row.accessToken, expiresAt: row.expiresAt }
+    if (this.fresh(row)) return { ok: true, accessToken: row.accessToken, expiresAt: row.expiresAt, rotated: false }
     return this.refresh(identity)
   }
 
@@ -149,7 +157,8 @@ export class LinearTokenService {
     // fresh pair, and rotating again would spend a token nobody needed spent.
     const row = await this.deps.tokens.get(identity)
     if (!row) return { ok: false, reason: 'not_connected' }
-    if (this.fresh(row)) return { ok: true, accessToken: row.accessToken, expiresAt: row.expiresAt }
+    // Fresh HERE but stale to the caller's read ⇒ a peer rotated between them; the answer is new to it.
+    if (this.fresh(row)) return { ok: true, accessToken: row.accessToken, expiresAt: row.expiresAt, rotated: true }
     if (!row.refreshToken) return { ok: false, reason: 'reconnect_required' }
 
     const rotated = await this.deps.api.refresh({
@@ -160,7 +169,7 @@ export class LinearTokenService {
     if (rotated.ok) {
       // Durable BEFORE the reply — see the single-writer note at the top of this file.
       await this.put(identity, rotated.result)
-      return { ok: true, accessToken: rotated.result.accessToken, expiresAt: rotated.result.expiresAt }
+      return { ok: true, accessToken: rotated.result.accessToken, expiresAt: rotated.result.expiresAt, rotated: true }
     }
     if (rotated.error === 'unreachable') return { ok: false, reason: 'unreachable' }
 
@@ -168,7 +177,7 @@ export class LinearTokenService {
     // persisted the rotated pair — reload once and use what it wrote.
     const reloaded = await this.deps.tokens.get(identity)
     if (reloaded && this.fresh(reloaded)) {
-      return { ok: true, accessToken: reloaded.accessToken, expiresAt: reloaded.expiresAt }
+      return { ok: true, accessToken: reloaded.accessToken, expiresAt: reloaded.expiresAt, rotated: true }
     }
     this.deps.log?.warn(
       { orgId: identity.orgId, organizationId: identity.organizationId },

@@ -32,6 +32,7 @@ import type { SessionVisibilityPushService } from '../orchestrator/visibilityPus
 import type { DutyAgentBundle, RelayRosterEntry } from '@agentconnect.md/protocol'
 import type { GithubService } from '../github/service.js'
 import type { GitlabGitcredService } from '../gitlab/gitcred.service.js'
+import type { LinearTokenService } from '../platforms/linear/token-service.js'
 import type { CodeHostReviewBrokerService } from '../codehost/review-lease.service.js'
 import type { GithubReviewBrokerService } from '../github/review-broker.service.js'
 import type { GithubRunCoordinator } from '../github/run-reporter.js'
@@ -90,8 +91,8 @@ export interface DaemonWsDeps {
   events: SessionEventSink
   /** Ownership check for the `integration/channels` EVT (integration → daemon scope). */
   integration: IntegrationRepo
-  /** Validates a daemon-reported external credential locator before a Session
-   *  is bound to its immutable provider scope. */
+  /** Validates a daemon-reported external credential locator before a Session is bound to its
+   *  immutable provider scope, and resolves the workspace bot behind a `linearcred/request`. */
   bot?: BotRepo
   /** Resolves a trusted GitHub delivery's installation id to this org's
    * durable credential locator before binding a repository ExternalScope. */
@@ -150,6 +151,9 @@ export interface DaemonWsDeps {
   github?: GithubService
   /** gitcred v2 GitLab grants (§13.1); absent ⇒ gitlab workspaces disabled. */
   gitlabGitcred?: GitlabGitcredService
+  /** Linear workspace token custody (linear-integration.md §7.3) — the one seam the `linearcred`
+   *  broker calls; absent ⇒ `linearcred/request` answers SCOPE_DENIED. */
+  linearTokens?: Pick<LinearTokenService, 'accessToken'>
   /** R1 action-time formal-review broker; absent ⇒ review/start REQs fail closed. */
   githubReviewBroker?: GithubReviewBrokerService
   /** Provider-neutral formal reviews: publication lease, operation ledger, outcome

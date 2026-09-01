@@ -38,6 +38,7 @@ import { handleEventSession, handleEventSessionSync } from './event-session.js'
 import { handleSessionActivity } from './event-session-activity.js'
 import { handleSessionPurged } from './event-session-purged.js'
 import { handleGitCredRequest } from './gitcred.js'
+import { handleLinearCredRequest } from './linearcred.js'
 import { handleHookStart } from './hook-start.js'
 import { handleApprovalRoute } from './approval-route.js'
 import { handleGithubReviewAuthorize } from './github-review-authorize.js'
@@ -101,6 +102,7 @@ export class FrameRouter {
       'event/session-activity': handleSessionActivity,
       'event/session-purged': handleSessionPurged,
       'gitcred/request': handleGitCredRequest,
+      'linearcred/request': handleLinearCredRequest,
       'webchat/mcp-grant/issue': handleWebchatMcpGrantIssue,
       'webchat/mcp-grant/accept': handleWebchatMcpGrantAccept,
       'webchat/mcp-grant/revoke': handleWebchatMcpGrantRevoke,

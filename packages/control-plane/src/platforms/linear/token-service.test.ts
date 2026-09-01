@@ -121,7 +121,13 @@ describe('accessToken — refresh only when the stored grant is near expiry', ()
   it('uses a fresh token as-is, without touching Linear', async () => {
     const { tokens, linear, service } = build()
     await seed(tokens, LINEAR_REFRESH_MARGIN_MS + 60_000)
-    expect(await service.accessToken(IDENTITY)).toMatchObject({ ok: true, accessToken: 'access_1' })
+    // `rotated: false` is what tells the broker no spec re-push is owed (§7.3).
+    expect(await service.accessToken(IDENTITY)).toEqual({
+      ok: true,
+      accessToken: 'access_1',
+      expiresAt: expect.any(Date),
+      rotated: false
+    })
     expect(linear.calls).toHaveLength(0)
   })
 
@@ -130,7 +136,8 @@ describe('accessToken — refresh only when the stored grant is near expiry', ()
     await seed(tokens, LINEAR_REFRESH_MARGIN_MS - 60_000)
     linear.reply(() => rotated(2))
 
-    expect(await service.accessToken(IDENTITY)).toMatchObject({ ok: true, accessToken: 'access_2' })
+    // `rotated` is the broker's re-push signal: every spec projecting the old pair is now stale.
+    expect(await service.accessToken(IDENTITY)).toMatchObject({ ok: true, accessToken: 'access_2', rotated: true })
     expect(linear.calls).toHaveLength(1)
     expect(linear.calls[0]!.body).toContain('grant_type=refresh_token')
     // The rotated REFRESH half is persisted too — Linear invalidates the old one.
@@ -177,7 +184,8 @@ describe('rotate-and-retry — a rejected rotate may just mean someone else rota
       return { status: 400, body: { error: 'invalid_grant' } }
     })
 
-    expect(await service.accessToken(IDENTITY)).toMatchObject({ ok: true, accessToken: 'access_peer' })
+    // A peer's pair is just as new to this caller, so it re-pushes too.
+    expect(await service.accessToken(IDENTITY)).toMatchObject({ ok: true, accessToken: 'access_peer', rotated: true })
     // Exactly one upstream attempt: the retry is a RELOAD, not a second rotate.
     expect(linear.calls).toHaveLength(1)
   })
