@@ -114,11 +114,13 @@ again when implementing):
 - **Webhook envelope.** Headers `Linear-Event: AgentSessionEvent`,
   `Linear-Delivery` (UUID), `Linear-Signature` (HMAC-SHA256 hex over the raw
   body, keyed by the OAuth app's **webhook signing secret**), and
-  `Linear-Timestamp` (epoch ms) to bound replay (reject > 60 s skew); the body
-  mirrors it as `webhookTimestamp`, but verification reads the **header** since
-  it runs before body parse. Payloads carry `organizationId` (the workspace) and
-  the app's `oauthClientId`. Failed deliveries retry after 1 min / 1 h / 6 h,
-  then the webhook may be auto-disabled. (Live-verified 2026-09, §15.)
+  `Linear-Timestamp` (epoch ms). Replay is bounded by the **signed body's**
+  `webhookTimestamp` (reject > 60 s skew), checked after HMAC verification —
+  the header is NOT covered by the signature, so it can be at most a
+  consistency cross-check, never the freshness authority. Payloads carry
+  `organizationId` (the workspace) and the app's `oauthClientId`. Failed
+  deliveries retry after 1 min / 1 h / 6 h, then the webhook may be
+  auto-disabled. (Live-verified 2026-09, §15.)
 - **Tokens.** OAuth `authorization_code` grant returns an access token
   (~24 h) plus a refresh token; refresh rotates with a 30-minute replay grace
   window. Per-app opt-in `client_credentials` tokens (30-day, app actor) also
@@ -514,9 +516,11 @@ idle window).
   relay-side `egress` facet (the daemon owns all Linear egress, like Feishu).
 - **`verify`** checks `Linear-Signature` (timing-safe HMAC-SHA256 over raw
   bytes, via the shared signature primitives relay core already serves both
-  seams with) and the `Linear-Timestamp` header's 60 s window on the host clock
-  (read from the header, before body parse), and returns the typed parsed
-  `AgentSessionEvent` — parsed exactly once.
+  seams with), then parses and enforces the 60 s window on the **signed
+  body's** `webhookTimestamp` against the host clock — the unsigned
+  `Linear-Timestamp` header may only be cross-checked for equality, never
+  trusted for freshness — and returns the typed parsed `AgentSessionEvent`,
+  parsed exactly once.
 - **`handle`**:
   - `created` / `prompted` → a `WireNormalizedMessage` (§6.3) through
     `host.forward(botId, msg)`. Relay-core arbitration resolves the target
@@ -1145,11 +1149,11 @@ A scratch OAuth app in a test workspace exercised the full delegate → activity
 follow-up loop. Beyond the two resolved questions above, three facts correct or
 sharpen the design:
 
-- **Webhook timestamp is an HTTP header, not only a body field.** The delivery
-  carries `Linear-Timestamp` (epoch ms) as a header alongside `Linear-Event`,
-  `Linear-Delivery`, and `Linear-Signature`; the body's `webhookTimestamp`
-  mirrors it. §6.1's replay window must read the **header** — verification runs
-  before body parse. The `>60 s` skew check applies to `Linear-Timestamp`.
+- **The delivery carries a `Linear-Timestamp` header (epoch ms), but it is
+  unsigned.** `Linear-Signature` covers only the raw body, so the header can be
+  replayed fresh alongside a captured body — the `>60 s` replay window must be
+  enforced on the **signed body's** `webhookTimestamp` after HMAC verification;
+  the header serves at most as an equality cross-check.
 - **Agent sessions are an app-level opt-in that gates delegation entirely.**
   Until the app enables webhooks with **Agent session events** checked,
   delegating an issue only sets the `delegate` badge and **no session is
@@ -1162,7 +1166,11 @@ sharpen the design:
   raises a new "Receive realtime updates about your workspace" scope; Linear
   warns that prior authorizations must re-authorize before webhooks arrive. This
   is the same re-consent the §7.4 reconnect flow and §10.6 signing-secret
-  rotation already drive — the connect UI's Reconnect CTA covers it.
+  rotation already drive — the connect UI's Reconnect CTA covers it. Detection
+  is the §11 staleness signal, not the token: a pre-subscription install keeps a
+  perfectly valid token while receiving nothing, so the console must surface
+  the Reconnect CTA on webhook silence (`lastDeliveryAt` staleness), not only
+  on a dead grant.
 - **Delegation self-assigns the issue.** Delegating to the app also sets the
   issue **assignee** to the delegating user (assignee and delegate are distinct
   fields); the `created` event also mints a Linear-authored anchor comment
