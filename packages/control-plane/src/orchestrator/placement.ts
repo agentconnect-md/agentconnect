@@ -181,6 +181,18 @@ export const isGatedAgent = (a: { visibility: AgentRecord['visibility'] }): bool
 export const gatesNewConversations = (platform: string, agent: { visibility: AgentRecord['visibility'] }): boolean =>
   isGatedAgent(agent) && !manifestFor(platform).soleConversation
 
+/** May a caller CHOOSE a conversation's trigger here? Not where the install names the one
+ *  conversation it can reach (§5 `soleConversation`): that conversation's trigger IS the link, so
+ *  an Off would silence a still-linked agent behind the mute fences while the console still shows
+ *  it installed. Removing the integration is the supported way to stop it. Owner (`agentId`)
+ *  changes stay available — that is WHICH member answers, not whether the workspace answers. */
+export const allowsTriggerControl = (platform: string): boolean => !manifestFor(platform).soleConversation
+
+/** The refusal a trigger write earns there — one message, so the HTTP route and every surface
+ *  layered on it name the same escape hatch. */
+export const TRIGGER_CONTROL_REFUSAL =
+  'this platform has one conversation per install, so its trigger cannot be changed; remove the integration to stop the agent'
+
 /**
  * Conversation-scoped bind rules for a GATED integration (resource-visibility.md
  * §14.3): only explicitly enabled conversations produce rules — a Mention channel

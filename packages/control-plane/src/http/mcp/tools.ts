@@ -516,7 +516,7 @@ export const MCP_TOOLS: McpToolDef[] = [
   {
     name: 'setChannelTrigger',
     description:
-      'Change how an integration behaves in one conversation: the trigger mode (off / mention-only / any message; off disables the conversation) and/or the conversation’s owning agent (null clears the override).',
+      'Change how an integration behaves in one conversation: the trigger mode (off / mention-only / any message; off disables the conversation) and/or the conversation’s owning agent (null clears the override). Some platforms have a single conversation per install whose trigger IS the link — there a `trigger` write is refused and removing the integration is the way to stop the agent, while an owner change still works.',
     write: true,
     schema: z
       .object({

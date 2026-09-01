@@ -27,6 +27,7 @@ import {
 } from '../../src/persistence/index.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { gatedDmSeeds, type GatedDmSeedResolver } from '../../src/orchestrator/linkedDm.js'
+import { seedSoleConversationMember } from '../../src/orchestrator/soleConversation.js'
 import { reconcileAgentLinkedDms, reconcileLinkedDms } from '../../src/orchestrator/linkedDmReconcile.js'
 import type { SlackIdentity } from '../../src/github/logto-identity.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
@@ -111,7 +112,10 @@ async function install(app: HttpApp): Promise<string> {
 
 /** Connect a LINEAR workspace through the REAL create tail the OAuth callback uses
  *  (`installNewBot`) — that is the seat that seeds the workspace conversation row. */
-async function installLinear(app: HttpApp, opts: { restricted?: boolean } = {}): Promise<string> {
+async function installLinear(
+  app: HttpApp,
+  opts: { restricted?: boolean } = {}
+): Promise<{ integrationId: string; botId: string; agentId: string }> {
   const agentId = randomUUID()
   await seedAgent(prisma, agentId, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID })
   if (opts.restricted) {
@@ -135,7 +139,26 @@ async function installLinear(app: HttpApp, opts: { restricted?: boolean } = {}):
       botUserId: 'lin-app-user'
     }
   } as never)
-  return integration.id
+  return { integrationId: integration.id, botId: integration.botId, agentId }
+}
+
+/** Add a SECOND agent to a connected Linear workspace, exactly as the add-member route does:
+ *  the membership row plus this install's own (ownerless) copy of the workspace conversation. */
+async function addLinearMember(app: HttpApp, botId: string): Promise<{ integrationId: string; agentId: string }> {
+  const agentId = randomUUID()
+  await seedAgent(prisma, agentId, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID })
+  const admission = await app.deps.repos.integration.addBotMembership({
+    id: IntegrationId(randomUUID()),
+    orgId: DEFAULT_ORG_ID as never,
+    agentId: agentId as never,
+    botId: botId as never,
+    platform: 'linear',
+    name: 'Acme'
+  } as never)
+  if (!('integration' in admission)) throw new Error(`unexpected membership outcome: ${admission.outcome}`)
+  const bot = await app.deps.repos.bot.getUnscoped(botId as never)
+  await seedSoleConversationMember(app.deps.repos.integrationChannel, admission.integration, bot!)
+  return { integrationId: admission.integration.id, agentId }
 }
 
 /** Install a TELEGRAM integration — the platform whose rows are session-derived, so
@@ -376,8 +399,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
-    const restricted = await installLinear(running, { restricted: true })
-    const open = await installLinear(running)
+    const restricted = (await installLinear(running, { restricted: true })).integrationId
+    const open = (await installLinear(running)).integrationId
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     const rows = (res.json() as { id: string; channels: { channelId: string; trigger: string }[] }[]).filter((d) =>
@@ -396,7 +419,7 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
-    const id = await installLinear(running, { restricted: true })
+    const id = (await installLinear(running, { restricted: true })).integrationId
 
     await report(DAEMON, id, [{ id: LINEAR_WORKSPACE, name: 'Acme Renamed' }], undefined, undefined, false)
 
@@ -1179,6 +1202,72 @@ describe('integration/channels EVT → integration_channel convergence', () => {
 
     await handleIntegrationChannels(frame, { daemonId: DAEMON } as DaemonConnection, deps)
     expect(await prisma.integrationChannel.count()).toBe(0)
+  })
+})
+
+describe('PATCH /integrations/:id/channels/:channelId — a sole-conversation platform', () => {
+  const patch = async (integrationId: string, body: Record<string, unknown>) =>
+    await running!.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${integrationId}/channels/${LINEAR_WORKSPACE}`,
+      payload: body
+    })
+
+  it('refuses a TRIGGER write on a Linear workspace and names the unlink path', async () => {
+    // Accepting `off` here would silence a still-linked agent through the mute fences while the
+    // console keeps showing it installed — the contradiction of "no trigger control / no Off".
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const { integrationId } = await installLinear(running)
+
+    for (const trigger of ['off', 'any', 'mention']) {
+      const res = await patch(integrationId, { trigger })
+      expect(res.statusCode, trigger).toBe(400)
+      expect((res.json() as { message: string }).message).toContain('remove the integration')
+    }
+    // The stored row is untouched, so no fence anywhere saw an Off.
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const dto = (res.json() as { id: string; channels: { trigger: string }[] }[]).find((d) => d.id === integrationId)
+    expect(dto!.channels).toEqual([expect.objectContaining({ trigger: 'mention' })])
+  })
+
+  it('still accepts an OWNER change on that same conversation', async () => {
+    // Which member answers is a real choice; whether the workspace answers at all is not.
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const first = await installLinear(running)
+    const second = await addLinearMember(running, first.botId)
+
+    const res = await patch(first.integrationId, { agentId: second.agentId })
+    expect(res.statusCode).toBe(200)
+    const list = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const rows = (list.json() as { id: string; channels: { agentId: string; trigger: string }[] }[]).filter((d) =>
+      [first.integrationId, second.integrationId].includes(d.id)
+    )
+    for (const dto of rows)
+      expect(dto.channels).toEqual([expect.objectContaining({ agentId: second.agentId, trigger: 'mention' })])
+  })
+
+  it('leaves both writes working on an ordinary platform', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    await report(DAEMON, id, [{ id: 'C1', name: 'deploys' }])
+
+    const res = await running.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${id}/channels/C1`,
+      payload: { trigger: 'off' }
+    })
+    expect(res.statusCode).toBe(200)
+    const list = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const dto = (list.json() as { id: string; channels: { channelId: string; trigger: string }[] }[]).find(
+      (d) => d.id === id
+    )
+    expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'C1', trigger: 'off' })])
   })
 })
 
