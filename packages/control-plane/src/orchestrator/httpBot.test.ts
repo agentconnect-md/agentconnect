@@ -1473,4 +1473,86 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     expect(removals).toEqual([]) // nothing left to pull
     expect(ch.sends).toEqual([{ type: 'rc/bot-unassign', payload: { botId: BOT, credentialRevision: 1 } }]) // re-stamp only
   })
+
+  describe('a sole-conversation platform (§5 soleConversation)', () => {
+    // A connected Linear workspace: the install names the ONE conversation it can reach, so its
+    // row is the workspace default rather than a channel-scoped route.
+    const WORKSPACE = 'org-linear-1'
+    // The real Linear provider needs a token service and a live app config; this compile reads
+    // nothing from it but the relay projection's existence, so a relabelled stub is enough.
+    const LINEAR_PLATFORMS = buildCpPlatformRegistry([
+      { ...createSlackCpProvider({}), platformId: 'linear' } as CpPlatformProvider
+    ])
+
+    beforeEach(() => {
+      botRow = bot({ platform: 'linear' } as Partial<BotRecord>)
+      integrations = [
+        { ...integration(INT_A, ALICE), platform: 'linear' },
+        { ...integration(INT_B, BOB), platform: 'linear' }
+      ]
+      channels = [channel({ integrationId: INT_B, channelId: WORKSPACE, agentId: BOB, trigger: 'mention' })]
+    })
+
+    it('emits NO channel-scoped route and makes the row owner the group default', async () => {
+      await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
+
+      // The whole correction: a scoped `mention` rule here would be the FIRST rung, and every
+      // Linear event marks the app as mentioned — so it would swallow keyword selection and
+      // thread continuity alike.
+      expect(assign.routes.some((r) => r.scope !== undefined)).toBe(false)
+      const keywords = assign.routes
+        .filter((r) => r.match.kind === 'keyword')
+        .map((r) => (r.match as { value: string }).value)
+        .sort()
+      expect(keywords).toEqual(['alice', 'bob'])
+      // The ROW outranks the earliest-member derivation (ALICE installs first): the workspace
+      // conversation's owner IS the default.
+      expect(assign.defaultAgentId).toBe(BOB)
+      expect(assign.defaultDaemonId).toBe(D2)
+    })
+
+    it('carries a RESTRICTED member as UNGATED, so a private linking agent is routable at all', async () => {
+      // §14's fail-open worry presumes conversations the install never granted. Here the install
+      // granted the only one, so the member is not conversation-gated ON THIS BOT — which is what
+      // keeps the relay's three gated fences (the keyword rung, the default derivation, and the
+      // scoped-route requirement `agentTarget`/thread continuity impose) from stranding it.
+      gatedAgents = new Set([BOB])
+      await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
+
+      expect(assign.gatedAgentIds).toEqual([])
+      expect(assign.defaultAgentId).toBe(BOB)
+      expect(assign.routes.some((r) => r.agentId === BOB && r.match.kind === 'keyword' && r.scope === undefined)).toBe(
+        true
+      )
+      // The daemon's own last-hop backstop must agree, or it would refuse what the relay routed.
+      expect(upserts.every((u) => u.spec.core?.mode === 'shared')).toBe(true)
+    })
+
+    it('still gates that same agent on an ORDINARY bot, so its name leaks nowhere', async () => {
+      // The de-gating is per BOT, derived from that bot's platform — a restricted agent that is
+      // also on a Slack bot keeps every §14 fence there.
+      gatedAgents = new Set([BOB])
+      botRow = bot()
+      integrations = [integration(INT_A, ALICE), integration(INT_B, BOB)]
+      channels = [channel({ integrationId: INT_B, channelId: 'C1', agentId: BOB, trigger: 'mention' })]
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
+
+      expect(assign.gatedAgentIds).toEqual([BOB])
+      expect(assign.defaultAgentId).toBe(ALICE)
+      expect(assign.routes.some((r) => r.agentId === BOB && r.match.kind === 'keyword')).toBe(false)
+    })
+
+    it('mutes an Off workspace and leaves the group without a default', async () => {
+      channels = [channel({ integrationId: INT_B, channelId: WORKSPACE, agentId: BOB, trigger: 'off' })]
+      await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
+
+      expect(assign.mutedChannels).toContain(WORKSPACE)
+      // No enabled row, so no workspace default — the bot preference does not resurrect one.
+      expect(assign.defaultAgentId).toBe(ALICE)
+    })
+  })
 })

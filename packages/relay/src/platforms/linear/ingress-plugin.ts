@@ -24,12 +24,13 @@ export interface LinearStopAction {
 // session is bound to one agent at creation (§4.5) the conversation's own target is the holder.
 export function forwardLinearStop(
   host: RelayIngressHost,
-  botId: string,
+  ingest: LinearHttpIngest,
   event: LinearAgentSessionEvent,
   msgId: string
 ): void {
+  const botId = ingest.botId
   const session = event.agentSession
-  const channelId = session.issue?.id ?? session.id
+  const channelId = ingest.identity.organizationId
   const route = host.directory.resolveTarget(botId, { channelId, threadTs: session.id })
   if (!route) {
     host.log.warn(`relay-ingress(${botId}): Linear stop for session ${session.id} has no current target`)
@@ -118,10 +119,10 @@ export const linearIngressPlugin: RelayPlatformIngressPlugin<LinearHttpIngest, V
     }
     if (host.dedupSeen(msgId)) return {}
     if (linearIsStop(event)) {
-      forwardLinearStop(host, botId, event, msgId)
+      forwardLinearStop(host, ingest, event, msgId)
       return {}
     }
-    const message = normalizeLinearEvent(event, msgId, ingest.identity.appUserId)
+    const message = normalizeLinearEvent(event, msgId, ingest.identity)
     void host
       .forward(botId, message)
       .catch((err) => host.log.warn(`linear ingress: event handler error: ${(err as Error).message}`))

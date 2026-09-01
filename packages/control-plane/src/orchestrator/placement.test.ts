@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import { httpIntegrationToSpec, integrationToSpec } from './placement.js'
+import { gatesNewConversations, httpIntegrationToSpec, integrationToSpec } from './placement.js'
 import { agentRecordToSpec } from './agentSpecAssembler.js'
 import type { AgentRecord, BotRecord, IntegrationChannelRecord, IntegrationRecord } from '../persistence/ports.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../domain/ids.js'
@@ -657,5 +657,25 @@ describe('agentRecordToSpec runtime overrides', () => {
 
     expect(agentRecordToSpec(base, { API_KEY: 'sk-1' })).toMatchObject({ secrets: { API_KEY: 'sk-1' } })
     expect(agentRecordToSpec(base, {})).toMatchObject({ secrets: {} })
+  })
+})
+
+describe('gatesNewConversations (resource-visibility §14 × the §5 manifest)', () => {
+  const restricted = { visibility: 'restricted' } as Pick<AgentRecord, 'visibility'>
+  const org = { visibility: 'org' } as Pick<AgentRecord, 'visibility'>
+
+  it('starts a restricted agent’s fresh conversations Off on every ordinary platform', () => {
+    for (const p of ['slack', 'telegram', 'discord', 'feishu', 'some-future-platform'])
+      expect(gatesNewConversations(p, restricted), p).toBe(true)
+  })
+
+  it('never gates a conversation on Linear, where the install IS the consent', () => {
+    // Linking an agent to a workspace is the act of enabling it there, and the workspace is the
+    // only conversation — so a restricted agent's row is born enabled like any other.
+    expect(gatesNewConversations('linear', restricted)).toBe(false)
+  })
+
+  it('gates nothing for a non-restricted agent, whatever the platform', () => {
+    for (const p of ['slack', 'linear', 'some-future-platform']) expect(gatesNewConversations(p, org), p).toBe(false)
   })
 })

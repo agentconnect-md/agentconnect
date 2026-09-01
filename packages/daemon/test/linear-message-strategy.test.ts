@@ -22,7 +22,7 @@ import {
 } from '../src/platforms/linear/message-strategy.js'
 
 const SESSION = 'c3f1e0aa-4d2f-4f0a-9b1e-2b6d5c4a0002'
-const ISSUE = 'd7c2b1aa-6e5f-4a3b-8c9d-1e2f3a4b0003'
+const WORKSPACE = 'a2f2f0d4-0e33-4c4b-9a4b-4f7a0f1f0001'
 const ISSUE_URL = 'https://linear.app/example/issue/TEAM-123/ship-the-thing'
 
 function ext(over: Partial<LinearAdapterExt> = {}): LinearAdapterExt {
@@ -35,7 +35,7 @@ function message(over: Partial<NormalizedMessage> = {}): NormalizedMessage {
     traceId: `linear:${SESSION}:created`,
     source: 'user',
     platform: 'linear',
-    channel: ISSUE,
+    channel: WORKSPACE,
     thread: SESSION,
     threadUrl: ISSUE_URL,
     sender: { id: 'linear:user-1', isBot: false, name: 'Dana' },
@@ -65,11 +65,13 @@ describe('linear adapter-extension reads', () => {
     expect(sanitizeTitle('x'.repeat(500)).endsWith('…')).toBe(true)
   })
 
-  it('names the channel TEAM-123 · <title>, degrading to whichever half exists', () => {
-    expect(linearChannelName(ext())).toBe('TEAM-123 · Ship the thing')
-    expect(linearChannelName(ext({ issueTitle: undefined }))).toBe('TEAM-123')
-    expect(linearChannelName(ext({ issueIdentifier: undefined }))).toBe('Ship the thing')
-    expect(linearChannelName({ agentSessionId: SESSION })).toBeUndefined()
+  it('names the channel after the WORKSPACE, degrading to the organization id', () => {
+    expect(linearChannelName({ workspaceName: 'Example Workspace', workspaceId: () => WORKSPACE })).toBe(
+      'Example Workspace'
+    )
+    expect(linearChannelName({ workspaceId: () => WORKSPACE })).toBe(WORKSPACE)
+    // Attacker-authored only in the sense that a workspace admin picked it — flattened all the same.
+    expect(linearChannelName({ workspaceName: ' Multi\nline ', workspaceId: () => WORKSPACE })).toBe('Multi line')
   })
 })
 
@@ -160,9 +162,12 @@ describe('the turn shape §8 names', () => {
 })
 
 describe('§4.5 issue-less surface', () => {
-  it('is exactly the delivery whose channel fell back to the AgentSession UUID', () => {
-    expect(isLinearIssuelessSurface(message(), ext())).toBe(false)
-    expect(isLinearIssuelessSurface(message({ channel: SESSION }), ext({ issueIdentifier: undefined }))).toBe(true)
+  it('is exactly the delivery whose bag carries no issue metadata', () => {
+    expect(isLinearIssuelessSurface(ext())).toBe(false)
+    // Half the metadata is still an issue: only a bag with NEITHER half names an unsupported surface.
+    expect(isLinearIssuelessSurface(ext({ issueTitle: undefined }))).toBe(false)
+    expect(isLinearIssuelessSurface(ext({ issueIdentifier: undefined }))).toBe(false)
+    expect(isLinearIssuelessSurface({ agentSessionId: SESSION })).toBe(true)
   })
 })
 

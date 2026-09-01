@@ -36,7 +36,7 @@ import type {
   McpServerSpec,
   MemoryConnectionSpec
 } from '@agentconnect.md/protocol'
-import { SessionRetentionSetting } from '@agentconnect.md/protocol'
+import { manifestFor, SessionRetentionSetting } from '@agentconnect.md/protocol'
 import type {
   AgentRepo,
   AgentRecord,
@@ -173,6 +173,25 @@ const DEFAULT_BIND_RULES: IntegrationBindRule[] = [{ match: { kind: 'mention' } 
 /** Conversation gating (resource-visibility.md §14): derived from restricted
  *  visibility at spec-assembly time — no stored toggle, no identities on the wire. */
 export const isGatedAgent = (a: { visibility: AgentRecord['visibility'] }): boolean => a.visibility === 'restricted'
+
+/** Does a NEWLY reported conversation start Off because its owner is gated? Only on a platform
+ *  whose install does not already grant it (§5 `soleConversation`) — where it does,
+ *  linking the agent WAS the per-conversation consent and there is nothing left for an editor
+ *  to enable. Every seat that seeds a fresh conversation's trigger reads this, not `isGatedAgent`. */
+export const gatesNewConversations = (platform: string, agent: { visibility: AgentRecord['visibility'] }): boolean =>
+  isGatedAgent(agent) && !manifestFor(platform).soleConversation
+
+/** May a caller CHOOSE a conversation's trigger here? Not where the install names the one
+ *  conversation it can reach (§5 `soleConversation`): that conversation's trigger IS the link, so
+ *  an Off would silence a still-linked agent behind the mute fences while the console still shows
+ *  it installed. Removing the integration is the supported way to stop it. Owner (`agentId`)
+ *  changes stay available — that is WHICH member answers, not whether the workspace answers. */
+export const allowsTriggerControl = (platform: string): boolean => !manifestFor(platform).soleConversation
+
+/** The refusal a trigger write earns there — one message, so the HTTP route and every surface
+ *  layered on it name the same escape hatch. */
+export const TRIGGER_CONTROL_REFUSAL =
+  'this platform has one conversation per install, so its trigger cannot be changed; remove the integration to stop the agent'
 
 /**
  * Conversation-scoped bind rules for a GATED integration (resource-visibility.md

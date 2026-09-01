@@ -45,6 +45,13 @@ export function observedMembershipPlatforms(): readonly string[] {
   return OBSERVED_MEMBERSHIP_PLATFORMS
 }
 
+/** One conversation a connection reports having observed, ahead of any session row. */
+export interface ObservedChat {
+  id: string
+  name?: string
+  isPrivate: boolean
+}
+
 /** One observed conversation row, as the snapshot pipeline carries it. */
 export interface ObservedChannelRow {
   id: string

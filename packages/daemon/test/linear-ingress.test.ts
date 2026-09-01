@@ -27,7 +27,6 @@ const INTEGRATION = 'int-linear'
 const BOT = '8f0a1c62-9a0f-4c6e-8b2b-7d3f5a1c0001'
 const WORKSPACE = 'a2f2f0d4-0e33-4c4b-9a4b-4f7a0f1f0001'
 const SESSION = 'c3f1e0aa-4d2f-4f0a-9b1e-2b6d5c4a0002'
-const ISSUE = 'd7c2b1aa-6e5f-4a3b-8c9d-1e2f3a4b0003'
 const ISSUE_URL = 'https://linear.app/example/issue/TEAM-123/ship-the-thing'
 const FAR_FUTURE = new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString()
 
@@ -111,6 +110,7 @@ async function boot(opts: BootOpts = {}) {
     integrationId: INTEGRATION,
     botUserId: 'app-user-1',
     workspaceId: () => WORKSPACE,
+    workspaceName: 'Example Workspace',
     async postActivity(sessionId: string, activity: LinearActivityInput) {
       // The ordering assertion itself: read the durable inbox AT POST TIME, so a row that
       // only lands later cannot make an out-of-order first activity look admitted.
@@ -171,14 +171,14 @@ function delivery(payloadOver: Record<string, unknown> = {}, extOver: Record<str
     agentId: AGENT,
     botId: BOT,
     integrationId: INTEGRATION,
-    sessionKey: `${ISSUE}/${SESSION}`,
+    sessionKey: `${WORKSPACE}/${SESSION}`,
     msgId,
     payload: {
       msgId,
       traceId: msgId,
       source: 'user' as const,
       platform: 'linear' as const,
-      channel: ISSUE,
+      channel: WORKSPACE,
       thread: SESSION,
       threadUrl: ISSUE_URL,
       sender: { id: 'linear:user-1', isBot: false, name: 'Dana' },
@@ -203,6 +203,31 @@ const acks = (posted: Posted[]) => posted.filter((p) => p.activity.type === 'tho
 const responses = (posted: Posted[]) => posted.filter((p) => p.activity.type === 'response')
 
 const im = async (daemon: Daemon, msg: unknown) => await (daemon as any).handleRelayIm(msg)
+
+describe('§4.5 the workspace as the one observed conversation', () => {
+  it('reports it at reconcile, before any delivery has landed', async () => {
+    // The CP dispatch row — and the channel-scoped route the compile makes of it — has to exist
+    // BEFORE the first delegation, so the report cannot wait for a session to reach history.
+    const { daemon } = await boot()
+    const snapshot = (daemon as any).channelSnapshots.get(INTEGRATION)
+    expect(snapshot).toMatchObject({ authoritative: false })
+    expect(snapshot.channels).toEqual([{ id: WORKSPACE, name: 'Example Workspace', isPrivate: false, kind: 'channel' }])
+    await daemon.stop()
+  })
+
+  it('labels the workspace id so the console never shows a bare organization UUID', async () => {
+    const { daemon, store } = await boot()
+    expect((await store.getDisplayNames([WORKSPACE])).get(WORKSPACE)).toBe('Example Workspace')
+    await daemon.stop()
+  })
+
+  it('re-reports on a reconcile that only rebinds, without duplicating the row', async () => {
+    const { daemon } = await boot()
+    await (daemon as any).connections.reconcileLinearConnections()
+    expect((daemon as any).channelSnapshots.get(INTEGRATION).channels).toHaveLength(1)
+    await daemon.stop()
+  })
+})
 
 describe('§10.1 the pre-spawn acknowledgement', () => {
   it('names the acting agent and the issue, after the durable inbox admitted the delivery', async () => {
@@ -258,7 +283,7 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     // a genuinely concurrent arrival would be blinded.
     await store.appendInbox({
       id: linearDeliveryReceiptId(stableMessageId(normalized)),
-      sessionKey: sessionKey('linear', ISSUE, SESSION, AGENT, transportScope(daemon)),
+      sessionKey: sessionKey('linear', WORKSPACE, SESSION, AGENT, transportScope(daemon)),
       agentId: AGENT,
       msg: '{}',
       completedAt: 1,
@@ -323,7 +348,7 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
 
   it('marks the queued variant when the session is already working', async () => {
     const { daemon, posted } = await boot()
-    const key = sessionKey('linear', ISSUE, SESSION, AGENT, transportScope(daemon))
+    const key = sessionKey('linear', WORKSPACE, SESSION, AGENT, transportScope(daemon))
     ;(daemon as any).inflight.add(key)
     await im(daemon, delivery())
     await vi.waitFor(() => expect(acks(posted).length).toBe(1))
@@ -339,10 +364,11 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     await daemon.stop()
   })
 
-  it('records the issue name as the session channel name', async () => {
+  it('records the WORKSPACE name as the session channel name', async () => {
+    // The channel is the workspace, so the issue lives on `threadUrl` and the §8 header instead.
     const { daemon, store } = await boot()
     await im(daemon, delivery())
-    expect((await store.getDisplayNames([ISSUE])).get(ISSUE)).toBe('TEAM-123 · Ship the thing')
+    expect((await store.getDisplayNames([WORKSPACE])).get(WORKSPACE)).toBe('Example Workspace')
     await daemon.stop()
   })
 
@@ -405,8 +431,8 @@ describe('§5 the Layer-2 surface', () => {
 })
 
 describe('§4.5 the issue-less surface', () => {
-  const issueless = () =>
-    delivery({ channel: SESSION, threadUrl: undefined }, { issueIdentifier: undefined, issueTitle: undefined })
+  // The channel stays the workspace; only the BAG loses its issue metadata.
+  const issueless = () => delivery({ threadUrl: undefined }, { issueIdentifier: undefined, issueTitle: undefined })
 
   it('answers once and starts NO turn', async () => {
     const { daemon, posted } = await boot()
@@ -420,12 +446,12 @@ describe('§4.5 the issue-less surface', () => {
     await daemon.stop()
   })
 
-  it('keys the session on the AgentSession UUID and admits it durably before answering', async () => {
+  it('keys the session on the workspace + AgentSession UUID and admits it durably before answering', async () => {
     const { daemon, posted, store } = await boot()
     ;(daemon as any).dispatch = vi.fn(async () => null)
     await im(daemon, issueless())
     expect(posted[0]!.inboxAdmitted).toBe(true)
-    const key = sessionKey('linear', SESSION, SESSION, AGENT, transportScope(daemon))
+    const key = sessionKey('linear', WORKSPACE, SESSION, AGENT, transportScope(daemon))
     const rows = await store.listInboxBySessionKeyFifo()
     expect(rows.map((row: { sessionKey: string }) => row.sessionKey)).toEqual([key])
     await daemon.stop()
@@ -446,7 +472,7 @@ describe('§6.3 the stop decoder', () => {
     source: 'platform_action' as const,
     platformId: 'linear',
     agentId: AGENT,
-    sessionKey: `${ISSUE}/${SESSION}`,
+    sessionKey: `${WORKSPACE}/${SESSION}`,
     msgId: 'linear:activity-stop',
     botId: BOT,
     integrationId: INTEGRATION,
@@ -457,13 +483,13 @@ describe('§6.3 the stop decoder', () => {
 
   it('interrupts the addressed session and settles it with a `response`', async () => {
     const { daemon, posted, store } = await boot()
-    const key = sessionKey('linear', ISSUE, SESSION, AGENT, transportScope(daemon))
+    const key = sessionKey('linear', WORKSPACE, SESSION, AGENT, transportScope(daemon))
     await store.upsertSession({
       key,
       sessionId: 'sess-1',
       agentId: AGENT,
       platform: 'linear',
-      channel: ISSUE,
+      channel: WORKSPACE,
       thread: SESSION,
       transportScope: transportScope(daemon),
       acpSessionId: 'acp-1',

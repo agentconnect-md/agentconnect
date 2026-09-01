@@ -16,7 +16,12 @@ import type { CpClient } from '../cp/client.js'
 import type { NormalizedMessage } from '../messages/normalized.js'
 import type { LocalStore } from '../store/local-store.js'
 import type { TelegramObservedChat } from '../telegram/connection.js'
-import { observedChannelsFor, observedMembershipPlatforms, type ObservedChannelsHost } from './observed-channels.js'
+import {
+  observedChannelsFor,
+  observedMembershipPlatforms,
+  type ObservedChannelsHost,
+  type ObservedChat
+} from './observed-channels.js'
 
 /** Exactly what the sync engine touches on the Daemon — nothing wider. */
 export interface ObservedChannelsSyncHost extends ObservedChannelsHost {
@@ -188,11 +193,7 @@ export class ObservedChannelsSync {
   /** Record one observed chat row for a platform that cannot enumerate its bot's
    *  chats. The event's own platform filters the fan-out — a caller is already
    *  platform-specific and names it as data, not a branch. */
-  async observePlatformChat(
-    platform: string,
-    chat: TelegramObservedChat,
-    integrationIds: readonly string[]
-  ): Promise<void> {
+  async observePlatformChat(platform: string, chat: ObservedChat, integrationIds: readonly string[]): Promise<void> {
     if (chat.name) {
       await this.host.store().setDisplayName(chat.id, chat.name, Date.now())
       await this.host.emitSessionMetadataSnapshotsForDisplayName(chat.id)

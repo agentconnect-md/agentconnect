@@ -451,3 +451,114 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     expect(a && 'botUserId' in a).toBe(false)
   })
 })
+
+/**
+ * Linear rides this ladder UNCHANGED (linear-integration.md §4.5). The workspace is the channel,
+ * but its conversation row compiles to the group's `defaultAgentId` — the LAST rung — and to no
+ * channel-scoped route: every Linear event marks the app as mentioned, so a scoped `mention` rule
+ * would fire FIRST on every delivery and shadow both keyword selection and thread continuity.
+ * Nothing below is Linear-aware; these are the same rungs Slack takes.
+ */
+describe('Linear workspace-as-channel arbitration', () => {
+  const WORKSPACE = '00000000-0000-4000-8000-000000000001'
+  const APP_USER = '00000000-0000-4000-8000-0000000000a1'
+  const empty = () => new Map<string, RouteTarget>()
+
+  /** The compile's output for a workspace whose conversation row is owned by ALICE: the keyword
+   *  rung per member, the owner as `defaultAgentId`, and NO scoped route at all. */
+  const linear = (): BotAssignment => ({
+    ...assignment(),
+    platform: 'linear',
+    botUserId: APP_USER,
+    routes: [
+      { agentId: ALICE, daemonId: D1, integrationId: 'iA', match: { kind: 'keyword', value: 'alice' } },
+      { agentId: BOB, daemonId: D2, integrationId: 'iB', match: { kind: 'keyword', value: 'bob' } }
+    ],
+    defaultAgentId: ALICE,
+    defaultDaemonId: D1
+  })
+
+  /** Every Linear delivery exists because the app was delegated to or mentioned (§6.1), so it
+   *  carries the app user id and is "explicitly addressed" by construction. */
+  const delegation = (text: string, thread = 'agent-session-1'): WireNormalizedMessage =>
+    msg({ platform: 'linear', channel: WORKSPACE, thread, text, mentionedBots: [APP_USER] })
+
+  it('routes a bare delegation to the workspace owner, through the default rung', () => {
+    const t = arbitrate(linear(), delegation('take a look at the failing job'), empty())
+    expect(t).toEqual({ agentId: ALICE, daemonId: D1, integrationId: 'iA' })
+  })
+
+  it('routes a NAMED delegation to the slug, not to the workspace owner', () => {
+    // The whole reason the owner is not a scoped route: §4.3's `@<agent-name>` selection has to
+    // beat the workspace default, and the unscoped keyword rung sits directly above it.
+    const t = arbitrate(linear(), delegation('bob please ship it'), empty())
+    expect(t).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
+  })
+
+  it('keeps a bound session with its agent when the workspace owner changes mid-session', () => {
+    // A Linear session is bound to one agent at creation (§4.5), and every follow-up `prompted`
+    // still marks the app as mentioned. Thread continuity outranks the default, so re-pointing
+    // the workspace at ALICE cannot hijack the session BOB already holds.
+    const affinity = new Map<string, RouteTarget>([
+      [`${WORKSPACE}/agent-session-1`, { agentId: BOB, daemonId: D2, integrationId: 'iB' }]
+    ])
+    const bound = arbitrate(linear(), delegation('does this reopen the session?'), affinity)
+    expect(bound).toEqual({ agentId: BOB, daemonId: D2, integrationId: 'iB' })
+    // A different session in the same workspace is unaffected and still falls to the owner.
+    expect(arbitrate(linear(), delegation('a fresh delegation', 'agent-session-2'), affinity)).toEqual({
+      agentId: ALICE,
+      daemonId: D1,
+      integrationId: 'iA'
+    })
+  })
+
+  it('refuses a workspace switched Off, ahead of every rung', () => {
+    const off = { ...linear(), mutedChannels: [WORKSPACE] }
+    expect(arbitrate(off, delegation('take a look'), empty())).toBeNull()
+  })
+
+  /**
+   * A PRIVATE (restricted) agent that linked the workspace. The compile carries it as UNGATED on
+   * this bot — link-is-consent already satisfied §14 here — which is what keeps the ladder's three
+   * gated fences from stranding it: the default rung skips gated agents, `contGateOk` demands a
+   * channel-scoped route for a gated agent, and so does `agentTarget`. None of those routes exist
+   * under the corrected shape, so leaving the member gated would make it unreachable outright.
+   */
+  describe('a private linking agent', () => {
+    const privateOwner = (): BotAssignment => ({ ...linear(), gatedAgentIds: [] })
+
+    it('receives a bare delegation through the default rung', () => {
+      expect(arbitrate(privateOwner(), delegation('take a look'), empty())).toEqual({
+        agentId: ALICE,
+        daemonId: D1,
+        integrationId: 'iA'
+      })
+    })
+
+    it('keeps its session across a workspace-owner change', () => {
+      // BOB now owns the workspace, but ALICE still holds the session it was bound to.
+      const reowned: BotAssignment = { ...privateOwner(), defaultAgentId: BOB, defaultDaemonId: D2 }
+      const affinity = new Map<string, RouteTarget>([
+        [`${WORKSPACE}/agent-session-1`, { agentId: ALICE, daemonId: D1, integrationId: 'iA' }]
+      ])
+      expect(arbitrate(reowned, delegation('a follow-up'), affinity)).toEqual({
+        agentId: ALICE,
+        daemonId: D1,
+        integrationId: 'iA'
+      })
+    })
+
+    it('is still fenced by the gate on a bot that DID keep it gated', () => {
+      // The same agent on an ordinary bot: the compile leaves it in `gatedAgentIds` and emits no
+      // keyword rung, so neither continuity nor a name reaches it without a scoped route.
+      const slackBot: BotAssignment = {
+        ...assignment(),
+        gatedAgentIds: [BOB],
+        routes: [{ agentId: ALICE, daemonId: D1, integrationId: 'iA', match: { kind: 'keyword', value: 'alice' } }]
+      }
+      const affinity = new Map<string, RouteTarget>([['CX/ts1', { agentId: BOB, daemonId: D2, integrationId: 'iB' }]])
+      const named = msg({ channel: 'CX', text: '<@UBOT> bob ship it', mentionedBots: [BOTUSER] })
+      expect(arbitrate(slackBot, named, affinity)).toEqual({ agentId: ALICE, daemonId: D1, integrationId: 'iA' })
+    })
+  })
+})

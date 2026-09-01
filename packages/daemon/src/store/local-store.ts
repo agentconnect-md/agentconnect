@@ -2032,22 +2032,25 @@ export class LocalStore {
       .get(...args)) as SessionRecord | undefined
   }
 
-  /** The agent's session on one platform THREAD, whatever channel it sits in. Exists for a
-   *  platform action that addresses a session by the provider's own session id (Linear's
-   *  AgentSession) and therefore has no channel coordinate to look up by. */
+  /** The agent's session on one platform THREAD inside one channel. Exists for a platform
+   *  action that addresses a session by the provider's own session id (Linear's AgentSession):
+   *  unlike `latestSessionForTransport` it does not require an ACP id, so a stop still reaches
+   *  a turn that has not spawned yet. */
   async latestSessionForThread(
     agentId: string,
     platform: string,
+    channel: string,
     thread: string,
     transportScope?: string
   ): Promise<SessionRecord | undefined> {
     return (await this.db
       .prepare(
         `SELECT * FROM sessions
-         WHERE agentId = ? AND platform = ? AND thread = ? AND COALESCE(transportScope, '') = ?
+         WHERE agentId = ? AND platform = ? AND channel = ? AND thread = ?
+           AND COALESCE(transportScope, '') = ?
          ORDER BY updatedAt DESC LIMIT 1`
       )
-      .get(agentId, platform, thread, transportScope ?? '')) as SessionRecord | undefined
+      .get(agentId, platform, channel, thread, transportScope ?? '')) as SessionRecord | undefined
   }
 
   /** The most recently active addressable session (has an ACP id) in a channel, across

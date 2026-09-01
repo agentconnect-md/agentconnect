@@ -97,20 +97,22 @@ export function readLinearExt(msg: Pick<NormalizedMessage, 'adapterExt'>): Linea
   return parsed.success ? parsed.data : undefined
 }
 
-/** §4.5 session `channelName`: `TEAM-123 · <title>`, degrading to whichever half exists. */
-export function linearChannelName(ext: LinearAdapterExt): string | undefined {
-  const identifier = ext.issueIdentifier?.trim()
-  const title = ext.issueTitle ? sanitizeTitle(ext.issueTitle) : ''
-  const parts = [identifier, title].filter((part): part is string => !!part)
-  return parts.length ? parts.join(' · ') : undefined
+/** §4.5 session `channelName`: the connected WORKSPACE, since the workspace is the channel.
+ *  Degrades to the organization id — a session labelled by its tenant beats one labelled
+ *  `undefined`, and the issue rides `threadUrl` plus the §8 header either way. */
+export function linearChannelName(conn: { workspaceName?: string; workspaceId(): string }): string {
+  const name = conn.workspaceName ? sanitizeTitle(conn.workspaceName) : ''
+  return name || conn.workspaceId()
 }
 
 /**
- * §4.5: the session Linear opened carries no issue, so its `channel` fell back to the
- * AgentSession UUID. v1 answers such a surface once and starts no turn.
+ * §4.5: the session Linear opened carries no issue — `app:mentionable` also covers documents
+ * and other editor surfaces. v1 answers such a surface once and starts no turn. Read off the
+ * ABSENCE of issue metadata in the bag: the channel is the workspace now, so the coordinates
+ * no longer say anything about which surface the session was opened on.
  */
-export function isLinearIssuelessSurface(msg: Pick<NormalizedMessage, 'channel'>, ext: LinearAdapterExt): boolean {
-  return msg.channel === ext.agentSessionId
+export function isLinearIssuelessSurface(ext: LinearAdapterExt): boolean {
+  return ext.issueIdentifier === undefined && ext.issueTitle === undefined
 }
 
 /** The actor as the trusted header names them: the provider's display name when the event
