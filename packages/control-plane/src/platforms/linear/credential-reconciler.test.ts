@@ -114,6 +114,78 @@ describe('LinearCredentialReconciler (§10.6)', () => {
     expect(order).toEqual([`install:${BOT}`, `resync:${BOT}`])
   })
 
+  it('retries a failed broadcast on the next pass WITHOUT rewriting the credential', async () => {
+    // The row is already correct by then, so the drift check alone would skip the bot forever
+    // while its relays kept verifying with the old key. The retry is remembered, not re-derived.
+    const secrets = new Map([[String(BOT), stamped({ clientSecret: 'old-client', signingSecret: 'old-signing' })]])
+    const { reconciler, install, resync } = harness([bot()], secrets)
+    resync.mockImplementationOnce(async () => {
+      throw new Error('no connected relay')
+    })
+
+    await reconciler.tick()
+    expect(install).toHaveBeenCalledTimes(1)
+    expect(resync).toHaveBeenCalledTimes(1)
+
+    await reconciler.tick()
+    expect(install).toHaveBeenCalledTimes(1)
+    expect(resync).toHaveBeenCalledTimes(2)
+    expect(resync).toHaveBeenLastCalledWith(BOT)
+  })
+
+  it('clears the debt once the broadcast succeeds, so later passes go quiet', async () => {
+    const secrets = new Map([[String(BOT), stamped({ clientSecret: 'old-client', signingSecret: 'old-signing' })]])
+    const { reconciler, install, resync } = harness([bot()], secrets)
+    resync.mockImplementationOnce(async () => {
+      throw new Error('no connected relay')
+    })
+
+    await reconciler.tick()
+    await reconciler.tick()
+    await reconciler.tick()
+
+    expect(install).toHaveBeenCalledTimes(1)
+    expect(resync).toHaveBeenCalledTimes(2)
+  })
+
+  it('publishes once for a bot that both drifted and owed a retry', async () => {
+    const app: AppRef = { current: APP }
+    const secrets = new Map([[String(BOT), stamped({ clientSecret: 'old-client', signingSecret: 'old-signing' })]])
+    const { reconciler, install, resync } = harness([bot()], secrets, {}, app)
+    resync.mockImplementationOnce(async () => {
+      throw new Error('no connected relay')
+    })
+
+    await reconciler.tick()
+    // A second rotation lands before the owed broadcast was ever delivered.
+    app.current = ROTATED
+    await reconciler.tick()
+
+    expect(install).toHaveBeenCalledTimes(2)
+    // One broadcast for the pass, not one per reason.
+    expect(resync).toHaveBeenCalledTimes(2)
+    expect(secrets.get(String(BOT))?.signingSecret).toBe(ROTATED.signingSecret)
+  })
+
+  it('drops a pending retry when the row leaves this loop’s standing', async () => {
+    const secrets = new Map([[String(BOT), stamped({ clientSecret: 'old-client', signingSecret: 'old-signing' })]])
+    const rows = [bot()]
+    const { reconciler, resync } = harness(rows, secrets)
+    resync.mockImplementationOnce(async () => {
+      throw new Error('no connected relay')
+    })
+
+    await reconciler.tick()
+    expect(resync).toHaveBeenCalledTimes(1)
+
+    // Revoked between passes: publishing it is now the revoke path's business, not this loop's.
+    rows[0] = bot(BOT, { revokedAt: new Date(1) })
+    await reconciler.tick()
+    await reconciler.tick()
+
+    expect(resync).toHaveBeenCalledTimes(1)
+  })
+
   it('leaves a matching row untouched, so a second pass is a no-op', async () => {
     const secrets = new Map([[String(BOT), stamped(APP)]])
     const { reconciler, install, resync } = harness([bot()], secrets)

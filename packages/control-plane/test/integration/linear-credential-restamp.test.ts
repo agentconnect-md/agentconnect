@@ -15,6 +15,8 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { AgentId, BotId, IntegrationId, OrgId } from '../../src/domain/ids.js'
+import { systemClock } from '../../src/domain/clock.js'
+import { LinearCredentialReconciler } from '../../src/platforms/linear/credential-reconciler.js'
 import type { LinearPlatformAppConfig } from '../../src/config/linear-platform.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 
@@ -257,6 +259,44 @@ describe('linear deployment-credential re-stamp (§10.6)', () => {
     expect(byBot.get(revoked)?.signingSecret).toBe(APP.signingSecret)
     // Exactly one workspace was published, and it is the live one.
     expect(assigns.map((frame) => frame.botId)).toEqual([live])
+  })
+
+  it('retries a failed broadcast against the already-correct row, then settles', async () => {
+    // The same graph, but with a resync that fails once: after it does, the row is already current,
+    // so nothing in the database could tell a later pass that its relays are still on the old key.
+    const app = build()
+    const botId = await connectWorkspace(app, APP)
+    const resynced: string[] = []
+    let failNext = true
+    const reconciler = new LinearCredentialReconciler({
+      bots: app.deps.repos.bot,
+      secrets: app.deps.repos.botSecret,
+      credentials: app.deps.repos.botCredential,
+      resync: async (id) => {
+        if (failNext) {
+          failNext = false
+          throw new Error('no connected relay')
+        }
+        resynced.push(id)
+      },
+      app: ROTATED,
+      clock: systemClock,
+      intervalMs: 60_000
+    })
+
+    await reconciler.tick()
+    const written = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
+    expect(resynced).toEqual([])
+
+    await reconciler.tick()
+    expect(resynced).toEqual([botId])
+    // The credential was written once; the second pass owed only the broadcast.
+    const settled = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
+    expect(settled.credentialRevision).toBe(written.credentialRevision)
+    expect(settled.credentialInstalledAt).toEqual(written.credentialInstalledAt)
+
+    await reconciler.tick()
+    expect(resynced).toEqual([botId])
   })
 
   it('writes nothing while the deployment app is unconfigured', async () => {
