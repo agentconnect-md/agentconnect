@@ -1,9 +1,9 @@
 'use client'
 
 // The Linear WORKSPACE CARD (linear-integration.md §7.4, §9.5). A Linear bot row IS
-// one connected workspace, so what the Settings → Bots card needs beside it is not a
-// bot adornment but a small membership surface: who is on the workspace, which member
-// catches a bare delegation, and how to repair a grant that stopped working.
+// one connected workspace, so what the Settings → Bots card shows beside it is the
+// workspace's own identity and health, plus the way to repair a grant that stopped
+// working.
 //
 // The state lives behind the module's own context (the contract's
 // `lifecycleActions.CardProvider`), mounted once per platform tab, because the row
@@ -11,39 +11,18 @@
 // open their own.
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AgentIconView } from '@/components/marks'
 import { Icon } from '@/components/ui'
 import type { BotDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
-import { agentLabel } from '@/lib/data'
 import type { WebBotSettingsFragments } from '../contract'
 import { linearApi } from './api'
 import { useLinearConnect } from './connect'
-import { linearDefaultAgents, linearMemberEligibility } from './default-agent'
-
-/** Why the default member's Remove control is inert (§7.4): a workspace with members
- *  but no default would strand every bare delegation. */
-export const LINEAR_DEFAULT_REMOVE_BLOCKED = 'Make another agent the default first'
-
-/** Why a member that is not MARKED default still cannot be removed: with a set-placed
- *  member in the list the console cannot tell which one the compiler picks, so every
- *  member that could be it is protected until a definite default is named. */
-export const LINEAR_MAYBE_DEFAULT_REMOVE_BLOCKED =
-  'This agent may be the workspace default — make a placed agent the default first'
-
-/** Why "Make default" is inert on a member the compiler would ignore anyway. */
-export const LINEAR_INELIGIBLE_DEFAULT = 'A restricted or unplaced agent cannot catch a bare delegation'
 
 interface LinearCardState {
   /** The workspace whose reconnect round trip is open, if any. */
   reconnectingBotId: string | null
   connectErr: string | null
   startReconnect(botId: string): void
-  /** The workspace whose membership write is in flight — one per card. */
-  busyBotId: string | null
-  rowErr: { botId: string; message: string } | null
-  moveDefault(bot: BotDto, agentId: string): void
-  removeMember(bot: BotDto, integrationId: string): void
 }
 
 const CardCtx = createContext<LinearCardState | null>(null)
@@ -55,10 +34,8 @@ function useLinearCard(): LinearCardState {
 }
 
 function LinearCardProvider({ children }: { children: ReactNode }) {
-  const { refresh, deleteIntegration } = useConsoleData()
+  const { refresh } = useConsoleData()
   const [reconnectingBotId, setReconnectingBotId] = useState<string | null>(null)
-  const [busyBotId, setBusyBotId] = useState<string | null>(null)
-  const [rowErr, setRowErr] = useState<{ botId: string; message: string } | null>(null)
   // The bot the pending mint is for. A ref, not the state above: `start()` reads its
   // mint closure in the same tick as the click, before a setState has landed.
   const target = useRef<string | null>(null)
@@ -76,40 +53,10 @@ function LinearCardProvider({ children }: { children: ReactNode }) {
     (botId: string) => {
       target.current = botId
       setReconnectingBotId(botId)
-      setRowErr(null)
       clearError()
       start()
     },
     [clearError, start]
-  )
-
-  const write = useCallback(async (botId: string, run: () => Promise<unknown>) => {
-    setBusyBotId(botId)
-    setRowErr(null)
-    try {
-      await run()
-    } catch (e) {
-      setRowErr({ botId, message: e instanceof Error ? e.message : String(e) })
-    } finally {
-      setBusyBotId(null)
-    }
-  }, [])
-
-  const moveDefault = useCallback(
-    (bot: BotDto, agentId: string) => {
-      void write(bot.id, async () => {
-        await linearApi.setDefaultAgent(bot.id, agentId)
-        await refresh()
-      })
-    },
-    [refresh, write]
-  )
-
-  const removeMember = useCallback(
-    (bot: BotDto, integrationId: string) => {
-      void write(bot.id, () => deleteIntegration(integrationId))
-    },
-    [deleteIntegration, write]
   )
 
   // The round trip is not open once it settles, whichever way it went.
@@ -118,13 +65,9 @@ function LinearCardProvider({ children }: { children: ReactNode }) {
     () => ({
       reconnectingBotId: openBotId,
       connectErr: flow.appMissing ? 'Linear isn’t set up on this deployment.' : flow.err,
-      startReconnect,
-      busyBotId,
-      rowErr,
-      moveDefault,
-      removeMember
+      startReconnect
     }),
-    [busyBotId, flow.appMissing, flow.err, moveDefault, openBotId, removeMember, rowErr, startReconnect]
+    [flow.appMissing, flow.err, openBotId, startReconnect]
   )
 
   return <CardCtx.Provider value={value}>{children}</CardCtx.Provider>
@@ -153,8 +96,7 @@ function LinearRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean })
 }
 
 /**
- * The workspace card body, under the bot row: connect status, the member agents with
- * the default marked and movable, and the Reconnect CTA.
+ * The workspace card body, under the bot row: connect status and the Reconnect CTA.
  *
  * The CTA is offered on a LIVE workspace too, not only a dead grant. Enabling agent
  * session events on an already-installed Linear app raises a new scope, and until
@@ -164,20 +106,12 @@ function LinearRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean })
  */
 function LinearCardNotice({ bot }: { bot: BotDto }) {
   const card = useLinearCard()
-  const { getAgent, integrations } = useConsoleData()
   if (bot.platform !== 'linear') return null
 
   // staleness signal not yet exposed — the CP publishes no `lastDeliveryAt`, so a
   // webhook-silent workspace is reachable only through the always-offered CTA below.
   const dead = !!bot.revokedAt
-  // The compiler's own eligibility, not membership order — and every member that could
-  // be the default while a set placement's duty holder is unknowable from here.
-  const { marked, candidates } = linearDefaultAgents(bot, getAgent)
   const open = card.reconnectingBotId === bot.id
-  const busy = card.busyBotId === bot.id
-  // Live rows carry an id; a demo row does not, and its member cannot be removed.
-  const integrationIdOf = (agentId: string): string | undefined =>
-    integrations.find((row) => row.botId === bot.id && row.agentId === agentId)?.id
 
   return (
     <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-[10px] pl-10">
@@ -199,72 +133,6 @@ function LinearCardNotice({ bot }: { bot: BotDto }) {
       {card.connectErr && card.reconnectingBotId === null && (
         <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--status-error)">
           {card.connectErr}
-        </div>
-      )}
-      {bot.agentIds.length > 0 && (
-        <div className="mt-[10px] overflow-hidden rounded-lg border border-(--border-subtle) bg-(--surface-card)">
-          {bot.agentIds.map((agentId) => {
-            const agent = getAgent(agentId)
-            const isDefault = agentId === marked
-            // Blocked for the marked default AND for every other member that could
-            // still turn out to be it — removing the real one strands bare delegations.
-            const blocked = candidates.includes(agentId)
-            const eligible = linearMemberEligibility(agent) !== 'ineligible'
-            const integrationId = integrationIdOf(agentId)
-            const removeTitle = isDefault
-              ? LINEAR_DEFAULT_REMOVE_BLOCKED
-              : blocked
-                ? LINEAR_MAYBE_DEFAULT_REMOVE_BLOCKED
-                : 'Remove this agent from the workspace'
-            return (
-              <div
-                key={agentId}
-                className="flex items-center gap-[10px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0"
-              >
-                <span className="av h-[22px] w-[22px] flex-none rounded-[6px]">
-                  <AgentIconView icon={agent?.icon} runtime={agent?.runtime || agent?.model || ''} size={22} />
-                </span>
-                <span className="mono min-w-0 flex-1 truncate text-[12px]">{agent ? agentLabel(agent) : agentId}</span>
-                {isDefault ? (
-                  <span
-                    className="badge flex-none bg-(--surface-active) text-(--text-secondary)"
-                    title="Bare delegations start a session with this agent"
-                  >
-                    default
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    // A restricted or unplaced agent is one the compile skips, so naming
-                    // it would persist a pointer nothing honors.
-                    disabled={busy || !eligible}
-                    title={eligible ? 'Bare delegations start a session with this agent' : LINEAR_INELIGIBLE_DEFAULT}
-                    onClick={() => card.moveDefault(bot, agentId)}
-                    className={`chip flex-none px-[9px] py-[3px] text-[11.5px] ${busy || !eligible ? 'cursor-not-allowed opacity-55' : 'cursor-pointer'}`}
-                  >
-                    Make default
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={blocked || busy || !integrationId}
-                  title={removeTitle}
-                  aria-label={`Remove ${agent ? agentLabel(agent) : agentId} from the workspace`}
-                  onClick={() => integrationId && card.removeMember(bot, integrationId)}
-                  className={`iconbtn h-7 w-7 flex-none ${
-                    blocked || busy || !integrationId ? 'cursor-not-allowed opacity-45' : 'cursor-pointer'
-                  }`}
-                >
-                  <Icon name="user-minus" size={13} />
-                </button>
-              </div>
-            )
-          })}
-        </div>
-      )}
-      {card.rowErr?.botId === bot.id && (
-        <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--status-error)">
-          {card.rowErr.message}
         </div>
       )}
       {open && (

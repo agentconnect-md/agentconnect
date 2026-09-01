@@ -126,7 +126,6 @@ function bot(over: Partial<BotRecord> = {}): BotRecord {
     feishuRegion: null,
     shareable: true,
     transport: 'http',
-    preferredAgentId: null,
     createdBy: null,
     lastUsedAt: null,
     lastAgentName: null,

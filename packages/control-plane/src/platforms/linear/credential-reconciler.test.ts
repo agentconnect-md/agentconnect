@@ -40,7 +40,6 @@ function bot(id: BotId = BOT, overrides: Partial<BotRecord> = {}): BotRecord {
     feishuRegion: null,
     shareable: true,
     transport: 'http',
-    preferredAgentId: null,
     createdBy: null,
     lastUsedAt: null,
     lastAgentName: null,

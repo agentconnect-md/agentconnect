@@ -979,13 +979,7 @@ export class HttpBotOrchestrator {
     //    rung), not a route, so it never pre-empts keyword/channel arbitration. A
     //    gated agent must never be the fallback (§14: the bare-@bot/DM rungs are
     //    what make an HTTP bot fail-open); a group of only gated agents has none.
-    //    The bot's persisted preference wins while it still passes those same
-    //    criteria — placed here, non-gated — so a stale pointer degrades to the
-    //    derivation rather than silencing the bot.
-    const preferred = bot.preferredAgentId
-      ? placed.find((p) => p.integration.agentId === bot.preferredAgentId && !p.gated)
-      : undefined
-    const first = preferred ?? placed.find((p) => !p.gated)
+    const first = placed.find((p) => !p.gated)
     const agents = placed.map((p) => {
       const a = agentById.get(p.integration.agentId)
       return {

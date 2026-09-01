@@ -12,7 +12,7 @@
 import type { Platform, FeishuRegion } from '@agentconnect.md/protocol'
 import type { Bot, Integration, IntegrationChannel, User } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
-import { BotExternalIdentityTaken, BotMissing, BotPreferredAgentMissing, BotStillShared } from '../errors.js'
+import { BotExternalIdentityTaken, BotMissing, BotStillShared } from '../errors.js'
 import type {
   BotRepo,
   BotIdentityProjector,
@@ -94,7 +94,6 @@ function toBotRecord(b: BotJoined): BotRecord {
     feishuRegion: (asText(cfg.feishuRegion) as FeishuRegion | null) ?? null,
     shareable: b.shareable,
     transport: b.transport as BotRecord['transport'],
-    preferredAgentId: b.preferredAgentId ? AgentId(b.preferredAgentId) : null,
     createdBy: b.createdBy
       ? { userId: b.createdBy.id, displayName: b.createdBy.displayName, email: b.createdBy.email }
       : null,
@@ -265,10 +264,6 @@ export class PgBotRepo implements BotRepo {
     // second-agent admission — whichever wins, the loser observes the winner's
     // committed state. The capacity recount lives HERE (not only in the route's
     // optimistic pre-check) because only under the lock is it authoritative.
-    //
-    // Both columns move in ONE statement inside that transaction. Split writes could
-    // commit the capacity flip and then fail the preferred agent's FK against a
-    // concurrent agent delete — a half-applied update the caller cannot undo.
     await withAmbientTx(this.db, async (tx) => {
       // The org fence rides the row-lock read and refuses BEFORE the recount:
       // reaching the recount with a foreign id would answer `BotStillShared`
@@ -282,26 +277,10 @@ export class PgBotRepo implements BotRepo {
         const active = await tx.integration.count({ where: { botId: id, status: 'active' } })
         if (active > 1) throw new BotStillShared(active)
       }
-      try {
-        await tx.bot.update({
-          where: { id, orgId },
-          data: {
-            ...(patch.shareable !== undefined ? { shareable: patch.shareable } : {}),
-            ...(patch.preferredAgentId !== undefined ? { preferredAgentId: patch.preferredAgentId } : {})
-          }
-        })
-      } catch (err) {
-        // The preferred agent is the only FK this statement writes, so a violation means
-        // it was deleted since the caller checked. Typed so the route can 409; the whole
-        // transaction has already rolled back, so the capacity flip is gone with it.
-        if (
-          (err as { code?: string }).code === 'P2003' &&
-          JSON.stringify((err as { meta?: unknown }).meta ?? '').includes('preferredAgentId')
-        ) {
-          throw new BotPreferredAgentMissing(String(patch.preferredAgentId))
-        }
-        throw err
-      }
+      await tx.bot.update({
+        where: { id, orgId },
+        data: { ...(patch.shareable !== undefined ? { shareable: patch.shareable } : {}) }
+      })
     })
   }
 

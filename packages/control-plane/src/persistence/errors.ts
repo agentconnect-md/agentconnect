@@ -210,19 +210,6 @@ export class BotStillShared extends Error {
   }
 }
 
-/** The preferred default agent lost its foreign key inside `BotRepo.update` — an agent
- *  deleted between the route's membership check and the write (the in-memory mutation
- *  gate does not exclude a delete). The cascade takes its Integration too, so it has
- *  genuinely stopped being a member: the route answers the same 409 as a body that
- *  named a non-member outright, never a 500. */
-export class BotPreferredAgentMissing extends Error {
-  readonly code = 'BOT_PREFERRED_AGENT_MISSING' as const
-  constructor(readonly agentId: string) {
-    super(`agent ${agentId} is no longer installed on this bot`)
-    this.name = 'BotPreferredAgentMissing'
-  }
-}
-
 /** A GitHub installation is already claimed by another AgentConnect org.
  * Claims are immutable: sync/callback/doorbell updates may refresh facts but
  * can never move the installation across tenants. */

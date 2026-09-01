@@ -827,7 +827,6 @@ model Agent {
   webchatParticipations WebchatConversationAgent[]
   webchatMcpDelegations WebchatMcpDelegation[]
   presetRecords         PresetAgent[]
-  preferredByBots       Bot[]                      @relation("BotPreferredAgent")
 
   organizationEnvironmentAssignments OrganizationEnvironmentAssignment[]
 
@@ -2294,26 +2293,19 @@ model Bot {
   // receives callbacks and the daemon gets a send-only spec. This is the
   // direct-vs-shared axis; `shareable` is the multi-agent-within-http sub-flag.
   transport             SlackTransport @default(socket)
-  // The operator's chosen DEFAULT member of a shared bot — who catches a bare mention, a
-  // DM, or a delegation. The HTTP-bot compile prefers it over its earliest-member
-  // derivation while it still resolves to a placed, non-gated member of this bot; NULL ⇒
-  // that derivation. Platform-free: every shared bot has the knob. SetNull because the
-  // bot row OUTLIVES the agent, so nothing else would clear a deleted agent's pointer.
-  preferredAgentId      String?        @db.Uuid
   createdByUserId       String? // WebUI user who registered it (audit)
   lastUsedAt            DateTime?      @db.Timestamptz(6) // stamped when its integration is removed
   lastAgentName         String? // agent the bot was last freed from (console display hint)
   createdAt             DateTime       @default(now()) @db.Timestamptz(6)
   updatedAt             DateTime       @updatedAt @db.Timestamptz(6)
 
-  org            Org           @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  createdBy      User?         @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
-  preferredAgent Agent?        @relation("BotPreferredAgent", fields: [preferredAgentId], references: [id], onDelete: SetNull)
-  secret         BotSecret?
+  org          Org           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy    User?         @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  secret       BotSecret?
   // A shareable bot backs MANY installs (one per agent); a classic bot backs ≤1.
   // The 1-install cap for classic bots is enforced in the install route, not by a
   // unique FK (dropped so shared bots can fan out).
-  integrations   Integration[]
+  integrations Integration[]
 
   // One Bot per external app identity per platform — the relay demux fence, and
   // cross-org global because a workspace binds to exactly one org. A row that
@@ -2324,7 +2316,6 @@ model Bot {
   // (platform, externalAppId) uniqueness declaratively.
   @@unique([platform, externalAppId, externalTenantId])
   @@index([orgId])
-  @@index([preferredAgentId])
   @@map("bot")
 }
 
