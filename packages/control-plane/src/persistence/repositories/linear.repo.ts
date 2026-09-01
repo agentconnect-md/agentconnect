@@ -12,10 +12,16 @@
  */
 import type { LinearInstallState, LinearToken } from '../../generated/prisma/client.js'
 import { withAmbientTx, type PrismaLike } from '../prisma.js'
-import { lockLinearIdentity } from '../linear-identity-lock.js'
+import {
+  LINEAR_IDENTITY_LOCK_MAX_HOLD_MS,
+  LINEAR_IDENTITY_LOCK_MAX_WAIT_MS,
+  LINEAR_IDENTITY_LOCK_WAIT_BUDGET_MS,
+  lockLinearIdentity
+} from '../linear-identity-lock.js'
 import type {
   LinearConnectionIdentity,
   LinearInstallStateRecord,
+  LinearIdentitySection,
   LinearInstallStateStore,
   LinearOrphanTokenRow,
   LinearTokenMaterial,
@@ -26,9 +32,18 @@ import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
 import { AgentId, BotId, OrgId } from '../../domain/ids.js'
 
-/** Budget for the locked ownership decision: room for one bounded upstream revoke plus the queueing
- *  a contended identity can add, without leaving a lock able to outlive a wedged caller. */
-const IDENTITY_LOCK_TX = { timeout: 20_000, maxWait: 10_000 }
+/** The HOLDER's budget — bounds how long anyone else can be kept waiting for this identity. */
+const IDENTITY_LOCK_TX = {
+  timeout: LINEAR_IDENTITY_LOCK_MAX_HOLD_MS,
+  maxWait: LINEAR_IDENTITY_LOCK_MAX_WAIT_MS
+}
+/** A WAITER's budget. `pg_advisory_xact_lock` blocks INSIDE the transaction, so the ceiling that
+ *  matters is `timeout`, not `maxWait` — and it must exceed the holder's above, or a `put` queued
+ *  behind a sweep expires having already spent its authorization code. */
+const IDENTITY_WAIT_TX = {
+  timeout: LINEAR_IDENTITY_LOCK_WAIT_BUDGET_MS,
+  maxWait: LINEAR_IDENTITY_LOCK_MAX_WAIT_MS
+}
 
 export class PgLinearTokenStore implements LinearTokenStore {
   constructor(
@@ -87,19 +102,23 @@ export class PgLinearTokenStore implements LinearTokenStore {
       refreshToken: material.refreshToken ? await this.cipher.seal(material.refreshToken, scope) : null,
       expiresAt: material.expiresAt
     }
-    await withAmbientTx(this.prisma, async (tx) => {
-      await lockLinearIdentity(tx, identity.clientId, identity.organizationId)
-      await tx.linearToken.upsert({
-        where: PgLinearTokenStore.key(identity),
-        create: {
-          orgId: identity.orgId,
-          clientId: identity.clientId,
-          organizationId: identity.organizationId,
-          ...tokens
-        },
-        update: tokens
-      })
-    })
+    await withAmbientTx(
+      this.prisma,
+      async (tx) => {
+        await lockLinearIdentity(tx, identity.clientId, identity.organizationId)
+        await tx.linearToken.upsert({
+          where: PgLinearTokenStore.key(identity),
+          create: {
+            orgId: identity.orgId,
+            clientId: identity.clientId,
+            organizationId: identity.organizationId,
+            ...tokens
+          },
+          update: tokens
+        })
+      },
+      IDENTITY_WAIT_TX
+    )
   }
 
   async delete(identity: LinearConnectionIdentity): Promise<void> {
@@ -121,7 +140,7 @@ export class PgLinearTokenStore implements LinearTokenStore {
    * identity?" — and deliberately returns no global one. Whether an upstream revoke is safe is a
    * question about OTHER organizations, and any answer computed here can be falsified before the
    * sweeper acts on it by a connect that touches none of these rows; it belongs to
-   * {@link PgLinearTokenStore.withIdentityOwnership}, under the lock, at the moment of acting.
+   * {@link PgLinearTokenStore.withIdentityLock}, under the lock, at the moment of acting.
    */
   async listOrphans(clientId: string, staleBefore: Date, limit: number): Promise<LinearOrphanTokenRow[]> {
     const rows = await this.prisma.$queryRaw<{ orgId: string; organizationId: string; updatedAt: Date }[]>`
@@ -146,83 +165,69 @@ export class PgLinearTokenStore implements LinearTokenStore {
   }
 
   /**
-   * Run `act` under the identity's advisory lock, handing it the GLOBAL ownership answer as of
-   * inside that lock — the only place the answer is safe to act on.
+   * ONE uninterrupted hold of the identity's advisory lock, exposing the two operations that are
+   * only sound while it is held. Both live here, rather than as separate store methods, because the
+   * hold has to be uninterrupted: with the claim outside the lock a same-org retry could re-grant
+   * in the gap, and the ownership query — which excludes the caller's own organization so that a
+   * disconnect does not count the row it is removing — would read "unowned" and revoke the
+   * authorization backing that brand-new grant.
    *
-   * A snapshot answer is not good enough for an upstream revoke, and that is the whole reason this
-   * exists: another organization can complete a connect for the same `(clientId, organizationId)`
-   * at any moment without touching this organization's row, so a listing-time "nobody owns it"
-   * survives the row-level claim intact and drives a revoke that tears down the workspace someone
-   * else just connected. Under this lock, `put` — every claimant's first durable write, §7.1 step 1
-   * — cannot interleave, so the answer holds for as long as `act` runs.
-   *
-   * `owned` is true when EITHER any organization's Bot holds the D6 identity, OR any OTHER
-   * organization holds a token row for it. The second disjunct is what catches a winner that is
-   * mid-callback: it has written its grant but not yet its Bot, and revoking would kill it before
-   * it ever appears as an owner.
+   * The transaction carries an explicit budget because `act` is the sweeper's upstream revoke, held
+   * inside the lock on purpose (releasing first would only narrow the window). See
+   * `linear-identity-lock.ts` for the ordering that keeps the API timeout under this ceiling and a
+   * waiting `put` above it.
    */
-  withIdentityOwnership<T>(identity: LinearConnectionIdentity, act: (owned: boolean) => Promise<T>): Promise<T> {
-    // An explicit budget because `act` is the sweeper's upstream revoke: one bounded HTTP call, held
-    // inside the lock on purpose (releasing first would only narrow the window). The Linear client's
-    // own per-request ceiling sits well under this, so a hung provider surfaces as `unreachable`
-    // rather than as an expired transaction.
+  withIdentityLock<T>(
+    identity: LinearConnectionIdentity,
+    act: (section: LinearIdentitySection) => Promise<T>
+  ): Promise<T> {
     return withAmbientTx(
       this.prisma,
       async (tx) => {
         await lockLinearIdentity(tx, identity.clientId, identity.organizationId)
-        const answer = await tx.$queryRaw<{ owned: boolean }[]>`
-        SELECT (
-          EXISTS (
-            SELECT 1 FROM "bot" b
-             WHERE b."platform" = 'linear'
-               AND b."externalAppId" = ${identity.clientId}
-               AND b."externalTenantId" = ${identity.organizationId}
-          )
-          OR EXISTS (
-            SELECT 1 FROM "linear_token" t
-             WHERE t."clientId" = ${identity.clientId}
-               AND t."organizationId" = ${identity.organizationId}
-               AND t."orgId" <> ${identity.orgId}
-          )
-        ) AS "owned"
-      `
-        // Fail CLOSED on an answer that did not come back: "unknown" must never authorize a revoke.
-        return act(answer[0]?.owned ?? true)
+        return act({
+          claim: async (updatedAt) => {
+            const removed = await tx.$queryRaw<{ accessToken: string; refreshToken: string | null; expiresAt: Date }[]>`
+              DELETE FROM "linear_token"
+               WHERE "orgId" = ${identity.orgId}
+                 AND "clientId" = ${identity.clientId}
+                 AND "organizationId" = ${identity.organizationId}
+                 AND "updatedAt" = ${updatedAt}
+              RETURNING "accessToken", "refreshToken", "expiresAt"
+            `
+            const row = removed[0]
+            if (!row) return null
+            const scope = orgScope(identity.orgId)
+            return {
+              accessToken: await this.cipher.open(row.accessToken, scope),
+              refreshToken: row.refreshToken ? await this.cipher.open(row.refreshToken, scope) : null,
+              expiresAt: row.expiresAt
+            }
+          },
+          owned: async () => {
+            const answer = await tx.$queryRaw<{ owned: boolean }[]>`
+              SELECT (
+                EXISTS (
+                  SELECT 1 FROM "bot" b
+                   WHERE b."platform" = 'linear'
+                     AND b."externalAppId" = ${identity.clientId}
+                     AND b."externalTenantId" = ${identity.organizationId}
+                )
+                OR EXISTS (
+                  SELECT 1 FROM "linear_token" t
+                   WHERE t."clientId" = ${identity.clientId}
+                     AND t."organizationId" = ${identity.organizationId}
+                     AND t."orgId" <> ${identity.orgId}
+                )
+              ) AS "owned"
+            `
+            // Fail CLOSED on an answer that did not come back: "unknown" never authorizes a revoke.
+            return answer[0]?.owned ?? true
+          }
+        })
       },
       IDENTITY_LOCK_TX
     )
-  }
-
-  /**
-   * The sweep's claim: delete the row only while it still carries the `updatedAt` the snapshot saw,
-   * and hand back what was removed. One statement, so a concurrent `put` — a retried connect
-   * re-granting the same workspace — serializes on the row: either this DELETE goes first and the
-   * re-grant re-creates the row (which the next sweep re-evaluates from scratch), or the re-grant
-   * goes first and this matches nothing.
-   *
-   * That is why the upstream revoke reads its token from HERE rather than from a prior `get`: the
-   * returned material is provably the row that was collected, never a fresher grant that landed
-   * between the snapshot and the act.
-   */
-  async deleteIfUnchanged(identity: LinearConnectionIdentity, updatedAt: Date): Promise<LinearTokenMaterial | null> {
-    const removed = await this.prisma.$queryRaw<
-      { accessToken: string; refreshToken: string | null; expiresAt: Date }[]
-    >`
-      DELETE FROM "linear_token"
-       WHERE "orgId" = ${identity.orgId}
-         AND "clientId" = ${identity.clientId}
-         AND "organizationId" = ${identity.organizationId}
-         AND "updatedAt" = ${updatedAt}
-      RETURNING "accessToken", "refreshToken", "expiresAt"
-    `
-    const row = removed[0]
-    if (!row) return null
-    const scope = orgScope(identity.orgId)
-    return {
-      accessToken: await this.cipher.open(row.accessToken, scope),
-      refreshToken: row.refreshToken ? await this.cipher.open(row.refreshToken, scope) : null,
-      expiresAt: row.expiresAt
-    }
   }
 }
 

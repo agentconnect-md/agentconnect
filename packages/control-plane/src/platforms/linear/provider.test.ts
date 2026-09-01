@@ -32,6 +32,7 @@ import type {
   CreateBotInput,
   IntegrationRecord,
   LinearConnectionIdentity,
+  LinearIdentitySection,
   LinearTokenMaterial,
   LinearTokenRecord,
   LinearTokenStore
@@ -67,13 +68,10 @@ class MemoryTokens implements LinearTokenStore {
   listOrphans(): Promise<[]> {
     return Promise.resolve([])
   }
-  deleteIfUnchanged(): Promise<null> {
-    return Promise.resolve(null)
-  }
   /** No lock without Postgres — the fence is the whole point, so these paths are pinned in the
-   *  integration suite. Here the answer is "owned", the fail-closed side. */
-  withIdentityOwnership<T>(_identity: unknown, act: (owned: boolean) => Promise<T>): Promise<T> {
-    return act(true)
+   *  integration suite. Here `owned` is the fail-closed answer and nothing is ever claimed. */
+  withIdentityLock<T>(_identity: unknown, act: (section: LinearIdentitySection) => Promise<T>): Promise<T> {
+    return act({ claim: () => Promise.resolve(null), owned: () => Promise.resolve(true) })
   }
 }
 

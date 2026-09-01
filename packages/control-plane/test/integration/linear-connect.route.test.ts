@@ -605,8 +605,7 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
       put: (i, m) => base.put(i, m),
       delete: (i) => base.delete(i),
       listOrphans: (c, s, l) => base.listOrphans(c, s, l),
-      deleteIfUnchanged: (i, u) => base.deleteIfUnchanged(i, u),
-      withIdentityOwnership: (i, act) => base.withIdentityOwnership(i, act),
+      withIdentityLock: (i, act) => base.withIdentityLock(i, act),
       ...overrides
     }
   }
@@ -760,6 +759,112 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
     expect(h.linear.count('/oauth/revoke')).toBe(0)
   })
 
+  it('never revokes when the SAME organization re-grants between the snapshot and the claim', async () => {
+    // The gap that survived the row-level guard. The ownership question deliberately does not count
+    // the caller's own organization — a disconnect must not see the row it is itself removing — so
+    // with the claim outside the lock, a same-org retry could re-grant in between and the sweep
+    // would read "unowned" and revoke the authorization backing that brand-new grant. Under one
+    // uninterrupted hold the retry cannot land there at all: it needs the same lock.
+    const h = await harness()
+    await putGrant(h, DEFAULT_ORG_ID, WORKSPACE)
+    const store = h.app.deps.repos.linearToken
+    const identity = { orgId: OrgId(DEFAULT_ORG_ID), clientId: APP.clientId, organizationId: WORKSPACE }
+    const snapshot = await store.listOrphans(APP.clientId, new Date(), 100)
+    expect(snapshot.map((c) => c.identity.organizationId)).toEqual([WORKSPACE])
+
+    // The retry wins the race to the lock and re-grants — exactly what §7.1 step 1 does.
+    await store.put(identity, {
+      accessToken: 'access_retry',
+      refreshToken: 'refresh_retry',
+      expiresAt: new Date(Date.now() + 86_400_000)
+    })
+
+    // The sweep proceeds on its now-stale snapshot.
+    await new LinearOrphanTokenSweeper({
+      app: APP,
+      tokens: storeWith(store, { listOrphans: () => Promise.resolve(snapshot) }),
+      service: new LinearTokenService({
+        app: APP,
+        tokens: store,
+        api: new LinearApiClient({ fetchImpl: h.linear.fetchImpl, clock }),
+        clock
+      }),
+      clock,
+      graceMs: 0
+    }).tick()
+
+    // The claim finds the row moved on, so nothing was collected and nothing was revoked.
+    expect((await grantRow(WORKSPACE))!.accessToken).toBe('access_retry')
+    expect(h.linear.count('/oauth/revoke')).toBe(0)
+  })
+
+  it('holds the claim and the ownership question in ONE hold a re-grant cannot enter', async () => {
+    // The stronger statement, and the one that actually distinguishes one hold from two: a same-org
+    // re-grant must not be able to COMMIT between the claim and the ownership question. That is the
+    // exact shape of the bug — a fresh row, committed and visible, that the ownership query then
+    // ignores because it excludes the caller's own organization — and the ordering above cannot
+    // catch it, since a `put` before the claim simply moves `updatedAt` and fails the claim.
+    const h = await harness()
+    await putGrant(h, DEFAULT_ORG_ID, WORKSPACE)
+    const store = h.app.deps.repos.linearToken
+    const identity = { orgId: OrgId(DEFAULT_ORG_ID), clientId: APP.clientId, organizationId: WORKSPACE }
+    const snapshot = await store.listOrphans(APP.clientId, new Date(), 100)
+
+    let landedInsideSection: boolean | undefined
+    let retry: Promise<void> | undefined
+    let holds = 0
+    const probing = storeWith(store, {
+      listOrphans: () => Promise.resolve(snapshot),
+      withIdentityLock: (i, act) => (
+        holds++,
+        store.withIdentityLock(i, (section) =>
+          act({
+            claim: async (updatedAt) => {
+              const removed = await section.claim(updatedAt)
+              // Fire a re-grant right here and give it a real chance. NOT awaited: it needs the very
+              // lock this section holds, so awaiting it would deadlock against the fence under test.
+              let landed = false
+              retry = store
+                .put(identity, {
+                  accessToken: 'access_retry',
+                  refreshToken: 'r',
+                  expiresAt: new Date(Date.now() + 86_400_000)
+                })
+                .then(() => {
+                  landed = true
+                })
+              await new Promise((r) => setTimeout(r, 250))
+              landedInsideSection = landed
+              return removed
+            },
+            owned: () => section.owned()
+          })
+        )
+      )
+    })
+
+    await new LinearOrphanTokenSweeper({
+      app: APP,
+      tokens: probing,
+      service: new LinearTokenService({
+        app: APP,
+        tokens: store,
+        api: new LinearApiClient({ fetchImpl: h.linear.fetchImpl, clock }),
+        clock
+      }),
+      clock,
+      graceMs: 0
+    }).tick()
+    await retry
+
+    // THE FENCE, two ways. First structurally: the whole collection is ONE acquisition, so there is
+    // no "between the claim and the question" for a re-grant to commit in — which is the only shape
+    // the bug had, since a `put` before the claim merely moves `updatedAt` and fails it.
+    expect(holds).toBe(1)
+    // And behaviourally: while that hold is open a same-org re-grant genuinely cannot land.
+    expect(landedInsideSection).toBe(false)
+  })
+
   it('never revokes when another organization wins the identity AFTER the row was claimed', async () => {
     // The last window the row-level guard cannot see. A different organization completing a connect
     // for the same (clientId, organizationId) touches NONE of this organization's rows, so the
@@ -772,12 +877,20 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
 
     let winnerOrg: string | undefined
     const racing = storeWith(store, {
-      deleteIfUnchanged: async (identity, updatedAt) => {
-        const removed = await store.deleteIfUnchanged(identity, updatedAt)
-        // The winner lands in exactly the gap: after the claim, before the revoke decision.
-        winnerOrg = await admitWinnerElsewhere(WORKSPACE)
-        return removed
-      }
+      withIdentityLock: (identity, act) =>
+        store.withIdentityLock(identity, async (section) =>
+          act({
+            claim: async (updatedAt) => {
+              const removed = await section.claim(updatedAt)
+              // The winner lands in exactly the gap the old split left open: after the claim,
+              // before the ownership question. Under one hold this can only be a Bot row appearing
+              // (a token `put` would block), which is precisely the cross-org winner's create tail.
+              winnerOrg = await admitWinnerElsewhere(WORKSPACE)
+              return removed
+            },
+            owned: () => section.owned()
+          })
+        )
     })
     await new LinearOrphanTokenSweeper({
       app: APP,
@@ -813,7 +926,7 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
     let claimed = false
     let claim: Promise<void> | undefined
 
-    await store.withIdentityOwnership(identity, async () => {
+    await store.withIdentityLock(identity, async () => {
       // A different organization tries to claim the same workspace while the lock is held. It is
       // deliberately NOT awaited here: the lock lives with this transaction, so waiting for a
       // contender inside it would deadlock against the very fence under test.

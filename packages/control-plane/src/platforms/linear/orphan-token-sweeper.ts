@@ -95,26 +95,26 @@ export class LinearOrphanTokenSweeper implements CpBackgroundLoop {
       try {
         // CLAIM BEFORE ACTING. A retried connect can re-grant this identity between the snapshot
         // above and this line — §7.1's step-1 upsert is exactly that write — and the sweep must not
-        // then revoke the FRESH token upstream or delete the row that now backs a live install. The
-        // guarded delete serializes against that `put` on the row, so either it removes precisely
-        // the grant it selected (and returns it), or it removes nothing and this candidate is
-        // simply skipped; the next pass re-evaluates it from scratch.
-        const removed = await this.deps.tokens.deleteIfUnchanged(identity, updatedAt)
-        if (!removed) continue
-        // The row is gone — correct either way, it was dead weight in its own organization. The
-        // REVOKE is the irreversible half, and its question is global: revoking acts on the
-        // app↔workspace grant, so it must be decided against other organizations' state, not this
-        // row's. That answer cannot be carried down from the listing — a different organization can
-        // complete a connect for this same workspace without touching anything the guarded delete
-        // above looks at — so it is re-asked durably, under the identity's advisory lock, with the
-        // revoke itself inside that lock. Releasing first would only narrow the window: a winner
-        // admitted in between still loses the grant it just obtained.
-        const revoked = await this.deps.tokens.withIdentityOwnership(identity, async (owned) => {
-          if (owned) return false
+        // then revoke the FRESH token upstream or delete the row that now backs a live install.
+        // ONE HOLD for the whole collection. The claim, the ownership question and the revoke are
+        // steps of a single decision, and every gap between them is a window where a connect for
+        // this identity lands and turns the answer stale — including a SAME-org retry, which the
+        // ownership query deliberately does not count (it must not count the row a disconnect is
+        // itself removing). Under the lock no claimant can interleave, so "unowned" stays true for
+        // as long as it takes to act on it.
+        const outcome = await this.deps.tokens.withIdentityLock(identity, async (section) => {
+          // Still the row the snapshot selected? A `put` that beat us to the lock moved it on.
+          const removed = await section.claim(updatedAt)
+          if (!removed) return null
+          // The row is gone — correct either way, it was dead weight in its own organization. The
+          // REVOKE is the irreversible half, and its question is global: it acts on the
+          // app↔workspace grant, not on this tenant's copy of it.
+          if (await section.owned()) return false
           return this.deps.service.revokeAccessToken(removed.accessToken, identity)
         })
+        if (outcome === null) continue
         this.deps.log?.info(
-          { orgId: identity.orgId, organizationId: identity.organizationId, revoked },
+          { orgId: identity.orgId, organizationId: identity.organizationId, revoked: outcome },
           'linear-orphan-token: collected a grant no bot references'
         )
       } catch (err) {

@@ -60,11 +60,14 @@ const DEFAULT_EXPIRES_IN_SEC = 24 * 60 * 60
  * revokes while holding the identity's advisory lock) until the transaction budget killed it. Well
  * under that budget, so the HTTP call always loses the race and surfaces as `unreachable`.
  */
-const REQUEST_TIMEOUT_MS = 10_000
+export const LINEAR_API_REQUEST_TIMEOUT_MS = 10_000
 
 /** `AbortSignal.timeout` rejects with a TimeoutError, which every caller here already maps to
  *  `unreachable` — the honest answer for "we never heard back". */
-const withTimeout = (init: RequestInit): RequestInit => ({ ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+const withTimeout = (init: RequestInit): RequestInit => ({
+  ...init,
+  signal: AbortSignal.timeout(LINEAR_API_REQUEST_TIMEOUT_MS)
+})
 
 interface TokenResponse {
   access_token?: unknown

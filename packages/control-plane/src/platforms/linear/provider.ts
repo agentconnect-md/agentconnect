@@ -367,8 +367,11 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
               const connection = connectionOf(bot)
               if (!connection) return
               if (tokenService) {
-                await tokens.withIdentityOwnership(connection, async (owned) => {
-                  if (!owned) await tokenService.revoke(connection)
+                // No `claim` here: this row is being dropped outright below, and the ownership
+                // question deliberately does not count the caller's own organization — so asking it
+                // before removing the row is exactly right.
+                await tokens.withIdentityLock(connection, async (section) => {
+                  if (!(await section.owned())) await tokenService.revoke(connection)
                 })
               }
               await tokens.delete(connection)

@@ -715,12 +715,18 @@ winner's Bot is alive:
   over its result: the oldest stale rows are overwhelmingly healthy installs,
   so a batch taken before filtering is spent on them and the orphans behind
   them are never reached.
-- **Claim, then act:** the grace window is a heuristic, not a lock — a retry
-  can re-grant a long-stale identity at any moment. So each row is deleted
-  under a condition on the `updatedAt` the snapshot saw, in one statement that
-  returns what it removed; zero rows affected ⇒ skip. The upstream revoke uses
-  the token that claim returned, so it can never revoke a grant that arrived
-  after the snapshot.
+- **Claim, ask and act in ONE hold:** the grace window is a heuristic, not a
+  lock — a retry can re-grant a long-stale identity at any moment. So the
+  whole collection happens inside a single acquisition of the identity lock:
+  the row is deleted under a condition on the `updatedAt` the snapshot saw
+  (zero rows affected ⇒ skip), the ownership question is asked, and the
+  upstream revoke is made, without ever releasing. Splitting those was a bug
+  in both directions — a **same-org** retry could commit a fresh grant in the
+  gap between the claim and the question, and because the question excludes
+  the caller's own organization (so a disconnect does not count the row it is
+  removing) the sweep read "unowned" and revoked the authorization backing
+  that brand-new grant. The revoke uses the token the claim returned, so it
+  can never act on a grant that arrived after the snapshot.
 - **Delete locally, unconditionally:** the row is dead weight in its
   organization regardless of who else holds the identity.
 - **Revoke upstream only when no organization relies on this app's
@@ -740,7 +746,13 @@ winner's Bot is alive:
   catches a winner that is mid-callback, having written its grant but not yet
   its Bot. §7.1 step 1's upsert takes the same lock, which is what makes the
   answer stable for the duration — and, because that write always precedes
-  the create tail, locking it fences bot admission too.
+  the create tail, locking it fences bot admission too. That upsert is
+  therefore a **waiter**, and its transaction budget must exceed the longest
+  a sweep may hold the lock (one bounded upstream call): expiring while
+  queued would abort a callback that has _already spent its OAuth
+  authorization code_, which Linear will not honour twice. The three
+  constants — API request timeout &lt; maximum hold &lt; waiter budget — live
+  beside the lock and are asserted in a unit test so they cannot drift apart.
 
 The same sweep is the backstop for a failed best-effort `onBotDelete`
 (§7.4). The funnel row's TTL reaper separately bounds stale connect

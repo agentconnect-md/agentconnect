@@ -4395,14 +4395,43 @@ export interface LinearTokenRecord extends LinearTokenMaterial {
  * One sweep candidate. It carries NO global ownership answer on purpose: whether an upstream revoke
  * is safe is a question about other organizations, and any answer computed at listing time can be
  * falsified before the sweeper acts on it — by a connect that never touches this row. That question
- * has exactly one safe home, {@link LinearTokenStore.withIdentityOwnership}, and keeping it off this
+ * has exactly one safe home, {@link LinearTokenStore.withIdentityLock}, and keeping it off this
  * type is what stops a caller from reaching for the cheap, stale version.
  */
+/**
+ * What a holder of the identity's advisory lock may do, for as long as it holds it
+ * ({@link LinearTokenStore.withIdentityLock}). Both answers are only sound under that lock, which
+ * is why they are reachable only from inside it.
+ */
+export interface LinearIdentitySection {
+  /**
+   * Delete the row ONLY while it still carries `updatedAt`, returning the material it removed (or
+   * `null` when a concurrent write moved it on). The guard is belt-and-braces under the lock — a
+   * re-grant cannot land while it is held — and remains the load-bearing check against anything
+   * that reaches the row without taking the lock.
+   *
+   * Returning the removed material is what lets an upstream revoke follow safely: it revokes
+   * precisely the token that was collected, never one that arrived after the snapshot.
+   */
+  claim(updatedAt: Date): Promise<LinearTokenMaterial | null>
+  /**
+   * Does ANY organization rely on this app's authorization of this workspace? The ONLY safe basis
+   * for an upstream `POST /oauth/revoke`, because that call acts on the app↔workspace grant rather
+   * than on one tenant's copy of it.
+   *
+   * True when any organization's Bot holds the D6 identity, OR any OTHER organization holds a token
+   * row for it. The caller's own organization is excluded so a disconnect does not count the row it
+   * is itself removing; a sweep calls {@link LinearIdentitySection.claim} first, which removes its
+   * own row, so the exclusion costs it nothing.
+   */
+  owned(): Promise<boolean>
+}
+
 export interface LinearOrphanTokenRow {
   identity: LinearConnectionIdentity
   /** The snapshot this candidate was selected under. Hand it back to
-   *  {@link LinearTokenStore.deleteIfUnchanged}: between the sweep's read and its act, a retried
-   *  connect can re-grant the same identity, and revoking THAT token would kill a live install. */
+   *  {@link LinearIdentitySection.claim}: between the sweep's read and its act, a retried connect
+   *  can re-grant the same identity, and revoking THAT token would kill a live install. */
   updatedAt: Date
 }
 
@@ -4422,27 +4451,21 @@ export interface LinearTokenStore {
    */
   listOrphans(clientId: string, staleBefore: Date, limit: number): Promise<LinearOrphanTokenRow[]>
   /**
-   * Delete the row ONLY while it still carries `updatedAt`, returning the material it removed (or
-   * `null` when a concurrent write moved it on). ONE statement, so a re-granting {@link
-   * LinearTokenStore.put} serializes against it: either the sweep deletes the exact row it selected,
-   * or it deletes nothing and the fresh grant stands untouched.
+   * Run `act` inside ONE hold of the identity's advisory lock
+   * (`persistence/linear-identity-lock.ts`), giving it the two operations that are only sound while
+   * that lock is held. {@link LinearTokenStore.put} takes the same lock, and §7.1 fixes it before
+   * any Bot exists, so nothing can claim this identity for the duration.
    *
-   * Returning the removed material is what lets an upstream revoke follow safely — it revokes
-   * precisely the token that was collected, never one that arrived after the snapshot.
+   * Both operations live behind this one entry point BECAUSE the hold has to be uninterrupted. When
+   * the claim sat outside the lock, a same-org retry could re-grant in the gap between it and the
+   * ownership query — and since that query excludes the caller's own organization (so that {@link
+   * LinearIdentitySection.owned} does not count the very row a disconnect is about to remove), the
+   * sweep read "unowned" and revoked the authorization backing the brand-new grant.
    */
-  deleteIfUnchanged(identity: LinearConnectionIdentity, updatedAt: Date): Promise<LinearTokenMaterial | null>
-  /**
-   * Run `act` under the identity's advisory lock (`persistence/linear-identity-lock.ts`), handing it
-   * the GLOBAL ownership answer as computed inside that lock — "does ANY organization rely on this
-   * app's authorization of this workspace?".
-   *
-   * This is the ONLY safe basis for an upstream `POST /oauth/revoke`, because that call acts on the
-   * app↔workspace grant rather than on one tenant's copy: a listing-time answer can be falsified by
-   * another organization completing a connect, which touches none of this organization's rows and so
-   * survives every row-level guard. {@link LinearTokenStore.put} takes the same lock, and §7.1 fixes
-   * it before any Bot exists, so the answer cannot change while `act` runs.
-   */
-  withIdentityOwnership<T>(identity: LinearConnectionIdentity, act: (owned: boolean) => Promise<T>): Promise<T>
+  withIdentityLock<T>(
+    identity: LinearConnectionIdentity,
+    act: (section: LinearIdentitySection) => Promise<T>
+  ): Promise<T>
 }
 
 /** Terminal state of one connect round trip. The funnel row SURVIVES its callback — the tab is a
