@@ -1168,7 +1168,11 @@ tile.
   disconnect (bot delete) revoke convergence.
 - **Live checklist:** real OAuth app in a scratch Linear workspace —
   delegate, mention, follow-up, stop, redelivery replay (Linear's webhook
-  console), token refresh across the 24 h boundary, workspace revoke.
+  console), token refresh across the 24 h boundary, workspace revoke. Run the
+  loop once against an agent served by a managed daemon-pool member as well as
+  a self-hosted daemon — the pool leg additionally proves the deployment's
+  egress policy admits `api.linear.app` and that `linearcred` brokerage works
+  through pool placement.
 
 ## 15. Open questions
 
