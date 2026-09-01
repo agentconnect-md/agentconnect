@@ -2,10 +2,12 @@ import { lstatSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { WorkspaceFs } from './workspace-fs.js'
 
-// The on-disk shape of an agent's secondary roots (multi-repository-workspaces.md §"Directory
+// The on-disk shape of an agent's workspace roots (multi-repository-workspaces.md §"Directory
 // layout"), separate from the manager so the launch path can read it without the whole workspace
 // module: a sandboxed runtime's boundary is computed from these paths before any session exists.
 
+/** The agent's own checkout, the root every session worktree is cut from. */
+export const PRIMARY_CHECKOUT_DIR = 'workspace'
 /** Secondary roots live under one agent-owned parent, one subtree per authorized repository. */
 export const SECONDARY_ROOTS_DIR = 'repos'
 /** What a secondary root's subtree records about the checkout beside it. */
@@ -22,6 +24,11 @@ const REPO_SEGMENT = /^[A-Za-z0-9._-]+$/
 /** A plain path segment that is also a legal GitHub owner or repository name. */
 export function isRepoSegment(value: string | undefined): value is string {
   return value !== undefined && value !== '.' && value !== '..' && REPO_SEGMENT.test(value)
+}
+
+/** `<agentRoot>/workspace` — the primary checkout, whether or not it holds a repository. */
+export function primaryCheckoutIn(agentRoot: string): string {
+  return join(agentRoot, PRIMARY_CHECKOUT_DIR)
 }
 
 /** `<agentRoot>/repos` — the parent every secondary root's subtree hangs off. */

@@ -12,7 +12,7 @@ import {
   runtimeHomePath
 } from '../runtimes/runtime-home.js'
 import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/probe.js'
-import { secondaryCheckoutsIn } from '../workspace/secondary-layout.js'
+import { primaryCheckoutIn, secondaryCheckoutsIn } from '../workspace/secondary-layout.js'
 import {
   CLAUDE_PROFILE_ENV,
   claudeProtectedSettings,
@@ -375,6 +375,21 @@ export function prepareRuntimeLaunch(opts: {
       return trusted
     })
   )
+  // An isolated session's cwd is its own worktree, but that worktree's index — and every ref and
+  // object its commits write — live in the OWNER checkout's `.git`, which no other carve-back
+  // covers. Without these the confined runtime cannot even run `git status` in its own worktree.
+  const gitMetadataWriteRoots = compactReadRoots(
+    [primaryCheckoutIn(agentRoot), ...secondaryCheckoutsIn(agentRoot)]
+      .map((checkout) => join(checkout, '.git'))
+      .filter((gitDir) => existsSync(gitDir) && lstatSync(gitDir).isDirectory())
+      .map((gitDir) => {
+        const trusted = safeRoot(gitDir, 'git metadata root')
+        if (trusted === agentRoot || !inside(agentRoot, trusted)) {
+          throw new Error(`git metadata root "${trusted}" is outside the agent root`)
+        }
+        return trusted
+      })
+  )
   const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
   if (claudeRuntime) {
     // Anthropic profile JSON may live in the agent-writable private HOME and may
@@ -412,7 +427,12 @@ export function prepareRuntimeLaunch(opts: {
     runtimeHome,
     mcpSocketPath: opts.mcpSocketPath,
     trustedReadRoots: [...trustedRuntimeReadRoots, ...providerCredentialReadRoots],
-    trustedWriteRoots: [...credentialWritableRoots, ...trustedWorkspaceWriteRoots, ...packageCacheWriteRoots]
+    trustedWriteRoots: [
+      ...credentialWritableRoots,
+      ...trustedWorkspaceWriteRoots,
+      ...packageCacheWriteRoots,
+      ...gitMetadataWriteRoots
+    ]
   })
   // SRT write roots must exist before spawn.
   // This also initializes workspace/memory for a newly-created agent.
@@ -433,6 +453,10 @@ export function prepareRuntimeLaunch(opts: {
     // plus trusted executable/package roots above; never an agent-provided path.
     denyRead: denyReadRoots,
     allowRead: boundary.allowRead,
+    // A Git metadata root is opened for the index, refs, and objects alone. SRT's own mandatory
+    // protection only covers a `.git` DIRECTORY below the cwd, which an isolated worktree's link
+    // file is not, so hooks and config are closed here instead.
+    denyWrite: gitMetadataWriteRoots.flatMap((gitDir) => [join(gitDir, 'hooks'), join(gitDir, 'config')]),
     gitSafeDirectories: boundary.gitSafeDirectories
   })
   const protectedCredentialRoots = compactReadRoots([
@@ -442,17 +466,12 @@ export function prepareRuntimeLaunch(opts: {
     ...privateCodexStateRoots
   ])
   if (credentialProfile === 'codex') {
-    // Codex's :workspace profile protects `.git`. Re-open only the canonical
-    // metadata directory already covered by the outer sandbox's writable root;
-    // session worktree indexes and refs live below this main checkout directory.
-    // A secondary root materialized after this spawn is reopened on the next one.
-    const gitMetadataOwners = [...boundary.gitSafeDirectories, ...secondaryCheckoutsIn(agentRoot)]
-    const writableGitMetadataRoots = gitMetadataOwners.flatMap((workspaceRoot) => {
-      const gitDir = join(workspaceRoot, '.git')
-      if (!existsSync(gitDir) || !lstatSync(gitDir).isDirectory()) return []
-      const canonical = realpathSync(gitDir)
-      return boundary.writable.some((root) => inside(root, canonical)) ? [canonical] : []
-    })
+    // Codex's :workspace profile protects `.git`. Re-open exactly the metadata directories the
+    // outer sandbox already made writable — the outer boundary stays the one that closes hooks and
+    // config. A secondary root materialized after this spawn is reopened on the next one.
+    const writableGitMetadataRoots = gitMetadataWriteRoots.filter((gitDir) =>
+      boundary.writable.some((root) => inside(root, gitDir))
+    )
     applyCodexPermissionProfile(env, {
       protectedRoots: protectedCredentialRoots,
       writableGitMetadataRoots,

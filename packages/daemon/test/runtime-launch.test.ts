@@ -349,6 +349,43 @@ describe('prepareRuntimeLaunch', () => {
     expect(writes.some((value) => value.includes(`"${realpathSync(join(cwd, '.git'))}" = "write"`))).toBe(true)
   })
 
+  // An isolated session's `.git` is a link FILE, so the checkout that owns its index, refs, and
+  // objects sits outside the cwd — and outside every other carve-back, which left a confined
+  // runtime unable to run any Git write in its own worktree.
+  it('carves back the owner checkout .git for a session worktree cwd, hooks and config excepted', () => {
+    const { scopeDir, hostHome } = fixture()
+    const primaryGit = join(scopeDir, 'workspace', '.git')
+    const worktrees = join(scopeDir, 'worktrees')
+    const cwd = join(worktrees, 'session-1')
+    mkdirSync(join(primaryGit, 'worktrees', 'session-1'), { recursive: true })
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(cwd, '.git'), `gitdir: ${join(primaryGit, 'worktrees', 'session-1')}\n`)
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      trustedWorkspaceWriteRoots: [worktrees, join(scopeDir, 'repos')],
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const policy = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
+    expect(coveredBy(policy.filesystem.allowWrite, realpathSync(primaryGit))).toBe(true)
+    // The working tree beside it stays outside the boundary: isolation is the point of the worktree.
+    expect(coveredBy(policy.filesystem.allowWrite, realpathSync(join(scopeDir, 'workspace')))).toBe(false)
+    // SRT's own mandatory protection is derived from the cwd, which holds no `.git` DIRECTORY here.
+    expect(policy.filesystem.denyWrite).toContain(join(realpathSync(primaryGit), 'hooks'))
+    expect(policy.filesystem.denyWrite).toContain(join(realpathSync(primaryGit), 'config'))
+    const profile = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] }
+    const writes = profile.configOverrides.filter((value) => value.includes('filesystem='))
+    expect(writes.some((value) => value.includes(`"${realpathSync(primaryGit)}" = "write"`))).toBe(true)
+  })
+
   it('rejects root-level protected paths instead of generating an ineffective policy', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     expect(() =>
