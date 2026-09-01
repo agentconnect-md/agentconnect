@@ -32,7 +32,12 @@ function permissionParams(): RequestPermissionRequest {
   } as unknown as RequestPermissionRequest
 }
 
-async function world(over?: { route?: ReturnType<typeof vi.fn>; noChannel?: boolean; platform?: string }) {
+async function world(over?: {
+  route?: ReturnType<typeof vi.fn>
+  noChannel?: boolean
+  platform?: string
+  requesterId?: string
+}) {
   const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
   const conn = fakeSlackConn()
   const route =
@@ -50,7 +55,8 @@ async function world(over?: { route?: ReturnType<typeof vi.fn>; noChannel?: bool
       agentName: 'Butler',
       platform: over?.platform ?? 'webchat',
       channel: 'C0',
-      requesterId: undefined,
+      integrationId: over?.platform === 'slack' ? 'int-1' : undefined,
+      requesterId: over?.requesterId,
       approvalSurfaceSuppressed: false
     },
     approval: { waitMs: 0, depth: 0 },
@@ -89,16 +95,25 @@ const requestIdOf = (route: ReturnType<typeof vi.fn>): string =>
 
 describe('approval DM (slack-approval-dm.md §5–§6)', () => {
   it('routes, DMs the target, and resolves on the verified target click', async () => {
-    const w = await world({ platform: 'slack' })
+    const w = await world({ platform: 'slack', requesterId: 'U1' })
     const decided = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
     await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1))
     expect(w.conn.openDirectMessage).toHaveBeenCalledWith('U1')
     // Top-level message: no thread ts.
     expect((w.conn.postBlocks.mock.calls[0] as unknown[])[3]).toBeUndefined()
-    // §5.2 intro: session deep link plus a quote of the triggering Slack message.
+    // §5.2 intro: session deep link plus — for the message's own author — its quote.
     const posted = JSON.stringify((w.conn.postBlocks.mock.calls[0] as unknown[])[1])
     expect(posted).toContain('https://console.example/sessions/outward-1')
     expect(posted).toContain('> please run ls /')
+    // A recipient who is NOT the author never receives the text (Slack ACL stays intact).
+    const other = await world({ platform: 'slack', requesterId: 'U-someone-else' })
+    void other.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
+    await vi.waitFor(() => expect(other.conn.postBlocks).toHaveBeenCalledTimes(1))
+    const otherPosted = JSON.stringify((other.conn.postBlocks.mock.calls[0] as unknown[])[1])
+    expect(otherPosted).toContain('https://console.example/sessions/outward-1')
+    expect(otherPosted).not.toContain('please run ls /')
+    await other.coordinator.releaseEditorPermissions(AGENT, ACP_SESSION)
+    await other.store.close()
     const requestId = requestIdOf(w.route)
 
     await w.coordinator.handlePermissionChoice({ requestId, optionId: 'o-allow', actor: { userId: 'U1' } })

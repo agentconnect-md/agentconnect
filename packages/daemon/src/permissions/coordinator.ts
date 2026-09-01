@@ -449,9 +449,15 @@ export class PermissionCoordinator {
       fromSlack && p.conn instanceof SlackConnection
         ? slackThreadUrl(p.conn.workspaceUrl, p.plan.channel, p.plan.thread ?? p.plan.statusThread)
         : undefined
-    // Quote the triggering Slack message itself (§5.2 "forwarded message") — the
-    // recipient decides from the DM, so the ask must be readable without a hop.
-    const sourceText = fromSlack ? p.entry.msg.text : undefined
+    // Quote the triggering Slack message only for its own author (§5.2): routing proves
+    // canEdit, not that the recipient may read the source conversation — a private
+    // channel's text must not ride a DM past Slack's ACL. Same integration ⇒ same
+    // workspace, so the member-id comparison is sound; everyone else keeps the
+    // permalink, where Slack enforces access itself.
+    const sourceText =
+      fromSlack && target.integrationId === p.plan.integrationId && target.userId === p.plan.requesterId
+        ? p.entry.msg.text
+        : undefined
     const intro = buildApprovalDmIntro({
       agentName: p.plan.agentName,
       requesterName,
