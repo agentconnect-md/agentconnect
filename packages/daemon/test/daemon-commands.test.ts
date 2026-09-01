@@ -1939,7 +1939,7 @@ describe('Slack interactive status bar', () => {
       sessionId: 'acp-1',
       params: { options: [{ optionId: 'allow_once', name: 'Allow Once', kind: 'allow_once' }] },
       evaluationParams: {},
-      conn: { updateBlocks },
+      conn: { updateBlocks, workspaceId: () => 'T1' },
       channel: 'C1',
       ts: 'card-1',
       resolve: permissionResolved
@@ -1963,7 +1963,7 @@ describe('Slack interactive status bar', () => {
       propName: 'language',
       kind: 'enum',
       approval: false,
-      conn: { updateBlocks },
+      conn: { updateBlocks, workspaceId: () => 'T1' },
       channel: 'C1',
       ts: 'card-2',
       resolve: elicitationResolved

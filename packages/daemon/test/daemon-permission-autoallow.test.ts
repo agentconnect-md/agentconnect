@@ -172,7 +172,13 @@ describe('an approval publishes its resolver before the durable write', () => {
     await released
     await expect(permissionResult).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
     await vi.waitFor(() =>
-      expect(store.resolvePermissionRequest).toHaveBeenCalledWith('agent-1', requestId, 'expired', expect.any(Number))
+      expect(store.resolvePermissionRequest).toHaveBeenCalledWith(
+        'agent-1',
+        requestId,
+        'expired',
+        expect.any(Number),
+        undefined
+      )
     )
     expect((daemon as any).permissions.pendingEditorPermissions.size).toBe(0)
   })

@@ -32,6 +32,12 @@ async function sharedMembers(first: string, second: string): Promise<[LocalStore
   ]
 }
 
+/** Undo the v15 approval-DM columns, so a fixture looks like a store an older daemon wrote. */
+const dropApprovalDmColumns = (db: DatabaseSync): void => {
+  for (const column of ['resolvedBy', 'resolvedByName', 'notifyIntegrationId', 'notifyChannel', 'notifyTs'])
+    db.exec(`ALTER TABLE permission_requests DROP COLUMN ${column}`)
+}
+
 /** Undo the v11 transcript fence, so a fixture looks like a store an older daemon wrote. */
 const dropTranscriptOrg = (db: DatabaseSync): void => {
   db.exec(`
@@ -89,6 +95,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     await (await LocalStore.open(path)).close()
     const old = new DatabaseSync(path)
     old.exec('ALTER TABLE permission_requests DROP COLUMN ownerId')
+    dropApprovalDmColumns(old)
     old.exec('DROP INDEX session_metadata_outbox_attempt')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN failedAttempts')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN nextAttemptAt')
@@ -121,6 +128,10 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     const purgeColumns = columnsOf('session_purges')
     upgraded.close()
     expect(columns).toContain('ownerId')
+    // Approval decisions record who decided; a DM card handle survives a restart (§5.4/§6.1).
+    expect(columns).toEqual(
+      expect.arrayContaining(['resolvedBy', 'resolvedByName', 'notifyIntegrationId', 'notifyChannel', 'notifyTs'])
+    )
     // Session-metadata snapshots are leased per pool member too (#1023).
     expect(outboxColumns).toEqual(expect.arrayContaining(['failedAttempts', 'nextAttemptAt', 'ownerId', 'claimedAt']))
     // Recovery ownership: a pool member must be able to tell its own rows from a peer's.
@@ -131,7 +142,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(cronColumns).toContain('definition')
     // Purge receipts are leased per pool member (#1032).
     expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
-    expect(userVersion(path)).toBe(14)
+    expect(userVersion(path)).toBe(15)
   })
 
   it.skipIf(pg)('never persists the CP routing map on a shared store, and still does on an owned one', async () => {
@@ -180,6 +191,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     dropTranscriptOrg(old)
     old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
+    dropApprovalDmColumns(old)
     old.exec('PRAGMA user_version = 5')
     old.close()
 
@@ -195,7 +207,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(await upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
     await upgraded.close()
 
-    expect(userVersion(path)).toBe(14)
+    expect(userVersion(path)).toBe(15)
   })
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', async () => {
@@ -226,6 +238,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     dropTranscriptOrg(old)
     old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
+    dropApprovalDmColumns(old)
     old.exec('PRAGMA user_version = 7')
     old.close()
 
@@ -247,7 +260,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
         .map((column) => column.name)
     expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
     expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
-    expect(userVersion(path)).toBe(14)
+    expect(userVersion(path)).toBe(15)
   })
 
   it('backfills a v11 store with the outward id its sessions were already reported under', async () => {
@@ -261,6 +274,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
       VALUES ('k2', 'bot-a', 'slack', 'C1', 'T2', NULL, 'idle', 100)`)
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
+    dropApprovalDmColumns(old)
     old.exec('PRAGMA user_version = 11')
     old.close()
 
@@ -271,7 +285,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect((await upgraded.getSession('k2'))?.sessionId).toBeNull()
     expect(await upgraded.ensureOutwardSessionId('k2', 'bot-a')).toMatch(/^[0-9a-f-]{36}$/)
     await upgraded.close()
-    expect(userVersion(path)).toBe(14)
+    expect(userVersion(path)).toBe(15)
   })
 
   // The regression that made `directDestination` reachable on fresh databases only: the step was
@@ -284,6 +298,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     old.exec(`INSERT INTO sessions (key, agentId, platform, channel, thread, acpSessionId, state, updatedAt)
       VALUES ('k1', 'bot-a', 'slack', 'C1', 'T1', 'acp-1', 'idle', 100)`)
+    dropApprovalDmColumns(old)
     old.exec('PRAGMA user_version = 12')
     old.close()
 
@@ -293,7 +308,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     await upgraded.setSessionClassification('k1', { sourceBindingKind: 'external', directDestination: true })
     expect(await upgraded.getSessionClassification('bot-a', 'acp-1')).toMatchObject({ directDestination: true })
     await upgraded.close()
-    expect(userVersion(path)).toBe(14)
+    expect(userVersion(path)).toBe(15)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', async () => {
@@ -596,6 +611,55 @@ describe('LocalStore', () => {
       { id: 'request-2', status: 'allowed', resolvedAt: 250 },
       { id: 'request-1', status: 'expired' }
     ])
+    await reopened.close()
+  })
+
+  it('records the decider and hands an orphaned DM card handle out exactly once', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-approval-dm-')), 'local.sqlite')
+    const s = await reopen(path)
+    const request = (id: string) => ({
+      id,
+      agentId: 'bot-a',
+      sessionId: 'session-1',
+      createdAt: 100,
+      requesterId: 'user-1',
+      requesterName: 'Ada',
+      command: 'Bash: pnpm test',
+      status: 'pending' as const,
+      resolvedAt: null
+    })
+    await s.createPermissionRequest(request('request-1'))
+    await s.createPermissionRequest(request('request-2'))
+
+    // The handle lands only while the row is still pending.
+    expect(await s.setPermissionRequestNotify('bot-a', 'request-1', 'int-1', 'D111', '1.100')).toBe(true)
+    expect(
+      await s.resolvePermissionRequest('bot-a', 'request-1', 'allowed', 250, {
+        resolvedBy: 'slack:T1:U1',
+        resolvedByName: 'Ada'
+      })
+    ).toBe(true)
+    expect(await s.setPermissionRequestNotify('bot-a', 'request-1', 'int-1', 'D111', '1.200')).toBe(false)
+    expect(await s.listPermissionRequests('bot-a')).toMatchObject([
+      { id: 'request-2', status: 'pending', resolvedBy: null },
+      { id: 'request-1', status: 'allowed', resolvedBy: 'slack:T1:U1', resolvedByName: 'Ada' }
+    ])
+
+    // A pending row's card is live — never handed to the orphan sweep.
+    expect(await s.setPermissionRequestNotify('bot-a', 'request-2', 'int-1', 'D222', '2.100')).toBe(true)
+    expect(await s.takeOrphanedPermissionNotices('int-1')).toMatchObject([
+      { id: 'request-1', notifyChannel: 'D111', notifyTs: '1.100', resolvedByName: 'Ada' }
+    ])
+    // Handed out once: the handle is cleared with the take.
+    expect(await s.takeOrphanedPermissionNotices('int-1')).toEqual([])
+
+    // A restart expires the pending row and its still-set handle becomes the orphan.
+    await s.close()
+    const reopened = await reopen(path)
+    expect(await reopened.takeOrphanedPermissionNotices('int-1')).toMatchObject([
+      { id: 'request-2', status: 'expired', notifyChannel: 'D222' }
+    ])
+    await reopened.clearPermissionRequestNotify('bot-a', 'request-2')
     await reopened.close()
   })
 
@@ -2516,6 +2580,7 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
     old.exec("INSERT INTO transcript_recipient (channel, thread, ts, agentId) VALUES ('C1', 'T1', '1', 'agent-b')")
     old.exec('ALTER TABLE sessions DROP COLUMN sessionId')
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
+    dropApprovalDmColumns(old)
     old.exec('PRAGMA user_version = 10')
     old.close()
     return path

@@ -183,6 +183,7 @@ import {
 import {
   OutputConverger,
   renderStatusBar,
+  buildApprovalOrphanCard,
   buildStatusBlocks,
   buildAttributionBlocks,
   type SlackAction,
@@ -300,6 +301,7 @@ import {
   RELAY_DAEMON_WS_PATH,
   K8S_SUPERVISOR,
   AGENT_CONFIG_REVISION_FEATURE,
+  APPROVAL_DM_ROUTE_V1_FEATURE,
   DAEMON_BOOTSTRAP_UPGRADE_FEATURE,
   GITCRED_GITHUB_V2_FEATURE,
   GITLAB_EFFECT_V1_FEATURE,
@@ -1417,7 +1419,10 @@ export class Daemon {
         discord: this.dcConnByIntegration,
         feishu: this.fsConnByIntegration
       }),
-      bindSlack: (integrationId, conn, botUserId) => this.bind(this.connByIntegration, integrationId, conn, botUserId),
+      bindSlack: (integrationId, conn, botUserId) => {
+        this.bind(this.connByIntegration, integrationId, conn, botUserId)
+        this.sweepOrphanedApprovalCards(integrationId, conn)
+      },
       bindTelegram: (integrationId, conn, botUsername) =>
         this.bind(this.tgConnByIntegration, integrationId, conn, botUsername),
       bindDiscord: (integrationId, conn, botUserId) =>
@@ -1456,6 +1461,27 @@ export class Daemon {
         this.commands.slackThreadSessions(shortcut, srcIntegrationIds),
       settleSlackSlot: (conn, a) => this.settleSlackSlot(conn as SlackConnection, a.channel, a.thread, a.exclude)
     }
+  }
+
+  /** Rewrite DM approval cards orphaned by a restart or takeover (slack-approval-dm.md §5.4):
+   *  the rows settled while no connection could edit their cards, so retire them now. */
+  private sweepOrphanedApprovalCards(integrationId: string, conn: SlackConnection): void {
+    void this.store
+      .takeOrphanedPermissionNotices(integrationId)
+      .then((rows) => {
+        for (const row of rows) {
+          void conn
+            .updateBlocks(
+              row.notifyChannel,
+              row.notifyTs,
+              buildApprovalOrphanCard(row.command, row.status, row.resolvedByName),
+              'Permission resolved',
+              true
+            )
+            .catch(() => {})
+        }
+      })
+      .catch((err) => this.log.warn(`orphaned approval-card sweep failed for "${integrationId}": ${formatErr(err)}`))
   }
 
   /** Point an integration at a live connection: one platform's binding map plus the bot
@@ -6596,7 +6622,7 @@ export class Daemon {
     } else if (payload.kind === 'permission-choice') {
       await this.permissions.handlePermissionChoice({ ...payload, actor })
     } else if (payload.kind === 'elicitation-choice') {
-      await this.permissions.handleElicitChoice({ requestId: payload.requestId, value: payload.value })
+      await this.permissions.handleElicitChoice({ requestId: payload.requestId, value: payload.value, actor })
     } else {
       await this.commands.handleStatusAction({ kind: 'cancel', sessionKey: msg.sessionKey, actor })
     }
@@ -7853,7 +7879,23 @@ export class Daemon {
       postCardSerialized: (p, post) => this.postCardSerialized(p, post),
       httpSlackSessionTarget: (p) => this.httpSlackSessionTarget(p),
       maskAgentSecrets: <T>(agentId: string, payload: T): T => this.maskAgentSecrets(agentId, payload),
-      logSessionAction: (verb, sessionKey, actor) => this.commands.logSessionAction(verb, sessionKey, actor)
+      logSessionAction: (verb, sessionKey, actor) => this.commands.logSessionAction(verb, sessionKey, actor),
+      // ── approval-DM routing (slack-approval-dm.md §4–§6) ──
+      cpApprovalRoute: () =>
+        this.cpClient?.supportsServerFeature?.(APPROVAL_DM_ROUTE_V1_FEATURE) === true ? this.cpClient : undefined,
+      orgForAgent: (agentId) => this.cpAgents?.orgForAgent(agentId) ?? this.cpCollab.orgForAgent(agentId),
+      sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
+      slackConnFor: (integrationId) => this.connByIntegration.get(integrationId),
+      approvalDmIntegrations: (agentId, preferred) => {
+        const live = (this.agents.get(agentId)?.integrations ?? [])
+          .filter((i) => i.platform === 'slack' && this.connByIntegration.has(i.id))
+          .map((i) => i.id)
+        return preferred && live.includes(preferred) ? [preferred, ...live.filter((id) => id !== preferred)] : live
+      },
+      // Unconditional (§5.3): a DM lives outside the session conversation, so the click's
+      // only route home is the block_id target — on the direct path it is simply unread.
+      slackDmSessionTarget: (p, integrationId) =>
+        encodeSharedSlackStatusTarget({ agentId: p.plan.agentId, integrationId, sessionKey: p.plan.sessionKey })
     }
   }
 

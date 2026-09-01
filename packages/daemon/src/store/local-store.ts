@@ -291,6 +291,20 @@ export interface PermissionRequestRecord {
   command: string
   status: PermissionRequestStatus
   resolvedAt: number | null
+  // Who decided (slack-approval-dm.md §6.1): `user:<id>` / `slack:<teamId>:<userId>`.
+  resolvedBy?: string | null
+  resolvedByName?: string | null
+}
+
+/** A pending approval's posted DM card — the §5.4 handle an orphan rewrite needs. */
+export interface PermissionNoticeRow {
+  id: string
+  agentId: string
+  status: PermissionRequestStatus
+  command: string
+  resolvedByName: string | null
+  notifyChannel: string
+  notifyTs: string
 }
 
 /**
@@ -843,7 +857,7 @@ function restrictPath(path: string, mode: number): void {
  * fresh databases and every established one fails at query time. `SCHEMA_MIGRATIONS`
  * asserts the two stay in lockstep for exactly that reason.
  */
-const SCHEMA_VERSION = 14
+const SCHEMA_VERSION = 15
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -979,7 +993,17 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
   // existing rows: absent keeps the CP's ordinary child inheritance, which is what they got.
   async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN directDestination INTEGER'),
   // Cluster skill tables are emitted by the current CREATE block after this step.
-  async () => undefined
+  async () => undefined,
+  // Approval decisions record who decided, and a DM card's handle survives a restart
+  // so an orphaned card can be rewritten (slack-approval-dm.md §5.4/§6.1).
+  async (db) =>
+    await db.exec(`
+      ALTER TABLE permission_requests ADD COLUMN resolvedBy TEXT;
+      ALTER TABLE permission_requests ADD COLUMN resolvedByName TEXT;
+      ALTER TABLE permission_requests ADD COLUMN notifyIntegrationId TEXT;
+      ALTER TABLE permission_requests ADD COLUMN notifyChannel TEXT;
+      ALTER TABLE permission_requests ADD COLUMN notifyTs TEXT;
+    `)
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1217,7 +1241,12 @@ export class LocalStore {
         command TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('pending', 'allowed', 'denied', 'expired')),
         resolvedAt INTEGER,
-        ownerId TEXT
+        ownerId TEXT,
+        resolvedBy TEXT,
+        resolvedByName TEXT,
+        notifyIntegrationId TEXT,
+        notifyChannel TEXT,
+        notifyTs TEXT
       );
       CREATE INDEX IF NOT EXISTS permission_requests_agent_created
         ON permission_requests (agentId, createdAt DESC);
@@ -1738,6 +1767,8 @@ export class LocalStore {
   }
 
   async createPermissionRequest(record: PermissionRequestRecord): Promise<void> {
+    // node:sqlite rejects bound params the statement never names — new rows start undecided anyway.
+    const { resolvedBy: _rb, resolvedByName: _rn, ...row } = record
     await this.db
       .prepare(
         `INSERT INTO permission_requests
@@ -1745,7 +1776,7 @@ export class LocalStore {
          VALUES
            (@id, @agentId, @sessionId, @createdAt, @requesterId, @requesterName, @command, @status, @resolvedAt, @ownerId)`
       )
-      .run({ ...record, ownerId: this.ownerId ?? null } as unknown as SqlParams)
+      .run({ ...row, ownerId: this.ownerId ?? null } as unknown as SqlParams)
     await this.prunePermissionRequestHistory(record.agentId)
   }
 
@@ -1780,16 +1811,68 @@ export class LocalStore {
     agentId: string,
     id: string,
     status: Exclude<PermissionRequestStatus, 'pending'>,
-    resolvedAt: number
+    resolvedAt: number,
+    by?: { resolvedBy: string | null; resolvedByName: string | null }
   ): Promise<boolean> {
     const result = await this.db
       .prepare(
-        "UPDATE permission_requests SET status = ?, resolvedAt = ? WHERE agentId = ? AND id = ? AND status = 'pending'"
+        `UPDATE permission_requests SET status = @status, resolvedAt = @resolvedAt,
+           resolvedBy = @resolvedBy, resolvedByName = @resolvedByName
+         WHERE agentId = @agentId AND id = @id AND status = 'pending'`
       )
-      .run(status, resolvedAt, agentId, id)
+      .run({
+        status,
+        resolvedAt,
+        agentId,
+        id,
+        resolvedBy: by?.resolvedBy ?? null,
+        resolvedByName: by?.resolvedByName ?? null
+      })
     const changed = Number(result.changes) === 1
     if (changed) await this.prunePermissionRequestHistory(agentId)
     return changed
+  }
+
+  /** Record a pending approval's DM card handle; false if the row already settled. */
+  async setPermissionRequestNotify(
+    agentId: string,
+    id: string,
+    integrationId: string,
+    channel: string,
+    ts: string
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE permission_requests SET notifyIntegrationId = ?, notifyChannel = ?, notifyTs = ?
+         WHERE agentId = ? AND id = ? AND status = 'pending'`
+      )
+      .run(integrationId, channel, ts, agentId, id)
+    return Number(result.changes) === 1
+  }
+
+  /** Drop the DM handle after its card has been rewritten to a terminal state. */
+  async clearPermissionRequestNotify(agentId: string, id: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE permission_requests SET notifyIntegrationId = NULL, notifyChannel = NULL, notifyTs = NULL
+         WHERE agentId = ? AND id = ?`
+      )
+      .run(agentId, id)
+  }
+
+  /** Settled rows whose DM card was never rewritten (daemon died first) — returned
+   *  once, handles cleared, so a reconnect sweep rewrites each orphan exactly once. */
+  async takeOrphanedPermissionNotices(integrationId: string, limit = 20): Promise<PermissionNoticeRow[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT id, agentId, status, command, resolvedByName, notifyChannel, notifyTs
+         FROM permission_requests
+         WHERE notifyIntegrationId = ? AND notifyTs IS NOT NULL AND status != 'pending'
+         ORDER BY resolvedAt DESC LIMIT ?`
+      )
+      .all(integrationId, Math.max(1, Math.min(100, limit)))) as unknown as PermissionNoticeRow[]
+    for (const row of rows) await this.clearPermissionRequestNotify(row.agentId, row.id)
+    return rows
   }
 
   /** Expire orphaned resolvers only after this process authoritatively takes ownership of their agents. */

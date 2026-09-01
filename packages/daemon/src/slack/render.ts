@@ -527,6 +527,41 @@ export function buildPermissionResolvedCard(
   ]
 }
 
+/** Context header for an approval DM (slack-approval-dm.md §5.2): which agent is
+ * asking, who triggered the turn, the console session deep link, and — for a
+ * Slack-triggered turn — a permalink to the source thread. Pure. */
+export function buildApprovalDmIntro(info: {
+  agentName: string
+  requesterName?: string | null
+  sessionUrl: string
+  sourceUrl?: string
+}): unknown[] {
+  const requester = info.requesterName ? ` for *${clampTo(info.requesterName, 60)}*` : ''
+  const links = [`<${info.sessionUrl}|Open session>`, ...(info.sourceUrl ? [`<${info.sourceUrl}|Source thread>`] : [])]
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${clampTo(info.agentName, 60)}* is waiting on an approval${requester}.\n${links.join(' · ')}`
+      }
+    }
+  ]
+}
+
+/** Terminal rewrite for a DM card orphaned by a restart or takeover (§5.4): only the
+ * stored row survives, so this renders from its bounded summary, no ACP params. Pure. */
+export function buildApprovalOrphanCard(command: string, status: string, resolvedByName?: string | null): unknown[] {
+  const icon = status === 'allowed' ? ':white_check_mark:' : status === 'denied' ? ':no_entry_sign:' : ':hourglass:'
+  const by = resolvedByName ? ` by ${clampTo(resolvedByName, 60)}` : ''
+  return [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `:lock: *Permission* — ${clampTo(command, 150)}\n${icon} ${status}${by}` }
+    }
+  ]
+}
+
 /** A workspace-level OAuth warning shown when Slack rejects an API call with
  * `missing_scope`. The URL button needs no daemon-side action handling: Slack opens
  * the app's OAuth & Permissions page directly so an owner can update/reinstall it. */

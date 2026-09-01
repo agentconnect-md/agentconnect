@@ -8,7 +8,13 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse
 } from '@agentclientprotocol/sdk'
-import type { Ack, AgentPermissionDecision } from '@agentconnect.md/protocol'
+import type {
+  Ack,
+  AgentApprovalRoute,
+  AgentApprovalRouted,
+  AgentPermissionDecision,
+  ApprovalRouteTarget
+} from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from '../log.js'
 import type { LocalStore } from '../store/local-store.js'
@@ -18,12 +24,14 @@ import type { DaemonEvaluationHooks } from '../evaluation/daemon-hooks.js'
 import { SlackConnection } from '../slack/connection.js'
 import type { InteractionActor } from '../platforms/contract.js'
 import {
+  buildApprovalDmIntro,
   buildElicitationCard,
   buildElicitationResolvedCard,
   buildPermissionCard,
   buildPermissionResolvedCard,
   elicitTarget
 } from '../slack/render.js'
+import { slackThreadUrl } from '../platforms/slack/permalink.js'
 import { slackAgentIdentityOptions } from '../platforms/slack/turn-output.js'
 import { turnChromeFor } from '../platforms/turn-chrome.js'
 import { formatErr } from '../daemon/text.js'
@@ -58,6 +66,12 @@ export interface PermissionCoreHost {
   memoryExtractionInFlight(turnKey: string): boolean
 }
 
+/** The CP exchange behind approval-DM routing — present only when connected AND the
+ *  CP advertises `approval-dm-route-v1` (slack-approval-dm.md §4.2). */
+export interface ApprovalRouteChannel {
+  approvalRoute(payload: AgentApprovalRoute, orgId?: string): Promise<AgentApprovalRouted>
+}
+
 /** The turn's platform surfaces a permission or elicitation card renders through. */
 export interface PermissionSurfaceHost {
   enqueueApply(p: Pending, action: DaemonRenderAction): void
@@ -69,33 +83,56 @@ export interface PermissionSurfaceHost {
   httpSlackSessionTarget(p: Pick<Pending, 'plan'>): string | undefined
   maskAgentSecrets<T>(agentId: string, payload: T): T
   logSessionAction(verb: string, sessionKey: string, actor?: InteractionActor): void
+  // ── approval-DM routing (slack-approval-dm.md §4–§6) ──
+  cpApprovalRoute(): ApprovalRouteChannel | undefined
+  orgForAgent(agentId: string): string | undefined
+  sessionLink(sessionId: string, source?: string): string
+  slackConnFor(integrationId: string): SlackConnection | undefined
+  /** The agent's LIVE Slack integration ids, `preferred` first. */
+  approvalDmIntegrations(agentId: string, preferred?: string): string[]
+  /** Unconditional shared-target block_id for a DM card (§5.3). */
+  slackDmSessionTarget(p: Pick<Pending, 'plan'>, integrationId: string): string
 }
 
 /** Everything the permission coordinator touches on the `Daemon`. */
 export interface PermissionHost extends PermissionCoreHost, PermissionSurfaceHost {}
 
+/** A live DM approval card (§5): its addressed target, connection, and message handle.
+ *  `propName`/`valueKind` mirror the elicitation card's one rendered field. */
+interface DmNotice {
+  target: ApprovalRouteTarget
+  conn: SlackConnection
+  channel: string
+  ts: string
+  propName?: string
+  valueKind?: 'enum' | 'boolean'
+}
+
+interface EditorPermissionEntry {
+  kind: 'permission'
+  agentId: string
+  sessionId: string
+  params: RequestPermissionRequest
+  evaluationParams: RequestPermissionRequest
+  resolve: (res: RequestPermissionResponse) => void
+  notify?: DmNotice
+}
+
+interface EditorElicitationEntry {
+  kind: 'elicitation'
+  agentId: string
+  sessionId: string
+  params: CreateElicitationRequest
+  resolve: (res: CreateElicitationResponse) => void
+  notify?: DmNotice
+}
+
 export class PermissionCoordinator {
   // ── Permission requests (ACP session/request_permission) ─────────────────────
   /** Durable rows still being written. Admission publishes its resolver first, so anything that
    *  settles a request must wait for the row it settles to exist. */
-  private readonly recordedWrites = new Map<string, Promise<void>>()
-  private pendingEditorPermissions = new Map<
-    string,
-    | {
-        kind: 'permission'
-        agentId: string
-        sessionId: string
-        params: RequestPermissionRequest
-        evaluationParams: RequestPermissionRequest
-        resolve: (res: RequestPermissionResponse) => void
-      }
-    | {
-        kind: 'elicitation'
-        agentId: string
-        sessionId: string
-        resolve: (res: CreateElicitationResponse) => void
-      }
-  >()
+  private readonly recordedWrites = new Map<string, Promise<unknown>>()
+  private pendingEditorPermissions = new Map<string, EditorPermissionEntry | EditorElicitationEntry>()
 
   private pendingChatPermissions = new Map<
     string,
@@ -142,7 +179,7 @@ export class PermissionCoordinator {
     command: string,
     p: Pending,
     notifyChat = true
-  ): Promise<void> {
+  ): Promise<{ requesterName: string | null }> {
     const store = this.host.store()
     const session = await store.getSessionByAcpIdForAgent(agentId, sessionId)
     const requesterId = p.plan.requesterId ?? session?.triggeredBy ?? null
@@ -159,7 +196,7 @@ export class PermissionCoordinator {
       resolvedAt: null
     })
 
-    if (!notifyChat) return
+    if (!notifyChat) return { requesterName }
     const text = '🔒 Permission requested. Ask an Agent editor to allow it from the Agent or Session page.'
     try {
       if (p.webchat) {
@@ -179,18 +216,20 @@ export class PermissionCoordinator {
       // must never discard the live resolver or silently fall back to auto-allow.
       this.host.log().warn(`permission request notice failed for "${p.plan.sessionKey}": ${formatErr(err)}`)
     }
+    return { requesterName }
   }
 
   private async resolveStoredPermissionRequest(
     agentId: string,
     requestId: string,
-    status: 'allowed' | 'denied' | 'expired'
+    status: 'allowed' | 'denied' | 'expired',
+    by?: { resolvedBy: string | null; resolvedByName: string | null }
   ): Promise<boolean> {
     try {
       // The row may still be in flight — a decision or sweep in that window settles nothing
       // unless it waits for the write it is settling.
       await this.recordedWrites.get(requestId)?.catch(() => undefined)
-      return await this.host.store().resolvePermissionRequest(agentId, requestId, status, this.host.clock().now())
+      return await this.host.store().resolvePermissionRequest(agentId, requestId, status, this.host.clock().now(), by)
     } catch (err) {
       this.host.log().error(`permission request "${requestId}" could not be resolved locally: ${formatErr(err)}`)
       return false
@@ -239,8 +278,9 @@ export class PermissionCoordinator {
     const wait = this.trackHumanApprovalWait(p, result)
     const recorded = this.noteEditorPermissionRequest(id, agentId, sessionId, permissionRequestSummary(params), p)
     this.recordedWrites.set(id, recorded)
+    let requesterName: string | null = null
     try {
-      await recorded
+      requesterName = (await recorded).requesterName
     } catch (err) {
       this.pendingEditorPermissions.delete(id)
       this.recordedWrites.delete(id)
@@ -249,6 +289,7 @@ export class PermissionCoordinator {
       throw err
     }
     this.recordedWrites.delete(id)
+    this.dispatchApprovalDm(id, agentId, p, requesterName)
     return wait
   }
 
@@ -265,13 +306,15 @@ export class PermissionCoordinator {
       kind: 'elicitation',
       agentId,
       sessionId,
+      params,
       resolve: resolveResult
     })
     const wait = this.trackHumanApprovalWait(p, result)
     const recorded = this.noteEditorPermissionRequest(id, agentId, sessionId, elicitationApprovalSummary(params), p)
     this.recordedWrites.set(id, recorded)
+    let requesterName: string | null = null
     try {
-      await recorded
+      requesterName = (await recorded).requesterName
     } catch (err) {
       this.pendingEditorPermissions.delete(id)
       this.recordedWrites.delete(id)
@@ -280,6 +323,7 @@ export class PermissionCoordinator {
       throw err
     }
     this.recordedWrites.delete(id)
+    this.dispatchApprovalDm(id, agentId, p, requesterName)
     return wait
   }
 
@@ -356,7 +400,243 @@ export class PermissionCoordinator {
     return await this.trackHumanApprovalWait(p, result)
   }
 
+  /** Fire the best-effort §5 approval DM. Never blocks or fails the approval itself. */
+  private dispatchApprovalDm(requestId: string, agentId: string, p: Pending, requesterName: string | null): void {
+    void this.sendApprovalDm(requestId, agentId, p, requesterName).catch((err) => {
+      this.host.log().warn(`approval DM for "${p.plan.sessionKey}" failed: ${formatErr(err)}`)
+    })
+  }
+
+  private async sendApprovalDm(
+    requestId: string,
+    agentId: string,
+    p: Pending,
+    requesterName: string | null
+  ): Promise<void> {
+    const cp = this.host.cpApprovalRoute()
+    if (!cp) return
+    const preferred = p.plan.platform === 'slack' ? p.plan.integrationId : undefined
+    const integrationIds = this.host.approvalDmIntegrations(agentId, preferred)
+    if (integrationIds.length === 0) return
+    const requesterId = p.plan.platform === 'slack' && p.plan.requesterId ? p.plan.requesterId : undefined
+    const routed = await cp.approvalRoute(
+      {
+        agentId,
+        requestId,
+        sessionId: p.outwardSessionId,
+        ...(requesterId ? { requesterId } : {}),
+        integrationIds
+      },
+      this.host.orgForAgent(agentId)
+    )
+    const target = routed.target
+    if (!target) return
+    const rec = this.pendingEditorPermissions.get(requestId)
+    if (!rec) return
+    const conn = this.host.slackConnFor(target.integrationId)
+    if (!conn) return
+    const channel = await conn.openDirectMessage(target.userId)
+    const sessionTarget = this.host.slackDmSessionTarget(p, target.integrationId)
+    const card =
+      rec.kind === 'permission'
+        ? buildPermissionCard(requestId, rec.params, sessionTarget)
+        : (buildElicitationCard(requestId, rec.params, sessionTarget) ?? [])
+    const sourceUrl =
+      p.plan.platform === 'slack' && p.conn instanceof SlackConnection
+        ? slackThreadUrl(p.conn.workspaceUrl, p.plan.channel, p.plan.thread ?? p.plan.statusThread)
+        : undefined
+    const intro = buildApprovalDmIntro({
+      agentName: p.plan.agentName,
+      requesterName,
+      sessionUrl: this.host.sessionLink(p.outwardSessionId, 'slack'),
+      ...(sourceUrl ? { sourceUrl } : {})
+    })
+    const ts = await conn.postBlocks(
+      channel,
+      [...intro, ...card],
+      `Approval requested by ${p.plan.agentName}`,
+      undefined,
+      {
+        ...(slackAgentIdentityOptions(p.plan) ?? {}),
+        chrome: true
+      }
+    )
+    if (!ts) return
+    const live = this.pendingEditorPermissions.get(requestId)
+    const handleStored =
+      live &&
+      (await this.host.store().setPermissionRequestNotify(agentId, requestId, target.integrationId, channel, ts))
+    if (!live || !handleStored) {
+      // Settled while posting: never leave live buttons on a decided request.
+      const resolved =
+        rec.kind === 'permission'
+          ? buildPermissionResolvedCard(rec.params, 'Already decided', undefined)
+          : buildElicitationResolvedCard(rec.params, ':hourglass: Already decided')
+      void conn.updateBlocks(channel, ts, resolved, 'Permission resolved', true).catch(() => {})
+      return
+    }
+    const elicit = rec.kind === 'elicitation' ? elicitTarget(rec.params) : null
+    live.notify = {
+      target,
+      conn,
+      channel,
+      ts,
+      ...(elicit ? { propName: elicit.propName, valueKind: elicit.kind } : {})
+    }
+  }
+
+  /** §6.3 click-time checks: actor equality, then the CP verify — both fail closed.
+   *  `authoritative: true` means the refusal is a rights answer, not an outage. */
+  private async verifyDmActor(
+    agentId: string,
+    requestId: string,
+    notify: DmNotice,
+    actor: InteractionActor | undefined
+  ): Promise<{ ok: true; name: string | null } | { ok: false; authoritative: boolean }> {
+    if (!actor || actor.userId !== notify.target.userId) return { ok: false, authoritative: false }
+    const cp = this.host.cpApprovalRoute()
+    if (!cp) return { ok: false, authoritative: false }
+    try {
+      const res = await cp.approvalRoute(
+        {
+          agentId,
+          requestId,
+          integrationIds: [notify.target.integrationId],
+          verify: {
+            integrationId: notify.target.integrationId,
+            teamId: notify.target.teamId,
+            userId: actor.userId,
+            consoleUserId: notify.target.consoleUserId
+          }
+        },
+        this.host.orgForAgent(agentId)
+      )
+      return res.allowed === true
+        ? { ok: true, name: res.displayName ?? notify.target.displayName ?? actor.name ?? null }
+        : { ok: false, authoritative: true }
+    } catch {
+      return { ok: false, authoritative: false }
+    }
+  }
+
+  private dmDecider(notify: DmNotice, name: string | null): { resolvedBy: string; resolvedByName: string | null } {
+    return { resolvedBy: `slack:${notify.target.teamId}:${notify.target.userId}`, resolvedByName: name }
+  }
+
+  private async handleDmPermissionChoice(
+    requestId: string,
+    rec: EditorPermissionEntry,
+    optionId: string,
+    actor: InteractionActor | undefined
+  ): Promise<void> {
+    const notify = rec.notify!
+    const verdict = await this.verifyDmActor(rec.agentId, requestId, notify, actor)
+    if (!verdict.ok) {
+      this.host.logSessionAction(`permission:${optionId} (refused)`, rec.sessionId, actor)
+      // An outage or a wrong actor leaves the live card alone; only a rights answer retires it.
+      if (verdict.authoritative) {
+        void notify.conn
+          .updateBlocks(
+            notify.channel,
+            notify.ts,
+            buildPermissionResolvedCard(
+              rec.params,
+              'No longer authorized — decide it from the Agent or Session page',
+              undefined
+            ),
+            'Permission requires an Agent editor',
+            true
+          )
+          .catch(() => {})
+      }
+      return
+    }
+    const option = rec.params.options.find((candidate) => candidate.optionId === optionId)
+    if (!option) return
+    const allowed = option.kind === 'allow_once' || option.kind === 'allow_always'
+    const by = this.dmDecider(notify, verdict.name)
+    if (!(await this.resolveStoredPermissionRequest(rec.agentId, requestId, allowed ? 'allowed' : 'denied', by))) return
+    this.host.logSessionAction(`permission:${allowed ? 'allowed' : 'denied'}`, rec.sessionId, actor)
+    this.pendingEditorPermissions.delete(requestId)
+    this.permissionEvaluationDetails.set(rec.evaluationParams, { reason: 'agent_editor' })
+    void notify.conn
+      .updateBlocks(
+        notify.channel,
+        notify.ts,
+        buildPermissionResolvedCard(
+          rec.params,
+          verdict.name ? `${option.name} — ${verdict.name}` : option.name,
+          allowed
+        ),
+        'Permission resolved',
+        true
+      )
+      .catch(() => {})
+    void this.host
+      .store()
+      .clearPermissionRequestNotify(rec.agentId, requestId)
+      .catch(() => {})
+    rec.resolve({ outcome: { outcome: 'selected', optionId: option.optionId } })
+  }
+
+  private async handleDmElicitChoice(
+    requestId: string,
+    rec: EditorElicitationEntry,
+    value: string | null,
+    actor: InteractionActor | undefined
+  ): Promise<void> {
+    const notify = rec.notify!
+    const verdict = await this.verifyDmActor(rec.agentId, requestId, notify, actor)
+    if (!verdict.ok) {
+      this.host.logSessionAction(`permission:elicit (refused)`, rec.sessionId, actor)
+      if (verdict.authoritative) {
+        void notify.conn
+          .updateBlocks(
+            notify.channel,
+            notify.ts,
+            buildElicitationResolvedCard(rec.params, ':lock: No longer authorized — decide it from the console'),
+            'Permission requires an Agent editor',
+            true
+          )
+          .catch(() => {})
+      }
+      return
+    }
+    let res: CreateElicitationResponse
+    let decision: string
+    if (value === null) {
+      res = { action: 'decline' }
+      decision = ':no_entry_sign: Dismissed'
+    } else if (notify.propName && notify.valueKind) {
+      const chosen = notify.valueKind === 'boolean' ? value === 'true' : value
+      res = { action: 'accept', content: { [notify.propName]: chosen } }
+      decision = `:white_check_mark: ${notify.valueKind === 'boolean' ? (chosen ? 'Yes' : 'No') : value}`
+    } else {
+      return
+    }
+    const by = this.dmDecider(notify, verdict.name)
+    if (!(await this.resolveStoredPermissionRequest(rec.agentId, requestId, value === null ? 'denied' : 'allowed', by)))
+      return
+    this.host.logSessionAction(`permission:${value === null ? 'denied' : 'allowed'}`, rec.sessionId, actor)
+    this.pendingEditorPermissions.delete(requestId)
+    void notify.conn
+      .updateBlocks(
+        notify.channel,
+        notify.ts,
+        buildElicitationResolvedCard(rec.params, verdict.name ? `${decision} — ${verdict.name}` : decision),
+        'Permission resolved',
+        true
+      )
+      .catch(() => {})
+    void this.host
+      .store()
+      .clearPermissionRequestNotify(rec.agentId, requestId)
+      .catch(() => {})
+    rec.resolve(res)
+  }
+
   async decideEditorPermission(req: AgentPermissionDecision): Promise<Ack> {
+    const decidedBy = { resolvedBy: req.decidedBy ?? null, resolvedByName: req.decidedByName ?? null }
     const pending = this.pendingEditorPermissions.get(req.requestId)
     if (!pending || pending.agentId !== req.agentId) {
       const chat = this.pendingChatPermissions.get(req.requestId)
@@ -369,7 +649,8 @@ export class PermissionCoordinator {
           !(await this.resolveStoredPermissionRequest(
             req.agentId,
             req.requestId,
-            req.decision === 'allow' ? 'allowed' : 'denied'
+            req.decision === 'allow' ? 'allowed' : 'denied',
+            decidedBy
           ))
         ) {
           return { ok: false, reason: 'permission request is no longer pending' }
@@ -404,7 +685,8 @@ export class PermissionCoordinator {
         !(await this.resolveStoredPermissionRequest(
           req.agentId,
           req.requestId,
-          req.decision === 'allow' ? 'allowed' : 'denied'
+          req.decision === 'allow' ? 'allowed' : 'denied',
+          decidedBy
         ))
       ) {
         return { ok: false, reason: 'permission request is no longer pending' }
@@ -454,12 +736,30 @@ export class PermissionCoordinator {
       !(await this.resolveStoredPermissionRequest(
         req.agentId,
         req.requestId,
-        req.decision === 'allow' ? 'allowed' : 'denied'
+        req.decision === 'allow' ? 'allowed' : 'denied',
+        decidedBy
       ))
     ) {
       return { ok: false, reason: 'permission request is no longer pending' }
     }
     this.pendingEditorPermissions.delete(req.requestId)
+    if (pending.notify) {
+      const label = `${req.decision === 'allow' ? 'Allowed' : 'Denied'} by ${req.decidedByName ?? 'an Agent editor'}`
+      const blocks =
+        pending.kind === 'permission'
+          ? buildPermissionResolvedCard(pending.params, label, req.decision === 'allow')
+          : buildElicitationResolvedCard(
+              pending.params,
+              `${req.decision === 'allow' ? ':white_check_mark:' : ':no_entry_sign:'} ${label}`
+            )
+      void pending.notify.conn
+        .updateBlocks(pending.notify.channel, pending.notify.ts, blocks, 'Permission resolved', true)
+        .catch(() => {})
+      void this.host
+        .store()
+        .clearPermissionRequestNotify(req.agentId, req.requestId)
+        .catch(() => {})
+    }
     if (pending.kind === 'permission') pending.resolve(permissionResponse!)
     else pending.resolve(elicitationResponse!)
     return { ok: true }
@@ -470,6 +770,11 @@ export class PermissionCoordinator {
     optionId: string
     actor?: InteractionActor
   }): Promise<void> {
+    // A DM card's request lives on the editor path (§2) — the chat gate never applies to it.
+    const editor = this.pendingEditorPermissions.get(input.requestId)
+    if (editor?.kind === 'permission' && editor.notify) {
+      return await this.handleDmPermissionChoice(input.requestId, editor, input.optionId, input.actor)
+    }
     const pending = this.pendingChatPermissions.get(input.requestId)
     if (!pending) return
     if (this.host.agents().get(pending.agentId)?.allowRuntimeChangesInChat !== true) {
@@ -491,7 +796,16 @@ export class PermissionCoordinator {
     const option = pending.params.options.find((candidate) => candidate.optionId === input.optionId)
     if (!option) return
     const allowed = option.kind === 'allow_once' || option.kind === 'allow_always'
-    if (!(await this.resolveStoredPermissionRequest(pending.agentId, input.requestId, allowed ? 'allowed' : 'denied')))
+    const team = pending.conn.workspaceId()
+    const by = input.actor
+      ? {
+          resolvedBy: team ? `slack:${team}:${input.actor.userId}` : null,
+          resolvedByName: input.actor.name ?? null
+        }
+      : undefined
+    if (
+      !(await this.resolveStoredPermissionRequest(pending.agentId, input.requestId, allowed ? 'allowed' : 'denied', by))
+    )
       return
     // Only now is this click the decision: the guard passed, the option was real, and
     // the request resolved. Logging any earlier would attribute a tool call to someone
@@ -568,6 +882,20 @@ export class PermissionCoordinator {
       if (pending.agentId !== agentId || pending.sessionId !== sessionId) continue
       this.pendingEditorPermissions.delete(id)
       await this.resolveStoredPermissionRequest(agentId, id, 'expired')
+      // Dead buttons must not survive the request (§5.4): retire the DM card in place.
+      if (pending.notify) {
+        const blocks =
+          pending.kind === 'permission'
+            ? buildPermissionResolvedCard(pending.params, 'Cancelled', undefined)
+            : buildElicitationResolvedCard(pending.params, ':hourglass: Cancelled')
+        void pending.notify.conn
+          .updateBlocks(pending.notify.channel, pending.notify.ts, blocks, 'Permission cancelled', true)
+          .catch(() => {})
+        void this.host
+          .store()
+          .clearPermissionRequestNotify(agentId, id)
+          .catch(() => {})
+      }
       if (pending.kind === 'permission') {
         this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'turn_cancelled' })
         pending.resolve({ outcome: { outcome: 'cancelled' } })
@@ -807,7 +1135,12 @@ export class PermissionCoordinator {
   /** A tapped elicitation-card button (SlackDeps.onElicitChoice): resolve the pending ACP
    *  request — `accept` with the chosen value (under the field name), or `decline` for the
    *  Dismiss button (value === null) — and edit the card in place. No-op if already gone. */
-  async handleElicitChoice(a: { requestId: string; value: string | null }): Promise<void> {
+  async handleElicitChoice(a: { requestId: string; value: string | null; actor?: InteractionActor }): Promise<void> {
+    // A DM elicitation card's request lives on the editor path (§2/§6.4).
+    const editor = this.pendingEditorPermissions.get(a.requestId)
+    if (editor?.kind === 'elicitation' && editor.notify) {
+      return await this.handleDmElicitChoice(a.requestId, editor, a.value, a.actor)
+    }
     const rec = this.pendingElicits.get(a.requestId)
     if (!rec) return
     if (rec.approval && this.host.agents().get(rec.agentId)?.allowRuntimeChangesInChat !== true) {
@@ -835,8 +1168,17 @@ export class PermissionCoordinator {
       decision = `:white_check_mark: ${rec.kind === 'boolean' ? (value ? 'Yes' : 'No') : a.value}`
     }
     if (rec.approval) {
+      const team = rec.conn.workspaceId()
+      const by = a.actor
+        ? { resolvedBy: team ? `slack:${team}:${a.actor.userId}` : null, resolvedByName: a.actor.name ?? null }
+        : undefined
       if (
-        !(await this.resolveStoredPermissionRequest(rec.agentId, a.requestId, a.value === null ? 'denied' : 'allowed'))
+        !(await this.resolveStoredPermissionRequest(
+          rec.agentId,
+          a.requestId,
+          a.value === null ? 'denied' : 'allowed',
+          by
+        ))
       )
         return
     }

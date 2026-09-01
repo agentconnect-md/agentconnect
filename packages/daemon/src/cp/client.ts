@@ -24,6 +24,8 @@ import type {
   HookStartOk,
   GithubReviewAuthorize,
   GithubReviewAuthorized,
+  AgentApprovalRoute,
+  AgentApprovalRouted,
   GithubReviewResultReport,
   GithubReviewResultOk,
   CodeHostNoteResult,
@@ -801,6 +803,16 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected github/review-authorized, got ${rep.type}`, false)
     }
     return rep.payload as GithubReviewAuthorized
+  }
+
+  /** Pick, or click-time revalidate, a pending approval's DM recipient (slack-approval-dm.md §4.2). */
+  async approvalRoute(payload: AgentApprovalRoute, orgId?: string): Promise<AgentApprovalRouted> {
+    this.requireReady('agent/approval-route')
+    const rep = await this.request('agent/approval-route', payload, orgId)
+    if (rep.type !== 'agent/approval-routed') {
+      throw new WireError('INTERNAL', `expected agent/approval-routed, got ${rep.type}`, false)
+    }
+    return rep.payload as AgentApprovalRouted
   }
 
   /** Immediate body-free outcome; HookReport repeats it for lost-reply recovery. */
