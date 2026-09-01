@@ -131,6 +131,49 @@ describe('private runtime HOME', () => {
     expect(env.DSH_HOME).toBe(join(home, '.dsh'))
   })
 
+  it('seeds the OpenClaw gateway config and pins $OPENCLAW_STATE_DIR into the private home', () => {
+    const { hostHome, scopeDir } = fixture()
+    const openclaw = join(hostHome, '.openclaw')
+    mkdirSync(join(openclaw, 'sessions'), { recursive: true })
+    writeFileSync(join(openclaw, 'openclaw.json'), '{"gateway":{"url":"ws://127.0.0.1:18789","token":"host-token"}}')
+    writeFileSync(join(openclaw, '.env'), 'OPENCLAW_GATEWAY_TOKEN=host-token')
+    writeFileSync(join(openclaw, 'sessions', 'old.jsonl'), 'do-not-copy')
+
+    const home = prepareRuntimeHome('openclaw', scopeDir, { HOME: hostHome })
+    expect(readFileSync(join(home, '.openclaw', 'openclaw.json'), 'utf8')).toContain('18789')
+    expect(existsSync(join(home, '.openclaw', '.env'))).toBe(true)
+    expect(existsSync(join(home, '.openclaw', 'sessions'))).toBe(false)
+
+    const env = runtimeHomeEnvironment(
+      'openclaw',
+      home,
+      {},
+      {
+        HOME: hostHome,
+        OPENCLAW_STATE_DIR: '/host/leak',
+        OPENCLAW_HOME: '/host/leak-home',
+        OPENCLAW_CONFIG_PATH: '/host/leak.json',
+        OPENCLAW_GATEWAY_URL: 'ws://127.0.0.1:19000'
+      }
+    )
+    expect(env.OPENCLAW_STATE_DIR).toBe(join(home, '.openclaw'))
+    expect(env.OPENCLAW_HOME).toBeUndefined()
+    expect(env.OPENCLAW_CONFIG_PATH).toBeUndefined()
+    // Gateway connection overrides are credentials, not user state — inherited.
+    expect(env.OPENCLAW_GATEWAY_URL).toBe('ws://127.0.0.1:19000')
+  })
+
+  it('seeds a relocated $OPENCLAW_CONFIG_PATH config ahead of the stale state-dir copy', () => {
+    const { root, hostHome, scopeDir } = fixture()
+    mkdirSync(join(hostHome, '.openclaw'), { recursive: true })
+    writeFileSync(join(hostHome, '.openclaw', 'openclaw.json'), '{"gateway":{"url":"ws://stale.invalid"}}')
+    const configPath = join(root, 'etc-openclaw.json')
+    writeFileSync(configPath, '{"gateway":{"url":"ws://127.0.0.1:18789"}}')
+
+    const home = prepareRuntimeHome('openclaw', scopeDir, { HOME: hostHome, OPENCLAW_CONFIG_PATH: configPath })
+    expect(readFileSync(join(home, '.openclaw', 'openclaw.json'), 'utf8')).toContain('18789')
+  })
+
   it('seeds Cline provider auth from its data directory without copying databases', () => {
     const { hostHome, scopeDir } = fixture()
     const clineDir = join(hostHome, '.cline')

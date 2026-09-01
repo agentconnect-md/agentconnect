@@ -81,6 +81,7 @@ describe('accountAppIsolation — not-applicable (clean machine inherits nothing
     'hermes-agent',
     'kiro-cli',
     'maki',
+    'openclaw',
     'zeroclaw',
     'omp',
     'cursor',

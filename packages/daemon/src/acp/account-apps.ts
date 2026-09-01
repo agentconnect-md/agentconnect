@@ -196,6 +196,7 @@ const NOT_APPLICABLE = new Set<string>([
   'hermes-agent', // Nous Research — local HERMES_HOME config only
   'kiro-cli', // local settings + explicitly configured MCP only
   'maki', // local Lua/configured MCP only
+  'openclaw', // tools come from the machine-local Gateway's own config — no cloud-account connector sync
   'zeroclaw', // local config + ACP-supplied MCP only
   'omp', // local config + explicitly configured MCP only
   'cursor', // Team MCP only via enterprise dashboard (default-off flag) — not on a clean machine

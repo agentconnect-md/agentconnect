@@ -20,7 +20,7 @@ import type { AcpProbeClient } from '../acp/probe-client.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
-import type { PreparedRuntimeLaunch } from '../launch/prepare.js'
+import { effectiveRunInSandbox, type PreparedRuntimeLaunch } from '../launch/prepare.js'
 import { composeRuntimeLaunch } from '../launch/compose.js'
 import { PACKAGE_LAUNCHERS } from './probe.js'
 
@@ -47,7 +47,12 @@ const PROVIDER_ENV_KEYS = new Set([
   'MOONSHOT_API_KEY',
   'KIMI_API_KEY',
   'XAI_API_KEY',
-  'OPENROUTER_API_KEY'
+  'OPENROUTER_API_KEY',
+  // The OpenClaw acp bridge's gateway connection overrides — credentials for a
+  // host configured via env instead of ~/.openclaw/openclaw.json.
+  'OPENCLAW_GATEWAY_URL',
+  'OPENCLAW_GATEWAY_TOKEN',
+  'OPENCLAW_GATEWAY_PASSWORD'
 ])
 
 /** Minimal ambient environment for an untrusted disposable compatibility probe. */
@@ -165,6 +170,9 @@ export interface ProbeOptions {
   /** Full host environment used for allowlisted credential seeding and redaction. */
   hostEnv?: NodeJS.ProcessEnv
   runInSandbox?: boolean
+  /** Operator policy: keeps an externalExecution runtime's probe sandboxed so it
+   *  fails loudly instead of admitting a runtime that later refuses to launch. */
+  requireSandbox?: boolean
   daemonRoot?: string
   agentsRoot?: string
   sandboxMechanism?: SandboxMechanism
@@ -403,19 +411,21 @@ function collectOmpCredentialValues(path: string, out: Set<string>): void {
 
 /** Collect only values from reviewed credential seeds in the already-private
  * probe home. They remain transient and are never passed to the child policy. */
+function collectDotEnvValues(path: string, out: Set<string>): void {
+  if (!existsSync(path)) return
+  for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.*)$/)
+    const value = match?.[1]?.replace(/^(?:"(.*)"|'(.*)')$/, '$1$2')
+    if (value) collectStringValues(value, out)
+  }
+}
+
 function probeCredentialRedactions(id: string, launch: PreparedRuntimeLaunch): string[] {
   const out = new Set<string>()
   if (id === 'hermes-agent' || id === 'hermes') {
     const root = launch.env.HERMES_HOME
     if (root) {
-      const dotEnv = join(root, '.env')
-      if (existsSync(dotEnv)) {
-        for (const line of readFileSync(dotEnv, 'utf8').split(/\r?\n/)) {
-          const match = line.match(/^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.*)$/)
-          const value = match?.[1]?.replace(/^(?:"(.*)"|'(.*)')$/, '$1$2')
-          if (value) collectStringValues(value, out)
-        }
-      }
+      collectDotEnvValues(join(root, '.env'), out)
       collectJsonCredentialValues(join(root, '.anthropic_oauth.json'), out)
       collectJsonCredentialValues(join(root, 'auth.json'), out)
     }
@@ -425,6 +435,13 @@ function probeCredentialRedactions(id: string, launch: PreparedRuntimeLaunch): s
   } else if (id === 'omp') {
     const root = launch.env.PI_CODING_AGENT_DIR
     if (root) collectOmpCredentialValues(join(root, 'agent.db'), out)
+  } else if (id === 'openclaw') {
+    // Both seeded files can carry the local gateway auth token.
+    const root = launch.env.OPENCLAW_STATE_DIR
+    if (root) {
+      collectJsonCredentialValues(join(root, 'openclaw.json'), out)
+      collectDotEnvValues(join(root, '.env'), out)
+    }
   }
   return [...out]
 }
@@ -485,7 +502,12 @@ export function preparedProbeLaunch(
     scopeDir,
     cwd,
     isolateHome: true,
-    runInSandbox: opts.runInSandbox ?? false,
+    runInSandbox: effectiveRunInSandbox(
+      opts.requireSandbox ?? false,
+      opts.runInSandbox ?? false,
+      opts.sandboxMechanism,
+      runtime
+    ),
     daemonRoot: opts.daemonRoot,
     agentsRoot: opts.agentsRoot,
     sandboxMechanism: opts.sandboxMechanism,

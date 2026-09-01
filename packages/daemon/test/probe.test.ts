@@ -238,6 +238,32 @@ describe('isRuntimeAvailable / custom probes', () => {
     ).toBe(true)
   })
 
+  it('openclaw needs ~/.openclaw even when openclaw is on PATH', () => {
+    makeExecutable(binDir, 'openclaw')
+    const rt: RuntimeDef = { command: 'openclaw', args: ['acp'], env: [] }
+    expect(isRuntimeAvailable('openclaw', rt, env())).toBe(false)
+    mkdirSync(join(home, '.openclaw'))
+    expect(isRuntimeAvailable('openclaw', rt, env())).toBe(true)
+  })
+
+  it('openclaw honors $OPENCLAW_STATE_DIR and $OPENCLAW_HOME overrides', () => {
+    makeExecutable(binDir, 'openclaw')
+    const rt: RuntimeDef = { command: 'openclaw', args: ['acp'], env: [] }
+    const cleanHome = mkdtempSync(join(tmpdir(), 'ac-openclaw-home-'))
+
+    const stateDir = mkdtempSync(join(tmpdir(), 'ac-openclaw-state-'))
+    expect(isRuntimeAvailable('openclaw', rt, env({ HOME: cleanHome }))).toBe(false)
+    expect(isRuntimeAvailable('openclaw', rt, env({ HOME: cleanHome, OPENCLAW_STATE_DIR: stateDir }))).toBe(true)
+
+    const openclawHome = mkdtempSync(join(tmpdir(), 'ac-openclaw-base-'))
+    mkdirSync(join(openclawHome, '.openclaw'))
+    expect(isRuntimeAvailable('openclaw', rt, env({ HOME: cleanHome, OPENCLAW_HOME: openclawHome }))).toBe(true)
+
+    const configPath = join(mkdtempSync(join(tmpdir(), 'ac-openclaw-cfg-')), 'openclaw.json')
+    writeFileSync(configPath, '{}')
+    expect(isRuntimeAvailable('openclaw', rt, env({ HOME: cleanHome, OPENCLAW_CONFIG_PATH: configPath }))).toBe(true)
+  })
+
   it('dsh-acp is fetched by npx, so ~/.dsh (or $DSH_HOME) is the only install signal', () => {
     makeExecutable(binDir, 'npx')
     const rt: RuntimeDef = {

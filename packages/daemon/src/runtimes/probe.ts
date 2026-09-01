@@ -176,6 +176,8 @@ const QODER_SEED = (brand: string): readonly string[] => [
 const CLAUDE_MODEL_CACHE_KEYS = ['additionalModelOptionsCache'] as const
 /** DeepSeek Harness auth: the managed 0600 credential store plus its .env fallback. */
 const DSH_SEED = ['.credentials.yaml', '.env'] as const
+/** OpenClaw acp bridge inputs: gateway address + token config and its .env fallback. */
+const OPENCLAW_SEED = ['openclaw.json', '.env'] as const
 
 export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // Anthropic Claude Code — seed only the rollout-model cache from ~/.claude.json.
@@ -347,6 +349,17 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // only the managed credential store and its .env fallback; sessions and logs
   // in the same directory stay agent-private.
   'dsh-acp': (env) => [...state(env.DSH_HOME, '.dsh', DSH_SEED), ...state(join(home(env), '.dsh'), '.dsh', DSH_SEED)],
+
+  // OpenClaw — ~/.openclaw, relocatable via $OPENCLAW_STATE_DIR (the dir itself),
+  // $OPENCLAW_HOME (the home base), or $OPENCLAW_CONFIG_PATH (the config file
+  // alone). The `acp` bridge is stateless; seed only the gateway config it
+  // reads, gateway-side sessions/state stay agent-private.
+  openclaw: (env) => [
+    ...state(env.OPENCLAW_CONFIG_PATH, join('.openclaw', 'openclaw.json')),
+    ...state(env.OPENCLAW_STATE_DIR, '.openclaw', OPENCLAW_SEED),
+    ...state(env.OPENCLAW_HOME ? join(env.OPENCLAW_HOME, '.openclaw') : undefined, '.openclaw', OPENCLAW_SEED),
+    ...state(join(home(env), '.openclaw'), '.openclaw', OPENCLAW_SEED)
+  ],
 
   // Cognition Devin (for Terminal) — XDG config + data dirs.
   devin: (env) => [

@@ -3329,7 +3329,12 @@ export class Daemon {
     // `security.requireSandbox` still forces confinement; a trusted/unsandboxed
     // agent runs (and installs/uses skills) unsandboxed, and the daemon never
     // fails closed on a host with no OS sandbox.
-    return effectiveRunInSandbox(this.cfg.security.requireSandbox, agent.runInSandbox, this.sandboxMechanism)
+    return effectiveRunInSandbox(
+      this.cfg.security.requireSandbox,
+      agent.runInSandbox,
+      this.sandboxMechanism,
+      this.runtimes[agent.runtime]
+    )
   }
 
   /**
@@ -3798,7 +3803,9 @@ export class Daemon {
     const runInSandbox = opts.runInSandbox
     if (agent.runInSandbox && !runInSandbox && opts.warnOnSandboxDowngrade) {
       this.log.warn(
-        `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
+        runtime.externalExecution
+          ? `acp: agent "${agentId}" requested Run in sandbox but runtime "${agent.runtime}" executes in an external machine-local service — running without it`
+          : `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
       )
     }
     const memoryAgent =
@@ -16440,6 +16447,7 @@ export class Daemon {
         fakeHosts: this.opts.hostFactory !== undefined,
         ...(this.opts.probeRuntimes ? { probe: this.opts.probeRuntimes } : {}),
         ...(this.sandboxMechanism ? { sandboxMechanism: this.sandboxMechanism } : {}),
+        requireSandbox: this.cfg.security.requireSandbox,
         daemonRoot: this.root,
         agentsRoot: this.cfg.agentsDir,
         isolateAccountApps: this.cfg.security.isolateAccountApps

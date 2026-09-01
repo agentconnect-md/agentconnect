@@ -53,6 +53,12 @@ export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
       deps.log?.debug(`catalog: ${runtimeId} skipped because no supported OS sandbox is available`)
       return undefined
     }
+    // Enumeration runs only under the OS sandbox; an externalExecution runtime
+    // cannot be confined, so it keeps its probe-derived model list instead.
+    if (rt.externalExecution) {
+      deps.log?.debug(`catalog: ${runtimeId} skipped because its execution lives outside the OS sandbox`)
+      return undefined
+    }
     const scope = mkdtempSync(join(tmpdir(), 'ac-catalog-'))
     const cwd = join(scope, 'workspace')
     mkdirSync(cwd, { recursive: true })

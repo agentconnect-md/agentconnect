@@ -304,6 +304,9 @@ describe('curatedProbeEnvironment', () => {
       OPENAI_API_KEY: 'openai-key',
       ANTHROPIC_API_KEY: 'anthropic-key',
       KIRO_API_KEY: 'kiro-key',
+      OPENCLAW_GATEWAY_URL: 'ws://127.0.0.1:18789',
+      OPENCLAW_GATEWAY_TOKEN: 'gateway-token',
+      OPENCLAW_STATE_DIR: '/host/openclaw',
       AWS_SHARED_CREDENTIALS_FILE: '/host/aws',
       GOOGLE_APPLICATION_CREDENTIALS: '/host/google.json',
       KUBECONFIG: '/host/kube',
@@ -323,7 +326,9 @@ describe('curatedProbeEnvironment', () => {
       NODE_EXTRA_CA_CERTS: '/etc/extra.pem',
       OPENAI_API_KEY: 'openai-key',
       ANTHROPIC_API_KEY: 'anthropic-key',
-      KIRO_API_KEY: 'kiro-key'
+      KIRO_API_KEY: 'kiro-key',
+      OPENCLAW_GATEWAY_URL: 'ws://127.0.0.1:18789',
+      OPENCLAW_GATEWAY_TOKEN: 'gateway-token'
     })
   })
 })
@@ -481,6 +486,57 @@ describe('probeTimeoutMs', () => {
     expect(readFileSync(hostDotEnv, 'utf8')).toContain('GOOGLE_APPLICATION_CREDENTIALS=/host/google.json')
     expect(existsSync(privateHome)).toBe(false)
     expect(existsSync(privateConfig)).toBe(false)
+  })
+
+  it('probes an externalExecution runtime unsandboxed but still with an isolated HOME', async () => {
+    const hostHome = mkdtempSync(join(tmpdir(), 'ac-probe-openclaw-'))
+    mkdirSync(join(hostHome, '.openclaw'))
+    writeFileSync(join(hostHome, '.openclaw', 'openclaw.json'), '{"gateway":{"url":"ws://127.0.0.1:18789"}}')
+
+    const results = await probeAllRuntimes(
+      { openclaw: { command: 'openclaw', args: ['acp'], env: [], externalExecution: true } },
+      {
+        curated: true,
+        runInSandbox: true,
+        sandboxMechanism: 'bwrap',
+        daemonRoot: '/srv/agentconnect',
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin' },
+        hostFactory: (_runtime, _id, _cwd, policy) => {
+          expect(policy.sandbox).toBeUndefined()
+          expect(policy.inheritProcessEnv).toBe(false)
+          expect(existsSync(join(policy.env!.HOME!, '.openclaw', 'openclaw.json'))).toBe(true)
+          expect(policy.env!.OPENCLAW_STATE_DIR).toBe(join(policy.env!.HOME!, '.openclaw'))
+          return successfulHost()
+        }
+      }
+    )
+
+    expect(results[0]?.ok).toBe(true)
+  })
+
+  it('fails the externalExecution probe under requireSandbox instead of admitting an unlaunchable runtime', async () => {
+    const hostHome = mkdtempSync(join(tmpdir(), 'ac-probe-openclaw-req-'))
+    const binDir = join(hostHome, 'bin')
+    mkdirSync(binDir)
+    writeFileSync(join(binDir, 'openclaw'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+
+    const results = await probeAllRuntimes(
+      { openclaw: { command: 'openclaw', args: ['acp'], env: [], externalExecution: true } },
+      {
+        curated: true,
+        runInSandbox: true,
+        requireSandbox: true,
+        sandboxMechanism: 'bwrap',
+        daemonRoot: '/srv/agentconnect',
+        hostEnv: { HOME: hostHome, PATH: binDir },
+        hostFactory: () => {
+          throw new Error('a refused launch must never construct a probe host')
+        }
+      }
+    )
+
+    expect(results[0]?.ok).toBe(false)
+    expect(results[0]?.error).toMatch(/external machine-local service/)
   })
 
   it('removes copied Maki MCP declarations from disposable probes', async () => {
