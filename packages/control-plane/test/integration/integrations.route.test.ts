@@ -1977,17 +1977,56 @@ describe('preferred default agent (PATCH /bots/:id)', () => {
     expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).preferredAgentId).toBe(second)
   })
 
-  it('carries the preference on GET /bots and takes both fields in one body', async () => {
+  it('applies neither half when the sharing half is refused', async () => {
+    // A refused PATCH must be a no-op on BOTH fields. Disabling sharing with two members
+    // installed is the refusal that is reachable without touching the platform manifest.
     const { botId, second } = await sharedBot()
-    const { app } = withRelay()
+    const { app, sends } = withRelay()
 
     const res = await app.app.inject({
       method: 'PATCH',
       url: `${ORG}/bots/${botId}`,
       payload: { shareable: false, preferredAgentId: second }
     })
-    expect(res.statusCode).toBe(409) // two members still installed — the sharing half is refused
-    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).preferredAgentId).toBe(second)
+
+    expect(res.statusCode).toBe(409)
+    const row = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
+    expect(row.preferredAgentId).toBeNull()
+    expect(row.shareable).toBe(true)
+    // Un-broadcast too: a rejected request must not have moved the relay's fallback rung.
+    expect(compiledDefault(sends)).toBeUndefined()
+  })
+
+  it('applies neither half when the preference half is refused', async () => {
+    // The symmetric case: the membership 409 leaves the sharing flag alone.
+    const { botId } = await sharedBot()
+    const stranger = randomUUID()
+    await seedAgent(prisma, stranger, { daemonId: DAEMON, name: 'stranger' })
+    const { app, sends } = withRelay()
+
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${botId}`,
+      payload: { shareable: false, preferredAgentId: stranger }
+    })
+
+    expect(res.statusCode).toBe(409)
+    const row = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
+    expect(row.preferredAgentId).toBeNull()
+    expect(row.shareable).toBe(true)
+    expect(compiledDefault(sends)).toBeUndefined()
+  })
+
+  it('carries the preference on GET /bots', async () => {
+    const { botId, second } = await sharedBot()
+    const { app } = withRelay()
+
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${botId}`,
+      payload: { preferredAgentId: second }
+    })
+    expect(res.statusCode).toBe(200)
 
     const listed = (await app.app.inject({ method: 'GET', url: `${ORG}/bots` })).json() as {
       id: string
