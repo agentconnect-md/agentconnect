@@ -94,7 +94,7 @@
  */
 import type { ComponentType, ReactNode } from 'react'
 import type { BotDto, CreateIntegrationInput, SessionMessageDto } from '@/lib/api'
-import type { Agent } from '@/lib/data'
+import type { Agent, IntegrationRow } from '@/lib/data'
 
 /** Inbound transport chosen in the wizard — same value set the create DTOs
  *  carry (api.ts:654-672) and the CP persists. */
@@ -559,6 +559,28 @@ export interface WebChannelListSemantics {
 }
 
 /**
+ * What one integration card on the AGENT page renders under its header, in place
+ * of the host's generic conversation list.
+ *
+ * The generic list assumes the platform's rooms are enumerable things the bot was
+ * ADDED to, each with a trigger and a way out. Linear has no such axis: linking a
+ * workspace IS the consent act, muting is unlinking, and the "room" the card
+ * configures is the workspace itself. Rather than teach
+ * {@link WebChannelListSemantics} to describe a list that must not render, a module
+ * with a different card body supplies one — and declares no `channelList`, so the
+ * generic one is not reached at all.
+ *
+ * The host keeps the card CHROME (mark, name, connected badge, delete). The Body gets
+ * the integration row — which names its own agent, so there is no second prop for the
+ * page's — and reaches the console data layer itself, exactly as the list does.
+ */
+export interface WebAgentIntegrationCardFacet {
+  /** `padX` lines the rows up with the host card that mounts them (16 mobile / 14
+   *  desktop detail), the generic list's own prop. */
+  Body: ComponentType<{ integration: IntegrationRow; padX: number }>
+}
+
+/**
  * One platform's web console module (§10). TypeScript only — registering a
  * module is one line in the (future) registry file; no host component grows a
  * platform branch.
@@ -641,8 +663,13 @@ export interface WebPlatformModule<TApi = unknown> {
   /** Out-of-wizard install polling (Slack today). */
   installPolling?: WebInstallPollingFacet
   /** Channel-list display semantics. Absent ⇒ the host defaults: `channel`
-   *  noun, `#` glyph, `leave: 'none'`, generic copy. */
+   *  noun, `#` glyph, `leave: 'none'`, generic copy — which a platform declaring
+   *  {@link agentCard} never spends, because the generic list is not rendered
+   *  for it at all. */
   channelList?: WebChannelListSemantics
+  /** The agent page's card body, replacing the generic conversation list.
+   *  Absent ⇒ that list, which is every platform whose rooms are enumerable. */
+  agentCard?: WebAgentIntegrationCardFacet
   /**
    * Per-platform transcript text renderer — the §14 defect-3 seam, ADOPTED:
    * `MessageText` resolves it from the ROW's platform key

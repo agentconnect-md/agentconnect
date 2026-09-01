@@ -4,6 +4,9 @@ import {
   listDreams,
   setAgentWorkspace,
   createGithubHook,
+  disconnectLinearWorkspace,
+  leaveIntegrationConversation,
+  reconnectLinearWorkspace,
   createMemoryRecord,
   deleteMemoryRecord,
   deleteOrgIcon,
@@ -963,5 +966,58 @@ describe('usage window', () => {
     expect(urls[0]).toContain('to=')
     expect(urls[0]).not.toContain('source=')
     expect(urls[1]).toContain('source=gateway')
+  })
+})
+
+describe('a POST that commands rather than creates', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const stub = (res: () => Response) => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        calls.push(url)
+        return res()
+      })
+    )
+    return calls
+  }
+
+  it('resolves on 204 No Content instead of failing on the body it does not have', async () => {
+    // The CP answers a no-content write with 204 (`response: { 204: z.null() }`) — the
+    // convention across two dozen of its routes. Parsing that unconditionally threw a
+    // SyntaxError on SUCCESS, so the caller reported a failure for work the server had
+    // already committed and its retry hit an already-deleted row.
+    stub(() => new Response(null, { status: 204 }))
+    await expect(disconnectLinearWorkspace('bot-9')).resolves.toBeUndefined()
+    await expect(
+      leaveIntegrationConversation('int-1', { kind: 'conversation', channel: 'C1' })
+    ).resolves.toBeUndefined()
+  })
+
+  it('still parses the body of a POST that returns a row', async () => {
+    stub(
+      () =>
+        new Response(JSON.stringify({ id: 'c1', connectUrl: 'https://linear.app/oauth/authorize' }), {
+          status: 201,
+          headers: { 'content-type': 'application/json' }
+        })
+    )
+    await expect(reconnectLinearWorkspace('bot-9')).resolves.toEqual({
+      id: 'c1',
+      connectUrl: 'https://linear.app/oauth/authorize'
+    })
+  })
+
+  it('still surfaces a refusal, with the server’s own sentence', async () => {
+    stub(
+      () =>
+        new Response(JSON.stringify({ message: 'only a connected Linear workspace can be disconnected' }), {
+          status: 409,
+          headers: { 'content-type': 'application/json' }
+        })
+    )
+    await expect(disconnectLinearWorkspace('bot-9')).rejects.toThrow(/only a connected Linear workspace/)
   })
 })

@@ -17,6 +17,7 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { trackedTestClock } from '../fakes/tracked-clock.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { BotId, OrgId } from '../../src/domain/ids.js'
 import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
 import { LinearApiClient } from '../../src/platforms/linear/api.js'
@@ -80,6 +81,8 @@ interface Harness {
   app: HttpApp
   linear: FakeLinear
   agentId: string
+  /** The daemon-facing frames this app emitted, when the caller asked for a spy. */
+  control: SpyControl
 }
 
 /** Captures the daemon-facing integration frames `syncBot` emits, so the fail-closed teardown and
@@ -105,10 +108,16 @@ async function harness(
   overrides: { relay?: boolean; onAssign?: (payload: { credentialRevision?: number }) => void } = {}
 ): Promise<Harness> {
   const linear = new FakeLinear()
-  const app = buildHttpApp(prisma, {
-    PUBLIC_RELAY_URL: 'https://relay.example.test',
-    PUBLIC_CP_URL: 'https://cp.example.test'
-  })
+  const control = new SpyControl()
+  const app = buildHttpApp(
+    prisma,
+    {
+      PUBLIC_RELAY_URL: 'https://relay.example.test',
+      PUBLIC_CP_URL: 'https://cp.example.test'
+    },
+    undefined,
+    control as unknown as ControlSender
+  )
   app.platformStubs.linearPlatformApp = APP
   app.platformStubs.linearFetch = linear.fetchImpl
   running = app
@@ -127,7 +136,7 @@ async function harness(
   })
   const agentId = randomUUID()
   await seedAgent(prisma, agentId, { daemonId: DAEMON })
-  return { app, linear, agentId }
+  return { app, linear, agentId, control }
 }
 
 const startConnect = (h: Harness, agentId = h.agentId) =>
@@ -211,7 +220,7 @@ describe('the connect funnel — nothing exists before the callback (§7.1)', ()
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: DAEMON })
 
-    const res = await startConnect({ app, linear, agentId })
+    const res = await startConnect({ app, linear, agentId, control: new SpyControl() })
     expect(res.statusCode).toBe(409)
     expect(res.json().message).toMatch(/does not support linear/)
   })
@@ -511,7 +520,7 @@ describe('reconnect — a dead grant is replaced in place (§7.4)', () => {
     })
     const agentId = randomUUID()
     await seedAgent(prisma, agentId, { daemonId: DAEMON })
-    const h: Harness = { app, linear, agentId }
+    const h: Harness = { app, linear, agentId, control }
 
     const { id } = (await startConnect(h)).json() as { id: string }
     await callback(h, { code: 'the-code', state: id })
@@ -1115,6 +1124,127 @@ describe('disconnect — the bot delete revokes only what nobody holds (§7.4)',
 
     expect((await h.app.app.inject({ method: 'DELETE', url: `${ORG}/bots/${local.id}` })).statusCode).toBe(204)
     expect(await grantRow()).not.toBeNull()
+    expect(h.linear.count('/oauth/revoke')).toBe(0)
+  })
+})
+
+/**
+ * The workspace disconnect route (§7.4). It exists because the CONSOLE cannot do this
+ * piecewise: `GET /integrations` is visibility-filtered, so a member on a restricted
+ * agent outside the caller's audience is invisible to it — a client loop would lift
+ * what it can see, and the bot delete behind it would refuse on the one it never knew
+ * about, reporting a full disconnect over a half-unlinked workspace.
+ */
+describe('workspace disconnect — the whole organization, not the caller’s view of it (§7.4)', () => {
+  /** A connected workspace with two members, the second on an agent the caller cannot see. */
+  async function connectedWithHiddenMember(): Promise<{ h: Harness; botId: string; hiddenAgentId: string }> {
+    const h = await harness()
+    const { id } = (await startConnect(h)).json() as { id: string }
+    await callback(h, { code: 'the-code', state: id })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { platform: 'linear' } })
+
+    // The membership is created through the ordinary reuse route while its agent is still
+    // org-visible, then the agent is restricted to an audience the caller is not in — the
+    // state an operator reaches by tightening an agent after installing it.
+    const hiddenAgentId = randomUUID()
+    await seedAgent(prisma, hiddenAgentId, { daemonId: DAEMON, name: 'hidden-agent' })
+    const added = await h.app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'linear', agentId: hiddenAgentId, botId: bot.id }
+    })
+    expect(added.statusCode).toBe(201)
+    await prisma.agent.update({
+      where: { id: hiddenAgentId },
+      data: { visibility: 'restricted', sharedWith: [randomUUID()] }
+    })
+    return { h, botId: bot.id, hiddenAgentId }
+  }
+
+  it('the piecewise path a console could run leaves the workspace half unlinked', async () => {
+    // The PREMISE, pinned rather than described: the caller's own list omits the hidden
+    // membership, so a loop over it removes one of two and the bot delete then refuses —
+    // after the operator was told a full disconnect was happening.
+    const { h, botId } = await connectedWithHiddenMember()
+
+    const listed = await h.app.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const ids = (listed.json() as { id: string }[]).map((row) => row.id)
+    expect(await prisma.integration.count({ where: { botId } })).toBe(2)
+    expect(ids).toHaveLength(1)
+
+    for (const id of ids) {
+      expect((await h.app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${id}` })).statusCode).toBe(204)
+    }
+    const refused = await h.app.app.inject({ method: 'DELETE', url: `${ORG}/bots/${botId}` })
+    expect(refused.statusCode).toBe(409)
+    expect(refused.json().message).toMatch(/installed on an agent/)
+    // Half unlinked: the bot, its hidden member, and the upstream grant all survive.
+    expect(await prisma.integration.count({ where: { botId } })).toBe(1)
+    expect(await grantRow()).not.toBeNull()
+    expect(h.linear.count('/oauth/revoke')).toBe(0)
+  })
+
+  it('removes every member — the invisible one included — then the bot and the grant', async () => {
+    const { h, botId, hiddenAgentId } = await connectedWithHiddenMember()
+    h.control.reset()
+
+    const res = await h.app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/linear/disconnect` })
+    expect(res.statusCode).toBe(204)
+
+    expect(await prisma.integration.count({ where: { botId } })).toBe(0)
+    expect(await prisma.bot.count({ where: { id: botId } })).toBe(0)
+    // The identity teardown `DELETE /bots/:id` spends runs here too: nobody holds the
+    // workspace any more, so the grant is revoked upstream and its row goes.
+    expect(await grantRow()).toBeNull()
+    expect(h.linear.count('/oauth/revoke')).toBe(1)
+    // Each member got its own removal broadcast, the hidden one included…
+    expect(h.control.removes).toHaveLength(2)
+    // …and disconnecting a workspace removes memberships, never the agents themselves.
+    expect(await prisma.agent.count({ where: { id: hiddenAgentId } })).toBe(1)
+  })
+
+  it('is refused for an unknown bot, a row this app did not connect, and a viewer', async () => {
+    const { h, botId } = await connectedWithHiddenMember()
+
+    const unknown = await h.app.app.inject({ method: 'POST', url: `${ORG}/bots/${randomUUID()}/linear/disconnect` })
+    expect(unknown.statusCode).toBe(404)
+
+    // A Linear row belonging to another deployment app holds no grant this app may revoke.
+    await prisma.bot.update({ where: { id: botId }, data: { externalAppId: 'someone_elses_client_id' } })
+    const foreign = await h.app.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/linear/disconnect` })
+    expect(foreign.statusCode).toBe(409)
+    expect(foreign.json().message).toMatch(/only a connected Linear workspace/)
+    await prisma.bot.update({ where: { id: botId }, data: { externalAppId: APP.clientId } })
+
+    const users = new PgUserRepo(prisma)
+    const email = 'linear-disconnect-viewer@acme.dev'
+    const { userId } = await users.provisionOidcUser({
+      oidcSubject: 'linear-disconnect-viewer',
+      email,
+      emailVerified: true
+    })
+    await users.addMemberByEmail(DEFAULT_ORG_ID, email, 'viewer')
+    const viewerApp = buildHttpApp(
+      prisma,
+      {
+        PUBLIC_RELAY_URL: 'https://relay.example.test',
+        PUBLIC_CP_URL: 'https://cp.example.test',
+        DEFAULT_OWNER_ID: userId
+      },
+      undefined,
+      new SpyControl() as unknown as ControlSender
+    )
+    viewerApp.platformStubs.linearPlatformApp = APP
+    viewerApp.platformStubs.linearFetch = h.linear.fetchImpl
+    try {
+      const denied = await viewerApp.app.inject({ method: 'POST', url: `${ORG}/bots/${botId}/linear/disconnect` })
+      expect(denied.statusCode).toBe(403)
+    } finally {
+      await viewerApp.close()
+    }
+
+    // Nothing moved on any refusal.
+    expect(await prisma.integration.count({ where: { botId } })).toBe(2)
     expect(h.linear.count('/oauth/revoke')).toBe(0)
   })
 })

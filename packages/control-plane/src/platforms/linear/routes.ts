@@ -32,6 +32,7 @@ import { resolveWebAppUrl } from '../../config/env.js'
 import { relayIngress } from '../../http/relay-ingress.js'
 import { integrationPlatformAvailability } from '../../http/daemon-platform-capability.js'
 import { installNewBot } from '../../http/install-bot.js'
+import { deleteBotIdentity, removeIntegrationRow } from '../../http/uninstall.js'
 import { BotExternalIdentityTaken, BotWorkspaceClaimed } from '../../persistence/errors.js'
 import { ErrorDto, IdParam } from '../../http/dto/index.js'
 import type { LinearRouteSeams } from '../../http/platform-route-seams.js'
@@ -248,6 +249,94 @@ export function linearConnectRoutes(deps: HttpDeps, linear: LinearRouteSeams) {
           id: install.id,
           connectUrl: linear.api.authorizeUrl({ clientId: platform.clientId, redirectUri, state: install.id })
         })
+      }
+    )
+
+    /**
+     * Disconnect a workspace for the whole organization (§7.4) — every member install and
+     * then the bot, as ONE call.
+     *
+     * It exists because the console cannot do this piecewise. `GET /integrations` is
+     * VISIBILITY-FILTERED, so a member on a restricted agent outside the caller's audience
+     * is invisible to it: a client loop would remove what it can see, and the bot delete
+     * behind it would 409 on the member it never knew about — leaving the workspace half
+     * unlinked after the operator confirmed a full disconnect. The authoritative member set
+     * is `listForBot` under the bot's own org fence, and only the server holds it.
+     *
+     * NO per-agent `canEdit`, deliberately — that is the same filter in another costume.
+     * Disconnecting is an act on the org's bot identity, gated exactly as `DELETE /bots/:id`
+     * is: a non-viewer member of the owning organization. A member the caller may not edit
+     * is precisely the one that must still go, or the refusal above comes back.
+     */
+    r.post(
+      '/bots/:id/linear/disconnect',
+      {
+        schema: {
+          tags: [Tag.Bots],
+          summary: 'Disconnect a Linear workspace',
+          description:
+            'Remove a connected Linear workspace for the whole organization: every agent’s membership of it, then the bot identity itself, whose deletion revokes the upstream grant. Atomic from the caller’s side — a partial teardown is reported as a conflict naming what is still linked, never as success.',
+          operationId: 'disconnectLinearWorkspace',
+          params: IdParam,
+          response: { 204: z.null(), 401: ErrorDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto }
+        }
+      },
+      async (req, reply) => {
+        if (denyViewerWrite(req, reply)) return
+        const orgId = req.orgCtx!.orgId
+        const bot = await deps.repos.bot.get(orgId, BotId(req.params.id))
+        if (!bot) {
+          return reply.code(404).send({ error: 'Not Found', statusCode: 404, message: 'bot not found' })
+        }
+        // Same identity fence the reconnect arm uses: a row from another deployment app is
+        // not this app's to tear down, and only a completed connect has a grant to revoke.
+        if (bot.platform !== 'linear' || bot.externalAppId !== platform.clientId || !bot.externalTenantId) {
+          return reply.code(409).send({
+            error: 'Conflict',
+            statusCode: 409,
+            message: 'only a connected Linear workspace can be disconnected'
+          })
+        }
+        // The AUTHORITATIVE member set — org-fenced through the bot, never viewer-filtered.
+        const installs = await deps.repos.integration.listForBot(bot.id)
+        const memberAgentIds = [...new Set(installs.map((install) => install.agentId))]
+        // Every member joins the lease: removing an install while its agent is being moved
+        // is the same race the per-integration route fences, once per member here.
+        const release = deps.agentMutations.tryBeginMutation(memberAgentIds)
+        if (!release) {
+          return reply
+            .code(409)
+            .send({ error: 'Conflict', statusCode: 409, message: 'agent move is in progress; retry the disconnect' })
+        }
+        try {
+          // Bot-scoped, so it runs once around the loop rather than once per member.
+          await deps.httpBot.prepareIntegrationRemoval(bot.id)
+          for (const install of installs) {
+            const agent = await deps.repos.agent.get(OrgId(bot.orgId), install.agentId)
+            try {
+              await removeIntegrationRow(deps, req.log, { orgId, integration: install, agent: agent ?? null })
+            } catch (err) {
+              // No silent partial success: re-read what is actually left and say so, so the
+              // operator retries a disconnect rather than believing one happened.
+              req.log.error({ err, botId: bot.id, integrationId: install.id }, 'linear disconnect: removal failed')
+              const left = await deps.repos.integration.listForBot(bot.id)
+              await deps.httpBot.syncBot(bot.id)
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: `disconnect stopped partway: ${left.length} of ${installs.length} agents are still linked to this workspace — retry the disconnect`
+              })
+            }
+          }
+          // Zero members now, so this releases the workspace from the relay pool.
+          await deps.httpBot.syncBot(bot.id)
+          // The shared identity teardown — the same one `DELETE /bots/:id` spends, so the
+          // upstream grant revoke (§7.4 `onBotDelete`) fires on both paths.
+          await deleteBotIdentity(deps, req.log, orgId, bot)
+          return reply.code(204).send(null)
+        } finally {
+          release()
+        }
       }
     )
   }

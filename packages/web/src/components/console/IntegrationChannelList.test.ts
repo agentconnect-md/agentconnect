@@ -6,6 +6,7 @@ import {
   groupBySpace,
   IntegrationChannelList,
   placePopover,
+  roomArticle,
   roomGlyph,
   rowLabel,
   rowMenuAction
@@ -305,9 +306,17 @@ describe('IntegrationChannelList footer', () => {
   it('names the room with the platform noun throughout', () => {
     expect(footer('telegram')).toContain('A group appears here once the bot is added to it')
     expect(footer('slack')).toContain('A channel appears here once the bot is added to it')
-    // The article follows the module's noun rather than being a literal — one of
-    // them starts with a vowel.
-    expect(footer('linear')).toContain('An issue appears here once the bot is added to it')
+    // The article follows the module's noun rather than being a literal, so a module
+    // whose noun starts with a vowel reads correctly without the sentence changing.
+    expect(roomArticle('issue')).toBe('An')
+    expect(roomArticle('channel')).toBe('A')
+  })
+
+  it('falls back to the generic noun for a platform that renders its own card', () => {
+    // Linear declares no channel-list semantics, because this list is never rendered
+    // for it (its module supplies the agent card's whole body). The lookup still has
+    // to be total, and what it answers is the host default — never a borrowed noun.
+    expect(footer('linear')).toContain('A channel appears here once the bot is added to it')
   })
 })
 

@@ -39,6 +39,7 @@ import { conversationOwnerRow, pickConversationOwner } from '../../orchestrator/
 import { seedSoleConversationMember } from '../../orchestrator/soleConversation.js'
 import { NoConnection } from '../../orchestrator/outbound.js'
 import { installNewBot } from '../install-bot.js'
+import { removeIntegrationRow } from '../uninstall.js'
 import { BotExternalIdentityTaken } from '../../persistence/errors.js'
 import { integrationPlatformAvailability } from '../daemon-platform-capability.js'
 import { relayIngress } from '../relay-ingress.js'
@@ -165,19 +166,6 @@ export function integrationRoutes(deps: HttpDeps) {
         ...(refusal.code ? { code: refusal.code } : {}),
         message: refusal.message
       })
-
-    const replicateRemove = async (
-      i: Pick<IntegrationRecord, 'id' | 'agentId' | 'orgId'>,
-      owningAgent: ResolvableAgent
-    ): Promise<void> => {
-      const { id: integrationId } = i
-      // The row's own org rides the send: `integration/remove` carries only an id,
-      // so a holder that never registered this integration has nothing to resolve.
-      await deps.agentDelivery.integrationRemove(owningAgent, i.id, i.orgId, (err, target) => {
-        if (!(err instanceof NoConnection)) throw err
-        app.log.debug({ integrationId, daemonId: target }, 'integration/remove skipped: daemon offline')
-      })
-    }
 
     r.post(
       '/integrations',
@@ -1189,16 +1177,9 @@ export function integrationRoutes(deps: HttpDeps) {
           if (botBefore?.transport === 'http') {
             await deps.httpBot.prepareIntegrationRemoval(existing.botId)
           }
-          await deps.repos.integration.delete(orgIdOf(req), existing.id)
-          deps.recomputeDuties?.(orgIdOf(req))
-          // "Freed" now means NO active integration remains (a shareable bot may still
-          // serve other agents — don't stamp it freed while it does, §6).
-          const remaining = await deps.repos.integration.listForBot(existing.botId)
-          if (remaining.length === 0) {
-            await deps.repos.bot.markFreed(orgIdOf(req), existing.botId, new Date(), agent.name ?? null)
-          }
-          // Tell the removed agent's daemon to drop the spec either way.
-          await replicateRemove(existing, agent)
+          // The row-scoped half is the shared skeleton (`http/uninstall.ts`): delete,
+          // re-derive the freed stamp, and tell the agent's daemons to drop the spec.
+          await removeIntegrationRow(deps, app.log, { orgId: orgIdOf(req), integration: existing, agent })
           // HTTP bot: recompute the relay's routes + members (or release it if this
           // was the last install).
           if (botBefore?.transport === 'http') await deps.httpBot.syncBot(existing.botId)

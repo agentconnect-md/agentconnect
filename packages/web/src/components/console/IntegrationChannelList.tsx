@@ -200,9 +200,10 @@ const canLeaveConversation = (platform?: string): boolean => channelListSemantic
  */
 const roomNoun = (platform?: string): string => channelListSemantics(platform).roomNoun
 
-/** "A"/"An" for a noun a module supplies. The room noun is the platform's own word,
- *  and one of them starts with a vowel ("issue"), so the article cannot be a literal. */
-const roomArticle = (noun: string): string => (/^[aeiou]/i.test(noun) ? 'An' : 'A')
+/** "A"/"An" for a noun a module supplies. The room noun is the platform's own word and
+ *  may start with a vowel, so the article cannot be a literal. Exported for its test:
+ *  today's modules all take "A", so only a test keeps the other arm honest. */
+export const roomArticle = (noun: string): string => (/^[aeiou]/i.test(noun) ? 'An' : 'A')
 
 /** The noun for ONE row: a DM is never a channel or a group, whatever the platform. */
 const rowNoun = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
