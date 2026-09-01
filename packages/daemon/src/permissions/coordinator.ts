@@ -104,6 +104,9 @@ interface DmNotice {
   conn: SlackConnection
   channel: string
   ts: string
+  /** The §5.2 context header (session link, source quote/permalink). Every in-place
+   *  rewrite prepends it — a resolved card must not lose the links (issue feedback). */
+  intro: unknown[]
   propName?: string
   valueKind?: 'enum' | 'boolean'
 }
@@ -441,15 +444,26 @@ export class PermissionCoordinator {
       rec.kind === 'permission'
         ? buildPermissionCard(requestId, rec.params, sessionTarget)
         : (buildElicitationCard(requestId, rec.params, sessionTarget) ?? [])
+    const fromSlack = p.plan.platform === 'slack'
     const sourceUrl =
-      p.plan.platform === 'slack' && p.conn instanceof SlackConnection
+      fromSlack && p.conn instanceof SlackConnection
         ? slackThreadUrl(p.conn.workspaceUrl, p.plan.channel, p.plan.thread ?? p.plan.statusThread)
+        : undefined
+    // Quote the triggering Slack message only for its own author (§5.2): routing proves
+    // canEdit, not that the recipient may read the source conversation — a private
+    // channel's text must not ride a DM past Slack's ACL. Same integration ⇒ same
+    // workspace, so the member-id comparison is sound; everyone else keeps the
+    // permalink, where Slack enforces access itself.
+    const sourceText =
+      fromSlack && target.integrationId === p.plan.integrationId && target.userId === p.plan.requesterId
+        ? p.entry.msg.text
         : undefined
     const intro = buildApprovalDmIntro({
       agentName: p.plan.agentName,
       requesterName,
       sessionUrl: this.host.sessionLink(p.outwardSessionId, 'slack'),
-      ...(sourceUrl ? { sourceUrl } : {})
+      ...(sourceUrl ? { sourceUrl } : {}),
+      ...(sourceText ? { sourceText } : {})
     })
     const ts = await conn.postBlocks(
       channel,
@@ -474,7 +488,7 @@ export class PermissionCoordinator {
         rec.kind === 'permission'
           ? buildPermissionResolvedCard(rec.params, 'Already decided', undefined)
           : buildElicitationResolvedCard(rec.params, ':hourglass: Already decided')
-      void conn.updateBlocks(channel, ts, resolved, 'Permission resolved', true).catch(() => {})
+      void conn.updateBlocks(channel, ts, [...intro, ...resolved], 'Permission resolved', true).catch(() => {})
       if (handleStored)
         void this.host
           .store()
@@ -488,6 +502,7 @@ export class PermissionCoordinator {
       conn,
       channel,
       ts,
+      intro,
       ...(elicit ? { propName: elicit.propName, valueKind: elicit.kind } : {})
     }
   }
@@ -555,11 +570,14 @@ export class PermissionCoordinator {
           .updateBlocks(
             notify.channel,
             notify.ts,
-            buildPermissionResolvedCard(
-              rec.params,
-              'No longer authorized — decide it from the Agent or Session page',
-              undefined
-            ),
+            [
+              ...notify.intro,
+              ...buildPermissionResolvedCard(
+                rec.params,
+                'No longer authorized — decide it from the Agent or Session page',
+                undefined
+              )
+            ],
             'Permission requires an Agent editor',
             true
           )
@@ -579,11 +597,14 @@ export class PermissionCoordinator {
       .updateBlocks(
         notify.channel,
         notify.ts,
-        buildPermissionResolvedCard(
-          rec.params,
-          verdict.name ? `${option.name} — ${verdict.name}` : option.name,
-          allowed
-        ),
+        [
+          ...notify.intro,
+          ...buildPermissionResolvedCard(
+            rec.params,
+            verdict.name ? `${option.name} — ${verdict.name}` : option.name,
+            allowed
+          )
+        ],
         'Permission resolved',
         true
       )
@@ -610,7 +631,10 @@ export class PermissionCoordinator {
           .updateBlocks(
             notify.channel,
             notify.ts,
-            buildElicitationResolvedCard(rec.params, ':lock: No longer authorized — decide it from the console'),
+            [
+              ...notify.intro,
+              ...buildElicitationResolvedCard(rec.params, ':lock: No longer authorized — decide it from the console')
+            ],
             'Permission requires an Agent editor',
             true
           )
@@ -639,7 +663,10 @@ export class PermissionCoordinator {
       .updateBlocks(
         notify.channel,
         notify.ts,
-        buildElicitationResolvedCard(rec.params, verdict.name ? `${decision} — ${verdict.name}` : decision),
+        [
+          ...notify.intro,
+          ...buildElicitationResolvedCard(rec.params, verdict.name ? `${decision} — ${verdict.name}` : decision)
+        ],
         'Permission resolved',
         true
       )
@@ -769,7 +796,13 @@ export class PermissionCoordinator {
               `${req.decision === 'allow' ? ':white_check_mark:' : ':no_entry_sign:'} ${label}`
             )
       void pending.notify.conn
-        .updateBlocks(pending.notify.channel, pending.notify.ts, blocks, 'Permission resolved', true)
+        .updateBlocks(
+          pending.notify.channel,
+          pending.notify.ts,
+          [...pending.notify.intro, ...blocks],
+          'Permission resolved',
+          true
+        )
         .catch(() => {})
       void this.host
         .store()
@@ -905,7 +938,13 @@ export class PermissionCoordinator {
             ? buildPermissionResolvedCard(pending.params, 'Cancelled', undefined)
             : buildElicitationResolvedCard(pending.params, ':hourglass: Cancelled')
         void pending.notify.conn
-          .updateBlocks(pending.notify.channel, pending.notify.ts, blocks, 'Permission cancelled', true)
+          .updateBlocks(
+            pending.notify.channel,
+            pending.notify.ts,
+            [...pending.notify.intro, ...blocks],
+            'Permission cancelled',
+            true
+          )
           .catch(() => {})
         void this.host
           .store()

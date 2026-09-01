@@ -528,22 +528,30 @@ export function buildPermissionResolvedCard(
 }
 
 /** Context header for an approval DM (slack-approval-dm.md §5.2): which agent is
- * asking, who triggered the turn, the console session deep link, and — for a
- * Slack-triggered turn — a permalink to the source thread. Pure. */
+ * asking, who triggered the turn, a quote of the triggering Slack message, the
+ * console session deep link, and a permalink to the source thread. Pure. */
 export function buildApprovalDmIntro(info: {
   agentName: string
   requesterName?: string | null
   sessionUrl: string
   sourceUrl?: string
+  sourceText?: string
 }): unknown[] {
   const requester = info.requesterName ? ` for *${clampTo(info.requesterName, 60)}*` : ''
+  // Quoted on every line so a multi-line message stays one visual quote block.
+  const quote = info.sourceText?.trim()
+    ? `\n${clampTo(info.sourceText.trim(), 300)
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n')}`
+    : ''
   const links = [`<${info.sessionUrl}|Open session>`, ...(info.sourceUrl ? [`<${info.sourceUrl}|Source thread>`] : [])]
   return [
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${clampTo(info.agentName, 60)}* is waiting on an approval${requester}.\n${links.join(' · ')}`
+        text: `*${clampTo(info.agentName, 60)}* is waiting on an approval${requester}.${quote}\n${links.join(' · ')}`
       }
     }
   ]
