@@ -38,6 +38,7 @@ the picture it draws.
 - [slack-integration-install.md](designs/slack-integration-install.md) — Slack installation and credential distribution.
 - [slack-install-smoothing.md](designs/slack-install-smoothing.md) — The streamlined Slack install flow.
 - [slack-identity.md](designs/slack-identity.md) — Slack accounts as a sign-in method, and the one rule for reading that identity.
+- [slack-approval-dm.md](designs/slack-approval-dm.md) — DM-ing a linked agent editor to decide a pending approval from Slack.
 - [slack-streaming-turn-output.md](designs/slack-streaming-turn-output.md) — Streaming a Slack turn's tool-call chrome over one native card stream.
 - [feishu-integration.md](designs/feishu-integration.md) — The Lark / Feishu integration, international and CN variants.
 
