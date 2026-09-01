@@ -828,8 +828,7 @@ export class AcpHost {
    *   SYNCHRONOUS on purpose: a runtime can emit the instant it has answered, and anything awaited
    *   here would widen the response-to-ownership gap into a window where that update is dropped.
    */
-  /** Safety net below every caller (dispatch, distill, dream): a runtime that
-   * rejects non-empty session mcpServers gets [] instead of a failed session. */
+  /** A runtime that rejects non-empty session mcpServers gets [] instead of a failed session — covers every creator. */
   private clampSessionMcpServers(mcpServers: McpServer[]): McpServer[] {
     if (this.runtime.sessionMcpServers !== 'unsupported' || mcpServers.length === 0) return mcpServers
     this.opts.log?.debug(`acp: dropping ${mcpServers.length} session MCP server(s) — the runtime rejects them`)

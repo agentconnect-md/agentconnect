@@ -2694,10 +2694,9 @@ export class Daemon {
       // The agent's enabled daemon-configured MCP servers are appended AFTER the bridge entry, gated
       // on the runtime's probed transport caps.
       mcpServersFor: ({ agent, platform, channel, thread, integrationId, transportScope, isDm }) => {
-        // An OpenClaw-style bridge rejects any non-empty session mcpServers list —
-        // skip tool/bridge assembly instead of failing every session/new.
+        // An OpenClaw-style bridge rejects non-empty session mcpServers — skip assembly instead of failing session/new.
         if (this.runtimes[agent.runtime]?.sessionMcpServers === 'unsupported') {
-          this.log.info(
+          this.log.debug(
             `acp: runtime "${agent.runtime}" rejects per-session MCP servers — agent "${agent.id}" runs without AgentConnect tools and configured MCP servers`
           )
           return []
