@@ -235,6 +235,7 @@ import { createDiscordCpProvider } from './platforms/discord/provider.js'
 import { createSlackCpProvider, createSlackToolingCredentials } from './platforms/slack/provider.js'
 import { createFeishuCpProvider } from './platforms/feishu/provider.js'
 import { createLinearCpProvider } from './platforms/linear/provider.js'
+import { LinearCredentialReconciler } from './platforms/linear/credential-reconciler.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
@@ -1688,6 +1689,20 @@ export function buildContainer(
     http.log
   )
 
+  // Rotating the deployment Linear app leaves every workspace bot holding the stamped copy the
+  // relay verifies with, so a provider-owned pass re-stamps them (linear-integration.md §10.6).
+  // The app is read per tick, so the disabled deployment simply finds nothing to do.
+  const linearCredentialReconciler = new LinearCredentialReconciler({
+    bots: repos.bot,
+    secrets: repos.botSecret,
+    credentials: repos.botCredential,
+    resync: (botId) => httpBot.syncBot(botId),
+    ...(linearPlatformApp ? { app: linearPlatformApp } : {}),
+    clock,
+    intervalMs: 15 * 60 * 1000,
+    log: http.log
+  })
+
   // The per-platform INJECTION seams the provider-contributed route plugins take
   // as their second argument (`http/platform-route-seams.ts`) — what used to be
   // twelve platform-named fields on `httpDeps`. Built here, once, and shared with
@@ -1789,7 +1804,8 @@ export function buildContainer(
     // platform from the inside (linear-integration.md §7.1).
     createLinearCpProvider({
       ...(linearPlatformApp ? { app: linearPlatformApp } : {}),
-      tokens: repos.linearToken
+      tokens: repos.linearToken,
+      credentialReconciler: linearCredentialReconciler
     })
   ])
 

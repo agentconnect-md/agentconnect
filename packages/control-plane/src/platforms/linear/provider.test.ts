@@ -258,6 +258,25 @@ describe('secretShape — the deployment credentials in the shared row (§7.2)',
   })
 })
 
+describe('backgroundLoops — the deployment-credential re-stamp (§10.6)', () => {
+  it('declares the loop so core drives it without naming the platform', () => {
+    const started: string[] = []
+    const provider = createLinearCpProvider({
+      app: APP,
+      credentialReconciler: { start: () => started.push('start'), stop: () => started.push('stop') }
+    })
+
+    expect(provider.backgroundLoops?.map((loop) => loop.label)).toEqual(['linear-credential-restamp'])
+    provider.backgroundLoops?.[0]?.start()
+    provider.backgroundLoops?.[0]?.stop()
+    expect(started).toEqual(['start', 'stop'])
+  })
+
+  it('declares no loop without the reconciler — member presence follows slot presence', () => {
+    expect(createLinearCpProvider({ app: APP }).backgroundLoops).toBeUndefined()
+  })
+})
+
 describe('projectBotAssign — strictly the two opaque bags, no routing (§6.2)', () => {
   it('carries the signing secret and the tenant-scoped demux composite in the generic slots', async () => {
     // The slot NAMES are the contract: relay core indexes `{appId: apiAppId, tenantId: teamId}` and
@@ -399,11 +418,12 @@ describe('the rest of the §9 surface', () => {
     expect(provider.installRoutes('public-callback')).toEqual([])
   })
 
-  it('declares no create-body refinement, no tooling credentials and no background loops', () => {
+  // Background loops moved out of this list once the §10.6 re-stamp earned one; their
+  // presence-follows-slot-presence pair lives in the dedicated describe above.
+  it('declares no create-body refinement, no tooling credentials and no install funnel', () => {
     const provider = createLinearCpProvider({ app: APP, tokens: new MemoryTokens() })
     expect(provider.refineCreateBody).toBeUndefined()
     expect(provider.providerToolingCredentials).toBeUndefined()
-    expect(provider.backgroundLoops).toBeUndefined()
     expect(provider.pendingInstalls).toBeUndefined()
   })
 })

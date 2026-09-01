@@ -112,6 +112,7 @@ import { createDiscordCpProvider } from '../../src/platforms/discord/provider.js
 import { createSlackCpProvider, createSlackToolingCredentials } from '../../src/platforms/slack/provider.js'
 import { createFeishuCpProvider } from '../../src/platforms/feishu/provider.js'
 import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
+import { LinearCredentialReconciler } from '../../src/platforms/linear/credential-reconciler.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from '../../src/http/routes/slack-install.js'
 import {
   slackPlatformInstallRoutes,
@@ -205,6 +206,8 @@ export interface HttpApp {
   /** The relay registry — a test can `add` a fake {@link RelayChannel} so
    *  `hasConnectedRelay()` is true (e.g. to exercise the http-transport paths). */
   relayReg: RelayRegistry
+  /** The Linear re-stamp loop, UNARMED: a suite drives `tick()` instead of a timer. */
+  linearCredentialReconciler: LinearCredentialReconciler
   close(): Promise<void>
 }
 
@@ -587,6 +590,21 @@ export function buildHttpApp(
     internalInvocationAuth
   }
 
+  // The §10.6 deployment-credential re-stamp, wired exactly as `buildContainer` wires it. Its app
+  // is a getter over the stub bag so a suite can rotate the deployment credentials mid-test, which
+  // is what the rotation actually looks like from this process: a different value on the next read.
+  const linearCredentialReconciler = new LinearCredentialReconciler({
+    bots: botRepo,
+    secrets: botSecretStore,
+    credentials: botCredentialWriter,
+    resync: (botId) => deps.httpBot.syncBot(botId),
+    get app() {
+      return platformStubs.linearPlatformApp
+    },
+    clock,
+    intervalMs: 15 * 60 * 1000
+  })
+
   // The per-platform route seams, mirroring `buildContainer`'s — but every member
   // reads THROUGH the mutable `platformStubs` bag rather than capturing its value,
   // so a suite that swaps a stub after `buildApp` is still observed. `configApi`
@@ -687,7 +705,8 @@ export function buildHttpApp(
       get app() {
         return platformStubs.linearPlatformApp
       },
-      tokens: linearTokenStore
+      tokens: linearTokenStore,
+      credentialReconciler: linearCredentialReconciler
     })
   ])
 
@@ -699,6 +718,7 @@ export function buildHttpApp(
     platformStubs,
     events,
     relayReg,
+    linearCredentialReconciler,
     close: async () => {
       await app.close()
     }

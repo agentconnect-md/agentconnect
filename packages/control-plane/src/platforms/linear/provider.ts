@@ -26,6 +26,7 @@ import type { ZodRawShape } from 'zod'
 import type { IntegrationLinearConfig } from '@agentconnect.md/protocol'
 import type { BotRecord, BotSecretMaterial, LinearTokenStore } from '../../persistence/ports.js'
 import type { LinearPlatformAppConfig } from '../../config/linear-platform.js'
+import type { LinearCredentialReconciler } from './credential-reconciler.js'
 import type { CpConfigValidation, CpNewBotInstall, CpPlatformProvider } from '../provider.js'
 
 /**
@@ -138,10 +139,13 @@ export interface LinearCpProviderDeps {
   /** The provider-owned `linear_token` store (§4.4). Absent ⇒ `projectIntegrationConfig` has no
    *  grant to load and answers fail-closed, and the disconnect side effect has nothing to drop. */
   tokens?: LinearTokenStore
+  /** The §10.6 re-stamp loop. Absent ⇒ no `backgroundLoops` member, exactly as Slack's optional
+   *  identity reconciler works — member presence follows slot presence. */
+  credentialReconciler?: Pick<LinearCredentialReconciler, 'start' | 'stop'>
 }
 
 export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformProvider<LinearCreateCredentials> {
-  const { tokens } = deps
+  const { tokens, credentialReconciler } = deps
 
   /** The bot's connection identity (§4.4), or null when the row carries no complete D6 pair. */
   const connectionOf = (bot: BotRecord) =>
@@ -222,6 +226,25 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
     },
 
     envSchema: LinearCpEnvSchema,
+
+    /**
+     * The §10.6 re-stamp: rotating the deployment app's credentials moves the source of truth away
+     * from every workspace bot's stamped secret row, and only a provider-owned pass can close that
+     * gap — core has no reason to know that two `BotSecret` slots on this platform are copies of a
+     * deployment credential rather than a per-workspace one. Declared so `startBackground()` and
+     * shutdown drive it without naming platforms.
+     */
+    ...(credentialReconciler
+      ? {
+          backgroundLoops: [
+            {
+              label: 'linear-credential-restamp',
+              start: () => credentialReconciler.start(),
+              stop: () => credentialReconciler.stop()
+            }
+          ] as const
+        }
+      : {}),
 
     /**
      * Disconnecting a workspace is deleting its Bot, and the grant does not hang off that row — it
