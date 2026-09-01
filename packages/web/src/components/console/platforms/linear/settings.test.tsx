@@ -9,30 +9,30 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BotDto } from '@/lib/api'
-import type { IntegrationRow } from '@/lib/data'
 
 const mocks = vi.hoisted(() => ({
   reconnectLinearWorkspace: vi.fn(),
   getLinearConnect: vi.fn(),
+  disconnectLinearWorkspace: vi.fn(),
   refresh: vi.fn(),
   deleteIntegration: vi.fn(),
-  deleteBot: vi.fn(),
-  integrations: [] as IntegrationRow[]
+  deleteBot: vi.fn()
 }))
 
 vi.mock('@/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api')>()),
   reconnectLinearWorkspace: mocks.reconnectLinearWorkspace,
-  getLinearConnect: mocks.getLinearConnect
+  getLinearConnect: mocks.getLinearConnect,
+  disconnectLinearWorkspace: mocks.disconnectLinearWorkspace
 }))
+// The piecewise teardown members stay on the mock so a test can catch the console
+// reaching for them: enumerating memberships client-side is exactly the bug this
+// dialog was rewritten to remove.
 vi.mock('@/lib/data-context', () => ({
   useConsoleData: () => ({
     refresh: mocks.refresh,
     deleteIntegration: mocks.deleteIntegration,
-    deleteBot: mocks.deleteBot,
-    get integrations() {
-      return mocks.integrations
-    }
+    deleteBot: mocks.deleteBot
   })
 }))
 
@@ -99,9 +99,8 @@ beforeEach(() => {
   mocks.refresh.mockReset()
   mocks.deleteIntegration.mockReset()
   mocks.deleteBot.mockReset()
-  mocks.deleteIntegration.mockResolvedValue(undefined)
-  mocks.deleteBot.mockResolvedValue(undefined)
-  mocks.integrations = []
+  mocks.disconnectLinearWorkspace.mockReset()
+  mocks.disconnectLinearWorkspace.mockResolvedValue(undefined)
   mocks.getLinearConnect.mockResolvedValue({ id: 'c1', status: 'pending', failureReason: null, botId: null })
   vi.stubGlobal(
     'open',
@@ -171,40 +170,42 @@ describe('disconnecting a workspace', () => {
     await act(async () => buttonWithLabel('Disconnect this workspace')!.click())
   }
 
-  it('confirms first, naming the consequence for every member', async () => {
+  it('confirms first, naming the consequence for every member — the invisible ones too', async () => {
     await openDialog()
 
     expect(text()).toContain('Disconnect workspace')
     expect(text()).toContain('all 2 agents that use it')
     expect(text()).toContain('forgets its Linear grant')
-    expect(mocks.deleteBot).not.toHaveBeenCalled()
+    expect(text()).toContain('Agents you cannot see are removed too')
+    expect(mocks.disconnectLinearWorkspace).not.toHaveBeenCalled()
   })
 
-  it('lifts every membership before the bot delete the CP would otherwise refuse', async () => {
-    // `DELETE /bots/:id` 409s while any agent is installed, so the memberships go
-    // first — in the order the dialog's own sentence describes.
-    mocks.integrations = [
-      { id: 'int-a', botId: 'bot-9' },
-      { id: 'int-b', botId: 'bot-9' },
-      { id: 'int-other', botId: 'bot-other' }
-    ] as unknown as IntegrationRow[]
+  it('tears the workspace down in ONE server call, never a client loop', async () => {
+    // `GET /integrations` is visibility-filtered, so a membership on an agent outside
+    // the caller's audience is not in the list a loop would walk — it would lift what
+    // it can see, the bot delete behind it would refuse on the hidden one, and the
+    // operator would be told a full disconnect happened. Only the server holds the
+    // authoritative member set, so only the server may spend it.
     await openDialog()
     await act(async () => buttonWithText('Disconnect')!.click())
     await settle()
 
-    expect(mocks.deleteIntegration.mock.calls.map(([id]) => id)).toEqual(['int-a', 'int-b'])
-    expect(mocks.deleteBot).toHaveBeenCalledWith('bot-9')
+    expect(mocks.disconnectLinearWorkspace).toHaveBeenCalledWith('bot-9')
+    expect(mocks.deleteIntegration).not.toHaveBeenCalled()
+    expect(mocks.deleteBot).not.toHaveBeenCalled()
+    expect(mocks.refresh).toHaveBeenCalled()
   })
 
-  it('stops on a refused membership rather than firing the delete behind it', async () => {
-    mocks.integrations = [{ id: 'int-a', botId: 'bot-9' }] as unknown as IntegrationRow[]
-    mocks.deleteIntegration.mockRejectedValue(new Error('daemon is offline'))
+  it('renders a partial teardown as the refusal it is, keeping the dialog open', async () => {
+    mocks.disconnectLinearWorkspace.mockRejectedValue(
+      new Error('disconnect stopped partway: 1 of 2 agents are still linked to this workspace — retry the disconnect')
+    )
     await openDialog()
     await act(async () => buttonWithText('Disconnect')!.click())
     await settle()
 
-    expect(text()).toContain('daemon is offline')
-    expect(mocks.deleteBot).not.toHaveBeenCalled()
+    expect(text()).toContain('1 of 2 agents are still linked')
+    expect(text()).toContain('Disconnect workspace')
   })
 
   it('closes without touching anything on cancel', async () => {
@@ -212,7 +213,6 @@ describe('disconnecting a workspace', () => {
     await act(async () => buttonWithText('Cancel')!.click())
 
     expect(text()).toBe('')
-    expect(mocks.deleteIntegration).not.toHaveBeenCalled()
-    expect(mocks.deleteBot).not.toHaveBeenCalled()
+    expect(mocks.disconnectLinearWorkspace).not.toHaveBeenCalled()
   })
 })

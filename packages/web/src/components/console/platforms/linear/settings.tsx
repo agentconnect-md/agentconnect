@@ -124,18 +124,22 @@ function LinearRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean })
 /**
  * Confirm disconnecting one workspace for the whole organization.
  *
- * `DELETE /bots/:id` refuses while any agent is installed, so the memberships go
- * first and the bot delete follows — which is also the order the copy describes. A
- * membership that fails to lift stops the run with its own message rather than
- * leaving the operator staring at the generic "installed on an agent" refusal.
+ * ONE server call, never a client loop over `integrations`: that list is
+ * visibility-filtered, so a member on an agent outside the caller's audience is
+ * invisible here — a loop would lift the memberships it can see and the bot delete
+ * behind it would refuse on the one it never knew about, leaving the workspace half
+ * unlinked after the operator confirmed a full disconnect. The authoritative member
+ * set only exists server-side, so the whole teardown does too; a partial one comes
+ * back as an error naming what is still linked.
  */
 function DisconnectWorkspaceModal({ bot, onClose }: { bot: BotDto; onClose: () => void }) {
-  const { integrations, deleteIntegration, deleteBot } = useConsoleData()
+  const { refresh } = useConsoleData()
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const name = bot.workspaceName || bot.name
   // A workspace normally has members — the first connect makes one — but every one can
-  // be unlinked, and "all 0 agents" is not a sentence.
+  // be unlinked, and "all 0 agents" is not a sentence. The count is the VISIBLE one, so
+  // it describes rather than bounds what the call removes.
   const members = bot.agentIds.length
   const audience =
     members === 0 ? 'this organization' : members === 1 ? 'the agent that uses it' : `all ${members} agents that use it`
@@ -145,10 +149,8 @@ function DisconnectWorkspaceModal({ bot, onClose }: { bot: BotDto; onClose: () =
     setBusy(true)
     setErr(null)
     try {
-      for (const row of integrations) {
-        if (row.botId === bot.id && row.id) await deleteIntegration(row.id)
-      }
-      await deleteBot(bot.id)
+      await linearApi.disconnect(bot.id)
+      await refresh()
       onClose()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -172,6 +174,9 @@ function DisconnectWorkspaceModal({ bot, onClose }: { bot: BotDto; onClose: () =
           <span className="mono text-(--text-primary)">{name}</span>&#32;is removed for {audience}, and AgentConnect
           forgets its Linear grant. Delegations in that workspace stop reaching any agent. Connecting it again is a
           fresh authorization in Linear.
+        </p>
+        <p className="mt-[10px] mb-0 font-sans text-[12.5px] font-normal leading-[1.6] text-(--text-tertiary)">
+          Agents you cannot see are removed too — the workspace is disconnected for the whole organization.
         </p>
         {err && (
           <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>

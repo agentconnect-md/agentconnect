@@ -106,8 +106,10 @@ describe('the linear transcript and card semantics', () => {
 })
 
 describe('the linear api bindings', () => {
-  it('names the funnel and its reconnect arm — and nothing else', () => {
-    expect(Object.keys(linearApi).sort()).toEqual(['getConnect', 'reconnect', 'startConnect'])
+  it('names the funnel, its reconnect arm and the org-wide disconnect — and nothing else', () => {
+    // `disconnect` is a route rather than a client loop because the membership list the
+    // console could loop over is visibility-filtered; only the server sees every member.
+    expect(Object.keys(linearApi).sort()).toEqual(['disconnect', 'getConnect', 'reconnect', 'startConnect'])
     expect(module().apiBindings).toBe(linearApi)
   })
 })

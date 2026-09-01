@@ -76,7 +76,8 @@ const EXPECTED_MOUNTS: Record<CpRouteScope, Record<string, string[]>> = {
     linearConnectRoutesPlugin: [
       'POST /integrations/linear/connect',
       'GET /integrations/linear/connect/:id',
-      'POST /bots/:id/linear/reconnect'
+      'POST /bots/:id/linear/reconnect',
+      'POST /bots/:id/linear/disconnect'
     ]
   },
   'public-callback': {

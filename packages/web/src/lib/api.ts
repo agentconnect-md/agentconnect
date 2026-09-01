@@ -3978,6 +3978,14 @@ export async function reconnectLinearWorkspace(botId: string): Promise<LinearCon
   return apiPost<LinearConnectStartDto>(`${orgBase()}/bots/${encodeURIComponent(botId)}/linear/reconnect`, {})
 }
 
+// Disconnect a workspace for the whole organization: every membership and then the bot
+// itself, in ONE call. The console must NOT loop `deleteIntegration` here — the list it
+// would loop over is visibility-filtered, so a member on an agent outside the caller's
+// audience is invisible to it and the workspace would be left half unlinked.
+export async function disconnectLinearWorkspace(botId: string): Promise<void> {
+  await apiPost<void>(`${orgBase()}/bots/${encodeURIComponent(botId)}/linear/disconnect`, {})
+}
+
 // Uninstall an integration (`DELETE /integrations/:id`): drops the CP record and
 // tells the owning daemon to close the connection. The BOT survives (freed) — it
 // shows up in the Add-integration picker for reuse.

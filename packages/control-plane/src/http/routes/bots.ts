@@ -20,6 +20,7 @@ import { orgOf, denyViewerWrite } from '../rbac.js'
 import { BotDto, BotListDto, UpdateBotBody, ErrorDto, IdParam, type BotDtoT } from '../dto/index.js'
 import { Tag } from '../plugins/openapi.js'
 import { multiAgentUnsupportedMessage } from '../../platforms/sharing.js'
+import { deleteBotIdentity } from '../uninstall.js'
 
 function toDto(b: BotRecord): BotDtoT {
   return {
@@ -121,21 +122,10 @@ export function botRoutes(deps: HttpDeps) {
             .code(409)
             .send({ error: 'Conflict', statusCode: 409, message: 'bot is installed on an agent — uninstall first' })
         }
-        // Platform-owned teardown the cascade cannot reach (contract §9 `onBotDelete`): read the
-        // secret row BEFORE the delete cascades it away, then run the declared side effect AFTER
-        // the row is gone, so a refused delete never tears down a live install's upstream state.
-        // Best-effort by contract — a failure is logged and the delete stands (Linear's own
-        // backstop is its orphan-token sweep).
-        const onBotDelete = deps.platforms.get(bot.platform)?.sideEffects?.onBotDelete
-        const secrets = onBotDelete ? await deps.repos.botSecret.get(orgOf(req), bot.id) : null
-        await deps.repos.bot.delete(orgOf(req), bot.id)
-        if (onBotDelete) {
-          try {
-            await onBotDelete(bot, secrets)
-          } catch (err) {
-            req.log.warn({ err, botId: bot.id, platform: bot.platform }, 'bot delete side effect failed')
-          }
-        }
+        // The row + the platform-owned teardown the cascade cannot reach are the shared
+        // skeleton (`http/uninstall.ts`), so this path and Linear's workspace disconnect
+        // cannot drift on which side effects a deleted identity fires.
+        await deleteBotIdentity(deps, req.log, orgOf(req), bot)
         return reply.code(204).send(null)
       }
     )
