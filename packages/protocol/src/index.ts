@@ -47,6 +47,7 @@ export {
   RUNTIME_COMMANDS_FEATURE,
   K8S_SUPERVISOR,
   AGENT_EXISTS_FEATURE,
+  APPROVAL_DM_ROUTE_V1_FEATURE,
   SESSION_LIVE_TAIL_FEATURE,
   SESSION_METADATA_ACK_FEATURE,
   SESSION_PURGE_FEATURE,
@@ -84,6 +85,7 @@ export * from './frames/duty.js'
 export * from './frames/hook.js'
 export * from './frames/codehost-note.js'
 export * from './frames/codehost-review.js'
+export * from './frames/approval-route.js'
 export * from './frames/integration.js'
 export * from './frames/mcpserver.js'
 export * from './frames/memory-connection.js'

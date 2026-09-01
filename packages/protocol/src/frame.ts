@@ -34,6 +34,7 @@ import {
   DutyFetchOk
 } from './frames/duty.js'
 import { CodeHostNoteDesired, CodeHostNoteResult, CodeHostNoteResultOk } from './frames/codehost-note.js'
+import { AgentApprovalRoute, AgentApprovalRouted } from './frames/approval-route.js'
 import {
   GithubReviewAuthorize,
   GithubReviewAuthorized,
@@ -249,6 +250,9 @@ export const FRAME_SCHEMAS = {
   'agent/permission-requests': AgentPermissionRequestList,
   'agent/permission-requests/page': AgentPermissionRequestPage,
   'agent/permission-decision': AgentPermissionDecision,
+  // ── approval-DM routing: pick / revalidate a Slack recipient (approval-route.ts).
+  'agent/approval-route': AgentApprovalRoute,
+  'agent/approval-routed': AgentApprovalRouted,
   // ── sandbox wake: a console-initiated resume with no turn (agent.ts `AgentWakeReq`).
   'agent/wake': AgentWakeReq,
   'agent/wake/ok': AgentWakeOk,
@@ -541,6 +545,8 @@ export const AnyFrame = z.discriminatedUnion('type', [
   frame('agent/permission-requests', FRAME_SCHEMAS['agent/permission-requests']),
   frame('agent/permission-requests/page', FRAME_SCHEMAS['agent/permission-requests/page']),
   frame('agent/permission-decision', FRAME_SCHEMAS['agent/permission-decision']),
+  frame('agent/approval-route', FRAME_SCHEMAS['agent/approval-route']),
+  frame('agent/approval-routed', FRAME_SCHEMAS['agent/approval-routed']),
   frame('agent/wake', FRAME_SCHEMAS['agent/wake']),
   frame('agent/wake/ok', FRAME_SCHEMAS['agent/wake/ok']),
   // ── routing and daemon control ──
