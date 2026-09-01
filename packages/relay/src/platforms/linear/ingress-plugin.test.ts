@@ -116,13 +116,20 @@ function promptedEvent(over: Record<string, unknown> = {}, activityOver: Record<
   }
 }
 
-function delivery(body: unknown, over: { secret?: string; timestamp?: number; signature?: string } = {}) {
+// `timestampHeader` absent ⇒ the header mirrors the SIGNED timestamp, as a real delivery does;
+// `null` ⇒ no header at all; a number ⇒ the attacker's freely chosen unsigned value.
+function delivery(
+  body: unknown,
+  over: { secret?: string; signature?: string; timestampHeader?: number | string | null } = {}
+) {
   const raw = Buffer.from(JSON.stringify(body))
   const signature =
     over.signature ??
     createHmac('sha256', over.secret ?? SIGNING_SECRET)
       .update(raw)
       .digest('hex')
+  const signed = (body as { webhookTimestamp?: number } | undefined)?.webhookTimestamp
+  const headerValue = over.timestampHeader === undefined ? signed : over.timestampHeader
   return {
     raw,
     body,
@@ -130,7 +137,7 @@ function delivery(body: unknown, over: { secret?: string; timestamp?: number; si
       'linear-event': 'AgentSessionEvent',
       'linear-delivery': '00000000-0000-4000-8000-0000000000d1',
       'linear-signature': signature,
-      'linear-timestamp': String(over.timestamp ?? NOW)
+      ...(headerValue === null || headerValue === undefined ? {} : { 'linear-timestamp': String(headerValue) })
     } as Record<string, string | string[] | undefined>
   }
 }
@@ -160,19 +167,51 @@ describe('linear ingress plugin — signature and replay window', () => {
     expect(h.forward).not.toHaveBeenCalled()
   })
 
-  it('reads Linear-Timestamp as epoch MILLISECONDS, not seconds', async () => {
+  it('rejects a STALE signed body even when the unsigned header is fresh', async () => {
+    // The signature covers the body only, so a captured body + signature replays for as long as
+    // the attacker keeps minting fresh `Linear-Timestamp` headers. The signed timestamp is the
+    // only freshness authority; a header-only skew check admits the replay.
     const h = host()
-    // The same instant expressed in seconds is ~1 788 249 909 ms after the epoch — far outside
-    // the window. Treating the header as seconds would accept it and reject every real delivery.
-    expect((await run(h, createdEvent(), { timestamp: Math.floor(NOW / 1000) })).verified).toBeUndefined()
-    expect((await run(h, createdEvent(), { timestamp: NOW })).verified).toMatchObject({ kind: 'agent-session' })
+    const captured = createdEvent({ webhookTimestamp: NOW - 6 * 60 * 60 * 1000 })
+    expect((await run(h, captured, { timestampHeader: NOW })).verified).toBeUndefined()
+    expect(h.forward).not.toHaveBeenCalled()
   })
 
-  it('rejects a timestamp more than 60 s from the host clock, in either direction', async () => {
+  it('accepts a fresh signed body with NO timestamp header at all', async () => {
     const h = host()
-    expect((await run(h, createdEvent(), { timestamp: NOW - 60_001 })).verified).toBeUndefined()
-    expect((await run(h, createdEvent(), { timestamp: NOW + 60_001 })).verified).toBeUndefined()
-    expect((await run(h, createdEvent(), { timestamp: NOW - 59_000 })).verified).toMatchObject({
+    expect((await run(h, createdEvent(), { timestampHeader: null })).verified).toMatchObject({
+      kind: 'agent-session'
+    })
+  })
+
+  it('rejects a body carrying no signed timestamp — nothing would bound its replay', async () => {
+    const h = host()
+    const undated = createdEvent()
+    delete (undated as Record<string, unknown>).webhookTimestamp
+    expect((await run(h, undated, { timestampHeader: NOW })).verified).toBeUndefined()
+  })
+
+  it('rejects an unsigned header that CONTRADICTS the signed timestamp', async () => {
+    // The header can only ever reject; a mismatch means one of the two was tampered with.
+    const h = host()
+    expect((await run(h, createdEvent(), { timestampHeader: NOW - 5_000 })).verified).toBeUndefined()
+    expect((await run(h, createdEvent(), { timestampHeader: 'not-a-number' })).verified).toBeUndefined()
+  })
+
+  it('reads webhookTimestamp as epoch MILLISECONDS, not seconds', async () => {
+    const h = host()
+    // The same instant expressed in seconds is ~1 788 249 909 ms after the epoch — far outside
+    // the window. A seconds reading would accept it and reject every real delivery.
+    const seconds = createdEvent({ webhookTimestamp: Math.floor(NOW / 1000) })
+    expect((await run(h, seconds)).verified).toBeUndefined()
+    expect((await run(h, createdEvent())).verified).toMatchObject({ kind: 'agent-session' })
+  })
+
+  it('rejects a signed timestamp more than 60 s from the host clock, in either direction', async () => {
+    const h = host()
+    expect((await run(h, createdEvent({ webhookTimestamp: NOW - 60_001 }))).verified).toBeUndefined()
+    expect((await run(h, createdEvent({ webhookTimestamp: NOW + 60_001 }))).verified).toBeUndefined()
+    expect((await run(h, createdEvent({ webhookTimestamp: NOW - 59_000 }))).verified).toMatchObject({
       kind: 'agent-session'
     })
   })
@@ -302,6 +341,14 @@ describe('linear ingress plugin — normalized message', () => {
     expect(forwarded?.sender).toMatchObject({ id: `linear:${USER_ID}`, name: 'Example Person' })
   })
 
+  it('also reads the DOCUMENTED prompted shape, where the body sits on the activity itself', async () => {
+    // Live deliveries nest the prompt under `content`; the docs describe `agentActivity.body`.
+    // Reading only one shape would forward an empty instruction for the other.
+    const h = host()
+    const documented = promptedEvent({}, { content: null, body: 'Documented-shape follow-up' })
+    expect((await run(h, documented)).forwarded?.text).toBe('Documented-shape follow-up')
+  })
+
   it('keys a session with NO issue on the session UUID — never `linear:undefined`', async () => {
     const h = host()
     const noIssue = createdEvent()
@@ -408,7 +455,12 @@ describe('linear ingress plugin — stop, revocation, and non-session events', (
 
   it('drops any other verified event category without forwarding or reporting', async () => {
     const h = host()
-    const { verified } = await run(h, { type: 'Issue', action: 'update', organizationId: ORG_ID })
+    const { verified } = await run(h, {
+      type: 'Issue',
+      action: 'update',
+      organizationId: ORG_ID,
+      webhookTimestamp: NOW
+    })
     expect(verified).toEqual({ kind: 'ignored' })
     expect(h.forward).not.toHaveBeenCalled()
     expect(h.reportRevoked).not.toHaveBeenCalled()
@@ -420,7 +472,8 @@ describe('linear ingress plugin — stop, revocation, and non-session events', (
       type: 'AgentSessionEvent',
       action: 'created',
       organizationId: ORG_ID,
-      oauthClientId: CLIENT_ID
+      oauthClientId: CLIENT_ID,
+      webhookTimestamp: NOW
     })
     expect(verified).toEqual({ kind: 'ignored' })
   })

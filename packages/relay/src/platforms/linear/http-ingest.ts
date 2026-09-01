@@ -6,7 +6,8 @@ import type { WireNormalizedMessage } from '@agentconnect.md/protocol'
 import { truncateUtf8 } from '../../hooks/github-ingress.js'
 import { HookRateLimiter } from '../../hooks/rate-limit.js'
 
-/** Replay window on the `Linear-Timestamp` header, which carries epoch MILLISECONDS. */
+// Replay window on the SIGNED `webhookTimestamp` (epoch MILLISECONDS). The `Linear-Timestamp`
+// header mirrors it but sits outside the HMAC, so only the body's copy can bound a replay.
 export const LINEAR_TIMESTAMP_WINDOW_MS = 60_000
 
 /** Hard cap on one delivery's raw body (§6.1). */
@@ -58,6 +59,8 @@ const LinearAgentActivity = z.object({
   signal: z.string().nullish(),
   sourceCommentId: z.string().nullish(),
   content: z.object({ type: z.string().optional(), body: z.string().optional() }).nullish(),
+  // Live deliveries nest the prompt under `content`; Linear's docs describe a top-level `body`.
+  body: z.string().nullish(),
   user: z.object({ id: z.string().optional(), name: z.string().optional() }).nullish()
 })
 
@@ -113,10 +116,18 @@ function signatureIsValid(signingSecret: string, rawBody: Buffer, header: string
   return presented.length === expected.length && timingSafeEqual(presented, expected)
 }
 
-function timestampInWindow(header: string | undefined, now: number): boolean {
-  if (!header || !/^\d+$/.test(header)) return false
-  const ms = Number(header)
-  return Number.isSafeInteger(ms) && Math.abs(now - ms) <= LINEAR_TIMESTAMP_WINDOW_MS
+// Freshness is decided by the SIGNED timestamp alone. An absent or non-integer one is stale by
+// definition: without it a captured body replays forever under whatever header the attacker sends.
+function freshSignedTimestamp(signedMs: number | undefined, now: number): number | undefined {
+  if (signedMs === undefined || !Number.isSafeInteger(signedMs)) return undefined
+  return Math.abs(now - signedMs) <= LINEAR_TIMESTAMP_WINDOW_MS ? signedMs : undefined
+}
+
+// The unsigned header is a CROSS-CHECK, never an authority: it can only reject a delivery the
+// signed timestamp already admitted, and its absence is fine because it proves nothing either way.
+function headerContradictsSignedTimestamp(header: string | undefined, signedMs: number): boolean {
+  if (header === undefined) return false
+  return !/^\d+$/.test(header) || Number(header) !== signedMs
 }
 
 /** Content-derived dedup identity (§4.5) — stable across Linear's 1 min/1 h/6 h redeliveries. */
@@ -182,7 +193,10 @@ function budgetContext(
 // The member's instruction must be readable as TEXT, never only inside the fenced prompt
 // context (§6.3): the follow-up body verbatim, else the delegation line the session opened with.
 function instructionText(event: LinearAgentSessionEvent): string {
-  if (event.action === 'prompted') return event.agentActivity?.content?.body ?? ''
+  // Tolerant reader: live deliveries nest the prompt under `content`, the docs name a top-level
+  // `body`. Either wire shape must yield the instruction, so read both rather than picking one.
+  const activity = event.agentActivity
+  if (event.action === 'prompted') return activity?.content?.body ?? activity?.body ?? ''
   const session = event.agentSession
   return session.comment?.body?.trim() || session.issue?.title || session.summary || ''
 }
@@ -267,9 +281,10 @@ export class LinearHttpIngest {
     return this.limiter.allow(this.botId)
   }
 
-  // Authenticate one delivery and derive its typed product exactly once: signature over the exact
-  // request bytes, then the replay window on the `Linear-Timestamp` HEADER. The body's
-  // `webhookTimestamp` mirrors that header but is only ever read for reporting, never to verify.
+  // Authenticate one delivery and derive its typed product exactly once. The order is the whole
+  // security argument: HMAC over the exact request bytes, THEN parse, THEN bound replay on the
+  // signed `webhookTimestamp` — the only timestamp an attacker replaying a captured body and
+  // signature cannot refresh. Everything the branch reads afterwards is signed material.
   decode(
     rawBody: Buffer,
     body: unknown,
@@ -277,9 +292,11 @@ export class LinearHttpIngest {
     now: number
   ): VerifiedLinearDelivery | undefined {
     if (!signatureIsValid(this.signingSecret, rawBody, headerString(headers['linear-signature']))) return undefined
-    if (!timestampInWindow(headerString(headers['linear-timestamp']), now)) return undefined
     const envelope = LinearEnvelope.safeParse(body)
     if (!envelope.success) return undefined
+    const signedMs = freshSignedTimestamp(envelope.data.webhookTimestamp, now)
+    if (signedMs === undefined) return undefined
+    if (headerContradictsSignedTimestamp(headerString(headers['linear-timestamp']), signedMs)) return undefined
     // Tenant-scoped demux (§6.1/§12): every sibling install of the deployment app shares this
     // signing secret, so the payload's own identity is the only thing separating workspaces.
     if (envelope.data.organizationId !== this.identity.organizationId) return undefined
@@ -288,9 +305,7 @@ export class LinearHttpIngest {
     }
     // `Linear-Event` is outside the HMAC, so the branch is taken on the SIGNED body's own type.
     if (envelope.data.type === 'OAuthApp' && envelope.data.action === 'revoked') {
-      const at = envelope.data.webhookTimestamp
-      const eventAtMs = typeof at === 'number' && Number.isFinite(at) ? Math.trunc(at) : undefined
-      return { kind: 'revoked', ...(eventAtMs !== undefined && eventAtMs >= 0 ? { eventAtMs } : {}) }
+      return { kind: 'revoked', ...(signedMs >= 0 ? { eventAtMs: signedMs } : {}) }
     }
     if (envelope.data.type !== 'AgentSessionEvent') return { kind: 'ignored' }
     const parsed = LinearAgentSessionEvent.safeParse(body)
