@@ -24,7 +24,12 @@ export interface BotAssignment {
   // S1a open reader (protocol route.ts Platform policy): the wire field is an
   // open string; the assign handler refuses an unsupported platform gracefully.
   platform: string
-  secrets: { botToken: string; signingSecret: string } | { verificationToken: string; encryptKey?: string }
+  // The third shape is the signing-secret-ONLY bag: a relay-verified platform whose every write
+  // lives on the daemon has no provider token to hand the relay, only the webhook signing secret.
+  secrets:
+    | { botToken: string; signingSecret: string }
+    | { verificationToken: string; encryptKey?: string }
+    | { signingSecret: string }
   /** Provider app id — the O(1) HTTP demux key when present. */
   apiAppId?: string
   /** Slack workspace id (== Events API `team_id`). Present ⇒ this bot is one
@@ -597,7 +602,12 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
             verificationToken: a.secrets.verificationToken,
             ...(typeof a.secrets.encryptKey === 'string' ? { encryptKey: a.secrets.encryptKey } : {})
           }
-        : null
+        : // §6.7 third shape — signing secret alone, from a platform whose egress is entirely the
+          // daemon's. The ABSENT `botToken` is what separates it from a half-filled Slack bag: a
+          // present-but-unusable token must still fail closed rather than fall through to here.
+          !('botToken' in a.secrets) && 'signingSecret' in a.secrets && typeof a.secrets.signingSecret === 'string'
+          ? { signingSecret: a.secrets.signingSecret }
+          : null
   if (!secrets) return null
   // §6.7: the opaque ingress bag is the ONE carrier of the demux identity. The
   // named top-level twins left the wire schema with the S3 protocol cleanup

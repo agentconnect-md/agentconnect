@@ -4,6 +4,7 @@ import type { WireNormalizedMessage } from '@agentconnect.md/protocol'
 import { linearIngressPlugin } from './ingress-plugin.js'
 import { LINEAR_CONTEXT_BUDGET_BYTES, type LinearAdapterExt } from './http-ingest.js'
 import type { RelayIngressHost } from '../contract.js'
+import { toBotAssignment } from '../../bot-arbitration.js'
 import type { BotAssignment, RouteTarget } from '../../bot-arbitration.js'
 
 const NOW = 1_788_249_909_143
@@ -218,6 +219,32 @@ describe('linear ingress plugin — demux and tenant isolation', () => {
     expect(
       linearIngressPlugin.buildIngest(assignment({ teamId: undefined, workspaceId: undefined }), h)
     ).toBeUndefined()
+  })
+
+  it('builds from the WIRE frame end to end, so the mapper and the plugin cannot drift', async () => {
+    // The plugin reads exactly the slots core indexes (`indexAssign`) and fences on, and the
+    // mapper is the only thing between the frame and those slots — so pin the pair together.
+    const h = host()
+    const mapped = toBotAssignment({
+      botId: '11111111-1111-4111-8111-111111111111',
+      platform: 'linear',
+      secrets: { signingSecret: SIGNING_SECRET },
+      ingress: { apiAppId: CLIENT_ID, teamId: ORG_ID, botUserId: APP_USER_ID },
+      members: [],
+      agents: [],
+      routes: [],
+      gatedAgentIds: [],
+      mutedChannels: [],
+      gatedOffChannels: [],
+      noticedDmConversations: []
+    } as never)
+    const ingest = linearIngressPlugin.buildIngest(mapped!, h)!
+    expect(ingest.identity).toEqual({ clientId: CLIENT_ID, organizationId: ORG_ID, appUserId: APP_USER_ID })
+    const d = delivery(createdEvent())
+    const verified = linearIngressPlugin.verify(ingest, d.raw, d.body, d.headers, NOW)!
+    await linearIngressPlugin.handle(ingest, verified, h)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(vi.mocked(h.forward).mock.calls[0]?.[1].mentionedBots).toEqual([APP_USER_ID])
   })
 })
 

@@ -355,9 +355,36 @@ describe('toBotAssignment (§6.7 open secrets reader)', () => {
     expect(f?.secrets).toEqual({ verificationToken: 'v', encryptKey: 'k' })
   })
 
-  it('refuses (null) a secret bag neither typed shape matches — log-and-skip, never a throw', () => {
+  it('refuses (null) a secret bag no shape matches — log-and-skip, never a throw', () => {
+    // No botToken, no verificationToken, no signingSecret: nothing here is a credential the
+    // relay knows how to verify with, so the bot is skipped rather than half-installed.
     expect(toBotAssignment({ ...base, secrets: { apiKey: 'k-1' } } as never)).toBeNull()
+    expect(toBotAssignment({ ...base, secrets: {} } as never)).toBeNull()
+  })
+
+  it('refuses a HALF-FILLED Slack bag rather than promoting it to the signing-secret shape', () => {
+    // A present-but-unusable botToken means the projector meant the Slack pair and lost half of
+    // it. Falling through to the third shape would install an ingest that can never post.
     expect(toBotAssignment({ ...base, secrets: { botToken: 'xoxb-only' } } as never)).toBeNull()
+    expect(toBotAssignment({ ...base, secrets: { botToken: null, signingSecret: 'sig' } } as never)).toBeNull()
+  })
+
+  it('maps the signing-secret-ONLY shape, carrying the generic ingress slots the plugin reads', () => {
+    // A relay-verified platform whose every write lives on the daemon hands the relay no provider
+    // token — only the webhook signing secret, plus the identity core indexes and fences on.
+    const a = toBotAssignment({
+      ...base,
+      platform: 'linear',
+      secrets: { signingSecret: 'sig' },
+      ingress: { apiAppId: 'client-1', teamId: 'org-1', botUserId: 'app-user-1' }
+    } as never)
+    expect(a?.secrets).toEqual({ signingSecret: 'sig' })
+    expect(a).toMatchObject({ apiAppId: 'client-1', teamId: 'org-1', botUserId: 'app-user-1' })
+  })
+
+  it('refuses a signingSecret that is not a string — never a demux key the mapper guessed', () => {
+    expect(toBotAssignment({ ...base, secrets: { signingSecret: 42 } } as never)).toBeNull()
+    expect(toBotAssignment({ ...base, secrets: { signingSecret: null } } as never)).toBeNull()
   })
 
   // §6.7: the opaque ingress bag is the ONE carrier of the demux identity. The
