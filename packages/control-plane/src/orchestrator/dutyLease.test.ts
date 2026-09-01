@@ -4,7 +4,13 @@
 // predicate lives in the repo tests; this pins what the service does with the bit.
 import { describe, it, expect, vi } from 'vitest'
 import { DutyLeaseService, DUTY_LEASE_DEFAULTS } from './dutyLease.js'
-import type { DutyGroupRepo, DutyGroupRecord, DutyGrantRecord, AgentHomeClaim } from '../persistence/ports.js'
+import type {
+  AgentHomeClaim,
+  CapabilityBlockedVacancy,
+  DutyGrantRecord,
+  DutyGroupRecord,
+  DutyGroupRepo
+} from '../persistence/ports.js'
 import { AgentId, DaemonId, OrgId } from '../domain/ids.js'
 import { FakeClock } from '../../test/fakes/fake-clock.js'
 
@@ -14,7 +20,13 @@ const AGENT = AgentId('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1')
 const GROUP = '00000000-0000-4000-8000-000000000001'
 
 /** A ledger with one vacant group covering one agent, and every claim path instrumented. */
-function fakeRepo(opts: { heldByMember?: DutyGroupRecord[]; heldBack?: (holder: string) => boolean } = {}) {
+function fakeRepo(
+  opts: {
+    heldByMember?: DutyGroupRecord[]
+    heldBack?: (holder: string) => boolean
+    capabilityBlocked?: CapabilityBlockedVacancy[]
+  } = {}
+) {
   const vacant: DutyGrantRecord = {
     groupId: GROUP,
     orgId: ORG,
@@ -30,8 +42,12 @@ function fakeRepo(opts: { heldByMember?: DutyGroupRecord[]; heldBack?: (holder: 
   }))
   const release = vi.fn(async () => undefined)
   const newerGenerationLive = vi.fn(async (holder: string) => opts.heldBack?.(holder) ?? false)
+  const capabilityBlockedVacancies = vi.fn(
+    async (): Promise<CapabilityBlockedVacancy[]> => opts.capabilityBlocked ?? []
+  )
   const repo = {
     newerGenerationLive,
+    capabilityBlockedVacancies,
     renewHeld: async () => [],
     listHeldBy: async () => opts.heldByMember ?? [],
     confirmHeld: async () => [],
@@ -43,7 +59,7 @@ function fakeRepo(opts: { heldByMember?: DutyGroupRecord[]; heldBack?: (holder: 
     claimAgentHome,
     release
   } as unknown as DutyGroupRepo
-  return { repo, claimVacant, claimAgentHome, release, newerGenerationLive }
+  return { repo, claimVacant, claimAgentHome, release, newerGenerationLive, capabilityBlockedVacancies }
 }
 
 function service(repo: DutyGroupRepo, clock = new FakeClock(0), warn = vi.fn()) {
@@ -190,5 +206,48 @@ describe('DutyLeaseService — the double-move line', () => {
     claimAgentHome.mockResolvedValueOnce({ granted: true, groupId: GROUP, term: 2n, holder: other })
     await svc.claimAgentHome(ORG, AGENT, other)
     expect(warn).not.toHaveBeenCalled()
+  })
+})
+
+describe('DutyLeaseService — the capability-gap line', () => {
+  // A capability refusal is silent on the wire: the claim statement simply matches fewer rows, so
+  // an agent stops placing mid-rollout with nothing anywhere naming the platform that is missing.
+  it('names every passed-over agent and the platforms the member lacks, once per pass', async () => {
+    const warn = vi.fn()
+    const { repo, capabilityBlockedVacancies } = fakeRepo({
+      capabilityBlocked: [{ groupId: GROUP, agentId: AGENT, missingPlatforms: ['linear'] }]
+    })
+    const svc = service(repo, new FakeClock(0), warn)
+
+    await beat(svc, MEMBER, { held: [], headroom: 4 })
+    const lines = warn.mock.calls.filter(([, m]) => /advertises no module/.test(String(m)))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]?.[0]).toMatchObject({ daemonId: MEMBER, agentId: AGENT, missingPlatforms: ['linear'] })
+    // Read under the same deliverability cap the claim carries, so it can only report what claim saw.
+    expect(capabilityBlockedVacancies).toHaveBeenCalledWith(
+      MEMBER,
+      expect.any(Date),
+      expect.objectContaining({ maxMembers: expect.any(Number) })
+    )
+  })
+
+  // The diagnostic costs a read, so it must not run on a claim that already spent its whole budget.
+  it('is not read when the claim filled the budget it asked for', async () => {
+    const { repo, capabilityBlockedVacancies } = fakeRepo()
+    const svc = service(repo)
+    await beat(svc, MEMBER, { held: [], headroom: 1 })
+    expect(capabilityBlockedVacancies).not.toHaveBeenCalled()
+  })
+
+  // Diagnostics for a claim that already happened: a failure here must never fail the exchange.
+  it('a failing diagnostic read still lets the beat confirm renewal', async () => {
+    const warn = vi.fn()
+    const { repo, capabilityBlockedVacancies } = fakeRepo()
+    capabilityBlockedVacancies.mockRejectedValueOnce(new Error('connection terminated'))
+    const svc = service(repo, new FakeClock(0), warn)
+
+    const send = await beat(svc, MEMBER, { held: [], headroom: 4 })
+    expect(send.mock.calls.map(([type]) => type)).toContain('duty/renewed')
+    expect(warn.mock.calls.filter(([, m]) => /diagnostics failed/.test(String(m)))).toHaveLength(1)
   })
 })

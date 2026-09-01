@@ -6330,12 +6330,22 @@ export interface AgentHomeClaim {
    *  claimant, which has no group to name and must not learn of one. */
   groupId?: string
   term?: bigint
-  /** The live holder — the caller when granted, the incumbent for a `not_holder` answer otherwise. */
+  /** The LIVE holder — the caller when granted, the incumbent for a `not_holder` answer otherwise,
+   *  and null when the group has none. Never a lapsed lease's leftover `holder`: the re-route it
+   *  would send acknowledged ingress to is a member that has stopped serving, so a drop. */
   holder: DaemonId | null
 }
 
 /** Pure plan callback run inside the reconcile transaction's org snapshot (orchestrator/dutyGroup.ts). */
 export type DutyReconcilePlanner = (existing: DutyGroupRecord[]) => DutyReconcilePlan
+
+/** One agent a member was passed over for, and the platform ids it does not advertise. */
+export interface CapabilityBlockedVacancy {
+  groupId: string
+  agentId: AgentId
+  /** The platforms this member is missing for that agent — never the full requirement. */
+  missingPlatforms: string[]
+}
 
 /** One member set's capacity and unmet demand, as {@link DutyGroupRepo.poolTelemetry} reads it. */
 export interface PoolTelemetryRow {
@@ -6357,6 +6367,11 @@ export interface PoolTelemetryRow {
   vacantGroups: number
   /** Vacant, eligible, but over the wire's member cap: never claimable at any pool size (D16). */
   oversizedVacantGroups: number
+  /** Vacant and eligible, but no LIVE member of the set advertises every platform the group's
+   *  integrations need — the mid-rollout gap. Split out of
+   *  {@link PoolTelemetryRow.vacantGroups} for the same reason oversized groups are: scaling the
+   *  pool cannot clear it, so it must not pin the capacity alarm. Rolling the image forward can. */
+  capabilityBlockedVacantGroups: number
   /** Age of the oldest {@link PoolTelemetryRow.vacantGroups} entry. Sustained ⇒ nothing could take it. */
   oldestVacancySec: number
 }
@@ -6392,6 +6407,16 @@ export interface DutyGroupRepo {
     leaseMs: number,
     opts?: { maxMembers?: number; excludeGroupIds?: readonly string[] }
   ): Promise<DutyGrantRecord[]>
+  /** Why a claim came up short of its budget: vacancies this member is placement-eligible for and
+   *  could deliver, but whose integrations name a platform its advertised `capabilities.platforms`
+   *  is missing. Read-only diagnostics for the claim path's log line — the SAME capability
+   *  predicate {@link DutyGroupRepo.claimVacant} gates on, so it can only ever report groups that
+   *  claim actually refused. Bounded by `limit`. */
+  capabilityBlockedVacancies(
+    holder: DaemonId,
+    now: Date,
+    opts?: { maxMembers?: number; excludeGroupIds?: readonly string[]; limit?: number }
+  ): Promise<CapabilityBlockedVacancy[]>
   /** The group-computation inputs for one org: every agent as a node, plus
    *  active integrations on daemon-held (socket, unrevoked) bots as edges. */
   computeInputs(orgId: OrgId): Promise<{ edges: DutyEdge[]; agents: AgentSeed[] }>

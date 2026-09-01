@@ -9,6 +9,7 @@ import { DaemonId, type OrgId } from '../domain/ids.js'
 import type { ViewCtx } from '../persistence/ports.js'
 import type { HttpDeps } from './deps.js'
 import { canView } from '../authorization/policy.js'
+import { servesPlatform } from '../domain/platform-capability.js'
 
 export type DaemonPlatformAvailability = 'available' | 'not_found' | 'unsupported'
 
@@ -24,6 +25,10 @@ export type DaemonPlatformAvailability = 'available' | 'not_found' | 'unsupporte
  * (one of the audit's six, Appendix A) added no safety: it could only ever
  * re-state the registry's ids, and a fifth registered platform would have needed
  * an edit here to be checkable at all.
+ *
+ * The predicate itself lives in `domain/platform-capability.ts` because the duty ledger's claim
+ * gate asks the same question of a whole group — install-time and claim-time must never disagree
+ * about what "this daemon can run that platform" means.
  */
 export async function integrationPlatformAvailability(
   deps: HttpDeps,
@@ -32,5 +37,5 @@ export async function integrationPlatformAvailability(
   // Availability admits this org's visible daemons and install-wide pool members, never another org's daemon.
   const daemon = await deps.registry.getAvailable(input.orgId, DaemonId(input.daemonId))
   if (!daemon || !canView(daemon, input.viewer)) return 'not_found'
-  return daemon.capabilities.platforms.includes(input.platform) ? 'available' : 'unsupported'
+  return servesPlatform(daemon.capabilities.platforms, input.platform) ? 'available' : 'unsupported'
 }

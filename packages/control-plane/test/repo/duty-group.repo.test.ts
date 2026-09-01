@@ -604,3 +604,343 @@ describe('DutyGroupRepo — pool telemetry (real Postgres)', () => {
     expect(await poolRow(repo, after(600_000))).toMatchObject({ vacantGroups: 0, oversizedVacantGroups: 0 })
   })
 })
+
+// The capability gate: a member may claim a group only when it advertises a module for every
+// platform the group's active integrations name. A daemon fails CLOSED on an unregistered platform
+// — it skips the integration and opens no connection — so an old image claiming a newly-integrated
+// agent takes that surface dark silently. This is the rollout window every new platform opens.
+describe('DutyGroupRepo — the platform-capability claim gate (real Postgres)', () => {
+  const MAX_MEMBERS = 1000
+  /** The image before a platform lands, and the one that carries it. */
+  const OLD_IMAGE = ['slack', 'telegram', 'discord', 'feishu']
+  const NEW_IMAGE = [...OLD_IMAGE, 'linear']
+  const A3 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3'
+  const I1 = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1'
+  const I2 = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc2'
+  const I3 = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc3'
+
+  const poolRow = async (repo: PgDutyGroupRepo, now = T0) =>
+    (await repo.poolTelemetry(now, LEASE_MS, MAX_MEMBERS)).find((r) => r.installWide)!
+
+  async function member(id: string, platforms: string[], lastSeenAt: Date | null = T0) {
+    await prisma.daemon.create({
+      data: {
+        id,
+        orgId: null,
+        maxAgents: 8,
+        status: 'ready',
+        lastSeenAt,
+        capabilities: { platforms, runtimes: ['claude'], acp: true, features: [] }
+      }
+    })
+  }
+
+  async function pooledAgent(id: string, setId: string, name: string) {
+    await prisma.agent.create({
+      data: { id, orgId: DEFAULT_ORG_ID, name, runtime: 'claude', placementKind: 'set', setId }
+    })
+  }
+
+  /** One active integration on its own bot — the edge the recompute reads and the platform requirement. */
+  async function integrate(integrationId: string, agentId: string, botId: string, platform: string) {
+    await prisma.bot.create({ data: { id: botId, orgId: DEFAULT_ORG_ID, platform, name: `${platform}-bot` } })
+    await shareBot(integrationId, agentId, botId, platform)
+  }
+
+  /** A second agent installed on a bot that already exists — the shared socket bot that joins two
+   *  agents into one duty group, which is what makes a group's requirement wider than any agent's. */
+  async function shareBot(integrationId: string, agentId: string, botId: string, platform: string) {
+    await prisma.integration.create({
+      data: { id: integrationId, orgId: DEFAULT_ORG_ID, agentId, botId, platform, name: `${platform}-bot` }
+    })
+  }
+
+  it('a member whose image lacks the platform is passed over; the one that carries it claims', async () => {
+    await member(M1, OLD_IMAGE)
+    await member(M2, NEW_IMAGE)
+    const setId = await joinPool(prisma, M1, M2)
+    await pooledAgent(A1, setId, 'needs-linear')
+    await integrate(I1, A1, B1, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(repo, [{ agentId: A1, botId: B1 }], [], T0)
+
+    expect(await repo.claimVacant(M1, 10, T0, LEASE_MS, { maxMembers: MAX_MEMBERS })).toEqual([])
+    const granted = await repo.claimVacant(M2, 10, T0, LEASE_MS, { maxMembers: MAX_MEMBERS })
+    expect(granted).toHaveLength(1)
+    expect(await repo.holdsAgent(M2, AgentId(A1), T0)).toBe(true)
+  })
+
+  // Fail-closed is the point: unserved and visible beats served-and-silently-dead.
+  it('stays vacant when NO live member advertises the platform, and the alert says why', async () => {
+    await member(M1, OLD_IMAGE)
+    const setId = await joinPool(prisma, M1)
+    await pooledAgent(A1, setId, 'needs-linear')
+    await integrate(I1, A1, B1, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(repo, [{ agentId: A1, botId: B1 }], [], T0)
+
+    expect(await repo.claimVacant(M1, 10, T0, LEASE_MS, { maxMembers: MAX_MEMBERS })).toEqual([])
+    // Made an hour old, so "the alarm cannot be pinned by it" is an assertion rather than a tautology.
+    await prisma.$executeRaw`UPDATE "duty_group" SET "updatedAt" = ${after(-3_600_000)}`
+
+    // Reported apart from the claimable demand, like an oversized group: scaling the pool cannot
+    // clear it, so it must not pin the capacity alarm — rolling the image forward is the fix.
+    expect(await poolRow(repo, after(60_000))).toMatchObject({
+      vacantGroups: 0,
+      capabilityBlockedVacantGroups: 1,
+      oldestVacancySec: 0
+    })
+
+    // A member that carries the platform joins: the same group becomes ordinary demand and places.
+    await member(M2, NEW_IMAGE)
+    await joinPool(prisma, M2)
+    const row = await poolRow(repo, after(60_000))
+    expect(row).toMatchObject({ vacantGroups: 1, capabilityBlockedVacantGroups: 0 })
+    expect(row.oldestVacancySec).toBeGreaterThan(3_600)
+    expect(await repo.claimVacant(M2, 10, T0, LEASE_MS, { maxMembers: MAX_MEMBERS })).toHaveLength(1)
+  })
+
+  // A quiet or scaled-to-zero set has no live member to prove an image gap against, so its
+  // vacancies stay ordinary demand — "the pool is empty" is what `members` reports, not this.
+  it('a set with no live member reports demand, not a capability gap', async () => {
+    await member(M1, OLD_IMAGE)
+    const setId = await joinPool(prisma, M1)
+    await pooledAgent(A1, setId, 'needs-linear')
+    await integrate(I1, A1, B1, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(repo, [{ agentId: A1, botId: B1 }], [], T0)
+
+    const quiet = after(LEASE_MS + 1)
+    expect(await poolRow(repo, quiet)).toMatchObject({
+      liveMembers: 0,
+      vacantGroups: 1,
+      capabilityBlockedVacantGroups: 0
+    })
+  })
+
+  // The parity rule the pool gauges live under: the alert's eligibility must state what the claim
+  // decides, or it alarms on work no pool size could take. With one live member the set-wise
+  // predicate reduces to that member's own, so the two counts are directly comparable.
+  it('parity: with one live member the alert counts exactly what that member claims and refuses', async () => {
+    await member(M1, OLD_IMAGE)
+    const setId = await joinPool(prisma, M1)
+    await pooledAgent(A1, setId, 'needs-linear')
+    await pooledAgent(A2, setId, 'needs-slack')
+    await pooledAgent(A3, setId, 'botless')
+    await integrate(I1, A1, B1, 'linear')
+    await integrate(I2, A2, B2, 'slack')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(
+      repo,
+      [
+        { agentId: A1, botId: B1 },
+        { agentId: A2, botId: B2 }
+      ],
+      [A3],
+      T0
+    )
+
+    const before = await poolRow(repo)
+    expect(before).toMatchObject({ vacantGroups: 2, capabilityBlockedVacantGroups: 1 })
+
+    const granted = await repo.claimVacant(M1, 10, T0, LEASE_MS, { maxMembers: MAX_MEMBERS })
+    expect(granted).toHaveLength(before.vacantGroups)
+    expect(await poolRow(repo, after(1000))).toMatchObject({
+      vacantGroups: 0,
+      capabilityBlockedVacantGroups: before.capabilityBlockedVacantGroups
+    })
+  })
+
+  // No behavior change where every member runs the same image — the pool's normal state.
+  it('a homogeneous pool claims exactly what it claimed before the gate existed', async () => {
+    await member(M1, NEW_IMAGE)
+    await member(M2, NEW_IMAGE)
+    const setId = await joinPool(prisma, M1, M2)
+    await pooledAgent(A1, setId, 'needs-linear')
+    await pooledAgent(A2, setId, 'needs-slack')
+    await pooledAgent(A3, setId, 'botless')
+    await integrate(I1, A1, B1, 'linear')
+    await integrate(I2, A2, B2, 'slack')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(
+      repo,
+      [
+        { agentId: A1, botId: B1 },
+        { agentId: A2, botId: B2 }
+      ],
+      [A3],
+      T0
+    )
+
+    expect(await repo.claimVacant(M1, 10, T0, LEASE_MS, { maxMembers: MAX_MEMBERS })).toHaveLength(3)
+    expect(await poolRow(repo, after(1000))).toMatchObject({ vacantGroups: 0, capabilityBlockedVacantGroups: 0 })
+  })
+
+  // The gate reads the same rows the install-time one does: an integration that is no longer
+  // active asks nothing of the member holding its agent.
+  it('a revoked integration stops requiring its platform', async () => {
+    await member(M1, OLD_IMAGE)
+    const setId = await joinPool(prisma, M1)
+    await pooledAgent(A1, setId, 'needs-linear')
+    await integrate(I1, A1, B1, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(repo, [{ agentId: A1, botId: B1 }], [], T0)
+    expect(await repo.claimVacant(M1, 10, T0, LEASE_MS, { maxMembers: MAX_MEMBERS })).toEqual([])
+
+    await prisma.integration.update({ where: { id: I1 }, data: { status: 'revoked' } })
+    expect(await repo.claimVacant(M1, 10, T0, LEASE_MS, { maxMembers: MAX_MEMBERS })).toHaveLength(1)
+  })
+
+  // The rendezvous is a claim path too: a trigger reaching the wrong member is not authority to
+  // serve a platform that member has no module for. Minting is the path here — no sweep has run —
+  // so the requirement is the triggered agent's own.
+  it('the activation rendezvous takes the same gate', async () => {
+    await member(M1, OLD_IMAGE)
+    await member(M2, NEW_IMAGE)
+    const setId = await joinPool(prisma, M1, M2)
+    await pooledAgent(A1, setId, 'needs-linear')
+    await integrate(I1, A1, B1, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    expect(await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)).toEqual({ granted: false, holder: null })
+    expect(await prisma.dutyGroup.count()).toBe(0)
+    expect((await repo.claimAgentHome(ORG, AgentId(A1), M2, T0, LEASE_MS)).granted).toBe(true)
+  })
+
+  // Scope is the whole finding: a duty group is a connected component, so a shared socket bot puts
+  // several agents in it, and TAKING it is a take of every one of them. Gating the rendezvous on
+  // the triggered agent alone would let this member through on A1 and hand it A2 as well — the
+  // dead surface `claimVacant` already refuses.
+  it('the rendezvous gates an existing group on every agent in it, not the triggered one', async () => {
+    await member(M1, OLD_IMAGE)
+    await member(M2, NEW_IMAGE)
+    const setId = await joinPool(prisma, M1, M2)
+    await pooledAgent(A1, setId, 'needs-slack')
+    await pooledAgent(A2, setId, 'also-needs-linear')
+    await integrate(I1, A1, B1, 'slack')
+    await shareBot(I3, A2, B1, 'slack') // the shared socket bot that joins them into ONE group
+    await integrate(I2, A2, B2, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(
+      repo,
+      [
+        { agentId: A1, botId: B1 },
+        { agentId: A2, botId: B1 }
+      ],
+      [],
+      T0
+    )
+    expect(await prisma.dutyGroup.count()).toBe(1)
+
+    // A1 on its own needs only slack, which this member advertises — the group does not.
+    const refused = await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)
+    expect(refused.granted).toBe(false)
+    expect(await repo.holdsAgent(M1, AgentId(A1), T0)).toBe(false)
+    expect((await repo.listForOrg(ORG))[0]).toMatchObject({ holder: null, term: 0n })
+
+    // Same rendezvous, the member that carries both platforms: granted.
+    expect((await repo.claimAgentHome(ORG, AgentId(A1), M2, T0, LEASE_MS)).granted).toBe(true)
+  })
+
+  // The other half of the scope rule: the gate belongs on the OPERATION, so the member refused a
+  // group it cannot serve whole still mints the singleton it can — the fallback for an agent no
+  // sweep has grouped yet is a group of exactly that agent.
+  it('the same member still mints a singleton for an agent it can serve', async () => {
+    await member(M1, OLD_IMAGE)
+    const setId = await joinPool(prisma, M1)
+    await pooledAgent(A1, setId, 'needs-slack')
+    await pooledAgent(A2, setId, 'needs-linear')
+    await integrate(I1, A1, B1, 'slack')
+    await integrate(I2, A2, B2, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    expect((await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)).granted).toBe(true)
+    expect(await repo.holdsAgent(M1, AgentId(A1), T0)).toBe(true)
+    // Its peer needs a platform this image has no module for, and that one is still refused.
+    expect(await repo.claimAgentHome(ORG, AgentId(A2), M1, T0, LEASE_MS)).toEqual({ granted: false, holder: null })
+  })
+
+  // A refusal must not cost the relay its one-hop re-route: the answer names the live incumbent,
+  // which is only knowable by reading the group — so the gate cannot sit at the entry.
+  it('a capability-refused rendezvous still names the live incumbent', async () => {
+    await member(M1, OLD_IMAGE)
+    await member(M2, NEW_IMAGE)
+    const setId = await joinPool(prisma, M1, M2)
+    await pooledAgent(A1, setId, 'needs-linear')
+    await integrate(I1, A1, B1, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    const won = await repo.claimAgentHome(ORG, AgentId(A1), M2, T0, LEASE_MS)
+    expect(won.granted).toBe(true)
+    expect(await repo.claimAgentHome(ORG, AgentId(A1), M1, after(1000), LEASE_MS)).toEqual({
+      granted: false,
+      groupId: won.groupId,
+      term: 1n,
+      holder: M2
+    })
+  })
+
+  // …and only a LIVE one. A lapsed lease leaves its `holder` column standing, so a refused take
+  // would otherwise hand back a member that has stopped serving as the sole re-route target — and
+  // the relay drops the ingress there, having acknowledged it upstream already.
+  it('a capability-refused vacancy names no incumbent, stale holder column and all', async () => {
+    await member(M1, OLD_IMAGE)
+    await member(M2, NEW_IMAGE)
+    const setId = await joinPool(prisma, M1, M2)
+    await pooledAgent(A1, setId, 'needs-linear')
+    await integrate(I1, A1, B1, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    const won = await repo.claimAgentHome(ORG, AgentId(A1), M2, T0, LEASE_MS)
+    // The lease lapses; the row still carries M2 in `holder`, which is what makes this a trap.
+    const lapsed = after(LEASE_MS + 1)
+    expect(await prisma.dutyGroup.findUniqueOrThrow({ where: { id: won.groupId! } })).toMatchObject({ holder: M2 })
+
+    expect(await repo.claimAgentHome(ORG, AgentId(A1), M1, lapsed, LEASE_MS)).toEqual({
+      granted: false,
+      groupId: won.groupId,
+      term: 1n,
+      holder: null
+    })
+    // The gate is what refused it, not the ledger: the member that carries the platform takes it.
+    expect((await repo.claimAgentHome(ORG, AgentId(A1), M2, lapsed, LEASE_MS)).granted).toBe(true)
+  })
+
+  // The claim's own diagnostic — negating the very predicate the claim carries, so it can only
+  // ever name groups the claim actually refused, and only the platforms this member is missing.
+  it('capabilityBlockedVacancies names the passed-over agent and only the platforms it lacks', async () => {
+    await member(M1, OLD_IMAGE)
+    const setId = await joinPool(prisma, M1)
+    await pooledAgent(A1, setId, 'needs-both')
+    await integrate(I1, A1, B1, 'linear')
+    await integrate(I2, A1, B2, 'slack')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(repo, [{ agentId: A1, botId: B1 }], [], T0)
+
+    const blocked = await repo.capabilityBlockedVacancies(M1, T0, { maxMembers: MAX_MEMBERS })
+    expect(blocked).toHaveLength(1)
+    expect(blocked[0]).toMatchObject({ agentId: A1, missingPlatforms: ['linear'] })
+
+    // Nothing to report once the group is claimable — the member that carries the platform sees none.
+    await member(M2, NEW_IMAGE)
+    await joinPool(prisma, M2)
+    expect(await repo.capabilityBlockedVacancies(M2, T0, { maxMembers: MAX_MEMBERS })).toEqual([])
+  })
+
+  // Fail-closed on the daemon read itself: a row whose capabilities carry no list advertises
+  // nothing, rather than reading as "no restriction".
+  it('a member whose capabilities name no platform list claims nothing that needs one', async () => {
+    await prisma.daemon.create({ data: { id: M1, orgId: null, maxAgents: 8, status: 'ready', lastSeenAt: T0 } })
+    const setId = await joinPool(prisma, M1)
+    await pooledAgent(A1, setId, 'needs-slack')
+    await pooledAgent(A2, setId, 'botless')
+    await integrate(I1, A1, B1, 'slack')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(repo, [{ agentId: A1, botId: B1 }], [A2], T0)
+
+    // Only the botless singleton, which requires nothing at all.
+    const granted = await repo.claimVacant(M1, 10, T0, LEASE_MS, { maxMembers: MAX_MEMBERS })
+    expect(granted).toHaveLength(1)
+    expect(granted[0]!.members).toEqual([{ kind: 'agent', refId: A2 }])
+  })
+})

@@ -546,6 +546,43 @@ gate filters those rows out inside `claimVacant` — a machine-placed agent has
 exactly one eligible holder and it is never a pool member — so they consume no
 grant budget.
 
+**Placement says who MAY hold a group; capability says who CAN serve it, and
+both gate every claim.** A daemon resolves an integration's config through its
+own platform-module registry and fails closed on an id it has no module for: it
+skips the integration and opens no connection. So a member running an older
+image that claims an agent whose integrations name a newly added platform takes
+that surface dark with no error anywhere, until the group moves again — a
+window every new platform's rollout opens. The claim paths therefore also
+require the group's active-integration platform set to be a **subset of the
+member's advertised `capabilities.platforms`** (the register handshake's list,
+the same one the install-time gate reads), stated once as SQL and carried by
+`claimVacant` and the rendezvous alike. It is fail-closed on both sides: a
+member whose capabilities carry no platform list advertises nothing, and a group
+no live member can serve stays vacant rather than being served by a member that
+would silently drop it. An agent with no active integration requires nothing, so
+webchat, cron and A2A singletons never meet the gate. Passing an agent over is
+otherwise invisible — the claim simply matches fewer rows — so a member that
+left claim budget unspent logs one line per passed-over agent naming the
+platform ids it lacks. Deliberately NOT folded into the placement fence: a
+capability read that failed closed at fence time would tear down live service,
+where the same read at claim time only delays a placement.
+
+**The gate rides each grant statement, at that statement's own scope.** A duty
+group is a connected component, so it can hold several agents joined through a
+shared socket bot: what a member must serve to take one is the whole group's
+requirement, never the requirement of whichever agent a trigger happened to
+name. So the vacancy claim and the rendezvous's take of an existing group both
+carry the **group-wise** predicate, and only the one place that mints a fresh
+singleton — the rendezvous's fallback for an agent no sweep has grouped yet —
+carries the **agent-wise** one, because there the group is that agent. Gating
+the rendezvous at its entry instead, on the triggered agent alone, would let an
+old image that serves that agent take a group containing a peer it cannot, which
+is the dead surface this gate exists to prevent; it would also answer before
+reading the group, and a refusal that names no incumbent costs the relay the
+one-hop re-route the rendezvous below is built on. An idempotent re-claim by
+the member already holding the lease takes nothing and is not gated, for the
+same reason the placement fence is not.
+
 ### The activation rendezvous
 
 A trigger for an _unheld_ group has nowhere to go — the ledger names no holder
@@ -933,6 +970,17 @@ CP never load-balances, never schedules, never picks; it only refuses invalid
 claims and **alarms on vacant-duty age**. A human scales the Deployment. No
 scheduler exists anywhere — deliberate continuity with the current system,
 where the session-placement scheduler was built but never armed.
+
+**The alarm's eligibility is the claim's eligibility, or it fires on work no
+pool size can take.** The vacancy gauges read `duty_group` through the very
+predicates the claim statements carry, and a vacancy whose remediation is not
+"scale the Deployment" is split into a series of its own rather than folded into
+the demand count: an oversized group is undeliverable on this wire at any size
+(D16), and a group needing a platform **no live member of the set advertises**
+(§6) is cleared by rolling the image forward, not by adding replicas of the same
+one. Both would otherwise pin the capacity alarm high indefinitely. A set with
+no live member at all proves neither — that is the member-count gauge's signal —
+so its vacancies stay ordinary demand.
 
 Per-org resource quota is deliberately not implemented here: a shared sandbox
 namespace keeps one namespace-wide `ResourceQuota`/`LimitRange` as the cluster
