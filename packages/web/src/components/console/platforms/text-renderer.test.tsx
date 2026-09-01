@@ -83,7 +83,7 @@ describe('per-platform transcript text renderer', () => {
     // neighbours on their own renderers.
     const markup = renderTranscript([
       { text: 'a', platform: 'slack' },
-      { text: 'b', platform: 'linear' },
+      { text: 'b', platform: 'zulip' },
       { text: 'c', platform: 'discord' }
     ])
     expect(markup).toBe(

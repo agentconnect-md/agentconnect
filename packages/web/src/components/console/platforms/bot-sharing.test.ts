@@ -44,12 +44,16 @@ function bot(over: Partial<BotDto> = {}): BotDto {
 /** Ids a bot row can carry that no module claims — core trigger kinds, a
  *  platform not built yet, and the prototype-pollution shapes a `Map` lookup
  *  must not answer for. */
-const UNCLAIMED = ['webhook', 'github', 'playground', 'webchat', 'linear', 'lark', 'Slack', '__proto__', '']
+const UNCLAIMED = ['webhook', 'github', 'playground', 'webchat', 'zulip', 'lark', 'Slack', '__proto__', '']
+
+/** The platforms whose bots may serve several agents — the §5 manifest's
+ *  `multiAgentShareable` set, mirrored one module at a time. */
+const SHARING_PLATFORMS = ['slack', 'linear']
 
 describe('platformSupportsSharing', () => {
-  it('is true for Slack and false for every other registered platform', () => {
-    expect(platformSupportsSharing('slack')).toBe(true)
-    for (const id of platformRegistry.ids().filter((p) => p !== 'slack')) {
+  it('is true for the multi-agent platforms and false for every other registered one', () => {
+    for (const id of SHARING_PLATFORMS) expect(platformSupportsSharing(id), id).toBe(true)
+    for (const id of platformRegistry.ids().filter((p) => !SHARING_PLATFORMS.includes(p))) {
       expect(platformSupportsSharing(id), id).toBe(false)
     }
   })
@@ -71,13 +75,19 @@ describe('platformSupportsSharing', () => {
         .all()
         .filter((m) => m.wizard.affordances.share === true)
         .map((m) => m.platformId)
-    ).toEqual(['slack'])
+    ).toEqual(SHARING_PLATFORMS)
   })
 })
 
 describe('botSharingEditable', () => {
   it('lets a Slack HTTP bot be shared', () => {
     expect(botSharingEditable(bot({ platform: 'slack', transport: 'http' }))).toBe(true)
+  })
+
+  it('lets a Linear workspace bot be shared — it is one workspace serving many agents', () => {
+    // The provider stamps `shareable: true` structurally on a connected workspace,
+    // so the toggle exists to turn multi-agent membership OFF, not to earn it.
+    expect(botSharingEditable(bot({ platform: 'linear', transport: 'http' }))).toBe(true)
   })
 
   it('refuses a Feishu HTTP bot — the platform, not the transport, is the reason', () => {

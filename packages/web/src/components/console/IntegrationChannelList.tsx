@@ -200,6 +200,10 @@ const canLeaveConversation = (platform?: string): boolean => channelListSemantic
  */
 const roomNoun = (platform?: string): string => channelListSemantics(platform).roomNoun
 
+/** "A"/"An" for a noun a module supplies. The room noun is the platform's own word,
+ *  and one of them starts with a vowel ("issue"), so the article cannot be a literal. */
+const roomArticle = (noun: string): string => (/^[aeiou]/i.test(noun) ? 'An' : 'A')
+
 /** The noun for ONE row: a DM is never a channel or a group, whatever the platform. */
 const rowNoun = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
   kind === 'im' ? 'conversation' : kind === 'mpim' ? 'group chat' : roomNoun(platform)
@@ -692,7 +696,7 @@ export function IntegrationChannelList({
               where leaving is done instead. It deliberately no longer narrates the
               menu's own items: those explain themselves on screen, and repeating them
               here in different words was most of what made this card read oddly. */}
-          {`A ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per conversation.`}
+          {`${roomArticle(roomNoun(platform))} ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per conversation.`}
           {' Direct messages appear when someone writes to the bot.'}
           {shareable && ' Default dispatch is the agent who handles unmatched messages in the conversation.'}
           {/* The platform's own tail, when it has one: Discord's servers-not-channels

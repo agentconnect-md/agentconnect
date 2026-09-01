@@ -5,6 +5,7 @@ import type { BotDto, SessionMessageDto } from '@/lib/api'
 import type { WebBotCardCopy, WebChannelListSemantics, WebPlatformModule, WebPlatformRegistry } from './contract'
 import { discordModule } from './discord'
 import { feishuModule } from './feishu'
+import { linearModule } from './linear'
 import { slackModule } from './slack'
 import { telegramModule } from './telegram'
 
@@ -20,7 +21,7 @@ import { telegramModule } from './telegram'
  *
  * Order is the picker order.
  */
-const MODULES: readonly WebPlatformModule[] = [slackModule, telegramModule, discordModule, feishuModule]
+const MODULES: readonly WebPlatformModule[] = [slackModule, telegramModule, discordModule, feishuModule, linearModule]
 
 const BY_ID = new Map(MODULES.map((m) => [m.platformId, m]))
 const IDS: readonly string[] = MODULES.map((m) => m.platformId)
@@ -53,9 +54,9 @@ export function channelListSemantics(platformId?: string): WebChannelListSemanti
  * otherwise — provider-free by construction, because the strings these replace
  * described Slack's model on every platform's rows.
  *
- * `shareHint`'s two arms are the SAME sentence here on purpose. The host picks
- * an arm by transport, but multi-agent bots are Slack-only at the CP, so for a
- * platform that declares nothing the transport arm is not the reason sharing is
+ * `shareHint`'s two arms are the SAME sentence here on purpose. The host picks an
+ * arm by transport, but a platform that declares nothing supports no multi-agent
+ * bot at any transport, so the arm it lands on is not the reason sharing is
  * unavailable and a second sentence would promise a fix that does not exist.
  */
 export const DEFAULT_BOT_CARD_COPY: Required<WebBotCardCopy> = {

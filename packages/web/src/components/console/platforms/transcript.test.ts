@@ -10,7 +10,7 @@ import { platformMessageIdentity, platformRegistry, platformTextRenderer, platfo
  * everything unrecognized, while the contract says an absent member means the
  * platform opts out.
  */
-const UNCLAIMED = ['linear', 'hook', 'github', 'playground', 'webchat', 'lark', 'Slack', 'constructor', '__proto__', '']
+const UNCLAIMED = ['zulip', 'hook', 'github', 'playground', 'webchat', 'lark', 'Slack', 'constructor', '__proto__', '']
 
 let seq = 0
 function row(over: Partial<SessionMessageDto>): SessionMessageDto {
@@ -38,6 +38,10 @@ describe('transcript module members', () => {
     expect(platformMessageIdentity('discord', row({ ts: SNOWFLAKE }))).toBe(`ts:${SNOWFLAKE}`)
     expect(platformMessageIdentity('telegram', row({ ts: '4821' }))).toBe('ts:4821')
     expect(platformMessageIdentity('feishu', row({ ts: 'om_abc123' }))).toBe('ts:om_abc123')
+    const ACTIVITY = 'b0f4b1a2-6c1e-4a3f-9f21-7c0d5e8a1b34'
+    expect(platformMessageIdentity('linear', row({ ts: ACTIVITY }))).toBe(`ts:${ACTIVITY}`)
+    // A Slack-shaped decimal ts is not an agent-activity id, so Linear declines it.
+    expect(platformMessageIdentity('linear', row({ ts: '1754123456.000200' }))).toBeNull()
     // A daemon-local millisecond stamp is nobody's native id.
     for (const id of platformRegistry.ids()) {
       expect(platformMessageIdentity(id, row({ ts: '1754123457123' })), id).toBeNull()

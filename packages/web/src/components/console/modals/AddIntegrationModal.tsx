@@ -661,9 +661,11 @@ export default function AddIntegrationModal({
     setIdentityChrome
   ])
 
-  // Deployment-level public-callback capability. Probed only for platforms that
-  // actually offer a transport choice — the same two panes that read it today.
-  const probe = useDeploymentConfig(wizard?.affordances.transport !== undefined)
+  // Deployment-level public-callback capability, probed for every platform module.
+  // It used to be gated on a transport CHOICE, which left `relayCapability` reading
+  // false for a platform whose single fixed transport is the relay-backed one — the
+  // opposite of the answer that platform needs most.
+  const probe = useDeploymentConfig(wizard !== undefined)
   const relayCapability = useMemo(
     () => ({ available: probe.config?.relayAvailable ?? false, publicUrl: probe.config?.relayPublicUrl ?? null }),
     [probe.config]
