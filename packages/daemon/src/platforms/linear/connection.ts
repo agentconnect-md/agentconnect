@@ -18,6 +18,7 @@
  * `getUserProfile` the Linear user; everything else answers empty. There is no bot
  * channel enumeration, no leave affordance, and attachment download is deferred.
  */
+import { randomUUID } from 'node:crypto'
 import type { IntegrationLinearConfig, LinearCredGrant } from '@agentconnect.md/protocol'
 import type { Agent } from '../../agents/agent-schema.js'
 import type { Logger } from '../../log.js'
@@ -42,6 +43,17 @@ export const LINEAR_SEND_INTERVAL_MS = 1_000
 
 /** How far past a renewal failure we retry rather than hammering the broker. */
 const RENEW_RETRY_MS = 60_000
+
+/**
+ * A retry of `agentActivityCreate` is only safe because the input carries our own id: creation
+ * is append-only (§15), so an indeterminate failure — transport loss, 5xx after the write
+ * committed — would otherwise post the same thought twice under two server ids. Linear refuses
+ * the second write on the id instead, which we read as "the first attempt landed".
+ *
+ * Only these say that clearly. Anything else surfaces: swallowing an ambiguous refusal would
+ * silently drop a real activity, which is the worse failure of the two.
+ */
+const DUPLICATE_ID_REFUSAL = /already exists|already been taken|duplicate|unique constraint/i
 
 /** §11 bounded send retry: attempts per enqueued write, and the spacing between them. */
 const SEND_MAX_ATTEMPTS = 3
@@ -163,6 +175,8 @@ export interface LinearDeps {
   /** Refresh-ahead timer, injectable for tests. Defaults to unref'd `setTimeout`. */
   setTimer?: (fn: () => void, ms: number) => unknown
   clearTimer?: (handle: unknown) => void
+  /** Idempotency key per activity; injectable so tests are deterministic. Defaults to `randomUUID`. */
+  newActivityId?: () => string
 }
 
 interface CachedToken {
@@ -186,6 +200,7 @@ export class LinearConnection implements PlatformConnection {
   private readonly sleep: (ms: number) => Promise<void>
   private readonly setTimer: (fn: () => void, ms: number) => unknown
   private readonly clearTimer: (handle: unknown) => void
+  private readonly newActivityId: () => string
   private cached: CachedToken
   /** Single-flight: concurrent sends inside the margin issue ONE `linearcred/request`. */
   private renewal: Promise<CachedToken> | undefined
@@ -219,6 +234,7 @@ export class LinearConnection implements PlatformConnection {
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
     this.setTimer = deps.setTimer ?? defaultSetTimer
     this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
+    this.newActivityId = deps.newActivityId ?? (() => randomUUID())
     this.cached = { token: config.accessToken, expiresAtMs: Date.parse(config.accessTokenExpiresAt) }
     this.queue = new PlatformSendQueue(deps.sendIntervalMs ?? LINEAR_SEND_INTERVAL_MS, this.now, deps.sleep)
   }
@@ -268,23 +284,27 @@ export class LinearConnection implements PlatformConnection {
 
   // ── 2. egress (§4.6 single writer) ──
 
-  /** `agentActivityCreate` — one row in the Linear agent-session feed. Returns the new
-   *  activity id when Linear reported one. */
+  /** `agentActivityCreate` — one row in the Linear agent-session feed. Returns the activity id,
+   *  which is OURS: minted once here, before the first attempt, and reused by every retry so an
+   *  indeterminate failure cannot append the same activity twice. */
   async createActivity(
     agentSessionId: string,
     content: LinearActivityContent,
     opts: { ephemeral?: boolean; signal?: string } = {}
   ): Promise<string | undefined> {
-    const input: Record<string, unknown> = { agentSessionId, content }
+    const id = this.newActivityId()
+    const input: Record<string, unknown> = { id, agentSessionId, content }
     if (opts.ephemeral !== undefined) input.ephemeral = opts.ephemeral
     if (opts.signal !== undefined) input.signal = opts.signal
-    const data = await this.enqueueGraphql<{
-      agentActivityCreate?: { success?: boolean; agentActivity?: { id?: string } | null }
-    }>(AGENT_ACTIVITY_CREATE, { input })
-    return data.agentActivityCreate?.agentActivity?.id ?? undefined
+    type CreatePayload = { agentActivityCreate?: { success?: boolean; agentActivity?: { id?: string } | null } }
+    const data = await this.enqueueGraphql<CreatePayload>(AGENT_ACTIVITY_CREATE, { input }, () => ({
+      agentActivityCreate: { agentActivity: { id } }
+    }))
+    return data.agentActivityCreate?.agentActivity?.id ?? id
   }
 
-  /** `agentSessionUpdate` — the session-level surfaces: plan and external URLs (§2). */
+  /** `agentSessionUpdate` — the session-level surfaces (§2). Needs no idempotency key: `plan` and
+   *  `externalUrls` are full-array replaces, so a retry converges on the same state. */
   async updateSession(agentSessionId: string, update: LinearSessionUpdate): Promise<void> {
     await this.enqueueGraphql<{ agentSessionUpdate?: { success?: boolean } }>(AGENT_SESSION_UPDATE, {
       id: agentSessionId,
@@ -454,12 +474,24 @@ export class LinearConnection implements PlatformConnection {
    *  retryable refusal gets a few spaced attempts inside the caller's one queue slot (order is
    *  preserved) and a terminal one fails at once. Read-port calls do not retry — they already
    *  degrade to a default. */
-  private async enqueueGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+  private async enqueueGraphql<T>(
+    query: string,
+    variables: Record<string, unknown>,
+    /** Present when the write carries an idempotency key: the value to resolve with if a RETRY is
+     *  refused because that key already exists, which means the earlier attempt committed. */
+    onDuplicateKey?: () => T
+  ): Promise<T> {
     return this.queue.enqueue(async () => {
       for (let attempt = 1; ; attempt += 1) {
         try {
           return await this.graphql<T>(query, variables)
         } catch (err) {
+          // Only ever on a RETRY: a first-attempt duplicate means the caller reused a key across
+          // two logical writes, which is a bug to surface rather than a success to invent.
+          if (attempt > 1 && onDuplicateKey && isDuplicateKeyRefusal(err)) {
+            this.deps.log?.debug('linear: retry refused on an existing id — the earlier attempt committed')
+            return onDuplicateKey()
+          }
           const retryable = err instanceof LinearApiError && err.retryable
           if (!retryable || attempt >= SEND_MAX_ATTEMPTS) throw err
           const backoff = (err as LinearApiError).retryAfterMs ?? SEND_RETRY_BASE_MS * 2 ** (attempt - 1)
@@ -507,6 +539,12 @@ export class LinearConnection implements PlatformConnection {
     if (body.data === undefined) throw new LinearApiError('linear returned no data', true)
     return body.data
   }
+}
+
+/** Does this refusal clearly say our idempotency key is already committed? Conservative by
+ *  construction — an ambiguous error is surfaced, never read as a silent success. */
+function isDuplicateKeyRefusal(err: unknown): boolean {
+  return err instanceof LinearApiError && DUPLICATE_ID_REFUSAL.test(err.message)
 }
 
 /** Status-only verdict, the fallback when the body names no code of its own. */

@@ -107,6 +107,9 @@ function harness(
     sendIntervalMs?: number
   } = {}
 ) {
+  // Deterministic idempotency keys: a real UUID would make every request assertion unpinnable.
+  let minted = 0
+  const activityIds: string[] = []
   const clock = fakeClock()
   const calls: RecordedCall[] = []
   const timers: { fn: () => void; delay: number; cleared: boolean }[] = []
@@ -133,6 +136,12 @@ function harness(
     sendIntervalMs: opts.sendIntervalMs ?? 0,
     now: clock.now,
     sleep: clock.sleep,
+    newActivityId: () => {
+      minted += 1
+      const id = `activity-${minted}`
+      activityIds.push(id)
+      return id
+    },
     setTimer: (fn, delay) => {
       const handle = { fn, delay, cleared: false }
       timers.push(handle)
@@ -159,8 +168,11 @@ function harness(
     timer.fn()
     await settle()
   }
-  return { conn, calls, clock, timers, warnings, armed, fireTimer }
+  return { conn, calls, clock, timers, warnings, armed, fireTimer, activityIds }
 }
+
+/** The idempotency key the connection put on one recorded `agentActivityCreate`. */
+const sentActivityId = (call: RecordedCall): unknown => (call.variables.input as { id?: unknown }).id
 
 describe('linear config schema (§6.4 fail-closed)', () => {
   it('accepts a full spec payload and narrows it to the linear module', () => {
@@ -488,7 +500,12 @@ describe('linear graphql client (§9.4)', () => {
     expect(calls[0]!.authorization).toBe('Bearer snapshot-token')
     expect(calls[0]!.query).toContain('agentActivityCreate')
     expect(calls[0]!.variables).toEqual({
-      input: { agentSessionId: SESSION, content: { type: 'thought', body: 'reading' }, ephemeral: true }
+      input: {
+        id: 'activity-1',
+        agentSessionId: SESSION,
+        content: { type: 'thought', body: 'reading' },
+        ephemeral: true
+      }
     })
   })
 
@@ -497,6 +514,7 @@ describe('linear graphql client (§9.4)', () => {
     await conn.createActivity(SESSION, { type: 'action', action: 'Read', parameter: 'src/app.ts', result: 'ok' })
     expect(calls[0]!.variables).toEqual({
       input: {
+        id: 'activity-1',
         agentSessionId: SESSION,
         content: { type: 'action', action: 'Read', parameter: 'src/app.ts', result: 'ok' }
       }
@@ -507,7 +525,7 @@ describe('linear graphql client (§9.4)', () => {
     const { conn, calls } = harness()
     await conn.createActivity(SESSION, { type: 'response', body: 'done' })
     expect(calls[0]!.variables).toEqual({
-      input: { agentSessionId: SESSION, content: { type: 'response', body: 'done' } }
+      input: { id: 'activity-1', agentSessionId: SESSION, content: { type: 'response', body: 'done' } }
     })
   })
 
@@ -606,6 +624,99 @@ describe('linear graphql client (§9.4)', () => {
     expect(err).toBeInstanceOf(LinearApiError)
     expect((err as LinearApiError).code).toBe('RATELIMITED')
     expect(calls).toHaveLength(3)
+  })
+
+  it('reuses one caller-supplied id across a retry, so an append-only create cannot double-post', async () => {
+    // The retry made this reachable: activities are append-only, and a 5xx after the write
+    // committed is indeterminate — without our own id the retry appends a second row.
+    let attempts = 0
+    const { conn, calls } = harness({
+      respond: () => {
+        attempts += 1
+        return attempts === 1
+          ? jsonResponse({}, 500)
+          : jsonResponse({ data: { agentActivityCreate: { agentActivity: { id: 'activity-1' } } } })
+      }
+    })
+    expect(await conn.createActivity(SESSION, { type: 'response', body: 'final' })).toBe('activity-1')
+    expect(calls).toHaveLength(2)
+    expect(sentActivityId(calls[0]!)).toBe('activity-1')
+    expect(sentActivityId(calls[1]!)).toBe('activity-1')
+  })
+
+  it('treats a duplicate-id refusal on a retry as the earlier attempt having committed', async () => {
+    let attempts = 0
+    const { conn, calls } = harness({
+      respond: () => {
+        attempts += 1
+        return attempts === 1
+          ? jsonResponse({}, 503)
+          : jsonResponse({ errors: [{ message: 'A record with that id already exists' }] }, 400)
+      }
+    })
+    expect(await conn.createActivity(SESSION, { type: 'response', body: 'final' })).toBe('activity-1')
+    expect(calls).toHaveLength(2)
+  })
+
+  it('surfaces a duplicate-id refusal on the FIRST attempt — that is a reused key, not a retry', async () => {
+    const { conn, calls } = harness({
+      respond: () => jsonResponse({ errors: [{ message: 'A record with that id already exists' }] }, 400)
+    })
+    await expect(conn.createActivity(SESSION, { type: 'response', body: 'final' })).rejects.toBeInstanceOf(
+      LinearApiError
+    )
+    expect(calls).toHaveLength(1)
+  })
+
+  it('surfaces an ambiguous refusal on a retry rather than inventing a success', async () => {
+    let attempts = 0
+    const { conn } = harness({
+      respond: () => {
+        attempts += 1
+        return attempts === 1 ? jsonResponse({}, 500) : jsonResponse({ errors: [{ message: 'Invalid input' }] }, 400)
+      }
+    })
+    const err = await conn.createActivity(SESSION, { type: 'response', body: 'final' }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LinearApiError)
+    expect((err as LinearApiError).message).toContain('Invalid input')
+  })
+
+  it('gives every logical activity its own id', async () => {
+    const { conn, calls, activityIds } = harness()
+    await conn.createActivity(SESSION, { type: 'thought', body: 'one' })
+    await conn.createActivity(SESSION, { type: 'thought', body: 'two' })
+    await conn.createActivity(SESSION, { type: 'response', body: 'three' })
+    const sent = calls.map(sentActivityId)
+    expect(sent).toEqual(['activity-1', 'activity-2', 'activity-3'])
+    expect(new Set(sent).size).toBe(3)
+    expect(activityIds).toEqual(['activity-1', 'activity-2', 'activity-3'])
+  })
+
+  it('mints a real UUID when no factory is injected', async () => {
+    const sent: { input?: { id?: unknown } }[] = []
+    const conn = new LinearConnection({
+      group: group(),
+      requestToken: async () => ({ accessToken: 'renewed', expiresAt: FRESH_EXPIRY }),
+      fetchImpl: (async (_url: unknown, init: unknown) => {
+        const request = init as { body: string }
+        sent.push((JSON.parse(request.body) as { variables: { input?: { id?: unknown } } }).variables)
+        return jsonResponse({ data: { agentActivityCreate: { agentActivity: {} } } })
+      }) as unknown as typeof fetch,
+      sendIntervalMs: 0,
+      now: () => START,
+      sleep: async () => {},
+      setTimer: () => undefined,
+      clearTimer: () => {}
+    })
+    await conn.createActivity(SESSION, { type: 'thought', body: 'x' })
+    expect(sent[0]?.input?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+  })
+
+  it('sends no idempotency key on agentSessionUpdate, whose replaces converge on their own', async () => {
+    const { conn, calls } = harness()
+    await conn.updateSessionPlan(SESSION, [{ content: 'step', status: 'pending' }])
+    expect(calls[0]!.variables).not.toHaveProperty('input.id')
+    expect(calls[0]!.variables).toEqual({ id: SESSION, input: { plan: [{ content: 'step', status: 'pending' }] } })
   })
 
   it('never retries a terminal refusal', async () => {
