@@ -6558,6 +6558,27 @@ export class Daemon {
       return { msgId: msg.msgId, accepted: true }
     }
 
+    // A DM approval card (slack-approval-dm.md §5.3) lives outside any session conversation —
+    // its origin session may be webchat/GitHub, or Slack under another integration — so the
+    // in-conversation gate below can never admit its click. Route it straight to the
+    // coordinator, whose click-time actor + verify checks are the authorization.
+    if (
+      (payload.kind === 'permission-choice' || payload.kind === 'elicitation-choice') &&
+      this.permissions.dmNotifiedVia(payload.requestId, msg.agentId, msg.integrationId)
+    ) {
+      const dmActor = msg.userId ? { userId: msg.userId } : undefined
+      if (payload.kind === 'permission-choice') {
+        await this.permissions.handlePermissionChoice({ ...payload, actor: dmActor })
+      } else {
+        await this.permissions.handleElicitChoice({
+          requestId: payload.requestId,
+          value: payload.value,
+          actor: dmActor
+        })
+      }
+      return { msgId: msg.msgId, accepted: true }
+    }
+
     const rec = await this.store.getSession(msg.sessionKey)
     if (!rec || rec.agentId !== msg.agentId || rec.platform !== 'slack') {
       this.log.warn(`relay: Slack action for stale or foreign session ${msg.sessionKey} — dropping`)

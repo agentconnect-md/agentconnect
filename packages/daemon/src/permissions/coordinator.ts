@@ -462,17 +462,24 @@ export class PermissionCoordinator {
       }
     )
     if (!ts) return
+    const handleStored = await this.host
+      .store()
+      .setPermissionRequestNotify(agentId, requestId, target.integrationId, channel, ts)
+    // Re-read AFTER the write: a decision landing inside that await saw no `notify`, so
+    // it neither rewrote this card nor cleared the handle — both fall to us here.
     const live = this.pendingEditorPermissions.get(requestId)
-    const handleStored =
-      live &&
-      (await this.host.store().setPermissionRequestNotify(agentId, requestId, target.integrationId, channel, ts))
-    if (!live || !handleStored) {
+    if (!handleStored || !live) {
       // Settled while posting: never leave live buttons on a decided request.
       const resolved =
         rec.kind === 'permission'
           ? buildPermissionResolvedCard(rec.params, 'Already decided', undefined)
           : buildElicitationResolvedCard(rec.params, ':hourglass: Already decided')
       void conn.updateBlocks(channel, ts, resolved, 'Permission resolved', true).catch(() => {})
+      if (handleStored)
+        void this.host
+          .store()
+          .clearPermissionRequestNotify(agentId, requestId)
+          .catch(() => {})
       return
     }
     const elicit = rec.kind === 'elicitation' ? elicitTarget(rec.params) : null
@@ -483,6 +490,15 @@ export class PermissionCoordinator {
       ts,
       ...(elicit ? { propName: elicit.propName, valueKind: elicit.kind } : {})
     }
+  }
+
+  /** Whether this request's DM card was addressed through `integrationId` (§5.3). The relay
+   *  click path routes such clicks here directly: a DM lives outside any session conversation,
+   *  so the in-conversation session gate can never admit it — authorization is the click-time
+   *  actor + verify checks, fenced on the agent and the integration the card was posted via. */
+  dmNotifiedVia(requestId: string, agentId: string, integrationId: string): boolean {
+    const rec = this.pendingEditorPermissions.get(requestId)
+    return rec?.agentId === agentId && rec.notify?.target.integrationId === integrationId
   }
 
   /** §6.3 click-time checks: actor equality, then the CP verify — both fail closed.
