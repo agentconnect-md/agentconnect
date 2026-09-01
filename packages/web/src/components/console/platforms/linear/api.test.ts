@@ -65,19 +65,6 @@ describe('linear api bindings', () => {
     expect(calls[0]!.method).toBe('POST')
   })
 
-  it('moves the default agent through the generic bot patch', async () => {
-    stubFetch(200, { id: 'bot-9' })
-    await linearApi.setDefaultAgent('bot-9', 'agent-b')
-    expect(pathOf(calls[0]!)).toBe('/api/v1/orgs/org-7/bots/bot-9')
-    expect(calls[0]!.method).toBe('PATCH')
-    expect(calls[0]!.body).toEqual({ preferredAgentId: 'agent-b' })
-
-    // Null is a real value here — it restores the earliest-member derivation.
-    calls = []
-    await linearApi.setDefaultAgent('bot-9', null)
-    expect(calls[0]!.body).toEqual({ preferredAgentId: null })
-  })
-
   it('surfaces the funnel’s 404 as an ApiError the pane can recognize', async () => {
     // The self-disable signal: without the deployment app, both routes 404.
     stubFetch(404, { error: 'Not Found', statusCode: 404, message: 'not found' })

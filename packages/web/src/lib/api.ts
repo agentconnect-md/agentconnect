@@ -905,9 +905,6 @@ export interface BotDto {
   // callbacks. Only a Slack http bot may be shared. Missing (older CP) ⇒ socket.
   transport: 'socket' | 'http'
   shareable: boolean // shared-bot opt-in — when true it may serve many agents at once
-  // The member that catches a bare mention / DM / delegation; null ⇒ the compile's
-  // earliest-non-gated-member derivation. Optional while older control planes roll out.
-  preferredAgentId?: string | null
   inUseByAgentId: string | null // classic-bot occupancy; ALWAYS null for a shareable bot
   agentIds: string[] // every agent currently installed on the bot (a shared bot may have many)
   lastUsedAt: string | null // ISO-8601; stamped when last freed; null ⇒ never used
@@ -4213,12 +4210,6 @@ export async function leaveIntegrationConversation(
 /** Flip a bot's shared-bot opt-in (PATCH /bots/:id). */
 export async function updateBot(id: string, shareable: boolean): Promise<BotDto> {
   return apiPatch<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}`, { shareable })
-}
-
-/** Move the bot's preferred default agent (PATCH /bots/:id); null restores the
- *  compile's earliest-member default. The CP 409s an agent that is not a member. */
-export async function setBotPreferredAgent(id: string, agentId: string | null): Promise<BotDto> {
-  return apiPatch<BotDto>(`${orgBase()}/bots/${encodeURIComponent(id)}`, { preferredAgentId: agentId })
 }
 
 /** Sync one user-managed Slack app's manifest and re-check the scopes granted to

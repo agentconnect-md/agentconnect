@@ -90,11 +90,8 @@ describe('the linear transcript and channel semantics', () => {
 })
 
 describe('the linear api bindings', () => {
-  it('names the funnel, its reconnect arm and the default-agent move — and nothing else', () => {
-    // Removing a member is deliberately absent: it is the generic
-    // DELETE /integrations/:id, committed through the console's own data context so
-    // the integration/bot projections refresh with it.
-    expect(Object.keys(linearApi).sort()).toEqual(['getConnect', 'reconnect', 'setDefaultAgent', 'startConnect'])
+  it('names the funnel and its reconnect arm — and nothing else', () => {
+    expect(Object.keys(linearApi).sort()).toEqual(['getConnect', 'reconnect', 'startConnect'])
     expect(module().apiBindings).toBe(linearApi)
   })
 })

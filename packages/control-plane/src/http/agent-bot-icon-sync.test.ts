@@ -96,7 +96,6 @@ function bot(
     feishuRegion: options.feishuRegion ?? null,
     shareable: options.shareable ?? false,
     transport: 'socket',
-    preferredAgentId: null,
     createdBy: null,
     lastUsedAt: null,
     lastAgentName: null,
