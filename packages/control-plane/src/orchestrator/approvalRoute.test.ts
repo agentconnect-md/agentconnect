@@ -156,6 +156,28 @@ describe('resolveApprovalRoute — route form', () => {
     expect(routed.target).toBeUndefined()
   })
 
+  it('a token-installed bot anchors on its reported workspaceId — teamId is platform-app-only', async () => {
+    const routed = await resolveApprovalRoute(
+      routeReq({ requesterId: 'U0OWNER' }),
+      deps({
+        members: [{ userId: 'u-owner', displayName: 'Owner' }],
+        links: { 'u-owner': linked('U0OWNER') },
+        bots: { 'bot-a': { teamId: null, workspaceId: TEAM_A } }
+      })
+    )
+    expect(routed.target).toMatchObject({ teamId: TEAM_A, userId: 'U0OWNER', consoleUserId: 'u-owner' })
+    // …and with neither, the integration is skipped fail-closed.
+    const anchorless = await resolveApprovalRoute(
+      routeReq({ requesterId: 'U0OWNER' }),
+      deps({
+        members: [{ userId: 'u-owner' }],
+        links: { 'u-owner': linked('U0OWNER') },
+        bots: { 'bot-a': { teamId: null, workspaceId: null } }
+      })
+    )
+    expect(anchorless.target).toBeUndefined()
+  })
+
   it('an identity linked to another workspace never matches', async () => {
     const routed = await resolveApprovalRoute(
       routeReq({ requesterId: 'U0OWNER' }),
@@ -233,6 +255,18 @@ describe('resolveApprovalRoute — verify form', () => {
     for (const world of worlds) {
       expect((await resolveApprovalRoute(verifyReq(), deps(world))).allowed).toBe(false)
     }
+  })
+
+  it('allows through a token-installed bot anchored on workspaceId', async () => {
+    const routed = await resolveApprovalRoute(
+      verifyReq(),
+      deps({
+        members: [{ userId: 'u-owner' }],
+        links: { 'u-owner': linked('U0OWNER') },
+        bots: { 'bot-a': { teamId: null, workspaceId: TEAM_A } }
+      })
+    )
+    expect(routed.allowed).toBe(true)
   })
 
   it('refuses a workspace that does not match the integration bot', async () => {
