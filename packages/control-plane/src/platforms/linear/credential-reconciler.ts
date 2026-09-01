@@ -13,6 +13,12 @@
  * `BotSecretStore.put` + `bumpCredential` in sequence: the pair is atomic and advances
  * `credentialRevision`, so anything that observed the previous secret is stale by construction.
  *
+ * It re-stamps only rows that are unambiguously the current app's live installs. Two lifecycle
+ * edges are skipped, both because a re-stamp there would assert something this loop cannot know:
+ * a bot carrying a PREVIOUS client id (a different app's install, whose grant and token row belong
+ * to that app), and a REVOKED bot (whose un-revoke is the reconnect flow's alone). Each needs an
+ * operator reconnect, which re-proves the grant; a rotation is not evidence of one.
+ *
  * A background loop rather than a boot-only pass, following the Slack bot-identity reconciler: the
  * credentials arrive through the environment and so can only move across a restart, which makes the
  * pass `start()` runs immediately the load-bearing one, while the interval is a cheap self-heal for
@@ -92,8 +98,24 @@ export class LinearCredentialReconciler {
 
   /** Per-bot so one unreachable row cannot strand the rest of the fleet. */
   private async restamp(app: LinearPlatformAppConfig): Promise<void> {
+    let awaitingReconnect = 0
     for (const bot of await this.deps.bots.listForPlatform('linear')) {
       try {
+        // A row whose durable app half is not the CURRENT client id is a PREVIOUS deployment app's
+        // install — the setup card permits changing the client id (§7.1). Its workspace authorized
+        // that app and its `linear_token` row is keyed by it, so stamping today's secrets on would
+        // fuse two identities into one row that neither app can serve. Only an operator reconnect
+        // re-proves the grant. A NULL app half fails the same way, and should: an unattributed row
+        // is not evidence that it is ours.
+        if (bot.externalAppId !== app.clientId) {
+          awaitingReconnect += 1
+          continue
+        }
+        // `install` advances the generation through `bumpCredential`, which CLEARS `revokedAt`, and
+        // the seam offers no no-unrevoke variant — so re-stamping here would let a secret rotation
+        // silently resurrect a workspace that revoked or uninstalled the app. Un-revoking belongs
+        // exclusively to the reconnect flow, which re-proves the grant first (§7.4).
+        if (bot.revokedAt) continue
         const secret = await this.deps.secrets.get(bot.orgId, bot.id)
         // No row to correct: a bot mid-connect is finished by the tail, not by this loop.
         if (!secret) continue
@@ -116,6 +138,13 @@ export class LinearCredentialReconciler {
       } catch (err) {
         this.deps.log?.warn({ err, botId: bot.id }, 'linear-credential: re-stamp failed')
       }
+    }
+    // Once per pass, not per row: this is a standing operator condition, not an event.
+    if (awaitingReconnect > 0) {
+      this.deps.log?.info(
+        { workspaces: awaitingReconnect },
+        'linear-credential: workspaces installed under a previous app await reconnect'
+      )
     }
   }
 }

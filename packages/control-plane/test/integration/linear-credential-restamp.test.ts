@@ -33,6 +33,12 @@ const ROTATED: LinearPlatformAppConfig = {
   clientSecret: 'linear-client-secret-v2',
   signingSecret: 'linear-signing-secret-v2'
 }
+/** A DIFFERENT app: the setup card also permits changing the client id (§7.1). */
+const PREVIOUS_APP: LinearPlatformAppConfig = {
+  clientId: 'lin_previous_app',
+  clientSecret: 'previous-client-secret',
+  signingSecret: 'previous-signing-secret'
+}
 
 let running: HttpApp | undefined
 afterEach(async () => {
@@ -64,23 +70,40 @@ function recordAssigns(app: HttpApp): AssignFrame[] {
  * What §7.1's connect tail leaves behind: an http workspace bot carrying the deployment app's D6
  * identity, its two stamped secret slots, and one member agent. The funnel that writes this lands
  * with the OAuth callback; the rows are what this loop reads either way.
+ *
+ * `credentials` is the app that was configured AT CONNECT TIME, so the projected `externalAppId`
+ * and the stamped secrets agree — which is what makes a workspace connected under a previous app
+ * representable here at all.
  */
-async function connectWorkspace(app: HttpApp, credentials: LinearPlatformAppConfig): Promise<BotId> {
+async function connectWorkspace(
+  app: HttpApp,
+  credentials: LinearPlatformAppConfig,
+  workspaceId = WORKSPACE
+): Promise<BotId> {
   const agentId = AgentId(randomUUID())
-  await seedDaemon(prisma, DAEMON)
+  // One daemon serves every workspace a test connects; `seedDaemon` would throw on the second call.
+  const seeded = await prisma.daemon.findUnique({ where: { id: DAEMON } })
+  if (!seeded) await seedDaemon(prisma, DAEMON)
   await seedAgent(prisma, agentId, { daemonId: DAEMON })
   const botId = BotId(randomUUID())
-  await app.deps.repos.bot.create({
-    id: botId,
-    orgId: ORG,
-    platform: 'linear',
-    name: 'Acme',
-    workspaceId: WORKSPACE,
-    workspaceName: 'Acme',
-    botUserId: 'lin-app-user',
-    shareable: true,
-    transport: 'http'
-  })
+  // The D6 projection reads the CURRENTLY configured app, so connect under the one being simulated.
+  const configured = app.platformStubs.linearPlatformApp
+  app.platformStubs.linearPlatformApp = credentials
+  try {
+    await app.deps.repos.bot.create({
+      id: botId,
+      orgId: ORG,
+      platform: 'linear',
+      name: 'Acme',
+      workspaceId,
+      workspaceName: 'Acme',
+      botUserId: 'lin-app-user',
+      shareable: true,
+      transport: 'http'
+    })
+  } finally {
+    app.platformStubs.linearPlatformApp = configured
+  }
   await app.deps.repos.botSecret.put(ORG, botId, {
     botToken: credentials.clientSecret,
     appToken: null,
@@ -175,6 +198,65 @@ describe('linear deployment-credential re-stamp (§10.6)', () => {
 
     const secret = await prisma.botSecret.findUniqueOrThrow({ where: { botId } })
     expect(secret.signingSecret).toBe(ROTATED.signingSecret)
+  })
+
+  it('leaves a workspace installed under a previous client id for the operator to reconnect', async () => {
+    const app = build()
+    const assigns = recordAssigns(app)
+    const botId = await connectWorkspace(app, PREVIOUS_APP)
+    const before = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
+    expect(before.externalAppId).toBe(PREVIOUS_APP.clientId)
+
+    // A rotation of the CURRENT app says nothing about a workspace that authorized a different one.
+    app.platformStubs.linearPlatformApp = ROTATED
+    await app.linearCredentialReconciler.tick()
+
+    const secret = await prisma.botSecret.findUniqueOrThrow({ where: { botId } })
+    expect(secret.signingSecret).toBe(PREVIOUS_APP.signingSecret)
+    expect(secret.botToken).toBe(PREVIOUS_APP.clientSecret)
+    const after = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
+    expect(after.credentialRevision).toBe(before.credentialRevision)
+    expect(assigns).toEqual([])
+  })
+
+  it('never re-stamps a revoked workspace, so a rotation cannot resurrect a dead grant', async () => {
+    const app = build()
+    const assigns = recordAssigns(app)
+    const botId = await connectWorkspace(app, APP)
+    const revokedAt = new Date('2026-09-01T00:00:00.000Z')
+    await prisma.bot.update({ where: { id: botId }, data: { revokedAt } })
+    const before = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
+
+    app.platformStubs.linearPlatformApp = ROTATED
+    await app.linearCredentialReconciler.tick()
+
+    // `install` would have cleared `revokedAt` on its way through `bumpCredential`.
+    const after = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
+    expect(after.revokedAt).toEqual(revokedAt)
+    expect(after.credentialRevision).toBe(before.credentialRevision)
+    const secret = await prisma.botSecret.findUniqueOrThrow({ where: { botId } })
+    expect(secret.signingSecret).toBe(APP.signingSecret)
+    expect(assigns).toEqual([])
+  })
+
+  it('re-stamps the live workspace in a fleet that also holds a previous-app and a revoked one', async () => {
+    const app = build()
+    const assigns = recordAssigns(app)
+    const live = await connectWorkspace(app, APP, 'linear-org-live')
+    const foreign = await connectWorkspace(app, PREVIOUS_APP, 'linear-org-foreign')
+    const revoked = await connectWorkspace(app, APP, 'linear-org-revoked')
+    await prisma.bot.update({ where: { id: revoked }, data: { revokedAt: new Date('2026-09-01T00:00:00.000Z') } })
+
+    app.platformStubs.linearPlatformApp = ROTATED
+    await app.linearCredentialReconciler.tick()
+
+    const secrets = await prisma.botSecret.findMany({ where: { botId: { in: [live, foreign, revoked] } } })
+    const byBot = new Map(secrets.map((s) => [s.botId, s]))
+    expect(byBot.get(live)?.signingSecret).toBe(ROTATED.signingSecret)
+    expect(byBot.get(foreign)?.signingSecret).toBe(PREVIOUS_APP.signingSecret)
+    expect(byBot.get(revoked)?.signingSecret).toBe(APP.signingSecret)
+    // Exactly one workspace was published, and it is the live one.
+    expect(assigns.map((frame) => frame.botId)).toEqual([live])
   })
 
   it('writes nothing while the deployment app is unconfigured', async () => {

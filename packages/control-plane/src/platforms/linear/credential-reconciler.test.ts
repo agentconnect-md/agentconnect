@@ -16,7 +16,7 @@ const OTHER_BOT = BotId('33333333-3333-4333-8333-333333333333')
 const APP = { clientId: 'lin_app', clientSecret: 'client-secret-v1', signingSecret: 'signing-secret-v1' }
 const ROTATED = { clientId: 'lin_app', clientSecret: 'client-secret-v2', signingSecret: 'signing-secret-v2' }
 
-function bot(id: BotId = BOT): BotRecord {
+function bot(id: BotId = BOT, overrides: Partial<BotRecord> = {}): BotRecord {
   return {
     id,
     orgId: ORG,
@@ -45,7 +45,8 @@ function bot(id: BotId = BOT): BotRecord {
     lastAgentName: null,
     agentIds: [],
     inUseByAgentId: null,
-    createdAt: new Date(0)
+    createdAt: new Date(0),
+    ...overrides
   }
 }
 
@@ -174,6 +175,63 @@ describe('LinearCredentialReconciler (§10.6)', () => {
     await reconciler.tick()
 
     expect(install).not.toHaveBeenCalled()
+  })
+
+  it('leaves a bot installed under a PREVIOUS client id alone — it is another app, not stale', async () => {
+    // Its workspace authorized that app and its `linear_token` row is keyed by it, so today's
+    // secrets on that row would serve neither app. Only an operator reconnect re-proves the grant.
+    const stale = stamped({ clientSecret: 'previous-client-secret', signingSecret: 'previous-signing-secret' })
+    const secrets = new Map([[String(BOT), stale]])
+    const { reconciler, install, resync } = harness([bot(BOT, { externalAppId: 'lin_previous_app' })], secrets)
+
+    await reconciler.tick()
+
+    expect(install).not.toHaveBeenCalled()
+    expect(resync).not.toHaveBeenCalled()
+    expect(secrets.get(String(BOT))).toEqual(stale)
+  })
+
+  it('treats an unattributed row as not ours rather than adopting it', async () => {
+    const secrets = new Map([[String(BOT), stamped({ clientSecret: 'old-client', signingSecret: 'old-signing' })]])
+    const { reconciler, install } = harness([bot(BOT, { externalAppId: null })], secrets)
+
+    await reconciler.tick()
+
+    expect(install).not.toHaveBeenCalled()
+  })
+
+  it('never re-stamps a revoked workspace, because install would clear its revocation', async () => {
+    const secrets = new Map([[String(BOT), stamped({ clientSecret: 'old-client', signingSecret: 'old-signing' })]])
+    const { reconciler, install, resync } = harness([bot(BOT, { revokedAt: new Date(1) })], secrets)
+
+    await reconciler.tick()
+
+    expect(install).not.toHaveBeenCalled()
+    expect(resync).not.toHaveBeenCalled()
+  })
+
+  it('re-stamps the live same-app bot in a fleet that also holds a foreign-app and a revoked one', async () => {
+    const live = BOT
+    const foreign = BotId('44444444-4444-4444-8444-444444444444')
+    const revoked = OTHER_BOT
+    const drifted = () => stamped({ clientSecret: 'old-client', signingSecret: 'old-signing' })
+    const secrets = new Map([
+      [String(live), drifted()],
+      [String(foreign), drifted()],
+      [String(revoked), drifted()]
+    ])
+    const { reconciler, install, resync } = harness(
+      [bot(foreign, { externalAppId: 'lin_previous_app' }), bot(revoked, { revokedAt: new Date(1) }), bot(live)],
+      secrets
+    )
+
+    await reconciler.tick()
+
+    expect(install).toHaveBeenCalledExactlyOnceWith(ORG, live, expect.anything(), expect.any(Date))
+    expect(resync).toHaveBeenCalledExactlyOnceWith(live)
+    expect(secrets.get(String(live))?.signingSecret).toBe(APP.signingSecret)
+    expect(secrets.get(String(foreign))).toEqual(drifted())
+    expect(secrets.get(String(revoked))).toEqual(drifted())
   })
 
   it('carries on past a bot whose re-stamp throws', async () => {
