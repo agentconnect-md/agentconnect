@@ -20,6 +20,7 @@
 import type { RelayBotIngress, RelayPlatformIngressPlugin } from './contract.js'
 import { slackIngressPlugin } from './slack/ingress-plugin.js'
 import { feishuIngressPlugin } from './feishu/ingress-plugin.js'
+import { linearIngressPlugin } from './linear/ingress-plugin.js'
 
 /**
  * **The one place a relay platform id is written down.** Adding a platform is
@@ -37,7 +38,11 @@ import { feishuIngressPlugin } from './feishu/ingress-plugin.js'
  * asks each pool in turn. That is the order the two hand-named pools were
  * asked in before the registry drove it (audit F2/F4), so nothing moved.
  */
-export const relayIngressPlugins: readonly RelayPlatformIngressPlugin[] = [slackIngressPlugin, feishuIngressPlugin]
+export const relayIngressPlugins: readonly RelayPlatformIngressPlugin[] = [
+  slackIngressPlugin,
+  feishuIngressPlugin,
+  linearIngressPlugin
+]
 
 /** One platform's pool of live per-bot ingests. Purely keyed by botId — the
  *  identity questions live in {@link DemuxIndex}, not here. */

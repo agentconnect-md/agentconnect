@@ -27,8 +27,10 @@ export class HookRateLimiter {
   private readonly refillPerSec: number
   private readonly maxEntries: number
 
+  // Only `now()` is read — narrowed so a caller holding a read-only clock (the platform
+  // ingress host, which exposes no timers) can reuse this limiter instead of forking one.
   constructor(
-    private readonly clock: Clock,
+    private readonly clock: Pick<Clock, 'now'>,
     opts: HookRateLimiterOpts = {}
   ) {
     this.capacity = opts.capacity ?? 10

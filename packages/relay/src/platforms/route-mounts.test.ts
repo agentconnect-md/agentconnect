@@ -32,7 +32,9 @@ import type { RelayIngressRouteDeps } from './contract.js'
  *  omitted; there are no GETs on this seam. */
 const EXPECTED_MOUNTS: Record<string, string[]> = {
   slack: ['POST /slack/events', 'POST /slack/interactions'],
-  feishu: ['POST /feishu/events']
+  feishu: ['POST /feishu/events'],
+  // One static, shared URL — a Linear app configures exactly one webhook endpoint.
+  linear: ['POST /linear/events']
 }
 
 const routeDeps = (): RelayIngressRouteDeps => ({
