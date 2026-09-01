@@ -53,6 +53,8 @@ export interface BuildAppDeps {
   /** open-connector admin API fetch override — integration tests stub it (absent under
    *  NODE_ENV=test ⇒ the connectors client is not assembled). */
   connectorsFetch?: FetchLike
+  /** Linear OAuth/GraphQL fetch override — the connect funnel's suites run a stubbed Linear. */
+  linearFetch?: FetchLike
 }
 
 /** The wired app both prod and tests drive. */
@@ -132,6 +134,7 @@ export function buildApp(deps: BuildAppDeps): App {
     ...(deps.githubFetch ? { githubFetch: deps.githubFetch } : {}),
     ...(deps.daemonReleaseFetch ? { daemonReleaseFetch: deps.daemonReleaseFetch } : {}),
     ...(deps.connectorsFetch ? { connectorsFetch: deps.connectorsFetch } : {}),
+    ...(deps.linearFetch ? { linearFetch: deps.linearFetch } : {}),
     ...(deps.secretCipher ? { secretCipher: deps.secretCipher } : {}),
     ...(deps.deploymentConfig ? { deploymentConfig: deps.deploymentConfig } : {})
   })

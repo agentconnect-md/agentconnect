@@ -646,8 +646,15 @@ https://linear.app/oauth/authorize?client_id=…&redirect_uri=…&response_type=
 with a one-shot `state` nonce persisted in `linear_install_state`
 (TTL-reaped via `pendingInstalls`; it carries the nonce, the initiating
 org/user, and the chosen default agent — **no secrets**, unlike the earlier
-per-agent revision's funnel). Core's relay-availability 409 applies at
-funnel start. **No Bot or Integration row exists before the callback**:
+per-agent revision's funnel). The row **survives its callback** rather than
+being deleted, carrying the terminal outcome the console polls: the OAuth
+tab is a throwaway, so a tail refusal below has no other channel back. That
+is also where "one-shot" is enforced — the callback CLAIMS the nonce with a
+compare-and-set before it spends the code, so a replayed or concurrent
+delivery of the same `state` never reaches Linear (the Slack platform-app
+funnel's settled-row precedent). Core's relay-availability 409 applies at
+funnel start, and so does the daemon `linear`-capability gate of §4.2.
+**No Bot or Integration row exists before the callback**:
 `IntegrationStatus` has no pending value, and `installNewBot` synchronizes
 an `http` bot immediately, which would drive `projectIntegrationConfig`
 before any `linear_token` exists — the funnel-creates-the-rows shape is the
@@ -724,7 +731,7 @@ attempts (the funnel row carries no secrets in this model, §7.1).
 | Client Secret                               | `BotSecret.botToken` slot (`secretShape.slots` labels it)                                                                                       | CP only (code exchange + refresh)                               |
 | Webhook signing secret                      | `BotSecret.signingSecret` slot; `httpAssignRequires: ['signingSecret']`                                                                         | relay only, via the `rc/bot-assign` secrets bag                 |
 | Access + refresh token, expiry              | provider-owned `linear_token` table, keyed by the connection identity `(orgId, clientId, organizationId)` (§4.4), values through `SecretCipher` | access token → daemon (spec + broker); refresh token → CP only  |
-| `state` nonce + default agent, pre-connect  | provider-owned `linear_install_state` funnel table (TTL-reaped; carries no secrets)                                                             | CP only                                                         |
+| `state` nonce + default agent + outcome     | provider-owned `linear_install_state` funnel table (TTL-reaped; carries no secrets; claimed once, then settled with the round trip's outcome)   | CP only                                                         |
 
 The opaque `IntegrationSpec.config` payload the provider projects (validated
 on the daemon by the linear module's schema in `CONFIG_SCHEMAS`):

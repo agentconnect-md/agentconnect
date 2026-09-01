@@ -2679,14 +2679,33 @@ model LinearToken {
 // the callback. No FKs (mirrors slack_platform_install): a dangling row after an org/agent delete is
 // harmless and TTL-reaped.
 model LinearInstallState {
-  id              String   @id @db.Uuid // == the OAuth state nonce
+  id              String              @id @db.Uuid // == the OAuth state nonce
   orgId           String
-  defaultAgentId  String?  @db.Uuid // the member agent bare delegations start a session with
+  defaultAgentId  String?             @db.Uuid // the member agent bare delegations start a session with
+  // Terminal state of the OAuth round trip — the row IS the console's completion signal, so it
+  // SURVIVES the callback rather than being deleted. That is also what makes the nonce one-shot:
+  // "already consumed" is a status check, not row absence, so a replayed callback cannot connect a
+  // second workspace. `failureReason` carries the same short code the close page showed — a tail
+  // refusal after §7.1's step 1 has no other channel back to the console.
+  status          LinearInstallStatus @default(pending)
+  failureReason   String?
+  botId           String?             @db.Uuid // the connected workspace's bot, for the console deep link
   createdByUserId String?
-  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  createdAt       DateTime            @default(now()) @db.Timestamptz(6)
+  // The one-shot fence: a callback CLAIMS the nonce here before it exchanges the code, so two
+  // concurrent deliveries of the same `state` cannot both reach Linear. `settledAt` is the later,
+  // separate moment the outcome landed.
+  claimedAt       DateTime?           @db.Timestamptz(6)
+  settledAt       DateTime?           @db.Timestamptz(6)
 
   @@index([orgId])
   @@map("linear_install_state")
+}
+
+enum LinearInstallStatus {
+  pending
+  completed
+  failed
 }
 
 // ───────────────────────────────────────────────────────────────────────────

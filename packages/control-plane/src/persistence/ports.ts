@@ -4387,12 +4387,32 @@ export interface LinearTokenRecord extends LinearTokenMaterial {
   updatedAt: Date
 }
 
+/**
+ * A `linear_token` row no Bot in its OWN organization references any more (§7.1) — the sweeper's
+ * unit of work. Selection is org-scoped and revocation is not, so the row carries both answers.
+ */
+export interface LinearOrphanTokenRow {
+  identity: LinearConnectionIdentity
+  /** Some OTHER organization's Bot still holds this `(clientId, organizationId)` pair — the
+   *  cross-org fence loser's case. Its live install must survive this row's collection, so the
+   *  local delete proceeds and the upstream revoke does not. */
+  claimedElsewhere: boolean
+}
+
 export interface LinearTokenStore {
   get(identity: LinearConnectionIdentity): Promise<LinearTokenRecord | null>
   /** Upsert the workspace's grant — the callback's step-1 write and every rotate. */
   put(identity: LinearConnectionIdentity, material: LinearTokenMaterial): Promise<void>
   delete(identity: LinearConnectionIdentity): Promise<void>
+  /** Rows of the deployment app older than `staleBefore` whose own organization has no Bot for the
+   *  identity. The grace window is the caller's — it exists so a callback between §7.1's steps 1
+   *  and 2 is never swept mid-flight. */
+  listOrphans(clientId: string, staleBefore: Date, limit: number): Promise<LinearOrphanTokenRow[]>
 }
+
+/** Terminal state of one connect round trip. The funnel row SURVIVES its callback — the tab is a
+ *  throwaway, so the row is the console's only channel for "it finished, and how". */
+export type LinearInstallStatus = 'pending' | 'completed' | 'failed'
 
 /** One pending connect-a-workspace funnel row. `id` IS the one-shot OAuth state
  *  nonce; `defaultAgentId` is the member bare delegations start a session with. */
@@ -4400,8 +4420,17 @@ export interface LinearInstallStateRecord {
   id: string
   orgId: OrgId
   defaultAgentId: AgentId | null
+  status: LinearInstallStatus
+  /** The short code the callback's close page showed, so the console can report WHY it failed. */
+  failureReason: string | null
+  /** The connected workspace's Bot, stamped on completion for the console deep link. */
+  botId: string | null
   createdByUserId: string | null
   createdAt: Date
+  /** When a callback CLAIMED this nonce — the one-shot fence itself, see
+   *  {@link LinearInstallStateStore.consume}. */
+  claimedAt: Date | null
+  settledAt: Date | null
 }
 
 export interface LinearInstallStateStore {
@@ -4412,14 +4441,28 @@ export interface LinearInstallStateStore {
     createdByUserId?: string
   }): Promise<LinearInstallStateRecord>
   /**
-   * Redeem the nonce: return the row and delete it in ONE statement, or `null`
-   * when no row is redeemable. Deliberately not a `get` + `delete` pair — the
-   * nonce is one-shot, and two concurrent callbacks (a double-clicked tab, a
-   * retried redirect) would both read the row before either deleted it and both
-   * proceed to mint a workspace. A single `DELETE` takes the row lock, so the
-   * loser re-evaluates against a gone row and gets `null`.
+   * Redeem the one-shot state nonce: the FIRST caller gets the row, every later one gets `null`.
+   * Deliberately not a read followed by a write — the nonce is one-shot, and two concurrent
+   * callbacks (a double-clicked tab, a retried redirect) would both see the same live row and both
+   * go on to mint a workspace. The claim is ONE statement, so the loser blocks on the row lock,
+   * re-evaluates, and matches nothing.
+   *
+   * It CLAIMS rather than deletes, because the row is also the console's only completion signal:
+   * the OAuth tab is a throwaway, so a tail refusal (§7.1's identity/workspace fences, which land
+   * after the grant is already written) has no other channel back. The claimed row survives to be
+   * settled, and the claim itself is what makes redemption exactly-once.
    */
   consume(id: string): Promise<LinearInstallStateRecord | null>
+  /** Record the outcome on the row this callback claimed. Idempotent — a row already settled keeps
+   *  its first outcome. */
+  settle(
+    id: string,
+    outcome: { status: 'completed'; botId: string } | { status: 'failed'; failureReason: string }
+  ): Promise<void>
+  /** STRICTLY READ-ONLY, for the console's status poll. It must NEVER gate redemption: reading a
+   *  row and then acting on it is the exact race {@link LinearInstallStateStore.consume} exists to
+   *  close, and this member is named `peek` so no caller mistakes it for a claim. */
+  peek(id: string): Promise<LinearInstallStateRecord | null>
   /** The shared TTL reaper's slice — an abandoned connect tab must not leave a live state nonce. */
   reapExpired(staleBefore: Date): Promise<number>
 }

@@ -351,21 +351,27 @@ describe('the provider-owned tables', () => {
     expect(await prisma.linearInstallState.findUnique({ where: { id: stale } })).toBeNull()
     expect(await prisma.linearInstallState.findUnique({ where: { id: nonce } })).not.toBeNull()
 
-    // Redemption returns the row and consumes it in the same statement.
+    // Redemption returns the row and claims it in the same statement. The row SURVIVES claimed —
+    // it is the console's completion signal — so `claimedAt`, not absence, is what spends the nonce.
     expect(await app.deps.repos.linearInstallState.consume(nonce)).toMatchObject({
       id: nonce,
       defaultAgentId: agentId
     })
-    expect(await prisma.linearInstallState.findUnique({ where: { id: nonce } })).toBeNull()
-    // A replayed callback finds nothing rather than a second live nonce.
+    expect(await prisma.linearInstallState.findUniqueOrThrow({ where: { id: nonce } })).toMatchObject({
+      claimedAt: expect.any(Date)
+    })
+    // A replayed callback finds nothing to claim rather than a second live nonce.
     expect(await app.deps.repos.linearInstallState.consume(nonce)).toBeNull()
     expect(await app.deps.repos.linearInstallState.consume(randomUUID())).toBeNull()
+    // …while the read-only poll still answers, which is the whole reason the row is kept.
+    expect(await app.deps.repos.linearInstallState.peek(nonce)).toMatchObject({ id: nonce, status: 'pending' })
   })
 
   it('redeems a nonce exactly once under concurrent callbacks', async () => {
-    // The hazard a `get` + `delete` pair leaves open: a double-clicked authorize tab, or Linear
+    // The hazard a read-then-write pair leaves open: a double-clicked authorize tab, or Linear
     // replaying the redirect, gives two requests the SAME live row and both go on to mint a
-    // workspace. One DELETE statement takes the row lock, so the loser sees a row that is gone.
+    // workspace. One compare-and-set statement takes the row lock, so the losers re-evaluate
+    // against a row that is already claimed and match nothing.
     const app = withLinearApp()
     const agentId = randomUUID()
     await seedDaemon(prisma, DAEMON)
@@ -385,6 +391,10 @@ describe('the provider-owned tables', () => {
     const winners = outcomes.filter((row) => row !== null)
     expect(winners).toHaveLength(1)
     expect(winners[0]).toMatchObject({ id: nonce, defaultAgentId: agentId })
-    expect(await prisma.linearInstallState.findUnique({ where: { id: nonce } })).toBeNull()
+    // Exactly one claim landed, and the row is still there for the winner to settle.
+    expect(await prisma.linearInstallState.findUniqueOrThrow({ where: { id: nonce } })).toMatchObject({
+      claimedAt: expect.any(Date),
+      status: 'pending'
+    })
   })
 })

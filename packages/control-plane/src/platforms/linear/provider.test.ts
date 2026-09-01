@@ -62,6 +62,10 @@ class MemoryTokens implements LinearTokenStore {
     this.rows.delete(MemoryTokens.key(identity))
     return Promise.resolve()
   }
+  /** The sweeper's selection is exercised against real Postgres; here it only has to exist. */
+  listOrphans(): Promise<[]> {
+    return Promise.resolve([])
+  }
 }
 
 function bot(over: Partial<BotRecord> = {}): BotRecord {
@@ -142,11 +146,13 @@ describe('validateConfig — the credential path is refused, not validated', () 
     }
   })
 
-  it('leaves the create tail unreachable: buildNewBotInstall throws rather than inventing a row', () => {
+  it('leaves the create tail unreachable: the pasted block carries no workspace to install', () => {
+    // `validateConfig` refuses first, so this can only ever be reached with an identity the OAuth
+    // callback derived — and the empty credential block derives none.
     const provider = createLinearCpProvider({ app: APP })
     expect(() =>
       provider.buildNewBotInstall({ credentials: {}, identity: {}, transport: 'http', shareable: true })
-    ).toThrow(/workspace connect flow/)
+    ).toThrow(/organization id/)
   })
 
   it('still contributes the vestigial block, so core’s exactly-one-of rule keeps its shape', () => {
@@ -411,19 +417,86 @@ describe('onBotDelete — the disconnect edge the contract grew for this platfor
   })
 })
 
-describe('the rest of the §9 surface', () => {
-  it('contributes no routes at either scope until the connect funnel lands', () => {
-    const provider = createLinearCpProvider({ app: APP })
-    expect(provider.installRoutes('org')).toEqual([])
-    expect(provider.installRoutes('public-callback')).toEqual([])
+describe('buildNewBotInstall — the rows one connected workspace writes (§7.1 step 2)', () => {
+  const built = () =>
+    createLinearCpProvider({ app: APP }).buildNewBotInstall({
+      credentials: {},
+      identity: { workspaceId: WORKSPACE, workspaceName: 'Acme Engineering', botUserId: 'user_app_1' },
+      transport: 'http',
+      // The caller's request is IGNORED: sharing is structural for this platform.
+      shareable: false
+    })
+
+  it('claims the D6 identity and the workspace off the deployment client id', () => {
+    const install = built()
+    expect(install.externalIdentity).toMatchObject({ externalAppId: APP.clientId, externalTenantId: WORKSPACE })
+    expect(install.workspaceClaim).toMatchObject({ appId: APP.clientId, tenantId: WORKSPACE })
   })
 
-  // Background loops moved out of this list once the §10.6 re-stamp earned one; their
-  // presence-follows-slot-presence pair lives in the dedicated describe above.
-  it('declares no create-body refinement, no tooling credentials and no install funnel', () => {
+  it('is shareable by construction, so the second member Integration is admitted', () => {
+    expect(built().bot?.shareable).toBe(true)
+  })
+
+  it('stamps the deployment app credentials into the workspace bot’s secret row', () => {
+    expect(built().secrets).toEqual({
+      botToken: APP.clientSecret,
+      appToken: null,
+      signingSecret: APP.signingSecret
+    })
+  })
+
+  it('carries the display metadata and the app user id the callback captured', () => {
+    expect(built().bot).toMatchObject({
+      workspaceId: WORKSPACE,
+      workspaceName: 'Acme Engineering',
+      botUserId: 'user_app_1'
+    })
+  })
+
+  it('refuses an identity with no workspace — there would be nothing to key, demux or fence', () => {
+    expect(() =>
+      createLinearCpProvider({ app: APP }).buildNewBotInstall({
+        credentials: {},
+        identity: {},
+        transport: 'http',
+        shareable: true
+      })
+    ).toThrow(/organization id/)
+  })
+})
+
+describe('the rest of the §9 surface', () => {
+  it('contributes exactly the funnel plugins it was composed with, per scope', () => {
+    const org = async () => {}
+    const publicCallback = async () => {}
+    const provider = createLinearCpProvider({
+      app: APP,
+      funnelRoutes: { org: [org], publicCallback: [publicCallback] }
+    })
+    expect(provider.installRoutes('org')).toEqual([org])
+    expect(provider.installRoutes('public-callback')).toEqual([publicCallback])
+  })
+
+  // Composed with NEITHER loop slot there is no `backgroundLoops` member at all; each loop's own
+  // presence-follows-slot-presence pair is covered beside the loop that owns it.
+  it('contributes no routes, funnel state or loops when composed without them', () => {
     const provider = createLinearCpProvider({ app: APP, tokens: new MemoryTokens() })
+    expect(provider.installRoutes('org')).toEqual([])
+    expect(provider.installRoutes('public-callback')).toEqual([])
     expect(provider.refineCreateBody).toBeUndefined()
     expect(provider.providerToolingCredentials).toBeUndefined()
     expect(provider.pendingInstalls).toBeUndefined()
+  })
+
+  it('declares one funnel reaper and one background loop when it owns them', () => {
+    const sweeper = { label: 'linear-orphan-token', start: () => {}, stop: () => {} }
+    const provider = createLinearCpProvider({
+      app: APP,
+      tokens: new MemoryTokens(),
+      pendingInstalls: { installStates: { reapExpired: () => Promise.resolve(0) }, intervalMs: 1000 },
+      orphanTokenSweeper: sweeper
+    })
+    expect(provider.pendingInstalls?.map((d) => d.label)).toEqual(['linear-install-state'])
+    expect(provider.backgroundLoops).toEqual([sweeper])
   })
 })
