@@ -26,9 +26,15 @@ const UNREGISTERED = ['webchat', 'hook', 'dream', 'mastodon', 'constructor'] as 
 
 const ALL = [...CP_PLATFORM_IDS, ...UNREGISTERED]
 
+/** The served set the retired hand expressions were written against. A platform
+ *  admitted AFTER them (`linear`) is outside their vocabulary by construction —
+ *  no equivalence can describe an id the retired code never named — so the
+ *  suites below run over this era and each new id is pinned by its own rows. */
+const RETIREMENT_ERA = ['slack', 'telegram', 'discord', 'feishu'] as const
+
 describe('F9 — Forget needs a durable suppression', () => {
-  it('is the observed-membership arm, for every id', () => {
-    for (const p of ALL) {
+  it('is the observed-membership arm, for every id of the retirement era', () => {
+    for (const p of [...RETIREMENT_ERA, ...UNREGISTERED]) {
       // What `http/routes/integrations.ts` spelled before: the three platforms
       // whose conversation list is rebuilt from session history.
       const retired = p === 'telegram' || p === 'discord' || p === 'feishu'
@@ -40,6 +46,12 @@ describe('F9 — Forget needs a durable suppression', () => {
       if ((CP_PLATFORM_IDS as readonly string[]).includes(p)) expect(viaManifest, p).toBe(retired)
       else expect(viaManifest, p).toBe(true)
     }
+  })
+
+  it('keeps the fail-closed default for Linear — it enumerates no membership of its own', () => {
+    // The manifest row Linear earned carries `multiAgentShareable` alone; every other axis stays
+    // at the default, so a Forget on a Linear conversation gets the durable suppression.
+    expect(manifestFor('linear').membershipEnumeration).toBe('observed')
   })
 })
 
@@ -94,8 +106,8 @@ describe('F12 — what a leave request may target', () => {
  * `WebWizardAffordances.share` mirror has to move in the same change as a row.
  */
 describe('the multi-agent-bot capability', () => {
-  it('is the retired Slack-only predicate, for every id this build serves', () => {
-    for (const p of ALL) {
+  it('is the retired Slack-only predicate, for every id of the retirement era', () => {
+    for (const p of [...RETIREMENT_ERA, ...UNREGISTERED]) {
       const retired = p === 'slack'
       expect(manifestFor(p).multiAgentShareable, p).toBe(retired)
     }
@@ -112,8 +124,7 @@ describe('the multi-agent-bot capability', () => {
   it('admits Linear, the second platform whose bot serves many agents', () => {
     // The row the field was earned by: a connected workspace is one shared bot
     // with the enabled agents as members, so the install gate must let a second
-    // member through. No provider serves `linear` yet, so this is the whole of
-    // the new behavior.
+    // member through.
     expect(manifestFor('linear').multiAgentShareable).toBe(true)
   })
 

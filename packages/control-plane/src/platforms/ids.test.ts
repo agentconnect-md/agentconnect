@@ -23,18 +23,20 @@ import { createTelegramCpProvider } from './telegram/provider.js'
 import { createDiscordCpProvider } from './discord/provider.js'
 import { createSlackCpProvider } from './slack/provider.js'
 import { createFeishuCpProvider } from './feishu/provider.js'
+import { createLinearCpProvider } from './linear/provider.js'
 import { toDbPlatform } from '../persistence/platform.js'
 import { Platform, UpsertCronBody, WaitlistJoinBody } from '../http/dto/index.js'
 import { findTool } from '../http/mcp/tools.js'
 
-/** The four providers `container.ts` composes, with offline stub seams — the
- *  same construction `env.test.ts` uses to read declarations off the real
- *  provider objects. */
+/** The providers `container.ts` composes, with offline stub seams — the same
+ *  construction `env.test.ts` uses to read declarations off the real provider
+ *  objects. */
 const productionRegistry = buildCpPlatformRegistry([
   createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
   createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
   createSlackCpProvider({}),
-  createFeishuCpProvider({})
+  createFeishuCpProvider({}),
+  createLinearCpProvider({})
 ])
 
 const sorted = [...CP_PLATFORM_IDS].sort()

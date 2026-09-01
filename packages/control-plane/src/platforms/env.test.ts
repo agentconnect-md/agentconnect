@@ -21,6 +21,7 @@ import { createTelegramCpProvider } from './telegram/provider.js'
 import { createDiscordCpProvider } from './discord/provider.js'
 import { createSlackCpProvider } from './slack/provider.js'
 import { createFeishuCpProvider } from './feishu/provider.js'
+import { createLinearCpProvider } from './linear/provider.js'
 
 /** Every supported deployment key. */
 const EXPECTED_KEYS = [
@@ -45,6 +46,9 @@ const EXPECTED_KEYS = [
   'HOST',
   'LARK_PLATFORM_APP_ID',
   'LARK_PLATFORM_APP_SECRET',
+  'LINEAR_PLATFORM_CLIENT_ID',
+  'LINEAR_PLATFORM_CLIENT_SECRET',
+  'LINEAR_PLATFORM_SIGNING_SECRET',
   'LOGTO_MGMT_APP_ID',
   'LOGTO_MGMT_APP_SECRET',
   'LOGTO_MGMT_ENDPOINT',
@@ -123,7 +127,10 @@ describe('composed AppConfigSchema', () => {
       FEISHU_PLATFORM_APP_ID: 'cli_feishu',
       FEISHU_PLATFORM_APP_SECRET: 'fsecret',
       LARK_PLATFORM_APP_ID: 'cli_lark',
-      LARK_PLATFORM_APP_SECRET: 'lsecret'
+      LARK_PLATFORM_APP_SECRET: 'lsecret',
+      LINEAR_PLATFORM_CLIENT_ID: 'lin_client',
+      LINEAR_PLATFORM_CLIENT_SECRET: 'lin_secret',
+      LINEAR_PLATFORM_SIGNING_SECRET: 'lin_sig'
     } as NodeJS.ProcessEnv)
 
     // Coerced number + the reaper default that is NOT in the environment.
@@ -132,12 +139,14 @@ describe('composed AppConfigSchema', () => {
     expect(config.SLACK_PLATFORM_APP_ID).toBe('A1')
     expect(config.FEISHU_PLATFORM_APP_SECRET).toBe('fsecret')
     expect(config.LARK_PLATFORM_APP_ID).toBe('cli_lark')
+    expect(config.LINEAR_PLATFORM_CLIENT_ID).toBe('lin_client')
   })
 
   it('leaves every platform key optional — an unset one never fail-fasts a boot', () => {
     const config = loadConfig(MINIMAL_ENV as NodeJS.ProcessEnv)
     expect(config.SLACK_PLATFORM_APP_ID).toBeUndefined()
     expect(config.FEISHU_PLATFORM_APP_ID).toBeUndefined()
+    expect(config.LINEAR_PLATFORM_CLIENT_ID).toBeUndefined()
     expect(config.SLACK_INSTALL_TTL_SEC).toBe(3600)
   })
 })
@@ -148,7 +157,8 @@ describe('platform env declarations', () => {
       createTelegramCpProvider({ verifyBot: async () => ({ status: 'unreachable' }) }),
       createDiscordCpProvider({ ensureMessageContentIntent: async () => 'ready' }),
       createSlackCpProvider({}),
-      createFeishuCpProvider({})
+      createFeishuCpProvider({}),
+      createLinearCpProvider({})
     ])
     const fromProviders = registry
       .all()

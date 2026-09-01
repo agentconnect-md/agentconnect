@@ -44,6 +44,8 @@ import type {
   SlackPlatformInstallStore,
   FeishuAppRegistrationStore,
   SlackUserConfigStore,
+  LinearTokenStore,
+  LinearInstallStateStore,
   PresetAgentStore,
   GithubInstallationRepo,
   AgentRepoAuthorizationRepo,
@@ -235,6 +237,10 @@ export interface HttpDeps {
     feishuAppRegistration: FeishuAppRegistrationStore
     /** One org's stored Slack App Configuration token (§Tier B); holds secret material, never DTO'd. */
     slackUserConfig: SlackUserConfigStore
+    /** Connected Linear workspaces' rotating OAuth grants, keyed by connection identity; secret material. */
+    linearToken: LinearTokenStore
+    /** Pending Linear workspace connects: the OAuth state nonce + chosen default agent, no secrets. */
+    linearInstallState: LinearInstallStateStore
     /** Per-org preset provisioning state (preset-agents.md §3.2) — read surface
      *  (the platform Slack install's default bind target; later, the checklist). */
     presetAgent: PresetAgentStore

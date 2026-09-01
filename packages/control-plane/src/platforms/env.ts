@@ -19,13 +19,15 @@
 import type { ZodRawShape } from 'zod'
 import { SlackCpEnvSchema } from './slack/provider.js'
 import { FeishuCpEnvSchema } from './feishu/provider.js'
+import { LinearCpEnvSchema } from './linear/provider.js'
 
 /** Every platform's declared env keys. Telegram and Discord own none — their
  *  whole install is the create-DTO path, with no deployment-level
  *  configuration, so they are absent here rather than present-and-empty. */
 export const CP_PLATFORM_ENV_SCHEMAS = [
   { platformId: 'slack', envSchema: SlackCpEnvSchema },
-  { platformId: 'feishu', envSchema: FeishuCpEnvSchema }
+  { platformId: 'feishu', envSchema: FeishuCpEnvSchema },
+  { platformId: 'linear', envSchema: LinearCpEnvSchema }
 ] as const
 
 type EnvSchemaOf<T> = T extends { envSchema: infer S } ? S : never

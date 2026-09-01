@@ -104,6 +104,7 @@ model Org {
   gitlabProjectBindings     GitlabProjectBinding[]
   gitlabAgentAccounts       GitlabAgentAccount[]
   slackUserConfigs          SlackUserConfig[]
+  linearTokens              LinearToken[]
   inviteLink                OrgInviteLink?
   mcpProviders              McpProvider[]
   skillSources              SkillSource[]
@@ -2637,6 +2638,46 @@ model SlackUserConfig {
 
   @@id([orgId, userId])
   @@map("slack_user_config")
+}
+
+// One connected Linear workspace's OAuth grant (docs/designs/linear-integration.md §4.4, §7.2).
+// Keyed by the CONNECTION identity `(orgId, clientId, organizationId)` — the same pair the workspace
+// Bot's D6 columns mirror — and deliberately NOT by the Bot row id: the token is the workspace's
+// authorization of the deployment's one OAuth app, so it survives agent-membership churn, it can be
+// written before the Bot row exists (the callback's step-1 upsert), and adding or removing a member
+// agent never touches it. Linear access tokens expire in ~24h and refresh ROTATES the refresh token,
+// so the CP is the single durable writer; both values pass through SecretCipher under the org scope,
+// exactly like `bot_secret`. Never logged, never in a DTO.
+model LinearToken {
+  orgId          String
+  clientId       String // the deployment app's OAuth client id (constant across rows)
+  organizationId String // the Linear workspace (organization) id
+  accessToken    String // ≤24h; projected into the integration spec and brokered over `linearcred`
+  refreshToken   String? // rotates on every refresh; CP-only, never leaves this table
+  expiresAt      DateTime @db.Timestamptz(6) // when accessToken expires (drives refresh)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+
+  org Org @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([orgId, clientId, organizationId])
+  @@map("linear_token")
+}
+
+// Pending "connect a Linear workspace" funnel state (linear-integration.md §7.1): the one-shot OAuth
+// `state` nonce bound to the initiating org/user and the workspace's chosen default agent. NO secret
+// material — the deployment app's credentials are deployment config and the tokens only exist after
+// the callback. No FKs (mirrors slack_platform_install): a dangling row after an org/agent delete is
+// harmless and TTL-reaped.
+model LinearInstallState {
+  id              String   @id @db.Uuid // == the OAuth state nonce
+  orgId           String
+  defaultAgentId  String?  @db.Uuid // the member agent bare delegations start a session with
+  createdByUserId String?
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([orgId])
+  @@map("linear_install_state")
 }
 
 // ───────────────────────────────────────────────────────────────────────────

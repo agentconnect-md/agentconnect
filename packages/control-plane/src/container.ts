@@ -37,6 +37,7 @@ import { CodeHostReviewBrokerService } from './codehost/review-lease.service.js'
 import { unionGitlabWebhookEvents } from './gitlab/webhook-events.js'
 import { resolveSlackPlatformAppConfig } from './config/slack-platform.js'
 import { resolveFeishuPlatformApps } from './config/feishu-platform.js'
+import { resolveLinearPlatformAppConfig } from './config/linear-platform.js'
 import type { FetchLike } from './github/api.js'
 import { ConnectorsClient, parseBlocklist, parseWhitelist } from './connectors/index.js'
 import { GithubService } from './github/service.js'
@@ -99,6 +100,8 @@ import {
   PgSlackPlatformInstallStore,
   PgFeishuAppRegistrationStore,
   PgSlackUserConfigStore,
+  PgLinearTokenStore,
+  PgLinearInstallStateStore,
   PgPresetAgentStore,
   PresetAgentBackfill,
   PgGithubInstallationRepo,
@@ -230,6 +233,7 @@ import { createTelegramCpProvider } from './platforms/telegram/provider.js'
 import { createDiscordCpProvider } from './platforms/discord/provider.js'
 import { createSlackCpProvider, createSlackToolingCredentials } from './platforms/slack/provider.js'
 import { createFeishuCpProvider } from './platforms/feishu/provider.js'
+import { createLinearCpProvider } from './platforms/linear/provider.js'
 import { slackInstallRoutes, slackConfigRoutes, slackOauthCallbackRoutes } from './http/routes/slack-install.js'
 import { slackPlatformInstallRoutes, slackPlatformCallbackRoutes } from './http/routes/slack-platform-install.js'
 import { feishuRegistrationRoutes } from './http/routes/feishu-registration.js'
@@ -258,9 +262,9 @@ export interface Container {
   relayGateway(app: FastifyInstance): WebSocketServer
   /** The single-tenant anchors the devAuth stub injects. */
   readonly defaults: { orgId: string; ownerId: string }
-  /** §9 platform-provider registry (S3) — all four platforms (Telegram,
-   *  Discord, Slack, Feishu). Composed here so the graph is whole, and now the
-   *  authority for route mounting, the create body + its live credential check,
+  /** §9 platform-provider registry (S3) — every served platform (Telegram,
+   *  Discord, Slack, Feishu, Linear). Composed here so the graph is whole, and
+   *  now the authority for route mounting, the create body + its live check,
    *  the pending-install reapers and the background convergence loops. Spec
    *  assembly and `rc/bot-assign` adopt it in a follow-up PR. */
   readonly platforms: CpPlatformRegistry
@@ -414,6 +418,8 @@ export function buildContainer(
     slackPlatformInstall: new PgSlackPlatformInstallStore(prisma),
     feishuAppRegistration: new PgFeishuAppRegistrationStore(prisma, secretCipher),
     slackUserConfig: new PgSlackUserConfigStore(prisma, secretCipher),
+    linearToken: new PgLinearTokenStore(prisma, secretCipher),
+    linearInstallState: new PgLinearInstallStateStore(prisma),
     presetAgent: new PgPresetAgentStore(prisma),
     cron: new PgCronRepo(prisma),
     dutyGroup: new PgDutyGroupRepo(prisma),
@@ -690,6 +696,10 @@ export function buildContainer(
   // Regional Login Apps mirrored from Logto. Their credentials are the stable
   // deployment tenant anchor used to admit Bot Apps from the same organization.
   const feishuPlatformApps = resolveFeishuPlatformApps(config)
+
+  // The deployment's one Linear OAuth app (linear-integration.md §7.1) — undefined ⇒ the platform
+  // self-disables (no workspace can be connected); partial set ⇒ fail-fast.
+  const linearPlatformApp = resolveLinearPlatformAppConfig(config)
 
   // Hook compiler/converger (webhook-triggers-and-github-events.md): CRUD routes
   // broadcast through it, and a (re)registering relay gets the full-set replay.
@@ -1461,6 +1471,8 @@ export function buildContainer(
       slackPlatformInstall: repos.slackPlatformInstall,
       feishuAppRegistration: repos.feishuAppRegistration,
       slackUserConfig: repos.slackUserConfig,
+      linearToken: repos.linearToken,
+      linearInstallState: repos.linearInstallState,
       presetAgent: repos.presetAgent,
       githubInstallation: repos.githubInstallation,
       agentRepoAuth: repos.agentRepoAuth,
@@ -1753,6 +1765,13 @@ export function buildContainer(
         registrations: repos.feishuAppRegistration,
         intervalMs: config.SLACK_INSTALL_REAP_INTERVAL_SEC * 1000
       }
+    }),
+    // Linear is registered unconditionally so the served platform set stays the same object in
+    // every deployment; the DEPLOYMENT APP is what is optional, and its absence self-disables the
+    // platform from the inside (linear-integration.md §7.1).
+    createLinearCpProvider({
+      ...(linearPlatformApp ? { app: linearPlatformApp } : {}),
+      tokens: repos.linearToken
     })
   ])
 

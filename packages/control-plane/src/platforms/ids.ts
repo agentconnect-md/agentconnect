@@ -38,7 +38,7 @@
  * protocol platforms with no provider, no persisted integration row, and no
  * install funnel (`persistence/platform.ts`, `isSessionIdentityPlatform`).
  */
-export const CP_PLATFORM_IDS = ['slack', 'telegram', 'discord', 'feishu'] as const
+export const CP_PLATFORM_IDS = ['slack', 'telegram', 'discord', 'feishu', 'linear'] as const
 
 /** One served chat platform. The closed static type behind `DbPlatform` and the
  *  cron/hook target vocabulary. */
