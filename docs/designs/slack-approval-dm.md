@@ -69,7 +69,8 @@ So the DM surface is **the editor path delivered over Slack**, and:
 
 - it is **not** gated by `allowRuntimeChangesInChat`;
 - a click on a DM card is honored only when the acting Slack user **is the
-  DM's addressed target** (§6.3) — the same person the CP authorized;
+  DM's addressed target** and **still passes both gates at click time**
+  (§6.3) — routing-time authorization is not an indefinite grant;
 - everything else about the request (durable row, console surfaces, decision
   frames) is the unmodified editor path. A DM decision and a console
   decision race exactly like two console editors do today, settled by the
@@ -108,11 +109,14 @@ bolted onto a flow that already works without it.
 
 Rungs 1–2 start from a _Slack_ id, and there is deliberately no reverse
 index from a Slack user to a console account
-([slack-identity.md](slack-identity.md), §4.4 below). So they are verified
-by the same forward scan rung 3 uses: enumerate the console users who can
-edit the agent, forward-resolve their linked Slack identities, and check
-whether the rung's `(teamId, userId)` pair is among them. One scan serves
-the whole chain.
+([slack-identity.md](slack-identity.md), §4.4 below). So a Slack-id rung is
+verified by a forward scan over the **eligible-editor set** — the console
+users who can edit the agent: forward-resolve their linked Slack identities
+and check whether the rung's `(teamId, userId)` pair is among them. One
+scan serves every Slack-id rung plus rung 3. That set is small for a
+`restricted` agent (its `sharedWith`), but for an `org`-visible agent it is
+the org's whole editor-capable membership — so the scan is capped, not
+assumed cheap (§4.2).
 
 ## 4. Target resolution runs on the Control Plane
 
@@ -139,12 +143,25 @@ A synchronous daemon→CP request/reply over the existing WS, modeled on
   `{ requestId, target?: { teamId, userId, displayName?, consoleUserId } }` —
   absent `target` means "no eligible recipient, keep today's behavior".
 
+The same pair also serves the decision-time revalidation of §6.3:
+`agent/approval-route` with `verify: { teamId, userId }` set asks not "whom
+should I DM" but "does this Slack pair, **right now**, map to a console
+user who can edit this agent" — answered by `{ requestId, allowed,
+consoleUserId? }`. Routing is best-effort (§4.3); verification is not — it
+authorizes an action, so an unanswerable verify fails closed.
+
 The CP evaluates the chain of §3 with the `linkedMemberIds` machinery
 (`packages/control-plane/src/orchestrator/linkedDm.ts`): the same
 per-subject-cached forward reads, the same `AUDIENCE_CONCURRENCY`, the same
-fail-closed posture. `MAX_AUDIENCE` applies to rung 3 — an agent shared with
-more than 200 people skips that rung rather than fanning out (rungs 1, 2,
-and 4 are single lookups and always run).
+fail-closed posture. `MAX_AUDIENCE` bounds the forward scan of §3, and the
+scan's input is the eligible-editor set — `sharedWith` for a `restricted`
+agent, the org's editor-capable membership for an `org`-visible one. When
+that set exceeds the cap, every rung that needs the scan — rung 3 and any
+rung whose candidate is a Slack id (rung 1; rung 2 for chat-triggered
+sessions) — is skipped rather than fanned out, keeping the fail-closed
+default of no DM. Rungs whose candidate is already a console user (rung 2
+for `user:<id>` owners; rung 4, the creator) are genuine single lookups and
+always run.
 
 ### 4.3 Degradation
 
@@ -264,11 +281,37 @@ rebuild and both sides get checked, per the standing rule.
 `handlePermissionChoice` currently refuses when
 `allowRuntimeChangesInChat` is off. It learns to distinguish card origin:
 for a DM-originated request (the coordinator knows — it posted it), the
-gate is replaced by **actor equality**: the clicking Slack user's
-`(teamId, userId)` must equal the addressed target's. A 1:1 DM makes
-mismatch nearly impossible, but the check is what makes the authorization
-claim of §2 true rather than topological. In-thread cards keep their
-existing gate unchanged.
+gate is replaced by two checks, both required:
+
+- **Actor equality** — the clicking Slack user's `(teamId, userId)` must
+  equal the addressed target's. A 1:1 DM makes mismatch nearly impossible,
+  but the check is what makes the authorization claim of §2 true rather
+  than topological.
+- **Decision-time revalidation** — routing-time `canEdit` is not an
+  indefinite grant: these requests have no timeout, and before the click
+  lands the target may have left the org, been demoted, dropped from
+  `sharedWith`, or unlinked the Slack identity. So the daemon revalidates
+  through the CP (the `verify` form of §4.2) that the actor's pair still
+  maps to a console user who can edit the agent — the same predicate the
+  console decision route evaluates at action time. The verify failing,
+  answering `allowed: false`, or being unanswerable (CP down) all **fail
+  closed**: the click is refused, the card is annotated "decide from the
+  console", and the request stays pending. The `consoleUserId` the verify
+  returns is what lands in `resolvedBy`.
+
+In-thread cards keep their existing gate unchanged.
+
+### 6.4 Elicitation clicks carry no actor today
+
+§2's addressed-target rule must hold for approval **elicitations** (Codex
+MCP approvals over `elicitation/create`) too — but the current elicit-choice
+path drops the actor on both transports: `onElicitChoice` has no actor
+parameter, the Socket Mode handler never calls `actorOf`, and the relay's
+`elicit-choice` frame omits the acting user. Interactive elicitation DMs
+therefore require extending that path first — actor on the Socket Mode
+handler, an acting-user field on the relay frame, and the §6.3 checks in
+`handleElicitChoice` for DM-originated cards. Until that lands, approval
+elicitations get **notify-only** DMs (§9 phase 1 content), never buttons.
 
 ## 7. Console notification states
 
@@ -300,10 +343,11 @@ category of §7 satisfies the issue's stated behavior.
    _text_ DM (summary + session link + source permalink). No buttons: the
    decision still happens on the web. Small, shippable, already most of the
    user value.
-2. **Interactive DM card** — buttons in the DM, actor verification (§6.3),
-   `resolvedBy` columns/frames (§6), card lifecycle + restart
-   survivability (§5.4), unconditional `block_id` target on DM cards
-   (§5.3).
+2. **Interactive DM card** — buttons in the DM, actor equality +
+   decision-time revalidation (§6.3), the elicitation actor plumbing or the
+   notify-only carve-out (§6.4), `resolvedBy` columns/frames (§6), card
+   lifecycle + restart survivability (§5.4), unconditional `block_id`
+   target on DM cards (§5.3).
 3. **Console notifications** — the `approval` category (§7).
 
 ## 10. Out of scope / future
