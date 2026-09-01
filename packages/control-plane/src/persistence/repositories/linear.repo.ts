@@ -23,7 +23,7 @@ import type {
 } from '../ports.js'
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
-import { AgentId, OrgId } from '../../domain/ids.js'
+import { AgentId, BotId, OrgId } from '../../domain/ids.js'
 
 export class PgLinearTokenStore implements LinearTokenStore {
   constructor(
@@ -89,34 +89,80 @@ export class PgLinearTokenStore implements LinearTokenStore {
   }
 
   /**
-   * Two reads, not a join: the stale candidates of this deployment app, then who — if anyone — owns
-   * each of their identities. The D6 composite unique is GLOBAL, so at most one Bot answers per
-   * `(clientId, organizationId)` and one map decides both questions the sweeper asks: a row whose
-   * owner is its own organization is a live install and never yielded, and everything else is an
-   * orphan whose `claimedElsewhere` says whether an upstream revoke would kill someone's install.
+   * The sweep's candidates, as ONE statement whose LIMIT counts orphans rather than scanned rows.
+   *
+   * The exclusion has to be inside the query, not a filter over its result: the deployment's oldest
+   * stale rows are overwhelmingly HEALTHY installs (a workspace that has not needed a token refresh
+   * in over an hour), so taking the oldest N and filtering afterwards lets those N occupy every
+   * pass and starves the orphans behind them forever.
+   *
+   * The two scopes the design separates are the two subqueries. `NOT EXISTS … AND b."orgId" = …`
+   * is the ORG-SCOPED selection — a row whose own organization still holds the identity is a live
+   * install and is not a candidate. `EXISTS …` without the org predicate is the GLOBAL question,
+   * and because the org-scoped arm already excluded same-org owners it can only mean another
+   * organization's Bot: the cross-org fence loser, whose winner an upstream revoke would kill.
    */
   async listOrphans(clientId: string, staleBefore: Date, limit: number): Promise<LinearOrphanTokenRow[]> {
-    const rows = await this.prisma.linearToken.findMany({
-      where: { clientId, updatedAt: { lt: staleBefore } },
-      orderBy: { updatedAt: 'asc' },
-      take: limit
-    })
-    if (rows.length === 0) return []
-    const owners = await this.prisma.bot.findMany({
-      where: {
-        platform: 'linear',
-        externalAppId: clientId,
-        externalTenantId: { in: [...new Set(rows.map((r) => r.organizationId))] }
-      },
-      select: { orgId: true, externalTenantId: true }
-    })
-    const ownerOf = new Map(owners.map((b) => [b.externalTenantId!, b.orgId]))
-    return rows
-      .filter((r) => ownerOf.get(r.organizationId) !== r.orgId)
-      .map((r) => ({
-        identity: { orgId: OrgId(r.orgId), clientId: r.clientId, organizationId: r.organizationId },
-        claimedElsewhere: ownerOf.has(r.organizationId)
-      }))
+    const rows = await this.prisma.$queryRaw<
+      { orgId: string; organizationId: string; updatedAt: Date; claimedElsewhere: boolean }[]
+    >`
+      SELECT t."orgId", t."organizationId", t."updatedAt",
+             EXISTS (
+               SELECT 1 FROM "bot" b
+                WHERE b."platform" = 'linear'
+                  AND b."externalAppId" = t."clientId"
+                  AND b."externalTenantId" = t."organizationId"
+             ) AS "claimedElsewhere"
+        FROM "linear_token" t
+       WHERE t."clientId" = ${clientId}
+         AND t."updatedAt" < ${staleBefore}
+         AND NOT EXISTS (
+               SELECT 1 FROM "bot" b
+                WHERE b."platform" = 'linear'
+                  AND b."externalAppId" = t."clientId"
+                  AND b."externalTenantId" = t."organizationId"
+                  AND b."orgId" = t."orgId"
+             )
+       ORDER BY t."updatedAt" ASC
+       LIMIT ${limit}
+    `
+    return rows.map((r) => ({
+      identity: { orgId: OrgId(r.orgId), clientId, organizationId: r.organizationId },
+      claimedElsewhere: r.claimedElsewhere,
+      updatedAt: r.updatedAt
+    }))
+  }
+
+  /**
+   * The sweep's claim: delete the row only while it still carries the `updatedAt` the snapshot saw,
+   * and hand back what was removed. One statement, so a concurrent `put` — a retried connect
+   * re-granting the same workspace — serializes on the row: either this DELETE goes first and the
+   * re-grant re-creates the row (which the next sweep re-evaluates from scratch), or the re-grant
+   * goes first and this matches nothing.
+   *
+   * That is why the upstream revoke reads its token from HERE rather than from a prior `get`: the
+   * returned material is provably the row that was collected, never a fresher grant that landed
+   * between the snapshot and the act.
+   */
+  async deleteIfUnchanged(identity: LinearConnectionIdentity, updatedAt: Date): Promise<LinearTokenMaterial | null> {
+    const removed = await this.prisma.$queryRaw<
+      { accessToken: string; refreshToken: string | null; expiresAt: Date }[]
+    >`
+      DELETE FROM "linear_token"
+       WHERE "orgId" = ${identity.orgId}
+         AND "clientId" = ${identity.clientId}
+         AND "organizationId" = ${identity.organizationId}
+         AND "updatedAt" = ${updatedAt}
+      RETURNING "accessToken", "refreshToken", "expiresAt"
+    `
+    const row = removed[0]
+    if (!row) return null
+    const scope = orgScope(identity.orgId)
+    return {
+      accessToken: await this.cipher.open(row.accessToken, scope),
+      refreshToken: row.refreshToken ? await this.cipher.open(row.refreshToken, scope) : null,
+      expiresAt: row.expiresAt
+    }
   }
 }
 
@@ -128,6 +174,7 @@ function toInstallStateRecord(r: LinearInstallState): LinearInstallStateRecord {
     status: r.status,
     failureReason: r.failureReason,
     botId: r.botId,
+    expectedBotId: r.expectedBotId,
     createdByUserId: r.createdByUserId,
     createdAt: r.createdAt,
     claimedAt: r.claimedAt,
@@ -142,6 +189,7 @@ export class PgLinearInstallStateStore implements LinearInstallStateStore {
     id: string
     orgId: OrgId
     defaultAgentId?: AgentId
+    expectedBotId?: BotId
     createdByUserId?: string
   }): Promise<LinearInstallStateRecord> {
     const row = await this.prisma.linearInstallState.create({
@@ -149,6 +197,7 @@ export class PgLinearInstallStateStore implements LinearInstallStateStore {
         id: input.id,
         orgId: input.orgId,
         ...(input.defaultAgentId !== undefined ? { defaultAgentId: input.defaultAgentId } : {}),
+        ...(input.expectedBotId !== undefined ? { expectedBotId: input.expectedBotId } : {}),
         ...(input.createdByUserId !== undefined ? { createdByUserId: input.createdByUserId } : {})
       }
     })

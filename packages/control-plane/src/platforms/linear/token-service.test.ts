@@ -45,6 +45,9 @@ class MemoryTokens implements LinearTokenStore {
   listOrphans(): Promise<[]> {
     return Promise.resolve([])
   }
+  deleteIfUnchanged(): Promise<null> {
+    return Promise.resolve(null)
+  }
 }
 
 type Answer = { status: number; body: unknown }

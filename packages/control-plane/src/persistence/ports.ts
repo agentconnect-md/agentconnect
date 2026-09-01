@@ -4397,6 +4397,10 @@ export interface LinearOrphanTokenRow {
    *  cross-org fence loser's case. Its live install must survive this row's collection, so the
    *  local delete proceeds and the upstream revoke does not. */
   claimedElsewhere: boolean
+  /** The snapshot this candidate was selected under. Hand it back to
+   *  {@link LinearTokenStore.deleteIfUnchanged}: between the sweep's read and its act, a retried
+   *  connect can re-grant the same identity, and revoking THAT token would kill a live install. */
+  updatedAt: Date
 }
 
 export interface LinearTokenStore {
@@ -4404,10 +4408,26 @@ export interface LinearTokenStore {
   /** Upsert the workspace's grant — the callback's step-1 write and every rotate. */
   put(identity: LinearConnectionIdentity, material: LinearTokenMaterial): Promise<void>
   delete(identity: LinearConnectionIdentity): Promise<void>
-  /** Rows of the deployment app older than `staleBefore` whose own organization has no Bot for the
-   *  identity. The grace window is the caller's — it exists so a callback between §7.1's steps 1
-   *  and 2 is never swept mid-flight. */
+  /**
+   * Rows of the deployment app older than `staleBefore` whose own organization has no Bot for the
+   * identity. The grace window is the caller's — it exists so a callback between §7.1's steps 1 and
+   * 2 is never swept mid-flight.
+   *
+   * `limit` bounds ORPHANS, not scanned rows: the live-owner exclusion is part of the selection, so
+   * a deployment whose oldest stale rows are all healthy installs cannot starve the orphans behind
+   * them out of every pass.
+   */
   listOrphans(clientId: string, staleBefore: Date, limit: number): Promise<LinearOrphanTokenRow[]>
+  /**
+   * Delete the row ONLY while it still carries `updatedAt`, returning the material it removed (or
+   * `null` when a concurrent write moved it on). ONE statement, so a re-granting {@link
+   * LinearTokenStore.put} serializes against it: either the sweep deletes the exact row it selected,
+   * or it deletes nothing and the fresh grant stands untouched.
+   *
+   * Returning the removed material is what lets an upstream revoke follow safely — it revokes
+   * precisely the token that was collected, never one that arrived after the snapshot.
+   */
+  deleteIfUnchanged(identity: LinearConnectionIdentity, updatedAt: Date): Promise<LinearTokenMaterial | null>
 }
 
 /** Terminal state of one connect round trip. The funnel row SURVIVES its callback — the tab is a
@@ -4425,6 +4445,9 @@ export interface LinearInstallStateRecord {
   failureReason: string | null
   /** The connected workspace's Bot, stamped on completion for the console deep link. */
   botId: string | null
+  /** A RECONNECT nonce's target (§7.4). Set ⇒ the callback refuses any workspace but this bot's;
+   *  null ⇒ a first connect, which has no workspace to match against yet. */
+  expectedBotId: string | null
   createdByUserId: string | null
   createdAt: Date
   /** When a callback CLAIMED this nonce — the one-shot fence itself, see
@@ -4438,6 +4461,7 @@ export interface LinearInstallStateStore {
     id: string
     orgId: OrgId
     defaultAgentId?: AgentId
+    expectedBotId?: BotId
     createdByUserId?: string
   }): Promise<LinearInstallStateRecord>
   /**

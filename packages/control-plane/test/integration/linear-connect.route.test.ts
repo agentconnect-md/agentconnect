@@ -99,7 +99,9 @@ class SpyControl {
 
 /** The deployment app configured, a relay connected, and one placed Linear-capable agent —
  *  everything the funnel start gates on. */
-async function harness(overrides: { relay?: boolean } = {}): Promise<Harness> {
+async function harness(
+  overrides: { relay?: boolean; onAssign?: (payload: { credentialRevision?: number }) => void } = {}
+): Promise<Harness> {
   const linear = new FakeLinear()
   const app = buildHttpApp(prisma, {
     PUBLIC_RELAY_URL: 'https://relay.example.test',
@@ -109,7 +111,14 @@ async function harness(overrides: { relay?: boolean } = {}): Promise<Harness> {
   app.platformStubs.linearFetch = linear.fetchImpl
   running = app
   if (overrides.relay !== false) {
-    app.relayReg.add({ relayId: 'r1', send() {}, close() {} } as unknown as RelayChannel)
+    // The relay is where an assign lands, so its `send` is where the broadcast revision is read.
+    app.relayReg.add({
+      relayId: 'r1',
+      send(type: string, payload: unknown) {
+        if (type === 'rc/bot-assign') overrides.onAssign?.(payload as { credentialRevision?: number })
+      },
+      close() {}
+    } as unknown as RelayChannel)
   }
   await seedDaemon(prisma, DAEMON, {
     capabilities: { platforms: ['linear'], runtimes: ['claude'], acp: true, features: [] }
@@ -375,6 +384,95 @@ describe('reconnect — a dead grant is replaced in place (§7.4)', () => {
     expect((await status(h, reconnect.id)).json()).toMatchObject({ status: 'completed', botId: bot.id })
   })
 
+  it('restores the REVOKED credential lifecycle, not just the grant', async () => {
+    // The way a workspace normally ends up needing a reconnect is the `OAuthApp revoked` doorbell,
+    // and `revokeBot` stamps `Bot.revokedAt` and flips every membership to revoked. A reconnect that
+    // only rewrote `linear_token` would then re-broadcast against an EMPTY member set (`agentIds` is
+    // active-only) — unassigning the bot while reporting success — and would leave
+    // `credentialRevision` where the dead grant left it, so a delayed revoke report for that grant
+    // would still pass the fence and kill the credential that just replaced it.
+    const assigns: { credentialRevision?: number }[] = []
+    const h = await harness({ onAssign: (payload) => assigns.push(payload) })
+    const { id } = (await startConnect(h)).json() as { id: string }
+    await callback(h, { code: 'the-code', state: id })
+    const bot = await prisma.bot.findFirstOrThrow({ where: { platform: 'linear' } })
+    const integrationId = (await prisma.integration.findFirstOrThrow({ where: { botId: bot.id } })).id
+
+    // Linear reports the app revoked.
+    const revokedAtRevision = bot.credentialRevision
+    expect(await h.app.deps.httpBot.revokeBot(bot.id, 'tokens_revoked', { revision: revokedAtRevision })).toEqual({
+      applied: true
+    })
+    expect(await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).toMatchObject({
+      revokedAt: expect.any(Date)
+    })
+    expect(await prisma.integration.findUniqueOrThrow({ where: { id: integrationId } })).toMatchObject({
+      status: 'revoked'
+    })
+
+    const reconnect = (
+      await h.app.app.inject({ method: 'POST', url: `${ORG}/bots/${bot.id}/linear/reconnect` })
+    ).json() as { id: string }
+    assigns.length = 0
+    expect((await callback(h, { code: 'code-2', state: reconnect.id })).body).toContain('connected')
+
+    // The revocation is fully undone: the bot is live again and the membership revoked WITH the
+    // replaced generation is active, so the workspace actually serves traffic.
+    const after = await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })
+    expect(after.revokedAt).toBeNull()
+    expect(await prisma.integration.findUniqueOrThrow({ where: { id: integrationId } })).toMatchObject({
+      status: 'active'
+    })
+    // The generation advanced, and the re-broadcast carries it — not an unassign.
+    expect(after.credentialRevision).toBeGreaterThan(revokedAtRevision)
+    expect(assigns.at(-1)?.credentialRevision).toBe(after.credentialRevision)
+
+    // …so a revoke report that was in flight for the OLD grant is refused rather than killing the
+    // credential the operator just restored.
+    expect(await h.app.deps.httpBot.revokeBot(bot.id, 'tokens_revoked', { revision: revokedAtRevision })).toEqual({
+      applied: false
+    })
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: bot.id } })).revokedAt).toBeNull()
+  })
+
+  it('refuses a reconnect that authorized a different workspace of the same organization', async () => {
+    // The nonce is bound to ONE workspace. Without that binding an operator repairing A who
+    // authorizes already-connected B would rotate B's grant, be told it worked, and leave A dead.
+    const h = await harness()
+    const first = (await startConnect(h)).json() as { id: string }
+    await callback(h, { code: 'the-code', state: first.id })
+    const botA = await prisma.bot.findFirstOrThrow({ where: { externalTenantId: WORKSPACE } })
+
+    // A second workspace connected in the SAME organization.
+    const second = randomUUID()
+    await seedAgent(prisma, second, { daemonId: DAEMON, name: 'second-agent' })
+    h.linear.viewerOrganizationId = 'org_beta'
+    const betaConnect = (await startConnect(h, second)).json() as { id: string }
+    await callback(h, { code: 'code-beta', state: betaConnect.id })
+    const botB = await prisma.bot.findFirstOrThrow({ where: { externalTenantId: 'org_beta' } })
+    const betaGrantBefore = await grantRow('org_beta')
+
+    // Reconnect A, but authorize B.
+    const reconnect = (
+      await h.app.app.inject({ method: 'POST', url: `${ORG}/bots/${botA.id}/linear/reconnect` })
+    ).json() as { id: string }
+    h.linear.viewerOrganizationId = 'org_beta'
+    h.linear.token = () => ({
+      status: 200,
+      body: { access_token: 'access_wrong', refresh_token: 'refresh_wrong', expires_in: 86400 }
+    })
+    const res = await callback(h, { code: 'code-2', state: reconnect.id })
+
+    expect(res.body).toContain('different workspace')
+    expect((await status(h, reconnect.id)).json()).toMatchObject({ failureReason: 'wrong_workspace' })
+    // B's grant is untouched — the refusal precedes step 1, so nothing was rotated…
+    expect(await grantRow('org_beta')).toEqual(betaGrantBefore)
+    // …and A, the workspace actually being repaired, is not silently reported fixed.
+    expect((await grantRow(WORKSPACE))!.accessToken).not.toBe('access_wrong')
+    expect(await prisma.bot.count({ where: { platform: 'linear' } })).toBe(2)
+    expect(botB.id).not.toBe(botA.id)
+  })
+
   it('restores the daemon-side integration the dead grant had torn down', async () => {
     // Since the provider's `undefined` became true absence, a grant that goes away actively PULLS
     // the send-only bundle on the live http path. Reconnect has to put it back, not merely rotate a
@@ -456,8 +554,12 @@ describe('reconnect — a dead grant is replaced in place (§7.4)', () => {
     h.linear.viewerOrganizationId = 'org_somewhere_else'
     await callback(h, { code: 'code-2', state: reconnect.id })
 
-    expect((await status(h, reconnect.id)).json()).toMatchObject({ failureReason: 'default_agent_required' })
+    // The nonce's workspace binding catches this before the missing-default arm ever comes up, so
+    // the operator is told the truth ("that was a different workspace") — and, because the check
+    // precedes step 1, the unrelated workspace gets no grant written for it either.
+    expect((await status(h, reconnect.id)).json()).toMatchObject({ failureReason: 'wrong_workspace' })
     expect(await prisma.bot.count({ where: { platform: 'linear' } })).toBe(1)
+    expect(await grantRow('org_somewhere_else')).toBeNull()
   })
 })
 
@@ -545,6 +647,82 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
     await sweeper(h).tick()
 
     expect(await grantRow()).not.toBeNull()
+    expect(h.linear.count('/oauth/revoke')).toBe(0)
+  })
+
+  it('reaches an orphan sitting behind a full batch of live grants', async () => {
+    // The oldest stale rows in a real deployment are overwhelmingly HEALTHY installs — a workspace
+    // that simply has not needed a refresh in an hour. Taking the oldest N and filtering afterwards
+    // therefore lets those N fill every pass and starves the orphans behind them forever, so the
+    // live-owner exclusion has to be part of the selection.
+    const h = await harness()
+    const older = new Date(Date.now() - 86_400_000)
+    for (let i = 0; i < 120; i++) {
+      const workspace = `org_live_${i}`
+      const orgId = `org-linear-${randomUUID()}`
+      await prisma.org.create({ data: { id: orgId, slug: orgId } })
+      await prisma.bot.create({
+        data: {
+          id: randomUUID(),
+          orgId,
+          platform: 'linear',
+          name: `live-${i}`,
+          transport: 'http',
+          externalAppId: APP.clientId,
+          externalTenantId: workspace
+        }
+      })
+      await putGrant(h, orgId, workspace)
+      // Older than the orphan, so an unfiltered "oldest first" would take all 120 before reaching it.
+      await prisma.linearToken.updateMany({ where: { orgId, organizationId: workspace }, data: { updatedAt: older } })
+    }
+    await putGrant(h, DEFAULT_ORG_ID, 'org_buried_orphan')
+
+    const candidates = await h.app.deps.repos.linearToken.listOrphans(APP.clientId, new Date(), 100)
+    expect(candidates.map((c) => c.identity.organizationId)).toEqual(['org_buried_orphan'])
+
+    await sweeper(h).tick()
+    expect(await grantRow('org_buried_orphan')).toBeNull()
+    // …and not one of the 120 live grants was touched.
+    expect(await prisma.linearToken.count({ where: { clientId: APP.clientId } })).toBe(120)
+  })
+
+  it('never revokes or deletes a grant a concurrent reconnect re-granted', async () => {
+    // The window the grace period cannot close: a retry callback's step-1 upsert lands between the
+    // sweep's snapshot and its act. Revoking THAT token upstream would kill the install the retry
+    // just repaired, so the row is claimed against the snapshot before anything irreversible.
+    const h = await harness()
+    await putGrant(h, DEFAULT_ORG_ID, 'org_racing')
+    const snapshot = await h.app.deps.repos.linearToken.listOrphans(APP.clientId, new Date(), 100)
+    expect(snapshot.map((c) => c.identity.organizationId)).toEqual(['org_racing'])
+
+    // The reconnect wins the race: a fresh grant for the same identity.
+    const identity = { orgId: OrgId(DEFAULT_ORG_ID), clientId: APP.clientId, organizationId: 'org_racing' }
+    await h.app.deps.repos.linearToken.put(identity, {
+      accessToken: 'access_fresh',
+      refreshToken: 'refresh_fresh',
+      expiresAt: new Date(Date.now() + 86_400_000)
+    })
+
+    // Now drive the real loop with that stale snapshot — the sweeper as it would be mid-pass when
+    // the upsert landed. The claim finds the row moved on, so the candidate is skipped: no upstream
+    // revoke of the fresh token, and the row that now backs the repaired install survives.
+    const store = h.app.deps.repos.linearToken
+    const stale = new LinearOrphanTokenSweeper({
+      app: APP,
+      tokens: { ...store, listOrphans: () => Promise.resolve(snapshot), put: (i, m) => store.put(i, m) },
+      service: new LinearTokenService({
+        app: APP,
+        tokens: store,
+        api: new LinearApiClient({ fetchImpl: h.linear.fetchImpl, clock }),
+        clock
+      }),
+      clock,
+      graceMs: 0
+    })
+    await stale.tick()
+
+    expect((await grantRow('org_racing'))!.accessToken).toBe('access_fresh')
     expect(h.linear.count('/oauth/revoke')).toBe(0)
   })
 

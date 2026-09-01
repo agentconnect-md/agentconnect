@@ -62,9 +62,13 @@ class MemoryTokens implements LinearTokenStore {
     this.rows.delete(MemoryTokens.key(identity))
     return Promise.resolve()
   }
-  /** The sweeper's selection is exercised against real Postgres; here it only has to exist. */
+  /** The sweeper's selection and its guarded claim are exercised against real Postgres, where their
+   *  whole point (SQL-side filtering, row-level serialization) actually exists. */
   listOrphans(): Promise<[]> {
     return Promise.resolve([])
+  }
+  deleteIfUnchanged(): Promise<null> {
+    return Promise.resolve(null)
   }
 }
 

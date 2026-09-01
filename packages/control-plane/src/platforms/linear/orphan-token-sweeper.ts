@@ -16,8 +16,10 @@
  *  - REVOKE only when NO organization's Bot holds the identity. The same app + workspace backs the
  *    winner's live install, so a loser-initiated revoke would tear it down.
  *
- * The grace window is what keeps the sweep off a callback in flight: a row younger than it may be
- * seconds away from its create tail, so it is never a candidate.
+ * The grace window keeps the sweep off a callback in flight: a row younger than it may be seconds
+ * away from its create tail, so it is never a candidate. The window is a heuristic, though, not a
+ * lock — a retry can re-grant a long-stale identity at any moment — so every row is additionally
+ * CLAIMED against the snapshot it was selected under before anything irreversible happens to it.
  */
 import type { LinearTokenStore } from '../../persistence/ports.js'
 import type { LinearPlatformAppConfig } from '../../config/linear-platform.js'
@@ -86,11 +88,18 @@ export class LinearOrphanTokenSweeper implements CpBackgroundLoop {
   private async sweep(app: LinearPlatformAppConfig): Promise<void> {
     const staleBefore = new Date(this.deps.clock.now() - (this.deps.graceMs ?? LINEAR_ORPHAN_GRACE_MS))
     const orphans = await this.deps.tokens.listOrphans(app.clientId, staleBefore, SWEEP_BATCH)
-    for (const { identity, claimedElsewhere } of orphans) {
+    for (const { identity, claimedElsewhere, updatedAt } of orphans) {
       try {
-        // Revoke FIRST — the access token it needs lives in the row this is about to delete.
-        if (!claimedElsewhere) await this.deps.service.revoke(identity)
-        await this.deps.tokens.delete(identity)
+        // CLAIM BEFORE ACTING. A retried connect can re-grant this identity between the snapshot
+        // above and this line — §7.1's step-1 upsert is exactly that write — and the sweep must not
+        // then revoke the FRESH token upstream or delete the row that now backs a live install. The
+        // guarded delete serializes against that `put` on the row, so either it removes precisely
+        // the grant it selected (and returns it), or it removes nothing and this candidate is
+        // simply skipped; the next pass re-evaluates it from scratch.
+        const removed = await this.deps.tokens.deleteIfUnchanged(identity, updatedAt)
+        if (!removed) continue
+        // Only now, and only with the token the claim actually removed.
+        if (!claimedElsewhere) await this.deps.service.revokeAccessToken(removed.accessToken, identity)
         this.deps.log?.info(
           { orgId: identity.orgId, organizationId: identity.organizationId, revoked: !claimedElsewhere },
           'linear-orphan-token: collected a grant no bot references'

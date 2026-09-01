@@ -63,7 +63,14 @@ const LinearConnectStatusDto = z.object({
 
 /** Terminal notes the throwaway callback tab shows, and the codes the status route reports. */
 type LinearCallbackNote =
-  'connected' | 'denied' | 'expired' | 'error' | 'workspace_taken' | 'default_agent_required' | 'agent_missing'
+  | 'connected'
+  | 'denied'
+  | 'expired'
+  | 'error'
+  | 'workspace_taken'
+  | 'wrong_workspace'
+  | 'default_agent_required'
+  | 'agent_missing'
 
 /** The callback tab is a THROWAWAY: the console keeps polling the funnel row, so this page only has
  *  to say the round trip is over. Nothing from the request is reflected — the note is server-chosen
@@ -80,11 +87,13 @@ function linearClosePageHtml(note: LinearCallbackNote, consoleUrl?: string): str
           ? 'The connect was cancelled. Close this tab and try again in AgentConnect.'
           : note === 'workspace_taken'
             ? 'This Linear workspace is already connected to a different AgentConnect organization. Remove that connection first, then try again.'
-            : note === 'default_agent_required'
-              ? 'This workspace isn’t connected yet, so it needs a default agent. Close this tab and start the connect from AgentConnect.'
-              : note === 'agent_missing'
-                ? 'The agent chosen for this workspace no longer exists. Close this tab and start again in AgentConnect.'
-                : 'Something went wrong finishing the connect. Close this tab and try again in AgentConnect.'
+            : note === 'wrong_workspace'
+              ? 'Linear authorized a different workspace than the one being reconnected. Close this tab and try again, choosing the workspace shown in AgentConnect.'
+              : note === 'default_agent_required'
+                ? 'This workspace isn’t connected yet, so it needs a default agent. Close this tab and start the connect from AgentConnect.'
+                : note === 'agent_missing'
+                  ? 'The agent chosen for this workspace no longer exists. Close this tab and start again in AgentConnect.'
+                  : 'Something went wrong finishing the connect. Close this tab and try again in AgentConnect.'
   const autoClose = ok ? '<script>setTimeout(function(){try{window.close()}catch(e){}},1500)</script>' : ''
   const link = consoleUrl ? `<p class="lnk"><a href="${consoleUrl}">Return to AgentConnect</a></p>` : ''
   const accent = ok ? '#16a34a' : '#dc2626'
@@ -227,10 +236,12 @@ export function linearConnectRoutes(deps: HttpDeps, linear: LinearRouteSeams) {
             message: 'only a connected Linear workspace can be reconnected'
           })
         }
-        // No default agent: the workspace already has one, and this funnel must never mint a bot.
+        // No default agent — the workspace already has one, so this funnel can never mint a bot —
+        // and the target bot, so the callback can refuse any workspace but this one.
         const install = await deps.repos.linearInstallState.create({
           id: randomUUID(),
           orgId,
+          expectedBotId: bot.id,
           createdByUserId: req.principal.userId
         })
         return reply.code(201).send({
@@ -296,6 +307,19 @@ export function linearOauthCallbackRoutes(deps: HttpDeps, linear: LinearRouteSea
         const organizationId = viewer.result.organizationId
         const identity = { orgId: row.orgId, clientId: platform.clientId, organizationId }
 
+        // A RECONNECT is aimed at ONE workspace (§7.4), so the granted workspace must be that one —
+        // checked BEFORE step 1, because writing first would rotate the grant of whatever workspace
+        // was actually authorized. Without this the nonce means "any workspace of this org": an
+        // operator repairing A who authorizes already-connected B would refresh B, be told it
+        // succeeded, and leave A exactly as dead as before.
+        if (row.expectedBotId) {
+          const expected = await deps.repos.bot.get(OrgId(row.orgId), BotId(row.expectedBotId))
+          if (!expected || expected.externalTenantId !== organizationId) {
+            req.log.warn({ connectId: row.id, botId: row.expectedBotId }, 'linear reconnect: different workspace')
+            return fail('wrong_workspace')
+          }
+        }
+
         // §7.1 STEP 1 — the grant, before anything references it. Idempotent, and the §7.4 reconnect
         // arm is this exact upsert. Keying by the connection identity is what makes the ordering
         // possible at all: the create tail below mints the bot id internally.
@@ -303,8 +327,25 @@ export function linearOauthCallbackRoutes(deps: HttpDeps, linear: LinearRouteSea
 
         const existing = await deps.repos.bot.getByExternalIdentity('linear', platform.clientId, organizationId)
         if (existing && existing.orgId === row.orgId) {
-          // Reconnect: the workspace is already a bot here and the write above replaced its dead
-          // grant in place. Re-push so every member's `agent.json` picks the fresh token up.
+          // RECONNECT. The reason this is a credential INSTALL and not just a re-push: the usual way
+          // a workspace ends up needing one is the `OAuthApp revoked` doorbell (§6.1, §7.4), and
+          // `revokeBot` stamps `Bot.revokedAt` and flips every membership to revoked. `agentIds` is
+          // active-only, so a bare `syncBot` would see an empty member set and UNASSIGN the bot
+          // while this callback reported success — and leaving `credentialRevision` untouched would
+          // let a delayed revoke report for the grant just replaced pass the fence and kill the new
+          // one. The shared writer does all three as one transaction (the Slack platform-app
+          // re-install's seam): store the credential, advance the generation, and restore exactly
+          // the memberships that were revoked WITH the generation being replaced.
+          const revision = await deps.repos.botCredential.install(
+            OrgId(row.orgId),
+            BotId(existing.id),
+            { botToken: platform.clientSecret, appToken: null, signingSecret: platform.signingSecret },
+            new Date(),
+            { restoreRevokedMemberships: true }
+          )
+          req.log.info({ connectId: row.id, botId: existing.id, revision }, 'linear reconnect: credential restored')
+          // Only now re-push: the assign carries the new revision, and every member's `agent.json`
+          // picks up the fresh token.
           await deps.httpBot.syncBot(existing.id)
           await deps.repos.linearInstallState.settle(row.id, { status: 'completed', botId: existing.id })
           return back('connected')

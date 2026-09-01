@@ -711,6 +711,16 @@ winner's Bot is alive:
 - **Select org-scoped:** a row is an orphan when its _own_ organization has
   no Bot for the identity and its last write is older than a grace window
   (long enough to never race a callback between steps 1 and 2, e.g. 1 h).
+  The ownership test belongs **inside** the selection query, not to a filter
+  over its result: the oldest stale rows are overwhelmingly healthy installs,
+  so a batch taken before filtering is spent on them and the orphans behind
+  them are never reached.
+- **Claim, then act:** the grace window is a heuristic, not a lock — a retry
+  can re-grant a long-stale identity at any moment. So each row is deleted
+  under a condition on the `updatedAt` the snapshot saw, in one statement that
+  returns what it removed; zero rows affected ⇒ skip. The upstream revoke uses
+  the token that claim returned, so it can never revoke a grant that arrived
+  after the snapshot.
 - **Delete locally, unconditionally:** the row is dead weight in its
   organization regardless of who else holds the identity.
 - **Revoke upstream only when no organization's Bot holds the identity
@@ -788,7 +798,16 @@ identity (§4.4), not any agent binding:
   upstream) — the workspace connection flips `error` with a **Reconnect**
   CTA: the org-scoped reconnect route restarts the OAuth funnel against the
   existing bot, and the callback's step-1 upsert (§7.1) replaces the
-  `linear_token` row in place. The `OAuthApp revoked` doorbell (§6.1)
+  `linear_token` row in place. Its nonce is **bound to that bot**, so
+  authorizing a different workspace is refused before anything is written
+  rather than silently rotating the other one's grant. Replacing the grant is
+  only half the repair: the usual cause is the revoked doorbell below, which
+  stamps `Bot.revokedAt` and flips every membership to `revoked`, so the
+  reconnect goes through the shared **credential install** (store, advance
+  `credentialRevision`, restore the memberships revoked with the replaced
+  generation — one transaction) before it re-broadcasts. A bare re-push would
+  instead assign an empty member set and leave a delayed revoke report for the
+  dead grant able to pass the fence. The `OAuthApp revoked` doorbell (§6.1)
   converges the same state when revocation originates on the Linear side —
   re-verified at the CP behind the `credentialRevision` fence, never trusted
   from the payload.
