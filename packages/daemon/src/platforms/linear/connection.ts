@@ -43,6 +43,12 @@ export const LINEAR_SEND_INTERVAL_MS = 1_000
 /** How far past a renewal failure we retry rather than hammering the broker. */
 const RENEW_RETRY_MS = 60_000
 
+/** §11 bounded send retry: attempts per enqueued write, and the spacing between them. */
+const SEND_MAX_ATTEMPTS = 3
+const SEND_RETRY_BASE_MS = 1_000
+/** Caps a provider-supplied `Retry-After` so one write cannot eat the queue's task budget. */
+const SEND_RETRY_CAP_MS = 5_000
+
 /** One agent activity's content (§5 `LinearAction`, the content half). */
 export type LinearActivityContent =
   | { type: 'thought'; body: string }
@@ -75,10 +81,12 @@ export interface LinearSessionUpdate {
 export class LinearApiError extends Error {
   constructor(
     message: string,
-    /** Worth another attempt (5xx, 429, transport). A rejected token or a bad input is not. */
+    /** Worth another attempt (5xx, 429, transport, `RATELIMITED`). A rejected token or a bad input is not. */
     readonly retryable: boolean,
     /** Linear's `extensions.code` on the first error, when it reported one. */
-    readonly code?: string
+    readonly code?: string,
+    /** The provider's own `Retry-After`, when it sent one — preferred over our backoff. */
+    readonly retryAfterMs?: number
   ) {
     super(message)
     this.name = 'LinearApiError'
@@ -175,6 +183,7 @@ export class LinearConnection implements PlatformConnection {
   private readonly endpoint: string
   private readonly fetchImpl: typeof fetch
   private readonly now: () => number
+  private readonly sleep: (ms: number) => Promise<void>
   private readonly setTimer: (fn: () => void, ms: number) => unknown
   private readonly clearTimer: (handle: unknown) => void
   private cached: CachedToken
@@ -207,6 +216,7 @@ export class LinearConnection implements PlatformConnection {
     this.endpoint = deps.endpoint ?? LINEAR_GRAPHQL_ENDPOINT
     this.fetchImpl = deps.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
     this.now = deps.now ?? (() => Date.now())
+    this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
     this.setTimer = deps.setTimer ?? defaultSetTimer
     this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
     this.cached = { token: config.accessToken, expiresAtMs: Date.parse(config.accessTokenExpiresAt) }
@@ -357,7 +367,14 @@ export class LinearConnection implements PlatformConnection {
   async token(): Promise<string> {
     const now = this.now()
     if (!this.needsRenewal(now)) return this.cached.token
-    if (now < this.renewBlockedUntil && this.stillValid(now)) return this.cached.token
+    // The backoff holds whether or not the cached token outlived it: an expired token is
+    // exactly when a per-send retry would hammer the broker through an outage.
+    if (now < this.renewBlockedUntil) {
+      if (this.stillValid(now)) return this.cached.token
+      throw new LinearTokenUnavailableError(
+        `linear access token for integration ${this.integrationId} expired and renewal is backing off`
+      )
+    }
     try {
       return (await this.renew()).token
     } catch (err) {
@@ -399,6 +416,9 @@ export class LinearConnection implements PlatformConnection {
       })
       .catch((err: unknown) => {
         this.renewBlockedUntil = this.now() + RENEW_RETRY_MS
+        // Re-arm on the failure path too: without this a transient refusal leaves an idle
+        // integration with no timer at all, so recovery is only ever found by a live send.
+        this.scheduleRefresh()
         throw err
       })
       .finally(() => {
@@ -416,17 +436,37 @@ export class LinearConnection implements PlatformConnection {
       this.refreshTimer = undefined
     }
     if (this.stopped || Number.isNaN(this.cached.expiresAtMs)) return
-    const delay = Math.max(RENEW_RETRY_MS, this.cached.expiresAtMs - RENEW_MARGIN_MS - this.now())
+    // Due at the margin, or at the end of a renewal backoff — whichever is later.
+    const dueAt = Math.max(this.cached.expiresAtMs - RENEW_MARGIN_MS, this.renewBlockedUntil)
+    const delay = Math.max(RENEW_RETRY_MS, dueAt - this.now())
     this.refreshTimer = this.setTimer(() => {
       this.refreshTimer = undefined
-      void this.token().catch(() => undefined)
+      // Re-arm whatever the outcome, so no single failure ends the refresh chain.
+      void this.token()
+        .catch(() => undefined)
+        .finally(() => this.scheduleRefresh())
     }, delay)
   }
 
   // ── GraphQL transport ──
 
-  private enqueueGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-    return this.queue.enqueue(() => this.graphql<T>(query, variables))
+  /** The paced egress path, with the §11 bounded retry: activities are droppable chrome, so a
+   *  retryable refusal gets a few spaced attempts inside the caller's one queue slot (order is
+   *  preserved) and a terminal one fails at once. Read-port calls do not retry — they already
+   *  degrade to a default. */
+  private async enqueueGraphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    return this.queue.enqueue(async () => {
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return await this.graphql<T>(query, variables)
+        } catch (err) {
+          const retryable = err instanceof LinearApiError && err.retryable
+          if (!retryable || attempt >= SEND_MAX_ATTEMPTS) throw err
+          const backoff = (err as LinearApiError).retryAfterMs ?? SEND_RETRY_BASE_MS * 2 ** (attempt - 1)
+          await this.sleep(Math.min(backoff, SEND_RETRY_CAP_MS))
+        }
+      }
+    })
   }
 
   private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
@@ -441,23 +481,47 @@ export class LinearConnection implements PlatformConnection {
     } catch (err) {
       throw new LinearApiError(`linear request failed: ${(err as Error).message}`, true)
     }
-    if (!res.ok) {
-      throw new LinearApiError(`linear responded ${res.status}`, res.status === 429 || res.status >= 500)
-    }
-    let body: { data?: T; errors?: { message?: string; extensions?: { code?: string } }[] }
+    // Parse BEFORE branching on the status: Linear reports a rate limit as HTTP 400 carrying
+    // `RATELIMITED` in the GraphQL errors, so a status-only verdict would call it terminal.
+    let body: { data?: T; errors?: { message?: string; extensions?: { code?: string } }[] } | undefined
     try {
       body = (await res.json()) as typeof body
-    } catch (err) {
-      throw new LinearApiError(`linear returned an unreadable body: ${(err as Error).message}`, true)
+    } catch {
+      body = undefined
     }
-    if (body.errors && body.errors.length > 0) {
+    if (body?.errors && body.errors.length > 0) {
       const code = body.errors[0]?.extensions?.code
       const message = body.errors.map((e) => e.message ?? 'unknown error').join('; ')
-      throw new LinearApiError(`linear rejected the request: ${message}`, code === 'RATELIMITED', code)
+      const retryable = code === 'RATELIMITED' || retryableStatus(res.status)
+      throw new LinearApiError(`linear rejected the request: ${message}`, retryable, code, retryAfterMs(res))
     }
+    if (!res.ok) {
+      throw new LinearApiError(
+        `linear responded ${res.status}`,
+        retryableStatus(res.status),
+        undefined,
+        retryAfterMs(res)
+      )
+    }
+    if (body === undefined) throw new LinearApiError('linear returned an unreadable body', true)
     if (body.data === undefined) throw new LinearApiError('linear returned no data', true)
     return body.data
   }
+}
+
+/** Status-only verdict, the fallback when the body names no code of its own. */
+function retryableStatus(status: number): boolean {
+  return status === 429 || status >= 500
+}
+
+/** `Retry-After`, as delta-seconds or an HTTP date. Absent/unparseable ⇒ the caller's own backoff. */
+function retryAfterMs(res: Response): number | undefined {
+  const raw = res.headers?.get?.('retry-after')
+  if (!raw) return undefined
+  const seconds = Number(raw)
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+  const at = Date.parse(raw)
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now())
 }
 
 // The four documents this connection sends. Shapes follow Linear's published agent API

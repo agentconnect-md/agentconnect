@@ -75,8 +75,16 @@ interface RecordedCall {
   at: number
 }
 
-const jsonResponse = (body: unknown, status = 200): Response =>
-  ({ ok: status >= 200 && status < 300, status, json: async () => body }) as unknown as Response
+const jsonResponse = (body: unknown, status = 200, headers: Record<string, string> = {}): Response =>
+  ({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
+    json: async () => body
+  }) as unknown as Response
+
+/** Let the timer callback's async chain settle before asserting on what it re-armed. */
+const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 function group(config: Record<string, unknown> = linearConfig()): ConsolidatedLinearGroup {
   const parsed = platformIntegrationConfig('linear', linearIntegration(config))
@@ -101,7 +109,7 @@ function harness(
 ) {
   const clock = fakeClock()
   const calls: RecordedCall[] = []
-  const timers: { fired: boolean; cleared: boolean }[] = []
+  const timers: { fn: () => void; delay: number; cleared: boolean }[] = []
   const warnings: string[] = []
   const fetchImpl = (async (url: unknown, init: unknown) => {
     const request = init as { headers: Record<string, string>; body: string }
@@ -125,8 +133,8 @@ function harness(
     sendIntervalMs: opts.sendIntervalMs ?? 0,
     now: clock.now,
     sleep: clock.sleep,
-    setTimer: () => {
-      const handle = { fired: false, cleared: false }
+    setTimer: (fn, delay) => {
+      const handle = { fn, delay, cleared: false }
       timers.push(handle)
       return handle
     },
@@ -141,7 +149,17 @@ function harness(
       error: () => {}
     }
   })
-  return { conn, calls, clock, timers, warnings }
+  /** The one timer currently armed — `scheduleRefresh` clears the old before setting the new. */
+  const armed = (): { fn: () => void; delay: number; cleared: boolean }[] => timers.filter((t) => !t.cleared)
+  /** Run the armed timer's callback and let its async chain settle. */
+  const fireTimer = async (): Promise<void> => {
+    const timer = armed().at(-1)
+    if (!timer) throw new Error('no timer is armed')
+    timer.cleared = true
+    timer.fn()
+    await settle()
+  }
+  return { conn, calls, clock, timers, warnings, armed, fireTimer }
 }
 
 describe('linear config schema (§6.4 fail-closed)', () => {
@@ -339,11 +357,83 @@ describe('linear token cache (§4.4)', () => {
   })
 
   it('warms the token on start and clears the refresh timer on stop', async () => {
-    const { conn, timers } = harness()
+    const { conn, timers, armed } = harness()
     await conn.start()
     expect(timers).toHaveLength(1)
     await conn.stop()
-    expect(timers[0]?.cleared).toBe(true)
+    expect(armed()).toHaveLength(0)
+  })
+
+  it('re-arms the refresh timer with backoff after a failed renewal', async () => {
+    // Without the re-arm a transient refusal ends the refresh chain: the integration then
+    // discovers recovery only on a live send, inside Linear's ≤10 s ack budget.
+    let requests = 0
+    const { conn, clock, armed, fireTimer } = harness({
+      config: linearConfig({ accessTokenExpiresAt: NEAR_EXPIRY }),
+      requestToken: async () => {
+        requests += 1
+        throw new Error('RATE_LIMITED')
+      }
+    })
+    await conn.start()
+    expect(requests).toBe(1)
+    expect(armed()).toHaveLength(1)
+    expect(armed()[0]!.delay).toBeGreaterThanOrEqual(60_000)
+
+    // Firing inside the backoff must not re-drive the broker — but must leave a timer armed.
+    await fireTimer()
+    expect(requests).toBe(1)
+    expect(armed()).toHaveLength(1)
+
+    // …and once the backoff has elapsed, the timer alone recovers the credential.
+    clock.advance(61_000)
+    await fireTimer()
+    expect(requests).toBe(2)
+    expect(armed()).toHaveLength(1)
+  })
+
+  it('stops re-arming once the connection is stopped', async () => {
+    const { conn, armed } = harness({
+      config: linearConfig({ accessTokenExpiresAt: NEAR_EXPIRY }),
+      requestToken: async () => {
+        throw new Error('LEASE_DENIED')
+      }
+    })
+    await conn.start()
+    const pending = armed()[0]!
+    await conn.stop()
+    expect(armed()).toHaveLength(0)
+    // A callback already in flight when stop() lands must not resurrect the chain.
+    pending.fn()
+    await settle()
+    expect(armed()).toHaveLength(0)
+  })
+
+  it('holds the renewal backoff even once the cached token expired, so sends do not hammer the broker', async () => {
+    // The bug this pins: the backoff used to be conditional on the cached token still being
+    // valid, so an expired token meant every single send re-drove a `linearcred` REQ.
+    let requests = 0
+    const { conn, calls, clock } = harness({
+      config: linearConfig({ accessTokenExpiresAt: NEAR_EXPIRY }),
+      requestToken: async () => {
+        requests += 1
+        throw new Error('LEASE_DENIED')
+      }
+    })
+    clock.advance(31 * 60 * 1000)
+    for (let i = 0; i < 4; i += 1) {
+      await expect(conn.createActivity(SESSION, { type: 'thought', body: `x${i}` })).rejects.toBeInstanceOf(
+        LinearTokenUnavailableError
+      )
+    }
+    expect(requests).toBe(1)
+    expect(calls).toHaveLength(0)
+
+    clock.advance(61_000)
+    await expect(conn.createActivity(SESSION, { type: 'thought', body: 'after' })).rejects.toBeInstanceOf(
+      LinearTokenUnavailableError
+    )
+    expect(requests).toBe(2)
   })
 })
 
@@ -462,7 +552,7 @@ describe('linear graphql client (§9.4)', () => {
     expect((err as LinearApiError).message).toContain('Entity not found')
   })
 
-  it('marks a rate-limit refusal and a 5xx retryable, and a 400 not', async () => {
+  it('marks a rate-limit refusal and a 5xx retryable, and a bare 400 terminal', async () => {
     const limited = harness({ respond: () => jsonResponse({ errors: [{ extensions: { code: 'RATELIMITED' } }] }) })
     const server = harness({ respond: () => jsonResponse({}, 503) })
     const client = harness({ respond: () => jsonResponse({}, 400) })
@@ -477,6 +567,56 @@ describe('linear graphql client (§9.4)', () => {
     }
   })
 
+  it('reads the GraphQL code on an HTTP 400, so a rate limit retries and then succeeds', async () => {
+    // Linear reports a rate limit as HTTP 400 carrying `RATELIMITED` in the body. Classifying
+    // on the status alone called that terminal and dropped the write — a final `response`
+    // would simply never land.
+    let attempts = 0
+    const { conn, calls } = harness({
+      respond: () => {
+        attempts += 1
+        return attempts === 1
+          ? jsonResponse({ errors: [{ message: 'Rate limit exceeded', extensions: { code: 'RATELIMITED' } }] }, 400)
+          : jsonResponse({ data: { agentActivityCreate: { success: true, agentActivity: { id: 'act-2' } } } })
+      }
+    })
+    expect(await conn.createActivity(SESSION, { type: 'response', body: 'final' })).toBe('act-2')
+    expect(calls).toHaveLength(2)
+  })
+
+  it('waits the provider’s Retry-After before the retry rather than its own backoff', async () => {
+    let attempts = 0
+    const { conn, calls } = harness({
+      respond: () => {
+        attempts += 1
+        return attempts === 1
+          ? jsonResponse({ errors: [{ extensions: { code: 'RATELIMITED' } }] }, 400, { 'retry-after': '2' })
+          : jsonResponse({ data: { agentActivityCreate: { agentActivity: { id: 'act-3' } } } })
+      }
+    })
+    await conn.createActivity(SESSION, { type: 'response', body: 'final' })
+    expect(calls[1]!.at - calls[0]!.at).toBe(2_000)
+  })
+
+  it('gives up after the bounded attempts and surfaces the rate-limit error', async () => {
+    const { conn, calls } = harness({
+      respond: () => jsonResponse({ errors: [{ message: 'Rate limit', extensions: { code: 'RATELIMITED' } }] }, 400)
+    })
+    const err = await conn.createActivity(SESSION, { type: 'response', body: 'final' }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LinearApiError)
+    expect((err as LinearApiError).code).toBe('RATELIMITED')
+    expect(calls).toHaveLength(3)
+  })
+
+  it('never retries a terminal refusal', async () => {
+    const { conn, calls } = harness({
+      respond: () =>
+        jsonResponse({ errors: [{ message: 'Entity not found', extensions: { code: 'ENTITY_NOT_FOUND' } }] })
+    })
+    await conn.createActivity(SESSION, { type: 'thought', body: 'x' }).catch(() => undefined)
+    expect(calls).toHaveLength(1)
+  })
+
   it('treats a transport throw as retryable rather than leaking the raw error', async () => {
     const conn = new LinearConnection({
       group: group(),
@@ -486,6 +626,8 @@ describe('linear graphql client (§9.4)', () => {
       }) as unknown as typeof fetch,
       sendIntervalMs: 0,
       now: () => START,
+      // Injected so the bounded retry's backoff costs the suite no real time.
+      sleep: async () => {},
       setTimer: () => undefined,
       clearTimer: () => {}
     })
