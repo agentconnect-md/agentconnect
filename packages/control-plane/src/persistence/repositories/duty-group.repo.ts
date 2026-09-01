@@ -691,24 +691,26 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       await lockDaemonMembership(tx, holder)
       // The rendezvous is a claim path, so it takes the same eligibility gate — inside the
       // transaction, against the live row, because this path can MINT a group and a check made
-      // before the lock would let a member reach through it for an agent it may not hold. The
-      // capability gate rides with it, per agent, exactly as `claimVacant` carries it per group: a
-      // trigger reaching a member of an older image is not authority to serve a platform it has no
-      // module for.
+      // before the lock would let a member reach through it for an agent it may not hold.
       const [eligible] = await tx.$queryRaw<{ ok: boolean }[]>(Prisma.sql`
-        SELECT (${eligibleAgent(Prisma.sql`a`, Prisma.sql`${holder}::uuid`)}
-                AND ${servesAgentPlatforms(Prisma.sql`a.id`, Prisma.sql`${holder}::uuid`)}) AS ok
+        SELECT ${eligibleAgent(Prisma.sql`a`, Prisma.sql`${holder}::uuid`)} AS ok
         FROM "agent" a WHERE a.id = ${agentId}::uuid
       `)
       if (eligible?.ok !== true) return { granted: false, holder: null }
+      // The capability gate rides the statements that GRANT below, each at its own scope, never the
+      // entry: a group can hold several agents behind a shared socket bot, so gating on the
+      // TRIGGERED agent alone would take a group containing a peer this member cannot serve, and an
+      // answer given before the group is read cannot name the incumbent the re-route needs.
       const member = await tx.dutyGroupMember.findUnique({ where: { kind_refId: { kind: 'agent', refId: agentId } } })
       if (!member) {
         // Claiming creates the lease: the first trigger for a botless agent — gated like a claim.
+        // It mints a SINGLETON, so the agent-wise predicate is the exact requirement, and it rides
+        // the INSERT's own WHERE beside the barrier so nothing commits between check and write.
         const groupId = this.mintId()
         const minted = await tx.$executeRaw(Prisma.sql`
           INSERT INTO "duty_group" (id, "orgId", "holder", "term", "expiresAt", "createdAt", "updatedAt")
           SELECT ${groupId}::uuid, ${orgId}, ${holder}::uuid, 1, ${expiresAt}, ${now}, ${now}
-          WHERE ${generationGate}
+          WHERE ${generationGate} AND ${servesAgentPlatforms(Prisma.sql`${agentId}::uuid`, Prisma.sql`${holder}::uuid`)}
         `)
         if (minted !== 1) return { granted: false, holder: null }
         await tx.dutyGroupMember.create({ data: { kind: 'agent', refId: agentId, groupId, orgId } })
@@ -718,8 +720,9 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
       if (row === null) throw new Error(`duty group ${member.groupId} vanished under its member row`)
       const live = row.holder !== null && row.expiresAt !== null && row.expiresAt > now
       if (live && row.holder === holder) {
-        // Idempotent re-claim: refresh the horizon, never churn the term. CAS on
-        // (holder, term) besides the row lock, so a moved lease can never be
+        // Idempotent re-claim: refresh the horizon, never churn the term — ungated on capability,
+        // which takes nothing and would only strand a group this member already serves.
+        // CAS on (holder, term) besides the row lock, so a moved lease can never be
         // extended by a stale reader; a miss falls through to report the row as
         // it now stands.
         const refreshed = await tx.dutyGroup.updateMany({
@@ -733,10 +736,14 @@ export class PgDutyGroupRepo implements DutyGroupRepo {
         // Vacancy re-asserted in the write despite the row lock — belt and braces — and the
         // rollout barrier in the same statement. Same rule as `claimVacant`: the term bump leaves
         // the grant unconfirmed by construction, including for the member that just lost it.
+        // This TAKES an existing group, so the gate here is the GROUP-wise one `claimVacant`
+        // carries: what the whole group needs, not what the trigger named. A refusal matches no
+        // row and falls through to report the row as it stands.
         const won = await tx.$executeRaw(Prisma.sql`
           UPDATE "duty_group" SET "holder" = ${holder}::uuid, "term" = "term" + 1, "expiresAt" = ${expiresAt}, "updatedAt" = ${now}
           WHERE id = ${row.id}::uuid AND ("holder" IS NULL OR "expiresAt" IS NULL OR "expiresAt" < ${now})
             AND ${generationGate}
+            AND ${servesGroupPlatforms(Prisma.sql`${row.id}::uuid`, Prisma.sql`${holder}::uuid`)}
         `)
         if (won === 1) {
           const granted = await tx.dutyGroup.findUniqueOrThrow({ where: { id: row.id } })

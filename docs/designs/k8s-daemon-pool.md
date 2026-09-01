@@ -567,6 +567,22 @@ platform ids it lacks. Deliberately NOT folded into the placement fence: a
 capability read that failed closed at fence time would tear down live service,
 where the same read at claim time only delays a placement.
 
+**The gate rides each grant statement, at that statement's own scope.** A duty
+group is a connected component, so it can hold several agents joined through a
+shared socket bot: what a member must serve to take one is the whole group's
+requirement, never the requirement of whichever agent a trigger happened to
+name. So the vacancy claim and the rendezvous's take of an existing group both
+carry the **group-wise** predicate, and only the one place that mints a fresh
+singleton — the rendezvous's fallback for an agent no sweep has grouped yet —
+carries the **agent-wise** one, because there the group is that agent. Gating
+the rendezvous at its entry instead, on the triggered agent alone, would let an
+old image that serves that agent take a group containing a peer it cannot, which
+is the dead surface this gate exists to prevent; it would also answer before
+reading the group, and a refusal that names no incumbent costs the relay the
+one-hop re-route the rendezvous below is built on. An idempotent re-claim by
+the member already holding the lease takes nothing and is not gated, for the
+same reason the placement fence is not.
+
 ### The activation rendezvous
 
 A trigger for an _unheld_ group has nowhere to go — the ledger names no holder

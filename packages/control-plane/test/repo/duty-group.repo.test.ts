@@ -617,6 +617,7 @@ describe('DutyGroupRepo — the platform-capability claim gate (real Postgres)',
   const A3 = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3'
   const I1 = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc1'
   const I2 = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc2'
+  const I3 = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc3'
 
   const poolRow = async (repo: PgDutyGroupRepo, now = T0) =>
     (await repo.poolTelemetry(now, LEASE_MS, MAX_MEMBERS)).find((r) => r.installWide)!
@@ -643,6 +644,12 @@ describe('DutyGroupRepo — the platform-capability claim gate (real Postgres)',
   /** One active integration on its own bot — the edge the recompute reads and the platform requirement. */
   async function integrate(integrationId: string, agentId: string, botId: string, platform: string) {
     await prisma.bot.create({ data: { id: botId, orgId: DEFAULT_ORG_ID, platform, name: `${platform}-bot` } })
+    await shareBot(integrationId, agentId, botId, platform)
+  }
+
+  /** A second agent installed on a bot that already exists — the shared socket bot that joins two
+   *  agents into one duty group, which is what makes a group's requirement wider than any agent's. */
+  async function shareBot(integrationId: string, agentId: string, botId: string, platform: string) {
     await prisma.integration.create({
       data: { id: integrationId, orgId: DEFAULT_ORG_ID, agentId, botId, platform, name: `${platform}-bot` }
     })
@@ -785,7 +792,8 @@ describe('DutyGroupRepo — the platform-capability claim gate (real Postgres)',
   })
 
   // The rendezvous is a claim path too: a trigger reaching the wrong member is not authority to
-  // serve a platform that member has no module for.
+  // serve a platform that member has no module for. Minting is the path here — no sweep has run —
+  // so the requirement is the triggered agent's own.
   it('the activation rendezvous takes the same gate', async () => {
     await member(M1, OLD_IMAGE)
     await member(M2, NEW_IMAGE)
@@ -797,6 +805,79 @@ describe('DutyGroupRepo — the platform-capability claim gate (real Postgres)',
     expect(await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)).toEqual({ granted: false, holder: null })
     expect(await prisma.dutyGroup.count()).toBe(0)
     expect((await repo.claimAgentHome(ORG, AgentId(A1), M2, T0, LEASE_MS)).granted).toBe(true)
+  })
+
+  // Scope is the whole finding: a duty group is a connected component, so a shared socket bot puts
+  // several agents in it, and TAKING it is a take of every one of them. Gating the rendezvous on
+  // the triggered agent alone would let this member through on A1 and hand it A2 as well — the
+  // dead surface `claimVacant` already refuses.
+  it('the rendezvous gates an existing group on every agent in it, not the triggered one', async () => {
+    await member(M1, OLD_IMAGE)
+    await member(M2, NEW_IMAGE)
+    const setId = await joinPool(prisma, M1, M2)
+    await pooledAgent(A1, setId, 'needs-slack')
+    await pooledAgent(A2, setId, 'also-needs-linear')
+    await integrate(I1, A1, B1, 'slack')
+    await shareBot(I3, A2, B1, 'slack') // the shared socket bot that joins them into ONE group
+    await integrate(I2, A2, B2, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+    await reconcile(
+      repo,
+      [
+        { agentId: A1, botId: B1 },
+        { agentId: A2, botId: B1 }
+      ],
+      [],
+      T0
+    )
+    expect(await prisma.dutyGroup.count()).toBe(1)
+
+    // A1 on its own needs only slack, which this member advertises — the group does not.
+    const refused = await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)
+    expect(refused.granted).toBe(false)
+    expect(await repo.holdsAgent(M1, AgentId(A1), T0)).toBe(false)
+    expect((await repo.listForOrg(ORG))[0]).toMatchObject({ holder: null, term: 0n })
+
+    // Same rendezvous, the member that carries both platforms: granted.
+    expect((await repo.claimAgentHome(ORG, AgentId(A1), M2, T0, LEASE_MS)).granted).toBe(true)
+  })
+
+  // The other half of the scope rule: the gate belongs on the OPERATION, so the member refused a
+  // group it cannot serve whole still mints the singleton it can — the fallback for an agent no
+  // sweep has grouped yet is a group of exactly that agent.
+  it('the same member still mints a singleton for an agent it can serve', async () => {
+    await member(M1, OLD_IMAGE)
+    const setId = await joinPool(prisma, M1)
+    await pooledAgent(A1, setId, 'needs-slack')
+    await pooledAgent(A2, setId, 'needs-linear')
+    await integrate(I1, A1, B1, 'slack')
+    await integrate(I2, A2, B2, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    expect((await repo.claimAgentHome(ORG, AgentId(A1), M1, T0, LEASE_MS)).granted).toBe(true)
+    expect(await repo.holdsAgent(M1, AgentId(A1), T0)).toBe(true)
+    // Its peer needs a platform this image has no module for, and that one is still refused.
+    expect(await repo.claimAgentHome(ORG, AgentId(A2), M1, T0, LEASE_MS)).toEqual({ granted: false, holder: null })
+  })
+
+  // A refusal must not cost the relay its one-hop re-route: the answer names the live incumbent,
+  // which is only knowable by reading the group — so the gate cannot sit at the entry.
+  it('a capability-refused rendezvous still names the live incumbent', async () => {
+    await member(M1, OLD_IMAGE)
+    await member(M2, NEW_IMAGE)
+    const setId = await joinPool(prisma, M1, M2)
+    await pooledAgent(A1, setId, 'needs-linear')
+    await integrate(I1, A1, B1, 'linear')
+    const repo = new PgDutyGroupRepo(prisma, minter())
+
+    const won = await repo.claimAgentHome(ORG, AgentId(A1), M2, T0, LEASE_MS)
+    expect(won.granted).toBe(true)
+    expect(await repo.claimAgentHome(ORG, AgentId(A1), M1, after(1000), LEASE_MS)).toEqual({
+      granted: false,
+      groupId: won.groupId,
+      term: 1n,
+      holder: M2
+    })
   })
 
   // The claim's own diagnostic — negating the very predicate the claim carries, so it can only
