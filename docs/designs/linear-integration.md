@@ -113,11 +113,12 @@ again when implementing):
   10 seconds** or the session renders as unresponsive.
 - **Webhook envelope.** Headers `Linear-Event: AgentSessionEvent`,
   `Linear-Delivery` (UUID), `Linear-Signature` (HMAC-SHA256 hex over the raw
-  body, keyed by the OAuth app's **webhook signing secret**), and a
-  `webhookTimestamp` field to bound replay (docs recommend rejecting > 60 s
-  skew). Payloads carry `organizationId` (the workspace) and the app's
-  `oauthClientId`. Failed deliveries retry after 1 min / 1 h / 6 h, then the
-  webhook may be auto-disabled.
+  body, keyed by the OAuth app's **webhook signing secret**), and
+  `Linear-Timestamp` (epoch ms) to bound replay (reject > 60 s skew); the body
+  mirrors it as `webhookTimestamp`, but verification reads the **header** since
+  it runs before body parse. Payloads carry `organizationId` (the workspace) and
+  the app's `oauthClientId`. Failed deliveries retry after 1 min / 1 h / 6 h,
+  then the webhook may be auto-disabled. (Live-verified 2026-09, §15.)
 - **Tokens.** OAuth `authorization_code` grant returns an access token
   (~24 h) plus a refresh token; refresh rotates with a 30-minute replay grace
   window. Per-app opt-in `client_credentials` tokens (30-day, app actor) also
@@ -513,8 +514,9 @@ idle window).
   relay-side `egress` facet (the daemon owns all Linear egress, like Feishu).
 - **`verify`** checks `Linear-Signature` (timing-safe HMAC-SHA256 over raw
   bytes, via the shared signature primitives relay core already serves both
-  seams with) and the `webhookTimestamp` 60 s window on the host clock, and
-  returns the typed parsed `AgentSessionEvent` — parsed exactly once.
+  seams with) and the `Linear-Timestamp` header's 60 s window on the host clock
+  (read from the header, before body parse), and returns the typed parsed
+  `AgentSessionEvent` — parsed exactly once.
 - **`handle`**:
   - `created` / `prompted` → a `WireNormalizedMessage` (§6.3) through
     `host.forward(botId, msg)`. Relay-core arbitration resolves the target
@@ -1101,12 +1103,29 @@ tile.
 
 ## 15. Open questions
 
-1. **`action` result delivery** — whether Linear renders a second
-   `agentActivityCreate` as an update to the prior action or as a new row;
-   affects whether we emit actions at start or only at terminal status.
-   Resolve against the live API during P1 (design assumes terminal-only).
-2. **`prompted` after `complete`** — whether Linear reopens the session or
-   requires a new one; determines resume behavior after the stop `response`.
+1. **`action` result delivery** — RESOLVED against the live API (2026-09,
+   scratch workspace). `agentActivityCreate` is **purely append-only**: every
+   call is a new activity row with its own id, and even a second create with an
+   identical `(action, parameter)` does **not** update the first — it stacks a
+   second row. Two consequences for §5.1: (a) the design's terminal-only posture
+   is correct and required — emit each tool call **once** at terminal status, or
+   the feed shows a start row and a result row for the same call; (b) the
+   "consecutive same-title calls collapse" line is **our converger's job**, not
+   Linear's — Linear will not coalesce, so the collapse must happen before the
+   GraphQL call. (Rendering note: the **issue-embedded** activity card shows only
+   a collapsed most-recent-action indicator — "Finished …" after a `response` —
+   while the **agent-session detail panel** shows the full append-only timeline;
+   both are driven by the same activity rows.)
+2. **`prompted` after `complete`** — RESOLVED. A `response` activity settles the
+   session to `status: complete` (`endedAt` set), inferred from the activity, not
+   set explicitly. A user follow-up on a completed session **reopens the same
+   session in place** (status → `pending`/`active`, same `agentSession.id`) — it
+   does not require a new session. The `prompted` webhook carries the same
+   `agentSession.id`, so §4.5's "follow-ups resume the same ACP session" holds
+   after a stop `response`: stop settles the session, and the next prompt
+   resumes it. (Observed `prompted` shape: `agentActivity.content.type: "prompt"`
+   with `body`, `sourceCommentId`, and the prompting `user`; a stop would instead
+   carry `agentActivity.signal: "stop"`, per §5.1.)
 3. **Plan API stability** — Linear still marks it technology preview; P2
    should feature-flag plan sync per integration.
 4. **`client_credentials` tokens** (30-day, per-app opt-in) are documented as
@@ -1115,6 +1134,35 @@ tile.
    into via OAuth (multi-workspace still needs `authorization_code`), and
    whether a 30-day non-rotating token is an acceptable custody trade-off.
    Evaluate before P2; the broker seam (§7.3) is unchanged either way.
+
+### Live-probe corrections to earlier assumptions (2026-09)
+
+A scratch OAuth app in a test workspace exercised the full delegate → activity →
+follow-up loop. Beyond the two resolved questions above, three facts correct or
+sharpen the design:
+
+- **Webhook timestamp is an HTTP header, not only a body field.** The delivery
+  carries `Linear-Timestamp` (epoch ms) as a header alongside `Linear-Event`,
+  `Linear-Delivery`, and `Linear-Signature`; the body's `webhookTimestamp`
+  mirrors it. §6.1's replay window must read the **header** — verification runs
+  before body parse. The `>60 s` skew check applies to `Linear-Timestamp`.
+- **Agent sessions are an app-level opt-in that gates delegation entirely.**
+  Until the app enables webhooks with **Agent session events** checked,
+  delegating an issue only sets the `delegate` badge and **no session is
+  created** — `agentSessionCreateOnIssue` returns "Agent sessions are not enabled
+  for this application." §7.1's webhook-configuration step is therefore a **hard
+  prerequisite**, not advisory, and its absence must surface in the console as a
+  misconfiguration (symptom: delegation with no agent response).
+- **Adding webhook/event subscriptions forces existing installs to
+  re-authorize.** Enabling Agent session events on an already-installed app
+  raises a new "Receive realtime updates about your workspace" scope; Linear
+  warns that prior authorizations must re-authorize before webhooks arrive. This
+  is the same re-consent the §7.4 reconnect flow and §10.6 signing-secret
+  rotation already drive — the connect UI's Reconnect CTA covers it.
+- **Delegation self-assigns the issue.** Delegating to the app also sets the
+  issue **assignee** to the delegating user (assignee and delegate are distinct
+  fields); the `created` event also mints a Linear-authored anchor comment
+  ("This thread is for an agent session with …") whose id rides `agentSession.commentId`.
 
 ## References
 
