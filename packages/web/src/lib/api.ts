@@ -1533,7 +1533,14 @@ async function apiPost<T>(path: string, body: unknown): Promise<T> {
     { 'content-type': 'application/json' }
   )
   if (!res.ok) throw await apiErrorFromResponse('POST', path, res)
-  return (await res.json()) as T
+  // Same split `apiDelete` makes, and for the same reason: a POST that COMMANDS rather
+  // than creates replies 204 No Content (leave a conversation, disconnect a workspace),
+  // while one that returns a row replies 200/201 with a body. Parsing unconditionally
+  // turned every SUCCESSFUL no-content write into a thrown SyntaxError — after the
+  // server had already done the thing.
+  if (res.status === 204) return undefined as T
+  const text = await res.text()
+  return (text ? JSON.parse(text) : undefined) as T
 }
 
 async function apiErrorFromResponse(method: string, path: string, res: Response): Promise<ApiError> {

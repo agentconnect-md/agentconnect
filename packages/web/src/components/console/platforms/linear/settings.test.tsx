@@ -193,7 +193,19 @@ describe('disconnecting a workspace', () => {
     expect(mocks.disconnectLinearWorkspace).toHaveBeenCalledWith('bot-9')
     expect(mocks.deleteIntegration).not.toHaveBeenCalled()
     expect(mocks.deleteBot).not.toHaveBeenCalled()
+  })
+
+  it('closes and refreshes once the call resolves — a 204 is a success, not a body to parse', async () => {
+    // The route answers 204 No Content, so the client helper must resolve on it. While
+    // it parsed unconditionally, every successful disconnect threw AFTER the workspace
+    // was gone: the dialog stayed open over deleted rows, the roster was never
+    // re-pulled, and the retry the error invited hit a bot that no longer existed.
+    await openDialog()
+    await act(async () => buttonWithText('Disconnect')!.click())
+    await settle()
+
     expect(mocks.refresh).toHaveBeenCalled()
+    expect(text()).toBe('')
   })
 
   it('renders a partial teardown as the refusal it is, keeping the dialog open', async () => {
