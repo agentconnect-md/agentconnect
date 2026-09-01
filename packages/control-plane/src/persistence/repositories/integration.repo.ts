@@ -17,6 +17,7 @@ import type {
   BotRepo,
   BotIdentityProjector,
   BotRecord,
+  BotUpdate,
   CreateBotInput,
   BotSecretStore,
   BotSecretMaterial,
@@ -258,12 +259,16 @@ export class PgBotRepo implements BotRepo {
     await this.db.bot.update({ where: { id, orgId }, data: { lastUsedAt: at, lastAgentName } })
   }
 
-  async setShareable(orgId: OrgId, id: BotId, shareable: boolean): Promise<void> {
+  async update(orgId: OrgId, id: BotId, patch: BotUpdate): Promise<void> {
     // Serialized on the bot row: membership admission (addBotMembership) takes
     // the same lock, so a disable can never commit alongside a concurrent
     // second-agent admission — whichever wins, the loser observes the winner's
     // committed state. The capacity recount lives HERE (not only in the route's
     // optimistic pre-check) because only under the lock is it authoritative.
+    //
+    // Both columns move in ONE statement inside that transaction. Split writes could
+    // commit the capacity flip and then fail the preferred agent's FK against a
+    // concurrent agent delete — a half-applied update the caller cannot undo.
     await withAmbientTx(this.db, async (tx) => {
       // The org fence rides the row-lock read and refuses BEFORE the recount:
       // reaching the recount with a foreign id would answer `BotStillShared`
@@ -273,18 +278,18 @@ export class PgBotRepo implements BotRepo {
         { id: string }[]
       >`SELECT id FROM bot WHERE id = ${id} AND "orgId" = ${orgId} FOR UPDATE`
       if (locked.length === 0) throw new BotMissing(id)
-      if (!shareable) {
+      if (patch.shareable === false) {
         const active = await tx.integration.count({ where: { botId: id, status: 'active' } })
         if (active > 1) throw new BotStillShared(active)
       }
-      await tx.bot.update({ where: { id, orgId }, data: { shareable } })
+      await tx.bot.update({
+        where: { id, orgId },
+        data: {
+          ...(patch.shareable !== undefined ? { shareable: patch.shareable } : {}),
+          ...(patch.preferredAgentId !== undefined ? { preferredAgentId: patch.preferredAgentId } : {})
+        }
+      })
     })
-  }
-
-  async setPreferredAgent(orgId: OrgId, id: BotId, agentId: AgentId | null): Promise<void> {
-    // Org-fenced like `markFreed`: cross-org and missing are the same P2025. No row lock —
-    // this only steers the compile's fallback, which re-reads membership as it recompiles.
-    await this.db.bot.update({ where: { id, orgId }, data: { preferredAgentId: agentId } })
   }
 
   async listHttpActive(): Promise<BotRecord[]> {
@@ -469,7 +474,7 @@ export class PgIntegrationRepo implements IntegrationRepo {
     // Atomic bot-membership admission (the platform "Add to Slack" re-install
     // AND the generic reuse path): the bot row is LOCKED, so `shareable`,
     // `revokedAt`, and the active membership set read below are stable through
-    // the insert — a concurrent sharing toggle (setShareable takes the same
+    // the insert — a concurrent sharing toggle (BotRepo.update takes the same
     // lock), a credential revoke (BotCredentialWriter.revoke opens with the
     // bot-row CAS), or a concurrent duplicate admission serializes here instead
     // of racing an earlier snapshot of the handler.

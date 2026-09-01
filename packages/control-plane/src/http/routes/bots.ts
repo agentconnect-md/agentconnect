@@ -242,7 +242,7 @@ export function botRoutes(deps: HttpDeps) {
             }
             // Disabling multi-agent is refused while >1 agent uses it (the others would
             // be left without a route). This read is the fast optimistic check; the
-            // authoritative recount happens INSIDE setShareable under the bot-row lock
+            // authoritative recount happens INSIDE the update under the bot-row lock
             // (BotStillShared), where a concurrent membership admission cannot race it.
             if (!sharingFlip && bot.agentIds.length > 1) {
               return reply.code(409).send({
@@ -252,27 +252,27 @@ export function botRoutes(deps: HttpDeps) {
               })
             }
           }
-          // Checks are exhausted. Sharing is written FIRST because its row-locked recount is
-          // the last thing that can still refuse, so no preference write can be stranded.
-          if (sharingFlip !== undefined) {
-            try {
-              await deps.repos.bot.setShareable(bot.orgId, bot.id, sharingFlip)
-            } catch (err) {
-              if (err instanceof BotStillShared) {
-                return reply.code(409).send({
-                  error: 'Conflict',
-                  statusCode: 409,
-                  message: 'bot is shared by multiple agents — uninstall the others before disabling sharing'
-                })
-              }
-              throw err
+          // Checks are exhausted. Both columns commit in ONE row-locked transaction, so
+          // neither the locked recount nor a lost FK can leave half the body applied.
+          try {
+            await deps.repos.bot.update(bot.orgId, bot.id, {
+              ...(sharingFlip !== undefined ? { shareable: sharingFlip } : {}),
+              ...(preferred !== undefined && preferred !== bot.preferredAgentId
+                ? { preferredAgentId: preferred === null ? null : AgentId(preferred) }
+                : {})
+            })
+          } catch (err) {
+            if (err instanceof BotStillShared) {
+              return reply.code(409).send({
+                error: 'Conflict',
+                statusCode: 409,
+                message: 'bot is shared by multiple agents — uninstall the others before disabling sharing'
+              })
             }
+            throw err
           }
-          if (preferred !== undefined && preferred !== bot.preferredAgentId) {
-            await deps.repos.bot.setPreferredAgent(bot.orgId, bot.id, preferred === null ? null : AgentId(preferred))
-          }
-          // One recompile for both halves — the relay pool's member set and its fallback
-          // rung ride the same broadcast (no ingest re-open; the transport is unchanged).
+          // One recompile for both halves, after the commit — the relay pool's member set
+          // and its fallback rung ride the same broadcast (the transport is unchanged).
           await deps.httpBot.syncRoutes(bot.id)
           const updated = await deps.repos.bot.get(bot.orgId, bot.id)
           return toDto(updated!)

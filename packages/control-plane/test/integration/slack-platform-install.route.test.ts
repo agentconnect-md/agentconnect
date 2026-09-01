@@ -800,7 +800,7 @@ describe('GET /integrations/slack/platform/callback', () => {
       })
     })
     // The toggle: its optimistic pre-check reads ONE member (the review's stale
-    // snapshot), then blocks on the row lock inside setShareable.
+    // snapshot), then blocks on the row lock inside BotRepo.update.
     const toggle = app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${bot.id}`, payload: { shareable: false } })
     await awaitLockWaiter() // the toggle is on the lock, so the admission below really is the loser
     admit()

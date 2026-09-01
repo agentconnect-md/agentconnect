@@ -158,7 +158,7 @@ export class AgentMissing extends Error {
 /**
  * Thrown by org-fenced bot mutations whose fence sits on a row-lock read rather
  * than on the write's own `where` (docs/designs/org-scoped-data-layer.md §3) —
- * today `BotRepo.setShareable`, where refusing BEFORE the install recount is
+ * today `BotRepo.update`, where refusing BEFORE the install recount is
  * what keeps a foreign bot's occupancy from leaking as a `BotStillShared` 409.
  * A cross-org id is deliberately indistinguishable from a missing row.
  */
@@ -171,7 +171,7 @@ export class BotMissing extends Error {
 }
 
 /**
- * Thrown by `BotRepo.setShareable(false)` when the row-locked recount still sees
+ * Thrown by `BotRepo.update({ shareable: false })` when the row-locked recount still sees
  * more than one ACTIVE install — disabling sharing then would orphan the others'
  * routes. The recount runs under the same bot-row lock `IntegrationRepo.
  * addBotMembership` takes, so a concurrent admission and a disable serialize:

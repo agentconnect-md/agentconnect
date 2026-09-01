@@ -20,7 +20,7 @@ import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { IntegrationUpsert, IntegrationRemove } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
-import { OrgId } from '../../src/domain/ids.js'
+import { AgentId, BotId, OrgId } from '../../src/domain/ids.js'
 import type { SlackConfigApi } from '../../src/http/slack-config-api.js'
 import { SLACK_BOT_EVENTS, SLACK_BOT_SCOPES } from '../../src/http/slack-manifest.js'
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
@@ -2015,6 +2015,29 @@ describe('preferred default agent (PATCH /bots/:id)', () => {
     expect(row.preferredAgentId).toBeNull()
     expect(row.shareable).toBe(true)
     expect(compiledDefault(sends)).toBeUndefined()
+  })
+
+  it('rolls the sharing flip back when the preferred write loses its FK', async () => {
+    // The mutation gate is in-memory and does not exclude a concurrent agent DELETE, so
+    // the preferred agent can vanish between validation and write. One transaction is
+    // what stops that from committing the capacity flip alone. A never-existing id
+    // stands in for the deleted row — the FK cannot tell the two apart.
+    const { botId } = await sharedBot()
+    // Enabling is the flip that reaches the write: disabling would stop at the recount.
+    await prisma.bot.update({ where: { id: botId }, data: { shareable: false } })
+    const { app } = withRelay()
+    const vanished = randomUUID()
+
+    await expect(
+      app.deps.repos.bot.update(OrgId(DEFAULT_ORG_ID), BotId(botId), {
+        shareable: true,
+        preferredAgentId: AgentId(vanished)
+      })
+    ).rejects.toThrow()
+
+    const row = await prisma.bot.findUniqueOrThrow({ where: { id: botId } })
+    expect(row.shareable).toBe(false)
+    expect(row.preferredAgentId).toBeNull()
   })
 
   it('carries the preference on GET /bots', async () => {

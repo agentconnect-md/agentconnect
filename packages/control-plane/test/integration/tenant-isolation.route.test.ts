@@ -741,9 +741,9 @@ describe('tenant isolation — DaemonRepo and BotRepo fences under the routes', 
     expect(await repo.get(CALLER_ORG, BotId(randomUUID()))).toBeNull()
     expect(await repo.get(CALLER_ORG, BotId(ownBotId))).not.toBeNull()
 
-    // setShareable refuses at the row-lock read, BEFORE the install recount that
+    // BotRepo.update refuses at the row-lock read, BEFORE the install recount that
     // would otherwise answer BotStillShared and disclose a foreign bot's occupancy.
-    await expect(repo.setShareable(CALLER_ORG, BotId(foreignBotId), true)).rejects.toBeInstanceOf(BotMissing)
+    await expect(repo.update(CALLER_ORG, BotId(foreignBotId), { shareable: true })).rejects.toBeInstanceOf(BotMissing)
     await expect(repo.markFreed(CALLER_ORG, BotId(foreignBotId), new Date(), 'hijacked')).rejects.toThrow()
     await expect(repo.setWorkspaceMetadata(CALLER_ORG, BotId(foreignBotId), 'THIJACK', 'Hijacked')).rejects.toThrow()
     await expect(repo.delete(CALLER_ORG, BotId(foreignBotId))).rejects.toThrow()
