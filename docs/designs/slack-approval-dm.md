@@ -1,9 +1,9 @@
 # Slack Approval DM
 
-> **Status:** Proposed (issue
-> [#1648](https://github.com/agentconnect-md/agentconnect/issues/1648)).
-> Nothing here is implemented yet; file/line references describe the shipped
-> machinery this design composes.
+> **Status:** Accepted (issue
+> [#1648](https://github.com/agentconnect-md/agentconnect/issues/1648));
+> shipping as two stacked changes (§9). File/line references describe the
+> shipped machinery this design composes.
 >
 > **Scope:** protocol + control-plane + daemon + web. Slack only — it is the
 > one platform with a linked-identity **assertion** (see §4.4) and the one
@@ -47,13 +47,13 @@ hangs until someone wanders by.
 decide (can edit the agent) and (b) has proven the Slack account is theirs
 (linked identity). The DM carries the approval card, a console session deep
 link, and — when the triggering message came from Slack — a permalink to it.
-The approval itself keeps living on the web exactly as today; the console's
-notification bell learns to show it as unread while pending and as read
-("_name_ approved / declined") once resolved.
+The approval itself keeps living on the web exactly as today, and the
+console's approval cards learn to show **who** decided (§6).
 
 Non-goals: replacing the in-conversation chat card (it stays, unchanged
-behind its opt-in), a server-side notification store (§8), any platform
-other than Slack (§10), and a reverse Slack→console identity index (§4.4).
+behind its opt-in), console notifications (§7, deferred), a server-side
+notification store (§8), any platform other than Slack (§10), and a reverse
+Slack→console identity index (§4.4).
 
 ## 2. The trust model — why a DM is the editor path, not the chat path
 
@@ -78,8 +78,11 @@ So the DM surface is **the editor path delivered over Slack**, and:
 
 ## 3. Recipient selection — the preference chain
 
-One human is DM'd per pending request (no fan-out). Every rung must pass
-both standing gates before it can win:
+One human is DM'd per pending request (no fan-out, no escalation, no
+per-user or per-org opt-out — the console queue is the backstop). The chain
+is anchored to one Slack workspace at a time; when the agent is connected
+to more than one, it runs per workspace in a stable order and the first hit
+wins (§4.2). Every rung must pass both standing gates before it can win:
 
 - **Authority:** the candidate's console user satisfies `canEdit(agent)`.
 - **Identity:** the candidate has linked a Slack identity **in the bot's own
@@ -135,20 +138,29 @@ A synchronous daemon→CP request/reply over the existing WS, modeled on
 `github/review-authorize` → `github/review-authorized`:
 
 - **`agent/approval-route`** (daemon→CP):
-  `{ agentId, sessionId, requestId, requesterId?, integrationId }` —
+  `{ agentId, sessionId, requestId, requesterId?, integrationIds }` —
   `requesterId` is the turn owner's Slack member id when the turn came from
-  Slack; `integrationId` names the bot whose workspace anchors the identity
-  gate.
+  Slack; `integrationIds` are the agent's connected Slack integrations in
+  the order to try, the session's own bot first when the session is on
+  Slack. Each names a workspace that anchors its own identity gate.
 - **`agent/approval-routed`** (CP→daemon):
-  `{ requestId, target?: { teamId, userId, displayName?, consoleUserId } }` —
-  absent `target` means "no eligible recipient, keep today's behavior".
+  `{ requestId, target?: { integrationId, teamId, userId, displayName?,
+consoleUserId } }` — the CP evaluates the chain once per workspace in the
+  given order and answers with the first hit; absent `target` means "no
+  eligible recipient, keep today's behavior".
+
+Sessions **not** triggered from Slack (webchat, GitHub, webhook, Telegram…)
+are covered by the same shape — they are precisely the approvals with no
+chat surface at all, so the DM matters most there. The daemon simply lists
+every Slack integration the agent is connected to (almost always one) and
+lets the CP pick.
 
 The same pair also serves the decision-time revalidation of §6.3:
-`agent/approval-route` with `verify: { teamId, userId }` set asks not "whom
-should I DM" but "does this Slack pair, **right now**, map to a console
-user who can edit this agent" — answered by `{ requestId, allowed,
-consoleUserId? }`. Routing is best-effort (§4.3); verification is not — it
-authorizes an action, so an unanswerable verify fails closed.
+`agent/approval-route` with `verify: { integrationId, teamId, userId }` set
+asks not "whom should I DM" but "does this Slack pair, **right now**, map
+to a console user who can edit this agent" — answered by `{ requestId,
+allowed, consoleUserId? }`. Routing is best-effort (§4.3); verification is
+not — it authorizes an action, so an unanswerable verify fails closed.
 
 The CP evaluates the chain of §3 with the `linkedMemberIds` machinery
 (`packages/control-plane/src/orchestrator/linkedDm.ts`): the same
@@ -210,7 +222,7 @@ One message per pending request, containing:
   thread** — built locally from pieces the daemon already holds
   (`packages/daemon/src/platforms/slack/permalink.ts`), no
   `chat.getPermalink` round trip;
-- the Allow/Deny buttons (phase 2, §9) — `buildPermissionCard` /
+- the Allow/Deny buttons — `buildPermissionCard` /
   `buildElicitationCard` (`packages/daemon/src/slack/render.ts`) reused
   as-is, since their `action_id` / `value` encoding is
   channel-independent.
@@ -233,9 +245,10 @@ in a DM channel routes exactly like one in the session thread:
 
 ### 5.4 Lifecycle
 
-- **Coalescing:** at most one _live_ card per `(session, recipient)` DM. A
-  second approval arriving while one is pending threads under the first
-  message rather than stacking top-level pings.
+- **One top-level message per request**, no threading and no cross-request
+  coalescing: a DM thread is easy to miss, and every pending approval must
+  trip the recipient's unread badge on its own. Approvals are rare enough
+  that a burst is itself the signal something is wrong.
 - **Resolution:** whoever decides (DM click, console, or the in-thread chat
   card), the DM card is rewritten to the resolved state
   (`buildPermissionResolvedCard`) naming the decider — same treatment the
@@ -307,48 +320,48 @@ In-thread cards keep their existing gate unchanged.
 MCP approvals over `elicitation/create`) too — but the current elicit-choice
 path drops the actor on both transports: `onElicitChoice` has no actor
 parameter, the Socket Mode handler never calls `actorOf`, and the relay's
-`elicit-choice` frame omits the acting user. Interactive elicitation DMs
-therefore require extending that path first — actor on the Socket Mode
-handler, an acting-user field on the relay frame, and the §6.3 checks in
-`handleElicitChoice` for DM-originated cards. Until that lands, approval
-elicitations get **notify-only** DMs (§9 phase 1 content), never buttons.
+`elicit-choice` frame omits the acting user. That plumbing is therefore in
+scope for this delivery (§9) — actor on the Socket Mode handler, an
+acting-user field on the relay frame, and the §6.3 checks in
+`handleElicitChoice` for DM-originated cards — so both request kinds get
+identical interactive DMs; the two runtimes must not diverge here.
 
-## 7. Console notification states
+## 7. Console notification states — deferred
 
-The issue asks the notification system to show a pending approval as unread
-and a resolved one as read with "_X_ has approved/declined".
-
-The console's notification center is client-local
-(`packages/web/src/lib/notifications.tsx`, localStorage, categories
-`daemon_lifecycle | session_retention | session_access`). This design adds
-an `approval` category fed by the polling the console already does
-(`ApprovalRequestsCard`'s SWR key at a 3 s interval, plus a lightweight
-pending-count read on the shell): a request in `pending` surfaces as an
-unread notification deep-linking to the Agent/Session page; on resolution
-the same notification flips to read and renders `resolvedByName` +
-decision. Known limitation, accepted: read-state is per-browser, like every
-existing category.
+The issue also asks the notification bell to show a pending approval as
+unread and a resolved one as read ("_X_ has approved/declined"). Deferred
+out of this delivery: the console has **no cross-agent pending signal** to
+feed a bell — the only live source is the per-agent daemon proxy (polled
+on detail pages), and the protocol's `agent/activity` frame with
+`ActivityState.awaiting_permission` is declared but never emitted by any
+daemon nor handled by the CP. A future effort can revive that frame (emit
+on park/release, persist the enum `SessionMeta.activityState` already has
+a column for) and hang a client-local `approval` category off it. Until
+then the decider's name lands on the approval cards themselves (§6), which
+is where an editor already looks — tracked in a follow-up issue.
 
 ## 8. Explicit non-goal: a server-side notification store
 
 Cross-device unread state, digests, or push would need a CP-persisted
 notification model that does not exist for _any_ category today. That is an
 independent piece of infrastructure with its own design; bundling it here
-would couple a small routing feature to a large one. The client-local
-category of §7 satisfies the issue's stated behavior.
+would couple a small routing feature to a large one. Whatever revives §7
+stays client-local unless that infrastructure arrives first.
 
-## 9. Rollout phases
+## 9. Delivery
 
-1. **Notify-only DM** — frames of §4.2, CP chain evaluation, daemon posts a
-   _text_ DM (summary + session link + source permalink). No buttons: the
-   decision still happens on the web. Small, shippable, already most of the
-   user value.
-2. **Interactive DM card** — buttons in the DM, actor equality +
-   decision-time revalidation (§6.3), the elicitation actor plumbing or the
-   notify-only carve-out (§6.4), `resolvedBy` columns/frames (§6), card
-   lifecycle + restart survivability (§5.4), unconditional `block_id`
-   target on DM cards (§5.3).
-3. **Console notifications** — the `approval` category (§7).
+One delivery — notify **and** interactive DM together — as two stacked
+changes:
+
+1. **Protocol + CP** — the §4.2 frame pair, the CP chain evaluation, and
+   the decision-time verify.
+2. **Daemon + web** — DM delivery (§5), actor equality + revalidation
+   (§6.3), the elicitation actor plumbing (§6.4), `resolvedBy`
+   columns/frames (§6.1–6.2) with the console approval cards showing the
+   decider, card lifecycle + restart survivability (§5.4), and the
+   unconditional `block_id` target on DM cards (§5.3).
+
+Console notifications (§7) are deferred to a follow-up issue.
 
 ## 10. Out of scope / future
 
