@@ -131,13 +131,16 @@ export interface PreparedRuntimeLaunch {
 }
 
 /** Daemon policy overrides the per-agent preference. Without an available host
- * mechanism, an optional sandbox request is ineffective. */
+ * mechanism, an optional sandbox request is ineffective. An externalExecution
+ * runtime downgrades an optional request (its execution lives outside any local
+ * sandbox), while requireSandbox stays true so the launch is refused loudly. */
 export function effectiveRunInSandbox(
   requireSandbox: boolean,
   requested: boolean,
-  mechanism: SandboxMechanism | undefined
+  mechanism: SandboxMechanism | undefined,
+  runtime?: Pick<RuntimeDef, 'externalExecution'>
 ): boolean {
-  return requireSandbox || (requested && mechanism !== undefined)
+  return requireSandbox || (requested && mechanism !== undefined && runtime?.externalExecution !== true)
 }
 
 /** Prepare one ACP adapter launch. A private HOME is normally part of sandbox
@@ -194,6 +197,11 @@ export function prepareRuntimeLaunch(opts: {
     // different machine. Inheriting it sent this daemon's HOME across, and the runtime then tried
     // to open its state under a path that exists only here. The pod supplies its own basics.
     return { env, inheritProcessEnv: opts.k8s !== true }
+  }
+  if (opts.runInSandbox && opts.runtime?.externalExecution) {
+    throw new Error(
+      `runtime "${opts.runtimeId}" executes in an external machine-local service the OS sandbox cannot contain — it can only launch unconfined`
+    )
   }
   if (opts.runInSandbox && !opts.sandboxMechanism) {
     throw new Error('OS sandbox requested but this host has no supported Linux SRT/bwrap mechanism')

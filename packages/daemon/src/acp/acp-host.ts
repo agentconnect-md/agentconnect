@@ -828,6 +828,13 @@ export class AcpHost {
    *   SYNCHRONOUS on purpose: a runtime can emit the instant it has answered, and anything awaited
    *   here would widen the response-to-ownership gap into a window where that update is dropped.
    */
+  /** A runtime that rejects non-empty session mcpServers gets [] instead of a failed session — covers every creator. */
+  private clampSessionMcpServers(mcpServers: McpServer[]): McpServer[] {
+    if (this.runtime.sessionMcpServers !== 'unsupported' || mcpServers.length === 0) return mcpServers
+    this.opts.log?.debug(`acp: dropping ${mcpServers.length} session MCP server(s) — the runtime rejects them`)
+    return []
+  }
+
   async newSession(
     cwd: string,
     mcpServers: McpServer[] = [],
@@ -849,7 +856,7 @@ export class AcpHost {
     const res = await this.conn!.agent.request(methods.agent.session.new, {
       cwd,
       ...(activeAdditionalDirectories.length > 0 ? { additionalDirectories: activeAdditionalDirectories } : {}),
-      mcpServers,
+      mcpServers: this.clampSessionMcpServers(mcpServers),
       ...(_meta ? { _meta } : {})
     })
     announce?.(res.sessionId)
@@ -1085,7 +1092,7 @@ export class AcpHost {
         sessionId,
         cwd,
         ...(activeAdditionalDirectories.length > 0 ? { additionalDirectories: activeAdditionalDirectories } : {}),
-        mcpServers,
+        mcpServers: this.clampSessionMcpServers(mcpServers),
         ...(_meta ? { _meta } : {})
       })
       this.live.add(sessionId)

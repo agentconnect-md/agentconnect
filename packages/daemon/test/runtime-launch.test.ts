@@ -15,7 +15,7 @@ import {
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import { prepareRuntimeLaunch } from '../src/launch/prepare.js'
+import { effectiveRunInSandbox, prepareRuntimeLaunch } from '../src/launch/prepare.js'
 import { composeRuntimeLaunch, runtimeSandboxReadRoots } from '../src/launch/compose.js'
 import { CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV } from '../src/acp/codex-permission-profiles.js'
 import { runtimeMemoryCapabilities } from '../src/memory/runtime/capabilities.js'
@@ -371,6 +371,32 @@ describe('prepareRuntimeLaunch', () => {
       /no supported Linux SRT\/bwrap/
     )
     expect(existsSync(join(scopeDir, 'home'))).toBe(false)
+  })
+
+  it('refuses to sandbox an externalExecution runtime instead of confining a bridge it cannot contain', () => {
+    const { scopeDir, cwd } = fixture()
+
+    expect(() =>
+      prepareRuntimeLaunch({
+        runtimeId: 'openclaw',
+        runtime: { command: 'openclaw', args: ['acp'], env: [], externalExecution: true },
+        scopeDir,
+        cwd,
+        runInSandbox: true,
+        daemonRoot: '/srv/agentconnect',
+        sandboxMechanism: 'bwrap'
+      })
+    ).toThrow(/external machine-local service/)
+    expect(existsSync(join(scopeDir, 'home'))).toBe(false)
+  })
+
+  it('downgrades an optional sandbox request for an externalExecution runtime but keeps requireSandbox loud', () => {
+    const external: RuntimeDef = { command: 'openclaw', args: ['acp'], env: [], externalExecution: true }
+    const ordinary: RuntimeDef = { command: 'hermes', args: ['acp'], env: [] }
+    expect(effectiveRunInSandbox(false, true, 'bwrap', external)).toBe(false)
+    expect(effectiveRunInSandbox(false, true, 'bwrap', ordinary)).toBe(true)
+    // requireSandbox stays true so the launch above throws instead of silently unconfining.
+    expect(effectiveRunInSandbox(true, false, 'bwrap', external)).toBe(true)
   })
 
   it('can isolate HOME for a disposable probe without enabling an OS sandbox', () => {

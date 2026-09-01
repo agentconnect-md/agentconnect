@@ -35,6 +35,30 @@ describe('AcpHost (against a fake ACP agent)', () => {
     await host.stop()
   })
 
+  it('clamps session mcpServers to [] for a runtime that rejects them, and only then', async () => {
+    const bridge = { name: 'agentconnect', command: process.execPath, args: ['-e', ''], env: [] }
+    const rejectingEnv = [{ name: 'AC_REJECT_MCP_SERVERS', value: '1' }]
+
+    // Without the declaration the fixture's OpenClaw-style rejection surfaces.
+    const bare = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: rejectingEnv },
+      { onUpdate: () => {} }
+    )
+    await bare.start()
+    await expect(bare.newSession('/tmp', [bridge])).rejects.toThrow(/per-session MCP servers/)
+    await bare.stop()
+
+    // With it, the host drops the list and the session opens.
+    const clamped = new AcpHost(
+      { command: process.execPath, args: [fakeAgent], env: rejectingEnv, sessionMcpServers: 'unsupported' },
+      { onUpdate: () => {} }
+    )
+    await clamped.start()
+    const sessionId = await clamped.newSession('/tmp', [bridge])
+    expect(sessionId).toBeTruthy()
+    await clamped.stop()
+  })
+
   // A runtime can advertise from inside `newSession()`: the host makes the session ownable and
   // then awaits its configuration round trips. Whatever the daemon needs in order to name that
   // session must therefore be handed over at the RAW response, before it is reachable.

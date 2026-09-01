@@ -239,7 +239,12 @@ const AMBIENT_STATE_ENV = new Set([
   'GEMINI_CLI_HOME',
   // DeepSeek Harness state root; $DSH_PATH (the harness install location) is not
   // user state and stays inherited.
-  'DSH_HOME'
+  'DSH_HOME',
+  // OpenClaw state/config roots. The gateway connection overrides
+  // ($OPENCLAW_GATEWAY_URL/_TOKEN/_PASSWORD) are credentials, not state — inherited.
+  'OPENCLAW_HOME',
+  'OPENCLAW_STATE_DIR',
+  'OPENCLAW_CONFIG_PATH'
 ])
 
 function inheritedEnvironment(source: NodeJS.ProcessEnv): Record<string, string> {
@@ -311,6 +316,7 @@ const RUNTIME_PRIVATE_ENV: Record<string, RuntimePrivateEnv> = {
     return env
   },
   'dsh-acp': (home) => ({ DSH_HOME: join(home, '.dsh') }),
+  openclaw: (home) => ({ OPENCLAW_STATE_DIR: join(home, '.openclaw') }),
   kimi: (home, hostEnv) => {
     const env: Record<string, string> = {}
     if (hostEnv.KIMI_CODE_HOME) env.KIMI_CODE_HOME = join(home, '.kimi-code')

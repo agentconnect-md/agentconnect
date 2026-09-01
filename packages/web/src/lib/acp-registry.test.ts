@@ -37,6 +37,10 @@ describe('ACP Registry metadata', () => {
       name: 'Kiro CLI',
       icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/kiro-color.svg'
     })
+    expect(agents.openclaw).toEqual({
+      name: 'OpenClaw',
+      icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/openclaw-color.svg'
+    })
   })
 
   it('serves curated marks even when the upstream registry fetch fails', async () => {

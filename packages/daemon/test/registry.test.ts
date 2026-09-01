@@ -239,7 +239,7 @@ describe('resolveRuntimes', () => {
 })
 
 describe('curated native ACP runtimes', () => {
-  it('declares the nine reviewed native ACP commands', () => {
+  it('declares the ten reviewed native ACP commands', () => {
     expect(CURATED_RUNTIME_CATALOG).toEqual({
       'hermes-agent': {
         name: 'Hermes Agent',
@@ -280,6 +280,17 @@ describe('curated native ACP runtimes', () => {
           args: ['-y', '-p', '@openma/deepseek-harness-acp@^0.4', 'dsh-acp'],
           env: [],
           skillsAgentId: 'universal'
+        }
+      },
+      openclaw: {
+        name: 'OpenClaw',
+        runtime: {
+          command: 'openclaw',
+          args: ['acp'],
+          env: [],
+          skillsAgentId: 'openclaw',
+          externalExecution: true,
+          sessionMcpServers: 'unsupported'
         }
       }
     })

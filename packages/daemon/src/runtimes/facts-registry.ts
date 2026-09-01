@@ -14,7 +14,7 @@ import type { CuratedRuntimeAdmission } from './curated-admission.js'
 import type { K8sRuntimeAcpSnapshot } from './k8s-runtimes.js'
 import { probeAllRuntimes, type ProbeOptions, type RuntimeProbeResult } from './runtime-prober.js'
 import { defaultProbeHostFactory } from '../acp/probe-host-factory.js'
-import { prepareRuntimeLaunch } from '../launch/prepare.js'
+import { effectiveRunInSandbox, prepareRuntimeLaunch } from '../launch/prepare.js'
 import { runtimeSandboxReadRoots } from '../launch/compose.js'
 import { capsFromConfigOptions, augmentEffortOptions } from './config-caps.js'
 import { isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
@@ -45,6 +45,8 @@ export interface RuntimeProbeLaunchContext {
   fakeHosts: boolean
   probe?: (runtimes: Record<string, RuntimeDef>, opts: ProbeOptions) => Promise<RuntimeProbeResult[]>
   sandboxMechanism?: SandboxMechanism
+  /** Operator policy: an externalExecution runtime is then refused, not downgraded. */
+  requireSandbox?: boolean
   daemonRoot: string
   agentsRoot: string | undefined
   isolateAccountApps: boolean
@@ -394,23 +396,29 @@ export class RuntimeFactsRegistry {
             log,
             hostFactory: probeHostFactory,
             onResult,
-            launchFor: (id, runtime, scopeDir, cwd) =>
-              prepareRuntimeLaunch({
+            launchFor: (id, runtime, scopeDir, cwd) => {
+              const runInSandbox = effectiveRunInSandbox(
+                launch.requireSandbox ?? false,
+                launch.sandboxMechanism !== undefined,
+                launch.sandboxMechanism,
+                runtime
+              )
+              return prepareRuntimeLaunch({
                 runtimeId: id,
                 runtime,
                 scopeDir,
                 cwd,
-                runInSandbox: launch.sandboxMechanism !== undefined,
+                runInSandbox,
                 daemonRoot: launch.daemonRoot,
                 agentsRoot: launch.agentsRoot,
-                trustedRuntimeReadRoots:
-                  launch.sandboxMechanism !== undefined
-                    ? runtimeSandboxReadRoots(runtime, process.env).readRoots
-                    : undefined,
+                trustedRuntimeReadRoots: runInSandbox
+                  ? runtimeSandboxReadRoots(runtime, process.env).readRoots
+                  : undefined,
                 explicitEnv: Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value])),
                 sandboxMechanism: launch.sandboxMechanism,
                 hostPackageCache: true
               })
+            }
           })
         )
       }
@@ -422,6 +430,7 @@ export class RuntimeFactsRegistry {
             hostFactory: probeHostFactory,
             onResult,
             runInSandbox: launch.sandboxMechanism !== undefined,
+            requireSandbox: launch.requireSandbox,
             daemonRoot: launch.daemonRoot,
             agentsRoot: launch.agentsRoot,
             sandboxMechanism: launch.sandboxMechanism,

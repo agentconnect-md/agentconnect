@@ -48,6 +48,8 @@ export const AUDITED_RUNTIME_SKILLS_AGENTS: Readonly<Record<string, string>> = O
   // cross-agent `<projectRoot>/.agents/skills` root the CLI's `universal` identity writes.
   'dsh-acp': 'universal',
   'kiro-cli': 'kiro-cli',
+  // skills@1.5.21 `openclaw` identity — global ~/.openclaw/skills, project `skills/`.
+  openclaw: 'openclaw',
   'qoder-cli': 'qoder',
   'qoder-cli-cn': 'qoder-cn'
 })

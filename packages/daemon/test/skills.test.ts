@@ -11,6 +11,7 @@ describe('skillsAgentIdForRuntime', () => {
     expect(skillsAgentIdForRuntime('factory-droid')).toBe('droid')
     expect(skillsAgentIdForRuntime('qoder-cli-cn')).toBe('qoder-cn')
     expect(skillsAgentIdForRuntime('dsh-acp')).toBe('universal')
+    expect(skillsAgentIdForRuntime('openclaw')).toBe('openclaw')
     expect(skillsAgentIdForRuntime('qwen-code')).toBe('qwen-code')
     expect(skillsAgentIdForRuntime('some-exotic-agent')).toBeUndefined()
   })

@@ -81,7 +81,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
   // sandbox decision (and the explicit operator requireSandbox), never a forced
   // skill-authority requirement — so chat runs on hosts with or without an OS
   // sandbox instead of failing closed.
-  const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, sandboxMechanism)
+  const runInSandbox = effectiveRunInSandbox(cfg.security.requireSandbox, agent.runInSandbox, sandboxMechanism, runtime)
   if (entry?.source === 'curated') {
     const admission = new CuratedRuntimeAdmission()
     const probe = opts.probeRuntimes ?? probeAllRuntimes
@@ -91,6 +91,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
         curated: true,
         hostFactory: defaultProbeHostFactory({ isolateAccountApps: cfg.security.isolateAccountApps }),
         runInSandbox,
+        requireSandbox: cfg.security.requireSandbox,
         daemonRoot: root,
         agentsRoot: cfg.agentsDir,
         sandboxMechanism,

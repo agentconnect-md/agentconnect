@@ -36,6 +36,10 @@ const CURATED_AGENTS: Record<string, { name: string; icon: string | null }> = {
   'dsh-acp': {
     name: 'DeepSeek Harness',
     icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/deepseek-color.svg'
+  },
+  openclaw: {
+    name: 'OpenClaw',
+    icon: 'https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/openclaw-color.svg'
   }
 }
 

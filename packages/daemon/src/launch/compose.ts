@@ -173,7 +173,12 @@ export function composeRuntimeLaunch(opts: {
 
   const protectedMemory = opts.provider !== 'native'
   const stateSourceEnv = opts.stateSourceEnv ?? opts.hostEnv ?? process.env
-  const sandboxAccess = opts.runInSandbox ? runtimeSandboxReadRoots(opts.runtime, stateSourceEnv) : undefined
+  // externalExecution can never launch sandboxed — skip executable resolution so
+  // prepareRuntimeLaunch reports the refusal instead of a resolution failure.
+  const sandboxAccess =
+    opts.runInSandbox && opts.runtime.externalExecution !== true
+      ? runtimeSandboxReadRoots(opts.runtime, stateSourceEnv)
+      : undefined
   const launch = prepareRuntimeLaunch({
     ...(opts.k8s === true ? { k8s: true } : {}),
     runtimeId: opts.runtimeId,

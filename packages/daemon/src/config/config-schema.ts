@@ -26,7 +26,17 @@ export const RuntimeDefSchema = z.object({
   // whose executable or dependencies live below a host path hidden from the
   // sandbox (most commonly HOME). Agent configuration can select a runtime but
   // cannot add entries here.
-  readRoots: z.array(z.string()).optional()
+  readRoots: z.array(z.string()).optional(),
+  // Reviewed exception for thin bridges (e.g. `openclaw acp`): agent execution
+  // lives in a machine-local external service the OS sandbox cannot contain,
+  // and netns isolation would sever the bridge's loopback dial — so the bridge
+  // launches like any unsandboxed runtime (admission probes still use a
+  // disposable isolated HOME). `security.requireSandbox` refuses it outright.
+  externalExecution: z.boolean().optional(),
+  // 'unsupported': the runtime rejects any non-empty session/new|load mcpServers
+  // list (OpenClaw's bridge does), so the daemon must not inject the AgentConnect
+  // bridge or configured MCP servers — such sessions run without those tools.
+  sessionMcpServers: z.literal('unsupported').optional()
 })
 export type RuntimeDef = z.infer<typeof RuntimeDefSchema>
 

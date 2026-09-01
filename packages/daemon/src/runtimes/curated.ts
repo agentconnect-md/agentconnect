@@ -66,5 +66,23 @@ export const CURATED_RUNTIME_CATALOG: Readonly<Record<string, CuratedRuntimeEntr
       env: [],
       skillsAgentId: 'universal'
     }
+  },
+  // `openclaw acp` (OpenClaw 2.0+) is a thin stdio bridge: execution lives in the
+  // machine-local OpenClaw Gateway (ws://127.0.0.1:18789 by default), and the
+  // bridge reads the gateway address + token from ~/.openclaw/openclaw.json.
+  // externalExecution: sandboxing the bridge would contain nothing (the Gateway
+  // executes) while netns isolation severs its loopback dial. The bridge also
+  // rejects any non-empty per-session mcpServers list, so sessions run without
+  // the AgentConnect bridge tools (MCP belongs on the Gateway's own config).
+  openclaw: {
+    name: 'OpenClaw',
+    runtime: {
+      command: 'openclaw',
+      args: ['acp'],
+      env: [],
+      skillsAgentId: 'openclaw',
+      externalExecution: true,
+      sessionMcpServers: 'unsupported'
+    }
   }
 })
