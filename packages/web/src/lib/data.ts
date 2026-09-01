@@ -87,7 +87,7 @@ export const POOL_PLACEMENT = 'pool'
  *  accepted API sugar on the way IN, so the console keeps submitting it and tolerates both. */
 export type PlacementKindValue = 'daemon' | 'set' | 'pool'
 
-/** What the console calls one of an organization's own member sets. The model名 is "member set";
+/** What the console calls one of an organization's own member sets. The model name is "member set";
  *  the reader-facing one is the design's own opening sentence — a named group of daemons. */
 export const GROUP_NOUN = 'group'
 /** The selectable value for an org group: the pool keeps the bare `pool` sentinel, so no existing
