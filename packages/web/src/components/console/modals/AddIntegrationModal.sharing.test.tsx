@@ -121,8 +121,9 @@ async function settle(): Promise<void> {
   }
 }
 
-/** Open the wizard on `tile` and switch it to the reuse path. */
-async function reusePane(tile: string): Promise<void> {
+/** Open the wizard on `tile`. `existing` switches the HOST chassis to its reuse path —
+ *  a step Linear does not have, because its pane replaces that chassis outright. */
+async function openPane(tile: string, options: { existing?: boolean } = {}): Promise<void> {
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -131,7 +132,7 @@ async function reusePane(tile: string): Promise<void> {
   })
   await settle()
   await clickByText('.ptile', tile)
-  await clickByText('.ptile', 'Use an existing bot')
+  if (options.existing) await clickByText('.ptile', 'Use an existing bot')
   await settle()
 }
 
@@ -149,16 +150,21 @@ afterEach(async () => {
 describe('the wizard’s Shared bot opt-in', () => {
   it('is not offered for a Linear workspace, which is shared structurally', async () => {
     mocks.bots = [bot({ id: 'ws-1', platform: 'linear', name: 'Example Workspace' })]
-    await reusePane('Linear')
+    await openPane('Linear')
 
-    // The workspace is still offered for reuse — membership is the whole point.
+    // The workspace is still offered — membership is the whole point — but it is the
+    // module's own list, reached without a mode card, and it carries no opt-in.
     expect(document.body.textContent).toContain('Example Workspace')
     expect(shareOptIn()).toBeUndefined()
+    // The whole identity chassis is replaced, so its mode cards are gone too.
+    expect([...document.querySelectorAll('.ptile')].some((t) => t.textContent?.includes('Use an existing bot'))).toBe(
+      false
+    )
   })
 
   it('is still offered for Slack, unchanged', async () => {
     mocks.bots = [bot({ id: 'sl-1', platform: 'slack' })]
-    await reusePane('Slack')
+    await openPane('Slack', { existing: true })
 
     const optIn = shareOptIn()
     expect(optIn).toBeDefined()

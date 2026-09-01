@@ -2,7 +2,13 @@
 
 import type { ComponentType } from 'react'
 import type { BotDto, SessionMessageDto } from '@/lib/api'
-import type { WebBotCardCopy, WebChannelListSemantics, WebPlatformModule, WebPlatformRegistry } from './contract'
+import type {
+  WebAgentIntegrationCardFacet,
+  WebBotCardCopy,
+  WebChannelListSemantics,
+  WebPlatformModule,
+  WebPlatformRegistry
+} from './contract'
 import { discordModule } from './discord'
 import { feishuModule } from './feishu'
 import { linearModule } from './linear'
@@ -47,6 +53,15 @@ export const DEFAULT_CHANNEL_LIST: WebChannelListSemantics = {
 /** One platform's channel-list display semantics, defaulted. */
 export function channelListSemantics(platformId?: string): WebChannelListSemantics {
   return (platformId ? platformRegistry.get(platformId)?.channelList : undefined) ?? DEFAULT_CHANNEL_LIST
+}
+
+/**
+ * This platform's own agent-page card body, or `undefined` for the generic
+ * conversation list. Total for the same reason every lookup here is — an
+ * integration row carries whatever platform the CP sent.
+ */
+export function platformAgentCard(platformId?: string): WebAgentIntegrationCardFacet | undefined {
+  return platformId ? platformRegistry.get(platformId)?.agentCard : undefined
 }
 
 /**

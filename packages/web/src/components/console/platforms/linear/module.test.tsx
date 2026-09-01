@@ -8,8 +8,10 @@ import { describe, expect, it } from 'vitest'
 import { PLATFORM_MARK_IDS } from '../marks'
 import { BOT_PLATFORMS, INTEGRATION_BLURB, isCoreTriggerKind } from '../host-projections'
 import {
+  DEFAULT_CHANNEL_LIST,
   botSharingEditable,
   channelListSemantics,
+  platformAgentCard,
   platformRegistry,
   platformSharingFixed,
   platformSupportsSharing
@@ -63,15 +65,29 @@ describe('the linear mark', () => {
   })
 })
 
-describe('the linear transcript and channel semantics', () => {
-  it('calls a room an issue and offers no leave affordance', () => {
-    const semantics = channelListSemantics('linear')
-    expect(semantics.roomNoun).toBe('issue')
-    expect(semantics.roomGlyph).toBe('')
-    expect(semantics.leave).toBe('none')
-    // Nobody is shown out of an issue from here, so the row hint names where the
-    // session actually ends instead of pointing at a control that does not exist.
-    expect(semantics.cannotLeaveRowHint).toContain('end the agent session in Linear')
+describe('the linear transcript and card semantics', () => {
+  it('declares NO channel list, and its own agent-card body instead', () => {
+    // The generic list enumerates rooms a bot was added to, each with a trigger and a
+    // way out. A Linear workspace has none of those, and its issues are not a roster
+    // the console keeps — so the module renders the workspace itself and the list is
+    // never reached. Declaring semantics for it would describe a list that must not
+    // exist; absence is the declaration.
+    expect(linearModule.channelList).toBeUndefined()
+    expect(linearModule.agentCard?.Body).toBeDefined()
+    expect(platformAgentCard('linear')?.Body).toBe(linearModule.agentCard?.Body)
+    // Falling back to the host defaults is what "never rendered" looks like from the
+    // lookup's side — no borrowed noun, no invented issue vocabulary.
+    expect(channelListSemantics('linear')).toEqual(DEFAULT_CHANNEL_LIST)
+  })
+
+  it('is the only module that replaces the agent card', () => {
+    const withOwnCard = platformRegistry.all().filter((m) => m.agentCard)
+    expect(withOwnCard.map((m) => m.platformId)).toEqual(['linear'])
+    // Every other platform keeps the generic list, so each still declares — or
+    // defaults — its own room semantics.
+    for (const m of platformRegistry.all()) {
+      if (m.platformId !== 'linear') expect(platformAgentCard(m.platformId), m.platformId).toBeUndefined()
+    }
   })
 
   it('dedupes on an agent-activity id and on nothing else', () => {

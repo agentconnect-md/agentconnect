@@ -67,6 +67,10 @@ export interface LinearConnectFlow {
    *  {@link linearConnectAvailability}). */
   appMissing: boolean
   start(): void
+  /** Abandon a round trip the operator no longer wants. The funnel row is left to
+   *  its TTL — the nonce is one-shot, so the abandoned tab can still only settle
+   *  the row it was minted for. */
+  cancel(): void
   clearError(): void
 }
 
@@ -101,6 +105,18 @@ export function useLinearConnect(
   }, [])
 
   const clearError = useCallback(() => setErr(null), [])
+
+  // Cancel closes the tab we opened as well: leaving an orphan authorize page behind
+  // is how an operator re-approves into a round trip nothing is polling any more.
+  const cancel = useCallback(() => {
+    try {
+      popup.current?.close()
+    } catch {
+      // a cross-origin popup may refuse; the round trip is dropped either way
+    }
+    reset()
+    setErr(null)
+  }, [reset])
 
   const start = useCallback(() => {
     if (busy.current) return
@@ -162,5 +178,5 @@ export function useLinearConnect(
     }
   }, [connectId, phase, reset])
 
-  return { phase, err, appMissing, start, clearError }
+  return { phase, err, appMissing, start, cancel, clearError }
 }

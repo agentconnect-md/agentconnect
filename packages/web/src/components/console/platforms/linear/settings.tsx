@@ -1,9 +1,14 @@
 'use client'
 
-// The Linear WORKSPACE CARD (linear-integration.md §7.4, §9.5). A Linear bot row IS
-// one connected workspace, so what the Settings → Bots card shows beside it is the
-// workspace's own identity and health, plus the way to repair a grant that stopped
-// working.
+// The ORG Bots view's Linear fragments (linear-integration.md §7.4, §9.5). A Linear
+// bot row IS one connected workspace, so what the row gains here are the two actions
+// that belong to the workspace as a whole rather than to any one agent: re-authorize
+// the grant, and disconnect it for the organization.
+//
+// Disconnect lives ONLY here. An agent's own card can unlink itself from a workspace;
+// removing the workspace for everyone is an org-level decision, and offering it beside
+// a single membership would let one member end every other member's access by
+// mistake.
 //
 // The state lives behind the module's own context (the contract's
 // `lifecycleActions.CardProvider`), mounted once per platform tab, because the row
@@ -11,7 +16,7 @@
 // open their own.
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Icon } from '@/components/ui'
+import { Button, Icon } from '@/components/ui'
 import type { BotDto } from '@/lib/api'
 import { useConsoleData } from '@/lib/data-context'
 import type { WebBotSettingsFragments } from '../contract'
@@ -23,6 +28,9 @@ interface LinearCardState {
   reconnectingBotId: string | null
   connectErr: string | null
   startReconnect(botId: string): void
+  /** The workspace whose disconnect confirmation is open, if any. */
+  disconnectingBotId: string | null
+  askDisconnect(botId: string | null): void
 }
 
 const CardCtx = createContext<LinearCardState | null>(null)
@@ -36,6 +44,7 @@ function useLinearCard(): LinearCardState {
 function LinearCardProvider({ children }: { children: ReactNode }) {
   const { refresh } = useConsoleData()
   const [reconnectingBotId, setReconnectingBotId] = useState<string | null>(null)
+  const [disconnectingBotId, setDisconnectingBotId] = useState<string | null>(null)
   // The bot the pending mint is for. A ref, not the state above: `start()` reads its
   // mint closure in the same tick as the click, before a setState has landed.
   const target = useRef<string | null>(null)
@@ -58,6 +67,7 @@ function LinearCardProvider({ children }: { children: ReactNode }) {
     },
     [clearError, start]
   )
+  const askDisconnect = useCallback((botId: string | null) => setDisconnectingBotId(botId), [])
 
   // The round trip is not open once it settles, whichever way it went.
   const openBotId = flow.phase === 'authorizing' ? reconnectingBotId : null
@@ -65,82 +75,160 @@ function LinearCardProvider({ children }: { children: ReactNode }) {
     () => ({
       reconnectingBotId: openBotId,
       connectErr: flow.appMissing ? 'Linear isn’t set up on this deployment.' : flow.err,
-      startReconnect
+      startReconnect,
+      disconnectingBotId,
+      askDisconnect
     }),
-    [flow.appMissing, flow.err, openBotId, startReconnect]
+    [askDisconnect, disconnectingBotId, flow.appMissing, flow.err, openBotId, startReconnect]
   )
 
   return <CardCtx.Provider value={value}>{children}</CardCtx.Provider>
 }
 
-/** The row's Reconnect control, in the card's 100px action track. Haloed while the
- *  grant is known dead — the same needs-attention shape Slack's refresh uses. */
+/** The workspace's two lifecycle actions, in the card's 100px action track. Reconnect
+ *  is haloed while the grant is known dead — the same needs-attention shape Slack's
+ *  refresh uses. */
 function LinearRowActions({ bot, canWrite }: { bot: BotDto; canWrite: boolean }) {
   const card = useLinearCard()
   const open = card.reconnectingBotId === bot.id
   const dead = !!bot.revokedAt
   return (
-    <button
-      type="button"
-      disabled={!canWrite || open}
-      title={open ? 'Waiting for Linear…' : 'Reconnect this workspace'}
-      aria-label="Reconnect this workspace"
-      onClick={() => card.startReconnect(bot.id)}
-      className={`iconbtn h-7 w-7 flex-none ${dead ? 'border-(--status-error) text-(--status-error)' : ''} ${
-        open ? 'cursor-default opacity-55' : 'cursor-pointer'
-      }`}
-    >
-      <Icon name={open ? 'loader' : 'refresh-cw'} size={13} className={open ? 'animate-spin' : ''} />
-    </button>
+    <>
+      <button
+        type="button"
+        disabled={!canWrite || open}
+        title={open ? 'Waiting for Linear…' : 'Reconnect this workspace'}
+        aria-label="Reconnect this workspace"
+        onClick={() => card.startReconnect(bot.id)}
+        className={`iconbtn h-7 w-7 flex-none ${dead ? 'border-(--status-error) text-(--status-error)' : ''} ${
+          open ? 'cursor-default opacity-55' : 'cursor-pointer'
+        }`}
+      >
+        <Icon name={open ? 'loader' : 'refresh-cw'} size={13} className={open ? 'animate-spin' : ''} />
+      </button>
+      {canWrite && (
+        <button
+          type="button"
+          title="Disconnect this workspace"
+          aria-label="Disconnect this workspace"
+          onClick={() => card.askDisconnect(bot.id)}
+          className="iconbtn h-7 w-7 flex-none cursor-pointer"
+        >
+          <Icon name="unplug" size={13} />
+        </button>
+      )}
+    </>
   )
 }
 
 /**
- * The workspace card body, under the bot row: connect status and the Reconnect CTA.
+ * Confirm disconnecting one workspace for the whole organization.
  *
- * The CTA is offered on a LIVE workspace too, not only a dead grant. Enabling agent
- * session events on an already-installed Linear app raises a new scope, and until
- * every prior authorization re-consents the workspace keeps a perfectly valid token
- * while receiving nothing (§15) — so the repair has to be reachable from the healthy
- * state as well.
+ * `DELETE /bots/:id` refuses while any agent is installed, so the memberships go
+ * first and the bot delete follows — which is also the order the copy describes. A
+ * membership that fails to lift stops the run with its own message rather than
+ * leaving the operator staring at the generic "installed on an agent" refusal.
+ */
+function DisconnectWorkspaceModal({ bot, onClose }: { bot: BotDto; onClose: () => void }) {
+  const { integrations, deleteIntegration, deleteBot } = useConsoleData()
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const name = bot.workspaceName || bot.name
+  // A workspace normally has members — the first connect makes one — but every one can
+  // be unlinked, and "all 0 agents" is not a sentence.
+  const members = bot.agentIds.length
+  const audience =
+    members === 0 ? 'this organization' : members === 1 ? 'the agent that uses it' : `all ${members} agents that use it`
+
+  const disconnect = async () => {
+    if (busy) return
+    setBusy(true)
+    setErr(null)
+    try {
+      for (const row of integrations) {
+        if (row.botId === bot.id && row.id) await deleteIntegration(row.id)
+      }
+      await deleteBot(bot.id)
+      onClose()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="modalhead">
+        <span className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[7px] bg-(--status-error-soft)">
+          <Icon name="unplug" size={16} color="var(--status-error)" />
+        </span>
+        <span className="flex-1 font-sans text-[16px] font-semibold leading-normal">Disconnect workspace</span>
+        <button className="iconbtn" onClick={onClose}>
+          <Icon name="x" size={16} />
+        </button>
+      </div>
+      <div className="modalbody">
+        <p className="m-0 font-sans text-[13.5px] font-normal leading-[1.6] text-(--text-secondary)">
+          <span className="mono text-(--text-primary)">{name}</span>&#32;is removed for {audience}, and AgentConnect
+          forgets its Linear grant. Delegations in that workspace stop reaching any agent. Connecting it again is a
+          fresh authorization in Linear.
+        </p>
+        {err && (
+          <div className="mt-[10px] font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)">{err}</div>
+        )}
+      </div>
+      <div className="modalfoot">
+        <div className="flex-1" />
+        <Button variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="danger" onClick={disconnect} className={busy ? 'pointer-events-none opacity-50' : undefined}>
+          <Icon name="unplug" size={15} />
+          {busy ? 'Disconnecting…' : 'Disconnect'}
+        </Button>
+      </div>
+    </>
+  )
+}
+
+/**
+ * The card's per-bot band, rendered only when there is something to say: a reconnect
+ * waiting on the Linear tab, or a funnel that could not start. It also HOSTS the
+ * disconnect dialog its sibling row action opens — the action track is a `<span>`
+ * cell, while this fragment renders as a block row of the card.
+ *
+ * It deliberately no longer narrates a healthy workspace. The row already carries its
+ * connect state — the host's own `revoked` badge and the haloed Reconnect — and a
+ * standing "delegations not arriving?" band on every live workspace reads as a
+ * problem report rather than as chrome.
  */
 function LinearCardNotice({ bot }: { bot: BotDto }) {
   const card = useLinearCard()
   if (bot.platform !== 'linear') return null
-
-  // staleness signal not yet exposed — the CP publishes no `lastDeliveryAt`, so a
-  // webhook-silent workspace is reachable only through the always-offered CTA below.
-  const dead = !!bot.revokedAt
   const open = card.reconnectingBotId === bot.id
+  const err = card.reconnectingBotId === null ? card.connectErr : null
+  const disconnecting = card.disconnectingBotId === bot.id
+  if (!open && !err && !disconnecting) return null
 
   return (
-    <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-[10px] pl-10">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span
-          className={`badge ${dead ? 'bg-(--status-error-soft) text-(--status-error)' : 'bg-(--surface-active) text-(--text-tertiary)'}`}
-        >
-          {dead ? 'grant expired' : 'connected'}
-        </span>
-        <span className="mono min-w-0 truncate text-[12px] text-(--text-secondary)">
-          {bot.workspaceName || bot.name}
-        </span>
-        <span className="min-w-0 flex-1 font-sans text-[12px] font-normal leading-[1.45] text-(--text-tertiary)">
-          {dead
-            ? 'Linear no longer accepts this workspace’s grant — reconnect to restore delivery.'
-            : 'Delegations not arriving? Reconnect to re-consent the workspace’s event subscription.'}
-        </span>
-      </div>
-      {card.connectErr && card.reconnectingBotId === null && (
-        <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--status-error)">
-          {card.connectErr}
+    <>
+      {(open || err) && (
+        <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 py-[10px] pl-10">
+          <div
+            className={`font-sans text-[12px] font-normal leading-[1.45] ${err ? 'text-(--status-error)' : 'text-(--text-tertiary)'}`}
+          >
+            {err ?? 'Approve the workspace in the Linear tab — this card updates once it lands.'}
+          </div>
         </div>
       )}
-      {open && (
-        <div className="mt-[6px] font-sans text-[11.5px] font-normal leading-[1.4] text-(--text-tertiary)">
-          Approve the workspace in the Linear tab — this card updates once it lands.
+      {disconnecting && (
+        <div className="scrim" onClick={() => card.askDisconnect(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <DisconnectWorkspaceModal bot={bot} onClose={() => card.askDisconnect(null)} />
+          </div>
         </div>
       )}
-    </div>
+    </>
   )
 }
 

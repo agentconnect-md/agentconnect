@@ -3,6 +3,8 @@
 import type { WebPlatformModule } from '../contract'
 import { linearApi, type LinearApi } from './api'
 import { LinearWizardBody } from './Body'
+import { LinearWorkspaceRows } from './card'
+import { linearLinkInput } from './link'
 import { LinearMark } from './mark'
 import { linearSettingsFragments } from './settings'
 
@@ -22,14 +24,7 @@ export const linearModule: WebPlatformModule<LinearApi> = {
      * predicate already drops revoked rows and other platforms'.
      */
     freeBotFilter: () => true,
-    buildReuseInput: (bot, ctx) => ({
-      platform: 'linear',
-      agentId: ctx.agentId,
-      botId: bot.id,
-      // Linear offers no dial-out transport, so a workspace bot is only ever http
-      // (§4.2); the CP treats the durable bot row as authoritative either way.
-      transport: 'http'
-    }),
+    buildReuseInput: (bot, ctx) => linearLinkInput(ctx.agentId, bot.id),
     affordances: {
       // No transport CHOICE: `http` is the platform's single fixed transport, which
       // is a different thing from offering two (contract: absent ⇒ fixed).
@@ -38,6 +33,8 @@ export const linearModule: WebPlatformModule<LinearApi> = {
       // while neither the wizard nor Settings offers a flag to move.
       share: 'fixed'
     },
+    // The pane replaces the identity chassis outright, so these two never render for
+    // Linear; the contract requires them of every module and they stay honest copy.
     identityCards: () => ({ create: 'Connect a Linear workspace', existing: 'A connected Linear workspace' }),
     // Not `inviteBotHint`: nobody invites the app to an issue. A Linear session starts
     // by delegating the issue to the app or mentioning it, and neither is an invite.
@@ -45,17 +42,12 @@ export const linearModule: WebPlatformModule<LinearApi> = {
   },
   settingsFragments: linearSettingsFragments,
   apiBindings: linearApi,
-  channelList: {
-    // A Linear issue is the room: several agents bind to it, one session each.
-    roomNoun: 'issue',
-    // Issues are titled, not `#name`-prefixed — the row shows the bare title.
-    roomGlyph: '',
-    // No console-driven leave: an issue's agent sessions end in Linear, and the app
-    // is removed from the workspace by disconnecting it here instead.
-    leave: 'none',
-    cannotLeaveRowHint: 'The app stays on the issue — end the agent session in Linear for that.',
-    footerNote: 'An issue lands here when the app is delegated to it or mentioned on it.'
-  },
+  // NO `channelList`. The generic list enumerates rooms a bot was added to, each with
+  // a trigger and a way out; a Linear workspace has none of those — linking is the
+  // consent act and unlinking is how an agent goes quiet — and its issues are not a
+  // roster the console keeps. The card body below renders the workspace instead, so
+  // the generic list is never reached and its semantics would describe nothing.
+  agentCard: { Body: LinearWorkspaceRows },
   // Agent activities are append-only rows with their own ids (§15), so a duplicate
   // across sources is the same activity; anything else never dedupes.
   messageIdentity: (row) => (LINEAR_ACTIVITY_ID.test(row.ts) ? `ts:${row.ts}` : null),
