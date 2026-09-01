@@ -324,7 +324,10 @@ session in it is a thread (§4.5):
   (`mention`) for every member, **including a private agent's**, whose rows
   every other platform seeds `off` (§9.2) — and, for the same reason, a
   private member here is not conversation-gated at all, so it keeps its
-  `@<agent-name>` rung and can hold the workspace default (§6.2). Slack's
+  `@<agent-name>` rung and can hold the workspace default (§6.2). The write
+  surfaces refuse it too — silencing a workspace is unlinking, so a `trigger`
+  write is rejected with a message naming that path, while the same route's
+  owner change keeps working (§9.1). Slack's
   `any` has no Linear meaning either: the platform emits no unaddressed
   traffic to opt into — every event is a delegation, an app mention, a
   follow-up inside a session the agent already owns, or a stop.
@@ -1034,8 +1037,9 @@ tile.
   - **One new axis this design earns: `soleConversation`** (`linear: true`,
     `DEFAULT_MANIFEST` `false`) — one install **names the single conversation
     it can reach**, so a connected account IS one conversation (§4.3). It
-    carries **three co-varying pre-dispatch reads**, all in CP core and all
-    today's platform branches waiting to happen:
+    carries **four co-varying reads** — three pre-dispatch, one on the
+    trigger-write surfaces — all in CP core and all today's platform branches
+    waiting to happen:
     1. **Route projection** — the conversation row's owner maps to the group's
        `defaultAgentId`, and the compile emits **no** channel-scoped route for
        it (§6.2).
@@ -1052,10 +1056,19 @@ tile.
     3. **Gating itself** — a restricted member of such a bot is not
        conversation-gated (§6.2), from that same predicate at the compile's
        single `placed` seat.
+    4. **The write-surface guard** — the generic per-conversation `PATCH` and
+       the `setChannelTrigger` MCP tool **refuse a `trigger` write** on such a
+       platform, answering with the unlink path instead of storing a value
+       nothing reads. The **owner** change rides the same `PATCH` untouched,
+       because that is the one setting the conversation really has (§9.5).
+       Without this the seed and the gating read would be quietly editable
+       back into the state they exist to prevent; Slack and every other
+       platform keep both writes.
 
-    The three co-vary by construction: the seed is only right if gating is
-    vacuous, and gating is only vacuous because the install granted the one
-    conversation. Fail-closed `false` keeps every other platform on the
+    The four co-vary by construction: the seed is only right if gating is
+    vacuous, gating is only vacuous because the install granted the one
+    conversation, and a trigger nobody may write is the only honest end of
+    that argument. Fail-closed `false` keeps every other platform on the
     ordinary §10/§14 arms.
 - The opaque integration-config payload shape (§7.2) is documented beside its
   peers in `frames/integration.ts`.
@@ -1381,7 +1394,11 @@ tile.
   to the earliest non-gated member; a **restricted** member of the workspace
   bot keeps its keyword route and may hold the default, while the same agent
   stays gated on an ordinary bot, and the console projection and the compile
-  agree on its trigger (one predicate, §9.1); moving the row's owner moves bare
+  agree on its trigger (one predicate, §9.1); a `trigger` write is **refused**
+  on both generic surfaces (the per-conversation `PATCH` and the
+  `setChannelTrigger` tool) with the unlink path named, an owner change
+  through the same `PATCH` **succeeds**, and a Slack conversation still
+  accepts both; moving the row's owner moves bare
   delegations; removing the owning member re-homes the row instead of
   stranding the workspace; reconnect replaces a dead
   token in place; broker scope denial for a foreign daemon; workspace
@@ -1510,7 +1527,11 @@ daemon is a default that is missing exactly when the first delegation lands
 (§9.2, §9.4). Slack's
 `any` has no Linear meaning either: the platform emits no unaddressed traffic
 to opt into — only delegations, app mentions, follow-ups inside a session the
-agent already owns, and stops.
+agent already owns, and stops. And a setting nobody reads must be a setting
+nobody can write: the generic trigger-write surfaces refuse it and name the
+unlink path instead, while the owner change on the same route goes through, so
+the console and the tool surface offer exactly the one control this
+conversation has.
 
 The same argument settles what a **private member** means here, and it settles
 it once rather than fence by fence. Conversation gating guards a restricted
