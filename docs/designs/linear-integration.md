@@ -556,10 +556,14 @@ Linear rides the standard bot assignment. The provider's `projectBotAssign`
 produces the two opaque bags:
 
 ```ts
-// secrets bag — relay-only material
+// secrets bag — relay-only material (a NEW accepted shape for the relay's
+// assignment mapper: signing secret alone, no bot token — the platform's
+// egress is entirely the daemon's)
 { signingSecret }
-// ingress bag — demux identity + self-echo metadata
-{ clientId, organizationId, appUserId? }
+// ingress bag — demux identity + self-echo metadata, in the bag's GENERIC
+// slots: relay core indexes {appId: apiAppId, tenantId: teamId} and its
+// tenant fence reads teamId, so platform-named keys would be dropped
+{ apiAppId: clientId, teamId: organizationId, botUserId: appUserId? }
 ```
 
 The signing secret is the deployment app's (§7.1), stamped into each
