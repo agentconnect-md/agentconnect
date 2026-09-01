@@ -5,6 +5,7 @@ import {
   IntegrationCoreEnvelope,
   IntegrationDiscordConfig,
   IntegrationFeishuConfig,
+  IntegrationLinearConfig,
   IntegrationSlackConfig,
   IntegrationTelegramConfig,
   ManagedSkillEntry
@@ -47,6 +48,11 @@ export type DiscordConfig = z.infer<typeof DiscordConfigSchema>
 
 export const FeishuConfigSchema = IntegrationFeishuConfig
 export type FeishuConfig = z.infer<typeof FeishuConfigSchema>
+
+/** Linear carries a SHORT-LIVED credential, not a durable bot token: the spec's ≤24 h
+ *  access-token snapshot plus its expiry, refreshed over `linearcred` (§4.4/§7.2). */
+export const LinearConfigSchema = IntegrationLinearConfig
+export type LinearConfig = z.infer<typeof LinearConfigSchema>
 
 /**
  * One integration entry — §6.4 FINAL SHAPE, migrated together with the protocol

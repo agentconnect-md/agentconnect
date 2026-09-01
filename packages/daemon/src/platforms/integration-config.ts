@@ -27,6 +27,7 @@ import type { BindRuleConfig, Integration } from '../agents/agent-schema.js'
 import {
   DiscordConfigSchema,
   FeishuConfigSchema,
+  LinearConfigSchema,
   SlackConfigSchema,
   TelegramConfigSchema
 } from '../agents/agent-schema.js'
@@ -38,7 +39,8 @@ const CONFIG_SCHEMAS = {
   slack: SlackConfigSchema,
   telegram: TelegramConfigSchema,
   discord: DiscordConfigSchema,
-  feishu: FeishuConfigSchema
+  feishu: FeishuConfigSchema,
+  linear: LinearConfigSchema
 } as const
 
 /** The union of every platform's validated config, derived from the registry

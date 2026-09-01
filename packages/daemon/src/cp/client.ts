@@ -40,6 +40,8 @@ import type {
   CodeHostReviewResultReport,
   GitCredRequest,
   GitCredGrant,
+  LinearCredRequest,
+  LinearCredGrant,
   ChannelAgentsReq,
   ChannelAgentsOk,
   ChildSessionStatus,
@@ -938,6 +940,23 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected gitcred/grant, got ${rep.type}`, false)
     }
     return rep.payload as GitCredGrant
+  }
+
+  /** Request a fresh Linear access token (linear-integration.md §7.3) — same posture as
+   *  `requestGitCred`: connected only, one send, a 10s timeout, and never a logged payload. */
+  async requestLinearCred(payload: LinearCredRequest): Promise<LinearCredGrant> {
+    if ((this.state !== 'READY' && this.state !== 'DRAINING') || !this.transport) {
+      throw new WireError('INTERNAL', `control plane unreachable (client ${this.state})`, true)
+    }
+    const frame = this.scopedFrame('linearcred/request', payload)
+    const rep = await this.correlator.request(frame, (e) => this.transport!.send(e), {
+      maxTries: 1,
+      ackTimeoutMs: 10_000
+    })
+    if (rep.type !== 'linearcred/grant') {
+      throw new WireError('INTERNAL', `expected linearcred/grant, got ${rep.type}`, false)
+    }
+    return rep.payload as LinearCredGrant
   }
 
   /**
