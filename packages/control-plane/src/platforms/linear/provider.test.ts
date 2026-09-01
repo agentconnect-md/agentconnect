@@ -506,4 +506,32 @@ describe('the rest of the §9 surface', () => {
     expect(provider.pendingInstalls?.map((d) => d.label)).toEqual(['linear-install-state'])
     expect(provider.backgroundLoops).toEqual([sweeper])
   })
+
+  it('publishes BOTH convergence loops when it owns both', () => {
+    // The re-stamp and the orphan sweep arrived independently and each declared `backgroundLoops`.
+    // As two object spreads that reads as additive and is not — the later key replaces the earlier,
+    // so one loop silently never starts. Pinning the pair is what makes that a failing test rather
+    // than a loop nobody notices is missing.
+    const sweeper = { label: 'linear-orphan-token', start: () => {}, stop: () => {} }
+    const provider = createLinearCpProvider({
+      app: APP,
+      tokens: new MemoryTokens(),
+      orphanTokenSweeper: sweeper,
+      credentialReconciler: { start: () => {}, stop: () => {} }
+    })
+    expect(provider.backgroundLoops?.map((l) => l.label)).toEqual(['linear-credential-restamp', 'linear-orphan-token'])
+  })
+
+  it('publishes just the one it owns, either way round', () => {
+    const reconcilerOnly = createLinearCpProvider({
+      app: APP,
+      credentialReconciler: { start: () => {}, stop: () => {} }
+    })
+    expect(reconcilerOnly.backgroundLoops?.map((l) => l.label)).toEqual(['linear-credential-restamp'])
+    const sweeperOnly = createLinearCpProvider({
+      app: APP,
+      orphanTokenSweeper: { label: 'linear-orphan-token', start: () => {}, stop: () => {} }
+    })
+    expect(sweeperOnly.backgroundLoops?.map((l) => l.label)).toEqual(['linear-orphan-token'])
+  })
 })

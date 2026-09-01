@@ -967,7 +967,7 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
     expect(await grantRow('org_in_flight')).not.toBeNull()
   })
 
-  it('is inert without the deployment app, and declares itself as the provider’s only loop', async () => {
+  it('is inert without the deployment app, and is published alongside the re-stamp loop', async () => {
     const h = await harness()
     await putGrant(h, DEFAULT_ORG_ID, 'org_unowned')
     const disabled = new LinearOrphanTokenSweeper({
@@ -982,7 +982,13 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
     })
     await disabled.tick()
     expect(await grantRow('org_unowned')).not.toBeNull()
-    expect(h.app.deps.platforms.get('linear')!.backgroundLoops?.map((l) => l.label)).toEqual(['linear-orphan-token'])
+    // The composed provider publishes BOTH convergence loops — the §10.6 re-stamp and this sweep.
+    // They are independently optional, so asserting the pair here is what catches a composition
+    // that quietly drops one (see the provider suite for the same claim at the unit level).
+    expect(h.app.deps.platforms.get('linear')!.backgroundLoops?.map((l) => l.label)).toEqual([
+      'linear-credential-restamp',
+      'linear-orphan-token'
+    ])
   })
 })
 
