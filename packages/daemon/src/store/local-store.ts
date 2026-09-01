@@ -4896,6 +4896,57 @@ export class LocalStore {
     return inserted.changes === 1
   }
 
+  /**
+   * Admit a message and mint its permanent DELIVERY RECEIPT in ONE transaction.
+   *
+   * The receipt is a born-completed row recording that this delivery was served; the ordinary
+   * row is the replay queue entry, which is deleted the moment the turn settles. A provider
+   * whose redelivery ladder outlives the turn needs both, and needs them to share one fate:
+   *
+   *  - written separately, a crash between them leaves an ordinary row that replays with no
+   *    receipt, so the next redelivery is unrecognizable and runs the turn a second time;
+   *  - committed together, an ordinary row can only exist where its receipt does.
+   *
+   * `admitted` is false when the receipt was already there — the delivery has been served
+   * before, and the caller must run nothing, not merely stay quiet.
+   */
+  async appendInboxWithReceipt(row: InboxRow, receipt: InboxRow): Promise<{ admitted: boolean }> {
+    return await this.transaction(async (raw) => {
+      const tx = accessOf(raw)
+      const insert = (r: InboxRow): Promise<{ changes: number }> =>
+        tx
+          .prepare(
+            `INSERT OR IGNORE INTO inbox
+              (id, sessionKey, agentId, msg, integrationId, callMeta, hookContext, posterPublishState,
+                terminalReport, completedAt, isQueueCmd, loopGuardCounted, enqueuedAt)
+             VALUES
+               (@id, @sessionKey, @agentId, @msg, @integrationId, @callMeta, @hookContext, @posterPublishState,
+                @terminalReport, @completedAt, @isQueueCmd, @loopGuardCounted, @enqueuedAt)`
+          )
+          .run({
+            id: r.id,
+            sessionKey: r.sessionKey,
+            agentId: r.agentId,
+            msg: r.msg,
+            integrationId: r.integrationId ?? null,
+            callMeta: r.callMeta ?? null,
+            hookContext: r.hookContext ?? null,
+            posterPublishState: r.posterPublishState ?? null,
+            terminalReport: r.terminalReport ?? null,
+            completedAt: r.completedAt ?? null,
+            isQueueCmd: r.isQueueCmd ?? null,
+            loopGuardCounted: r.loopGuardCounted ?? 0,
+            enqueuedAt: r.enqueuedAt
+          })
+      // The receipt is the CAS. Losing it means another delivery of the same event owns this
+      // work, so the ordinary row is never written and no turn is admitted for this copy.
+      const minted = await insert(receipt)
+      if (minted.changes !== 1) return { admitted: false }
+      await insert(row)
+      return { admitted: true }
+    })
+  }
+
   /** Stable-id admission probe used before any hook anchoring side effect. A
    * live row will be replayed (or is already running); a terminal row is the
    * durable receipt. Either way, redelivery must not post another anchor. */

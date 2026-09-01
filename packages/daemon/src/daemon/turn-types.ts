@@ -15,6 +15,7 @@ import type { TelegramAction, TelegramConverger } from '../telegram/render.js'
 import type { DiscordAction, DiscordConverger } from '../discord/render.js'
 import type { FeishuAction, FeishuConverger } from '../feishu/render.js'
 import type { LinearAction, LinearConverger } from '../platforms/linear/turn-output.js'
+import type { PlatformConnection } from '../platforms/connection-reconciler.js'
 import type { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
@@ -334,6 +335,9 @@ export interface TurnRun {
   readonly plan: TurnPlan
   readonly agent: LoadedAgent
   readonly replyConn: ReplyConnection | undefined
+  /** The platform egress transport this turn leased, when its output does not go through
+   *  `replyConn`. Resolved ONCE, with the lease, and handed to the output surface as-is. */
+  readonly egressConn?: PlatformConnection
   readonly evaluation: TurnEvaluationReporter
 }
 

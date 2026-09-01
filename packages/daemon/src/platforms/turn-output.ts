@@ -50,10 +50,12 @@ export interface TurnOutputContext<TMessage> {
   /** The message that started the turn. A platform seeds its per-turn state from
    *  its own inbound event — Telegram's reply anchor is derived from it. */
   message: TMessage
-  /** The integration this turn's output goes through, when the turn has one. A surface whose
-   *  transport is resolved from a binding map captures it HERE, at turn start: the binding can
-   *  be dropped by reconciliation mid-turn, and a turn must still be able to settle. */
-  integrationId?: string
+  /** The egress transport core resolved for this turn AND holds the lease on, for a platform
+   *  whose output does not travel over the reply connection. Handed over already resolved, so
+   *  the leased connection and the emitting port are the same object BY CONSTRUCTION — a
+   *  second lookup could land on a different one if reconciliation rebound the integration in
+   *  between, leaving the lease on one client and the output on another. */
+  egress?: unknown
   /** COMPOUND mention addresses this conversation can contain, which the platform's
    *  splitter must never cut in half (send-message-routing-rework.md §5.3). Today only
    *  Slack has any — a shared bot's `<@U_SHARED> reviewer`, where the bot user id names

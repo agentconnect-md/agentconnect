@@ -124,7 +124,6 @@ export function buildTurnPlan(input: TurnPlanInput): TurnPlan {
     isDm: msg.isDm,
     showFooter,
     message: msg,
-    ...(integrationId !== undefined ? { integrationId } : {}),
     // send-message-routing-rework.md §5.3: compound shared-bot addresses this conversation
     // can contain, so the splitter never cuts `<@U_SHARED> reviewer` in half.
     protectedAddresses: input.protectedAddresses

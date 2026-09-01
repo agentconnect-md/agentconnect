@@ -413,6 +413,7 @@ import {
   linearAttributionOf,
   LinearConverger,
   type LinearAction,
+  type LinearEgressPort,
   type LinearTurnState
 } from './platforms/linear/turn-output.js'
 import {
@@ -938,10 +939,10 @@ export class Daemon {
         // brokered token and the retry ladder. Captured HERE, at turn start, and held by the
         // turn's lease — so reconciliation dropping the binding mid-turn cannot strand the
         // settling activity that ends the Linear session.
-        initialTurnState: (ctx): LinearTurnState => {
-          const conn = ctx.integrationId ? this.lnConnByIntegration.get(ctx.integrationId) : undefined
-          return { ...initialLinearTurnState(), ...(conn ? { conn } : {}) }
-        },
+        initialTurnState: (ctx): LinearTurnState => ({
+          ...initialLinearTurnState(),
+          ...(ctx.egress ? { conn: ctx.egress as LinearEgressPort } : {})
+        }),
         apply: (p, action) => applyLinearAction({ plan: p.plan }, turnState<LinearTurnState>(p), action as LinearAction)
       })
       return registry
@@ -6507,6 +6508,7 @@ export class Daemon {
     const admitted = new Promise<RdAck>((resolve) => (report = resolve))
     const dispatched = this.dispatch(msg.agentId, normalized, msg.integrationId, undefined, undefined, {
       ...(ingress?.requireDurable ? { requireDurable: true } : {}),
+      ...(ingress?.receiptId ? { receiptId: ingress.receiptId(normalized) } : {}),
       onAdmission: async (result) => {
         if (result.accepted && !result.duplicate) await onAdmitted(msg, normalized, busy)
         // A durability refusal is the ONE outcome the provider must send again: nothing was
@@ -6552,14 +6554,18 @@ export class Daemon {
       /** Refuse the delivery when the durable row cannot be written, rather than running it
        *  best-effort — for a platform whose admission hook USES that row as its dedup. */
       requireDurable?: boolean
+      /** The permanent receipt id for this delivery, minted with the admission row in one
+       *  transaction. Its prior existence makes the delivery a duplicate: nothing runs. */
+      receiptId?(normalized: NormalizedMessage): string
     }
   >([
     [
       'linear',
       {
         prepare: async (msg, normalized) => await this.prepareLinearDelivery(msg, normalized),
-        onAdmitted: async (msg, normalized, busy) => await this.admitLinearDelivery(msg, normalized, busy),
-        requireDurable: true
+        onAdmitted: async (msg, normalized, busy) => this.postLinearAck(msg, normalized, busy),
+        requireDurable: true,
+        receiptId: (normalized) => linearDeliveryReceiptId(stableMessageId(normalized))
       }
     ]
   ])
@@ -6666,28 +6672,13 @@ export class Daemon {
   }
 
   /**
-   * Admit one Linear delivery, INSIDE dispatch's durable fence (§10.1).
-   *
-   * The receipt is the delivery's permanent dedup record and is written here, with the
-   * ordinary admission, precisely so the two share one fate: a receipt the store refuses
-   * rejects out of this hook, which refuses the delivery, so no turn runs that a later
-   * redelivery would be unable to recognize and would therefore run again.
-   */
-  private async admitLinearDelivery(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): Promise<void> {
-    // Losing the CAS means a sibling delivery of the same event owns the acknowledgement;
-    // that is a collapse, not a failure, so the delivery stays admitted and silent.
-    if (!(await this.mintLinearDeliveryReceipt(msg, normalized))) return
-    this.postLinearAck(msg, normalized, busy)
-  }
-
-  /**
    * The ≤10 s pre-spawn acknowledgement (§10.1) — the ONE activity posted outside the
    * converger, and the reason a suppressed turn can still be ack-only. Fire-and-forget: it is
    * chrome, and the turn it precedes must never wait on a Linear write.
    *
-   * Reached only once {@link admitLinearDelivery} has won the receipt CAS, so the strict order
-   * §10.1 asks for holds twice over: the ordinary durable row is owned AND the permanent
-   * receipt is written before the feed ever sees a row.
+   * Reached only on an admission that WON the receipt CAS, so the strict order §10.1 asks for
+   * holds by construction: the admission row and the permanent receipt were committed together
+   * before this can run, and a losing copy of the delivery never reaches it at all.
    */
   private postLinearAck(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): void {
     const conn = this.lnConnByIntegration.get(msg.integrationId)
@@ -8600,27 +8591,40 @@ export class Daemon {
   private async persistInbox(
     entry: QueueEntry,
     key: string,
-    options: { required?: boolean; adoptExisting?: boolean; existingId?: string } = {}
+    options: { required?: boolean; adoptExisting?: boolean; existingId?: string; receiptId?: string } = {}
   ): Promise<'inserted' | 'adopted' | 'existing' | 'skipped' | 'failed'> {
     if (entry.webchat && entry.webchat.initiator !== 'agent') return 'skipped' // Browser-owned live sinks cannot replay.
     const id = options.existingId ?? entry.callMeta?.deliveryId ?? stableMessageId(entry.msg)
+    const row = {
+      id,
+      sessionKey: key,
+      agentId: entry.agentId,
+      msg: JSON.stringify(entry.msg),
+      integrationId: entry.integrationId ?? null,
+      callMeta: entry.callMeta ? JSON.stringify(entry.callMeta) : null,
+      hookContext: entry.hookContext ? JSON.stringify(entry.hookContext) : null,
+      posterPublishState: entry.posterPublishState ?? null,
+      isQueueCmd: entry.isQueueCmd ? 1 : null,
+      // persistInbox runs only after a successful admission. New rows are born
+      // replay-neutral; a migrated row's atomic charge already advanced this marker,
+      // and appendInbox reasserts it without replacing the original payload/FIFO slot.
+      loopGuardCounted: 1,
+      enqueuedAt: monotonicTs()
+    }
     try {
-      const inserted = await this.store.appendInbox({
-        id,
-        sessionKey: key,
-        agentId: entry.agentId,
-        msg: JSON.stringify(entry.msg),
-        integrationId: entry.integrationId ?? null,
-        callMeta: entry.callMeta ? JSON.stringify(entry.callMeta) : null,
-        hookContext: entry.hookContext ? JSON.stringify(entry.hookContext) : null,
-        posterPublishState: entry.posterPublishState ?? null,
-        isQueueCmd: entry.isQueueCmd ? 1 : null,
-        // persistInbox runs only after a successful admission. New rows are born
-        // replay-neutral; a migrated row's atomic charge already advanced this marker,
-        // and appendInbox reasserts it without replacing the original payload/FIFO slot.
-        loopGuardCounted: 1,
-        enqueuedAt: monotonicTs()
-      })
+      // A caller asking for a DELIVERY RECEIPT gets both rows in one transaction: the receipt
+      // outlives the turn and is what a late redelivery is recognized by, so it must never
+      // exist without its admission row, nor the row without it. The receipt is also the CAS —
+      // losing it means this copy of the delivery is a duplicate and admits nothing.
+      const inserted = options.receiptId
+        ? (
+            await this.store.appendInboxWithReceipt(row, {
+              ...row,
+              id: options.receiptId,
+              completedAt: this.clock.now()
+            })
+          ).admitted
+        : await this.store.appendInbox(row)
       if (!inserted && !options.adoptExisting) return 'existing'
       entry.inboxId = id
       this.liveInboxIds.add(id)
@@ -9085,6 +9089,12 @@ export class Daemon {
       /** Stable target-scoped inbox id for a physical event delivered to more
        * than one agent. It does not replace the provider transcript identity. */
       deliveryId?: string
+      /** Mint a permanent DELIVERY RECEIPT under this id, in the SAME transaction as the
+       * admission row (see `LocalStore.appendInboxWithReceipt`). For a provider whose
+       * redelivery ladder outlives the turn: the ordinary row is deleted at settlement, so
+       * without a receipt a late redelivery would run the same work again. An already-minted
+       * receipt makes the delivery a duplicate — nothing is admitted and no turn runs. */
+      receiptId?: string
       /** Startup replay deliberately adopts the row already read from SQLite. */
       adoptExistingInbox?: boolean
       /** Admission barrier: called after the durable row is owned, or with a rejection before
@@ -9341,7 +9351,8 @@ export class Daemon {
               persistence = await this.persistInbox(entry, key, {
                 required: opts?.requireDurable,
                 adoptExisting: opts?.adoptExistingInbox,
-                existingId: opts?.inboxReplayId ?? opts?.deliveryId
+                existingId: opts?.inboxReplayId ?? opts?.deliveryId,
+                ...(opts?.receiptId ? { receiptId: opts.receiptId } : {})
               })
             } catch (err) {
               await settleAdmission({ accepted: false, reason: 'durability' })
@@ -9433,7 +9444,8 @@ export class Daemon {
             persistence = await this.persistInbox(entry, key, {
               required: opts?.requireDurable,
               adoptExisting: opts?.adoptExistingInbox,
-              existingId: opts?.inboxReplayId ?? opts?.deliveryId
+              existingId: opts?.inboxReplayId ?? opts?.deliveryId,
+              ...(opts?.receiptId ? { receiptId: opts.receiptId } : {})
             })
           } catch (err) {
             await this.releaseDispatchClaim(key)
@@ -9951,7 +9963,12 @@ export class Daemon {
     // The call itself is deferred to the turn's first task — a turn that runs no tools never
     // opens a stream and is byte-identical to today.
     if (conv instanceof OutputConverger && this.slackStreamingEligible(plan, replyConn)) conv.enableStreaming()
-    const run: TurnRun = { entry, key, plan, agent, replyConn, evaluation }
+    // ONE lookup for the platform egress transport: the lease below and the port the output
+    // surface emits through are the SAME object. Resolving it twice — once to lease, once at
+    // turn-state seeding — leaves a window where reconciliation rebinds the integration
+    // between them, and the turn then holds a lease on a client it never writes to.
+    const egressConn = this.platformTurnEgress.get(msg.platform)?.(plan.integrationId)
+    const run: TurnRun = { entry, key, plan, agent, replyConn, ...(egressConn ? { egressConn } : {}), evaluation }
     // Add the streaming fields onto the SAME webchat object held by QueueEntry. Sharing
     // `doneSent` closes a Pending-vs-gate race where cancel could otherwise terminally signal
     // each copy once. Seeded HERE, before `openSession`, because the sandbox-bootstrap notice
@@ -9976,9 +9993,7 @@ export class Daemon {
     // needs the reconciler to drain before it stops that transport (§7.5): without a lease the
     // prune pass can stop the client mid-turn and the settling activity is simply lost.
     const releaseReplyTransport = this.holdReplyConnection(replyConn)
-    const releaseEgressTransport = this.holdReplyConnection(
-      this.platformTurnEgress.get(msg.platform)?.(plan.integrationId)
-    )
+    const releaseEgressTransport = this.holdReplyConnection(run.egressConn)
     const releaseReplyConn = (): void => {
       releaseReplyTransport()
       releaseEgressTransport()
@@ -10450,7 +10465,10 @@ export class Daemon {
       acpSessionId: sessionId,
       outwardSessionId,
       ...(entry.selectedHost ? { selectedHost: entry.selectedHost } : {}),
-      turnState: plan.turnSurface.initialTurnState(plan.turnCtx),
+      turnState: plan.turnSurface.initialTurnState({
+        ...plan.turnCtx,
+        ...(run.egressConn ? { egress: run.egressConn } : {})
+      }),
       conn: run.replyConn,
       ...(callMeta ? { callMeta } : {}),
       ...(turn.webchat ? { webchat: turn.webchat } : {}),

@@ -11,9 +11,11 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { stableMessageId } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
 import type { LinearActivityInput } from '../src/platforms/linear/turn-output.js'
 import {
+  linearDeliveryReceiptId,
   linearFailureBody,
   LINEAR_STOP_RESPONSE_BODY,
   LINEAR_UNSUPPORTED_SURFACE_BODY,
@@ -246,26 +248,40 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     await daemon.stop()
   })
 
-  it('acknowledges once even if the admission hook itself runs twice', async () => {
-    // The last guard, and the only one the redelivery tests cannot reach: a delivery arriving
-    // while the first one's ack has admitted but not yet minted its receipt passes the
-    // `prepare` gate AND gets a fresh dispatch row. The receipt CAS is what stops the second
-    // feed row, so drive the hook directly rather than trying to hit that window by timing.
-    const { daemon, posted, turnSettled } = await boot()
+  it('refuses the WHOLE delivery for a copy that loses the receipt CAS, not just its ack', async () => {
+    // The window two concurrent deliveries race through: both pass `prepare` because neither
+    // sees a receipt yet, both reach admission, and one loses the transaction's CAS. The loser
+    // must run nothing — suppressing only its acknowledgement would still start a second turn.
+    const { daemon, posted, store, turnSettled } = await boot()
     const normalized = { ...delivery().payload, transportScope: transportScope(daemon) }
-    const relayMsg = delivery()
-    await (daemon as any).admitLinearDelivery(relayMsg, normalized, false)
-    await (daemon as any).admitLinearDelivery(relayMsg, normalized, false)
+    // Stand in for the peer that got there first, and blind the pre-dispatch fast path the way
+    // a genuinely concurrent arrival would be blinded.
+    await store.appendInbox({
+      id: linearDeliveryReceiptId(stableMessageId(normalized)),
+      sessionKey: sessionKey('linear', ISSUE, SESSION, AGENT, transportScope(daemon)),
+      agentId: AGENT,
+      msg: '{}',
+      completedAt: 1,
+      loopGuardCounted: 1,
+      enqueuedAt: '1'
+    })
+    vi.spyOn(store, 'hasInbox').mockResolvedValue(false)
+    const handle = vi.fn()
+    ;(daemon as any).sessions.handle = handle
+
+    expect(await im(daemon, delivery())).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
     await turnSettled()
-    expect(acks(posted)).toHaveLength(1)
+    expect(posted).toEqual([])
+    expect(handle).not.toHaveBeenCalled()
     await daemon.stop()
   })
 
-  it('refuses the delivery rather than acking when the durable row cannot be written', async () => {
+  it('refuses the delivery rather than acking when the durable admission cannot be written', async () => {
     const { daemon, posted, store, turnSettled } = await boot()
-    // §10.1's dedup fence IS the durable row, so a swallowed write would let a redelivery
-    // double-post an append-only feed. Refusing is the correct trade — the relay retries.
-    vi.spyOn(store, 'appendInbox').mockRejectedValue(new Error('disk is gone'))
+    // §10.1's dedup fence IS the durable admission, so a swallowed write would let a
+    // redelivery double-post an append-only feed. Refusing is the correct trade — the
+    // provider's retry ladder is what recovers it.
+    vi.spyOn(store, 'appendInboxWithReceipt').mockRejectedValue(new Error('disk is gone'))
     expect(await im(daemon, delivery())).toEqual({
       msgId: `linear:${SESSION}:created`,
       accepted: false,
@@ -276,25 +292,14 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     await daemon.stop()
   })
 
-  it('refuses the delivery — and runs NO turn — when only the permanent receipt fails', async () => {
-    // The receipt is what a redelivery is recognized by, and it is written inside the same
-    // admission fence as the ordinary row precisely so the two share one fate. Fail only the
-    // receipt: the delivery must be refused whole, or the ordinary row is removed at
-    // settlement and the provider's next redelivery runs the very same turn again.
+  it('leaves NOTHING behind when the durable admission fails, so no turn replays later', async () => {
+    // The crash window: the admission row and its permanent receipt are one transaction, so a
+    // failure leaves neither. A surviving row would replay at startup with no receipt, and the
+    // provider's next redelivery would then run the very same turn a second time.
     const { daemon, posted, store, turnSettled } = await boot()
-    const dispatched: unknown[] = []
-    const realAppend = store.appendInbox.bind(store)
-    vi.spyOn(store, 'appendInbox').mockImplementation(async (...args: unknown[]) => {
-      const row = args[0] as { id: string }
-      if (row.id.includes('linear-served')) throw new Error('disk is gone')
-      return (await realAppend(row)) as boolean
-    })
-    const prompt = vi.fn()
-    ;(daemon as any).sessions.handle = vi.fn(async (...args: unknown[]) => {
-      dispatched.push(args)
-      prompt()
-      throw new Error('should never be reached')
-    })
+    const handle = vi.fn()
+    ;(daemon as any).sessions.handle = handle
+    vi.spyOn(store, 'appendInboxWithReceipt').mockRejectedValue(new Error('disk is gone'))
 
     expect(await im(daemon, delivery())).toEqual({
       msgId: `linear:${SESSION}:created`,
@@ -303,7 +308,8 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     })
     await turnSettled()
     expect(posted).toEqual([])
-    expect(prompt).not.toHaveBeenCalled()
+    expect(handle).not.toHaveBeenCalled()
+    expect(await store.listInboxBySessionKeyFifo()).toEqual([])
     await daemon.stop()
   })
 
@@ -361,7 +367,7 @@ describe('§5 the Layer-2 surface', () => {
     const surface = (daemon as any).turnSurfaces.for('linear')
     const turn = {
       plan: { thread: SESSION, platform: 'linear', agentId: AGENT, sessionKey: 'k' },
-      turnState: surface.initialTurnState({ integrationId: INTEGRATION })
+      turnState: surface.initialTurnState({ egress: (daemon as any).lnConnByIntegration.get(INTEGRATION) })
     }
     await surface.apply(turn, { kind: 'activity', type: 'response', body: 'done' })
     expect(responses(posted).map((p) => p.activity.body)).toEqual(['done'])
@@ -377,7 +383,7 @@ describe('§5 the Layer-2 surface', () => {
     const surface = (daemon as any).turnSurfaces.for('linear')
     const turn = {
       plan: { thread: SESSION, platform: 'linear', agentId: AGENT, sessionKey: 'k' },
-      turnState: surface.initialTurnState({ integrationId: INTEGRATION })
+      turnState: surface.initialTurnState({ egress: (daemon as any).lnConnByIntegration.get(INTEGRATION) })
     }
     ;(daemon as any).lnConnByIntegration.delete(INTEGRATION)
     await surface.apply(turn, { kind: 'activity', type: 'error', body: 'boom' })
@@ -390,7 +396,7 @@ describe('§5 the Layer-2 surface', () => {
     const surface = (daemon as any).turnSurfaces.for('linear')
     const turn = {
       plan: { thread: SESSION, platform: 'linear', agentId: AGENT, sessionKey: 'k' },
-      turnState: surface.initialTurnState({ integrationId: 'int-unbound' })
+      turnState: surface.initialTurnState({})
     }
     await surface.apply(turn, { kind: 'activity', type: 'response', body: 'done' })
     expect(posted).toEqual([])
@@ -672,6 +678,48 @@ describe('§7.5 the turn holds its egress transport', () => {
     // The client was stopped only after the turn had posted its settling activity through it.
     expect(posted.length).toBeGreaterThan(0)
     expect(stoppedAfter).toBe(posted.length)
+    await daemon.stop()
+  })
+})
+
+describe('§7.5 the leased transport and the emitting port are one object', () => {
+  it('keeps emitting through the LEASED connection when reconcile rebinds mid-open', async () => {
+    // The transport used to be resolved twice — once to take the lease, once when the output
+    // surface seeded its turn state — with session opening in between. A rebind landing in
+    // that window left the lease on the old client and the output on the new one: the leased
+    // client could be stopped while still being written to, and the new one written to with
+    // no lease at all. Rebinding through the registry seam is what that window looked like.
+    const { daemon, posted, turnSettled } = await boot()
+    const leased = (daemon as any).lnConnByIntegration.get(INTEGRATION)
+    const rebound: Posted[] = []
+    const replacement = {
+      integrationId: INTEGRATION,
+      botUserId: 'app-user-1',
+      workspaceId: () => WORKSPACE,
+      async postActivity(sessionId: string, activity: LinearActivityInput) {
+        rebound.push({ sessionId, activity, inboxAdmitted: true })
+      },
+      async updateSession() {}
+    }
+    let lookups = 0
+    ;(daemon as any).platformTurnEgress.set('linear', () => {
+      lookups += 1
+      // Anything after the FIRST lookup sees the rebound client, which is exactly what a
+      // reconcile between the two old lookups would have produced.
+      if (lookups > 1) return replacement
+      ;(daemon as any).lnConnByIntegration.set(INTEGRATION, replacement)
+      return leased
+    })
+
+    await im(daemon, delivery())
+    // Settle the WHOLE turn: the turn-state seeding that used to re-resolve happens after
+    // session opening, so asserting on the acknowledgement alone would pass either way.
+    await turnSettled()
+
+    // One resolution for the whole turn, and every activity went to the connection it leased.
+    expect(lookups).toBe(1)
+    expect(posted.length).toBeGreaterThan(0)
+    expect(rebound).toEqual([])
     await daemon.stop()
   })
 })
