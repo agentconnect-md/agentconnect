@@ -24,6 +24,7 @@ import { LinearOrphanTokenSweeper } from '../../src/platforms/linear/orphan-toke
 import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { IntegrationRemove, IntegrationUpsert } from '@agentconnect.md/protocol'
+import type { LinearTokenStore } from '../../src/persistence/ports.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const APP = { clientId: 'lin_client_id', clientSecret: 'lin_client_secret', signingSecret: 'lin_signing_secret' }
@@ -595,6 +596,39 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
     })
   }
 
+  /** A store that DELEGATES to the real one, with named overrides. Spreading the instance instead
+   *  would drop every prototype method and turn a race test into a silent TypeError the sweeper's
+   *  own try/catch swallows — which passes for the wrong reason. */
+  function storeWith(base: LinearTokenStore, overrides: Partial<LinearTokenStore>): LinearTokenStore {
+    return {
+      get: (i) => base.get(i),
+      put: (i, m) => base.put(i, m),
+      delete: (i) => base.delete(i),
+      listOrphans: (c, s, l) => base.listOrphans(c, s, l),
+      deleteIfUnchanged: (i, u) => base.deleteIfUnchanged(i, u),
+      withIdentityOwnership: (i, act) => base.withIdentityOwnership(i, act),
+      ...overrides
+    }
+  }
+
+  /** A winner Bot for the identity, in some OTHER organization. */
+  async function admitWinnerElsewhere(organizationId: string): Promise<string> {
+    const winnerOrg = `org-linear-${randomUUID()}`
+    await prisma.org.create({ data: { id: winnerOrg, slug: winnerOrg } })
+    await prisma.bot.create({
+      data: {
+        id: randomUUID(),
+        orgId: winnerOrg,
+        platform: 'linear',
+        name: 'winner',
+        transport: 'http',
+        externalAppId: APP.clientId,
+        externalTenantId: organizationId
+      }
+    })
+    return winnerOrg
+  }
+
   const putGrant = (h: Harness, orgId: string, organizationId: string) =>
     h.app.deps.repos.linearToken.put(
       { orgId: OrgId(orgId), clientId: APP.clientId, organizationId },
@@ -710,7 +744,7 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
     const store = h.app.deps.repos.linearToken
     const stale = new LinearOrphanTokenSweeper({
       app: APP,
-      tokens: { ...store, listOrphans: () => Promise.resolve(snapshot), put: (i, m) => store.put(i, m) },
+      tokens: storeWith(store, { listOrphans: () => Promise.resolve(snapshot) }),
       service: new LinearTokenService({
         app: APP,
         tokens: store,
@@ -724,6 +758,82 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
 
     expect((await grantRow('org_racing'))!.accessToken).toBe('access_fresh')
     expect(h.linear.count('/oauth/revoke')).toBe(0)
+  })
+
+  it('never revokes when another organization wins the identity AFTER the row was claimed', async () => {
+    // The last window the row-level guard cannot see. A different organization completing a connect
+    // for the same (clientId, organizationId) touches NONE of this organization's rows, so the
+    // updatedAt-guarded delete still succeeds — and a listing-time "nobody owns it" carried down to
+    // here would revoke the app↔workspace grant the winner just obtained. The decision is therefore
+    // re-asked under the identity's advisory lock, at the moment of acting.
+    const h = await harness()
+    await putGrant(h, DEFAULT_ORG_ID, WORKSPACE)
+    const store = h.app.deps.repos.linearToken
+
+    let winnerOrg: string | undefined
+    const racing = storeWith(store, {
+      deleteIfUnchanged: async (identity, updatedAt) => {
+        const removed = await store.deleteIfUnchanged(identity, updatedAt)
+        // The winner lands in exactly the gap: after the claim, before the revoke decision.
+        winnerOrg = await admitWinnerElsewhere(WORKSPACE)
+        return removed
+      }
+    })
+    await new LinearOrphanTokenSweeper({
+      app: APP,
+      tokens: racing,
+      service: new LinearTokenService({
+        app: APP,
+        tokens: store,
+        api: new LinearApiClient({ fetchImpl: h.linear.fetchImpl, clock }),
+        clock
+      }),
+      clock,
+      graceMs: 0
+    }).tick()
+
+    expect(winnerOrg).toBeDefined()
+    // The local delete already happened and is fine — the row was dead weight in ITS organization.
+    expect(await grantRow(WORKSPACE)).toBeNull()
+    // …but the irreversible half was withheld, so the winner's brand-new grant still works.
+    expect(h.linear.count('/oauth/revoke')).toBe(0)
+  })
+
+  it('serializes the revoke decision against a connect claiming the same identity', async () => {
+    // The fence itself: `put` (§7.1 step 1, every claimant's first durable write) and the revoke
+    // decision take the SAME advisory lock, so they cannot interleave. Holding the decision open
+    // must therefore hold a concurrent claim off.
+    const h = await harness()
+    await putGrant(h, DEFAULT_ORG_ID, 'org_contended')
+    const store = h.app.deps.repos.linearToken
+    const identity = { orgId: OrgId(DEFAULT_ORG_ID), clientId: APP.clientId, organizationId: 'org_contended' }
+    const otherOrg = `org-linear-${randomUUID()}`
+    await prisma.org.create({ data: { id: otherOrg, slug: otherOrg } })
+
+    let claimed = false
+    let claim: Promise<void> | undefined
+
+    await store.withIdentityOwnership(identity, async () => {
+      // A different organization tries to claim the same workspace while the lock is held. It is
+      // deliberately NOT awaited here: the lock lives with this transaction, so waiting for a
+      // contender inside it would deadlock against the very fence under test.
+      claim = store
+        .put(
+          { orgId: OrgId(otherOrg), clientId: APP.clientId, organizationId: 'org_contended' },
+          { accessToken: 'a', refreshToken: 'r', expiresAt: new Date(Date.now() + 86_400_000) }
+        )
+        .then(() => {
+          claimed = true
+        })
+      // Give it a real chance to land; it must not, because it is queued behind this lock.
+      await new Promise((r) => setTimeout(r, 150))
+      expect(claimed).toBe(false)
+    })
+
+    // …and once the decision's transaction ended, the claim went through.
+    await claim
+    expect(claimed).toBe(true)
+    expect(await grantRow('org_contended', otherOrg)).not.toBeNull()
   })
 
   it('respects the grace window, so a callback between steps 1 and 2 is never swept', async () => {

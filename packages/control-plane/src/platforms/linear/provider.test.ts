@@ -70,6 +70,11 @@ class MemoryTokens implements LinearTokenStore {
   deleteIfUnchanged(): Promise<null> {
     return Promise.resolve(null)
   }
+  /** No lock without Postgres — the fence is the whole point, so these paths are pinned in the
+   *  integration suite. Here the answer is "owned", the fail-closed side. */
+  withIdentityOwnership<T>(_identity: unknown, act: (owned: boolean) => Promise<T>): Promise<T> {
+    return act(true)
+  }
 }
 
 function bot(over: Partial<BotRecord> = {}): BotRecord {

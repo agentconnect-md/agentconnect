@@ -24,7 +24,7 @@ import { z } from 'zod'
 import type { ZodRawShape } from 'zod'
 import type { FastifyPluginAsync } from 'fastify'
 import type { IntegrationLinearConfig } from '@agentconnect.md/protocol'
-import type { BotRecord, BotRepo, BotSecretMaterial, LinearTokenStore } from '../../persistence/ports.js'
+import type { BotRecord, BotSecretMaterial, LinearTokenStore } from '../../persistence/ports.js'
 import type { LinearPlatformAppConfig } from '../../config/linear-platform.js'
 import type { LinearCredentialReconciler } from './credential-reconciler.js'
 import type {
@@ -193,9 +193,6 @@ export interface LinearCpProviderDeps {
   /** Token custody (§4.4). Present ⇒ the disconnect edge also revokes upstream before dropping the
    *  row; absent ⇒ it only drops the row, which is still the whole of the local teardown. */
   tokenService?: LinearTokenService
-  /** The D6 lookup the disconnect edge asks "does any organization still hold this identity?" —
-   *  a CROSS-ORG read by construction, which is exactly the question. */
-  bots?: Pick<BotRepo, 'getByExternalIdentity'>
   /** The connect funnel's plugins, injected PRE-BOUND by the composition root (a provider never
    *  reaches back for a route factory — the Slack/Feishu discipline). */
   funnelRoutes?: { org: FastifyPluginAsync[]; publicCallback: FastifyPluginAsync[] }
@@ -210,8 +207,7 @@ export interface LinearCpProviderDeps {
 export const LINEAR_CONNECT_TTL_MS = 30 * 60 * 1000
 
 export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformProvider<LinearCreateCredentials> {
-  const { tokens, tokenService, bots, funnelRoutes, pendingInstalls, orphanTokenSweeper, credentialReconciler } =
-    deps
+  const { tokens, tokenService, funnelRoutes, pendingInstalls, orphanTokenSweeper, credentialReconciler } = deps
 
   /** The bot's connection identity (§4.4), or null when the row carries no complete D6 pair. */
   const connectionOf = (bot: BotRecord) =>
@@ -352,9 +348,12 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
      * is keyed by the connection identity — so nothing else would ever collect it (§7.4). Two steps,
      * in this order because the revoke needs the access token the delete is about to drop:
      *
-     *  1. best-effort `POST /oauth/revoke` at Linear, but ONLY when no organization's Bot still
-     *     holds the identity. The fences are global while token rows are org-scoped, so a loser's
-     *     teardown must never revoke the grant backing the WINNER's live install (§7.1);
+     *  1. best-effort `POST /oauth/revoke` at Linear, but ONLY when no organization still relies on
+     *     this app's authorization of the workspace. The fences are global while token rows are
+     *     org-scoped, so a loser's teardown must never revoke the grant backing the WINNER's live
+     *     install (§7.1) — and because a revoke acts on the app↔workspace grant, that question is
+     *     asked DURABLY, under the identity's advisory lock, rather than from a plain read a
+     *     concurrent connect could falsify before the call goes out;
      *  2. drop the identity's row, unconditionally — it is dead weight in this organization either
      *     way. The delete runs after core removed the bot, so a refused delete changes nothing.
      *
@@ -367,12 +366,11 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
             onBotDelete: async (bot) => {
               const connection = connectionOf(bot)
               if (!connection) return
-              const heldElsewhere = await bots?.getByExternalIdentity(
-                'linear',
-                connection.clientId,
-                connection.organizationId
-              )
-              if (tokenService && !heldElsewhere) await tokenService.revoke(connection)
+              if (tokenService) {
+                await tokens.withIdentityOwnership(connection, async (owned) => {
+                  if (!owned) await tokenService.revoke(connection)
+                })
+              }
               await tokens.delete(connection)
             }
           }

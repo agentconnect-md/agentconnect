@@ -11,7 +11,8 @@
  * terminal outcome the console polls for, and carries no secret material, so it needs no cipher.
  */
 import type { LinearInstallState, LinearToken } from '../../generated/prisma/client.js'
-import type { PrismaLike } from '../prisma.js'
+import { withAmbientTx, type PrismaLike } from '../prisma.js'
+import { lockLinearIdentity } from '../linear-identity-lock.js'
 import type {
   LinearConnectionIdentity,
   LinearInstallStateRecord,
@@ -24,6 +25,10 @@ import type {
 import type { SecretCipher } from '../../secrets/cipher.js'
 import { orgScope } from '../../secrets/scope.js'
 import { AgentId, BotId, OrgId } from '../../domain/ids.js'
+
+/** Budget for the locked ownership decision: room for one bounded upstream revoke plus the queueing
+ *  a contended identity can add, without leaving a lock able to outlive a wedged caller. */
+const IDENTITY_LOCK_TX = { timeout: 20_000, maxWait: 10_000 }
 
 export class PgLinearTokenStore implements LinearTokenStore {
   constructor(
@@ -62,6 +67,19 @@ export class PgLinearTokenStore implements LinearTokenStore {
     return row ? this.toRecord(identity, row) : null
   }
 
+  /**
+   * §7.1's step-1 write, under the identity's advisory lock.
+   *
+   * The lock is what makes this write the serialization point for the whole identity: it is the
+   * FIRST durable trace of an organization laying claim to one, it provably precedes that
+   * organization's Bot (the create tail runs after it, by §7.1's ordering), and it is a single
+   * upsert — so the critical section holds no I/O and stays open for microseconds. The orphan
+   * sweeper takes the same lock to decide whether an upstream revoke is safe, and cannot therefore
+   * observe a half-made claim.
+   *
+   * Sealing happens OUTSIDE the transaction: cipher calls may be remote (Vault Transit), and
+   * holding a lock across that round trip would be the thing this is careful not to do.
+   */
   async put(identity: LinearConnectionIdentity, material: LinearTokenMaterial): Promise<void> {
     const scope = orgScope(identity.orgId)
     const tokens = {
@@ -69,15 +87,18 @@ export class PgLinearTokenStore implements LinearTokenStore {
       refreshToken: material.refreshToken ? await this.cipher.seal(material.refreshToken, scope) : null,
       expiresAt: material.expiresAt
     }
-    await this.prisma.linearToken.upsert({
-      where: PgLinearTokenStore.key(identity),
-      create: {
-        orgId: identity.orgId,
-        clientId: identity.clientId,
-        organizationId: identity.organizationId,
-        ...tokens
-      },
-      update: tokens
+    await withAmbientTx(this.prisma, async (tx) => {
+      await lockLinearIdentity(tx, identity.clientId, identity.organizationId)
+      await tx.linearToken.upsert({
+        where: PgLinearTokenStore.key(identity),
+        create: {
+          orgId: identity.orgId,
+          clientId: identity.clientId,
+          organizationId: identity.organizationId,
+          ...tokens
+        },
+        update: tokens
+      })
     })
   }
 
@@ -96,23 +117,15 @@ export class PgLinearTokenStore implements LinearTokenStore {
    * in over an hour), so taking the oldest N and filtering afterwards lets those N occupy every
    * pass and starves the orphans behind them forever.
    *
-   * The two scopes the design separates are the two subqueries. `NOT EXISTS … AND b."orgId" = …`
-   * is the ORG-SCOPED selection — a row whose own organization still holds the identity is a live
-   * install and is not a candidate. `EXISTS …` without the org predicate is the GLOBAL question,
-   * and because the org-scoped arm already excluded same-org owners it can only mean another
-   * organization's Bot: the cross-org fence loser, whose winner an upstream revoke would kill.
+   * This answers only the ORG-SCOPED question — "does this row's own organization still hold the
+   * identity?" — and deliberately returns no global one. Whether an upstream revoke is safe is a
+   * question about OTHER organizations, and any answer computed here can be falsified before the
+   * sweeper acts on it by a connect that touches none of these rows; it belongs to
+   * {@link PgLinearTokenStore.withIdentityOwnership}, under the lock, at the moment of acting.
    */
   async listOrphans(clientId: string, staleBefore: Date, limit: number): Promise<LinearOrphanTokenRow[]> {
-    const rows = await this.prisma.$queryRaw<
-      { orgId: string; organizationId: string; updatedAt: Date; claimedElsewhere: boolean }[]
-    >`
-      SELECT t."orgId", t."organizationId", t."updatedAt",
-             EXISTS (
-               SELECT 1 FROM "bot" b
-                WHERE b."platform" = 'linear'
-                  AND b."externalAppId" = t."clientId"
-                  AND b."externalTenantId" = t."organizationId"
-             ) AS "claimedElsewhere"
+    const rows = await this.prisma.$queryRaw<{ orgId: string; organizationId: string; updatedAt: Date }[]>`
+      SELECT t."orgId", t."organizationId", t."updatedAt"
         FROM "linear_token" t
        WHERE t."clientId" = ${clientId}
          AND t."updatedAt" < ${staleBefore}
@@ -128,9 +141,56 @@ export class PgLinearTokenStore implements LinearTokenStore {
     `
     return rows.map((r) => ({
       identity: { orgId: OrgId(r.orgId), clientId, organizationId: r.organizationId },
-      claimedElsewhere: r.claimedElsewhere,
       updatedAt: r.updatedAt
     }))
+  }
+
+  /**
+   * Run `act` under the identity's advisory lock, handing it the GLOBAL ownership answer as of
+   * inside that lock — the only place the answer is safe to act on.
+   *
+   * A snapshot answer is not good enough for an upstream revoke, and that is the whole reason this
+   * exists: another organization can complete a connect for the same `(clientId, organizationId)`
+   * at any moment without touching this organization's row, so a listing-time "nobody owns it"
+   * survives the row-level claim intact and drives a revoke that tears down the workspace someone
+   * else just connected. Under this lock, `put` — every claimant's first durable write, §7.1 step 1
+   * — cannot interleave, so the answer holds for as long as `act` runs.
+   *
+   * `owned` is true when EITHER any organization's Bot holds the D6 identity, OR any OTHER
+   * organization holds a token row for it. The second disjunct is what catches a winner that is
+   * mid-callback: it has written its grant but not yet its Bot, and revoking would kill it before
+   * it ever appears as an owner.
+   */
+  withIdentityOwnership<T>(identity: LinearConnectionIdentity, act: (owned: boolean) => Promise<T>): Promise<T> {
+    // An explicit budget because `act` is the sweeper's upstream revoke: one bounded HTTP call, held
+    // inside the lock on purpose (releasing first would only narrow the window). The Linear client's
+    // own per-request ceiling sits well under this, so a hung provider surfaces as `unreachable`
+    // rather than as an expired transaction.
+    return withAmbientTx(
+      this.prisma,
+      async (tx) => {
+        await lockLinearIdentity(tx, identity.clientId, identity.organizationId)
+        const answer = await tx.$queryRaw<{ owned: boolean }[]>`
+        SELECT (
+          EXISTS (
+            SELECT 1 FROM "bot" b
+             WHERE b."platform" = 'linear'
+               AND b."externalAppId" = ${identity.clientId}
+               AND b."externalTenantId" = ${identity.organizationId}
+          )
+          OR EXISTS (
+            SELECT 1 FROM "linear_token" t
+             WHERE t."clientId" = ${identity.clientId}
+               AND t."organizationId" = ${identity.organizationId}
+               AND t."orgId" <> ${identity.orgId}
+          )
+        ) AS "owned"
+      `
+        // Fail CLOSED on an answer that did not come back: "unknown" must never authorize a revoke.
+        return act(answer[0]?.owned ?? true)
+      },
+      IDENTITY_LOCK_TX
+    )
   }
 
   /**

@@ -723,9 +723,24 @@ winner's Bot is alive:
   after the snapshot.
 - **Delete locally, unconditionally:** the row is dead weight in its
   organization regardless of who else holds the identity.
-- **Revoke upstream only when no organization's Bot holds the identity
-  globally:** the same Linear app + workspace backs the winner's live
-  install, so a loser-initiated `POST /oauth/revoke` would tear it down.
+- **Revoke upstream only when no organization relies on this app's
+  authorization of this workspace** — the same Linear app + workspace backs
+  the winner's live install, so a loser-initiated `POST /oauth/revoke` would
+  tear it down. This is the one question here that another organization can
+  falsify **without touching any row the sweep looked at**: it completes a
+  connect for the same `(clientId, organizationId)` and the loser's own stale
+  row is still exactly as the snapshot left it, so every row-level guard
+  passes. It is therefore re-asked durably at the moment of acting, under a
+  **per-identity advisory lock** (`persistence/linear-identity-lock.ts`,
+  keyed on `(clientId, organizationId)` and deliberately **not** org-scoped),
+  with the revoke inside that lock — releasing first would only narrow the
+  window, since a winner admitted in between still loses its grant. The
+  answer is "owned" when any organization's Bot holds the D6 identity **or**
+  any other organization holds a token row for it; the second disjunct
+  catches a winner that is mid-callback, having written its grant but not yet
+  its Bot. §7.1 step 1's upsert takes the same lock, which is what makes the
+  answer stable for the duration — and, because that write always precedes
+  the create tail, locking it fences bot admission too.
 
 The same sweep is the backstop for a failed best-effort `onBotDelete`
 (§7.4). The funnel row's TTL reaper separately bounds stale connect

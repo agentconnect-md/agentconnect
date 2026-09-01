@@ -4391,12 +4391,15 @@ export interface LinearTokenRecord extends LinearTokenMaterial {
  * A `linear_token` row no Bot in its OWN organization references any more (§7.1) — the sweeper's
  * unit of work. Selection is org-scoped and revocation is not, so the row carries both answers.
  */
+/**
+ * One sweep candidate. It carries NO global ownership answer on purpose: whether an upstream revoke
+ * is safe is a question about other organizations, and any answer computed at listing time can be
+ * falsified before the sweeper acts on it — by a connect that never touches this row. That question
+ * has exactly one safe home, {@link LinearTokenStore.withIdentityOwnership}, and keeping it off this
+ * type is what stops a caller from reaching for the cheap, stale version.
+ */
 export interface LinearOrphanTokenRow {
   identity: LinearConnectionIdentity
-  /** Some OTHER organization's Bot still holds this `(clientId, organizationId)` pair — the
-   *  cross-org fence loser's case. Its live install must survive this row's collection, so the
-   *  local delete proceeds and the upstream revoke does not. */
-  claimedElsewhere: boolean
   /** The snapshot this candidate was selected under. Hand it back to
    *  {@link LinearTokenStore.deleteIfUnchanged}: between the sweep's read and its act, a retried
    *  connect can re-grant the same identity, and revoking THAT token would kill a live install. */
@@ -4428,6 +4431,18 @@ export interface LinearTokenStore {
    * precisely the token that was collected, never one that arrived after the snapshot.
    */
   deleteIfUnchanged(identity: LinearConnectionIdentity, updatedAt: Date): Promise<LinearTokenMaterial | null>
+  /**
+   * Run `act` under the identity's advisory lock (`persistence/linear-identity-lock.ts`), handing it
+   * the GLOBAL ownership answer as computed inside that lock — "does ANY organization rely on this
+   * app's authorization of this workspace?".
+   *
+   * This is the ONLY safe basis for an upstream `POST /oauth/revoke`, because that call acts on the
+   * app↔workspace grant rather than on one tenant's copy: a listing-time answer can be falsified by
+   * another organization completing a connect, which touches none of this organization's rows and so
+   * survives every row-level guard. {@link LinearTokenStore.put} takes the same lock, and §7.1 fixes
+   * it before any Bot exists, so the answer cannot change while `act` runs.
+   */
+  withIdentityOwnership<T>(identity: LinearConnectionIdentity, act: (owned: boolean) => Promise<T>): Promise<T>
 }
 
 /** Terminal state of one connect round trip. The funnel row SURVIVES its callback — the tab is a

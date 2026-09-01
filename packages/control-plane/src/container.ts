@@ -1845,7 +1845,6 @@ export function buildContainer(
       tokens: repos.linearToken,
       credentialReconciler: linearCredentialReconciler,
       tokenService: linearTokenService,
-      bots: repos.bot,
       funnelRoutes: {
         org: [linearConnectRoutes(httpDeps, linearSeams)],
         publicCallback: [linearOauthCallbackRoutes(httpDeps, linearSeams)]

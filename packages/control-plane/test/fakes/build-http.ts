@@ -754,7 +754,6 @@ export function buildHttpApp(
       tokens: linearTokenStore,
       credentialReconciler: linearCredentialReconciler,
       tokenService: linearTokenService,
-      bots: botRepo,
       funnelRoutes: {
         org: [linearConnectRoutes(deps, linearSeams)],
         publicCallback: [linearOauthCallbackRoutes(deps, linearSeams)]

@@ -13,8 +13,11 @@
  *  - SELECT org-scoped — a row is an orphan when its OWN organization has no Bot for the identity.
  *    The cross-org loser must be sweepable even though the winner's Bot is very much alive.
  *  - DELETE unconditionally — the row is dead weight in its organization either way.
- *  - REVOKE only when NO organization's Bot holds the identity. The same app + workspace backs the
- *    winner's live install, so a loser-initiated revoke would tear it down.
+ *  - REVOKE only when NO organization relies on this app's authorization of this workspace. The
+ *    same app + workspace backs the winner's live install, so a loser-initiated revoke would tear
+ *    it down. This one is decided UNDER AN ADVISORY LOCK at the moment of acting, never carried
+ *    down from the selection: it is the only question here whose answer another organization can
+ *    falsify without touching a single row this sweep looked at.
  *
  * The grace window keeps the sweep off a callback in flight: a row younger than it may be seconds
  * away from its create tail, so it is never a candidate. The window is a heuristic, though, not a
@@ -88,7 +91,7 @@ export class LinearOrphanTokenSweeper implements CpBackgroundLoop {
   private async sweep(app: LinearPlatformAppConfig): Promise<void> {
     const staleBefore = new Date(this.deps.clock.now() - (this.deps.graceMs ?? LINEAR_ORPHAN_GRACE_MS))
     const orphans = await this.deps.tokens.listOrphans(app.clientId, staleBefore, SWEEP_BATCH)
-    for (const { identity, claimedElsewhere, updatedAt } of orphans) {
+    for (const { identity, updatedAt } of orphans) {
       try {
         // CLAIM BEFORE ACTING. A retried connect can re-grant this identity between the snapshot
         // above and this line — §7.1's step-1 upsert is exactly that write — and the sweep must not
@@ -98,10 +101,20 @@ export class LinearOrphanTokenSweeper implements CpBackgroundLoop {
         // simply skipped; the next pass re-evaluates it from scratch.
         const removed = await this.deps.tokens.deleteIfUnchanged(identity, updatedAt)
         if (!removed) continue
-        // Only now, and only with the token the claim actually removed.
-        if (!claimedElsewhere) await this.deps.service.revokeAccessToken(removed.accessToken, identity)
+        // The row is gone — correct either way, it was dead weight in its own organization. The
+        // REVOKE is the irreversible half, and its question is global: revoking acts on the
+        // app↔workspace grant, so it must be decided against other organizations' state, not this
+        // row's. That answer cannot be carried down from the listing — a different organization can
+        // complete a connect for this same workspace without touching anything the guarded delete
+        // above looks at — so it is re-asked durably, under the identity's advisory lock, with the
+        // revoke itself inside that lock. Releasing first would only narrow the window: a winner
+        // admitted in between still loses the grant it just obtained.
+        const revoked = await this.deps.tokens.withIdentityOwnership(identity, async (owned) => {
+          if (owned) return false
+          return this.deps.service.revokeAccessToken(removed.accessToken, identity)
+        })
         this.deps.log?.info(
-          { orgId: identity.orgId, organizationId: identity.organizationId, revoked: !claimedElsewhere },
+          { orgId: identity.orgId, organizationId: identity.organizationId, revoked },
           'linear-orphan-token: collected a grant no bot references'
         )
       } catch (err) {

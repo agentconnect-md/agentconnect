@@ -54,6 +54,18 @@ export type LinearApiResult<T> =
 /** Linear's default access-token lifetime, used when a token response omits `expires_in`. */
 const DEFAULT_EXPIRES_IN_SEC = 24 * 60 * 60
 
+/**
+ * Per-request ceiling. Node's `fetch` has no default timeout, so without this a hung Linear pins the
+ * caller indefinitely — which for the orphan sweep would mean pinning a Postgres transaction (it
+ * revokes while holding the identity's advisory lock) until the transaction budget killed it. Well
+ * under that budget, so the HTTP call always loses the race and surfaces as `unreachable`.
+ */
+const REQUEST_TIMEOUT_MS = 10_000
+
+/** `AbortSignal.timeout` rejects with a TimeoutError, which every caller here already maps to
+ *  `unreachable` — the honest answer for "we never heard back". */
+const withTimeout = (init: RequestInit): RequestInit => ({ ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+
 interface TokenResponse {
   access_token?: unknown
   refresh_token?: unknown
@@ -122,11 +134,14 @@ export class LinearApiClient {
   async viewer(accessToken: string): Promise<LinearApiResult<LinearViewer>> {
     let res: Response
     try {
-      res = await this.fetchImpl(this.endpoints.graphqlUrl, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ query: 'query { viewer { id organization { id name } } }' })
-      })
+      res = await this.fetchImpl(
+        this.endpoints.graphqlUrl,
+        withTimeout({
+          method: 'POST',
+          headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'query { viewer { id organization { id name } } }' })
+        })
+      )
     } catch (err) {
       return { ok: false, error: 'unreachable', detail: String(err) }
     }
@@ -154,10 +169,10 @@ export class LinearApiClient {
   async revoke(accessToken: string): Promise<LinearApiResult<true>> {
     let res: Response
     try {
-      res = await this.fetchImpl(this.endpoints.revokeUrl, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${accessToken}` }
-      })
+      res = await this.fetchImpl(
+        this.endpoints.revokeUrl,
+        withTimeout({ method: 'POST', headers: { authorization: `Bearer ${accessToken}` } })
+      )
     } catch (err) {
       return { ok: false, error: 'unreachable', detail: String(err) }
     }
@@ -169,11 +184,14 @@ export class LinearApiClient {
   private async token(form: Record<string, string>): Promise<LinearApiResult<LinearGrant>> {
     let res: Response
     try {
-      res = await this.fetchImpl(this.endpoints.tokenUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams(form).toString()
-      })
+      res = await this.fetchImpl(
+        this.endpoints.tokenUrl,
+        withTimeout({
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams(form).toString()
+        })
+      )
     } catch (err) {
       return { ok: false, error: 'unreachable', detail: String(err) }
     }
