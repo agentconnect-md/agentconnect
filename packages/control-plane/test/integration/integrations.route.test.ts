@@ -1569,12 +1569,13 @@ describe('bot roster (GET/DELETE /bots)', () => {
 })
 
 /**
- * Multi-agent bots are a per-PLATFORM capability (`platforms/sharing.ts`), and
- * the two routes that read it had drifted: the shareable install refused
- * everything but Slack while `PATCH /bots/:id` gated only on the transport. So
- * any HTTP-transport bot on another platform — Feishu is the one that exists,
- * since it offers a transport choice of its own — could be flipped `shareable`,
- * and the flag would sit on the row as a promise the install path never honors.
+ * Multi-agent bots are a per-PLATFORM capability — the §5 manifest's
+ * `multiAgentShareable` — and the two routes that read it had drifted: the
+ * shareable install refused everything but Slack while `PATCH /bots/:id` gated
+ * only on the transport. So any HTTP-transport bot on a platform outside the set
+ * — Feishu is the one that exists, since it offers a transport choice of its own
+ * — could be flipped `shareable`, and the flag would sit on the row as a promise
+ * the install path never honors.
  */
 describe('bot sharing capability (PATCH /bots/:id)', () => {
   /** A durable bot row with no install — enough for the toggle, which reads
@@ -1601,7 +1602,7 @@ describe('bot sharing capability (PATCH /bots/:id)', () => {
     const res = await app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${botId}`, payload: { shareable: true } })
 
     expect(res.statusCode).toBe(409)
-    expect(res.json()).toMatchObject({ message: 'multi-agent bots currently support Slack only' })
+    expect(res.json()).toMatchObject({ message: 'multi-agent bots are not supported on feishu' })
     expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).shareable).toBe(false)
   })
 
@@ -1615,7 +1616,7 @@ describe('bot sharing capability (PATCH /bots/:id)', () => {
     const res = await app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${botId}`, payload: { shareable: true } })
 
     expect(res.statusCode).toBe(409)
-    expect((res.json() as { message: string }).message).toBe('multi-agent bots currently support Slack only')
+    expect((res.json() as { message: string }).message).toBe('multi-agent bots are not supported on feishu')
   })
 
   it('still lets a row flipped before the guard existed be turned back off', async () => {
@@ -1681,7 +1682,7 @@ describe('bot sharing capability (PATCH /bots/:id)', () => {
     })
 
     expect(res.statusCode).toBe(400)
-    expect(res.json()).toMatchObject({ message: 'multi-agent bots currently support Slack only' })
+    expect(res.json()).toMatchObject({ message: 'multi-agent bots are not supported on feishu' })
   })
 })
 

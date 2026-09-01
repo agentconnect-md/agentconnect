@@ -284,21 +284,20 @@ export interface WebWizardAffordances {
    *  whose create DTOs carry no transport at all, api.ts:660-661). */
   transport?: WebTransportAffordance
   /**
-   * The platform supports multi-agent bots (§5 `multiAgentShareable` mirror;
-   * Slack only today). The host still applies the http-only gate itself —
-   * create mode on the chosen transport, reuse mode on the reused bot's own
-   * (:1321-1326).
+   * The platform supports multi-agent bots — the console's mirror of the §5
+   * manifest's `multiAgentShareable`, which is what the CP's two gates read.
+   * The host still applies the http-only gate itself — create mode on the
+   * chosen transport, reuse mode on the reused bot's own (:1321-1326).
    *
    * Nested under `wizard` for where it is DECLARED, not for where it may be
    * read: it is a platform fact, and the Settings → Bots Sharable toggle reads
    * the same one through `platformSupportsSharing` (registry.ts). That toggle
    * shipped gated on transport ALONE, which left a Feishu HTTP bot — the one
-   * non-Slack platform whose bots can be `transport: 'http'` — offering a live
-   * control for a capability the CP refuses ("multi-agent bots currently
-   * support Slack only", control-plane `platforms/sharing.ts`). The fix is this
-   * member, not a second one on {@link WebBotSettingsFragments}: a Settings-side
-   * mirror could disagree with the wizard's about the same platform, and one
-   * declaration cannot.
+   * non-shareable platform whose bots can be `transport: 'http'` — offering a
+   * live control for a capability the CP refuses. The fix is this member, not a
+   * second one on {@link WebBotSettingsFragments}: a Settings-side mirror could
+   * disagree with the wizard's about the same platform, and one declaration
+   * cannot.
    */
   share?: boolean
 }
@@ -394,11 +393,10 @@ export interface WebBotCardCopy {
    * sentences and lets the host choose.
    *
    * Absent ⇒ ONE host sentence used for BOTH arms, and the collapse is the
-   * point rather than an economy: multi-agent bots are Slack-only at the
-   * server ("multi-agent bots currently support Slack only",
-   * control-plane http/routes/integrations.ts), so on every other platform the
-   * transport arm the host lands on is not the reason sharing is unavailable
-   * — and two different sentences would promise that switching transport helps.
+   * point rather than an economy: the server admits multi-agent bots only where
+   * the §5 manifest declares `multiAgentShareable`, so on a platform outside
+   * that set the transport arm the host lands on is not the reason sharing is
+   * unavailable — and two sentences would promise that switching transport helps.
    */
   shareHint?: { available: string; unavailable: string }
   /**
