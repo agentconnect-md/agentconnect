@@ -559,6 +559,15 @@ export interface CpPlatformProvider<TCredentials = unknown> {
    * `botUserId`) and `bot.transport` is the direct-vs-shared fork itself.
    * Shape validation of the produced payload lives in the same platform's
    * DAEMON module (§6.4), not here. Token-bearing — NEVER log.
+   *
+   * `undefined` is the fail-closed answer for "this row has NO deliverable
+   * payload right now" — a provider-held credential that was revoked or swept.
+   * Core turns it into ABSENCE from the deliverable roster, so the daemon drops
+   * the integration (`drop.integrations`) and the live http path pulls the
+   * send-only bundle. Do NOT return it for a payload that is merely incomplete:
+   * a config-less spec would be refused by the daemon's reader, which keeps the
+   * entry it already holds, so the integration would go on running against the
+   * last good credential.
    */
   projectIntegrationConfig(
     integration: IntegrationRecord,

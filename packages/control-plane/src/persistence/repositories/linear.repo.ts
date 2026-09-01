@@ -118,14 +118,20 @@ export class PgLinearInstallStateStore implements LinearInstallStateStore {
     return toInstallStateRecord(row)
   }
 
-  async get(id: string): Promise<LinearInstallStateRecord | null> {
-    const row = await this.prisma.linearInstallState.findUnique({ where: { id } })
-    return row ? toInstallStateRecord(row) : null
-  }
-
-  async delete(id: string): Promise<void> {
-    // deleteMany so a double callback / already-reaped row is a no-op, not a throw.
-    await this.prisma.linearInstallState.deleteMany({ where: { id } })
+  /**
+   * One-shot redemption as a single `DELETE ... RETURNING`. Prisma's `delete` returns the row it
+   * removed and raises P2025 when the statement matched nothing, which is exactly the loser's
+   * answer under concurrency: the second `DELETE` blocks on the winner's row lock, re-evaluates
+   * against a row that is gone, and matches nothing. A `findUnique` + `delete` pair would instead
+   * let both callers read the same live nonce and both proceed.
+   */
+  async consume(id: string): Promise<LinearInstallStateRecord | null> {
+    try {
+      return toInstallStateRecord(await this.prisma.linearInstallState.delete({ where: { id } }))
+    } catch (err) {
+      if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2025') return null
+      throw err
+    }
   }
 
   async reapExpired(staleBefore: Date): Promise<number> {

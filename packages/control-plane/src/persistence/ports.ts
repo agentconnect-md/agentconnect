@@ -4383,8 +4383,15 @@ export interface LinearInstallStateStore {
     defaultAgentId?: AgentId
     createdByUserId?: string
   }): Promise<LinearInstallStateRecord>
-  get(id: string): Promise<LinearInstallStateRecord | null>
-  delete(id: string): Promise<void>
+  /**
+   * Redeem the nonce: return the row and delete it in ONE statement, or `null`
+   * when no row is redeemable. Deliberately not a `get` + `delete` pair — the
+   * nonce is one-shot, and two concurrent callbacks (a double-clicked tab, a
+   * retried redirect) would both read the row before either deleted it and both
+   * proceed to mint a workspace. A single `DELETE` takes the row lock, so the
+   * loser re-evaluates against a gone row and gets `null`.
+   */
+  consume(id: string): Promise<LinearInstallStateRecord | null>
   /** The shared TTL reaper's slice — an abandoned connect tab must not leave a live state nonce. */
   reapExpired(staleBefore: Date): Promise<number>
 }

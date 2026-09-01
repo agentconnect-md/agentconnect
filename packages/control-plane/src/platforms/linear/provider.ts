@@ -106,9 +106,12 @@ export function linearBotAssignBags(
  * exposure than the other platforms' permanent bot tokens; the daemon renews it over `linearcred`.
  *
  * `undefined` is the FAIL-CLOSED answer for a bot whose identity or grant is missing (a dead token
- * awaiting reconnect, a row written before the app was configured): the daemon's platform module
- * rejects a spec whose `config` fails its schema (skip + warn), which is exactly the intended
- * outcome — no Linear egress from an unauthorized workspace. Token-bearing — NEVER log.
+ * awaiting reconnect, a row written before the app was configured). Core reads that as "no
+ * deliverable spec" and withholds the integration entirely: the reconnect roster omits it so
+ * `drop.integrations` prunes the daemon's entry, and the live http path pulls the send-only bundle.
+ * Emitting a config-less spec instead would NOT revoke anything — the daemon refuses the
+ * replacement and keeps the entry it already holds, so egress would continue on the dead grant.
+ * Token-bearing — NEVER log.
  */
 export function linearIntegrationConfig(
   bot: Pick<BotRecord, 'workspaceName' | 'botUserId'>,

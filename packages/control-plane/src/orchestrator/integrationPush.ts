@@ -66,6 +66,9 @@ export async function convergeIntegrationGating(
       // reaches only the placement leaves a holder admitting conversations the
       // agent's new visibility forbids.
       const spec = await integrationToSpec(deps.platforms, i, bot, secret, channels, gated)
+      // No deliverable payload ⇒ nothing to converge; the reconcile roster prunes it, like a
+      // missing secret. Pushing a config-less spec would only be refused and ignored by the daemon.
+      if (!spec) continue
       await deps.agentDelivery.integrationUpsert(agent, spec, (err) => {
         if (err instanceof NoConnection) return // offline daemon → reconcile roster carries it
         throw err

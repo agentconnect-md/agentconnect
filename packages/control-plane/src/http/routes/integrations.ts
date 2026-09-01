@@ -115,6 +115,8 @@ export function integrationRoutes(deps: HttpDeps) {
         channels,
         owner ? isGatedAgent(owner) : false
       )
+      // The provider had no deliverable payload — same exit as a missing secret above.
+      if (!spec) return
       await deps.agentDelivery.integrationUpsert(owningAgent, spec, (err, target) => {
         if (!(err instanceof NoConnection)) throw err
         app.log.debug({ integrationId: i.id, daemonId: target }, 'integration/upsert skipped: daemon offline')

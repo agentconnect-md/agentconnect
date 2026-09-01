@@ -244,6 +244,7 @@ describe('telegram projection equivalence with the live integrationToSpec path',
   for (const { label, channels, gated } of cases) {
     it(`routes the live path through the telegram projector unchanged — ${label}`, async () => {
       const spec = await integrationToSpec(PLATFORMS, INTEGRATION, BOT, SECRET, channels, gated)
+      if (!spec) throw new Error('expected a deliverable spec')
       expect(spec.core.mode).toBe('direct')
       expect(spec.config).toEqual(telegramIntegrationConfig(SECRET))
       // The payload satisfies the daemon reader's wire schema (§6.4).

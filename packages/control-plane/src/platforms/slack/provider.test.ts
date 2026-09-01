@@ -537,6 +537,7 @@ describe('slack projection equivalence with the live integrationToSpec path (dir
   for (const { label, channels, gated } of cases) {
     it(`routes the live path through the slack projector unchanged — ${label}`, async () => {
       const spec = await integrationToSpec(PLATFORMS, INTEGRATION, SOCKET_BOT, SOCKET_SECRET, channels, gated)
+      if (!spec) throw new Error('expected a deliverable spec')
       expect(spec.core.mode).toBe('direct')
       expect(spec.config).toEqual(slackIntegrationConfig(SOCKET_SECRET))
       // The payload satisfies the daemon reader's wire schema (§6.4).
@@ -597,7 +598,7 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
         appId: 'A0TESTAPP'
       }
     })
-    expect(spec.config).not.toHaveProperty('appToken')
+    expect(spec?.config).not.toHaveProperty('appToken')
   })
 
   for (const { label, bot: httpBot, channels, gated } of cases) {
@@ -606,6 +607,7 @@ describe('slack projection equivalence with the live httpIntegrationToSpec path 
       // `botUserId` are read off it by the projector instead of being forwarded
       // positionally by each call site.
       const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBot, HTTP_SECRET, channels, gated)
+      if (!spec) throw new Error('expected a deliverable spec')
       expect(spec.core.mode).toBe('shared')
       expect(spec.config).toEqual(
         slackSharedIntegrationConfig(HTTP_SECRET, httpBot.shareable, httpBot.slackAppId ?? undefined)

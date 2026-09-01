@@ -8,9 +8,10 @@
  *
  * What is pinned: the D6 identity the projector writes through `PgBotRepo.create`, that
  * `projectIntegrationConfig` resolves the grant BY that identity (and answers fail-closed when it is
- * another organization's), that the credential-paste path is refused at the live create route, and
- * that core's bot-delete runs the provider's `onBotDelete` so the grant no bot row references is
- * actually collected.
+ * another organization's), that the credential-paste path is refused at the live create route, that
+ * a grant that is GONE pulls the send-only bundle off the daemon rather than leaving it on the last
+ * good token, that core's bot-delete runs the provider's `onBotDelete` so the grant no bot row
+ * references is actually collected, and that the funnel nonce is redeemable exactly once.
  */
 import { describe, it, expect, afterEach } from 'vitest'
 import { randomUUID } from 'node:crypto'
@@ -22,7 +23,14 @@ import { AgentId, BotId, IntegrationId, OrgId } from '../../src/domain/ids.js'
 import { PgLinearTokenStore } from '../../src/persistence/repositories/linear.repo.js'
 import { PlaintextSecretCipher } from '../../src/secrets/cipher.js'
 import type { BotRecord, IntegrationRecord } from '../../src/persistence/ports.js'
-import type { IntegrationCoreEnvelope, IntegrationLinearConfig } from '@agentconnect.md/protocol'
+import type { ControlSender } from '../../src/orchestrator/outbound.js'
+import type { RelayChannel } from '../../src/ws/relay-registry.js'
+import type {
+  IntegrationCoreEnvelope,
+  IntegrationLinearConfig,
+  IntegrationRemove,
+  IntegrationUpsert
+} from '@agentconnect.md/protocol'
 
 const CORE: IntegrationCoreEnvelope = { mode: 'shared', bindRules: [], mutedChannels: [], gated: false }
 
@@ -37,9 +45,21 @@ afterEach(async () => {
   running = undefined
 })
 
+/** Records the integration frames core would have pushed to the member agents' daemons. */
+class SpyControl {
+  readonly upserts: Array<{ daemonId: string; integrationId: string }> = []
+  readonly removes: Array<{ daemonId: string; integrationId: string }> = []
+  async integrationUpsert(daemonId: string, u: IntegrationUpsert): Promise<void> {
+    this.upserts.push({ daemonId, integrationId: u.integrationId })
+  }
+  async integrationRemove(daemonId: string, r: IntegrationRemove): Promise<void> {
+    this.removes.push({ daemonId, integrationId: r.integrationId })
+  }
+}
+
 /** The harness app with the deployment Linear app configured — the platform is disabled without it. */
-function withLinearApp(): HttpApp {
-  const app = buildHttpApp(prisma, { PUBLIC_RELAY_URL: 'https://relay.example.test' })
+function withLinearApp(control?: ControlSender): HttpApp {
+  const app = buildHttpApp(prisma, { PUBLIC_RELAY_URL: 'https://relay.example.test' }, undefined, control)
   app.platformStubs.linearPlatformApp = APP
   running = app
   return app
@@ -202,6 +222,36 @@ describe('Linear provider — the disconnect edge (§7.4)', () => {
     expect(await prisma.bot.findUnique({ where: { id: survivor.id } })).not.toBeNull()
   })
 
+  it('pulls the send-only bundle off the daemon once the grant is gone', async () => {
+    // The live http path a Linear bot actually rides. A dead grant must PULL the spec, the same
+    // teardown a workspace-side revoke performs — not leave the daemon on the last good token.
+    const spy = new SpyControl()
+    const app = withLinearApp(spy as unknown as ControlSender)
+    app.relayReg.add({ relayId: 'r1', send() {}, close() {} } as RelayChannel)
+    const bot = await connectWorkspace(app, 'org_alpha')
+    await seedDaemon(prisma, DAEMON, {
+      capabilities: { platforms: ['linear'], runtimes: ['claude'], acp: true, features: [] }
+    })
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const member = memberOf(bot, AgentId(agentId))
+    await app.deps.repos.integration.create({ ...member, name: 'member' })
+
+    await app.deps.httpBot.syncBot(String(bot.id))
+    expect(spy.upserts.map((u) => u.integrationId)).toEqual([member.id])
+    expect(spy.removes).toEqual([])
+
+    await app.deps.repos.linearToken.delete({
+      orgId: OrgId(DEFAULT_ORG_ID),
+      clientId: APP.clientId,
+      organizationId: 'org_alpha'
+    })
+    await app.deps.httpBot.syncBot(String(bot.id))
+    expect(spy.removes.map((r) => r.integrationId)).toEqual([member.id])
+    // …and no second upsert: a config-less spec is never put on the wire.
+    expect(spy.upserts.map((u) => u.integrationId)).toEqual([member.id])
+  })
+
   it('leaves the grant alone when the delete itself is refused', async () => {
     const app = withLinearApp()
     const bot = await connectWorkspace(app, 'org_alpha')
@@ -290,7 +340,6 @@ describe('the provider-owned tables', () => {
       createdByUserId: 'user-1'
     })
     expect(created).toMatchObject({ id: nonce, defaultAgentId: agentId, createdByUserId: 'user-1' })
-    expect(await app.deps.repos.linearInstallState.get(nonce)).toMatchObject({ id: nonce })
 
     // An abandoned connect tab must not leave a live state nonce; a fresh one is untouched.
     await app.deps.repos.linearInstallState.create({ id: stale, orgId: OrgId(DEFAULT_ORG_ID) })
@@ -299,12 +348,43 @@ describe('the provider-owned tables', () => {
       data: { createdAt: new Date('2020-01-01T00:00:00Z') }
     })
     expect(await app.deps.repos.linearInstallState.reapExpired(new Date('2021-01-01T00:00:00Z'))).toBe(1)
-    expect(await app.deps.repos.linearInstallState.get(stale)).toBeNull()
-    expect(await app.deps.repos.linearInstallState.get(nonce)).not.toBeNull()
+    expect(await prisma.linearInstallState.findUnique({ where: { id: stale } })).toBeNull()
+    expect(await prisma.linearInstallState.findUnique({ where: { id: nonce } })).not.toBeNull()
 
-    await app.deps.repos.linearInstallState.delete(nonce)
-    expect(await app.deps.repos.linearInstallState.get(nonce)).toBeNull()
-    // Idempotent, like every other funnel-row delete on a double callback.
-    await expect(app.deps.repos.linearInstallState.delete(nonce)).resolves.toBeUndefined()
+    // Redemption returns the row and consumes it in the same statement.
+    expect(await app.deps.repos.linearInstallState.consume(nonce)).toMatchObject({
+      id: nonce,
+      defaultAgentId: agentId
+    })
+    expect(await prisma.linearInstallState.findUnique({ where: { id: nonce } })).toBeNull()
+    // A replayed callback finds nothing rather than a second live nonce.
+    expect(await app.deps.repos.linearInstallState.consume(nonce)).toBeNull()
+    expect(await app.deps.repos.linearInstallState.consume(randomUUID())).toBeNull()
+  })
+
+  it('redeems a nonce exactly once under concurrent callbacks', async () => {
+    // The hazard a `get` + `delete` pair leaves open: a double-clicked authorize tab, or Linear
+    // replaying the redirect, gives two requests the SAME live row and both go on to mint a
+    // workspace. One DELETE statement takes the row lock, so the loser sees a row that is gone.
+    const app = withLinearApp()
+    const agentId = randomUUID()
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, agentId, { daemonId: DAEMON })
+    const nonce = randomUUID()
+    await app.deps.repos.linearInstallState.create({
+      id: nonce,
+      orgId: OrgId(DEFAULT_ORG_ID),
+      defaultAgentId: AgentId(agentId)
+    })
+
+    const outcomes = await Promise.all([
+      app.deps.repos.linearInstallState.consume(nonce),
+      app.deps.repos.linearInstallState.consume(nonce),
+      app.deps.repos.linearInstallState.consume(nonce)
+    ])
+    const winners = outcomes.filter((row) => row !== null)
+    expect(winners).toHaveLength(1)
+    expect(winners[0]).toMatchObject({ id: nonce, defaultAgentId: agentId })
+    expect(await prisma.linearInstallState.findUnique({ where: { id: nonce } })).toBeNull()
   })
 })

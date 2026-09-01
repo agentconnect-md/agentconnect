@@ -130,8 +130,12 @@ export async function installNewBot(
     deps.repos.botSecret.get(orgId, botId),
     deps.repos.integrationChannel.listForIntegration(id)
   ])
-  if (secret) {
-    const spec = await integrationToSpec(deps.platforms, integration, bot, secret, channels, isGatedAgent(agent))
+  const spec = secret
+    ? await integrationToSpec(deps.platforms, integration, bot, secret, channels, isGatedAgent(agent))
+    : null
+  // No secret, or a provider with no deliverable payload: withhold the push and let the reconcile
+  // roster carry (or prune) the row.
+  if (spec) {
     await deps.agentDelivery.integrationUpsert(agent, spec, (err, target) => {
       if (!(err instanceof NoConnection)) throw err
       log.debug({ integrationId: id, daemonId: target }, 'integration/upsert skipped: daemon offline')

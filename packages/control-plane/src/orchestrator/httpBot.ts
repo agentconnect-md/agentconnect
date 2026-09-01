@@ -1029,6 +1029,20 @@ export class HttpBotOrchestrator {
     for (const { integration, agent, gated } of compiled.placed) {
       const channels = compiled.botChannels.filter((c) => c.integrationId === integration.id)
       const spec = await httpIntegrationToSpec(this.platforms, integration, bot, secret, channels, gated)
+      // No deliverable spec ⇒ the provider's own credential for this bot is gone (a revoked or
+      // swept grant). PULL the send-only bundle instead of leaving the daemon on the last good
+      // one — the same teardown `revokeBot` performs for a credential the workspace revoked.
+      if (!spec) {
+        this.log.info(
+          { integrationId: integration.id, botId: String(bot.id) },
+          'http-bot: no deliverable spec — pulling the send-only bundle'
+        )
+        await this.agentDelivery.integrationRemove(agent, integration.id, integration.orgId, (err) => {
+          if (!(err instanceof NoConnection)) throw err
+          this.log.debug?.({ integrationId: integration.id }, 'http-bot: spec removal skipped — daemon offline')
+        })
+        continue
+      }
       // The relay still addresses ingress to `daemonId`; the send-only credential
       // bundle goes to every daemon serving the agent, so a duty holder is not
       // left signing egress with a credential the workspace has since rotated.

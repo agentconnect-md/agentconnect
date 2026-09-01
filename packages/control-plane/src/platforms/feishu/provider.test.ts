@@ -436,6 +436,7 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
 
   it("defaults a legacy region-less row to 'feishu', exactly as the pre-adoption arm did", async () => {
     const spec = await integrationToSpec(PLATFORMS, LEGACY_INTEGRATION, SOCKET_BOT, SOCKET_SECRET, [], false)
+    if (!spec) throw new Error('expected a deliverable spec')
     expect(spec.config).toMatchObject({ region: 'feishu' })
   })
 
@@ -444,6 +445,7 @@ describe('feishu projection equivalence with the live integrationToSpec path (di
   for (const { label, integration, channels, gated } of cases) {
     it(`routes the live path through the feishu projector unchanged — ${label}`, async () => {
       const spec = await integrationToSpec(PLATFORMS, integration, SOCKET_BOT, SOCKET_SECRET, channels, gated)
+      if (!spec) throw new Error('expected a deliverable spec')
       expect(spec.core.mode).toBe('direct')
       expect(spec.config).toEqual(feishuIntegrationConfig(SOCKET_SECRET, integration))
       // The payload satisfies the daemon reader's wire schema (§6.4).
@@ -513,6 +515,7 @@ describe('feishu projection equivalence with the live httpIntegrationToSpec path
       // The bot row is passed WHOLE now: `botUserId` is read off it by the
       // projector instead of being forwarded positionally by each call site.
       const spec = await httpIntegrationToSpec(PLATFORMS, INTEGRATION, httpBot, HTTP_SECRET, channels, gated)
+      if (!spec) throw new Error('expected a deliverable spec')
       expect(spec.core.mode).toBe('shared')
       expect(spec.config).toEqual(
         feishuSharedIntegrationConfig(HTTP_SECRET, INTEGRATION, httpBot.botUserId ?? undefined)
