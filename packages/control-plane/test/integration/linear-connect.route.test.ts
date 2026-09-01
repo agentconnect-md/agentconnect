@@ -17,7 +17,8 @@ import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { trackedTestClock } from '../fakes/tracked-clock.js'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
-import { OrgId } from '../../src/domain/ids.js'
+import { BotId, OrgId } from '../../src/domain/ids.js'
+import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
 import { LinearApiClient } from '../../src/platforms/linear/api.js'
 import { LinearTokenService } from '../../src/platforms/linear/token-service.js'
 import { LinearOrphanTokenSweeper } from '../../src/platforms/linear/orphan-token-sweeper.js'
@@ -145,6 +146,20 @@ const grantRow = (organizationId = WORKSPACE, orgId = DEFAULT_ORG_ID) =>
   prisma.linearToken.findUnique({
     where: { orgId_clientId_organizationId: { orgId, clientId: APP.clientId, organizationId } }
   })
+
+/** A store that DELEGATES to the real one, with named overrides. Spreading the instance instead
+ *  would drop every prototype method and turn a race test into a silent TypeError the sweeper's
+ *  own try/catch swallows — which passes for the wrong reason. */
+function storeWith(base: LinearTokenStore, overrides: Partial<LinearTokenStore>): LinearTokenStore {
+  return {
+    get: (i) => base.get(i),
+    put: (i, m) => base.put(i, m),
+    delete: (i) => base.delete(i),
+    listOrphans: (c, s, l) => base.listOrphans(c, s, l),
+    withIdentityLock: (i, act) => base.withIdentityLock(i, act),
+    ...overrides
+  }
+}
 
 describe('the connect funnel — nothing exists before the callback (§7.1)', () => {
   it('records the chosen default agent behind a one-shot nonce and mints no rows', async () => {
@@ -596,20 +611,6 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
     })
   }
 
-  /** A store that DELEGATES to the real one, with named overrides. Spreading the instance instead
-   *  would drop every prototype method and turn a race test into a silent TypeError the sweeper's
-   *  own try/catch swallows — which passes for the wrong reason. */
-  function storeWith(base: LinearTokenStore, overrides: Partial<LinearTokenStore>): LinearTokenStore {
-    return {
-      get: (i) => base.get(i),
-      put: (i, m) => base.put(i, m),
-      delete: (i) => base.delete(i),
-      listOrphans: (c, s, l) => base.listOrphans(c, s, l),
-      withIdentityLock: (i, act) => base.withIdentityLock(i, act),
-      ...overrides
-    }
-  }
-
   /** A winner Bot for the identity, in some OTHER organization. */
   async function admitWinnerElsewhere(organizationId: string): Promise<string> {
     const winnerOrg = `org-linear-${randomUUID()}`
@@ -837,6 +838,7 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
               landedInsideSection = landed
               return removed
             },
+            remove: () => section.remove(),
             owned: () => section.owned()
           })
         )
@@ -888,6 +890,7 @@ describe('the orphan-token sweeper — org-scoped selection, global revoke (§7.
               winnerOrg = await admitWinnerElsewhere(WORKSPACE)
               return removed
             },
+            remove: () => section.remove(),
             owned: () => section.owned()
           })
         )
@@ -1003,6 +1006,79 @@ describe('disconnect — the bot delete revokes only what nobody holds (§7.4)',
     expect((await h.app.app.inject({ method: 'DELETE', url: `${ORG}/bots/${bot.id}` })).statusCode).toBe(204)
     expect(await grantRow()).toBeNull()
     expect(h.linear.count('/oauth/revoke')).toBe(1)
+  })
+
+  it('removes the OLD row inside the hold, so a queued re-grant survives the disconnect', async () => {
+    // The same shape as the sweep's claim, on the teardown path. With the removal AFTER the hold, a
+    // `put` waiting on the lock publishes a fresh grant the instant the section ends and the
+    // trailing unconditional delete wipes it — leaving the create or reconnect tail behind that
+    // `put` believing its grant is durable when the row is already gone.
+    //
+    // The discriminating assertion is structural, not a race: whether the removal happened while the
+    // hold was still open. Asserting only "the fresh grant survived" would be timing-dependent —
+    // after the hold releases, the queued `put` and a trailing delete are two round trips with no
+    // ordering between them, so the buggy version passes whenever the delete happens to win.
+    const h = await harness()
+    const { id } = (await startConnect(h)).json() as { id: string }
+    await callback(h, { code: 'the-code', state: id })
+    const botRow = await prisma.bot.findFirstOrThrow({ where: { platform: 'linear' } })
+    const bot = (await h.app.deps.repos.bot.get(OrgId(DEFAULT_ORG_ID), BotId(botRow.id)))!
+    const store = h.app.deps.repos.linearToken
+    const identity = { orgId: OrgId(DEFAULT_ORG_ID), clientId: APP.clientId, organizationId: WORKSPACE }
+
+    let removedInsideSection = false
+    let landedInsideSection: boolean | undefined
+    let regrant: Promise<void> | undefined
+    const probing = storeWith(store, {
+      withIdentityLock: (i, act) =>
+        store.withIdentityLock(i, (section) =>
+          act({
+            claim: (u) => section.claim(u),
+            remove: async () => {
+              removedInsideSection = true
+              await section.remove()
+            },
+            owned: async () => {
+              const answer = await section.owned()
+              // A re-grant queues on this identity's lock while the section still holds it.
+              let landed = false
+              regrant = store
+                .put(identity, {
+                  accessToken: 'access_regranted',
+                  refreshToken: 'r',
+                  expiresAt: new Date(Date.now() + 86_400_000)
+                })
+                .then(() => {
+                  landed = true
+                })
+              await new Promise((r) => setTimeout(r, 250))
+              landedInsideSection = landed
+              return answer
+            }
+          })
+        )
+    })
+
+    // The provider as the container builds it, over the probing store.
+    const provider = createLinearCpProvider({
+      app: APP,
+      tokens: probing,
+      tokenService: new LinearTokenService({
+        app: APP,
+        tokens: probing,
+        api: new LinearApiClient({ fetchImpl: h.linear.fetchImpl, clock }),
+        clock
+      })
+    })
+    await provider.sideEffects!.onBotDelete!(bot, null)
+    await regrant
+
+    // The removal happened while the hold was open — that is the fix.
+    expect(removedInsideSection).toBe(true)
+    // The re-grant genuinely could not commit during it…
+    expect(landedInsideSection).toBe(false)
+    // …so what the section removed was the OLD row, and the fresh grant behind it survives.
+    expect((await grantRow())!.accessToken).toBe('access_regranted')
   })
 
   it('never revokes on behalf of a row another organization’s bot still backs', async () => {

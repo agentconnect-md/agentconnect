@@ -204,6 +204,17 @@ export class PgLinearTokenStore implements LinearTokenStore {
               expiresAt: row.expiresAt
             }
           },
+          // deleteMany, not delete: an identity whose row a sweep already collected is a no-op here,
+          // not a throw — the disconnect edge is best-effort by contract.
+          remove: async () => {
+            await tx.linearToken.deleteMany({
+              where: {
+                orgId: identity.orgId,
+                clientId: identity.clientId,
+                organizationId: identity.organizationId
+              }
+            })
+          },
           owned: async () => {
             const answer = await tx.$queryRaw<{ owned: boolean }[]>`
               SELECT (

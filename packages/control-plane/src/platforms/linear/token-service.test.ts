@@ -46,10 +46,21 @@ class MemoryTokens implements LinearTokenStore {
   listOrphans(): Promise<[]> {
     return Promise.resolve([])
   }
-  /** No lock without Postgres — the fence is the whole point, so these paths are pinned in the
-   *  integration suite. Here `owned` is the fail-closed answer and nothing is ever claimed. */
-  withIdentityLock<T>(_identity: unknown, act: (section: LinearIdentitySection) => Promise<T>): Promise<T> {
-    return act({ claim: () => Promise.resolve(null), owned: () => Promise.resolve(true) })
+  /** No lock without Postgres — the fence is the whole point, so those paths are pinned in the
+   *  integration suite. Here `owned` is the fail-closed answer, nothing is ever claimed, and
+   *  `remove` really does drop the row so the sections that call it can still be exercised. */
+  withIdentityLock<T>(
+    identity: LinearConnectionIdentity,
+    act: (section: LinearIdentitySection) => Promise<T>
+  ): Promise<T> {
+    return act({
+      claim: () => Promise.resolve(null),
+      remove: () => {
+        this.rows.delete(MemoryTokens.key(identity))
+        return Promise.resolve()
+      },
+      owned: () => Promise.resolve(true)
+    })
   }
 }
 

@@ -816,8 +816,15 @@ identity (§4.4), not any agent binding:
   but no default would strand bare delegations.
 - **Disconnect the workspace** — deleting the **Bot** is the real teardown:
   best-effort `POST /oauth/revoke` at Linear plus deletion of the identity's
-  `linear_token` row. The shipped `CpPlatformProvider` has no bot-delete
-  lifecycle member, so this design adds one:
+  `linear_token` row — both inside ONE hold of the identity's advisory lock,
+  for the same reason the sweep's claim is (§7.1). Released between the
+  ownership decision and the removal, a `put` queued on that lock publishes a
+  fresh grant the instant the section ends and the unconditional delete then
+  removes _that_ row, leaving the create or reconnect tail behind it believing
+  its grant is durable. The ownership question is asked before the removal on
+  purpose: it excludes the caller's own organization, so it already reads the
+  world as it will be once the row is gone. The shipped `CpPlatformProvider`
+  has no bot-delete lifecycle member, so this design adds one:
   `sideEffects.onBotDelete?(bot, secrets)` — best-effort by contract like
   `postCreate`, called from core's bot-delete path for any platform that
   declares it.

@@ -4415,6 +4415,17 @@ export interface LinearIdentitySection {
    */
   claim(updatedAt: Date): Promise<LinearTokenMaterial | null>
   /**
+   * Drop this organization's row for the identity, unconditionally. The disconnect edge's removal:
+   * it has no snapshot to guard against, and needs none, because under this hold no `put` can have
+   * interleaved — so the row removed is exactly the one the decision above was made about.
+   *
+   * That is the whole reason it belongs here rather than after the hold. Released first, a `put`
+   * queued on the lock publishes a fresh grant the instant the section ends, and an unconditional
+   * delete then removes THAT row — the create or reconnect tail behind it carries on believing its
+   * grant is durable.
+   */
+  remove(): Promise<void>
+  /**
    * Does ANY organization rely on this app's authorization of this workspace? The ONLY safe basis
    * for an upstream `POST /oauth/revoke`, because that call acts on the app↔workspace grant rather
    * than on one tenant's copy of it.

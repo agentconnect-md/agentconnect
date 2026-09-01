@@ -357,6 +357,15 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
      *  2. drop the identity's row, unconditionally — it is dead weight in this organization either
      *     way. The delete runs after core removed the bot, so a refused delete changes nothing.
      *
+     * BOTH INSIDE ONE HOLD, for the same reason the sweep's claim is. Released between the decision
+     * and the removal, a `put` queued on the lock publishes a fresh grant the instant the section
+     * ends, and this unconditional delete then removes THAT row while the create or reconnect tail
+     * behind it carries on believing its grant is durable. Under one hold nothing can interleave, so
+     * the row removed is exactly the one the revoke decision was made about.
+     *
+     * `owned()` is asked BEFORE the removal on purpose: it deliberately excludes the caller's own
+     * organization, so it reads the world as it will be once this row is gone.
+     *
      * Best-effort by contract: core logs a failure and the delete stands, and the orphan-token
      * sweeper (§7.1) is the backstop for a row this misses.
      */
@@ -366,15 +375,10 @@ export function createLinearCpProvider(deps: LinearCpProviderDeps): CpPlatformPr
             onBotDelete: async (bot) => {
               const connection = connectionOf(bot)
               if (!connection) return
-              if (tokenService) {
-                // No `claim` here: this row is being dropped outright below, and the ownership
-                // question deliberately does not count the caller's own organization — so asking it
-                // before removing the row is exactly right.
-                await tokens.withIdentityLock(connection, async (section) => {
-                  if (!(await section.owned())) await tokenService.revoke(connection)
-                })
-              }
-              await tokens.delete(connection)
+              await tokens.withIdentityLock(connection, async (section) => {
+                if (tokenService && !(await section.owned())) await tokenService.revoke(connection)
+                await section.remove()
+              })
             }
           }
         }
