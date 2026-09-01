@@ -75,6 +75,7 @@ function bot(over: Partial<BotRecord> = {}): BotRecord {
     discordAppId: null,
     shareable: true,
     transport: 'http',
+    preferredAgentId: null,
     createdBy: null,
     lastUsedAt: null,
     lastAgentName: null,
@@ -752,6 +753,68 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         })
       }
     ])
+  })
+
+  // The bot row's persisted preferred default (linear-integration.md §9.2) — the only way
+  // "move the default agent" can move a bare mention / DM / delegation. It is preferred
+  // over the earliest-member derivation, but never past the criteria that derivation
+  // already applies, so a preference that has stopped resolving degrades instead of
+  // silencing the bot.
+  describe('preferred default agent', () => {
+    it('prefers the persisted default over the earliest member', async () => {
+      botRow = bot({ preferredAgentId: BOB })
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.defaultAgentId).toBe(BOB)
+      expect(assign.defaultDaemonId).toBe(D2)
+      // A fallback rung, not a route: the keyword rules are untouched by the preference.
+      const keywords = assign.routes
+        .filter((r) => r.match.kind === 'keyword')
+        .map((r) => (r.match as { value: string }).value)
+        .sort()
+      expect(keywords).toEqual(['alice', 'bob'])
+    })
+
+    it('falls back to the earliest member once the preference is cleared', async () => {
+      botRow = bot({ preferredAgentId: null })
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.defaultAgentId).toBe(ALICE)
+      expect(assign.defaultDaemonId).toBe(D1)
+    })
+
+    it('ignores a preference naming an agent that does not use this bot', async () => {
+      botRow = bot({ preferredAgentId: AgentId('44444444-4444-4444-8444-444444444449') })
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.defaultAgentId).toBe(ALICE)
+    })
+
+    it('ignores a GATED preferred agent — §14 outranks the operator’s pick', async () => {
+      gatedAgents = new Set([BOB])
+      botRow = bot({ preferredAgentId: BOB })
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.defaultAgentId).toBe(ALICE)
+      expect(assign.gatedAgentIds).toEqual([BOB])
+    })
+
+    it('ignores a preferred agent no member is serving, rather than stranding the fallback', async () => {
+      unplacedAgents = new Set([BOB])
+      botRow = bot({ preferredAgentId: BOB })
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.defaultAgentId).toBe(ALICE)
+      expect(assign.defaultDaemonId).toBe(D1)
+    })
+
+    it('leaves a group of only gated agents without a default, preference or not', async () => {
+      gatedAgents = new Set([ALICE, BOB])
+      botRow = bot({ preferredAgentId: BOB })
+      await makeOrch().syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')!.payload as RcBotAssign
+      expect(assign.defaultAgentId).toBeUndefined()
+    })
   })
 
   describe('conversation gating (resource-visibility §14)', () => {

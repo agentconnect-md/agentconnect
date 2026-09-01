@@ -93,6 +93,7 @@ function toBotRecord(b: BotJoined): BotRecord {
     feishuRegion: (asText(cfg.feishuRegion) as FeishuRegion | null) ?? null,
     shareable: b.shareable,
     transport: b.transport as BotRecord['transport'],
+    preferredAgentId: b.preferredAgentId ? AgentId(b.preferredAgentId) : null,
     createdBy: b.createdBy
       ? { userId: b.createdBy.id, displayName: b.createdBy.displayName, email: b.createdBy.email }
       : null,
@@ -278,6 +279,12 @@ export class PgBotRepo implements BotRepo {
       }
       await tx.bot.update({ where: { id, orgId }, data: { shareable } })
     })
+  }
+
+  async setPreferredAgent(orgId: OrgId, id: BotId, agentId: AgentId | null): Promise<void> {
+    // Org-fenced like `markFreed`: cross-org and missing are the same P2025. No row lock —
+    // this only steers the compile's fallback, which re-reads membership as it recompiles.
+    await this.db.bot.update({ where: { id, orgId }, data: { preferredAgentId: agentId } })
   }
 
   async listHttpActive(): Promise<BotRecord[]> {

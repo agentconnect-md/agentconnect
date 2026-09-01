@@ -1856,3 +1856,167 @@ describe('integration updates follow the duty holder', () => {
     expect(spy.upserts.map((u) => u.daemonId)).toEqual([DAEMON])
   })
 })
+
+/**
+ * The bot-level preferred default agent: a persisted pointer the HTTP-bot compile
+ * prefers over its earliest-non-gated-member derivation, so moving the default agent
+ * actually moves a bare mention, a DM, or a delegation. Platform-free — this is the
+ * generic knob every shared bot has, not a per-platform one.
+ */
+describe('preferred default agent (PATCH /bots/:id)', () => {
+  const SECOND_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
+
+  /** A shared HTTP Slack bot with two placed members, `first` being the earliest install. */
+  async function sharedBot(): Promise<{ botId: string; first: string; second: string }> {
+    await seedDaemon(prisma, DAEMON, { capabilities: daemonCapabilities(['slack']) })
+    await seedDaemon(prisma, SECOND_DAEMON, { capabilities: daemonCapabilities(['slack']) })
+    const first = randomUUID()
+    const second = randomUUID()
+    await seedAgent(prisma, first, { daemonId: DAEMON, name: 'alpha' })
+    await seedAgent(prisma, second, { daemonId: SECOND_DAEMON, name: 'beta' })
+    const botId = randomUUID()
+    await prisma.bot.create({
+      data: {
+        id: botId,
+        orgId: DEFAULT_ORG_ID,
+        platform: 'slack',
+        name: 'shared-bot',
+        transport: 'http',
+        shareable: true
+      }
+    })
+    await prisma.botSecret.create({
+      data: { botId, botToken: SLACK.botToken, signingSecret: 'signing-secret' }
+    })
+    // Distinct createdAt: the compile orders installs by it, so "earliest" is pinned.
+    for (const [index, agentId] of [first, second].entries()) {
+      await prisma.integration.create({
+        data: {
+          id: randomUUID(),
+          orgId: DEFAULT_ORG_ID,
+          agentId,
+          botId,
+          platform: 'slack',
+          name: 'shared-bot',
+          status: 'active',
+          createdAt: new Date(1_700_000_000_000 + index * 1000)
+        }
+      })
+    }
+    return { botId, first, second }
+  }
+
+  /** The app plus the frames its one connected relay received. */
+  function withRelay(): { app: HttpApp; sends: Array<{ type: string; payload: unknown }> } {
+    const { app } = withSpy()
+    const sends: Array<{ type: string; payload: unknown }> = []
+    app.relayReg.add({
+      relayId: 'r1',
+      send: (type: string, payload: unknown) => sends.push({ type, payload }),
+      close() {}
+    } as RelayChannel)
+    return { app, sends }
+  }
+
+  /** The `defaultAgentId`/`defaultDaemonId` of the last routing frame the relay saw. */
+  function compiledDefault(sends: Array<{ type: string; payload: unknown }>) {
+    const routing = sends.filter((send) => send.type === 'rc/routes' || send.type === 'rc/bot-assign')
+    return routing.at(-1)?.payload as { defaultAgentId?: string; defaultDaemonId?: string } | undefined
+  }
+
+  it('sets the preference and recompiles the relay fallback rung onto it', async () => {
+    const { botId, first, second } = await sharedBot()
+    const { app, sends } = withRelay()
+
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${botId}`,
+      payload: { preferredAgentId: second }
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ id: botId, preferredAgentId: second })
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).preferredAgentId).toBe(second)
+    // The whole point: the compiled default moved off the earliest install.
+    expect(compiledDefault(sends)).toMatchObject({ defaultAgentId: second, defaultDaemonId: SECOND_DAEMON })
+    expect(compiledDefault(sends)?.defaultAgentId).not.toBe(first)
+  })
+
+  it('clears the preference back to the earliest member', async () => {
+    const { botId, first, second } = await sharedBot()
+    await prisma.bot.update({ where: { id: botId }, data: { preferredAgentId: second } })
+    const { app, sends } = withRelay()
+
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${botId}`,
+      payload: { preferredAgentId: null }
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ id: botId, preferredAgentId: null })
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).preferredAgentId).toBeNull()
+    expect(compiledDefault(sends)).toMatchObject({ defaultAgentId: first, defaultDaemonId: DAEMON })
+  })
+
+  it('refuses an agent that does not use this bot, writing nothing', async () => {
+    const { botId, second } = await sharedBot()
+    const stranger = randomUUID()
+    await seedAgent(prisma, stranger, { daemonId: DAEMON, name: 'stranger' })
+    await prisma.bot.update({ where: { id: botId }, data: { preferredAgentId: second } })
+    const { app } = withRelay()
+
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${botId}`,
+      payload: { preferredAgentId: stranger }
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ message: 'default agent must be an agent that uses this bot' })
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).preferredAgentId).toBe(second)
+  })
+
+  it('carries the preference on GET /bots and takes both fields in one body', async () => {
+    const { botId, second } = await sharedBot()
+    const { app } = withRelay()
+
+    const res = await app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/bots/${botId}`,
+      payload: { shareable: false, preferredAgentId: second }
+    })
+    expect(res.statusCode).toBe(409) // two members still installed — the sharing half is refused
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).preferredAgentId).toBe(second)
+
+    const listed = (await app.app.inject({ method: 'GET', url: `${ORG}/bots` })).json() as {
+      id: string
+      preferredAgentId: string | null
+    }[]
+    expect(listed.find((bot) => bot.id === botId)?.preferredAgentId).toBe(second)
+  })
+
+  it('rejects a body that names neither field', async () => {
+    const { botId } = await sharedBot()
+    const { app } = withRelay()
+
+    const res = await app.app.inject({ method: 'PATCH', url: `${ORG}/bots/${botId}`, payload: {} })
+
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('leaves the bot on its derivation when the preferred agent is deleted', async () => {
+    // The FK is SET NULL, not CASCADE: the bot row outlives the agent, so nothing else
+    // would clear the pointer and the compile would keep chasing a vanished member.
+    const { botId, first, second } = await sharedBot()
+    await prisma.bot.update({ where: { id: botId }, data: { preferredAgentId: second } })
+
+    await prisma.integration.deleteMany({ where: { agentId: second } })
+    await prisma.agent.delete({ where: { id: second } })
+
+    expect((await prisma.bot.findUniqueOrThrow({ where: { id: botId } })).preferredAgentId).toBeNull()
+    const { app, sends } = withRelay()
+    await app.deps.httpBot.syncRoutes(botId)
+    expect(compiledDefault(sends)).toMatchObject({ defaultAgentId: first, defaultDaemonId: DAEMON })
+  })
+})

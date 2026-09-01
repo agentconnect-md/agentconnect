@@ -3095,6 +3095,10 @@ export interface BotRecord {
   shareable: boolean
   /** Inbound transport: 'http' ⇒ relay callbacks; 'socket' ⇒ daemon long connection. */
   transport: SlackTransport
+  /** The operator's chosen DEFAULT member: the HTTP-bot compile prefers it over its
+   *  earliest-member derivation while it still resolves to a placed, non-gated member
+   *  of this bot. Null ⇒ that derivation. */
+  preferredAgentId: AgentId | null
   /** Creator (WebUI user), joined for the console picker; null for prebuilt/CLI. */
   createdBy: { userId: string; displayName: string | null; email: string } | null
   /** Stamped when the bot's integration is removed ("last used 12d ago"). */
@@ -3154,6 +3158,11 @@ export interface BotRepo {
    *  Org-fenced: the lock read is filtered, so a cross-org id throws the same
    *  missing-row error ({@link BotMissing}) as an absent one. */
   setShareable(orgId: OrgId, id: BotId, shareable: boolean): Promise<void>
+  /** Point the bot's preferred default member at `agentId`, or clear it with null.
+   *  Membership is the CALLER's check (the route owns that error shape); the FK only
+   *  fences the id's existence. Org-fenced like {@link BotRepo.markFreed}: a cross-org
+   *  id throws the same P2025 as an absent row. */
+  setPreferredAgent(orgId: OrgId, id: BotId, agentId: AgentId | null): Promise<void>
   /** Every http-transport bot with ≥1 active integration, across all orgs — the
    *  shared-bot orchestrator's convergence worklist (relay register / failover).
    *  System-tier: fleet-wide by design. */

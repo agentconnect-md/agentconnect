@@ -1716,10 +1716,16 @@ export const LeaveIntegrationConversationBody = z.object({
   ])
 })
 
-/** `PATCH /bots/:id` — flip the shared-bot opt-in (shared-bot-relay.md §4.1). */
-export const UpdateBotBody = z.object({
-  shareable: z.boolean()
-})
+/** `PATCH /bots/:id` — flip the shared-bot opt-in (shared-bot-relay.md §4.1) and/or move
+ *  the bot's preferred default agent (null clears it). At least one field. */
+export const UpdateBotBody = z
+  .object({
+    shareable: z.boolean().optional(),
+    preferredAgentId: z.string().min(1).nullable().optional()
+  })
+  .refine((b) => b.shareable !== undefined || b.preferredAgentId !== undefined, {
+    message: 'provide shareable and/or preferredAgentId'
+  })
 
 /** Console view of a bot identity — metadata only, NEVER the tokens. */
 export const BotDto = z.object({
@@ -1742,6 +1748,9 @@ export const BotDto = z.object({
   /** Slack inbound transport (slack-http-mode): 'http' ⇒ relay-pool Events API
    *  ingress; 'socket' ⇒ classic daemon Socket Mode. Immutable post-create. */
   transport: z.enum(['socket', 'http']),
+  /** The member that catches a bare mention / DM / delegation, when an operator has
+   *  chosen one; null ⇒ the compile's earliest-non-gated-member derivation. */
+  preferredAgentId: z.string().nullable(),
   /** Classic-bot occupancy: the single agent holding it, or null (free). ALWAYS
    *  null for a shareable bot — sharing lifts the 1-install cap. */
   inUseByAgentId: z.string().nullable(),
