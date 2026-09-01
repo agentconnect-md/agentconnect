@@ -4388,6 +4388,18 @@ export interface LinearTokenRecord extends LinearTokenMaterial {
 }
 
 /**
+ * What {@link LinearTokenStore.rotate}'s compare-and-set found. `gone` and `superseded` are not
+ * failures — they are the world having moved on, and each names what it moved to.
+ */
+export type LinearTokenRotation =
+  /** The rotation landed on the row the flight read. */
+  | { outcome: 'rotated' }
+  /** A newer grant is in place (a reconnect, or a peer instance's rotate); the rotation was discarded. */
+  | { outcome: 'superseded'; current: LinearTokenRecord }
+  /** The row is gone — disconnected or swept. Nothing was written, and nothing may be. */
+  | { outcome: 'gone' }
+
+/**
  * A `linear_token` row no Bot in its OWN organization references any more (§7.1) — the sweeper's
  * unit of work. Selection is org-scoped and revocation is not, so the row carries both answers.
  */
@@ -4448,8 +4460,30 @@ export interface LinearOrphanTokenRow {
 
 export interface LinearTokenStore {
   get(identity: LinearConnectionIdentity): Promise<LinearTokenRecord | null>
-  /** Upsert the workspace's grant — the callback's step-1 write and every rotate. */
+  /** Upsert the workspace's grant — the connect callback's step-1 write and the §7.4 reconnect. */
   put(identity: LinearConnectionIdentity, material: LinearTokenMaterial): Promise<void>
+  /**
+   * The REFRESH path's write, and the reason it is not {@link LinearTokenStore.put}: a rotation is
+   * issued upstream long before it can be stored, and the world can move underneath it in between.
+   *
+   * So it is a compare-and-set on the row the flight actually read — an UPDATE, never an upsert,
+   * matching only while the row still carries `expectedUpdatedAt`, the same CAS token
+   * {@link LinearIdentitySection.claim} guards with. Two hazards die on that shape at once:
+   *
+   *  - a disconnect (locked revoke + remove) that completed while the refresh was in flight leaves
+   *    NOTHING to update, and an UPDATE cannot create a row — so a late rotation can never
+   *    resurrect a grant for a workspace that was disconnected, however long it was delayed;
+   *  - a reconnect that stored a brand-new grant in the meantime moved `updatedAt`, so the older
+   *    rotation matches nothing instead of overwriting the fresher pair.
+   *
+   * The caller learns which happened and adopts the world as it now is, rather than retrying into
+   * it. Takes the same lock {@link LinearTokenStore.put} does, on the same waiter budget.
+   */
+  rotate(
+    identity: LinearConnectionIdentity,
+    expectedUpdatedAt: Date,
+    material: LinearTokenMaterial
+  ): Promise<LinearTokenRotation>
   delete(identity: LinearConnectionIdentity): Promise<void>
   /**
    * Rows of the deployment app older than `staleBefore` whose own organization has no Bot for the

@@ -14,6 +14,7 @@ import type {
   LinearIdentitySection,
   LinearTokenMaterial,
   LinearTokenRecord,
+  LinearTokenRotation,
   LinearTokenStore
 } from '../../persistence/ports.js'
 import { LinearApiClient } from './api.js'
@@ -26,8 +27,10 @@ const NOW = Date.parse('2026-03-01T00:00:00.000Z')
 
 class MemoryTokens implements LinearTokenStore {
   readonly rows = new Map<string, LinearTokenRecord>()
-  /** Every `put`, in order — the persist-before-reply assertion reads this. */
+  /** Every durable write, in order — the persist-before-reply assertion reads this. */
   readonly writes: LinearTokenMaterial[] = []
+  /** A distinct `updatedAt` per write, so the CAS token behaves as Postgres's does. */
+  private stamp = 0
   private static key(i: LinearConnectionIdentity) {
     return `${i.orgId} ${i.clientId} ${i.organizationId}`
   }
@@ -36,8 +39,24 @@ class MemoryTokens implements LinearTokenStore {
   }
   put(identity: LinearConnectionIdentity, material: LinearTokenMaterial): Promise<void> {
     this.writes.push(material)
-    this.rows.set(MemoryTokens.key(identity), { ...identity, ...material, updatedAt: new Date(NOW) })
+    this.rows.set(MemoryTokens.key(identity), { ...identity, ...material, updatedAt: new Date(NOW + ++this.stamp) })
     return Promise.resolve()
+  }
+  /** The real CAS, in memory: update ONLY the row still carrying `expectedUpdatedAt`, and never
+   *  create one — the two properties the Postgres statement is written for. */
+  rotate(
+    identity: LinearConnectionIdentity,
+    expectedUpdatedAt: Date,
+    material: LinearTokenMaterial
+  ): Promise<LinearTokenRotation> {
+    const current = this.rows.get(MemoryTokens.key(identity))
+    if (!current) return Promise.resolve({ outcome: 'gone' })
+    if (current.updatedAt.getTime() !== expectedUpdatedAt.getTime()) {
+      return Promise.resolve({ outcome: 'superseded', current })
+    }
+    this.writes.push(material)
+    this.rows.set(MemoryTokens.key(identity), { ...identity, ...material, updatedAt: new Date(NOW + ++this.stamp) })
+    return Promise.resolve({ outcome: 'rotated' })
   }
   delete(identity: LinearConnectionIdentity): Promise<void> {
     this.rows.delete(MemoryTokens.key(identity))
@@ -188,6 +207,41 @@ describe('rotate-and-retry — a rejected rotate may just mean someone else rota
     expect(await service.accessToken(IDENTITY)).toMatchObject({ ok: true, accessToken: 'access_peer', rotated: true })
     // Exactly one upstream attempt: the retry is a RELOAD, not a second rotate.
     expect(linear.calls).toHaveLength(1)
+  })
+
+  it('discards a rotation whose row was removed while the refresh was upstream', async () => {
+    const { tokens, linear, service } = build()
+    await seed(tokens, 0)
+    // The disconnect edge's locked removal completes inside the upstream call.
+    linear.reply(() => {
+      void tokens.delete(IDENTITY)
+      return rotated(2)
+    })
+
+    expect(await service.accessToken(IDENTITY)).toEqual({ ok: false, reason: 'not_connected' })
+    // An upsert here would hand a live grant back to a workspace whose install is gone.
+    expect(await tokens.get(IDENTITY)).toBeNull()
+    expect(tokens.writes).toEqual([])
+  })
+
+  it('adopts a grant stored while the refresh was upstream instead of overwriting it', async () => {
+    const { tokens, linear, service } = build()
+    await seed(tokens, 0)
+    // The §7.4 reconnect's upsert lands mid-flight; its pair is the one Linear now honors.
+    linear.reply(() => {
+      void tokens.put(IDENTITY, {
+        accessToken: 'access_reconnect',
+        refreshToken: 'refresh_reconnect',
+        expiresAt: new Date(NOW + 86_400_000)
+      })
+      return rotated(2)
+    })
+
+    expect(await service.accessToken(IDENTITY)).toMatchObject({ ok: true, accessToken: 'access_reconnect' })
+    expect(await tokens.get(IDENTITY)).toMatchObject({
+      accessToken: 'access_reconnect',
+      refreshToken: 'refresh_reconnect'
+    })
   })
 
   it('flips to reconnect_required when the reload finds nothing fresher', async () => {

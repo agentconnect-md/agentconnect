@@ -154,6 +154,7 @@ function storeWith(base: LinearTokenStore, overrides: Partial<LinearTokenStore>)
   return {
     get: (i) => base.get(i),
     put: (i, m) => base.put(i, m),
+    rotate: (i, u, m) => base.rotate(i, u, m),
     delete: (i) => base.delete(i),
     listOrphans: (c, s, l) => base.listOrphans(c, s, l),
     withIdentityLock: (i, act) => base.withIdentityLock(i, act),

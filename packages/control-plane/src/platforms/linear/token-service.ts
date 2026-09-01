@@ -15,15 +15,26 @@
  *    collapses them into one upstream call, and each joiner gets the winner's answer.
  *  - PERSIST BEFORE REPLY. The rotated pair is written durably before any caller sees it. Replying
  *    first and persisting after is how a crash mid-rotation strands a workspace with a token only
- *    the daemon has and a refresh token Linear has already spent.
+ *    the daemon has and a refresh token Linear has already spent. That write is a COMPARE-AND-SET
+ *    on the row the flight read ({@link LinearTokenStore.rotate}), not an upsert: an upstream call
+ *    takes real time, and a disconnect or a reconnect can complete inside it. An upsert would
+ *    resurrect a workspace that was disconnected mid-refresh, or overwrite a reconnect's newer
+ *    grant with an older rotation; an UPDATE that matches nothing does neither.
  *
  * ROTATE-AND-RETRY is the Slack config-token precedent (`http/slack-user-config.ts`): a rotate that
  * Linear DEFINITIVELY rejects may simply mean a peer CP instance rotated first, so the row is
  * reloaded once and a fresh pair found there is used. Only after that does the workspace count as
  * needing a reconnect. An unreachable Linear never spends the retry and never flips the state —
- * a blip is not proof the grant is dead.
+ * a blip is not proof the grant is dead. A LOST CAS takes the same arm on purpose: "someone else
+ * moved this identity on" is one event, and whether it surfaces as a rejected rotate or as an
+ * update that matched nothing is only a question of when this flight noticed.
  */
-import type { LinearConnectionIdentity, LinearTokenRecord, LinearTokenStore } from '../../persistence/ports.js'
+import type {
+  LinearConnectionIdentity,
+  LinearTokenRecord,
+  LinearTokenRotation,
+  LinearTokenStore
+} from '../../persistence/ports.js'
 import type { LinearPlatformAppConfig } from '../../config/linear-platform.js'
 import { systemClock, type Clock } from '../../domain/clock.js'
 import type { LinearApiClient, LinearGrant, LinearViewer } from './api.js'
@@ -167,17 +178,42 @@ export class LinearTokenService {
       refreshToken: row.refreshToken
     })
     if (rotated.ok) {
-      // Durable BEFORE the reply — see the single-writer note at the top of this file.
-      await this.put(identity, rotated.result)
-      return { ok: true, accessToken: rotated.result.accessToken, expiresAt: rotated.result.expiresAt, rotated: true }
+      // Durable BEFORE the reply — see the single-writer note at the top of this file — and as a
+      // CAS on the row this flight read, never an upsert: the world may have moved while the call
+      // above was in flight, and this write must not be able to undo it.
+      const applied = await this.deps.tokens.rotate(identity, row.updatedAt, rotated.result)
+      if (applied.outcome === 'rotated') {
+        return { ok: true, accessToken: rotated.result.accessToken, expiresAt: rotated.result.expiresAt, rotated: true }
+      }
+      return this.adopt(identity, applied)
     }
     if (rotated.error === 'unreachable') return { ok: false, reason: 'unreachable' }
 
     // Rejected. The refresh token may simply have been spent by another CP instance that already
     // persisted the rotated pair — reload once and use what it wrote.
     const reloaded = await this.deps.tokens.get(identity)
-    if (reloaded && this.fresh(reloaded)) {
-      return { ok: true, accessToken: reloaded.accessToken, expiresAt: reloaded.expiresAt, rotated: true }
+    return this.adopt(identity, reloaded ? { outcome: 'superseded', current: reloaded } : { outcome: 'gone' })
+  }
+
+  /**
+   * The world as it is after a rotation this flight could not apply — the SAME rule the rejected
+   * rotate takes, because a lost CAS and a spent refresh token are one event seen at two moments.
+   *
+   * `gone` is a workspace that was disconnected or swept out from under the refresh: there is
+   * nothing to serve and nothing may be written, which is precisely what stops a delayed rotation
+   * from resurrecting it. `superseded` is a newer grant — a reconnect, or a peer instance — and it
+   * is adopted when it is usable rather than re-rotated into.
+   */
+  private adopt(identity: LinearConnectionIdentity, applied: LinearTokenRotation): LinearTokenResolution {
+    if (applied.outcome === 'superseded' && this.fresh(applied.current)) {
+      return { ok: true, accessToken: applied.current.accessToken, expiresAt: applied.current.expiresAt, rotated: true }
+    }
+    if (applied.outcome === 'gone') {
+      this.deps.log?.warn(
+        { orgId: identity.orgId, organizationId: identity.organizationId },
+        'linear: the workspace grant was removed while its token was being refreshed'
+      )
+      return { ok: false, reason: 'not_connected' }
     }
     this.deps.log?.warn(
       { orgId: identity.orgId, organizationId: identity.organizationId },
