@@ -376,8 +376,8 @@ export function conversationOwners(botId: string, integrations: IntegrationRow[]
  *  conversation has exactly one owner: the agent that answers whatever its
  *  routing rules don't hand to someone else.
  *
- *  The design keeps this strictly apart from the trigger toggle ("切换 default 和
- *  trigger 是两类控制，不要混一起") — a compact avatar + chevron whose popover
+ *  The design keeps this strictly apart from the trigger toggle (the two are separate
+ *  controls, never merged) — a compact avatar + chevron whose popover
  *  READS the current default and offers exactly one action, claiming the channel
  *  for the agent whose page this is. Handing a conversation to some third agent stays
  *  in Settings → Bots, where the whole roster is in view. */
