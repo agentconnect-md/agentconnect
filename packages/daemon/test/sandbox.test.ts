@@ -78,7 +78,7 @@ describe('sandboxWrap', () => {
       mkdirSync(workspace, { recursive: true })
       mkdirSync(home)
       mkdirSync(memory)
-      const settingsPath = writeSandboxSettings(agentDir, {
+      const settingsPath = writeSandboxSettings(agentDir, 'agent', {
         writable: [workspace, home, memory],
         denyRead: [agentDir],
         allowRead: [workspace, home, memory],
@@ -213,7 +213,7 @@ describe('bwrap PID isolation', () => {
     const home = join(agentDir, 'home')
     mkdirSync(workspace, { recursive: true })
     mkdirSync(home)
-    const settingsPath = writeSandboxSettings(agentDir, {
+    const settingsPath = writeSandboxSettings(agentDir, 'agent', {
       writable: [workspace, home],
       denyRead: [],
       allowRead: [],
@@ -249,6 +249,7 @@ describe('bwrap config-file rematerialization', () => {
     const configRootInode = statSync(configFilesDir(agentDir)).ino
     const settingsPath = writeSandboxSettings(
       agentDir,
+      'agent',
       sandboxBoundary({ agentDir, cwd: workspace, runtimeHome: home })
     )
     const { cmd, args } = sandboxWrap(

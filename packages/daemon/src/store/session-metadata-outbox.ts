@@ -47,6 +47,8 @@ export interface SessionMetadataHost {
 
 export interface SessionMetadataSnapshotInput {
   sessionId: string
+  /** The logical session; with one host per session an ACP id alone can name a sibling's row. */
+  sessionKey?: string
   agentId: string
   phase: EventSession['phase']
   platform: SessionKey['platform']
@@ -101,7 +103,9 @@ export class SessionMetadataOutbox {
     if (!cpClient && !this.host.controlPlaneConfigured()) return
     const now = new Date(this.host.clock().now()).toISOString()
     // Callers hold the ACP hop's id; the wire carries the session's outward one (§1.1).
-    const slot = await store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
+    const slot = input.sessionKey
+      ? await store.getSession(input.sessionKey)
+      : await store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
     // An unresolvable slot keeps the id it was given — the same thing a pre-v12 daemon would have sent.
     const outwardSessionId =
       slot?.sessionId ??
@@ -123,7 +127,9 @@ export class SessionMetadataOutbox {
     // Visibility-classification inputs (session-visibility.md §4.1), read from
     // the session row so every re-emit carries them. Absent fields make the CP
     // fail closed (no owner) rather than guess — never send a placeholder.
-    const classification = await store.getSessionClassification(input.agentId, input.sessionId)
+    // By the logical session, never the ACP pair: sibling session hosts can share one runtime-local id.
+    const classificationKey = input.sessionKey ?? slot?.key
+    const classification = classificationKey ? await store.getSessionClassificationByKey(classificationKey) : undefined
     if (classification?.conversationKind !== undefined) {
       event.conversationKind = classification.conversationKind as EventSession['conversationKind']
     }
@@ -174,7 +180,7 @@ export class SessionMetadataOutbox {
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
     if (input.runtime !== undefined) event.runtime = input.runtime
     else if (agent?.runtime) event.runtime = agent.runtime
-    const sessionRecord = await store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
+    const sessionRecord = slot
     if (sessionRecord?.workspaceIsolation) event.workspaceIsolation = sessionRecord.workspaceIsolation
     const storeKey = sessionRecord?.key
     const configuredModel =
@@ -461,6 +467,7 @@ export class SessionMetadataOutbox {
       if (row.channel !== id && row.triggeredBy !== id) continue
       await this.emitSessionMetadataSnapshot({
         sessionId: row.acpSessionId,
+        sessionKey: row.key,
         agentId: row.agentId,
         phase: 'plan',
         platform: row.platform as SessionKey['platform'],

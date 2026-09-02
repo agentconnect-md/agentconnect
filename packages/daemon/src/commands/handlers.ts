@@ -12,6 +12,7 @@
  * {@link CommandHost} — and the Daemon keeps thin same-name delegates for the
  * ingress paths (and the tests) that already call these by name.
  */
+import type { HostKey } from '../acp/host-key.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import { applySelect, selectCardText, selectDisplay, selectLabel, selectOptions } from './select-projection.js'
 import type { SelectSetters } from './select-projection.js'
@@ -63,7 +64,10 @@ export interface CommandHost {
   /** True when this session runs on its own credential host rather than the shared static one. */
   hasModelSessionHost(key: string): boolean
   modelCrossesHostProvider(key: string, agentId: string, model: string): boolean
-  hostForStoredSession(agentId: string, acpSessionId: string): Promise<AcpHost | undefined>
+  /** The live host of a logical session, whatever kind of host serves it. */
+  hostForSession(agentId: string, sessionKey: string): AcpHost | undefined
+  /** The owner key a session's pending/lease entries are filed under. */
+  sessionOwnerKey(agentId: string, sessionKey: string): HostKey
   statusInfoFrom(agentId: string, sessionKey: string, acpSessionId?: string): Promise<StatusBarInfo>
   emitStatusBar(p: Pending): Promise<void>
   interruptTurn(
@@ -170,12 +174,12 @@ export class CommandHandlers {
       return true
     }
     const acpSessionId = rec.acpSessionId
-    const host = acpSessionId ? await this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
+    const host = acpSessionId ? this.host.hostForSession(rec.agentId, rec.key) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) return true // no live session — applies next turn
     void host
       .setSessionModel(acpSessionId, model)
       .then(async (applied) => {
-        const p = this.host.pending().get(pendingTurnKey(rec.agentId, acpSessionId))
+        const p = this.host.pending().get(pendingTurnKey(this.host.sessionOwnerKey(rec.agentId, rec.key), acpSessionId))
         if (applied && p) await this.host.emitStatusBar(p) // reflect the new model on the status bar
       })
       .catch((err) => this.host.log().warn(`set-model failed: ${(err as Error).message}`))
@@ -211,7 +215,7 @@ export class CommandHandlers {
     await this.host.store().setEffortOverride(key, effort)
     this.host.log().info(`session ${key} effort override → "${effort}"`)
     const acpSessionId = rec.acpSessionId
-    const host = acpSessionId ? await this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
+    const host = acpSessionId ? this.host.hostForSession(rec.agentId, rec.key) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) {
       await this.refreshStatusBarForKey(key)
       return true
@@ -232,7 +236,7 @@ export class CommandHandlers {
     await this.host.store().setPermissionModeOverride(key, permissionMode)
     this.host.log().info(`session ${key} permission mode override → "${permissionMode}"`)
     const acpSessionId = rec.acpSessionId
-    const host = acpSessionId ? await this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
+    const host = acpSessionId ? this.host.hostForSession(rec.agentId, rec.key) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) {
       await this.refreshStatusBarForKey(key)
       return true
@@ -253,7 +257,7 @@ export class CommandHandlers {
     await this.host.store().setFastModeOverride(key, fastMode)
     this.host.log().info(`session ${key} fast-mode override → ${fastMode}`)
     const acpSessionId = rec.acpSessionId
-    const host = acpSessionId ? await this.host.hostForStoredSession(rec.agentId, acpSessionId) : undefined
+    const host = acpSessionId ? this.host.hostForSession(rec.agentId, rec.key) : undefined
     if (!acpSessionId || !host?.hasSession(acpSessionId)) {
       await this.refreshStatusBarForKey(key)
       return true
@@ -269,7 +273,9 @@ export class CommandHandlers {
    *  (model / effort / fast) is reflected. No-op when the session is idle. */
   async refreshStatusBarForKey(key: string): Promise<void> {
     const rec = await this.host.store().getSession(key)
-    const p = rec?.acpSessionId ? this.host.pending().get(pendingTurnKey(rec.agentId, rec.acpSessionId)) : undefined
+    const p = rec?.acpSessionId
+      ? this.host.pending().get(pendingTurnKey(this.host.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
+      : undefined
     if (p) await this.host.emitStatusBar(p)
   }
 

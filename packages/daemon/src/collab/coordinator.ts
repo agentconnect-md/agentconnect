@@ -2,6 +2,7 @@
 // orchestration, hoisted out of `Daemon` verbatim. Every delivery here is DIRECT (never a
 // visible channel post) and every ordering below — record-first, CAS, admission barrier — is
 // load-bearing against a fast worker replying before its record exists.
+import type { HostKey } from '../acp/host-key.js'
 import { randomUUID } from 'node:crypto'
 import type { Clock, TimerHandle } from '@agentconnect.md/connection'
 import {
@@ -57,6 +58,8 @@ export interface CollabCoreHost {
   evalHooks(): DaemonEvaluationHooks
   /** Live turns keyed by `pendingTurnKey(agentId, acpSessionId)`. */
   pending(): ReadonlyMap<string, Pending>
+  /** The owner key a session's pending/lease entries are filed under. */
+  sessionOwnerKey(agentId: string, sessionKey: string): HostKey
   /** Per-session call metadata of the turn running right now — the caller's live hop depth. */
   activeTurnCallMeta(): ReadonlyMap<string, CallMeta>
   /** Shutdown/pause: an A2A obligation must not be inferred while the daemon is draining. */
@@ -105,9 +108,10 @@ export interface CollabTurnHost {
     }
   ): Promise<string | null>
   webchatTransport(): WebchatTransport
+  /** The external audience of a session, by its logical key. */
   externalOriginForSession(
     agentId: string,
-    acpSessionId: string | undefined
+    sessionKey: string | undefined
   ): Promise<ExternalSessionAudience | undefined>
 }
 
@@ -342,7 +346,9 @@ export class CollabCoordinator {
     ): Promise<MessageAgentResult> => {
       const caller = await this.host.store().getSession(callerKey)
       const pending = caller?.acpSessionId
-        ? this.host.pending().get(pendingTurnKey(req.callerAgentId, caller.acpSessionId))
+        ? this.host
+            .pending()
+            .get(pendingTurnKey(this.host.sessionOwnerKey(req.callerAgentId, callerKey), caller.acpSessionId))
         : undefined
       this.host.evalHooks().emit({
         type,
@@ -404,9 +410,7 @@ export class CollabCoordinator {
     const originSessionId = callerSession
       ? await this.host.store().ensureOutwardSessionId(callerKey, req.callerAgentId, this.host.clock().now())
       : undefined
-    // These two read the caller's LOCAL rows, which are keyed by the runtime's id.
-    const callerAcpSessionId = callerSession?.acpSessionId ?? undefined
-    const externalOrigin = await this.host.externalOriginForSession(req.callerAgentId, callerAcpSessionId)
+    const externalOrigin = await this.host.externalOriginForSession(req.callerAgentId, callerKey)
     const originCoordPlatform = platform
     const originCoords: CallMeta['originCoords'] = {
       platform: originCoordPlatform,
@@ -483,7 +487,7 @@ export class CollabCoordinator {
           sourceHopCount,
           correlationId,
           ...(originSessionId !== undefined ? { originSessionId } : {}),
-          ...(callerAcpSessionId !== undefined ? { originAcpSessionId: callerAcpSessionId } : {}),
+          originSessionKey: callerKey,
           originCoords,
           ...(externalOrigin ? { externalOrigin } : {})
         }
@@ -534,8 +538,7 @@ export class CollabCoordinator {
       ...(req.needsReply === true && originSessionId !== undefined ? { needsReply: true } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(originSessionId !== undefined &&
-      (await this.host.store().isCaptureExcluded(req.callerAgentId, callerAcpSessionId))
+      ...(originSessionId !== undefined && (await this.host.store().isCaptureExcluded(req.callerAgentId, callerKey))
         ? { parentPrivate: true }
         : {})
     }
@@ -705,7 +708,10 @@ export class CollabCoordinator {
     // and that wake is deferred while this very dispatch finalizes — so a tasks-only
     // check would see zero and infer the narration while the bg wake is still owed.
     const sessionId = (await this.host.store().getSession(childKey))?.acpSessionId ?? undefined
-    const lease = sessionId !== undefined ? this.host.sdkLease().get(sdkLeaseKey(agentId, sessionId)) : undefined
+    const lease =
+      sessionId !== undefined
+        ? this.host.sdkLease().get(sdkLeaseKey(this.host.sessionOwnerKey(agentId, childKey), sessionId))
+        : undefined
     if (lease !== undefined && (lease.tasks.size > 0 || lease.armedWakes > 0)) return
     const finalOutput = p.reply.text.trim()
     const text =
@@ -798,13 +804,10 @@ export class CollabCoordinator {
     // Hand the origin owner a turn whose origin points back at the REPLIER's session, so the
     // origin could reply again (symmetric lineage). callFrom = the replier.
     const replyCoordPlatform = platform
-    // Symmetric lineage: what we hand the origin is the REPLIER's outward id (§1.1), while the
-    // replier's own local rows stay keyed by the runtime's.
-    const replierAcpSessionId = callerRec?.acpSessionId ?? undefined
     const replierSessionId = callerRec
       ? await this.host.store().ensureOutwardSessionId(callerKey, req.callerAgentId, this.host.clock().now())
       : undefined
-    const externalOrigin = await this.host.externalOriginForSession(req.callerAgentId, replierAcpSessionId)
+    const externalOrigin = await this.host.externalOriginForSession(req.callerAgentId, callerKey)
     const replyOriginCoords: CallMeta['originCoords'] = {
       platform: replyCoordPlatform,
       channel: req.callerChannel,
@@ -820,8 +823,7 @@ export class CollabCoordinator {
       ...(externalOrigin ? { externalOrigin } : {}),
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(replierSessionId !== undefined &&
-      (await this.host.store().isCaptureExcluded(req.callerAgentId, replierAcpSessionId))
+      ...(replierSessionId !== undefined && (await this.host.store().isCaptureExcluded(req.callerAgentId, callerKey))
         ? { parentPrivate: true }
         : {})
     }
@@ -954,7 +956,7 @@ export class CollabCoordinator {
         sourceHopCount: inbound.hopCount,
         ...(correlationId !== undefined ? { correlationId } : {}),
         ...(replierSessionId !== undefined ? { originSessionId: replierSessionId } : {}),
-        ...(replierAcpSessionId !== undefined ? { originAcpSessionId: replierAcpSessionId } : {}),
+        originSessionKey: callerKey,
         originCoords: replyOriginCoords,
         ...(externalOrigin ? { externalOrigin } : {}),
         // §5.3: this is a REPLY into the validated origin session, not a wake — the
@@ -1374,7 +1376,6 @@ export class CollabCoordinator {
       return false
     }
     const originRec = await this.host.store().getSession(originKey)
-    const originAcpSessionId = originRec?.acpSessionId ?? undefined
     const originSessionId = originRec
       ? await this.host.store().ensureOutwardSessionId(originKey, req.agentId, this.host.clock().now())
       : undefined
@@ -1397,7 +1398,7 @@ export class CollabCoordinator {
       },
       // §5.1: seal the child's capture gate when the waking session is private.
       // Tighten-only — see CallMeta.parentPrivate.
-      ...(originSessionId && (await this.host.store().isCaptureExcluded(req.agentId, originAcpSessionId))
+      ...(originSessionId && (await this.host.store().isCaptureExcluded(req.agentId, originKey))
         ? { parentPrivate: true }
         : {})
     }
@@ -1462,8 +1463,8 @@ export class CollabCoordinator {
       /** §5.3: the caller's origin session, forwarded so the remote child can reply back — its
        *  OUTWARD id (§1.1), since it travels to another daemon. */
       originSessionId?: string
-      /** The same session's runtime-local id, for the gates this daemon keys by it. */
-      originAcpSessionId?: string
+      /** The same session's logical key, for the gates this daemon keys by it. */
+      originSessionKey?: string
       originCoords?: CallMeta['originCoords']
       externalOrigin?: CallMeta['externalOrigin']
       /** §5.3 lineage reply: the EXISTING target session this delivery replies into, by its
@@ -1491,8 +1492,8 @@ export class CollabCoordinator {
           // keyed by the runtime's id, so read it from the caller's own slot — `originSessionId`
           // is the lineage id, which is outward (§1.1).
           ...(ctx.originSessionId !== undefined &&
-          ctx.originAcpSessionId !== undefined &&
-          (await this.host.store().isCaptureExcluded(req.callerAgentId, ctx.originAcpSessionId))
+          ctx.originSessionKey !== undefined &&
+          (await this.host.store().isCaptureExcluded(req.callerAgentId, ctx.originSessionKey))
             ? { parentPrivate: true }
             : {}),
           toAgentId: req.toAgentId,

@@ -1,3 +1,4 @@
+import { sessionHostKey, type HostKey } from '../acp/host-key.js'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import type { RuntimeDef } from '../config/config-schema.js'
@@ -31,13 +32,15 @@ export interface ModelSessionHostPoolHost {
   acpSessionId(sessionKey: string): Promise<string | null | undefined>
   /** The slot's OUTWARD session id, minted on first ask — see session-concept.md §1.1. */
   outwardSessionId(sessionKey: string, agentId: string): Promise<string>
-  sessionKeyForAcpId(agentId: string, acpSessionId: string): Promise<string | undefined>
-  sessionSdkQuiescent(agentId: string, acpSessionId: string | null | undefined): boolean
-  releaseSdkLease(agentId: string, acpSessionId: string): void
+  sessionSdkQuiescent(owner: HostKey, acpSessionId: string | null | undefined): boolean
+  releaseSdkLease(owner: HostKey, acpSessionId: string): void
   /** Build + start the confined runtime for one entry, retries included (buildAcpHost seam). */
   startRuntime(agent: LoadedAgent, entry: ModelSessionHost): Promise<AcpHost>
   /** The agent's ordinary warm host, if any — the fallback for a session with no bound host. */
-  ordinaryHost(agentId: string): AcpHost | undefined
+  /** Whether the daemon itself still runs a host for the agent (its config files stay until the last one goes). */
+  hasDaemonHost(agentId: string): boolean
+  /** A pool host's process is gone; per-host daemon state (its sandbox policy directory) goes with it. */
+  hostStopped?(agentId: string, sessionKey: string): void
   /** Drop the agent's config-file secrets once it owns no host of any kind any more. */
   cleanupAgentConfigFiles(agentId: string): void
 }
@@ -200,6 +203,7 @@ export class ModelSessionHostPool {
     let cleanup: Promise<void> | undefined
     return {
       host,
+      hostKey: sessionHostKey(entry.agentId, entry.sessionKey),
       stop: (deadlineMs) => (cleanup ??= this.stopRuntime(entry, host, deadlineMs)),
       waitForCleanup: () => cleanup ?? Promise.resolve()
     }
@@ -326,7 +330,7 @@ export class ModelSessionHostPool {
 
   private async sdkQuiescent(entry: ModelSessionHost): Promise<boolean> {
     const acpSessionId = await this.host.acpSessionId(entry.sessionKey)
-    return this.host.sessionSdkQuiescent(entry.agentId, acpSessionId)
+    return this.host.sessionSdkQuiescent(sessionHostKey(entry.agentId, entry.sessionKey), acpSessionId)
   }
 
   async stopRuntime(entry: ModelSessionHost, expectedHost?: AcpHost, deadlineMs?: number): Promise<void> {
@@ -344,8 +348,9 @@ export class ModelSessionHostPool {
       })
       .finally(async () => {
         if (entry.stopping === stopping) entry.stopping = undefined
+        this.host.hostStopped?.(entry.agentId, entry.sessionKey)
         const sessionId = await this.host.acpSessionId(entry.sessionKey)
-        if (sessionId) this.host.releaseSdkLease(entry.agentId, sessionId)
+        if (sessionId) this.host.releaseSdkLease(sessionHostKey(entry.agentId, entry.sessionKey), sessionId)
       })
     entry.stopping = stopping
     await stopping
@@ -374,7 +379,7 @@ export class ModelSessionHostPool {
       this.entries.set(sessionKey, entry)
       this.log.warn(`session ${sessionKey}: model host stop failed — retained for a retry`)
     }
-    if (!this.host.ordinaryHost(entry.agentId) && !this.hasEntryForAgent(entry.agentId)) {
+    if (!this.host.hasDaemonHost(entry.agentId) && !this.hasEntryForAgent(entry.agentId)) {
       this.host.cleanupAgentConfigFiles(entry.agentId)
     }
     if (stopError) throw stopError
@@ -391,8 +396,8 @@ export class ModelSessionHostPool {
     await Promise.all(keys.map((key) => this.release(key, deadlineMs)))
   }
 
-  async hostForStoredSession(agentId: string, acpSessionId: string): Promise<AcpHost | undefined> {
-    const sessionKey = await this.host.sessionKeyForAcpId(agentId, acpSessionId)
-    return (sessionKey ? this.entries.get(sessionKey)?.host : undefined) ?? this.host.ordinaryHost(agentId)
+  /** The pool's started host for a logical session, if it has one. */
+  hostForSessionKey(sessionKey: string): AcpHost | undefined {
+    return this.entries.get(sessionKey)?.host
   }
 }

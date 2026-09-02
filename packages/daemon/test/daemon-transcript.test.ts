@@ -12,6 +12,10 @@ import type { SlackPostOptions } from '../src/slack/connection.js'
 import { WAIT } from './wait-support.js'
 
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
+
+/** The capture gate is keyed by the logical session: the one row the runtime id names in these single-session tests. */
+const gateKeyOf = async (daemon: unknown): Promise<string> =>
+  (await (daemon as any).store.getSessionByAcpIdForAgent('bot-a', 'acp-1')).key
 const TRANSCRIPT_CHANNEL = transcriptChannelKey('C1', TRANSPORT_SCOPE)
 
 function scaffold(mode: 'minimal' | 'low' | 'medium' | 'high', agentExtra: Record<string, unknown> = {}): string {
@@ -217,7 +221,7 @@ describe('Daemon transcript records the agent reply', () => {
     await daemon.start()
     const conn = makeRoutable(daemon)
     await (daemon as any).dispatch('bot-a', dm('100', 'private question'), 'int-a')
-    expect(await (daemon as any).store.applyCpCaptureGate('bot-a', 'acp-1', false, 1)).toBe('applied')
+    expect(await (daemon as any).store.applyCpCaptureGate('bot-a', await gateKeyOf(daemon), false, 1)).toBe('applied')
 
     let releaseDelivery!: () => void
     const deliveryBlocked = new Promise<void>((resolve) => (releaseDelivery = resolve))
@@ -237,11 +241,13 @@ describe('Daemon transcript records the agent reply', () => {
     releaseDelivery()
     await turn
     await vi.waitFor(() => expect(recordTurn).toHaveBeenCalledOnce(), WAIT)
+    // The capture names the session outwardly (§1.1): a runtime id can be shared by sibling session hosts.
+    const outward = (await (daemon as any).store.getSessionByAcpIdForAgent('bot-a', 'acp-1')).sessionId as string
     expect(recordTurn).toHaveBeenCalledWith(
-      { agentId: 'bot-a', sessionId: 'acp-1' },
+      { agentId: 'bot-a', sessionId: outward },
       {
         turnId: stableTurnId('bot-a', dm('200', 'shared follow-up')),
-        sessionId: 'acp-1',
+        sessionId: outward,
         input: expect.stringContaining('shared follow-up'),
         output: 'here is my answer'
       },
@@ -268,7 +274,7 @@ describe('Daemon transcript records the agent reply', () => {
 
     await (daemon as any).dispatch('bot-a', channelMsg('100', 'question?'), 'int-a')
 
-    expect(await (daemon as any).store.isCaptureExcluded('bot-a', 'acp-1')).toBe(false)
+    expect(await (daemon as any).store.isCaptureExcluded('bot-a', await gateKeyOf(daemon))).toBe(false)
     await vi.waitFor(() => expect(recordTurn).toHaveBeenCalledOnce(), WAIT)
     await daemon.stop()
   })
@@ -404,7 +410,7 @@ describe('Daemon transcript records the agent reply', () => {
 
     await (daemon as any).dispatch('bot-a', dm('100', 'question?'), 'int-a')
 
-    expect(await (daemon as any).store.isCaptureExcluded('bot-a', 'acp-1')).toBe(true)
+    expect(await (daemon as any).store.isCaptureExcluded('bot-a', await gateKeyOf(daemon))).toBe(true)
     expect(recordTurn).not.toHaveBeenCalled()
     await daemon.stop()
   })

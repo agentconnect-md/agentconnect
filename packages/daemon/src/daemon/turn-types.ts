@@ -1,3 +1,4 @@
+import type { HostKey } from '../acp/host-key.js'
 import type { DutyGrantEntry, EventSession, ExternalSessionAudience, SessionKey } from '@agentconnect.md/protocol'
 import type { AcpHost } from '../acp/acp-host.js'
 import type { LoadedAgent } from '../agents/load-agents.js'
@@ -58,15 +59,27 @@ export class LifecycleCleanupBlockedError extends Error {
 }
 
 /** ACP session ids are scoped to one agent runtime, not globally unique. */
-export function pendingTurnKey(agentId: string, acpSessionId: string): string {
-  return JSON.stringify([agentId, acpSessionId])
+// Keyed by the OWNING HOST, not the agent: ACP ids are runtime-local, and a confined agent runs one
+// host per session, so two of its children can both mint `acp-1`. The shared host's owner is the agent id.
+export function pendingTurnKey(owner: HostKey, acpSessionId: string): string {
+  return JSON.stringify([owner, acpSessionId])
+}
+
+/** The host a pendingTurnKey / sdkLeaseKey belongs to. */
+export function pendingTurnOwner(key: string): HostKey {
+  return (JSON.parse(key) as [HostKey, string])[0]
+}
+
+/** The ACP session id a pendingTurnKey / sdkLeaseKey names. */
+export function pendingTurnAcpSessionId(key: string): string {
+  return (JSON.parse(key) as [string, string])[1]
 }
 
 /** Background-task leases are per (agent, ACP session) for the same reason turns are: two
  *  agents can each expose an `acp-1`. Sharing one entry would let one agent's live task
  *  suppress the other's completion wake, or overwrite its task record under a colliding id. */
-export function sdkLeaseKey(agentId: string, acpSessionId: string): string {
-  return pendingTurnKey(agentId, acpSessionId)
+export function sdkLeaseKey(owner: HostKey, acpSessionId: string): string {
+  return pendingTurnKey(owner, acpSessionId)
 }
 
 /** One LIVE background task — a member of the lease's liveness set. `startedAt` is when the
@@ -221,6 +234,8 @@ export type TurnInterruptDisposition = 'terminal' | 'handoff'
  */
 export interface SelectedTurnHost {
   host: AcpHost
+  /** The host's key — the owner every pending/lease entry of its sessions is filed under. */
+  hostKey: HostKey
   /** Full lifecycle cleanup for the exact process selected for this turn. */
   stop: (deadlineMs?: number) => Promise<void>
   /** The exact stop operation once lifecycle cleanup has begun, or an already
@@ -559,6 +574,8 @@ export interface Pending {
   promptEchoPrefix?: string
   /** The live ACP session id for this turn (part of the `this.pending` map key). */
   acpSessionId: string
+  /** The host that minted `acpSessionId` — the other half of the `this.pending` key. */
+  hostKey: HostKey
   /** The same session's OUTWARD id (session-concept.md §1.1) — what the console knows it by, so
    *  every deep link and status payload this turn produces addresses a row the CP actually has.
    *  Stamped once here because most of those producers are synchronous. */

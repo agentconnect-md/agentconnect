@@ -27,7 +27,22 @@ import {
   type StoredUsage
 } from './store/local-store.js'
 import { AcpHost, turnFailureCode, turnFailureReason } from './acp/acp-host.js'
-import { probeSandboxHost, SandboxError, type SandboxMechanism, type SandboxProbe } from './acp/sandbox.js'
+import {
+  probeSandboxHost,
+  removeSandboxSettings,
+  SandboxError,
+  type SandboxMechanism,
+  type SandboxProbe
+} from './acp/sandbox.js'
+import {
+  agentHostKey,
+  hostKeyAgentId,
+  hostKeyDirName,
+  hostKeyLabel,
+  hostKeySessionKey,
+  sessionHostKey,
+  type HostKey
+} from './acp/host-key.js'
 import { effectiveRunInSandbox, prepareRuntimeLaunch } from './launch/prepare.js'
 import {
   SessionManager,
@@ -507,7 +522,9 @@ import {
   FailStopError,
   LifecycleCleanupBlockedError,
   pendingSessionKey,
+  pendingTurnAcpSessionId,
   pendingTurnKey,
+  pendingTurnOwner,
   QueueFullError,
   sdkLeaseKey,
   turnState,
@@ -614,8 +631,22 @@ registerObservedChannels(discordObservedChannels)
 registerObservedChannels(linearObservedChannels)
 
 /** Chain key for one agent's view of one ACP session — see `Daemon.enqueueAcpUpdate`. */
-function acpUpdateChainKey(agentId: string, sessionId: string): string {
-  return `${agentId}\u001f${sessionId}`
+function liveSdkLease(l: {
+  tasks: Map<string, unknown>
+  armedWakes: number
+  deliveringWakes: number
+  sdkState: string
+}): boolean {
+  return l.tasks.size > 0 || l.armedWakes > 0 || l.deliveringWakes > 0 || l.sdkState === 'running'
+}
+
+/** The store row a memory dream executes under. */
+function dreamExecutionKey(agentId: string, dreamId: string): string {
+  return sessionKey('dream', 'memory', dreamId, agentId)
+}
+
+function acpUpdateChainKey(owner: HostKey, sessionId: string): string {
+  return `${owner}\u001f${sessionId}`
 }
 
 // One agent-discovery pass: what this daemon will serve, plus the whole active fleet on disk.
@@ -755,13 +786,13 @@ export class Daemon {
   // mirrors only the loaded local files and is rebuilt each reconcile.
   private agents = new Map<string, LoadedAgent>()
   private fileAgents = new Map<string, LoadedAgent>()
-  private hosts = new Map<string, AcpHost>()
-  // agentId → when its current host was (re)built (clock ms). The idle reaper reads
-  // this so a freshly-started host that hasn't recorded session activity yet is NOT
-  // treated as idle-since-epoch (`agentLastActivityTs` is unset until the first turn
-  // stamps it) and reclaimed the instant it comes up, racing its own first dispatch.
-  private hostStartedAt = new Map<string, number>()
-  // agentId → config-file secret state for the current host (shim/config-file-env.ts).
+  // Every live ACP host by HostKey (agent id, or agent id + session key under perSessionHost); every per-host map below is keyed alike.
+  private hosts = new Map<HostKey, AcpHost>()
+  // Per-host launch facts: the agent dir (the roster entry is gone when a removed agent's host stops) and the launch cwd.
+  private hostLaunch = new Map<HostKey, { agentDir: string; cwd: string }>()
+  // host → when it was (re)built (clock ms), so the idle reaper gives a host with no recorded activity yet a full window.
+  private hostStartedAt = new Map<HostKey, number>()
+  // agentId → config-file secret state (shim/config-file-env.ts); the files are shared by the agent's hosts and go with its last one.
   // Recorded at spawn because the reconcile remove path drops the roster entry BEFORE
   // stopping the host — the agent dir can't be re-resolved there. `childEnv` is the
   // merged spawn env snapshot the materialization was planned from: the idle sweep
@@ -1045,15 +1076,15 @@ export class Daemon {
   // agentId → the in-flight (or resolved) host-startup promise. Resolves to the
   // STARTED host (startHostWithRetry may build several across retries — the last,
   // successful one wins). `.has()` doubles as "is this agent starting / started?".
-  private hostStarts = new Map<string, Promise<AcpHost>>()
+  private hostStarts = new Map<HostKey, Promise<AcpHost>>()
   // Monotonic per-agent fence. stop/evict increments it so an older async startup
   // (including its retry loop) can never publish or retry after teardown.
-  private hostStartGeneration = new Map<string, number>()
+  private hostStartGeneration = new Map<HostKey, number>()
   /** Hosts whose initialize handshake completed for the current generation. */
-  private readyHosts = new Set<string>()
+  private readyHosts = new Set<HostKey>()
   // Wakes a retry that is sleeping in backoff when its generation is invalidated.
   // Without this, shutdown could return while an old timer still owns executable work.
-  private hostStartAborts = new Map<string, AbortController>()
+  private hostStartAborts = new Map<HostKey, AbortController>()
   private watcher?: FSWatcher
   private debounceTimer?: NodeJS.Timeout
   private agentsDir = ''
@@ -1208,9 +1239,8 @@ export class Daemon {
     string,
     { agentId: string; sessionId: string; updates: { sessionUpdate: string; [key: string]: any }[] }
   >()
-  // In-progress host teardowns, keyed by agentId. ensureHostAsync awaits an entry
-  // before (re)spawning so a stop racing a new message can't leave two live hosts.
-  private hostStopping = new Map<string, Promise<void>>()
+  // In-progress host teardowns by HostKey; ensureHostAsync awaits an entry before (re)spawning so a stop racing a message leaves one host.
+  private hostStopping = new Map<HostKey, Promise<void>>()
   // Recurring idle sweep (reap idle hosts + TTL-close idle sessions).
   private idleSweepTimer?: TimerHandle
   private storeRetentionTimer?: TimerHandle
@@ -1415,9 +1445,9 @@ export class Daemon {
     try {
       for (const wait of this.permissions.liveApprovalWaits()) {
         if (wait.agentId !== agentId) continue
-        const outward = (await this.outwardSessionIdForAcp(agentId, wait.sessionId)) ?? wait.sessionId
+        const outward = (await this.outwardSessionIdForAcp(agentId, wait.sessionId, wait.owner)) ?? wait.sessionId
         // The snapshot above is stale by now; the emit itself re-checks the wait is still live.
-        if (outward === outwardSessionId) this.emitApprovalActivity(agentId, wait.sessionId, 'awaiting_permission')
+        if (outward === outwardSessionId) this.emitApprovalActivity(wait.owner, wait.sessionId, 'awaiting_permission')
       }
     } catch (err) {
       this.log.warn(`approval wait for session "${outwardSessionId}" not re-asserted: ${formatErr(err)}`)
@@ -1458,8 +1488,8 @@ export class Daemon {
       commandChrome: () => this.commandChrome,
       hasModelSessionHost: (key) => this.modelSessions.has(key),
       modelCrossesHostProvider: (key, agentId, model) => this.modelSessions.crossesHostProvider(key, agentId, model),
-      hostForStoredSession: async (agentId, acpSessionId) =>
-        await this.modelSessions.hostForStoredSession(agentId, acpSessionId),
+      hostForSession: (agentId, sessionKey) => this.hostForOwner(this.sessionOwnerKey(agentId, sessionKey)),
+      sessionOwnerKey: (agentId, sessionKey) => this.sessionOwnerKey(agentId, sessionKey),
       statusInfoFrom: async (agentId, sessionKey, acpSessionId) =>
         await this.statusInfoFrom(agentId, sessionKey, acpSessionId),
       emitStatusBar: (p) => this.emitStatusBar(p),
@@ -2309,7 +2339,7 @@ export class Daemon {
           if (!agent) throw new Error(`unknown agent ${agentId}`)
           await this.memory.recordTurnForBinding(
             {
-              ...(await this.memoryScopeForSession(agentId, turn.sessionId ?? '')),
+              ...(await this.memoryScopeForCapturedTurn(agentId, turn.sessionId ?? '')),
               ...(turn.sessionId ? { sessionId: turn.sessionId } : {})
             },
             {
@@ -2657,7 +2687,10 @@ export class Daemon {
         // refuses to distill a capture-excluded turn at all. The binding is never
         // model-supplied, so this cannot be forged from inside a session.
         if (ctx.memoryBinding) return true
-        return !(await this.store.isCaptureExcluded(ctx.agentId, await this.acpSessionIdForToolCall(ctx)))
+        return !(await this.store.isCaptureExcluded(
+          ctx.agentId,
+          sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        ))
       },
       memoryScope: (ctx) => this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
       resolveAttachment: async (ctx, name) => {
@@ -2696,7 +2729,11 @@ export class Daemon {
           sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
           runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
         })
-        const acpSessionId = await this.acpSessionIdForToolCall(ctx).catch(() => undefined)
+        // The session by its logical key; the scope answers by the outward id the row carries.
+        const row = await this.store
+          .getSession(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
+          .catch(() => undefined)
+        const acpSessionId = row?.sessionId ?? row?.acpSessionId ?? undefined
         // Session-worktree first (an isolated session's files live there), then the agent
         // root: `location(id, sessionId)` answers ONLY for git-repo agents on isolated
         // sessions, and the default config (shared isolation, from-scratch) is the other arm.
@@ -2843,11 +2880,17 @@ export class Daemon {
       store: this.store,
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
       // which needs the ACP connection that start() establishes.
-      hostFor: (agentId) => this.ensureHostAsync(agentId),
+      hostFor: (agentId, request, cwd) =>
+        this.ensureHostAsync(this.hostKeyFor(agentId, request.sessionKey), { session: { workspace: request, cwd } }),
       // A constructed AcpHost is not yet running. Keep the session on the cold
       // path until initialize succeeds so concurrent waiters consume hostFor's
       // single preparation rather than starting a warm preparation afterward.
-      isHostRunning: (agentId) => this.readyHosts.has(agentId),
+      isHostRunning: (agentId, request) => this.readyHosts.has(this.hostKeyFor(agentId, request.sessionKey)),
+      // A session-bound host was launched in the session's directory; the runtime session opens there.
+      boundHostCwd: (agentId, request) => {
+        const key = this.hostKeyFor(agentId, request.sessionKey)
+        return hostKeySessionKey(key) === undefined ? undefined : this.hostLaunch.get(key)?.cwd
+      },
       agentById: (id) => this.agents.get(id),
       // Skill-invocation translation reads what the runtime itself advertised (runtime-commands.ts).
       advertisedCommandsFor: (agentId) => this.runtimeCommands.get(agentId).commands,
@@ -3548,6 +3591,117 @@ export class Daemon {
     )
   }
 
+  // git-workspace-model §11: a confined self-hosted session gets its own host; a pool launch dials the agent's one pod, so it keeps the shared host.
+  private perSessionHost(agent: Agent): boolean {
+    return !this.k8s && this.agentRunsInSandbox(agent)
+  }
+
+  /** The host that serves `sessionKey` of this agent: its own under perSessionHost, else the shared one. */
+  private hostKeyFor(agentId: string, sessionKey?: string): HostKey {
+    const agent = this.agents.get(agentId)
+    return sessionKey !== undefined && agent && this.perSessionHost(agent)
+      ? sessionHostKey(agentId, sessionKey)
+      : agentHostKey(agentId)
+  }
+
+  /** Every host key the agent has live, starting or stopping, plus its shared one (its start fence). */
+  private hostKeysForAgent(agentId: string): HostKey[] {
+    const keys = new Set<HostKey>([agentHostKey(agentId)])
+    for (const map of [this.hosts, this.hostStarts, this.hostStopping]) {
+      for (const key of map.keys()) if (hostKeyAgentId(key) === agentId) keys.add(key)
+    }
+    return [...keys]
+  }
+
+  private hasHostForAgent(agentId: string): boolean {
+    for (const key of this.hosts.keys()) if (hostKeyAgentId(key) === agentId) return true
+    return false
+  }
+
+  /** The agent's key for `host` — scoped to the agent, since a test factory may hand one object to several agents. */
+  private hostKeyOfHost(agentId: string, host: AcpHost): HostKey | undefined {
+    for (const [key, candidate] of this.hosts) if (candidate === host && hostKeyAgentId(key) === agentId) return key
+    return undefined
+  }
+
+  private hostStartedAtForAgent(agentId: string): number {
+    let latest = 0
+    for (const [key, at] of this.hostStartedAt) if (hostKeyAgentId(key) === agentId) latest = Math.max(latest, at)
+    return latest
+  }
+
+  /** The owner of a logical session's pending/lease entries: the pool's host when it has one, else the host hostKeyFor names. */
+  private sessionOwnerKey(agentId: string, sessionKey: string): HostKey {
+    return this.modelSessions.has(sessionKey)
+      ? sessionHostKey(agentId, sessionKey)
+      : this.hostKeyFor(agentId, sessionKey)
+  }
+
+  /** The live host an owner key names: the daemon's own map, else the pool's entry for the session key. */
+  private hostForOwner(owner: HostKey): AcpHost | undefined {
+    const sessionKey = hostKeySessionKey(owner)
+    return (
+      this.hosts.get(owner) ?? (sessionKey === undefined ? undefined : this.modelSessions.hostForSessionKey(sessionKey))
+    )
+  }
+
+  /** The dream host's owner: its execution row's key, so its ACP id resolves to that row and nothing else. */
+  private dreamOwnerKey(agentId: string, dreamId: string): HostKey {
+    return sessionHostKey(agentId, dreamExecutionKey(agentId, dreamId))
+  }
+
+  // The session row an ACP id names for THIS owner. A session-bound owner answers only for its own row —
+  // an internal pass with no row (memory/commit) answers nothing, never a sibling that minted the same id.
+  private async sessionForAcp(owner: HostKey, acpSessionId: string): Promise<SessionRecord | undefined> {
+    const sessionKey = hostKeySessionKey(owner)
+    if (sessionKey === undefined) return await this.store.getSessionByAcpIdForAgent(hostKeyAgentId(owner), acpSessionId)
+    const rec = await this.store.getSession(sessionKey)
+    return rec?.acpSessionId === acpSessionId ? rec : undefined
+  }
+
+  /** Admission the session holds right now, read with no await so a stop can decide against it in one tick. */
+  private sessionAdmitted(sessionKey: string, hostKey: HostKey): boolean {
+    return (
+      this.inflight.has(sessionKey) ||
+      this.activeDispatchDoneByKey.has(sessionKey) ||
+      this.hostStarts.has(hostKey) ||
+      [...this.pending.values()].some((p) => p.plan.sessionKey === sessionKey)
+    )
+  }
+
+  /** The host and start generation a session-host stop decision is taken against. */
+  private sessionHostFence(
+    agentId: string,
+    sessionKey: string
+  ): { expected: AcpHost | undefined; generation: number | undefined } {
+    const key = sessionHostKey(agentId, sessionKey)
+    return { expected: this.hosts.get(key), generation: this.hostStartGeneration.get(key) }
+  }
+
+  // Stop the host bound to one session because its row or directory is going. `fence` is what the cleanup
+  // decision saw; a replacement, a newer start generation, or a turn admitted meanwhile is not its to evict.
+  private async stopSessionHost(
+    agentId: string,
+    sessionKey: string,
+    fence?: {
+      expected: AcpHost | undefined
+      generation: number | undefined
+      row: { key: string; agentId: string; acpSessionId: string | null }
+    }
+  ): Promise<void> {
+    const key = sessionHostKey(agentId, sessionKey)
+    if (fence) {
+      if (this.hosts.get(key) !== fence.expected) return
+      if (await this.sessionRetentionActive(fence.row)) return
+      // Read again with no await between here and the stop: the probe above awaited a store query.
+      if (this.hosts.get(key) !== fence.expected) return
+      if (this.hostStartGeneration.get(key) !== fence.generation) return
+      if (this.sessionAdmitted(sessionKey, key)) return
+    }
+    if (!this.hosts.has(key) && !this.hostStarts.has(key) && !this.hostStopping.has(key)) return
+    await this.stopHostByKey(key)
+  }
+
   /**
    * Whether a bridge spawned for this daemon's tools can reach it at all.
    *
@@ -3810,8 +3964,11 @@ export class Daemon {
     if (!current || this.workspacePreparationAuthority(current) !== this.workspacePreparationAuthority(agent)) {
       throw new Error(`workspace preparation blocked for superseded agent authority (${agent.id})`)
     }
-    if (expectedWarmHost && (this.hosts.get(agent.id) !== expectedWarmHost || !this.readyHosts.has(agent.id))) {
-      throw new Error(`workspace preparation blocked for superseded warm host (${agent.id})`)
+    if (expectedWarmHost) {
+      const key = this.hostKeyOfHost(agent.id, expectedWarmHost)
+      if (key === undefined || !this.readyHosts.has(key)) {
+        throw new Error(`workspace preparation blocked for superseded warm host (${agent.id})`)
+      }
     }
   }
 
@@ -3909,17 +4066,22 @@ export class Daemon {
     await this.stopHost(agentId)
   }
 
-  private ensureHost(agentId: string, cfg: ReturnType<typeof loadConfig>): AcpHost {
-    const host = this.hosts.get(agentId)
+  /** Construct + memoize the host for `key`; `cwd` is the session directory for a session-bound host. */
+  private ensureHost(key: HostKey, cfg: ReturnType<typeof loadConfig>, cwd?: string): AcpHost {
+    const host = this.hosts.get(key)
     if (host) return host
+    const agentId = hostKeyAgentId(key)
     const agent = this.agents.get(agentId)!
+    const launchCwd = cwd ?? agent.workspace.path
     const built = this.buildAcpHost(agent, cfg, {
+      hostKey: key,
       runInSandbox: this.agentRunsInSandbox(agent),
-      cwd: agent.workspace.path,
+      cwd: launchCwd,
       warnOnSandboxDowngrade: true
     })
-    this.hosts.set(agentId, built.host)
-    this.hostStartedAt.set(agentId, this.clock.now())
+    this.hosts.set(key, built.host)
+    this.hostLaunch.set(key, { agentDir: agent.dir, cwd: launchCwd })
+    this.hostStartedAt.set(key, this.clock.now())
     this.hostConfigFiles.set(agentId, { agentDir: agent.dir, ...built.configFileState })
     return built.host
   }
@@ -3942,6 +4104,8 @@ export class Daemon {
     agent: LoadedAgent,
     cfg: ReturnType<typeof loadConfig>,
     opts: {
+      /** Names the host being built; its sandbox policy directory and terminal reap are keyed by it. */
+      hostKey: HostKey
       runInSandbox: boolean
       cwd: string
       warnOnSandboxDowngrade?: boolean
@@ -3953,7 +4117,7 @@ export class Daemon {
     configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean }
   } {
     const agentId = agent.id
-    const onUpdate = (sid: string, u: any) => this.enqueueAcpUpdate(agentId, sid, u)
+    const onUpdate = (sid: string, u: any) => this.enqueueAcpUpdate(opts.hostKey, sid, u)
     const runtimeEntry = this.runtimeCatalog.entries[agent.runtime]
     if (runtimeEntry?.source === 'curated') {
       this.curatedRuntimeAdmission.assertLaunch(agent.runtime, runtimeEntry.source)
@@ -4107,6 +4271,7 @@ export class Daemon {
         provider: memoryKindOf(agent),
         scopeDir: agent.dir,
         cwd: opts.cwd,
+        hostKey: opts.hostKey,
         runInSandbox,
         daemonRoot: this.root,
         agentsRoot: cfg.agentsDir,
@@ -4171,17 +4336,17 @@ export class Daemon {
       // back to its LocalDriver, which is what a self-hosted daemon wants.
       ...(this.k8sPlane ? { driver: this.k8sPlane.driver } : {}),
       onUpdate,
-      onPermission: (sid, params) => this.permissions.onAcpPermission(agentId, sid, params),
+      onPermission: (sid, params) => this.permissions.onAcpPermission(opts.hostKey, sid, params),
       ...(this.evalHooks.enabled
         ? {
             onPermissionEvent: (sid, params, event) =>
-              this.permissions.onAcpPermissionEvent(agentId, sid, params, event)
+              this.permissions.onAcpPermissionEvent(opts.hostKey, sid, params, event)
           }
         : {}),
-      onElicit: (sid, params) => this.permissions.onAcpElicit(agentId, sid, params),
-      onSdkLifecycle: (sid, message) => this.onSdkLifecycle(agentId, sid, message),
+      onElicit: (sid, params) => this.permissions.onAcpElicit(opts.hostKey, sid, params),
+      onSdkLifecycle: (sid, message) => this.onSdkLifecycle(opts.hostKey, sid, message),
       // Pairs the runtime's terminal exit with the ordinary rebuild — see reapTerminalHost.
-      onTerminal: () => this.reapTerminalHost(agentId, constructed.host),
+      onTerminal: () => this.reapTerminalHost(opts.hostKey, constructed.host),
       env: launch.env,
       ...(sandboxSessionGit
         ? {
@@ -4223,12 +4388,13 @@ export class Daemon {
    * A host that never became ready is deliberately left alone: `startHostWithRetry` reaps its
    * own failed child, and evicting the start generation here would cancel its remaining attempts.
    */
-  private reapTerminalHost(agentId: string, host?: AcpHost): void {
-    if (!host || this.hosts.get(agentId) !== host) return
-    if (!this.readyHosts.has(agentId)) return
-    this.log.warn(`acp: agent "${agentId}" runtime exited — reclaiming its host so the next message re-spawns it`)
-    void this.stopHost(agentId).catch((err) =>
-      this.log.warn(`acp: reclaiming the exited host for agent "${agentId}" failed: ${formatErr(err)}`)
+  private reapTerminalHost(key: HostKey, host?: AcpHost): void {
+    if (!host || this.hosts.get(key) !== host) return
+    if (!this.readyHosts.has(key)) return
+    const label = hostKeyLabel(key)
+    this.log.warn(`acp: agent "${label}" runtime exited — reclaiming its host so the next message re-spawns it`)
+    void this.stopHostByKey(key).catch((err) =>
+      this.log.warn(`acp: reclaiming the exited host for agent "${label}" failed: ${formatErr(err)}`)
     )
   }
 
@@ -4321,11 +4487,12 @@ export class Daemon {
     )
   }
 
-  private selectedOrdinaryTurnHost(agentId: string, host: AcpHost): SelectedTurnHost {
+  private selectedOrdinaryTurnHost(key: HostKey, host: AcpHost): SelectedTurnHost {
     let cleanup: Promise<void> | undefined
     return {
       host,
-      stop: (deadlineMs) => (cleanup ??= this.stopHost(agentId, deadlineMs)),
+      hostKey: key,
+      stop: (deadlineMs) => (cleanup ??= this.stopHostByKey(key, deadlineMs)),
       waitForCleanup: () => cleanup ?? Promise.resolve()
     }
   }
@@ -4341,13 +4508,12 @@ export class Daemon {
       acpSessionId: async (sessionKey) => (await this.store.getSession(sessionKey))?.acpSessionId,
       outwardSessionId: async (sessionKey, agentId) =>
         await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now()),
-      sessionKeyForAcpId: async (agentId, acpSessionId) =>
-        (await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId))?.key,
-      sessionSdkQuiescent: (agentId, acpSessionId) => this.sessionSdkQuiescent(agentId, acpSessionId),
-      releaseSdkLease: (agentId, acpSessionId) => void this.sdkLease.delete(sdkLeaseKey(agentId, acpSessionId)),
+      sessionSdkQuiescent: (owner, acpSessionId) => this.sessionSdkQuiescent(owner, acpSessionId),
+      releaseSdkLease: (owner, acpSessionId) => void this.sdkLease.delete(sdkLeaseKey(owner, acpSessionId)),
       startRuntime: async (agent, entry) => await this.startModelSessionRuntime(agent, entry),
-      ordinaryHost: (agentId) => this.hosts.get(agentId),
-      cleanupAgentConfigFiles: (agentId) => this.cleanupModelSessionConfigFiles(agentId)
+      hasDaemonHost: (agentId) => this.hasHostForAgent(agentId),
+      cleanupAgentConfigFiles: (agentId) => this.cleanupModelSessionConfigFiles(agentId),
+      hostStopped: (agentId, sessionKey) => this.releaseHostLaunch(sessionHostKey(agentId, sessionKey))
     }
   }
 
@@ -4356,7 +4522,9 @@ export class Daemon {
     let lastError: unknown
     for (let attempt = 1; attempt <= attempts; attempt++) {
       const cwd = await this.prepareAgentWorkspace(agent, undefined, undefined)
+      const hostKey = sessionHostKey(agent.id, entry.sessionKey)
       const { host, configFileState } = this.buildAcpHost(agent, this.cfg, {
+        hostKey,
         runInSandbox: this.agentRunsInSandbox(agent),
         cwd,
         warnOnSandboxDowngrade: true,
@@ -4371,16 +4539,25 @@ export class Daemon {
       if (configFileState.childEnv) {
         this.hostConfigFiles.set(agent.id, { agentDir: agent.dir, ...configFileState })
       }
+      this.hostLaunch.set(hostKey, { agentDir: agent.dir, cwd })
       try {
         await host.start()
         return host
       } catch (error) {
         lastError = error
         await host.stop().catch(() => {})
+        this.releaseHostLaunch(hostKey)
         if (attempt < attempts) await this.sleep(this.cfg.limits.agentStartBackoffMs)
       }
     }
     throw lastError
+  }
+
+  /** Forget a host's launch facts and drop its sandbox policy directory, once its process is gone. */
+  private releaseHostLaunch(key: HostKey): void {
+    const launch = this.hostLaunch.get(key)
+    this.hostLaunch.delete(key)
+    if (launch) removeSandboxSettings(launch.agentDir, hostKeyDirName(key))
   }
 
   /** Drop an agent's config-file secrets once the pool's last host for it is gone. */
@@ -4449,10 +4626,12 @@ export class Daemon {
     }
   }
 
-  /** Memory scope for a running session, resolving its channel from the store by
-   *  ACP session id (the capture path only carries the session id). */
-  private async memoryScopeForSession(agentId: string, acpSessionId: string): Promise<MemoryScope> {
-    const rec = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+  // Memory scope of a captured turn on replay: the capture names its session outwardly (§1.1); a row
+  // captured before that was named by the runtime's id, which is tried second.
+  private async memoryScopeForCapturedTurn(agentId: string, capturedSessionId: string): Promise<MemoryScope> {
+    const rec =
+      (await this.store.getSessionByOutwardId(capturedSessionId, agentId)) ??
+      (await this.store.getSessionByAcpIdForAgent(agentId, capturedSessionId))
     return this.memoryScope(agentId, rec?.channel, rec?.transportScope)
   }
 
@@ -4464,7 +4643,9 @@ export class Daemon {
     output: string,
     binding: Agent['memory'],
     captureTarget?: PreparedExternalMemoryCapture,
-    evaluationTurnId = turnId
+    evaluationTurnId = turnId,
+    // The logical session and its outward id: the gate is keyed by the former, the capture names the latter.
+    session?: { key: string; outwardSessionId: string }
   ): Promise<void> {
     if (this.evaluationProfile.memory === 'off') return
     if (!output.trim()) return
@@ -4473,7 +4654,7 @@ export class Daemon {
     // launch-correlated one) must never be distilled into it. The gate is checked
     // HERE — before both the managed distillation and the external capture outbox
     // — and fails closed on unknown state.
-    if (await this.store.isCaptureExcluded(agentId, sessionId)) return
+    if (await this.store.isCaptureExcluded(agentId, session?.key)) return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
     const record = async () => {
@@ -4487,9 +4668,11 @@ export class Daemon {
         })
       }
       try {
+        const rec = session ? await this.store.getSession(session.key) : undefined
+        const capturedSessionId = session?.outwardSessionId ?? sessionId
         await this.memory.recordTurnForBinding(
-          { ...(await this.memoryScopeForSession(agentId, sessionId)), sessionId },
-          { turnId, sessionId, input, output },
+          { ...this.memoryScope(agentId, rec?.channel, rec?.transportScope), sessionId: capturedSessionId },
+          { turnId, sessionId: capturedSessionId, input, output },
           binding,
           captureTarget
         )
@@ -4565,9 +4748,9 @@ export class Daemon {
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     const modelSessionKey = this.modelSessions.enabled ? internalSessionKey.memory(agentId) : undefined
-    const host = modelSessionKey
-      ? (await this.modelSessions.ensure(agent, modelSessionKey)).host
-      : await this.ensureHostAsync(agentId)
+    const selected = modelSessionKey ? await this.modelSessions.ensure(agent, modelSessionKey) : undefined
+    const owner = selected?.hostKey ?? agentHostKey(agentId)
+    const host = selected?.host ?? (await this.ensureHostAsync(agentHostKey(agentId)))
     try {
       if (this.memoryExtractionUnavailable.has(host)) {
         throw new Error('memory extraction is unavailable for this runtime host')
@@ -4640,7 +4823,7 @@ export class Daemon {
             )
         // Synchronous on purpose: the runtime advertises its commands on a timer right after this
         // resolves, and a registration behind one more await loses that race (#1310 review).
-        const passKey = pendingTurnKey(agentId, sessionId)
+        const passKey = pendingTurnKey(owner, sessionId)
         this.internalPassSessions.add(internalPassSlot.distill(cacheKey), passKey)
         if (!(await host.setSessionPermissionMode(sessionId, readOnlyMode))) {
           host.discardSession(sessionId)
@@ -4650,7 +4833,7 @@ export class Daemon {
         }
         this.memoryExtractionSessions.set(cacheKey, sessionId)
       }
-      const key = pendingTurnKey(agentId, sessionId)
+      const key = pendingTurnKey(owner, sessionId)
       const chunks: string[] = []
       this.memoryExtractionQuarantines.delete(key)
       this.memoryExtractionCollectors.set(key, { chunks })
@@ -4664,7 +4847,7 @@ export class Daemon {
         await host.prompt(sessionId, [{ type: 'text', text }])
         // The runtime's notifications are handled off the prompt call, so drain this
         // session's update chain before the pass reads what they collected.
-        await this.acpUpdateChains.get(acpUpdateChainKey(agentId, sessionId))
+        await this.acpUpdateChains.get(acpUpdateChainKey(owner, sessionId))
         return chunks.join('')
       } catch (err) {
         if (this.memoryExtractionSessions.get(cacheKey) === sessionId) {
@@ -4684,7 +4867,7 @@ export class Daemon {
       if (modelSessionKey) {
         const extractionSessionId = this.memoryExtractionSessions.get(cacheKey)
         if (extractionSessionId) {
-          this.memoryExtractionQuarantines.delete(pendingTurnKey(agentId, extractionSessionId))
+          this.memoryExtractionQuarantines.delete(pendingTurnKey(owner, extractionSessionId))
         }
         this.memoryExtractionSessions.delete(cacheKey)
         await this.modelSessions.release(modelSessionKey)
@@ -4730,9 +4913,9 @@ export class Daemon {
     if (!agent) throw new Error(`unknown agent ${agentId}`)
     if (signal.aborted) throw new Error('commit-message pass canceled before dispatch')
     const modelSessionKey = this.modelSessions.enabled ? internalSessionKey.commit(agentId, randomUUID()) : undefined
-    const host = modelSessionKey
-      ? (await this.modelSessions.ensure(agent, modelSessionKey)).host
-      : await this.ensureHostAsync(agentId)
+    const selected = modelSessionKey ? await this.modelSessions.ensure(agent, modelSessionKey) : undefined
+    const owner = selected?.hostKey ?? agentHostKey(agentId)
+    const host = selected?.host ?? (await this.ensureHostAsync(agentHostKey(agentId)))
     try {
       // OBSERVED, not gated (memory-dreaming.md §2): the policy rides `_meta.systemPrompt` where the
       // runtime has that channel and is prepended inline where it does not. The output contract lives
@@ -4750,7 +4933,7 @@ export class Daemon {
       const sessionId = trusted
         ? await host.newSession(cwd, [], undefined, systemPrompt, [], undefined, CLAUDE_HEADLESS_DISALLOWED_TOOLS)
         : await host.newSession(cwd, [], undefined, undefined, [], undefined, CLAUDE_HEADLESS_DISALLOWED_TOOLS)
-      const key = pendingTurnKey(agentId, sessionId)
+      const key = pendingTurnKey(owner, sessionId)
       // Synchronous on purpose: see the distillation pass — the advertisement is already on a timer.
       this.internalPassSessions.add(internalPassSlot.commit(agentId, sessionId), key)
       try {
@@ -4913,20 +5096,23 @@ export class Daemon {
       }
     }
     let host: AcpHost
+    const dreamHostKey = this.dreamOwnerKey(agent.id, context.dreamId)
     try {
-      host = await this.buildDreamHost(agent, context.inputDir, issued)
+      host = await this.buildDreamHost(agent, context.inputDir, dreamHostKey, issued)
     } catch (error) {
+      removeSandboxSettings(agent.dir, hostKeyDirName(dreamHostKey))
       if (issued) await this.modelSessions.revokeKeyQuietly(issued.grant.keyId)
       throw error
     }
     const ref: { sessionId?: string } = {}
     try {
-      return await this.runDreamExtractionOnHost(host, agent, systemPrompt, prompt, signal, context, ref)
+      return await this.runDreamExtractionOnHost(host, dreamHostKey, agent, systemPrompt, prompt, signal, context, ref)
     } finally {
       // One-off host: discard the whole confined child so its process + huge,
       // attacker-influenced context never lingers (dreams are rare). Stopping the
       // child also kills a runtime that ignored `session/cancel`.
       await host.stop().catch(() => {})
+      removeSandboxSettings(agent.dir, hostKeyDirName(dreamHostKey))
       if (issued) {
         await this.modelSessions.revokeKey(issued.grant.keyId)
       }
@@ -4936,7 +5122,7 @@ export class Daemon {
       // clearMemoryExtractionQuarantines sweep, so without this a long-lived
       // daemon would leak one Map entry per dream. Scoped to THIS session so a
       // concurrent distiller quarantine on the warm host is untouched.
-      if (ref.sessionId) this.memoryExtractionQuarantines.delete(pendingTurnKey(agent.id, ref.sessionId))
+      if (ref.sessionId) this.memoryExtractionQuarantines.delete(pendingTurnKey(dreamHostKey, ref.sessionId))
     }
   }
 
@@ -4959,9 +5145,11 @@ export class Daemon {
   private async buildDreamHost(
     agent: LoadedAgent,
     cwd: string,
+    hostKey: HostKey,
     issued?: { target: ModelProviderTarget; grant: KeyGrant }
   ): Promise<AcpHost> {
     const { host } = this.buildAcpHost(agent, this.cfg, {
+      hostKey,
       runInSandbox: this.agentRunsInSandbox(agent),
       cwd,
       // A dream needs only its materialized inputs, never the agent's tool
@@ -5016,6 +5204,7 @@ export class Daemon {
    */
   private async runDreamExtractionOnHost(
     host: AcpHost,
+    owner: HostKey,
     agent: LoadedAgent,
     systemPrompt: string,
     prompt: string,
@@ -5086,9 +5275,10 @@ export class Daemon {
       ref.sessionId = sessionId
       // Redundant while the dream owns a dedicated host the gate already excludes, but it keeps one
       // rule: every session the daemon opens for itself is registered, synchronously, right here.
-      this.internalPassSessions.add(internalPassSlot.dream(agentId), pendingTurnKey(agentId, sessionId))
+      this.internalPassSessions.add(internalPassSlot.dream(agentId), pendingTurnKey(owner, sessionId))
       const result = await this.runDreamExtractionSession(
         host,
+        owner,
         agent,
         sessionId,
         prompt,
@@ -5110,6 +5300,7 @@ export class Daemon {
    *  for the session is always unregistered in the caller's finally. */
   private async runDreamExtractionSession(
     host: AcpHost,
+    owner: HostKey,
     agent: LoadedAgent,
     sessionId: string,
     prompt: string,
@@ -5134,7 +5325,7 @@ export class Daemon {
     // apply, and persisting/pricing that override would be false observability.
     const model =
       modelOptions === null ? agent.runtimeOverrides?.model : selectedModel === 'default' ? undefined : selectedModel
-    const executionKey = sessionKey('dream', 'memory', context.dreamId, agentId)
+    const executionKey = dreamExecutionKey(agentId, context.dreamId)
     const now = this.clock.now()
     await this.store.upsertSession({
       key: executionKey,
@@ -5172,6 +5363,7 @@ export class Daemon {
     })
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId,
+      sessionKey: executionKey,
       agentId,
       phase: 'start',
       platform: 'dream',
@@ -5203,7 +5395,7 @@ export class Daemon {
       // Final guard immediately before dispatch — abort during permission setup.
       if (signal.aborted) throw new Error('dream extraction canceled before dispatch')
 
-      const key = pendingTurnKey(agentId, sessionId)
+      const key = pendingTurnKey(owner, sessionId)
       const chunks: string[] = []
       collector = {
         chunks,
@@ -5243,7 +5435,7 @@ export class Daemon {
         promptCompleted = true
         // The runtime's notifications are handled off the prompt call, so drain this
         // session's update chain before the pass reads what they collected.
-        await this.acpUpdateChains.get(acpUpdateChainKey(agentId, sessionId))
+        await this.acpUpdateChains.get(acpUpdateChainKey(owner, sessionId))
         if (result.usage) {
           const counts = {
             totalTokens: result.usage.totalTokens,
@@ -5307,6 +5499,7 @@ export class Daemon {
       await this.store.setSessionState(executionKey, 'idle', this.clock.now())
       await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
         sessionId,
+        sessionKey: executionKey,
         agentId,
         phase: promptCompleted ? 'end' : 'problem',
         platform: 'dream',
@@ -5318,7 +5511,7 @@ export class Daemon {
         ...(extractionMode ? { permissionMode: extractionMode } : {})
       })
       host.discardSession(sessionId)
-      this.internalPassSessions.delete(pendingTurnKey(agentId, sessionId))
+      this.internalPassSessions.delete(pendingTurnKey(owner, sessionId))
     }
   }
 
@@ -5400,6 +5593,7 @@ export class Daemon {
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       // The outbox takes the ACP hop's id and translates; the dream row holds the outward one.
       sessionId: rec.acpSessionId ?? dream.executionSessionId,
+      sessionKey: rec.key,
       agentId: dream.agentId,
       phase: event.type === 'memory.dream.failed' ? 'problem' : 'end',
       platform: 'dream',
@@ -6323,9 +6517,7 @@ export class Daemon {
    *  survive until the next message restores the Agent-level policy. */
   private async restoreConfiguredRuntimeSettings(agent: LoadedAgent): Promise<void> {
     for (const session of await this.store.listSessions(agent.id)) {
-      const host = session.acpSessionId
-        ? await this.modelSessions.hostForStoredSession(agent.id, session.acpSessionId)
-        : this.hosts.get(agent.id)
+      const host = this.hostForOwner(this.sessionOwnerKey(agent.id, session.key))
       if (!session.acpSessionId || host?.hasSession?.(session.acpSessionId) !== true) continue
       const sessionId = session.acpSessionId
       void this.applyConfiguredRuntimeSettings(agent, host, sessionId)
@@ -7727,7 +7919,8 @@ export class Daemon {
         this.prepareAgentWorkspace(agent, expectedWarmHost, request),
       sessionHasReferenceDirectories: async (agent, request) =>
         (await this.workspaces.sessionAdditionalRoots(agent, request)).length > 0,
-      warmHostFor: (agentId) => (this.readyHosts.has(agentId) ? this.hosts.get(agentId) : undefined),
+      warmHostFor: (agentId) =>
+        this.readyHosts.has(agentHostKey(agentId)) ? this.hosts.get(agentHostKey(agentId)) : undefined,
       anchorTrigger: (agentId, msg, target, anchorText, label, safetyReviewLane) =>
         this.anchorTrigger(agentId, msg, target, anchorText, label, safetyReviewLane),
       dispatch: (agentId, msg, integrationId, webchat, callMeta, opts, githubReply, hookContext) =>
@@ -7738,8 +7931,11 @@ export class Daemon {
       sessionLink: (sessionId, source) => this.sessionLink(sessionId, source),
       outwardSessionId: (agentId, acpSessionId) => this.outwardSessionIdForAcp(agentId, acpSessionId),
       runtimeNames: () => this.runtimeFacts.runtimeNames(),
-      hostForStoredSession: async (agentId, acpSessionId) =>
-        await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
+      // A hook names its session by agent + runtime id; the row's logical key picks the owning host.
+      hostForStoredSession: async (agentId, acpSessionId) => {
+        const rec = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+        return rec ? this.hostForOwner(this.sessionOwnerKey(agentId, rec.key)) : this.hosts.get(agentHostKey(agentId))
+      }
     }
   }
 
@@ -8559,7 +8755,7 @@ export class Daemon {
       httpSlackSessionTarget: (p) => this.httpSlackSessionTarget(p),
       maskAgentSecrets: <T>(agentId: string, payload: T): T => this.maskAgentSecrets(agentId, payload),
       logSessionAction: (verb, sessionKey, actor) => this.commands.logSessionAction(verb, sessionKey, actor),
-      emitApprovalActivity: (agentId, acpSessionId, state) => this.emitApprovalActivity(agentId, acpSessionId, state),
+      emitApprovalActivity: (owner, acpSessionId, state) => this.emitApprovalActivity(owner, acpSessionId, state),
       approvalGateOpened: (p, gateId, request) => this.openApprovalGateSurface(p, gateId, request),
       approvalGateClosed: (p, gateId, allowed) => this.settleApprovalGateSurface(p, gateId, allowed),
       // ── approval-DM routing (slack-approval-dm.md §4–§6) ──
@@ -8599,13 +8795,14 @@ export class Daemon {
   private approvalActivityChain: Promise<void> = Promise.resolve()
 
   /** D→C `agent/activity` for the approval bell (slack-approval-dm.md §7); best-effort, the reconnect replay converges it. */
-  private emitApprovalActivity(agentId: string, acpSessionId: string, state: 'awaiting_permission' | 'idle'): void {
+  private emitApprovalActivity(owner: HostKey, acpSessionId: string, state: 'awaiting_permission' | 'idle'): void {
+    const agentId = hostKeyAgentId(owner)
     this.approvalActivityChain = this.approvalActivityChain.then(async () => {
       try {
-        const sessionId = (await this.outwardSessionIdForAcp(agentId, acpSessionId)) ?? acpSessionId
+        const sessionId = (await this.outwardSessionIdForAcp(agentId, acpSessionId, owner)) ?? acpSessionId
         // Re-checked after the lookup with no await before the send: a settle that landed meanwhile
         // already queued its `idle` ahead of this task, and a stale `awaiting_permission` must not follow it.
-        if (state === 'awaiting_permission' && !this.permissions.isAwaitingApproval(agentId, acpSessionId)) return
+        if (state === 'awaiting_permission' && !this.permissions.isAwaitingApproval(owner, acpSessionId)) return
         this.cpClient?.emitAgentActivity?.({ agentId, sessionId, state, ts: new Date(this.clock.now()).toISOString() })
       } catch (err) {
         this.log.warn(`approval activity for agent "${agentId}" not reported: ${formatErr(err)}`)
@@ -8622,6 +8819,7 @@ export class Daemon {
       agents: () => this.agents,
       evalHooks: () => this.evalHooks,
       pending: () => this.pending,
+      sessionOwnerKey: (agentId, sessionKey) => this.sessionOwnerKey(agentId, sessionKey),
       activeTurnCallMeta: () => this.activeTurnCallMeta,
       draining: () => this.draining,
       serialQueue: () => this.serialQueue,
@@ -8641,7 +8839,7 @@ export class Daemon {
       dispatch: (agentId, msg, integrationId, webchat, callMeta, opts) =>
         this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts),
       webchatTransport: () => this.webchatTransport,
-      externalOriginForSession: (agentId, acpSessionId) => this.externalOriginForSession(agentId, acpSessionId)
+      externalOriginForSession: (agentId, sessionKey) => this.externalOriginForSession(agentId, sessionKey)
     }
   }
 
@@ -10329,7 +10527,7 @@ export class Daemon {
       evaluationTurnId,
       // Read here, not in the planner: the sticky override is live daemon state.
       stickyOutputMode: await this.store.getOutputModeOverride(key),
-      hostAlreadyRunning: this.hostStarts.has(agentId) || this.modelSessions.hasStartedHost(key),
+      hostAlreadyRunning: this.hostStarts.has(this.hostKeyFor(agentId, key)) || this.modelSessions.hasStartedHost(key),
       // Synchronous and exact: an attached shim session IS the pod being up, so no cluster read.
       clusterPodBootstrap: this.k8sPlane !== undefined && !this.k8sPlane.runsInSandbox(agentId),
       protectedAddresses: this.compoundMentionAddresses(agentId, msg),
@@ -10416,7 +10614,7 @@ export class Daemon {
     await this.applyStagedRuntime(run)
     await this.announceTurnStart(run, sessionId, created)
     if (handled.initializedOnly) {
-      await this.finishSessionInitialization(agentId, sessionId)
+      await this.finishSessionInitialization(agentId, { owner: this.sessionOwnerKey(agentId, key), sessionId })
       this.clearTurnActivity(run)
       releaseReplyConn()
       this.log.info(`dispatch: initialized session ${key} from self-authored channel root without a model turn`)
@@ -10625,7 +10823,7 @@ export class Daemon {
             // selectedHost is assigned only after handle() for ordinary warm
             // turns. Resolve the already-running agent host directly here so the
             // rotated descriptor forces session/load before this prompt.
-            const warmHost = entry.selectedHost?.host ?? this.hosts.get(agentId)
+            const warmHost = entry.selectedHost?.host ?? this.hostForOwner(this.sessionOwnerKey(agentId, key))
             if (existing?.acpSessionId) warmHost?.forgetSession(existing.acpSessionId)
           }
         } catch (error) {
@@ -10779,6 +10977,7 @@ export class Daemon {
     // recordMilestone upserts, so a repeated 'start' phase is safe on the CP.
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId,
+      sessionKey: key,
       agentId,
       phase: 'start',
       platform: msg.platform,
@@ -10798,7 +10997,9 @@ export class Daemon {
     try {
       // The one consumer is the CP's cron report, a console deep link — so the callback is
       // handed the session's outward id (§1.1), not the runtime's.
-      onSessionReady?.((await this.outwardSessionIdForAcp(agentId, sessionId)) ?? sessionId)
+      onSessionReady?.(
+        (await this.outwardSessionIdForAcp(agentId, sessionId, this.sessionOwnerKey(agentId, key))) ?? sessionId
+      )
     } catch (err) {
       this.log.warn(`dispatch: session-ready notification failed (${formatErr(err)})`)
     }
@@ -10821,12 +11022,14 @@ export class Daemon {
     let resolveDone!: () => void
     const done = new Promise<void>((r) => (resolveDone = r))
     if (!entry.selectedHost) {
-      const ordinaryHost = this.hosts.get(agentId)
-      if (ordinaryHost) entry.selectedHost = this.selectedOrdinaryTurnHost(agentId, ordinaryHost)
+      const hostKey = this.hostKeyFor(agentId, run.key)
+      const ordinaryHost = this.hosts.get(hostKey)
+      if (ordinaryHost) entry.selectedHost = this.selectedOrdinaryTurnHost(hostKey, ordinaryHost)
     }
     const p: Pending = {
       plan,
       entry,
+      hostKey: entry.selectedHost?.hostKey ?? this.sessionOwnerKey(agentId, run.key),
       conv,
       rec,
       termOut: new TerminalOutputFolder(),
@@ -10870,10 +11073,10 @@ export class Daemon {
     }
     // A real turn takes over the session — flush any drain narration first (delivered, not
     // dropped), so buffered text can neither leak into this turn nor go stale behind it.
-    void this.deliverDrainNarration(agentId, sessionId).catch((err) =>
+    void this.deliverDrainNarration(p.hostKey, sessionId).catch((err) =>
       this.log.warn(`drain delivery failed for "${agentId}": ${(err as Error).message}`)
     )
-    this.pending.set(pendingTurnKey(agentId, sessionId), p)
+    this.pending.set(pendingTurnKey(p.hostKey, sessionId), p)
     return p
   }
 
@@ -10949,7 +11152,7 @@ export class Daemon {
     // session/new|load may emit title/usage metadata before the local row exists.
     // Replay only after Pending owns the live sink so persisted and streamed state
     // converge in the same turn instead of requiring a browser refresh.
-    await this.finishSessionInitialization(agentId, sessionId)
+    await this.finishSessionInitialization(agentId, { owner: this.sessionOwnerKey(agentId, key), sessionId })
     // §6.7 active-turn context: expose THIS turn's trusted callMeta by logical sessionKey so
     // a nested messageAgent made during the turn can auto-inherit hop/origin + reply-correlation.
     if (callMeta) this.activeTurnCallMeta.set(key, callMeta)
@@ -11061,8 +11264,14 @@ export class Daemon {
     const { entry, key, agent } = run
     const { agentId, webchat } = entry
     if (!p.selectedHost) {
-      const ordinaryHost = await this.ensureHostAsync(agentId)
-      p.selectedHost = this.selectedOrdinaryTurnHost(agentId, ordinaryHost)
+      const hostKey = this.hostKeyFor(agentId, key)
+      // Normally a join of the host handle() started; a session-bound host evicted since re-launches in its directory.
+      const ordinaryHost = await this.ensureHostAsync(hostKey, {
+        session: {
+          workspace: { sessionKey: key, isolation: (await this.store.getSession(key))?.workspaceIsolation ?? 'shared' }
+        }
+      })
+      p.selectedHost = this.selectedOrdinaryTurnHost(hostKey, ordinaryHost)
       entry.selectedHost = p.selectedHost
     }
     const host = p.selectedHost.host
@@ -11333,7 +11542,7 @@ export class Daemon {
       const result = await promptPromise
       // The runtime's notifications are handled off the prompt call, so drain this
       // session's update chain before the turn reads what they wrote.
-      await this.acpUpdateChains.get(acpUpdateChainKey(agent.id, sessionId))
+      await this.acpUpdateChains.get(acpUpdateChainKey(p.hostKey, sessionId))
       stopReason = result.stopReason
       usage = result.usage
 
@@ -11751,7 +11960,8 @@ export class Daemon {
       p.reply.text,
       agent.memory,
       memoryCaptureTarget,
-      plan.evaluationTurnId
+      plan.evaluationTurnId,
+      { key, outwardSessionId: p.outwardSessionId }
     )
     evaluation.finishEvaluation('turn.completed', {
       ...(stopReason ? { stopReason } : {}),
@@ -11960,7 +12170,7 @@ export class Daemon {
     // The ACP prompt is no longer capable of ignoring session/cancel once control
     // reaches cleanup. Clear its host-kill backstop BEFORE awaiting renderer I/O;
     // renderer drain is tracked separately by this dispatch/safety lease.
-    this.clearCancelBackstop(agentId, sessionId)
+    this.clearCancelBackstop(p.hostKey, sessionId)
     // Settle the status row before releasing the Slack transport. Suppressed turns still
     // allow this one terminal chrome update; ordinary queued output remains blocked.
     await this.settleStatusBar(p)
@@ -11978,9 +12188,9 @@ export class Daemon {
     this.clearFeishuStream(p)
     this.clearSlackStream(p)
     // Backstop: settle any permission / elicitation card still awaiting a tap.
-    await this.permissions.releaseElicits(agentId, sessionId)
-    await this.permissions.releaseChatPermissions(agentId, sessionId)
-    await this.permissions.releaseEditorPermissions(agentId, sessionId)
+    await this.permissions.releaseElicits(p.hostKey, sessionId)
+    await this.permissions.releaseChatPermissions(p.hostKey, sessionId)
+    await this.permissions.releaseEditorPermissions(p.hostKey, sessionId)
     // §6.7: this turn's active call context ends with the turn (a nested messageAgent can
     // only inherit while the turn is in flight). Only clear if THIS turn owns the entry —
     // the map is keyed by sessionKey and the gate guarantees one active turn per key.
@@ -12062,7 +12272,7 @@ export class Daemon {
     const cleanupOutcome = await this.waitForTurnLifecycleCleanup(entry, key, p.selectedHost)
     if (!cleanupOutcome.blocked) {
       this.recordFooterHolder(p)
-      this.pending.delete(pendingTurnKey(agentId, sessionId))
+      this.pending.delete(pendingTurnKey(p.hostKey, sessionId))
       // §7.3 prompting/cancelling → idle: the turn is over (cleanly, on error, or
       // cancelled), so the session is idle again. Without this the row stayed
       // `prompting` forever — the thread never went idle and TTL-close never fired.
@@ -12077,6 +12287,7 @@ export class Daemon {
       )
       await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
         sessionId,
+        sessionKey: key,
         agentId,
         phase: settlement.finalPhase,
         platform: msg.platform,
@@ -12219,7 +12430,7 @@ export class Daemon {
       }
     }
     const live = acpSessionId
-      ? this.pending.get(pendingTurnKey(agentId, acpSessionId))
+      ? this.pending.get(pendingTurnKey(this.sessionOwnerKey(agentId, key), acpSessionId))
       : [...this.pending.values()].find((pending) => pending.plan.sessionKey === key)
     const liveSessionId = acpSessionId ?? live?.acpSessionId
     if (live) {
@@ -12268,17 +12479,17 @@ export class Daemon {
     // Release any card the user hasn't answered: ACP requires pending permission /
     // elicitation requests to resolve cancelled when a turn is cancelled, and this lets
     // the agent's prompt unwind (it's blocked awaiting our promise) so the finally runs.
-    await this.permissions.releaseElicits(agentId, liveSessionId)
-    await this.permissions.releaseChatPermissions(agentId, liveSessionId)
-    await this.permissions.releaseEditorPermissions(agentId, liveSessionId)
+    await this.permissions.releaseElicits(live.hostKey, liveSessionId)
+    await this.permissions.releaseChatPermissions(live.hostKey, liveSessionId)
+    await this.permissions.releaseEditorPermissions(live.hostKey, liveSessionId)
     // §7.3 idle→cancelling: send session/cancel, then arm a force backstop. The turn's
     // dispatch finally clears the timer + writes the terminal idle state when the agent
     // yields; if it never does, the backstop force-stops the host.
     await this.store.setSessionState(key, 'cancelling', this.clock.now())
-    void (live.selectedHost?.host ?? this.hosts.get(agentId))
+    void (live.selectedHost?.host ?? this.hostForOwner(live.hostKey))
       ?.cancel(liveSessionId)
       .catch((err) => this.log.error(`command ${reason}: cancel failed: ${(err as Error).message}`))
-    this.armCancelBackstop(agentId, liveSessionId, key, reason)
+    this.armCancelBackstop(live.hostKey, liveSessionId, key, reason)
     await this.recordOperatorInterrupt(agentId, reason, opts.actor, anchor)
   }
 
@@ -12354,10 +12565,11 @@ export class Daemon {
    *  cancel — force-stop its host (the only hard kill available) so the session
    *  can't be stuck in `cancelling` forever. dispatch's finally clears this timer
    *  the moment the turn yields on its own. */
-  private armCancelBackstop(agentId: string, acpSessionId: string, key: string, reason: string): void {
-    this.clearCancelBackstop(agentId, acpSessionId)
+  private armCancelBackstop(owner: HostKey, acpSessionId: string, key: string, reason: string): void {
+    const agentId = hostKeyAgentId(owner)
+    this.clearCancelBackstop(owner, acpSessionId)
     const ms = this.cfg.limits.cancelBackstopMs
-    const pendingKey = pendingTurnKey(agentId, acpSessionId)
+    const pendingKey = pendingTurnKey(owner, acpSessionId)
     this.cancelTimers.set(
       pendingKey,
       this.clock.setTimeout(() => {
@@ -12383,8 +12595,8 @@ export class Daemon {
     )
   }
 
-  private clearCancelBackstop(agentId: string, acpSessionId: string): void {
-    const key = pendingTurnKey(agentId, acpSessionId)
+  private clearCancelBackstop(owner: HostKey, acpSessionId: string): void {
+    const key = pendingTurnKey(owner, acpSessionId)
     const t = this.cancelTimers.get(key)
     if (t !== undefined) {
       this.clock.clearTimeout(t)
@@ -12661,17 +12873,30 @@ export class Daemon {
    *  hop's id: `newSession()` returns a live session that can stream updates before the row
    *  carrying the mapping is written, and one of those updates (an `available_commands_update`)
    *  is persisted durably. */
-  private async outwardSessionIdForAcp(agentId: string, acpSessionId: string): Promise<string | undefined> {
+  private async outwardSessionIdForAcp(
+    agentId: string,
+    acpSessionId: string,
+    owner?: HostKey
+  ): Promise<string | undefined> {
     // `store` is absent only in bare test harnesses constructed without start() — the same guard
     // the advertisement's own persist makes one line later.
-    const slot = await this.store?.getSessionByAcpIdForAgent(agentId, acpSessionId)
-    const turnKey = pendingTurnKey(agentId, acpSessionId)
+    const slot = this.store
+      ? owner
+        ? await this.sessionForAcp(owner, acpSessionId)
+        : await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+      : undefined
     // Once the row can answer, it is the authority and the binding has done its job.
     if (slot) {
-      this.openingOutwardSessionIds.delete(turnKey)
+      if (owner) this.openingOutwardSessionIds.delete(pendingTurnKey(owner, acpSessionId))
       return await this.store.ensureOutwardSessionId(slot.key, agentId, this.clock.now())
     }
-    return this.openingOutwardSessionIds.get(turnKey)
+    if (owner) return this.openingOutwardSessionIds.get(pendingTurnKey(owner, acpSessionId))
+    // A wire-level caller names the slot by agent + runtime id alone; find whichever host of the agent is opening it.
+    for (const [turnKey, outward] of this.openingOutwardSessionIds) {
+      if (hostKeyAgentId(pendingTurnOwner(turnKey)) === agentId && pendingTurnAcpSessionId(turnKey) === acpSessionId)
+        return outward
+    }
+    return undefined
   }
 
   /** Slots whose runtime session exists but whose row does not yet, by {@link pendingTurnKey}.
@@ -12686,7 +12911,7 @@ export class Daemon {
     const outward = await this.store.ensureOutwardSessionId(key, agentId, this.clock.now())
     return (acpSessionId) => {
       if (this.openingOutwardSessionIds.size >= 2000) this.openingOutwardSessionIds.clear()
-      this.openingOutwardSessionIds.set(pendingTurnKey(agentId, acpSessionId), outward)
+      this.openingOutwardSessionIds.set(pendingTurnKey(this.sessionOwnerKey(agentId, key), acpSessionId), outward)
     }
   }
 
@@ -12750,9 +12975,7 @@ export class Daemon {
       ? await this.store.ensureOutwardSessionId(sessionKey, agentId, this.clock.now())
       : undefined
     // `?.()` guards a host stub without the method (test fakes); real AcpHosts always have it.
-    const host = acpSessionId
-      ? await this.modelSessions.hostForStoredSession(agentId, acpSessionId)
-      : this.hosts.get(agentId)
+    const host = this.hostForOwner(this.sessionOwnerKey(agentId, sessionKey))
     const model = host?.modelOptions?.(acpSessionId)
     // A persisted session can outlive the adapter process that created it. In that
     // cold state the exact session selector is unavailable, but the runtime probe has
@@ -13211,12 +13434,13 @@ export class Daemon {
   }
 
   private bufferEarlySessionMetadata(
-    agentId: string,
+    owner: HostKey,
     sessionId: string,
     update: { sessionUpdate: string; [key: string]: any }
   ): boolean {
+    const agentId = hostKeyAgentId(owner)
     if ((this.sessionInitializationsByAgent.get(agentId) ?? 0) === 0) return false
-    const key = pendingTurnKey(agentId, sessionId)
+    const key = pendingTurnKey(owner, sessionId)
     const entry = this.earlySessionMetadata.get(key) ?? { agentId, sessionId, updates: [] }
     const previous = entry.updates.findIndex((candidate) => candidate.sessionUpdate === update.sessionUpdate)
     if (previous >= 0) entry.updates[previous] = update
@@ -13228,12 +13452,15 @@ export class Daemon {
   /** Complete one SessionManager initialization and replay any metadata the ACP
    *  adapter emitted before its local session row existed. Leftover unknown ids
    *  are discarded once the agent has no other initialization in flight. */
-  private async finishSessionInitialization(agentId: string, sessionId?: string): Promise<void> {
-    if (sessionId) {
-      const key = pendingTurnKey(agentId, sessionId)
+  private async finishSessionInitialization(
+    agentId: string,
+    session?: { owner: HostKey; sessionId: string }
+  ): Promise<void> {
+    if (session) {
+      const key = pendingTurnKey(session.owner, session.sessionId)
       const entry = this.earlySessionMetadata.get(key)
       this.earlySessionMetadata.delete(key)
-      if (entry) for (const update of entry.updates) await this.onAcpUpdate(agentId, sessionId, update)
+      if (entry) for (const update of entry.updates) await this.onAcpUpdate(session.owner, session.sessionId, update)
     }
     const remaining = Math.max(0, (this.sessionInitializationsByAgent.get(agentId) ?? 1) - 1)
     if (remaining > 0) {
@@ -13260,6 +13487,7 @@ export class Daemon {
     if (!rec.acpSessionId) return
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId: rec.acpSessionId,
+      sessionKey: rec.key,
       agentId: rec.agentId,
       phase: 'plan',
       platform: rec.platform as SessionKey['platform'],
@@ -13318,7 +13546,7 @@ export class Daemon {
     }
     await this.persistSessionTitle(rec, req.title)
 
-    const p = this.pending.get(pendingTurnKey(rec.agentId, rec.acpSessionId))
+    const p = this.pending.get(pendingTurnKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
     if (p && p.plan.sessionKey === key && !p.outputSuppressed) {
       if (p.webchat) {
         webchatTurnOutput.emitWebchatUpdate(p.webchat, { sessionUpdate: 'session_info_update', title: req.title })
@@ -13334,10 +13562,10 @@ export class Daemon {
 
   /** One ACP session's updates stay in arrival order: the async store would otherwise let
    *  a later update whose handler does less I/O emit ahead of an earlier one. */
-  private enqueueAcpUpdate(agentId: string, sessionId: string, update: unknown): Promise<void> {
-    const key = acpUpdateChainKey(agentId, sessionId)
+  private enqueueAcpUpdate(owner: HostKey, sessionId: string, update: unknown): Promise<void> {
+    const key = acpUpdateChainKey(owner, sessionId)
     const previous = this.acpUpdateChains.get(key) ?? Promise.resolve()
-    const done = previous.then(() => this.onAcpUpdate(agentId, sessionId, update))
+    const done = previous.then(() => this.onAcpUpdate(owner, sessionId, update))
     this.acpUpdateChains.set(
       key,
       done.catch((err) => this.log.error(`acp update failed for session ${sessionId}: ${formatErr(err)}`))
@@ -13345,14 +13573,15 @@ export class Daemon {
     return done
   }
 
-  private async onAcpUpdate(agentId: string, sessionId: string, update: any): Promise<void> {
+  private async onAcpUpdate(owner: HostKey, sessionId: string, update: any): Promise<void> {
+    const agentId = hostKeyAgentId(owner)
     // Write-only secret values (agent runtimeOverrides.secrets) are masked out of the
     // update BEFORE any consumer sees it — memory extraction, the reply accumulator,
     // the GitHub collector, the webchat stream, the platform converger, and the
     // transcript recorder (tool rawInput/rawOutput included) all hang off this entry
     // point, so this one transform keeps a leaked value out of every surface at once.
     update = this.maskAgentSecrets(agentId, update)
-    const extractionKey = pendingTurnKey(agentId, sessionId)
+    const extractionKey = pendingTurnKey(owner, sessionId)
     const extraction = this.memoryExtractionCollectors.get(extractionKey)
     if (extraction) {
       if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
@@ -13386,7 +13615,7 @@ export class Daemon {
     const extractionQuarantineOwner = this.memoryExtractionQuarantines.get(extractionKey)
     if (extractionQuarantineOwner) {
       if (extractionQuarantineOwner === agentId && update?.sessionUpdate === 'usage_update') {
-        const rec = await this.store.getSessionByAcpIdForAgent(agentId, sessionId)
+        const rec = await this.sessionForAcp(owner, sessionId)
         if (rec?.platform === 'dream') {
           await this.store.setUsageSnapshot(rec.key, {
             contextUsed: update.used,
@@ -13407,14 +13636,14 @@ export class Daemon {
     // yet. And the session must not be one this daemon opened for a pass of its OWN: those run on
     // the agent's warm host over a temp dir, whose list is missing its project skills (#1310 review).
     if (isAvailableCommandsUpdate(update)) {
-      const host = this.hosts.get(agentId)
+      const host = this.hostForOwner(owner)
       const owned = host?.hasSession(sessionId) || host?.isLoadingSession(sessionId)
       if (owned && !this.internalPassSessions.has(extractionKey)) {
         // Recorded under the session's OUTWARD id (§1.1): the row survives the session, so a name
         // resolved later would change once retention drops the mapping.
         const entry = this.runtimeCommands.record(
           agentId,
-          (await this.outwardSessionIdForAcp(agentId, sessionId)) ?? sessionId,
+          (await this.outwardSessionIdForAcp(agentId, sessionId, owner)) ?? sessionId,
           update,
           this.clock.now()
         )
@@ -13432,7 +13661,7 @@ export class Daemon {
       }
       return
     }
-    const p = this.pending.get(pendingTurnKey(agentId, sessionId))
+    const p = this.pending.get(pendingTurnKey(owner, sessionId))
     this.evalHooks.emit({
       type: 'acp.update',
       agentId,
@@ -13467,9 +13696,8 @@ export class Daemon {
     const isEarlyMetadata =
       update?.sessionUpdate === 'usage_update' ||
       (update?.sessionUpdate === 'session_info_update' && update.title !== undefined)
-    const detachedRec =
-      !p && isEarlyMetadata ? await this.store.getSessionByAcpIdForAgent(agentId, sessionId) : undefined
-    if (!p && isEarlyMetadata && !detachedRec && this.bufferEarlySessionMetadata(agentId, sessionId, update)) return
+    const detachedRec = !p && isEarlyMetadata ? await this.sessionForAcp(owner, sessionId) : undefined
+    if (!p && isEarlyMetadata && !detachedRec && this.bufferEarlySessionMetadata(owner, sessionId, update)) return
     // Context-window + cost snapshot (latest-wins). Captured for telemetry only;
     // it's dropped from the channel by the renderer. Handle it even after a turn
     // leaves `pending`: a late native cost must replace any fallback we just
@@ -13528,7 +13756,7 @@ export class Daemon {
       // background-task-aware-reclaim.md). Gated on a lease saying `running`: a straggler
       // chunk after idle stays dropped, so stale text can never leak into a later flush.
       if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
-        const lease = this.sdkLease.get(sdkLeaseKey(agentId, sessionId))
+        const lease = this.sdkLease.get(sdkLeaseKey(owner, sessionId))
         if (lease?.sdkState === 'running')
           lease.drainText = (lease.drainText + String(update.content.text ?? '')).slice(0, MAX_DRAIN_TEXT_CHARS)
       }
@@ -13631,25 +13859,39 @@ export class Daemon {
     })
   }
 
-  private invalidateHostStart(agentId: string): void {
-    this.readyHosts.delete(agentId)
-    this.hostStartGeneration.set(agentId, (this.hostStartGeneration.get(agentId) ?? 0) + 1)
-    this.hostStarts.delete(agentId)
-    this.hostStartAborts.get(agentId)?.abort(new Error(`host start superseded for ${agentId}`))
-    this.hostStartAborts.delete(agentId)
+  private invalidateHostStart(key: HostKey): void {
+    this.readyHosts.delete(key)
+    this.hostStartGeneration.set(key, (this.hostStartGeneration.get(key) ?? 0) + 1)
+    this.hostStarts.delete(key)
+    this.hostStartAborts.get(key)?.abort(new Error(`host start superseded for ${hostKeyLabel(key)}`))
+    this.hostStartAborts.delete(key)
   }
 
-  private async ensureHostAsync(agentId: string, opts: { allowAgentDrain?: boolean } = {}): Promise<AcpHost> {
+  /** Whether another host of the agent is live or starting — the shared config files are still in use then. */
+  private agentHasOtherHosts(agentId: string, except: HostKey): boolean {
+    for (const map of [this.hosts, this.hostStarts]) {
+      for (const key of map.keys()) if (key !== except && hostKeyAgentId(key) === agentId) return true
+    }
+    return this.modelSessions.hasStartedHostForAgent(agentId)
+  }
+
+  // Start (or join the start of) the host `key` names; a session-bound key carries its session's workspace request or prepared cwd.
+  private async ensureHostAsync(
+    key: HostKey,
+    opts: { allowAgentDrain?: boolean; session?: { workspace: PrepareSessionWorkspaceRequest; cwd?: string } } = {}
+  ): Promise<AcpHost> {
+    const agentId = hostKeyAgentId(key)
+    const label = hostKeyLabel(key)
     const assertStartAllowed = (): void => {
-      if (this.draining) throw new Error(`host start blocked while daemon is draining (${agentId})`)
+      if (this.draining) throw new Error(`host start blocked while daemon is draining (${label})`)
       // Already-admitted work in another logical session may keep using the warm
       // host while a conversation-scoped interrupt drains. It may not allocate a
       // replacement after that host/start generation has been evicted.
-      if (this.safetyDrainingAgents.has(agentId) && !this.hostStarts.has(agentId)) {
-        throw new Error(`host start blocked while interrupted turns are stopping (${agentId})`)
+      if (this.safetyDrainingAgents.has(agentId) && !this.hostStarts.has(key)) {
+        throw new Error(`host start blocked while interrupted turns are stopping (${label})`)
       }
       if (!opts.allowAgentDrain && this.drainingAgents.has(agentId)) {
-        throw new Error(`host start blocked while agent is draining (${agentId})`)
+        throw new Error(`host start blocked while agent is draining (${label})`)
       }
     }
     // A workspace mutation is a transient exclusion, not a refusal: join the fence and re-read the
@@ -13667,23 +13909,23 @@ export class Daemon {
     // the lifecycle resource boundary so an already-admitted cold turn cannot spawn a
     // replacement child after reconcile/stop has begun.
     await admitStart()
-    // If this agent's previous host is mid-teardown, wait it out before (re)spawning
+    // If this host's previous incarnation is mid-teardown, wait it out before (re)spawning
     // — otherwise we'd boot a second child while the first is still SIGTERM-ing.
-    const stopping = this.hostStopping.get(agentId)
+    const stopping = this.hostStopping.get(key)
     if (stopping) {
       await stopping
       // A reconcile gate may have been installed while this call waited. Re-check at
       // the exact promise boundary before allocating a new start generation.
       await admitStart()
     }
-    let p = this.hostStarts.get(agentId)
+    let p = this.hostStarts.get(key)
     if (!p) {
-      const generation = (this.hostStartGeneration.get(agentId) ?? 0) + 1
-      this.hostStartGeneration.set(agentId, generation)
+      const generation = (this.hostStartGeneration.get(key) ?? 0) + 1
+      this.hostStartGeneration.set(key, generation)
       const startAbort = new AbortController()
-      this.hostStartAborts.set(agentId, startAbort)
-      p = this.startHostWithRetry(agentId, generation, startAbort.signal, opts.allowAgentDrain === true)
-      this.hostStarts.set(agentId, p)
+      this.hostStartAborts.set(key, startAbort)
+      p = this.startHostWithRetry(key, generation, startAbort.signal, opts.allowAgentDrain === true, opts.session)
+      this.hostStarts.set(key, p)
       // A total failure (all attempts exhausted) must NOT poison the cache: without
       // this the rejected promise stays memoized and every later message re-awaits the
       // same rejection, so the agent could never recover. startHostWithRetry already
@@ -13691,11 +13933,11 @@ export class Daemon {
       // identity in case a concurrent stopHost already replaced it).
       void p.then(
         () => {
-          if (this.hostStartAborts.get(agentId) === startAbort) this.hostStartAborts.delete(agentId)
+          if (this.hostStartAborts.get(key) === startAbort) this.hostStartAborts.delete(key)
         },
         () => {
-          if (this.hostStarts.get(agentId) === p) this.hostStarts.delete(agentId)
-          if (this.hostStartAborts.get(agentId) === startAbort) this.hostStartAborts.delete(agentId)
+          if (this.hostStarts.get(key) === p) this.hostStarts.delete(key)
+          if (this.hostStartAborts.get(key) === startAbort) this.hostStartAborts.delete(key)
         }
       )
     }
@@ -13708,57 +13950,73 @@ export class Daemon {
    *  next try. On success the started host is left memoized in `this.hosts`; when every
    *  attempt fails the last error is thrown (dispatch surfaces it to the session). */
   private async startHostWithRetry(
-    agentId: string,
+    key: HostKey,
     generation: number,
     signal: AbortSignal,
-    allowAgentDrain = false
+    allowAgentDrain = false,
+    session?: { workspace: PrepareSessionWorkspaceRequest; cwd?: string }
   ): Promise<AcpHost> {
     const attempts = Math.max(1, this.cfg.limits.agentStartAttempts)
-    if (this.hostStartGeneration.get(agentId) !== generation) throw new Error(`host start superseded for ${agentId}`)
+    const agentId = hostKeyAgentId(key)
+    const label = hostKeyLabel(key)
+    if (this.hostStartGeneration.get(key) !== generation) throw new Error(`host start superseded for ${label}`)
     const agent = this.agents.get(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
+    // A session-bound host launches in its session's directory, so the cold gate below prepares it before the spawn.
+    const bound = hostKeySessionKey(key) === undefined ? undefined : session
+    if (hostKeySessionKey(key) !== undefined && !bound) {
+      throw new Error(`session host ${label} needs its session's workspace request`)
+    }
     let lastErr: unknown
     // A repaired runtime install earns one extra attempt, so a fault fixed on the last try still starts.
     let extraAttempts = 0
     let repairTried = false
     for (let i = 1; i <= attempts + extraAttempts; i++) {
-      if (this.hostStartGeneration.get(agentId) !== generation) {
-        throw new Error(`host start superseded for ${agentId}`)
+      if (this.hostStartGeneration.get(key) !== generation) {
+        throw new Error(`host start superseded for ${label}`)
       }
       // This is the cold-host gate for every daemon caller and every fresh spawn
       // attempt. A failed ACP child had workspace write authority; re-verify the
       // immutable skill receipts after it is fully reaped and before constructing
       // its replacement, rather than trusting the first attempt's gate.
-      await this.prepareAgentWorkspace(agent, undefined, undefined, allowAgentDrain)
+      const prepared = await this.prepareAgentWorkspace(
+        agent,
+        undefined,
+        bound && bound.cwd === undefined ? bound.workspace : undefined,
+        allowAgentDrain
+      )
       await this.ensureRuntimeInstalled(agent.runtime)
-      if (this.hostStartGeneration.get(agentId) !== generation) {
-        throw new Error(`host start superseded for ${agentId}`)
+      if (this.hostStartGeneration.get(key) !== generation) {
+        throw new Error(`host start superseded for ${label}`)
       }
-      const host = this.ensureHost(agentId, this.cfg) // constructs + memoizes into this.hosts
+      // Constructs + memoizes into this.hosts, in the session directory for a session-bound host.
+      const host = this.ensureHost(key, this.cfg, bound ? (bound.cwd ?? prepared) : undefined)
       try {
         await host.start()
-        if (this.hostStartGeneration.get(agentId) !== generation) {
-          throw new Error(`host start superseded for ${agentId}`)
+        if (this.hostStartGeneration.get(key) !== generation) {
+          throw new Error(`host start superseded for ${label}`)
         }
-        this.readyHosts.add(agentId)
+        this.readyHosts.add(key)
         this.lastStartFailure.delete(agentId)
         return host
       } catch (err) {
         lastErr = err
-        this.readyHosts.delete(agentId)
+        this.readyHosts.delete(key)
         // Reap the dead child and drop it so the next attempt spawns a fresh one.
-        if (this.hosts.get(agentId) === host) this.hosts.delete(agentId)
+        if (this.hosts.get(key) === host) this.hosts.delete(key)
         await host.stop().catch(() => {})
-        if (this.hostStartGeneration.get(agentId) !== generation) throw err
-        // The failed attempt's ensureHost already materialized the config-file
-        // secrets — remove them so a permanently-failing start doesn't leave them
-        // resting on disk. Generation-fenced above, so this can't touch a
-        // superseding host's files; the next attempt re-materializes its own.
-        const failedSpawnDir = this.hostConfigFiles.get(agentId)?.agentDir
-        this.hostConfigFiles.delete(agentId)
-        if (failedSpawnDir) {
-          const cleanupErr = cleanupConfigFiles(failedSpawnDir)
-          if (cleanupErr) this.log.warn(`config-files: cleanup for agent "${agentId}" failed — ${cleanupErr}`)
+        const failedLaunch = this.hostLaunch.get(key)
+        this.hostLaunch.delete(key)
+        if (failedLaunch) removeSandboxSettings(failedLaunch.agentDir, hostKeyDirName(key))
+        if (this.hostStartGeneration.get(key) !== generation) throw err
+        // Remove the failed attempt's materialized config-file secrets unless another host of the agent still reads them.
+        if (!this.agentHasOtherHosts(agentId, key)) {
+          const failedSpawnDir = this.hostConfigFiles.get(agentId)?.agentDir
+          this.hostConfigFiles.delete(agentId)
+          if (failedSpawnDir) {
+            const cleanupErr = cleanupConfigFiles(failedSpawnDir)
+            if (cleanupErr) this.log.warn(`config-files: cleanup for agent "${agentId}" failed — ${cleanupErr}`)
+          }
         }
         // Retrying an incomplete package tree just reproduces the same crash, so repair it once and
         // let the loop try again rather than burning every attempt and staging the agent out. An
@@ -13772,11 +14030,11 @@ export class Daemon {
         if (i < budget) {
           const backoff = this.cfg.limits.agentStartBackoffMs
           this.log.warn(
-            `acp: agent "${agentId}" start attempt ${i}/${budget} failed (${(err as Error).message}) — retrying in ${backoff}ms`
+            `acp: agent "${label}" start attempt ${i}/${budget} failed (${(err as Error).message}) — retrying in ${backoff}ms`
           )
           await this.sleep(backoff, signal)
         } else {
-          this.log.error(`acp: agent "${agentId}" failed to start after ${budget} attempt(s): ${formatErr(err)}`)
+          this.log.error(`acp: agent "${label}" failed to start after ${budget} attempt(s): ${formatErr(err)}`)
           this.lastStartFailure.set(agentId, startFailureDetail(err))
         }
       }
@@ -13919,7 +14177,7 @@ export class Daemon {
       // Never let classification break a turn — but fail CLOSED: an unclassified
       // session keeps memory capture excluded until the CP confirms otherwise.
       this.log.warn(`session visibility: classification failed for ${acpSessionId} (${formatErr(err)})`)
-      await this.store.setLocalCaptureGate(agentId, acpSessionId, true)
+      await this.store.setLocalCaptureGate(agentId, key, true)
     }
   }
 
@@ -13928,13 +14186,12 @@ export class Daemon {
    * by the root session's agent, not part of the audience identity. */
   private async externalOriginForSession(
     agentId: string,
-    acpSessionId: string | undefined
+    sessionKey: string | undefined
   ): Promise<ExternalSessionAudience | undefined> {
-    if (!acpSessionId) return undefined
-    // ACP session ids are runtime-local and can collide across agents. Bind the
-    // lookup to the trusted caller agent so another runtime cannot lend this
-    // A2A wake its external audience by accident.
-    return this.externalAudienceForSessionRecord(await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId))
+    if (!sessionKey) return undefined
+    // By the logical key, bound to the trusted caller agent so no other agent's row lends this wake its audience.
+    const rec = await this.store.getSession(sessionKey)
+    return this.externalAudienceForSessionRecord(rec?.agentId === agentId ? rec : undefined)
   }
 
   private externalAudienceForSessionRecord(rec: SessionRecord | undefined): ExternalSessionAudience | undefined {
@@ -14152,23 +14409,12 @@ export class Daemon {
     // stay private.
     const locallyPrivate =
       !isEvaluation && (isA2aChild || msg.isDm || msg.platform === 'webchat' || launchCorrelationId !== undefined)
-    await this.store.setLocalCaptureGate(agentId, acpSessionId, locallyPrivate)
+    await this.store.setLocalCaptureGate(agentId, key, locallyPrivate)
   }
 
   /** The ACP session id behind an MCP tool call, from the caller's trusted
    *  session coords. Undefined when no local row matches — the capture gate
    *  treats that as unknown, i.e. excluded. */
-  private async acpSessionIdForToolCall(ctx: {
-    agentId: string
-    platform: string
-    channel: string
-    thread: string
-    transportScope?: string
-  }): Promise<string | undefined> {
-    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-    return (await this.store.getSession(key))?.acpSessionId ?? undefined
-  }
-
   /** Mint-once, persisted: stable across restarts and credential rotations. */
   private async mintedTenantScope(integrationId: string): Promise<string> {
     return (
@@ -14658,53 +14904,72 @@ export class Daemon {
 
   // ── lifecycle: host reaping, drain, fleet exit (§2.5/§5.3/§7.2) ──────────────
 
-  /** Stop and evict an ACP adapter child, returning the agent to `provisioned`
-   *  (config kept; the next message lazily re-spawns it). Idempotent. The teardown
-   *  is registered in `hostStopping` so a concurrent ensureHostAsync waits for
-   *  both the adapter and any superseded cold workspace preparation instead of
-   *  spawning against a still-mutating old generation. */
+  /** Stop and evict every ACP adapter child of the agent — its shared host and any session-bound
+   *  ones — returning it to `provisioned` (config kept; the next message lazily re-spawns). Idempotent. */
   private async stopHost(agentId: string, deadlineMs?: number): Promise<void> {
+    const results = await Promise.allSettled(
+      this.hostKeysForAgent(agentId).map((key) => this.stopHostByKey(key, deadlineMs))
+    )
+    // With every host of the agent gone, nothing of its session state can be live: sweep it agent-wide.
+    for (const [sid, lease] of this.sdkLease) if (lease.agentId === agentId) this.sdkLease.delete(sid)
+    for (const [bindingKey, binding] of this.sessionDeliveryBindings) {
+      if (binding.agentId === agentId) this.sessionDeliveryBindings.delete(bindingKey)
+    }
+    for (const [quarantineKey, ownerAgentId] of this.memoryExtractionQuarantines) {
+      if (ownerAgentId === agentId) this.memoryExtractionQuarantines.delete(quarantineKey)
+    }
+    const failed = results.find((result) => result.status === 'rejected')
+    if (failed) throw failed.reason
+  }
+
+  /** Stop and evict one host. The teardown is registered in `hostStopping` so a concurrent
+   *  ensureHostAsync waits for both the adapter and any superseded cold workspace preparation
+   *  instead of spawning against a still-mutating old generation. */
+  private async stopHostByKey(key: HostKey, deadlineMs?: number): Promise<void> {
+    const agentId = hostKeyAgentId(key)
+    const sessionKey = hostKeySessionKey(key)
     const supersededStarts: Promise<AcpHost>[] = []
     const captureSupersededStart = (): void => {
-      const start = this.hostStarts.get(agentId)
+      const start = this.hostStarts.get(key)
       if (start && !supersededStarts.includes(start)) supersededStarts.push(start)
     }
     captureSupersededStart()
-    this.invalidateHostStart(agentId)
-    const alreadyStopping = this.hostStopping.get(agentId)
+    this.invalidateHostStart(key)
+    const alreadyStopping = this.hostStopping.get(key)
     if (alreadyStopping) {
       // A second teardown must not report success while the first child is still
       // alive. Once it settles, fence again before taking a fresh host snapshot:
       // an ensureHostAsync waiter may have resumed at the same promise boundary.
       await alreadyStopping
       captureSupersededStart()
-      this.invalidateHostStart(agentId)
+      this.invalidateHostStart(key)
     }
-    const host = this.hosts.get(agentId)
-    this.hosts.delete(agentId)
-    this.hostStartedAt.delete(agentId)
-    const agentDir = this.hostConfigFiles.get(agentId)?.agentDir
-    this.hostConfigFiles.delete(agentId)
-    // The adapter (and its in-memory ACP sessions) is going away — drop this agent's
-    // background-task leases so they can't leak or wrongly defer a future host.
-    for (const [sid, lease] of this.sdkLease) if (lease.agentId === agentId) this.sdkLease.delete(sid)
+    const host = this.hosts.get(key)
+    this.hosts.delete(key)
+    this.hostStartedAt.delete(key)
+    const launch = this.hostLaunch.get(key)
+    this.hostLaunch.delete(key)
+    // The shared config files go with the agent's LAST host; another live host still reads them.
+    const agentDir = this.agentHasOtherHosts(agentId, key) ? undefined : this.hostConfigFiles.get(agentId)?.agentDir
+    if (agentDir) this.hostConfigFiles.delete(agentId)
+    // Session state is filed under its owning host, so this host drops exactly its own — a sibling
+    // session host of the same agent keeps its leases and bindings (the agent-wide sweep is stopHost's).
+    for (const sid of this.sdkLease.keys()) if (pendingTurnOwner(sid) === key) this.sdkLease.delete(sid)
     const clearDeliveryBindings = () => {
-      for (const [key, binding] of this.sessionDeliveryBindings) {
-        if (binding.agentId === agentId) this.sessionDeliveryBindings.delete(key)
+      for (const [bindingKey, binding] of this.sessionDeliveryBindings) {
+        if (binding.agentId === agentId && this.sessionOwnerKey(agentId, bindingKey) === key) {
+          this.sessionDeliveryBindings.delete(bindingKey)
+        }
       }
     }
     const clearMemoryExtractionQuarantines = () => {
-      for (const [key, ownerAgentId] of this.memoryExtractionQuarantines) {
-        if (ownerAgentId === agentId) this.memoryExtractionQuarantines.delete(key)
+      for (const quarantineKey of this.memoryExtractionQuarantines.keys()) {
+        if (pendingTurnOwner(quarantineKey) === key) this.memoryExtractionQuarantines.delete(quarantineKey)
       }
     }
-    // Once the child (and its process group) is gone, nothing can read the
-    // materialized config-file secrets (KUBECONFIG & co.) — remove them so the
-    // secret material stops resting on disk between sessions. Safe against the
-    // re-spawn race: ensureHostAsync waits out `hostStopping`, and this teardown's
-    // continuation runs before any such waiter re-materializes.
+    // With the child gone the config-file secrets are unread; a host of the agent started meanwhile re-registered them and keeps them.
     const removeConfigFiles = () => {
-      if (!agentDir) return
+      if (!agentDir || this.agentHasOtherHosts(agentId, key)) return
       const err = cleanupConfigFiles(agentDir)
       if (err) this.log.warn(`config-files: cleanup for agent "${agentId}" failed — ${err}`)
     }
@@ -14718,9 +14983,9 @@ export class Daemon {
         if (hostResult?.status === 'rejected') throw hostResult.reason
       })
       .finally(() => {
-        if (this.hostStopping.get(agentId) === stop) this.hostStopping.delete(agentId)
+        if (this.hostStopping.get(key) === stop) this.hostStopping.delete(key)
       })
-    this.hostStopping.set(agentId, stop)
+    this.hostStopping.set(key, stop)
     try {
       await stop
     } finally {
@@ -14729,6 +14994,8 @@ export class Daemon {
       clearDeliveryBindings()
       clearMemoryExtractionQuarantines()
       removeConfigFiles()
+      // The policy the provider read for this child is daemon-owned per host; it goes with the child.
+      if (launch) removeSandboxSettings(launch.agentDir, hostKeyDirName(key))
     }
   }
 
@@ -14767,7 +15034,8 @@ export class Daemon {
    *  are ignored so a future event-shape change degrades to plain-TTL behavior
    *  rather than throwing. Field names verified against the adapter (§4.2 of
    *  docs/designs/background-task-aware-reclaim.md). */
-  private async onSdkLifecycle(agentId: string, acpSessionId: string, message: unknown): Promise<void> {
+  private async onSdkLifecycle(owner: HostKey, acpSessionId: string, message: unknown): Promise<void> {
+    const agentId = hostKeyAgentId(owner)
     const m = message as {
       type?: unknown
       subtype?: unknown
@@ -14791,7 +15059,7 @@ export class Daemon {
         live: Array.isArray(m.tasks) ? m.tasks.length : undefined
       })} on ${acpSessionId}`
     )
-    const leaseKey = sdkLeaseKey(agentId, acpSessionId)
+    const leaseKey = sdkLeaseKey(owner, acpSessionId)
     const lease = this.sdkLease.get(leaseKey) ?? {
       agentId,
       tasks: new Map<string, LiveSdkTask>(),
@@ -14830,14 +15098,14 @@ export class Daemon {
       // commands (sleeps, watchers) settle here every time. Both conditions are required:
       // `running` without a Pending is a self-drain cycle (§5.2 delivers its narration), and a
       // Pending past `idle` is finalization the model has already left.
-      if (lease.sdkState === 'running' && this.pending.has(pendingTurnKey(agentId, acpSessionId))) {
+      if (lease.sdkState === 'running' && this.pending.has(pendingTurnKey(owner, acpSessionId))) {
         this.log.debug(
           `bg-task wake skipped (settled inside the live foreground turn): ` +
             `"${rec.description?.trim() || 'background task'}" on ${acpSessionId}`
         )
         return
       }
-      this.scheduleBackgroundTaskWake(agentId, acpSessionId, taskId, rec.description, status)
+      this.scheduleBackgroundTaskWake(owner, acpSessionId, taskId, rec.description, status)
     }
     switch (m.subtype) {
       case 'session_state_changed':
@@ -14850,7 +15118,7 @@ export class Daemon {
           // The cycle ended — deliver whatever a Pending-less drain narrated (no-op after a
           // real turn, whose chunks were never buffered). Fire-and-forget like the announce.
           if (m.state === 'idle' && wasRunning)
-            void this.deliverDrainNarration(agentId, acpSessionId).catch((err) =>
+            void this.deliverDrainNarration(owner, acpSessionId).catch((err) =>
               this.log.warn(`drain delivery failed for "${agentId}": ${(err as Error).message}`)
             )
         }
@@ -14909,7 +15177,8 @@ export class Daemon {
     // id, so this read is where the two meet. An unresolvable id is passed through, which is what
     // a pre-v12 session was reported under.
     const slot = await this.store.getSessionByOutwardId(req.sessionId, req.agentId)
-    const lease = this.sdkLease.get(sdkLeaseKey(req.agentId, slot?.acpSessionId ?? req.sessionId))
+    const owner = slot ? this.sessionOwnerKey(req.agentId, slot.key) : agentHostKey(req.agentId)
+    const lease = this.sdkLease.get(sdkLeaseKey(owner, slot?.acpSessionId ?? req.sessionId))
     const iso = (ms: number) => new Date(ms).toISOString()
     // Model-authored, so bounded here rather than trusted; the row survives, the tail does not.
     const described = (description: string | undefined) =>
@@ -14953,8 +15222,9 @@ export class Daemon {
    *  Agent speech, not a notice: it posts with the agent's conversational identity and lands
    *  in the transcript. {@link wakeOnBackgroundTaskDone} reads `drainDeliveredAt` at fire
    *  time and stands down for the completions this narration already covered. */
-  private async deliverDrainNarration(agentId: string, acpSessionId: string): Promise<void> {
-    const lease = this.sdkLease.get(sdkLeaseKey(agentId, acpSessionId))
+  private async deliverDrainNarration(owner: HostKey, acpSessionId: string): Promise<void> {
+    const agentId = hostKeyAgentId(owner)
+    const lease = this.sdkLease.get(sdkLeaseKey(owner, acpSessionId))
     if (!lease?.drainText) return
     const text = lease.drainText.trim()
     lease.drainText = ''
@@ -14967,7 +15237,7 @@ export class Daemon {
       )
       return
     }
-    const rec = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    const rec = await this.sessionForAcp(owner, acpSessionId)
     if (!rec || rec.state === 'closed') return
     const mode = (await this.store.getOutputModeOverride(rec.key)) ?? this.agents.get(agentId)?.output?.mode ?? 'low'
     // Resolved against the SESSION's platform (delivery binding first) — never replyConnFor's
@@ -15132,20 +15402,21 @@ export class Daemon {
    *  the session and drop the lease before the timer fires. {@link wakeOnBackgroundTaskDone}
    *  releases the count on every exit path. */
   private scheduleBackgroundTaskWake(
-    agentId: string,
+    owner: HostKey,
     acpSessionId: string,
     taskId: string,
     description?: string,
     status?: string,
     attempt = 0
   ): void {
+    const agentId = hostKeyAgentId(owner)
     if (this.draining) return
-    const armed = this.sdkLease.get(sdkLeaseKey(agentId, acpSessionId))
+    const armed = this.sdkLease.get(sdkLeaseKey(owner, acpSessionId))
     if (armed) armed.armedWakes += 1
     const handle = this.clock.setTimeout(async () => {
       this.bgWakeTimers.delete(handle)
       try {
-        await this.wakeOnBackgroundTaskDone(agentId, acpSessionId, taskId, description, status, attempt)
+        await this.wakeOnBackgroundTaskDone(owner, acpSessionId, taskId, description, status, attempt)
       } catch (err) {
         this.log.error(`bg-task wake failed for "${agentId}": ${formatErr(err)}`)
       }
@@ -15181,15 +15452,16 @@ export class Daemon {
    *    observe the task itself).
    */
   private async wakeOnBackgroundTaskDone(
-    agentId: string,
+    owner: HostKey,
     acpSessionId: string,
     taskId: string,
     description?: string,
     status?: string,
     attempt = 0
   ): Promise<void> {
+    const agentId = hostKeyAgentId(owner)
     if (this.draining) return
-    const lease = this.sdkLease.get(sdkLeaseKey(agentId, acpSessionId))
+    const lease = this.sdkLease.get(sdkLeaseKey(owner, acpSessionId))
     const what = description?.trim() || 'background task'
     if (!lease) {
       this.log.debug(`bg-task wake skipped (host reclaimed): "${what}" on ${acpSessionId}`)
@@ -15224,7 +15496,7 @@ export class Daemon {
         return
       }
       // Take the next attempt's fence BEFORE releasing this one so the count never dips to 0.
-      this.scheduleBackgroundTaskWake(agentId, acpSessionId, taskId, description, status, attempt + 1)
+      this.scheduleBackgroundTaskWake(owner, acpSessionId, taskId, description, status, attempt + 1)
       return skip(`runtime cycle still running, re-armed ${attempt + 1}/${MAX_BG_TASK_WAKE_REARMS}`)
     }
     if (lease.tasks.size > 0) return skip('other background tasks still live')
@@ -15244,7 +15516,7 @@ export class Daemon {
       )
       return
     }
-    const rec = await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId)
+    const rec = await this.sessionForAcp(owner, acpSessionId)
     if (!rec) return skip('no session row')
     // A turn is in flight for this session. It must NOT absorb this completion: `sdkState` is
     // already idle above, so `host.prompt()` has returned and the model cannot observe the task
@@ -15257,7 +15529,7 @@ export class Daemon {
       lease.armedWakes += 1 // the deferred retry's slot, taken before this one is released
       const resume = (): void => {
         lease.armedWakes = Math.max(0, lease.armedWakes - 1)
-        this.scheduleBackgroundTaskWake(agentId, acpSessionId, taskId, description, status, attempt)
+        this.scheduleBackgroundTaskWake(owner, acpSessionId, taskId, description, status, attempt)
       }
       void active.then(resume, resume)
       return skip('a turn is in flight — deferred until it settles')
@@ -15328,9 +15600,9 @@ export class Daemon {
    *  behavior). An armed wake counts: the task it will deliver is already out of `tasks`,
    *  so without it a long-running task's session could be TTL-closed inside the grace
    *  window and the completion lost — the very thing §5.1 exists to prevent. */
-  private sessionSdkQuiescent(agentId: string, acpSessionId: string | null | undefined): boolean {
+  private sessionSdkQuiescent(owner: HostKey, acpSessionId: string | null | undefined): boolean {
     if (!acpSessionId) return true
-    const l = this.sdkLease.get(sdkLeaseKey(agentId, acpSessionId))
+    const l = this.sdkLease.get(sdkLeaseKey(owner, acpSessionId))
     return !l || (l.tasks.size === 0 && l.armedWakes === 0 && l.deliveringWakes === 0 && l.sdkState === 'idle')
   }
 
@@ -15339,12 +15611,13 @@ export class Daemon {
    *  self-initiated followup turn that carries no `this.pending` entry). Gates idle host
    *  reclaim. */
   private agentHasLiveSdkWork(agentId: string): boolean {
-    for (const l of this.sdkLease.values())
-      if (
-        l.agentId === agentId &&
-        (l.tasks.size > 0 || l.armedWakes > 0 || l.deliveringWakes > 0 || l.sdkState === 'running')
-      )
-        return true
+    for (const l of this.sdkLease.values()) if (l.agentId === agentId && liveSdkLease(l)) return true
+    return false
+  }
+
+  /** Live background work on the sessions one host owns — its leases are filed under its key. */
+  private hostHasLiveSdkWork(owner: HostKey): boolean {
+    for (const [leaseKey, l] of this.sdkLease) if (pendingTurnOwner(leaseKey) === owner && liveSdkLease(l)) return true
     return false
   }
 
@@ -15392,7 +15665,7 @@ export class Daemon {
       this.activeDispatchDoneByKey.has(rec.key) ||
       [...this.pending.values()].some((p) => p.plan.sessionKey === rec.key) ||
       (await this.store.sessionHasPendingInboxRows(rec.key)) ||
-      !this.sessionSdkQuiescent(rec.agentId, rec.acpSessionId)
+      !this.sessionSdkQuiescent(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId)
     )
   }
 
@@ -15420,6 +15693,8 @@ export class Daemon {
       ) {
         return { outcome: 'not_applicable' }
       }
+      // A host bound to this session runs inside the directory about to go: stop it before the removal.
+      await this.stopSessionHost(rec.agentId, rec.key, { ...this.sessionHostFence(rec.agentId, rec.key), row: rec })
       // The volume has to be up and bound for the removal, as it was for the preparation — and for
       // the question of WHICH roots exist, which is asked of the filesystem that holds them: on a
       // suspended sandbox this daemon's own disk would answer "none" for a scratch agent whose pod
@@ -15441,9 +15716,7 @@ export class Daemon {
         // the worktree and runs session/load/new before prompting in its cwd.
         const current = await this.store.getSession(rec.key)
         if (current?.acpSessionId === rec.acpSessionId) {
-          ;(await this.modelSessions.hostForStoredSession(rec.agentId, rec.acpSessionId))?.forgetSession(
-            rec.acpSessionId
-          )
+          this.hostForOwner(this.sessionOwnerKey(rec.agentId, rec.key))?.forgetSession(rec.acpSessionId)
         }
       }
       return result
@@ -15510,13 +15783,16 @@ export class Daemon {
         active += 1
         continue
       }
+      const sessionHost = this.sessionHostFence(rec.agentId, rec.key)
       // The purge receipt is written in deleteSession's transaction: the CP holds
       // the only surviving record of this session, and it must be told that the
       // content behind it is gone (drained below, durably, on ACK).
       if (await this.store.deleteSession(rec.key, { reason: 'retention', at: purgedAt, ownerId: this.cfg.daemonId })) {
         removed += 1
-        if (rec.acpSessionId) this.sdkLease.delete(sdkLeaseKey(rec.agentId, rec.acpSessionId))
+        if (rec.acpSessionId)
+          this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
         await this.modelSessions.release(rec.key)
+        await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
       }
     }
     this.log.info(
@@ -15766,6 +16042,9 @@ export class Daemon {
     // §7.3 idle→closed: a thread untouched past the TTL stops catching up — UNLESS it
     // still has in-flight background work (the SDK lease), which keeps it open. The
     // lease is member-local, so on a pool only the agent's holder decides its rows.
+    // The hosts and start generations the close decision is taken against; a re-admitted session has newer ones.
+    const hostsAtDecision = new Map(this.hosts)
+    const generationsAtDecision = new Map(this.hostStartGeneration)
     const closed = await this.store.closeIdleSessions(now, ttl, (agentId, acpSessionId, key) =>
       this.sessionRetentionActive({ key, agentId, acpSessionId })
     )
@@ -15788,10 +16067,21 @@ export class Daemon {
         }
       }
       this.lastFooterReply.delete(row.key) // the session is gone — release its footer record
+      // A host bound to the closed session has nothing left to serve — unless a new turn reopened the key since.
+      const closedHost = sessionHostKey(row.agentId, row.key)
+      const fence = {
+        expected: hostsAtDecision.get(closedHost),
+        generation: generationsAtDecision.get(closedHost),
+        row
+      }
+      void this.stopSessionHost(row.agentId, row.key, fence).catch((error) =>
+        this.log.warn(`idle: stopping the host of closed session ${row.key} failed (${formatErr(error)})`)
+      )
       if (!row.acpSessionId) continue
-      this.sdkLease.delete(sdkLeaseKey(row.agentId, row.acpSessionId)) // the session is gone — drop its lease
+      this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(row.agentId, row.key), row.acpSessionId)) // the session is gone
       await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
         sessionId: row.acpSessionId,
+        sessionKey: row.key,
         agentId: row.agentId,
         phase: 'end',
         platform: row.platform as SessionKey['platform'],
@@ -15810,7 +16100,7 @@ export class Daemon {
       if (!entry.materialized || !entry.childEnv) continue
       if (this.drainingAgents.has(agentId)) continue // stopHost will remove them
       if ([...this.pending.values()].some((p) => p.plan.agentId === agentId)) continue
-      const last = Math.max((await this.store.agentLastActivityTs(agentId)) ?? 0, this.hostStartedAt.get(agentId) ?? 0)
+      const last = Math.max((await this.store.agentLastActivityTs(agentId)) ?? 0, this.hostStartedAtForAgent(agentId))
       if (now - last <= configFilesIdle) continue
       // The lease also covers the settle→followup gap of a background task: a
       // task-drain turn flips sdkState to running before any tool can fire.
@@ -15831,13 +16121,19 @@ export class Daemon {
     // §7.2 ready→provisioned: reclaim a host whose agent has no recent session
     // activity AND no in-flight turn (a long turn stamps no activity, so the
     // in-flight guard is load-bearing — see recordUnrouted).
-    for (const [agentId] of [...this.hosts]) {
+    for (const [key] of [...this.hosts]) {
+      const agentId = hostKeyAgentId(key)
+      const sessionKey = hostKeySessionKey(key)
+      const label = hostKeyLabel(key)
       if (this.drainingAgents.has(agentId)) continue
       // `pending` begins only after session/new|load. A warm dispatch can still
       // be assembling memory/context or preparing its workspace before that;
       // reclaiming its host here would detach a live initialization generation.
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
-      if ([...this.pending.values()].some((p) => p.plan.agentId === agentId)) continue
+      // A session-bound host is quiet when ITS session is; the shared host, when every session of the agent is.
+      const inFlight = (p: Pending): boolean =>
+        p.plan.agentId === agentId && (sessionKey === undefined || p.plan.sessionKey === sessionKey)
+      if ([...this.pending.values()].some(inFlight)) continue
       // A just-started host that hasn't served a turn yet has no recorded activity
       // (`agentLastActivityTs` unset ⇒ 0 ⇒ idle≈now), so without this it would be
       // reclaimed on the very next sweep — including WHILE it is still mid-startup
@@ -15845,27 +16141,31 @@ export class Daemon {
       // down underneath its own first dispatch (ACP "connection closed" → "already
       // started" → "Session not found"). Fall back to when the host came up so it
       // gets a full idle window from start, not an instant reclaim.
-      const last = Math.max((await this.store.agentLastActivityTs(agentId)) ?? 0, this.hostStartedAt.get(agentId) ?? 0)
+      const activity =
+        sessionKey === undefined
+          ? await this.store.agentLastActivityTs(agentId)
+          : await this.store.sessionLastActivityTs(sessionKey)
+      const last = Math.max(activity ?? 0, this.hostStartedAt.get(key) ?? 0)
       if (now - last <= ttl) continue
       // Background-task lease: don't reap a host that still has live background work
       // (a running SDK cycle / followup turn or unsettled background tasks) — reaping
       // SIGTERMs the adapter, and `claude` reaps its own background jobs on graceful
       // exit. Bounded by the absolute lifetime ceiling so a wedged / never-ending task
       // can't pin an idle host forever.
-      if (this.agentHasLiveSdkWork(agentId)) {
-        const age = now - (this.hostStartedAt.get(agentId) ?? now)
+      if (this.hostHasLiveSdkWork(key)) {
+        const age = now - (this.hostStartedAt.get(key) ?? now)
         if (age <= maxLifetime) {
-          this.log.info(`idle: host "${agentId}" has in-flight background work — deferring reclaim`)
+          this.log.info(`idle: host "${label}" has in-flight background work — deferring reclaim`)
           continue
         }
         this.log.warn(
-          `idle: host "${agentId}" over max lifetime (${Math.round(age / 1000)}s) with background work still ` +
+          `idle: host "${label}" over max lifetime (${Math.round(age / 1000)}s) with background work still ` +
             `in flight — force-reclaiming (a wedged/long-lived background task may be terminated)`
         )
       }
-      this.log.info(`idle: reclaiming host "${agentId}" (idle ${Math.round((now - last) / 1000)}s) → provisioned`)
-      void this.stopHost(agentId).catch((err) =>
-        this.log.error(`idle: stop host "${agentId}" failed: ${formatErr(err)}`)
+      this.log.info(`idle: reclaiming host "${label}" (idle ${Math.round((now - last) / 1000)}s) → provisioned`)
+      void this.stopHostByKey(key).catch((err) =>
+        this.log.error(`idle: stop host "${label}" failed: ${formatErr(err)}`)
       )
     }
     await this.sweepIdleSandboxes(now, ttl)
@@ -15889,7 +16189,7 @@ export class Daemon {
       if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
       // A live host owns the decision above; suspending under it would pull the pod out from
       // beneath a runtime that is merely between turns.
-      if (this.hosts.has(agentId) || this.modelSessions.hasStartedHostForAgent(agentId)) continue
+      if (this.hasHostForAgent(agentId) || this.modelSessions.hasStartedHostForAgent(agentId)) continue
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
       if ([...this.pending.values()].some((p) => p.plan.agentId === agentId)) continue
       // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
@@ -16034,7 +16334,7 @@ export class Daemon {
       for (const p of this.pending.values()) {
         if (!match(p)) continue
         this.log.warn(`drain[${scope.kind}]: cancelling straggler turn (session ${p.acpSessionId})`)
-        await (p.selectedHost?.host ?? this.hosts.get(p.plan.agentId))?.cancel(p.acpSessionId).catch(() => {})
+        await (p.selectedHost?.host ?? this.hostForOwner(p.hostKey))?.cancel(p.acpSessionId).catch(() => {})
       }
     }
     return { matched: [...matched.values()], drained: [...drained.values()], targets: targets.map(([, p]) => p) }
@@ -16062,7 +16362,7 @@ export class Daemon {
     let released: SessionKey[]
     if (drain.scope.kind === 'daemon') {
       await this.stopSelectedTurnHosts(targets)
-      for (const id of [...this.hosts.keys()]) await this.stopHost(id)
+      for (const key of [...this.hosts.keys()]) await this.stopHostByKey(key)
       for (const key of this.modelSessions.keys()) await this.modelSessions.release(key)
       await this.webchatMcpRevocations.revokeAllRemoteWebchatGrants('agent_detached')
       this.draining = false
@@ -16444,10 +16744,10 @@ export class Daemon {
         p.outputSuppressed ??= 'shutdown'
         this.clearIdle(p)
         this.turnSurfaces.exact(p.plan.platform)?.onSuppress?.(p)
-        await this.permissions.releaseElicits(p.plan.agentId, p.acpSessionId)
-        await this.permissions.releaseChatPermissions(p.plan.agentId, p.acpSessionId)
-        await this.permissions.releaseEditorPermissions(p.plan.agentId, p.acpSessionId)
-        void (p.selectedHost?.host ?? this.hosts.get(p.plan.agentId))?.cancel(p.acpSessionId).catch(() => {})
+        await this.permissions.releaseElicits(p.hostKey, p.acpSessionId)
+        await this.permissions.releaseChatPermissions(p.hostKey, p.acpSessionId)
+        await this.permissions.releaseEditorPermissions(p.hostKey, p.acpSessionId)
+        void (p.selectedHost?.host ?? this.hostForOwner(p.hostKey))?.cancel(p.acpSessionId).catch(() => {})
       }
       return forceAgents
     }
@@ -16799,7 +17099,7 @@ export class Daemon {
         this.webchatMcpRevocations.revokeRemoteWebchatGrantsForAgent(agentId, reason),
       stopAgent: (agentId) => this.stopAgent(agentId),
       stopHost: (agentId, deadlineMs) => this.stopHost(agentId, deadlineMs),
-      ensureHostAsync: (agentId, opts) => this.ensureHostAsync(agentId, opts),
+      ensureHostAsync: (agentId, opts) => this.ensureHostAsync(agentHostKey(agentId), opts),
       prepareAgentWorkspace: (agent, expectedWarmHost, request, allowAgentDrain) =>
         this.prepareAgentWorkspace(agent, expectedWarmHost, request, allowAgentDrain),
       enqueueAgentWorkspacePreparation: <T>(
@@ -16865,7 +17165,8 @@ export class Daemon {
       mcpServerFactsFromDefs: () => this.mcpServerFactsFromDefs(),
       cpLocalState: () => this.cpLocalState(),
       metrics: () => this.metrics,
-      hostCount: () => this.hosts.size,
+      // Load counts agents with a live host, not hosts: capacity gates count agents, and per-session hosts are bounded by session admission.
+      hostCount: () => new Set([...this.hosts.keys()].map(hostKeyAgentId)).size,
       activeSessions: () => this.pending.size,
       bootstrapUpgradeCapable: () => this.bootstrapUpgradeCapable(),
       runBootstrapFleetUpgrade: (targetVersion) => this.fleetUpgrade.runBootstrapFleetUpgrade(targetVersion),
@@ -17864,8 +18165,8 @@ export class Daemon {
     // teardown goes through the same generation fence/hostStopping path, and no async
     // starter is allowed to outlive the store/MCP boundary below.
     const hostStarts = [...this.hostStarts.values()]
-    const hostIds = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
-    for (const agentId of hostIds) await this.stopHost(agentId).catch((e) => errors.push(e))
+    const hostKeys = new Set([...this.hosts.keys(), ...this.hostStarts.keys(), ...this.hostStopping.keys()])
+    for (const key of hostKeys) await this.stopHostByKey(key).catch((e) => errors.push(e))
     for (const key of this.modelSessions.keys()) {
       await this.modelSessions.release(key).catch((e) => errors.push(e))
     }

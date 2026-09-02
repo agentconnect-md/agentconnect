@@ -2,6 +2,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync 
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from '../acp/sandbox.js'
+import { hostKeyDirName, type HostKey } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { compactReadRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
@@ -193,6 +194,9 @@ export function prepareRuntimeLaunch(opts: {
   runtime?: RuntimeDef
   scopeDir: string
   cwd: string
+  /** Which host this launch is for; its sandbox policy lives in a per-host directory. Absent only for
+   *  a single-launch scope such as a probe, which then takes the shared host's leaf. */
+  hostKey?: HostKey
   runInSandbox: boolean
   isolateHome?: boolean
   explicitEnv?: Record<string, string>
@@ -487,7 +491,7 @@ export function prepareRuntimeLaunch(opts: {
     const projectClaudeDir = join(boundary.gitSafeDirectories[0]!, '.claude')
     if (!existsSync(projectClaudeDir)) mkdirSync(projectClaudeDir, { mode: 0o700 })
   }
-  const settingsPath = writeSandboxSettings(opts.scopeDir, {
+  const settingsPath = writeSandboxSettings(opts.scopeDir, hostKeyDirName(opts.hostKey), {
     writable: boundary.writable,
     // Host user data is default-denied. Re-open only the current agent surfaces
     // plus trusted executable/package roots above; never an agent-provided path.

@@ -128,6 +128,7 @@ function installPending(daemon: Daemon): {
       statusThread: 'test',
       approvalSurfaceSuppressed: false
     },
+    hostKey: 'agent-1',
     chrome: {},
     reply: { text: '', attemptText: '', attemptAnswerUpdates: [] },
     signals: { applyChain: Promise.resolve() },

@@ -156,6 +156,9 @@ function abortable<T>(start: () => PromiseLike<T> | T, signal?: AbortSignal): Pr
   })
 }
 
+/** What a logical session asks of its workspace — also what keys its host where hosts are per session. */
+export type SessionWorkspaceRequest = { sessionKey: string; isolation: 'shared' | 'session'; initiatedBy?: string }
+
 export class SessionManager {
   /** The owning daemon's plane when it supplied one; otherwise a private plane, so two harnesses
    *  in one process still cannot see each other's registrations. */
@@ -170,10 +173,14 @@ export class SessionManager {
       /** Mint a slot's outward id (§1.1) and hand back the synchronous binder the runtime's raw
        *  `session/new` response calls — see the opener's `prepareOutwardBinding`. */
       prepareOutwardBinding?: (agentId: string, key: string) => Promise<(acpSessionId: string) => void>
-      hostFor: (agentId: string) => Promise<AcpHost>
+      /** The host for this logical session — per session where the daemon confines one, else the
+       *  agent's shared host. `cwd` is a daemon-verified directory a session-bound host must launch in. */
+      hostFor: (agentId: string, request: SessionWorkspaceRequest, cwd?: string) => Promise<AcpHost>
       /** Whether the runtime initialize handshake completed. A cold hostFor may
        * own preparation itself when resolvePreparedWorkspace is also supplied. */
-      isHostRunning?: (agentId: string) => boolean
+      isHostRunning?: (agentId: string, request: SessionWorkspaceRequest) => boolean
+      /** The cwd a session-bound host launched in, whatever the isolation; undefined for a shared host. */
+      boundHostCwd?: (agentId: string, request: SessionWorkspaceRequest) => string | undefined
       agentById: (id: string) => LoadedAgent | undefined
       /** The owning daemon's workspace plane. Absent only in lightweight harnesses, which get
        *  their own so nothing is shared between them. */
@@ -185,7 +192,7 @@ export class SessionManager {
       prepareWorkspace?: (
         agent: Agent,
         expectedWarmHost?: AcpHost,
-        request?: { sessionKey: string; isolation: 'shared' | 'session'; initiatedBy?: string }
+        request?: SessionWorkspaceRequest
       ) => Promise<string>
       /** Resolve the cwd produced by hostFor's cold preparation without
        * repeating pull/source acquisition/reconciliation. Production supplies
@@ -505,7 +512,7 @@ export class SessionManager {
     // Lightweight embedders without that contract retain the legacy pre-host fallback.
     // A warm turn on a live host does not prepare here; the per-branch preparation
     // below handles only warm-host new-session/resume cases.
-    const hostCold = options.host ? false : !(this.deps.isHostRunning?.(agentId) ?? false)
+    const hostCold = options.host ? false : !(this.deps.isHostRunning?.(agentId, workspaceRequest) ?? false)
     let preparedCwd =
       hostCold && !this.deps.resolvePreparedWorkspace
         ? await abortable(
@@ -515,11 +522,23 @@ export class SessionManager {
             signal
           )
         : undefined
-    const host = options.host ?? (await abortable(() => this.deps.hostFor(agentId), signal))
+    const host =
+      options.host ??
+      (await abortable(() => this.deps.hostFor(agentId, workspaceRequest, options.preparedWorkspaceCwd), signal))
     // Explicit private-cell hosts are not owned by the daemon's ordinary host
     // map. Only an ordinary warm host carries generation identity into the
     // preparation seam; its daemon can then reject a late post-stop mutation.
     const expectedWarmHost = options.host ? undefined : host
+    const hostBoundCwd = options.host ? undefined : this.deps.boundHostCwd?.(agentId, workspaceRequest)
+    if (
+      hostBoundCwd !== undefined &&
+      options.preparedWorkspaceCwd !== undefined &&
+      hostBoundCwd !== options.preparedWorkspaceCwd
+    ) {
+      throw new Error(
+        `session host launched in ${hostBoundCwd}, not the prepared workspace ${options.preparedWorkspaceCwd}`
+      )
+    }
     if (hostCold && this.deps.resolvePreparedWorkspace) {
       preparedCwd = await abortable(() => this.deps.resolvePreparedWorkspace!(agent), signal)
     }
@@ -612,6 +631,7 @@ export class SessionManager {
         ? { prepareOutwardBinding: () => this.deps.prepareOutwardBinding!(agentId, key) }
         : {}),
       ...(options.preparedWorkspaceCwd !== undefined ? { preparedWorkspaceCwd: options.preparedWorkspaceCwd } : {}),
+      ...(hostBoundCwd !== undefined ? { hostBoundCwd } : {}),
       ...(preparedCwd !== undefined ? { preparedCwd } : {}),
       ...(expectedWarmHost !== undefined ? { expectedWarmHost } : {}),
       prepareWorkspace: (a, warmHost) =>

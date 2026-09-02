@@ -1,3 +1,5 @@
+import { sessionHostKey } from '../src/acp/host-key.js'
+import { sdkLeaseKey } from '../src/daemon/turn-types.js'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '@agentconnect.md/connection'
 import { Daemon } from '../src/daemon.js'
@@ -80,7 +82,7 @@ describe('daemon model-key session lifecycle', () => {
     ])
     await h.daemon.modelSessions.ensure(agent, 'session-a')
     h.daemon.store.getSession = () => ({ acpSessionId: 'acp-1' })
-    h.daemon.sdkLease.set(JSON.stringify(['agent-a', 'acp-1']), {
+    h.daemon.sdkLease.set(sdkLeaseKey(sessionHostKey('agent-a', 'session-a'), 'acp-1'), {
       agentId: 'agent-a',
       tasks: new Map([['task-1', {}]]),
       settled: [],
@@ -109,7 +111,7 @@ describe('daemon model-key session lifecycle', () => {
     ])
     await h.daemon.modelSessions.ensure(agent, 'session-a')
     h.daemon.store.getSession = () => ({ acpSessionId: 'acp-1' })
-    h.daemon.sdkLease.set(JSON.stringify(['agent-a', 'acp-1']), {
+    h.daemon.sdkLease.set(sdkLeaseKey(sessionHostKey('agent-a', 'session-a'), 'acp-1'), {
       agentId: 'agent-a',
       tasks: new Map([['task-1', {}]]),
       settled: [],
@@ -146,7 +148,7 @@ describe('daemon model-key session lifecycle', () => {
 
     // Live SDK work: the switch is recorded, but the running host keeps its binding.
     h.daemon.store.getSession = () => ({ agentId: 'agent-a', acpSessionId: 'acp-1' })
-    h.daemon.sdkLease.set(JSON.stringify(['agent-a', 'acp-1']), {
+    h.daemon.sdkLease.set(sdkLeaseKey(sessionHostKey('agent-a', 'session-a'), 'acp-1'), {
       agentId: 'agent-a',
       tasks: new Map([['task-1', {}]]),
       settled: [],
