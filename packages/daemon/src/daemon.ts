@@ -13359,6 +13359,15 @@ export class Daemon {
       (isStandingContextTitleEcho(update.title) || isPromptEchoTitle(update.title, p?.promptEchoPrefix ?? ''))
     )
       return
+    // Clamp a surviving runtime title ONCE, here, to the one-line 80-character shape every
+    // other title source produces — like the secret mask above, so the persisted row, Slack,
+    // the live webchat stream, and the recorder cannot disagree. A whitespace-only push sets
+    // nothing anywhere. Must follow the echo test, which reads the unclamped title.
+    if (update?.sessionUpdate === 'session_info_update' && typeof update.title === 'string') {
+      const clamped = clampRuntimeTitle(update.title)
+      if (clamped === undefined) return
+      update = { ...update, title: clamped }
+    }
     const isEarlyMetadata =
       update?.sessionUpdate === 'usage_update' ||
       (update?.sessionUpdate === 'session_info_update' && update.title !== undefined)
@@ -13405,13 +13414,10 @@ export class Daemon {
       const rec = p ? await this.store.getSession(p.plan.sessionKey) : detachedRec
       // The callback is agent-bound, but ACP session ids are runtime-controlled. Match
       // both before touching another logical session if two adapters reuse an id.
-      // Clamped to the one-line, 80-character shape every other title source produces, so no
-      // runtime can persist a multi-paragraph title; a whitespace-only push sets nothing.
-      const title = typeof update.title === 'string' ? clampRuntimeTitle(update.title) : null
-      if (rec?.agentId === agentId && rec.acpSessionId === sessionId && title !== undefined) {
-        await this.persistSessionTitle(rec, title)
-        // Runtime title, never the console's first-message fallback.
-        const slackTitle = title ?? ''
+      if (rec?.agentId === agentId && rec.acpSessionId === sessionId) {
+        await this.persistSessionTitle(rec, update.title)
+        // The clamped runtime title — never the console's first-message fallback.
+        const slackTitle = typeof update.title === 'string' ? update.title : ''
         if (p && turnChromeFor(p.plan.platform).sessionTitle && slackTitle) {
           this.enqueueApply(p, { kind: 'set-title', text: slackTitle })
         } else if (!p && slackTitle) {
