@@ -640,8 +640,12 @@ export function arbitrateSharedBotResult(
   const contGateOk = directControlOk && contGrantOk
   if (cont && contGateOk && a.members.some((m) => m.daemonId === cont.daemonId && m.agentIds.includes(cont.agentId))) {
     if (cont.integrationId) return hit(cont)
+    // A CP-projected affinity names no install. Slack backfills from the agent's route; an
+    // `ownerAsDefault` platform has no route for its owner, so the seat itself names it — an
+    // empty id would reach the daemon as an invalid delivery and be dropped unanswered.
     const route = a.routes.find((r) => r.agentId === cont.agentId)
     if (route) return hit({ ...cont, integrationId: route.integrationId })
+    if (channelDefault?.agentId === cont.agentId) return hit({ ...cont, integrationId: channelDefault.integrationId })
     return hit(cont)
   }
 

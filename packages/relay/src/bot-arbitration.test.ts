@@ -627,6 +627,19 @@ describe('Linear team-as-channel arbitration (the per-conversation default rung)
       })
     })
 
+    it("backfills a CP-projected binding's install from the seat, since the owner has no route", () => {
+      // `rc/assign` carries no integrationId, so the relay installs the echo of its own report
+      // with an empty one. Slack backfills from the agent's route; the owner here has none, and
+      // an empty id would reach the daemon as an invalid delivery, dropped without an answer.
+      const router = new BotArbitrationRouter()
+      router.upsert(gatedOwner())
+      router.setAffinity('bot-1', `${TEAM_A}/agent-session-1`, { agentId: ALICE, daemonId: D1, integrationId: '' })
+      expect(router.routeResult('bot-1', delegation('a follow-up'))).toEqual({
+        kind: 'target',
+        target: { agentId: ALICE, daemonId: D1, integrationId: 'iA' }
+      })
+    })
+
     it('REFUSES a follow-up once the default moves off it — never falling to the new default', () => {
       // A Linear AgentSession has one writer (§4.6): letting BOB answer inside a session ALICE's
       // runtime still holds would put two daemons on one feed.
