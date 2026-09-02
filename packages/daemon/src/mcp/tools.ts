@@ -4,8 +4,8 @@ import { SESSION_TITLE_TOOL_NAME } from './session-title-tool.js'
 import {
   allAttachmentReadTools,
   allPortPlatforms,
+  declaresPort,
   attachmentReadToolsFor,
-  platformsWithPort,
   type PlatformToolPort
 } from '../platforms/read-ports.js'
 import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
@@ -311,7 +311,9 @@ function buildSendMessageTool(platforms: string[]): ToolDescriptor {
  * The enum is narrowed at build time to the agent's own platforms. Sending is
  * handled separately by {@link buildSendMessageTool}; per-platform credentialed
  * file downloads by whichever platforms declare that read port
- * ({@link attachmentReadToolsFor}).
+ * ({@link attachmentReadToolsFor}). The port-gated tools (thread history, reactions,
+ * bookmarks, lists, canvases, …) are the opposite: platform-shaped, so they carry no
+ * `platform` selector and are injected only into a session ON a declaring platform.
  */
 /**
  * `shareFile` — post a workspace image into the CURRENT conversation
@@ -366,16 +368,17 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
     type: 'string',
     description: 'Optional. Pick a specific bot when the agent has multiple integrations on the target platform.'
   }
-  // Channel history has no target selector, so only the current session platform may enable it.
-  const historyPlatform = currentPlatform ?? (platforms.length === 1 ? platforms[0] : undefined)
-  const hasChannelHistory =
-    historyPlatform !== undefined && platformsWithPort('channelHistory', [historyPlatform]).length > 0
-  // Everything else routes by `platform`, so the gate is "any of this agent's platforms
-  // declares the port" and the enum narrows to exactly those. No declarer ⇒ no tool.
-  const portPlatform = (port: PlatformToolPort) => {
-    const declaring = platformsWithPort(port, platforms)
-    return declaring.length === 0 ? undefined : { ...platform, enum: declaring }
+  // The port-gated tools below act on THIS session's platform only, so their bot selector
+  // never crosses platforms: another bot of this agent on the same platform, nothing else.
+  const sameBotSelector = {
+    type: 'string',
+    description: 'Optional. Pick another of this agent’s bots on this platform when it has several.'
   }
+  // Port-gated tools have no platform selector: a session on a platform that declares the port
+  // gets the tool, any other session does not — cross-platform reach of a platform-shaped
+  // capability was never asked for, and it cost every other session the descriptors.
+  const sessionPlatform = currentPlatform ?? (platforms.length === 1 ? platforms[0] : undefined)
+  const offered = (port: PlatformToolPort) => sessionPlatform !== undefined && declaresPort(sessionPlatform, port)
   return [
     {
       name: 'getCurrentChannel',
@@ -394,7 +397,7 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
         'has multiple bots on the platform (history is not attributable to one bot).',
       inputSchema: obj({ platform, integrationId })
     },
-    ...(hasChannelHistory
+    ...(offered('channelHistory')
       ? [
           {
             name: 'getChannelHistory',
@@ -461,13 +464,13 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
         ['user']
       )
     },
-    ...buildThreadHistoryTool(portPlatform('threadHistory'), integrationId),
-    ...buildReactionTools(portPlatform('reactions'), integrationId),
-    ...buildConversationCreateTool(portPlatform('conversationCreate'), integrationId),
-    ...buildBookmarkTools(portPlatform('bookmarks'), integrationId),
-    ...buildListTools(portPlatform('lists'), integrationId),
-    ...buildScheduleMessageTool(portPlatform('scheduledMessages'), integrationId),
-    ...buildCanvasTools(portPlatform('canvas'), integrationId)
+    ...buildThreadHistoryTool(offered('threadHistory'), sameBotSelector),
+    ...buildReactionTools(offered('reactions'), sameBotSelector),
+    ...buildConversationCreateTool(offered('conversationCreate'), sameBotSelector),
+    ...buildBookmarkTools(offered('bookmarks'), sameBotSelector),
+    ...buildListTools(offered('lists'), sameBotSelector),
+    ...buildScheduleMessageTool(offered('scheduledMessages'), sameBotSelector),
+    ...buildCanvasTools(offered('canvas'), sameBotSelector)
   ]
 }
 
@@ -475,19 +478,19 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
  *  `integrationId` selectors are, and what a port gate hands the builders below. */
 type SchemaProp = Record<string, JsonValue>
 
-/** The channel selector shared by every platform-routed tool below: the current
- *  conversation's channel by default, and required once `platform` names another one. */
+/** The channel selector shared by the port-gated tools below: the current conversation's
+ *  channel by default, and required once `integrationId` names another bot. */
 const targetChannel = {
   type: 'string',
   description:
-    'Channel/chat id. Defaults to this conversation’s channel; required when `platform` names a different platform.'
+    'Channel/chat id. Defaults to this conversation’s channel; required when `integrationId` names another bot.'
 }
 
 /** `getThreadHistory` — the same provider thread read the daemon already uses to rebuild
  *  mid-thread context, handed to the agent. Reads a thread the agent is NOT answering,
  *  which is the one thing the ordinary turn context cannot show it. */
-function buildThreadHistoryTool(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
-  if (!platform) return []
+function buildThreadHistoryTool(offered: boolean, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!offered) return []
   return [
     {
       name: 'getThreadHistory',
@@ -498,7 +501,6 @@ function buildThreadHistoryTool(platform: SchemaProp | undefined, integrationId:
         'when the thread is longer than `limit`. Your own status chrome is filtered out.',
       inputSchema: obj(
         {
-          platform,
           integrationId,
           channel: targetChannel,
           thread: { type: 'string', description: 'Root message id of the thread (Slack thread_ts).' },
@@ -519,8 +521,8 @@ function buildThreadHistoryTool(platform: SchemaProp | undefined, integrationId:
 
 /** `addReaction` / `getReactions` — the emoji comes from the MODEL, which knows what platform
  *  it is on, unlike the turn-chrome `react` intent core names for it. */
-function buildReactionTools(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
-  if (!platform) return []
+function buildReactionTools(offered: boolean, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!offered) return []
   const messageTs = { type: 'string', description: 'Id of the message to act on (Slack ts).' }
   return [
     {
@@ -531,7 +533,6 @@ function buildReactionTools(platform: SchemaProp | undefined, integrationId: Sch
         'the same emoji is not an error. This reacts as the bot, not under your agent identity.',
       inputSchema: obj(
         {
-          platform,
           integrationId,
           channel: targetChannel,
           messageTs,
@@ -545,7 +546,7 @@ function buildReactionTools(platform: SchemaProp | undefined, integrationId: Sch
       description:
         'List the emoji reactions already on one message, each with its count and — where the platform reports them ' +
         '— the users who reacted. Use it to read a poll or a lightweight approval someone ran with emoji.',
-      inputSchema: obj({ platform, integrationId, channel: targetChannel, messageTs }, ['messageTs'])
+      inputSchema: obj({ integrationId, channel: targetChannel, messageTs }, ['messageTs'])
     }
   ]
 }
@@ -555,13 +556,13 @@ function buildReactionTools(platform: SchemaProp | undefined, integrationId: Sch
  * conversation. Small, durable, and visible to everyone in the channel, which is why the write
  * says so: a bookmark outlives the task the way a canvas does, not the way a reply does.
  */
-function buildBookmarkTools(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
-  if (!platform) return []
+function buildBookmarkTools(offered: boolean, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!offered) return []
   const channel = {
     type: 'string',
     description:
-      'Channel id. Defaults to the conversation you are in — but REQUIRED when `platform` or ' +
-      '`integrationId` names anything else, since this conversation’s id means nothing there.'
+      'Channel id. Defaults to the conversation you are in — but REQUIRED when `integrationId` names ' +
+      'another bot, since this conversation’s id means nothing there.'
   }
   return [
     {
@@ -570,7 +571,7 @@ function buildBookmarkTools(platform: SchemaProp | undefined, integrationId: Sch
         'List the links pinned at the top of a conversation, each with its id, title and URL. Read this before ' +
         'changing anything: `removeBookmark` needs an id, and it is also how you tell whether the link you were ' +
         'about to pin is already there.',
-      inputSchema: obj({ platform, integrationId, channel })
+      inputSchema: obj({ integrationId, channel })
     },
     {
       name: 'addBookmark',
@@ -581,7 +582,6 @@ function buildBookmarkTools(platform: SchemaProp | undefined, integrationId: Sch
         'Slack allows 100 per channel.',
       inputSchema: obj(
         {
-          platform,
           integrationId,
           channel,
           title: { type: 'string', minLength: 1, description: 'Short label shown on the bookmark.' },
@@ -598,7 +598,6 @@ function buildBookmarkTools(platform: SchemaProp | undefined, integrationId: Sch
         'a shared channel — do it when asked, not as tidying.',
       inputSchema: obj(
         {
-          platform,
           integrationId,
           channel,
           bookmarkId: { type: 'string', minLength: 1, description: 'Bookmark id from `listBookmarks`.' }
@@ -616,8 +615,8 @@ function buildBookmarkTools(platform: SchemaProp | undefined, integrationId: Sch
  * without them: a value is addressed by `columnId` and keyed by that column's type, and the
  * platform publishes no schema endpoint. Same shape as the canvas section ids.
  */
-function buildListTools(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
-  if (!platform) return []
+function buildListTools(offered: boolean, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!offered) return []
   const listId = { type: 'string', minLength: 1, description: 'List id (a Slack List `F…` id).' }
   const fields = {
     type: 'array',
@@ -650,7 +649,6 @@ function buildListTools(platform: SchemaProp | undefined, integrationId: SchemaP
         'computes as `readOnly`. Page with `cursor`.',
       inputSchema: obj(
         {
-          platform,
           integrationId,
           listId,
           cursor: { type: 'string', description: 'Cursor from a previous page.' },
@@ -664,7 +662,7 @@ function buildListTools(platform: SchemaProp | undefined, integrationId: SchemaP
       description:
         'Append a row to a list. Get `columns` from `readList` first; a column id this list does not have is ' +
         'refused rather than guessed at. The row is visible to everyone with access to the list.',
-      inputSchema: obj({ platform, integrationId, listId, fields }, ['listId', 'fields'])
+      inputSchema: obj({ integrationId, listId, fields }, ['listId', 'fields'])
     },
     {
       name: 'updateListItem',
@@ -673,7 +671,6 @@ function buildListTools(platform: SchemaProp | undefined, integrationId: SchemaP
         'columns you name are touched, the rest of the row is left alone.',
       inputSchema: obj(
         {
-          platform,
           integrationId,
           listId,
           itemId: { type: 'string', minLength: 1, description: 'Row id from `readList`.' },
@@ -686,8 +683,8 @@ function buildListTools(platform: SchemaProp | undefined, integrationId: SchemaP
 }
 
 /** `createConversation` — the one tool here that creates durable workspace state. */
-function buildConversationCreateTool(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
-  if (!platform) return []
+function buildConversationCreateTool(offered: boolean, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!offered) return []
   return [
     {
       name: 'createConversation',
@@ -698,7 +695,6 @@ function buildConversationCreateTool(platform: SchemaProp | undefined, integrati
         'workspace state that outlives the task and everyone can see, so only do it when someone asked for it — ' +
         'to reach people who already share a channel with you, post there instead.',
       inputSchema: obj({
-        platform,
         integrationId,
         name: {
           type: 'string',
@@ -718,8 +714,8 @@ function buildConversationCreateTool(platform: SchemaProp | undefined, integrati
 
 /** `scheduleMessage` — a channel-root post the PLATFORM delivers later. Deliberately has no
  *  thread form, for the same reason `sendMessage` has none (send-message-routing-rework.md §2.2). */
-function buildScheduleMessageTool(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
-  if (!platform) return []
+function buildScheduleMessageTool(offered: boolean, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!offered) return []
   return [
     {
       name: 'scheduleMessage',
@@ -732,7 +728,6 @@ function buildScheduleMessageTool(platform: SchemaProp | undefined, integrationI
         'can be replied into; a reply reaches you as an ordinary new message.',
       inputSchema: obj(
         {
-          platform,
           integrationId,
           channel: targetChannel,
           message: { type: 'string', minLength: 1, description: 'The message body, as CommonMark/GFM.' },
@@ -746,8 +741,8 @@ function buildScheduleMessageTool(platform: SchemaProp | undefined, integrationI
 
 /** `createCanvas` / `readCanvas` / `updateCanvas` — the platform's own rich-text page, which
  *  outlives a message and can be edited in place (Slack Canvas). */
-function buildCanvasTools(platform: SchemaProp | undefined, integrationId: SchemaProp): ToolDescriptor[] {
-  if (!platform) return []
+function buildCanvasTools(offered: boolean, integrationId: SchemaProp): ToolDescriptor[] {
+  if (!offered) return []
   const canvasId = { type: 'string', description: 'Id of the canvas (Slack F0123ABC).' }
   const markdownRules =
     'Markdown is the platform’s own dialect: headings `#`/`##`/`###` only, no headings or code blocks inside list ' +
@@ -762,7 +757,6 @@ function buildCanvasTools(platform: SchemaProp | undefined, integrationId: Schem
         markdownRules,
       inputSchema: obj(
         {
-          platform,
           integrationId,
           title: { type: 'string', minLength: 1, maxLength: 255, description: 'Canvas title.' },
           markdown: { type: 'string', minLength: 1, description: 'Canvas body.' },
@@ -779,7 +773,7 @@ function buildCanvasTools(platform: SchemaProp | undefined, integrationId: Schem
         'one from an earlier turn is stale and must never be reused. Two limits worth knowing: only HEADING ' +
         'sections get an id, so an anchored edit can address a heading but not an arbitrary paragraph, and the body ' +
         'is absent (rather than empty) when the platform would not serve it — the canvas still exists.',
-      inputSchema: obj({ platform, integrationId, canvasId }, ['canvasId'])
+      inputSchema: obj({ integrationId, canvasId }, ['canvasId'])
     },
     {
       name: 'updateCanvas',
@@ -791,7 +785,6 @@ function buildCanvasTools(platform: SchemaProp | undefined, integrationId: Schem
         markdownRules,
       inputSchema: obj(
         {
-          platform,
           integrationId,
           canvasId,
           edits: {
@@ -1255,10 +1248,10 @@ export const ALL_TOOL_NAMES = [
       // are stable and belong in the permission auto-allow set.
       buildSendMessageTool([]),
       buildShareFileTool(),
-      // Built against EVERY registered platform so every port gate opens: the auto-allow
-      // set is about names, and a name some platform can inject must be listed even for
-      // an agent that will never see it.
-      ...buildReadTools(allPortPlatforms(), platformsWithPort('channelHistory').at(0)),
+      // Built once per registered platform AS the session platform so every port gate opens:
+      // the auto-allow set is about names, and a name some platform can inject must be listed
+      // even for an agent that will never see it.
+      ...allPortPlatforms().flatMap((platform) => buildReadTools(allPortPlatforms(), platform)),
       // Every platform's credentialed attachment tool, whatever this agent has:
       // the auto-allow set is about NAMES, and a name a platform can inject must
       // be listed even for an agent that will never see it.

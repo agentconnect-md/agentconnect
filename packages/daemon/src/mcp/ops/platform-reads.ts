@@ -45,7 +45,6 @@ export const GET_CHANNEL_HISTORY_ARGS = z.object({
 
 /** `getThreadHistory` arguments; `channel` defaults to the current one on the same platform. */
 export const GET_THREAD_HISTORY_ARGS = z.object({
-  platform: optionalString('platform'),
   integrationId: optionalString('integrationId'),
   channel: optionalString('channel'),
   thread: requiredString('thread'),
@@ -229,11 +228,10 @@ export async function getThreadHistory(
   deps: PlatformReadDeps
 ): Promise<unknown> {
   const parsed = parseArgs(GET_THREAD_HISTORY_ARGS, args)
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   const channel = parsed.channel ?? (sameConvo ? ctx.channel : undefined)
-  if (!channel)
-    throw new Error(`channel is required to read a thread on ${platform} (a different platform than this session)`)
+  if (!channel) throw new Error(`channel is required to read a thread on ${platform} (another bot than this session's)`)
   if (!gw.getThreadReplies)
     throw new Error(`thread history is unavailable on this ${platformLabel(platform)} connection`)
   const readState = { truncated: false }
