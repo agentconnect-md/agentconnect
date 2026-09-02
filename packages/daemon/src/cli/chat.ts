@@ -141,6 +141,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     // Same sandbox write carve-back the daemon grants: without it a sandboxed chat run cannot write
     // its own session worktrees, nor read the secondary roots beside them.
     trustedWorkspaceWriteRoots: runInSandbox ? workspaces.trustedWorkspaceWriteRoots(agent) : undefined,
+    trustedPrimaryCheckout: runInSandbox ? workspaces.localPrimaryCheckoutFor(agent) : undefined,
     // No daemon here, so there is no MCP bridge socket, gh wrapper, or git-credential shim to carve
     // back: mcpSocketPath / allowModelToolUnixSockets / runtimeReadRoots stay genuinely unused.
     sandboxMechanism

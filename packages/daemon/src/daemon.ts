@@ -4005,6 +4005,7 @@ export class Daemon {
               this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials, gitlabCredentials)
           : undefined,
         trustedWorkspaceWriteRoots: runInSandbox ? this.workspaces.trustedWorkspaceWriteRoots(agent) : undefined,
+        trustedPrimaryCheckout: runInSandbox ? this.workspaces.localPrimaryCheckoutFor(agent) : undefined,
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
         // Inner tool sandboxes must CONNECT to the daemon socket for either

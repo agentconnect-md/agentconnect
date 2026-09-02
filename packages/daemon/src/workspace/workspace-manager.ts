@@ -1114,6 +1114,12 @@ export class WorkspaceManager {
     return join(this.agentRootFor(agent), 'worktrees')
   }
 
+  /** The same disk's primary checkout — the one whose `.git` owns every session worktree's index,
+   *  refs, and objects. A locally authored agent may keep a path that is not the default one. */
+  localPrimaryCheckoutFor(agent: Agent): string {
+    return this.primaryCheckoutAt(agent, undefined)
+  }
+
   /** The primary root's worktrees parent, under the name the daemon and CLI already address it by. */
   sessionWorktreeRoot(agent: Agent): string {
     return this.worktreesPathFor(agent)

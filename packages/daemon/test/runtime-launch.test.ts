@@ -386,6 +386,53 @@ describe('prepareRuntimeLaunch', () => {
     expect(writes.some((value) => value.includes(`"${realpathSync(primaryGit)}" = "write"`))).toBe(true)
   })
 
+  // A locally authored agent may keep a checkout path the default layout does not name, and its
+  // session worktrees still hang off THAT checkout — so the daemon names it rather than assuming.
+  it('follows the daemon-supplied primary checkout rather than the default layout path', () => {
+    const { scopeDir, hostHome } = fixture()
+    const primaryGit = join(scopeDir, 'legacy-checkout', '.git')
+    const worktrees = join(scopeDir, 'worktrees')
+    const cwd = join(worktrees, 'session-1')
+    mkdirSync(primaryGit, { recursive: true })
+    mkdirSync(cwd, { recursive: true })
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      trustedWorkspaceWriteRoots: [worktrees],
+      trustedPrimaryCheckout: join(scopeDir, 'legacy-checkout'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const policy = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
+    expect(coveredBy(policy.filesystem.allowWrite, realpathSync(primaryGit))).toBe(true)
+    expect(policy.filesystem.denyWrite).toContain(join(realpathSync(primaryGit), 'hooks'))
+  })
+
+  it('refuses a primary checkout outside the agent root instead of carving it back', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    expect(() =>
+      prepareRuntimeLaunch({
+        runtimeId: 'codex-acp',
+        runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+        scopeDir,
+        cwd,
+        runInSandbox: true,
+        daemonRoot: dirname(scopeDir),
+        sandboxMechanism: 'bwrap',
+        credentialPlatform: 'linux',
+        trustedPrimaryCheckout: dirname(scopeDir),
+        hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+      })
+    ).toThrow(/trusted primary checkout .* is outside the agent root/)
+  })
+
   it('rejects root-level protected paths instead of generating an ineffective policy', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     expect(() =>
