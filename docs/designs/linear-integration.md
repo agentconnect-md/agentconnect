@@ -1251,12 +1251,22 @@ tile.
     default, which is why a miss must not fall through to ordinary
     arbitration. On a miss (the relay pod holds no affinity for the key —
     a restart, or the session's first event landed on another pod) the
-    plugin **fans the stop out to every member daemon of the bot**
-    (`host.forwardToMembers(botId, action)`, over the assignment's
-    `members`): a stop can only end work, the daemon's stop decoder is a
-    no-op for a session it does not hold, and only the holder acts — so the
-    fan-out is safe where re-arbitration is not, and it survives affinity
-    loss where "drop" would leave the runtime running.
+    directory asks the CP for the **durable binding**: a `cr/session-lookup`
+    request over the relay's existing CP request/reply channel, carrying
+    `(botId, platform, channel, thread)`, answered from `session_meta` —
+    which records every session's `platform`/`tenantScope`/`channel`/`thread`
+    and `agentId` at `session/new`, under the
+    `session_meta_conversation_key_idx` index this lookup rides — with the
+    holding agent's `integrationId` on that bot and its routable daemon
+    (placement), or nothing. A hit is validated like a memory hit
+    (membership, placement) and cached back into the affinity map; nothing
+    means **nobody**, and the stop is dropped with a warning. A fan-out to
+    every member daemon was considered and rejected: `platform_action` is
+    pre-addressed to one agent and integration, and the daemon's stop
+    handler deliberately settles the Linear session with a `response` even
+    when it holds no local session for the thread, so every non-holder
+    reached would post its own "Stopped" — a duplicate-settlement bug, not
+    a no-op.
   - `conversationDefaults` rides the **routes hot-update too**: an owner
     edit persists through `HttpBot.updateConversation` and converges through
     `syncRoutes` → `rc/routes` → `BotArbitrationRouter.updateRoutes`, which
@@ -1931,11 +1941,13 @@ threads.
    refusal on `ownerAsDefault` assignments;
    `directory.resolveBoundTarget(botId, sessionKey)` (Stop-only, bot-scoped,
    membership- and placement-validated, grant-blind, no arbitration
-   fallback) and `host.forwardToMembers(botId, action)` (the stop fan-out on
-   a miss) on the `RelayIngressHost` contract, used by `forwardLinearStop`;
-   the Linear plugin keys `channel` on the team and drops a refused delivery.
-   `packages/control-plane` (same PR, the emitting side of the frame change)
-   — `syncRoutes` emits `conversationDefaults`.
+   fallback) on the `RelayIngressHost` contract, used by
+   `forwardLinearStop`, backed on a memory miss by the new
+   `cr/session-lookup` request/reply frame; the Linear plugin keys `channel`
+   on the team and drops a refused delivery. `packages/control-plane` (same
+   PR, the other side of both frame changes) — `syncRoutes` emits
+   `conversationDefaults`, and the session-lookup handler answers from
+   `session_meta` plus placement.
 2. `packages/control-plane` — team rows from the provider create tail and
    the member-add path (Linear API `teams`), plus the team upsert on the
    `LinearCredentialReconciler` tick; `soleConversation.ts`,
