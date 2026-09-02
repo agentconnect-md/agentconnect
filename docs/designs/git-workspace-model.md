@@ -244,3 +244,96 @@ Each step ships independently; nothing observable changes before step 3.
   operator's boundary and the only place the host list lives).
 - Skill sources, which stay deliberately GitHub-only
   ([shared-skills.md](shared-skills.md)).
+
+## 11. Session isolation under an OS boundary (decided 2026-09-02)
+
+`isolation: 'session'` promises each logical session its own directory. How that
+directory is made depends on whether an OS boundary encloses the runtime — the
+promise is one, the implementation is not:
+
+| Condition                                     | Per-session directory                     | ACP host                      | Console label       |
+| --------------------------------------------- | ----------------------------------------- | ----------------------------- | ------------------- |
+| no boundary (self-hosted daemon, sandbox off) | `git worktree` of the primary (unchanged) | one per agent                 | "worktree"          |
+| self-hosted daemon, sandbox effective         | **per-session clone**                     | **one per session**           | "session isolation" |
+| managed pool                                  | **per-session clone**                     | **one per session (its pod)** | "session isolation" |
+
+"Boundary present" is `effectiveRunInSandbox(...)` on a self-hosted daemon and
+always true on a pool member: a pool runtime is isolated by its own pod, the
+daemon keeps the in-process sandbox off there and advertises no `sandbox`
+capability, so `runInSandbox` is not a pool-side knob at all. The console label
+derives from that effective value, never from the stored flag.
+
+### Why the worktree cannot serve the confined case
+
+A linked worktree keeps its index under the owner checkout's
+`.git/worktrees/<sid>/` and writes every commit's objects and refs into the
+owner's `.git`. A confined session can therefore commit only if that shared
+`.git` is writable — and once it is, every session of the agent can rewrite every
+other session's refs, index and objects, including the branch another session is
+about to push. Unconfined, the runtime already owns the machine and the shared
+`.git` adds nothing; confined, it defeats the boundary the agent asked for.
+
+Nor can the confined case be rescued with a smarter grant. The Codex runtime's
+inner sandbox pins the cwd's _resolved_ git directory read-only and resolves
+conflicts by most-specific path; a subtree grant on the sessions parent never
+reaches a clone's own `.git` (its `index.lock` stays on a read-only mount), a
+glob grant is refused outright, and only an exact per-session path opens it.
+An exact path exists only for a host that knows which session it serves — hence
+one host per session, which is also what a private per-session `HOME` and a
+per-session sandbox policy need.
+
+### The clone
+
+`git clone --filter=blob:none` — a blobless partial clone from the remote,
+through the daemon's own credential path, exactly like the first clone of a
+primary today. It checks out the tip and carries the **whole** commit history
+(messages, authors, trees); old file contents are fetched lazily on `blame`,
+`show` or `diff` of a past revision, which needs the session's read-tier fetch
+credential. Measured on a ~1,500-commit repository: ~4 s and 17 MB against 12 MB
+for a depth-1 clone and 30 MB for a full one; `--filter=tree:0` is rejected
+(a path-scoped `git log` fetches trees one round trip at a time). A hardlink
+clone from a primary checkout on the same disk is an optional acceleration when
+one exists, never a dependency; alternates (`--shared`) are never used, because
+a prune in the source breaks every clone that borrows from it.
+
+Layout, one directory per session, removed whole at retirement:
+
+```
+<agentDir>/sessions/<sid>/
+├── workspace/            # primary clone — the session cwd
+├── repos/<owner>/<repo>/ # one clone per secondary root (multi-repository-workspaces.md decision 4)
+└── home/                 # private HOME, TMPDIR, XDG_RUNTIME_DIR, runtime state
+```
+
+The primary checkout keeps its roles for `shared` isolation, the console's
+workspace views and `pullOnNewSession`; for confined sessions it is no longer
+the parent of anything.
+
+### What changes for a confined session
+
+- **Refs are a snapshot.** The clone's `refs/remotes/origin/*` are the remote's
+  at clone time; what the daemon later fetches into the primary is not visible,
+  and the session fetches for itself when it wants newer state. Session branches
+  exist only in the clone.
+- **Review sessions** fetch `refs/pull/<n>/merge` into the clone and verify the
+  checked-out HEAD exactly as today.
+- **Retirement** applies the same dirty and unique-commit rules in the clone and
+  then removes the directory; there is no worktree registry to prune and no
+  branch to delete in the primary.
+- **Console push and Git reads** resolve the session root as today.
+- **Sandbox grants** are per session and exact: the clone's `.git` writable,
+  its `hooks` and `config` read-only, for both the outer sandbox and a runtime's
+  inner one.
+
+The unconfined tier is untouched, and so is everything that made the worktree
+tier commit under a boundary in the interim (#1695, #1698, #1703, #1715); those
+grants stay for it and simply do not apply to a clone.
+
+### Non-goals here
+
+- Narrowing the model-side push credential, or a daemon-owned publish tool.
+  Separate work; a clone changes who can write a `.git`, not who can push.
+- Per-agent writable package caches. A shared cache feeds execution, so a
+  session could poison what the next one runs; the per-session `home/` above is
+  what makes a writable cache safe, and provisioning package managers into it is
+  its own design.
