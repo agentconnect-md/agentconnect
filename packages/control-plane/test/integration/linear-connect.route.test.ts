@@ -16,7 +16,7 @@ import { prisma } from '../setup.db.js'
 import { seedAgent, seedDaemon } from '../fixtures/seed.js'
 import { buildHttpApp, type HttpApp } from '../fakes/build-http.js'
 import { trackedTestClock } from '../fakes/tracked-clock.js'
-import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
+import { DEFAULT_ORG_ID, DEFAULT_OWNER_ID } from '../../prisma/seed.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
 import { BotId, OrgId } from '../../src/domain/ids.js'
 import { createLinearCpProvider } from '../../src/platforms/linear/provider.js'
@@ -27,6 +27,28 @@ import type { RelayChannel } from '../../src/ws/relay-registry.js'
 import type { ControlSender } from '../../src/orchestrator/outbound.js'
 import type { IntegrationRemove, IntegrationUpsert } from '@agentconnect.md/protocol'
 import type { LinearTokenStore } from '../../src/persistence/ports.js'
+import { findTool, type McpToolCtx } from '../../src/http/mcp/tools.js'
+
+/** The routing slice both `rc/bot-assign` and its `rc/routes` hot update carry, which is what the
+ *  team-row assertions read — an owner or trigger edit converges through the hot update alone. */
+interface RoutingPayload {
+  routes: { agentId: string; match: { kind: string; value?: string }; scope?: { channel?: string } }[]
+  conversationDefaults: { channel: string; agentId: string }[]
+  ownerAsDefault?: boolean
+  mutedChannels: string[]
+  gatedAgentIds: string[]
+}
+
+/** Record every routing frame a connected relay would see, newest last. */
+function routingFrames(): { frames: RoutingPayload[]; onFrame: (type: string, payload: unknown) => void } {
+  const frames: RoutingPayload[] = []
+  return {
+    frames,
+    onFrame: (type, payload) => {
+      if (type === 'rc/bot-assign' || type === 'rc/routes') frames.push(payload as RoutingPayload)
+    }
+  }
+}
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 const APP = { clientId: 'lin_client_id', clientSecret: 'lin_client_secret', signingSecret: 'lin_signing_secret' }
@@ -56,14 +78,27 @@ class FakeLinear {
     }
   })
   revoke: () => { status: number; body: unknown } = () => ({ status: 200, body: {} })
+  /** The workspace's teams (§4.5) — mutable so a suite can add or rename one between ticks. */
+  teamNodes: { id: string; key: string; name: string }[] = [
+    { id: 'team_eng', key: 'ENG', name: 'Engineering' },
+    { id: 'team_design', key: 'DES', name: 'Design' }
+  ]
+  teams: () => { status: number; body: unknown } = () => ({
+    status: 200,
+    body: { data: { teams: { nodes: this.teamNodes } } }
+  })
 
   readonly fetchImpl = (url: string, init?: RequestInit): Promise<Response> => {
-    this.calls.push({ url, body: String(init?.body ?? '') })
+    const body = String(init?.body ?? '')
+    this.calls.push({ url, body })
+    // Both GraphQL queries hit one endpoint, so the query text is the demux.
     const answer = url.endsWith('/oauth/token')
       ? this.token()
       : url.endsWith('/oauth/revoke')
         ? this.revoke()
-        : this.viewer()
+        : body.includes('teams(')
+          ? this.teams()
+          : this.viewer()
     return Promise.resolve(
       new Response(JSON.stringify(answer.body), {
         status: answer.status,
@@ -105,7 +140,11 @@ class SpyControl {
 /** The deployment app configured, a relay connected, and one placed Linear-capable agent —
  *  everything the funnel start gates on. */
 async function harness(
-  overrides: { relay?: boolean; onAssign?: (payload: { credentialRevision?: number }) => void } = {}
+  overrides: {
+    relay?: boolean
+    onAssign?: (payload: unknown) => void
+    onFrame?: (type: string, payload: unknown) => void
+  } = {}
 ): Promise<Harness> {
   const linear = new FakeLinear()
   const control = new SpyControl()
@@ -126,7 +165,8 @@ async function harness(
     app.relayReg.add({
       relayId: 'r1',
       send(type: string, payload: unknown) {
-        if (type === 'rc/bot-assign') overrides.onAssign?.(payload as { credentialRevision?: number })
+        overrides.onFrame?.(type, payload)
+        if (type === 'rc/bot-assign') overrides.onAssign?.(payload)
       },
       close() {}
     } as unknown as RelayChannel)
@@ -418,7 +458,7 @@ describe('reconnect — a dead grant is replaced in place (§7.4)', () => {
     // `credentialRevision` where the dead grant left it, so a delayed revoke report for that grant
     // would still pass the fence and kill the credential that just replaced it.
     const assigns: { credentialRevision?: number }[] = []
-    const h = await harness({ onAssign: (payload) => assigns.push(payload) })
+    const h = await harness({ onAssign: (payload) => assigns.push(payload as { credentialRevision?: number }) })
     const { id } = (await startConnect(h)).json() as { id: string }
     await callback(h, { code: 'the-code', state: id })
     const bot = await prisma.bot.findFirstOrThrow({ where: { platform: 'linear' } })
@@ -1246,5 +1286,266 @@ describe('workspace disconnect — the whole organization, not the caller’s vi
     // Nothing moved on any refusal.
     expect(await prisma.integration.count({ where: { botId } })).toBe(2)
     expect(h.linear.count('/oauth/revoke')).toBe(0)
+  })
+})
+
+/**
+ * The team rows a connected workspace is born with (§4.3, §7.1, §15 "the team is the channel").
+ *
+ * A team IS a channel here: the granularity at which a dispatch default and a trigger are stored,
+ * edited and read. The rows are written by the install paths themselves, synchronously and with no
+ * daemon involved, so every team's default is durable before the first delegation can arrive.
+ */
+describe('the team conversation rows (§4.3, §7.1)', () => {
+  /** Connect a workspace through the real funnel and answer with what it left behind. */
+  async function connect(h: Harness, agentId = h.agentId): Promise<{ botId: string; integrationId: string }> {
+    const { id } = (await startConnect(h, agentId)).json() as { id: string }
+    const res = await callback(h, { code: 'the-code', state: id })
+    expect(res.statusCode).toBe(200)
+    const bot = await prisma.bot.findFirstOrThrow({ where: { orgId: DEFAULT_ORG_ID, platform: 'linear' } })
+    const integration = await prisma.integration.findFirstOrThrow({ where: { botId: bot.id, agentId } })
+    return { botId: bot.id, integrationId: integration.id }
+  }
+
+  const rowsFor = (botId: string) =>
+    prisma.integrationChannel.findMany({
+      where: { integration: { botId } },
+      orderBy: [{ channelId: 'asc' }, { integrationId: 'asc' }]
+    })
+
+  /** Add a second member through the generic existing-bot arm — the add-member path of §7.1. */
+  async function addMember(h: Harness, botId: string, opts: { restricted?: boolean } = {}): Promise<string> {
+    const agentId = randomUUID()
+    await seedAgent(prisma, agentId, { daemonId: DAEMON, name: `member-${agentId.slice(0, 8)}` })
+    if (opts.restricted) {
+      await prisma.agent.update({
+        where: { id: agentId },
+        data: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+      })
+    }
+    const added = await h.app.app.inject({
+      method: 'POST',
+      url: `${ORG}/integrations`,
+      payload: { platform: 'linear', agentId, botId }
+    })
+    expect(added.statusCode).toBe(201)
+    return agentId
+  }
+
+  const ownerInstall = (botId: string, agentId: string) =>
+    prisma.integration.findFirstOrThrow({ where: { botId, agentId } })
+
+  it('writes one row per team at connect — named, owned by the linking agent, born on mention', async () => {
+    const h = await harness()
+    const { botId, integrationId } = await connect(h)
+
+    const rows = await rowsFor(botId)
+    expect(rows).toHaveLength(2)
+    expect(rows.map((r) => [r.channelId, r.name, r.kind, r.trigger, r.agentId])).toEqual([
+      ['team_design', 'DES · Design', 'channel', 'mention', h.agentId],
+      ['team_eng', 'ENG · Engineering', 'channel', 'mention', h.agentId]
+    ])
+    expect(rows.every((r) => r.integrationId === integrationId)).toBe(true)
+    // ONE `teams` query for the whole connect — the call count is bounded by workspaces, not teams.
+    expect(h.linear.calls.filter((c) => c.body.includes('teams(')).length).toBe(1)
+  })
+
+  it('seeds every row Off when the linking agent is gated, through the ordinary §14 arm', async () => {
+    const h = await harness()
+    const gated = randomUUID()
+    await seedAgent(prisma, gated, { daemonId: DAEMON, name: 'private-agent' })
+    await prisma.agent.update({
+      where: { id: gated },
+      data: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+    })
+    const { botId } = await connect(h, gated)
+
+    const rows = await rowsFor(botId)
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.trigger === 'off' && r.agentId === gated)).toBe(true)
+  })
+
+  it('gives a later member ownerless sibling rows carrying each team’s own trigger', async () => {
+    const h = await harness()
+    const { botId, integrationId } = await connect(h)
+    // One team muted before the member joins, so the sibling proves it copies PER TEAM.
+    const patched = await h.app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${integrationId}/channels/team_design`,
+      payload: { trigger: 'off' }
+    })
+    expect(patched.statusCode).toBe(200)
+
+    const second = await addMember(h, botId)
+    const secondInstall = await ownerInstall(botId, second)
+    const siblings = (await rowsFor(botId)).filter((r) => r.integrationId === secondInstall.id)
+    expect(siblings.map((r) => [r.channelId, r.trigger, r.agentId])).toEqual([
+      ['team_design', 'off', null],
+      ['team_eng', 'mention', null]
+    ])
+  })
+
+  it('projects each row’s owner as a per-conversation DEFAULT and emits no channel-scoped route', async () => {
+    const { frames, onFrame } = routingFrames()
+    const h = await harness({ onFrame })
+    const { botId, integrationId } = await connect(h)
+    const second = await addMember(h, botId)
+    // Move one team's default; the other must not follow.
+    const moved = await h.app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${integrationId}/channels/team_eng`,
+      payload: { agentId: second }
+    })
+    expect(moved.statusCode).toBe(200)
+
+    // The axis rides the full assignment; an owner edit converges on the hot update alone.
+    expect(frames.filter((f) => f.ownerAsDefault !== undefined).every((f) => f.ownerAsDefault)).toBe(true)
+    const last = frames.at(-1)!
+    expect(last.routes.filter((r) => r.scope?.channel)).toEqual([])
+    expect(
+      [...last.conversationDefaults]
+        .sort((a, b) => a.channel.localeCompare(b.channel))
+        .map((d) => [d.channel, d.agentId])
+    ).toEqual([
+      ['team_design', h.agentId],
+      ['team_eng', second]
+    ])
+    // A named mention still reaches the named member — the keyword rung is untouched.
+    expect(last.routes.some((r) => r.match.kind === 'keyword' && r.agentId === second)).toBe(true)
+  })
+
+  it('re-homes a team row when its owning member is removed', async () => {
+    const { frames, onFrame } = routingFrames()
+    const h = await harness({ onFrame })
+    const { botId, integrationId } = await connect(h)
+    const second = await addMember(h, botId)
+
+    const removed = await h.app.app.inject({ method: 'DELETE', url: `${ORG}/integrations/${integrationId}` })
+    expect(removed.statusCode).toBe(204)
+
+    const rows = await rowsFor(botId)
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.agentId === second && r.trigger === 'mention')).toBe(true)
+    expect(frames.at(-1)!.conversationDefaults.every((d) => d.agentId === second)).toBe(true)
+  })
+
+  it('takes a trigger write on a team row from both generic surfaces, and mutes only that team', async () => {
+    const { frames, onFrame } = routingFrames()
+    const h = await harness({ onFrame })
+    const { botId, integrationId } = await connect(h)
+
+    // Surface 1 — the per-conversation PATCH.
+    const patched = await h.app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${integrationId}/channels/team_eng`,
+      payload: { trigger: 'off' }
+    })
+    expect(patched.statusCode).toBe(200)
+    expect(frames.at(-1)!.mutedChannels).toEqual(['team_eng'])
+    expect(frames.at(-1)!.conversationDefaults.map((d) => d.channel)).toEqual(['team_design'])
+
+    // Surface 2 — the `setChannelTrigger` tool, over the same route it composes.
+    const result = await findTool('setChannelTrigger')!.call(
+      {
+        orgId: DEFAULT_ORG_ID,
+        get: () => Promise.reject(new Error('unused')),
+        send: async (method: 'PATCH', path: string, body?: Record<string, unknown>) => {
+          const res = await h.app.app.inject({ method, url: `/api/v1${path}`, payload: body })
+          return { statusCode: res.statusCode, body: res.body }
+        }
+      } as unknown as McpToolCtx,
+      { integrationId, channelId: 'team_eng', trigger: 'mention' }
+    )
+    expect(result.statusCode).toBe(200)
+    const restored = await rowsFor(botId)
+    expect(restored.find((r) => r.channelId === 'team_eng')!.trigger).toBe('mention')
+  })
+
+  it('keeps a gated member’s default seat in conversationDefaults, and an Off row out of it', async () => {
+    const { frames, onFrame } = routingFrames()
+    const h = await harness({ onFrame })
+    const { botId, integrationId } = await connect(h)
+    const gated = await addMember(h, botId, { restricted: true })
+
+    // A gated member set as a team's default: that seat IS its grant (§6.2).
+    const moved = await h.app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${integrationId}/channels/team_eng`,
+      payload: { agentId: gated }
+    })
+    expect(moved.statusCode).toBe(200)
+    let last = frames.at(-1)!
+    expect(last.gatedAgentIds).toEqual([gated])
+    expect(last.conversationDefaults.find((d) => d.channel === 'team_eng')?.agentId).toBe(gated)
+    // No unscoped keyword rung for a gated member, and still no channel-scoped route for anyone.
+    expect(last.routes.some((r) => r.agentId === gated)).toBe(false)
+    expect(last.routes.filter((r) => r.scope?.channel)).toEqual([])
+
+    // Off withdraws the seat: a muted channel resolves to nothing at every rung.
+    const muted = await h.app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${integrationId}/channels/team_eng`,
+      payload: { trigger: 'off' }
+    })
+    expect(muted.statusCode).toBe(200)
+    last = frames.at(-1)!
+    expect(last.conversationDefaults.some((d) => d.channel === 'team_eng')).toBe(false)
+    expect(last.mutedChannels).toContain('team_eng')
+  })
+
+  it('the reconciler tick seeds a team reported later and refreshes a renamed one', async () => {
+    const h = await harness()
+    const { botId } = await connect(h)
+
+    h.linear.teamNodes = [
+      { id: 'team_eng', key: 'ENG', name: 'Platform Engineering' },
+      { id: 'team_design', key: 'DES', name: 'Design' },
+      { id: 'team_docs', key: 'DOC', name: 'Docs' }
+    ]
+    await h.app.linearCredentialReconciler.tick()
+
+    const rows = await rowsFor(botId)
+    expect(rows.map((r) => [r.channelId, r.name, r.trigger, r.agentId])).toEqual([
+      ['team_design', 'DES · Design', 'mention', h.agentId],
+      ['team_docs', 'DOC · Docs', 'mention', h.agentId],
+      ['team_eng', 'ENG · Platform Engineering', 'mention', h.agentId]
+    ])
+  })
+
+  it('the tick never overwrites an operator’s trigger or owner on a row that exists', async () => {
+    const h = await harness()
+    const { botId, integrationId } = await connect(h)
+    const second = await addMember(h, botId)
+    await h.app.app.inject({
+      method: 'PATCH',
+      url: `${ORG}/integrations/${integrationId}/channels/team_eng`,
+      payload: { trigger: 'off', agentId: second }
+    })
+
+    await h.app.linearCredentialReconciler.tick()
+
+    const eng = (await rowsFor(botId)).filter((r) => r.channelId === 'team_eng')
+    expect(eng.every((r) => r.trigger === 'off')).toBe(true)
+    expect(eng.find((r) => r.agentId !== null)?.agentId).toBe(second)
+  })
+
+  it('still seeds a row for a bot whose members are ALL gated — the pass that has no other route', async () => {
+    // No `defaultAgentId`, so the relay drops the new team's first event and no daemon ever
+    // observes it. The row is born Off for an operator to enable (§15).
+    const h = await harness()
+    const gated = randomUUID()
+    await seedAgent(prisma, gated, { daemonId: DAEMON, name: 'only-private' })
+    await prisma.agent.update({
+      where: { id: gated },
+      data: { visibility: 'restricted', sharedWith: [DEFAULT_OWNER_ID] }
+    })
+    const { botId } = await connect(h, gated)
+
+    h.linear.teamNodes = [...h.linear.teamNodes, { id: 'team_ops', key: 'OPS', name: 'Operations' }]
+    await h.app.linearCredentialReconciler.tick()
+
+    const ops = (await rowsFor(botId)).filter((r) => r.channelId === 'team_ops')
+    expect(ops).toHaveLength(1)
+    expect(ops[0]).toMatchObject({ trigger: 'off', agentId: gated, name: 'OPS · Operations' })
   })
 })

@@ -1700,20 +1700,6 @@ export function buildContainer(
     http.log
   )
 
-  // Rotating the deployment Linear app leaves every workspace bot holding the stamped copy the
-  // relay verifies with, so a provider-owned pass re-stamps them (linear-integration.md §10.6).
-  // The app is read per tick, so the disabled deployment simply finds nothing to do.
-  const linearCredentialReconciler = new LinearCredentialReconciler({
-    bots: repos.bot,
-    secrets: repos.botSecret,
-    credentials: repos.botCredential,
-    resync: (botId) => httpBot.syncBot(botId),
-    ...(linearPlatformApp ? { app: linearPlatformApp } : {}),
-    clock,
-    intervalMs: 15 * 60 * 1000,
-    log: http.log
-  })
-
   // The per-platform INJECTION seams the provider-contributed route plugins take
   // as their second argument (`http/platform-route-seams.ts`) — what used to be
   // twelve platform-named fields on `httpDeps`. Built here, once, and shared with
@@ -1760,6 +1746,27 @@ export function buildContainer(
     api: linearApi,
     tokens: linearTokenService
   }
+
+  // Rotating the deployment Linear app leaves every workspace bot holding the stamped copy the
+  // relay verifies with, so a provider-owned pass re-stamps them (linear-integration.md §10.6).
+  // The same tick carries the §15 team pass. The app is read per tick, so a disabled deployment
+  // simply finds nothing to do. Built after the token service, which the team pass reads.
+  const linearCredentialReconciler = new LinearCredentialReconciler({
+    bots: repos.bot,
+    secrets: repos.botSecret,
+    credentials: repos.botCredential,
+    resync: (botId) => httpBot.syncBot(botId),
+    ...(linearPlatformApp ? { app: linearPlatformApp } : {}),
+    teams: {
+      integrations: repos.integration,
+      agents: repos.agent,
+      channels: repos.integrationChannel,
+      tokens: linearTokenService
+    },
+    clock,
+    intervalMs: 15 * 60 * 1000,
+    log: http.log
+  })
   const linearOrphanTokenSweeper = new LinearOrphanTokenSweeper({
     get app() {
       return linearPlatformApp

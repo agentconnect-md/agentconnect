@@ -37,6 +37,7 @@ import { BotExternalIdentityTaken, BotWorkspaceClaimed } from '../../persistence
 import { ErrorDto, IdParam } from '../../http/dto/index.js'
 import type { LinearRouteSeams } from '../../http/platform-route-seams.js'
 import { buildLinearWorkspaceInstall } from './provider.js'
+import { seedLinearTeamRows } from './teams.js'
 
 /** The callback's public path — the value baked into the deployment app's redirect URL (§7.1). */
 export const LINEAR_OAUTH_CALLBACK_PATH = '/integrations/linear/oauth/callback'
@@ -452,9 +453,16 @@ export function linearOauthCallbackRoutes(deps: HttpDeps, linear: LinearRouteSea
         const agent = await deps.repos.agent.get(row.orgId, row.defaultAgentId)
         if (!agent) return fail('agent_missing')
 
+        // The workspace's teams ARE its conversations (§4.5), so the tail seeds one row per team
+        // before its `syncBot` publishes routes. Asked with the grant just exchanged; an
+        // unreachable Linear leaves the rows to the reconciler tick rather than failing a connect
+        // that already spent its authorization code.
+        const teams = await linear.tokens.teams(exchanged.result.accessToken)
+        if (!teams.ok) req.log.warn({ connectId: row.id, error: teams.error }, 'linear connect: team list unavailable')
+
         // §7.1 STEP 2 — the shared create tail, unchanged: bot row (D6 identity + `shareable: true`
         // structurally), the deployment credentials in its secret row, the default agent's
-        // Integration active from birth, and the tail's own `syncBot` broadcast.
+        // Integration active from birth, the team rows, and the tail's own `syncBot` broadcast.
         try {
           const install = buildLinearWorkspaceInstall(platform, {
             workspaceId: organizationId,
@@ -468,7 +476,9 @@ export function linearOauthCallbackRoutes(deps: HttpDeps, linear: LinearRouteSea
             platform: 'linear',
             name: viewer.result.organizationName ?? 'Linear workspace',
             transport: 'http',
-            ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {})
+            ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {}),
+            seedConversations: (integration) =>
+              seedLinearTeamRows(deps.repos.integrationChannel, integration.id, agent, teams.ok ? teams.result : [])
           })
           await deps.repos.linearInstallState.settle(row.id, { status: 'completed', botId: bot.id })
           return back('connected')

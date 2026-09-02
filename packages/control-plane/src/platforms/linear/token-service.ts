@@ -37,7 +37,7 @@ import type {
 } from '../../persistence/ports.js'
 import type { LinearPlatformAppConfig } from '../../config/linear-platform.js'
 import { systemClock, type Clock } from '../../domain/clock.js'
-import type { LinearApiClient, LinearGrant, LinearViewer } from './api.js'
+import type { LinearApiClient, LinearGrant, LinearTeam, LinearViewer } from './api.js'
 
 /** Refresh when under 2 h of access-token life remains — the daemon's own re-request margin (§4.4),
  *  so the CP has already renewed by the time a daemon asks. */
@@ -99,6 +99,11 @@ export class LinearTokenService {
   /** `viewer { id organization { id name } }` against a freshly exchanged grant. */
   viewer(accessToken: string): Promise<{ ok: true; result: LinearViewer } | { ok: false; error: string }> {
     return this.deps.api.viewer(accessToken).then((r) => (r.ok ? r : { ok: false as const, error: r.error }))
+  }
+
+  /** The workspace's teams — its conversations (§4.5) — against a token the caller already holds. */
+  teams(accessToken: string): Promise<{ ok: true; result: LinearTeam[] } | { ok: false; error: string }> {
+    return this.deps.api.teams(accessToken).then((r) => (r.ok ? r : { ok: false as const, error: r.error }))
   }
 
   /** Persist a grant under its connection identity — §7.1's step 1 and the §7.4 reconnect arm are

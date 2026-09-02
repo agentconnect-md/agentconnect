@@ -40,6 +40,13 @@ export interface LinearGrant {
   expiresAt: Date
 }
 
+/** One team of a connected workspace — the conversation a Linear bot routes on (§4.5). */
+export interface LinearTeam {
+  id: string
+  key: string
+  name: string
+}
+
 /** The app's own identity inside the workspace that just authorized it. */
 export interface LinearViewer {
   /** The app user id — the self-echo guard and the shared-bot addressing input. */
@@ -166,6 +173,42 @@ export class LinearApiClient {
         organizationName: typeof viewer?.organization?.name === 'string' ? viewer.organization.name : null
       }
     }
+  }
+
+  /**
+   * `teams(first: 100) { nodes { id key name } }` — the workspace's teams, which ARE its
+   * conversations (§4.5). One page: a workspace past 100 teams keeps the rows it has and the
+   * reconciler tick re-asks each pass, so the cap degrades to "the first hundred", never to a
+   * failure. Called once per workspace per connect and per tick, never on the message path.
+   */
+  async teams(accessToken: string): Promise<LinearApiResult<LinearTeam[]>> {
+    let res: Response
+    try {
+      res = await this.fetchImpl(
+        this.endpoints.graphqlUrl,
+        withTimeout({
+          method: 'POST',
+          headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'query { teams(first: 100) { nodes { id key name } } }' })
+        })
+      )
+    } catch (err) {
+      return { ok: false, error: 'unreachable', detail: String(err) }
+    }
+    if (!res.ok)
+      return { ok: false, error: res.status >= 500 ? 'unreachable' : 'rejected', detail: `http ${res.status}` }
+    const body = (await res.json().catch(() => undefined)) as { data?: { teams?: { nodes?: unknown } } } | undefined
+    const nodes = body?.data?.teams?.nodes
+    if (!Array.isArray(nodes)) return { ok: false, error: 'rejected', detail: 'teams query returned no nodes' }
+    // A node missing any of the three cannot be keyed or named, so it is dropped rather than
+    // written as a row the console shows blank.
+    const teams = nodes.flatMap((node) => {
+      const n = node as { id?: unknown; key?: unknown; name?: unknown }
+      return typeof n?.id === 'string' && typeof n?.key === 'string' && typeof n?.name === 'string'
+        ? [{ id: n.id, key: n.key, name: n.name }]
+        : []
+    })
+    return { ok: true, result: teams }
   }
 
   /** Best-effort upstream teardown of one grant (§7.4). `rejected` includes "already revoked". */

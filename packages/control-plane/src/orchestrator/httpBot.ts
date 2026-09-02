@@ -46,7 +46,7 @@ import type {
 } from '../persistence/ports.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
-import { gatesNewConversations, isGatedAgent, httpIntegrationToSpec } from './placement.js'
+import { isGatedAgent, httpIntegrationToSpec } from './placement.js'
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
@@ -605,7 +605,7 @@ export class HttpBotOrchestrator {
       // Conversation gating (§14): a gated install's fresh channels start Off — an
       // editor must enable them in the console before the compiler emits a route.
       const owner = await this.agents.getUnscoped(integration.agentId)
-      const defaultTrigger = owner && gatesNewConversations(bot.platform, owner) ? ('off' as const) : undefined
+      const defaultTrigger = owner && isGatedAgent(owner) ? ('off' as const) : undefined
       await this.channels.replaceSnapshot(integration.id, channels, defaultTrigger ? { defaultTrigger } : undefined)
     }
     await this.syncRoutes(botId)
@@ -689,7 +689,7 @@ export class HttpBotOrchestrator {
       const reported = { ...conversation, kind }
       // Resolved per install, because a shared bot's installs are different agents with
       // different audiences — the same DM may be open for one and Off for the next.
-      const defaultTrigger = gatesNewConversations(bot.platform, agent)
+      const defaultTrigger = isGatedAgent(agent)
         ? await this.gatedConversationTrigger(agent, bot, reported)
         : kind === 'im'
           ? ('any' as const)
@@ -794,8 +794,7 @@ export class HttpBotOrchestrator {
     template?: IntegrationChannelRecord
   ): Promise<IntegrationChannelRecord> {
     const ownerAgent = await this.agents.getUnscoped(owner.agentId)
-    const defaultTrigger =
-      ownerAgent && gatesNewConversations(owner.platform, ownerAgent) ? ('off' as const) : undefined
+    const defaultTrigger = ownerAgent && isGatedAgent(ownerAgent) ? ('off' as const) : undefined
     const updated = await this.channels.upsertAgent(owner.id, channelId, owner.agentId, {
       ...(defaultTrigger ? { defaultTrigger } : {}),
       ...(template ? { kind: template.kind } : {})
@@ -908,7 +907,7 @@ export class HttpBotOrchestrator {
         // §14.8's one exception, re-derived here rather than trusted from the row: the
         // audience may have changed since the row was seeded, and this is the write
         // that would otherwise freeze a stale answer in as the owner's trigger.
-        if (ownerAgent && gatesNewConversations(owner.platform, ownerAgent)) {
+        if (ownerAgent && isGatedAgent(ownerAgent)) {
           if (bot === undefined) bot = await this.bots.getUnscoped(botId)
           const direct = conversationRows.find((row) => row.kind === 'im' && row.dmUserId)
           trigger = bot
@@ -953,17 +952,14 @@ export class HttpBotOrchestrator {
       if (!agent) continue
       const daemonId = await this.placement.routableDaemon(agent)
       if (!daemonId) continue
-      // §14 gating is vacuous where the install names the one conversation it can reach, so the
-      // ONE predicate decides the keyword rung, the default, and `gatedAgentIds` together.
-      placed.push({ integration, agent, daemonId, gated: gatesNewConversations(bot.platform, agent) })
+      // The ONE predicate decides the keyword rung, the default, and `gatedAgentIds` together.
+      placed.push({ integration, agent, daemonId, gated: isGatedAgent(agent) })
     }
     if (placed.length === 0) return null
     // linear-integration.md §6.2: a row's owner rides the relay's PER-CONVERSATION default
     // rung instead of a channel-scoped route — which would otherwise shadow keyword selection
     // and thread continuity on a platform whose every event marks the app as mentioned.
-    // (Still read through the manifest's `soleConversation` name; the rename lands with the
-    // arms it retires.)
-    const ownerAsDefault = manifestFor(bot.platform).soleConversation
+    const ownerAsDefault = manifestFor(bot.platform).ownerAsDefault
 
     // members: daemonId → agentIds (the daemon connections the relay expects).
     const memberMap = new Map<string, Set<string>>()
@@ -995,7 +991,7 @@ export class HttpBotOrchestrator {
         .filter((c) => c.trigger === 'off')
         .filter((c) => {
           const agent = c.agentId ? agentById.get(c.agentId) : undefined
-          return !!agent && gatesNewConversations(bot.platform, agent)
+          return !!agent && isGatedAgent(agent)
         })
         .map((c) => c.channelId)
     )
@@ -1027,8 +1023,7 @@ export class HttpBotOrchestrator {
       const a = agentById.get(p.integration.agentId)
       if (!a) continue
       // Conversation gating (§14): no UNSCOPED rung may name a gated agent — the keyword slug
-      // would make "@bot <slug>" fail-open in every conversation. Where the install granted the
-      // only conversation there are no others to fail open into, so `p.gated` is already false.
+      // would make "@bot <slug>" fail-open in every conversation.
       if (p.gated) continue
       routes.push({
         agentId: p.integration.agentId,

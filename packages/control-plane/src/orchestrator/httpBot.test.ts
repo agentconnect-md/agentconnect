@@ -1502,7 +1502,7 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     expect(ch.sends).toEqual([{ type: 'rc/bot-unassign', payload: { botId: BOT, credentialRevision: 1 } }]) // re-stamp only
   })
 
-  describe('an ownerAsDefault platform (§5, read through soleConversation)', () => {
+  describe('an ownerAsDefault platform (§5 `ownerAsDefault`)', () => {
     // A connected Linear workspace: each team row's owner is that CONVERSATION's default rather
     // than a channel-scoped route, which would outrank the keyword and continuity rungs.
     const TEAM_A = 'team-linear-a'
@@ -1562,27 +1562,38 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(assign.defaultAgentId).toBe(ALICE)
     })
 
-    it('carries a RESTRICTED member as UNGATED, so a private linking agent is routable at all', async () => {
-      // §14's fail-open worry presumes conversations the install never granted. Today's de-gating
-      // arm still applies on this platform, which is what keeps the relay's gated fences (the
-      // keyword rung, the default derivation, the scoped-route requirement) from stranding it.
+    it('gives a GATED member its grant as the team default, and no unscoped keyword rung', async () => {
+      // §14 gating applies here as everywhere. The shared-bot model has exactly one grant a gated
+      // agent can hold in a conversation — owning the row while it is not Off — and on an
+      // `ownerAsDefault` platform that fact lives in `conversationDefaults`, not in a scoped route.
       gatedAgents = new Set([BOB])
       await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
 
-      expect(assign.gatedAgentIds).toEqual([])
-      // Its seat is the team's own default, not the group's.
+      expect(assign.gatedAgentIds).toEqual([BOB])
       expect(assign.conversationDefaults).toContainEqual({
         channel: TEAM_A,
         agentId: BOB,
         daemonId: D2,
         integrationId: INT_B
       })
-      expect(assign.routes.some((r) => r.agentId === BOB && r.match.kind === 'keyword' && r.scope === undefined)).toBe(
-        true
-      )
-      // The daemon's own last-hop backstop must agree, or it would refuse what the relay routed.
-      expect(upserts.every((u) => u.spec.core?.mode === 'shared')).toBe(true)
+      // No UNSCOPED rung may name it, and an `ownerAsDefault` platform emits no scoped one either.
+      expect(assign.routes.some((r) => r.agentId === BOB)).toBe(false)
+      expect(assign.defaultAgentId).toBe(ALICE)
+    })
+
+    it('keeps a gated member OUT of the defaults once its row is Off — the seat is the grant', async () => {
+      gatedAgents = new Set([BOB])
+      channels = [
+        channel({ integrationId: INT_B, channelId: TEAM_A, agentId: BOB, trigger: 'off' }),
+        channel({ integrationId: INT_A, channelId: TEAM_B, agentId: ALICE, trigger: 'mention' })
+      ]
+      await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
+
+      expect(assign.conversationDefaults.map((d) => d.channel)).toEqual([TEAM_B])
+      expect(assign.mutedChannels).toContain(TEAM_A)
+      expect(assign.gatedOffChannels).toContain(TEAM_A)
     })
 
     it('carries the defaults on the rc/routes HOT UPDATE, so an owner edit converges', async () => {
@@ -1599,9 +1610,9 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(routes.routes.some((r) => r.scope !== undefined)).toBe(false)
     })
 
-    it('still gates that same agent on an ORDINARY bot, so its name leaks nowhere', async () => {
-      // The de-gating is per BOT, derived from that bot's platform — a restricted agent that is
-      // also on a Slack bot keeps every §14 fence there.
+    it('gates that same agent on an ORDINARY bot the same way, through its ownership route', async () => {
+      // The one predicate is now the platform-blind `isGatedAgent`, so the fences an ordinary bot
+      // applies are unchanged — what differs is only WHERE the owner is delivered.
       gatedAgents = new Set([BOB])
       botRow = bot()
       integrations = [integration(INT_A, ALICE), integration(INT_B, BOB)]
