@@ -1,4 +1,4 @@
-import { isAbsolute, normalize } from 'node:path'
+import { isAbsolute, join, normalize } from 'node:path'
 
 export const CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV = 'CODEX_ACP_PERMISSION_PROFILE_CONFIG'
 
@@ -69,8 +69,13 @@ export function codexPermissionProfileConfig(
           )}`
         ]
       : []
+  // A writable hooks/config would run model-authored code under host-side Git; most-specific match wins.
   const agentFilesystemEntries: Array<[string, string]> = [
     ...writableGitMetadataRoots.map((root): [string, string] => [root, 'write']),
+    ...writableGitMetadataRoots.flatMap((root): Array<[string, string]> => [
+      [join(root, 'hooks'), 'deny'],
+      [join(root, 'config'), 'deny']
+    ]),
     ...protectedRoots.map((root): [string, string] => [root, 'deny'])
   ]
   const agentFilesystem =

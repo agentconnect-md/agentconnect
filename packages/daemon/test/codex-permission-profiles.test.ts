@@ -60,12 +60,45 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
 
     expect(config.configOverrides).toContain('features.unified_exec=false')
     expect(config.configOverrides).toContain(
-      'permissions.agentconnect-protected-workspace.filesystem={ "/agent/workspace/.git" = "write", "/agent/home/.codex" = "deny" }'
+      'permissions.agentconnect-protected-workspace.filesystem={ "/agent/workspace/.git" = "write", ' +
+        '"/agent/workspace/.git/hooks" = "deny", "/agent/workspace/.git/config" = "deny", ' +
+        '"/agent/home/.codex" = "deny" }'
     )
     expect(
       config.configOverrides.find((value) =>
         value.startsWith('permissions.agentconnect-protected-read-only.filesystem=')
       )
     ).not.toContain('/agent/workspace/.git')
+  })
+
+  // Verified against the vendored Codex: without the nested deny a shell command can plant a Git hook.
+  it('denies hooks and config inside every Git metadata root it opens for writing', () => {
+    const config = codexPermissionProfileConfig({
+      protectedRoots: [],
+      writableGitMetadataRoots: ['/agent/workspace/.git', '/agent/repos/acme/infra/checkout/.git']
+    })!
+
+    const agent = config.configOverrides.find((value) =>
+      value.startsWith('permissions.agentconnect-protected-workspace.filesystem=')
+    )!
+    for (const root of ['/agent/workspace/.git', '/agent/repos/acme/infra/checkout/.git']) {
+      expect(agent).toContain(`"${root}" = "write"`)
+      expect(agent).toContain(`"${root}/hooks" = "deny"`)
+      expect(agent).toContain(`"${root}/config" = "deny"`)
+    }
+  })
+
+  // agent-full-access is deliberately unconfined; the paired deny belongs only where the write was granted.
+  it('leaves the full-access profile untouched by the Git metadata grant', () => {
+    const config = codexPermissionProfileConfig({
+      protectedRoots: [],
+      writableGitMetadataRoots: ['/agent/workspace/.git']
+    })!
+
+    const fullAccess = config.configOverrides.find((value) =>
+      value.startsWith('permissions.agentconnect-protected-full-access.filesystem=')
+    )!
+    expect(fullAccess).toContain('"/.git" = "write"')
+    expect(fullAccess).not.toContain('deny')
   })
 })
