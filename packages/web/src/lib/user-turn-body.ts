@@ -32,21 +32,26 @@ export function shortSha(sha: string): string {
 
 const XML_ENTITIES: Record<string, string> = { '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&amp;': '&' }
 
+/** `&lt;` and friends, as Linear's XML-shaped context escapes them. */
+const decodeEntities = (value: string): string =>
+  value.replace(/&(lt|gt|quot|#39|amp);/g, (entity) => XML_ENTITIES[entity] ?? entity).trim()
+
 /**
  * Linear hands the agent the issue as XML-shaped text (`promptContext`): `<issue …><title>…</title>
  * <description>…</description> …</issue>`. The console shows the description as the markdown it is.
- * An `<issue>` envelope without that element is an issue with no description — the title and team
- * it does carry are facts of their own — so it yields an empty, parsed description rather than the
- * envelope; only a context that is not the envelope at all is shown whole, since guessing at its
- * shape would hide it.
+ *
+ * Three shapes, because the relay cuts the context at a byte budget and carries `truncated`:
+ * a closed `<description>` is that element; an OPEN one whose close was cut away is everything
+ * after it, so a long description stays readable; and an `<issue>` envelope with no such element
+ * at all is an issue that has none — its identifier, title and team are rows of their own, so the
+ * envelope is not worth printing back. Only a context that is not the envelope at all is shown
+ * whole, since guessing at its shape would hide it.
  */
 export function linearDescriptionMarkdown(description: string): { markdown: string; parsed: boolean } {
-  const match = /<description(?:\s[^>]*)?>([\s\S]*?)<\/description>/i.exec(description)
-  if (match) {
-    const markdown = match[1]!.replace(/&(lt|gt|quot|#39|amp);/g, (entity) => XML_ENTITIES[entity] ?? entity).trim()
-    return { markdown, parsed: true }
-  }
-  // The envelope with no description element: the issue simply has none.
+  const closed = /<description(?:\s[^>]*)?>([\s\S]*?)<\/description>/i.exec(description)
+  if (closed) return { markdown: decodeEntities(closed[1]!), parsed: true }
+  const open = /<description(?:\s[^>]*)?>([\s\S]*)$/i.exec(description)
+  if (open) return { markdown: decodeEntities(open[1]!), parsed: true }
   if (/^\s*<issue[\s>]/i.test(description)) return { markdown: '', parsed: true }
   return { markdown: description, parsed: false }
 }

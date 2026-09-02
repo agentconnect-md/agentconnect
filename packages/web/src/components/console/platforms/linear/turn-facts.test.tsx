@@ -89,6 +89,24 @@ describe('LinearTurnFacts', () => {
     expect(el.querySelector('pre')).toBeNull()
   })
 
+  it('still prints a description the relay cut before its closing tag', async () => {
+    const el = await render(
+      <LinearTurnFacts
+        body={{
+          linear: {
+            issue: { identifier: 'ENG-3' },
+            description: '<issue identifier="ENG-3">\n<description>The first half of a long',
+            truncated: true
+          }
+        }}
+      />
+    )
+    const text = el.textContent ?? ''
+    expect(text).toContain('The first half of a long')
+    expect(text).toContain('Context truncated')
+    expect(text).not.toContain('<issue')
+  })
+
   it('renders nothing for a body without Linear facts', async () => {
     const el = await render(<LinearTurnFacts body={{}} />)
     expect(el.textContent).toBe('')

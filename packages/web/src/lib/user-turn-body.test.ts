@@ -60,6 +60,13 @@ describe('linearDescriptionMarkdown', () => {
     expect(linearDescriptionMarkdown('<issue><description/></issue>')).toEqual({ markdown: '', parsed: true })
   })
 
+  it('keeps a description the relay cut before its closing tag', () => {
+    // `promptContext` is byte-truncated at the relay's budget, so a long description can arrive
+    // as an open element with no close. Every word that DID arrive still reads.
+    const cut = '<issue identifier="ENG-3">\n<title>investigate</title>\n<description>The first half of a long'
+    expect(linearDescriptionMarkdown(cut)).toEqual({ markdown: 'The first half of a long', parsed: true })
+  })
+
   it('takes a description element that carries attributes', () => {
     expect(linearDescriptionMarkdown('<issue><description format="markdown">ship it</description></issue>')).toEqual({
       markdown: 'ship it',
