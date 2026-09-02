@@ -3834,76 +3834,62 @@ describe('buildHookMessage', () => {
       expect(long.endsWith('…')).toBe(true)
     })
 
-    it('a numbered thread carries the auto-reply hint (do not self-comment); a threadless push does not', async () => {
+    it('a numbered thread carries the standing rules once and a per-turn line; a threadless push carries neither', async () => {
+      const pr = {
+        repoId: '123',
+        repoFullName: 'acme/infra',
+        sourceInstallationId: '456',
+        subjectKind: 'pull_request' as const,
+        pullNumber: 42
+      }
+      // The rules ride the STANDING block (read once per session, never a transcript row).
+      const standing = buildHookMessage(ghFire(), 'trace').standingContext!
+      expect(standing.startsWith('# GitHub\n')).toBe(true)
+      expect(standing).toContain('exclusively owns that reply')
+      expect(standing).toContain('Do NOT create, update, or delete GitHub comments or formal reviews')
+      expect(standing).toContain('`gh`, another CLI, a connector, or a direct API call')
+      expect(standing).toContain('Other GitHub tools are for READ-only inspection')
+      expect(standing).toContain('structured `submitCodeReview` tool')
+      expect(standing).toContain('replyGithubReviewThreads')
+      expect(standing).toContain('never infer a finding from another checkout')
+      // The per-turn text names THIS delivery and repeats only the ownership clause.
       const withThread = buildHookText(ghFire())
-      expect(withThread).toContain('posts that final back to acme/infra#42 automatically')
-      expect(withThread).toContain('exclusively owns the reply')
-      expect(withThread).toContain('Formal GitHub review submission is unavailable')
+      expect(withThread).toContain('Reply to this GitHub conversation on acme/infra#42')
+      expect(withThread).toContain('Formal GitHub review submission is unavailable for this delivery')
+      expect(withThread).toContain('The daemon owns the reply; post nothing yourself.')
       expect(withThread).not.toContain('submitCodeReview')
-      expect(withThread).toContain('Do NOT create, update, or delete GitHub comments or formal reviews')
-      expect(withThread).toContain('`gh`, another CLI, a connector, or a direct API call')
-      expect(withThread).toContain('Other GitHub tools are for READ-only inspection')
-      // Ordinary PR conversations preserve their worktree and cannot submit a
-      // formal verdict. A mention identified by the relay opens a review below.
-      const issueComment = buildHookText(ghFire({ event: 'issue_comment', action: 'created' }))
-      expect(issueComment).toContain('Formal GitHub review submission is unavailable')
-      expect(issueComment).not.toContain('submitCodeReview')
+      expect(withThread).not.toContain('READ-only inspection')
+      expect(withThread).not.toContain('# GitHub')
+      // An ordinary PR conversation cannot submit a formal verdict; a relay-identified mention opens a review below.
       const prConversation = buildHookText(
-        ghFire(
-          { event: 'issue_comment', action: 'created' },
-          {
-            reviewPolicy: 'full',
-            github: {
-              repoId: '123',
-              repoFullName: 'acme/infra',
-              sourceInstallationId: '456',
-              subjectKind: 'pull_request',
-              pullNumber: 42
-            }
-          }
-        )
+        ghFire({ event: 'issue_comment', action: 'created' }, { reviewPolicy: 'full', github: pr })
       )
-      expect(prConversation).toContain('does not prove its files match the PR revision')
-      expect(prConversation).toContain('revision-addressed Git object reads')
+      expect(prConversation).toContain('Formal GitHub review submission is unavailable for this delivery')
       expect(prConversation).not.toContain('submitCodeReview')
       const revisionReview = buildHookText(
         ghFire(
           { event: 'pull_request', action: 'synchronize' },
           {
             reviewPolicy: 'full',
-            github: {
-              repoId: '123',
-              repoFullName: 'acme/infra',
-              sourceInstallationId: '456',
-              subjectKind: 'pull_request',
-              pullNumber: 42,
-              headSha: 'a'.repeat(40),
-              baseSha: 'b'.repeat(40),
-              reportSha: 'a'.repeat(40)
-            }
+            github: { ...pr, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), reportSha: 'a'.repeat(40) }
           }
         )
       )
       expect(revisionReview).toContain('opens a review generation for the current PR revision')
-      expect(revisionReview).toContain('structured `submitCodeReview` tool')
+      expect(revisionReview).toContain('record the verdict through `submitCodeReview`')
       expect(revisionReview).toContain(`Base SHA: ${'b'.repeat(40)}`)
       expect(revisionReview).toContain(`Head SHA: ${'a'.repeat(40)}`)
-      expect(revisionReview).toContain('Before trusting local files or repository traces')
       expect(revisionReview).toContain('use APPROVE + pass when it passes')
-      expect(revisionReview).toContain(
-        'An approval or rejection from an earlier revision does not complete this revision'
-      )
+      expect(revisionReview).toContain('REQUEST_CHANGES + fail when it has blocking findings')
+      // One short line, not the paragraph the standing block already carries.
+      expect(revisionReview.split('\n\n').at(-1)!.length).toBeLessThan(400)
       const retargetReview = buildHookText(
         ghFire(
           { event: 'pull_request', action: 'edited' },
           {
             reviewPolicy: 'full',
             github: {
-              repoId: '123',
-              repoFullName: 'acme/infra',
-              sourceInstallationId: '456',
-              subjectKind: 'pull_request',
-              pullNumber: 42,
+              ...pr,
               headSha: 'a'.repeat(40),
               baseSha: 'c'.repeat(40),
               reportSha: 'a'.repeat(40),
@@ -3914,56 +3900,31 @@ describe('buildHookMessage', () => {
       )
       expect(retargetReview).toContain('opens a review generation for the current PR revision')
       const suiteRerequest = buildHookText(
-        ghFire(
-          { event: 'check_suite', action: 'rerequested' },
-          {
-            reviewPolicy: 'full',
-            github: {
-              repoId: '123',
-              repoFullName: 'acme/infra',
-              sourceInstallationId: '456',
-              subjectKind: 'pull_request',
-              pullNumber: 42
-            }
-          }
-        )
+        ghFire({ event: 'check_suite', action: 'rerequested' }, { reviewPolicy: 'full', github: pr })
       )
       expect(suiteRerequest).toContain('opens a review generation for the current PR revision')
-      // An inline-review follow-up already belongs to an existing review
-      // thread. Its final is posted there; a second formal review is neither
-      // advertised nor authorized for this turn.
+      // An inline-review follow-up already belongs to an existing review thread.
       const inlineReply = buildHookText(
         ghFire(
           { event: 'pull_request_review_comment', action: 'created' },
           {
             event: 'pull_request_review_comment:created',
-            github: {
-              repoId: '123',
-              repoFullName: 'acme/infra',
-              sourceInstallationId: '456',
-              subjectKind: 'pull_request',
-              pullNumber: 42,
-              reviewCommentId: '3565656411',
-              reviewThreadRootCommentId: '3565283658'
-            }
+            github: { ...pr, reviewCommentId: '3565656411', reviewThreadRootCommentId: '3565283658' }
           }
         )
       )
-      expect(inlineReply).toContain('daemon posts it back to the existing review thread automatically')
-      expect(inlineReply).toContain('exclusively owns every inline reply')
+      expect(inlineReply).toContain('Answer the triggering inline review conversation on acme/infra#42')
+      expect(inlineReply).toContain('posts your final back to the existing review thread automatically')
       expect(inlineReply).not.toContain('submitCodeReview')
       expect(inlineReply).not.toContain('ordinary GitHub comment')
+      expect(inlineReply).not.toContain('same submitted review')
       const batchableInline = buildHookText(
         ghFire(
           { event: 'pull_request_review_comment', action: 'created' },
           {
             event: 'pull_request_review_comment:created',
             github: {
-              repoId: '123',
-              repoFullName: 'acme/infra',
-              sourceInstallationId: '456',
-              subjectKind: 'pull_request',
-              pullNumber: 42,
+              ...pr,
               pullRequestReviewId: '900',
               reviewCommentId: '3565656411',
               reviewThreadRootCommentId: '3565656411'
@@ -3971,36 +3932,25 @@ describe('buildHookMessage', () => {
           }
         )
       )
-      expect(batchableInline).toContain('replyGithubReviewThreads')
       expect(batchableInline).toContain('root comments from the same submitted review')
-      // During a rolling relay upgrade the event family is still known, but
-      // an old relay cannot provide the trusted thread root. Promise only the
-      // ordinary fallback and keep formal-review guidance disabled.
+      // During a rolling relay upgrade the event family is known, but an old relay cannot provide
+      // the trusted thread root: promise only the ordinary fallback.
       const missingRoot = buildHookText(
         ghFire(
           { event: 'pull_request_review_comment', action: 'created' },
-          {
-            event: 'pull_request_review_comment:created',
-            github: {
-              repoId: '123',
-              repoFullName: 'acme/infra',
-              sourceInstallationId: '456',
-              subjectKind: 'pull_request',
-              pullNumber: 42
-            }
-          }
+          { event: 'pull_request_review_comment:created', github: pr }
         )
       )
       expect(missingRoot).toContain('does not carry trusted inline-thread metadata')
-      expect(missingRoot).toContain('automatically as one ordinary GitHub comment')
-      expect(missingRoot).toContain('Formal GitHub reviews are unavailable')
+      expect(missingRoot).toContain('as one ordinary GitHub comment')
+      expect(missingRoot).toContain('formal GitHub reviews are unavailable')
       expect(missingRoot).not.toContain('existing review thread')
       expect(missingRoot).not.toContain('submitCodeReview')
-      // push events have no issue/PR number → no poster runs → no hint.
-      const push = buildHookText(
-        ghFire({ event: 'push', action: undefined, number: undefined, bodyExcerpt: undefined })
-      )
-      expect(push).not.toContain('automatically')
+      // push events have no issue/PR number → no poster runs → no line, and no standing block yet:
+      // the session learns the rules from its first answerable delivery.
+      const push = ghFire({ event: 'push', action: undefined, number: undefined, bodyExcerpt: undefined })
+      expect(buildHookText(push)).not.toContain('The daemon owns the reply')
+      expect(buildHookMessage(push, 'trace').standingContext).toBeUndefined()
     })
 
     it('requires a formal verdict for an authorized explicit PR review mention', async () => {
@@ -4022,7 +3972,6 @@ describe('buildHookMessage', () => {
       )
       expect(text).toContain('opens a review generation for the current PR revision')
       expect(text).toContain('use APPROVE + pass when it passes')
-      expect(text).not.toContain('do not submit COMMENT + neutral merely to answer the conversation')
     })
 
     it.each([
@@ -4069,7 +4018,7 @@ describe('buildHookMessage', () => {
       )
       expect(text).not.toContain('opens a review generation for the current PR revision')
       expect(text).not.toContain('use APPROVE + pass when it passes')
-      expect(text).toContain('Formal GitHub review submission is unavailable')
+      expect(text).toContain('Formal GitHub review submission is unavailable for this delivery')
       expect(text).not.toContain('submitCodeReview')
     })
 
