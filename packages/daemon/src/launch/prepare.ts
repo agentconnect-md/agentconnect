@@ -2,7 +2,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync 
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from '../acp/sandbox.js'
-import { hostKeyDirName, type HostKey } from '../acp/host-key.js'
+import { hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { compactReadRoots } from '../runtimes/read-roots.js'
 import { prepareSharedRuntimeCredentials, sharedCredentialProfile } from '../runtimes/runtime-credentials.js'
@@ -14,6 +14,7 @@ import {
 } from '../runtimes/runtime-home.js'
 import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/probe.js'
 import { primaryCheckoutIn, secondaryCheckoutsIn } from '../workspace/secondary-layout.js'
+import { isRealDir, sessionDirIn, sessionGitDirsIn } from '../workspace/session-layout.js'
 import {
   CLAUDE_PROFILE_ENV,
   claudeProtectedSettings,
@@ -54,6 +55,13 @@ function gitMetadataDirsIn(agentRoot: string, primaryCheckout: string): string[]
   return [primaryCheckout, ...secondaryCheckoutsIn(agentRoot)]
     .map((checkout) => join(checkout, '.git'))
     .filter((gitDir) => existsSync(gitDir) && lstatSync(gitDir).isDirectory())
+}
+
+/** The session directory a confined session host launches for (git-workspace-model §11); undefined for the shared host, and for a session host with no clones (a dream, a model session). */
+function confinedSessionDirOf(agentRoot: string, hostKey: HostKey | undefined): string | undefined {
+  if (hostKey === undefined || hostKeySessionKey(hostKey) === undefined) return undefined
+  const sessionDir = sessionDirIn(agentRoot, hostKeyDirName(hostKey))
+  return isRealDir(sessionDir) ? sessionDir : undefined
 }
 
 /** The same roots with NO outer boundary: one escaping the agent tree is left protected, not refused. */
@@ -414,11 +422,8 @@ export function prepareRuntimeLaunch(opts: {
       return trusted
     })
   )
-  // An isolated session's cwd is its own worktree, but that worktree's index — and every ref and
-  // object its commits write — live in the OWNER checkout's `.git`, which no other carve-back
-  // covers. Without these the confined runtime cannot even run `git status` in its own worktree.
-  // The primary checkout is the daemon's own record of it: a locally authored agent may keep a
-  // path the default layout does not name, and its worktrees still hang off THAT checkout.
+  // A confined session's clones own their `.git` (§11), so the primary's is never reopened for it; otherwise an isolated session's worktree keeps its index, refs and objects in the OWNER checkout's `.git`, which no other carve-back covers and which the daemon names (a locally authored agent may keep a path the layout does not).
+  const sessionDir = confinedSessionDirOf(agentRoot, opts.hostKey)
   const primaryCheckout = opts.trustedPrimaryCheckout
     ? safeRoot(opts.trustedPrimaryCheckout, 'trusted primary checkout')
     : primaryCheckoutIn(agentRoot)
@@ -426,13 +431,15 @@ export function prepareRuntimeLaunch(opts: {
     throw new Error(`trusted primary checkout "${primaryCheckout}" is outside the agent root`)
   }
   const gitMetadataWriteRoots = compactReadRoots(
-    gitMetadataDirsIn(agentRoot, primaryCheckout).map((gitDir) => {
-      const trusted = safeRoot(gitDir, 'git metadata root')
-      if (trusted === agentRoot || !inside(agentRoot, trusted)) {
-        throw new Error(`git metadata root "${trusted}" is outside the agent root`)
+    (sessionDir === undefined ? gitMetadataDirsIn(agentRoot, primaryCheckout) : sessionGitDirsIn(sessionDir)).map(
+      (gitDir) => {
+        const trusted = safeRoot(gitDir, 'git metadata root')
+        if (trusted === agentRoot || !inside(agentRoot, trusted)) {
+          throw new Error(`git metadata root "${trusted}" is outside the agent root`)
+        }
+        return trusted
       }
-      return trusted
-    })
+    )
   )
   const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
   if (claudeRuntime) {
@@ -516,7 +523,10 @@ export function prepareRuntimeLaunch(opts: {
     )
     applyCodexPermissionProfile(env, {
       protectedRoots: protectedCredentialRoots,
-      writableGitMetadataRoots,
+      // A session's clones take the exact per-clone entries; an owner checkout's `.git` takes the worktree ones.
+      ...(sessionDir === undefined
+        ? { writableGitMetadataRoots }
+        : { sessionGitMetadataRoots: writableGitMetadataRoots }),
       allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true,
       disableUnifiedExec: true
     })

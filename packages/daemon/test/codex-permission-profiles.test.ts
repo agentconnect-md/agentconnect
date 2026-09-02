@@ -93,6 +93,33 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
     }
   })
 
+  // A session clone's `.git` is the exact path :workspace pins (§11): its entry alone reopens it, hooks and config stay `read`, and no worktrees subtree hangs off it.
+  it('opens a session clone .git exactly: write, hooks and config read, no worktrees subtree', () => {
+    const primary = '/agent/sessions/session-1/workspace/.git'
+    const secondary = '/agent/sessions/session-1/repos/acme/infra/.git'
+    const config = codexPermissionProfileConfig({
+      protectedRoots: ['/agent/home/.codex'],
+      sessionGitMetadataRoots: [primary, secondary]
+    })!
+
+    expect(config.configOverrides).toContain(
+      'permissions.agentconnect-protected-workspace.filesystem={ ' +
+        `"${primary}" = "write", "${primary}/hooks" = "read", "${primary}/config" = "read", ` +
+        `"${secondary}" = "write", "${secondary}/hooks" = "read", "${secondary}/config" = "read", ` +
+        '"/agent/home/.codex" = "deny" }'
+    )
+    const agent = config.configOverrides.find((value) =>
+      value.startsWith('permissions.agentconnect-protected-workspace.filesystem=')
+    )!
+    expect(agent).not.toContain('worktrees')
+    expect(agent).not.toContain('= "deny" }"') // no clone path is denied
+    expect(
+      config.configOverrides.find((value) =>
+        value.startsWith('permissions.agentconnect-protected-read-only.filesystem=')
+      )
+    ).not.toContain('/agent/sessions')
+  })
+
   // agent-full-access is deliberately unconfined; the paired deny belongs only where the write was granted.
   it('leaves the full-access profile untouched by the Git metadata grant', () => {
     const config = codexPermissionProfileConfig({

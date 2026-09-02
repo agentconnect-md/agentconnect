@@ -1055,7 +1055,7 @@ describe('secondary roots on the pod volume', () => {
 
     expect(await workspaces.hasSessionWorktreeRoots(agent)).toBe(true)
     expect(await workspaces.sessionWorktreeRoots(agent)).toEqual([
-      { path: `${INFRA}/checkout`, worktreesPath: `${INFRA}/worktrees` }
+      { path: `${INFRA}/checkout`, worktreesPath: `${INFRA}/worktrees`, repoFullName: 'acme/infra' }
     ])
     worktreeStatus = ' M a.txt\n'
     expect(await workspaces.removeSessionWorktree(agent, 'sess-1')).toEqual({

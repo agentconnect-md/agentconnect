@@ -277,6 +277,25 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     expect(existsSync(two.launch.sandbox!.settingsPath)).toBe(true)
   })
 
+  // git-workspace-model §11: the same predicate that gives the session its own host gives it its own clones.
+  it('asks the session workspace for its own clone directory only under a confined launch', async () => {
+    const confined = await startDaemon(scaffold())
+    const confinedPrepare = vi.spyOn((confined.daemon as any).workspaces, 'prepareSessionWorkspace')
+    await (confined.daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    expect(confinedPrepare).toHaveBeenCalled()
+    expect(confinedPrepare.mock.calls.at(-1)![1]).toMatchObject({ sessionKey: KEY('T1'), confined: true })
+    await confined.daemon.stop()
+
+    // A shared host's cold gate prepares no session workspace for a scratch agent, so ask the funnel directly.
+    const open = await startDaemon(scaffold({ runInSandbox: false }))
+    const openPrepare = vi.spyOn((open.daemon as any).workspaces, 'prepareSessionWorkspace')
+    const request = { sessionKey: KEY('T1'), isolation: 'session' as const }
+    await (open.daemon as any).runAgentWorkspacePreparation((open.daemon as any).agents.get('bot-a'), request)
+    expect(openPrepare).toHaveBeenCalledTimes(1)
+    expect(openPrepare.mock.calls[0]![1]).toEqual(request)
+    await open.daemon.stop()
+  })
+
   it('gives a resumed session its own host again after a daemon restart', async () => {
     const root = scaffold()
     const first = await startDaemon(root)

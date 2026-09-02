@@ -12,7 +12,6 @@
  * and the one it commits must be the same directory, and describing them two different ways is what
  * broke both panels. Extracted from the CP client's wiring so the routing is testable on its own.
  */
-import { join } from 'node:path'
 import type { Agent } from '../agents/agent-schema.js'
 import type { WorkspaceLocation } from '../workspace/workspace-files.js'
 import type { WorkspaceManager } from '../workspace/workspace-manager.js'
@@ -79,8 +78,9 @@ export function createWorkspaceScope(deps: WorkspaceScopeDeps): WorkspaceScope {
     if (!sessionId) return { root: root.path, scratch: false }
     const session = await deps.sessionOf(agent.id, sessionId)
     if (session?.workspaceIsolation !== 'session') return undefined
+    // The root's worktree at the session's id, or its clone in the session's own directory (§11).
     return {
-      root: join(root.worktreesPath, deps.workspaces.sessionWorktreeId(session.key)),
+      root: deps.workspaces.sessionRootDirectory(agent, root, session.key),
       scratch: false,
       sessionKey: session.key
     }

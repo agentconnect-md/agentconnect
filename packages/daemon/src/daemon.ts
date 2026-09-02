@@ -3748,8 +3748,13 @@ export class Daemon {
       skillsStateDir: join(this.root, 'skill-installs'),
       skillsAgentId: this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId ?? null
     }
+    // §11: the session a per-session host serves gets its own clones, never a worktree of the primary.
     return request
-      ? this.workspaces.prepareSessionWorkspace(agent, request, opts)
+      ? this.workspaces.prepareSessionWorkspace(
+          agent,
+          this.perSessionHost(agent) ? { ...request, confined: true } : request,
+          opts
+        )
       : this.workspaces.prepareWorkspace(agent, opts)
   }
 
@@ -4293,7 +4298,10 @@ export class Daemon {
           ? (launchEnv) =>
               this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials, gitlabCredentials)
           : undefined,
-        trustedWorkspaceWriteRoots: runInSandbox ? this.workspaces.trustedWorkspaceWriteRoots(agent) : undefined,
+        // A session host with its own clones (§11) writes its session directory alone; the launch derives its Git grants from it.
+        trustedWorkspaceWriteRoots: runInSandbox
+          ? this.workspaces.trustedWorkspaceWriteRoots(agent, hostKeySessionKey(opts.hostKey))
+          : undefined,
         // Not sandbox-gated: an unconfined Codex launch needs it too, its own profile protects `.git`.
         trustedPrimaryCheckout: this.workspaces.localPrimaryCheckoutFor(agent),
         sandboxMechanism: this.sandboxMechanism,
@@ -15701,8 +15709,10 @@ export class Daemon {
       // volume carries secondary worktrees, and the session row would be deleted without them ever
       // being judged. A pod that will not come up is THIS session's failure, never the whole
       // sweep's — it retries next pass.
+      // A session directory of its own (§11) is judged even when no shared root remains to hang a worktree off.
       const result = await this.withAgentVolume(rec.agentId, async () =>
-        (await this.workspaces.hasSessionWorktreeRoots(currentAgent))
+        (await this.workspaces.hasSessionWorktreeRoots(currentAgent)) ||
+        this.workspaces.confinedSessionDir(currentAgent, rec.key) !== undefined
           ? await this.workspaces.removeSessionWorktree(currentAgent, rec.key)
           : undefined
       ).catch((err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message }))
