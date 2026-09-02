@@ -25,6 +25,8 @@ import { linearAttributionFooter, linearAttributionOf } from './turn-output.js'
  *  indeterminate retry can recognise "the first attempt committed" instead of creating twice. */
 export interface LinearToolClient {
   request<T>(query: string, variables: Record<string, unknown>, opts?: { onDuplicateKey?: () => T }): Promise<T>
+  /** The issue an AgentSession was opened on, when this connection has seen a delivery for it. */
+  issueOfSession?(sessionId: string): string | undefined
 }
 
 /** List page bounds — Linear's own `first` cap is 250; 50 keeps a page inside a tool result. */
@@ -240,8 +242,8 @@ export const LINEAR_TOOLS: ToolDescriptor[] = [
     name: 'createIssueComment',
     description:
       'Comment on an issue, Markdown; `parent` replies inside a comment thread. Post the OUTCOME of finished ' +
-      'work, never a plan — the session already shows that. Do not sign the comment: your attribution footer ' +
-      'is appended for you.',
+      'work, never a plan — the session already shows that. Do not sign the comment: on this session’s issue ' +
+      'its Resources already link the session, and elsewhere your attribution is appended for you.',
     inputSchema: obj({ issue: issueRef, body: str('Comment body, Markdown.'), parent: str('Parent comment id.') }, [
       'issue',
       'body'
@@ -835,6 +837,8 @@ async function updateIssue(client: LinearToolClient, args: Record<string, unknow
 /** What a write tool knows about the acting turn beyond its arguments — daemon facts only. */
 interface LinearToolCall {
   agentName?: string
+  /** The Linear AgentSession UUID this turn runs in — the normalized `thread` coordinate. */
+  sessionThread?: string
   attribution?: () => Promise<ReplyAttributionInfo | undefined>
 }
 
@@ -842,7 +846,7 @@ interface LinearToolCall {
  *  write, and still reaches for. A single `-` is never matched: that is a list item. */
 const SIGNATURE_LINE = /^\s*[*_]{0,2}\s*(?:\u2014|\u2013|--)\s*(.+?)\s*[*_]{0,2}\s*$/
 
-/** Drop that line so the appended footer is the comment's only attribution. */
+/** Drop that line: attribution is the daemon's — the Resources link, or the footer it appends. */
 export function stripAgentSignature(body: string, names: readonly (string | undefined)[]): string {
   const wanted = names.flatMap((n) => (n?.trim() ? [n.trim().toLowerCase()] : []))
   if (wanted.length === 0) return body
@@ -863,10 +867,11 @@ async function createIssueComment(client: LinearToolClient, args: Record<string,
   const a = parseArgs(CREATE_ISSUE_COMMENT_ARGS, args)
   const target = await resolveIssue(client, a.issue)
   const id = randomUUID()
-  const info = await call.attribution?.()
-  // Attribution is the DAEMON's line, not the model's: strip whatever it signed with, then append
-  // the same muted footer the turn's `response` activity carries (§5) — every agent posts through
-  // the one deployment app, so identity can live nowhere but the content.
+  // Once the issue's Resources link this session (§12) a comment there reads as the app's post;
+  // anywhere else — another issue, or a session whose Resources write never landed — the footer
+  // is the only association a reader gets, every agent posting as one app.
+  const own = call.sessionThread ? client.issueOfSession?.(call.sessionThread) : undefined
+  const info = own === target.id ? undefined : await call.attribution?.()
   const body = appendGithubMarkdownChrome(
     stripAgentSignature(a.body, [call.agentName, info?.botName]),
     info ? linearAttributionFooter(linearAttributionOf(info)) : ''
@@ -1212,6 +1217,7 @@ export const LINEAR_SESSION_TOOLS: PlatformSessionTools = {
     if (!tool) throw new Error(`unknown tool: ${name}`)
     return await tool(asClient(env.connection), args, {
       ...(ctx.agentName ? { agentName: ctx.agentName } : {}),
+      ...(ctx.thread ? { sessionThread: ctx.thread } : {}),
       ...(env.attribution ? { attribution: env.attribution } : {})
     })
   }

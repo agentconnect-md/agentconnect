@@ -213,6 +213,9 @@ export function bareLinearUserId(id: string): string {
   return id.startsWith('linear:') ? id.slice('linear:'.length) : id
 }
 
+/** Sessions remembered per connection — a bound, not a budget; a follow-up re-learns its issue. */
+const SESSION_ISSUE_CACHE_MAX = 4096
+
 export class LinearConnection implements PlatformConnection {
   /** All outbound writes funnel through one queue so activities land in converger order. */
   private readonly queue: PlatformSendQueue
@@ -221,6 +224,8 @@ export class LinearConnection implements PlatformConnection {
   private readonly now: () => number
   private readonly sleep: (ms: number) => Promise<void>
   private readonly setTimer: (fn: () => void, ms: number) => unknown
+  /** The issue each AgentSession was opened on, learned off every delivery (§12). */
+  private readonly issueBySession = new Map<string, string>()
   private readonly clearTimer: (handle: unknown) => void
   private readonly newActivityId: () => string
   private cached: CachedToken
@@ -358,6 +363,19 @@ export class LinearConnection implements PlatformConnection {
       id: agentSessionId,
       input: update
     })
+  }
+
+  /** Remember which issue a session sits on; the newest entry is the last evicted. */
+  noteSessionIssue(sessionId: string, issueId: string): void {
+    this.issueBySession.delete(sessionId)
+    this.issueBySession.set(sessionId, issueId)
+    if (this.issueBySession.size > SESSION_ISSUE_CACHE_MAX)
+      this.issueBySession.delete(this.issueBySession.keys().next().value!)
+  }
+
+  /** The issue a session was opened on, when a delivery on this connection has said so. */
+  issueOfSession(sessionId: string): string | undefined {
+    return this.issueBySession.get(sessionId)
   }
 
   /** `attachmentCreate` — the issue's Resources entry. Needs no idempotency key of ours: Linear

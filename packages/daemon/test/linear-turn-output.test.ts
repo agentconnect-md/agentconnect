@@ -576,8 +576,14 @@ class FakePort {
     this.updates.push({ sessionId, update })
   }
   readonly attachments: LinearAttachmentInput[] = []
+  attachmentFails?: Error
   async createIssueAttachment(input: LinearAttachmentInput): Promise<void> {
+    if (this.attachmentFails) throw this.attachmentFails
     this.attachments.push(input)
+  }
+  readonly sessionIssues = new Map<string, string>()
+  noteSessionIssue(sessionId: string, issueId: string): void {
+    this.sessionIssues.set(sessionId, issueId)
   }
 }
 
@@ -649,6 +655,25 @@ describe('applyLinearAction', () => {
     expect(port.attachments).toEqual([input])
     expect(port.activities).toEqual([])
     expect(state.activityBudget).toBe(before)
+  })
+
+  it('notes the session ↔ issue association only once the Resources write landed (§12)', async () => {
+    const port = new FakePort()
+    const turn = linearTurn(port)
+    const input = { issueId: 'issue-1', url: 'https://console.example.test/s/1', title: 'AgentConnect session' }
+    await applyLinearAction(turn, initialLinearTurnState(), { kind: 'attachment', input })
+    expect(port.sessionIssues.get(turn.plan.thread!)).toBe('issue-1')
+
+    const failing = new FakePort()
+    failing.attachmentFails = new Error('attachmentCreate: rate limited')
+    await expect(
+      applyLinearAction(linearTurn(failing), initialLinearTurnState(), {
+        kind: 'attachment',
+        input
+      })
+    ).rejects.toThrow('rate limited')
+    // No Resource, no association: the comment tool keeps its footer on this issue.
+    expect(failing.sessionIssues.size).toBe(0)
   })
 
   it('enforces the per-turn activity budget as the hard egress backstop', async () => {

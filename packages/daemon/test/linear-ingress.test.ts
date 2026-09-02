@@ -175,6 +175,7 @@ async function boot(opts: BootOpts = {}) {
   )
   const posted: Posted[] = []
   const attached: { issueId: string; url: string; title: string; subtitle?: string }[] = []
+  const sessionIssues = new Map<string, string>()
   const store = (daemon as any).store
   const conn = {
     integrationId: INTEGRATION,
@@ -192,6 +193,10 @@ async function boot(opts: BootOpts = {}) {
     async updateSession() {},
     async createIssueAttachment(input: { issueId: string; url: string; title: string; subtitle?: string }) {
       attached.push(input)
+    },
+    sessionIssues,
+    noteSessionIssue(sessionId: string, issueId: string) {
+      sessionIssues.set(sessionId, issueId)
     }
   }
   ;(daemon as any).lnConnByIntegration.set(INTEGRATION, conn)
@@ -969,6 +974,7 @@ describe('§7.5 the turn holds its egress transport', () => {
       workspaceId: bound.workspaceId,
       postActivity: bound.postActivity,
       updateSession: bound.updateSession,
+      noteSessionIssue: bound.noteSessionIssue,
       stop: async () => {
         stoppedAfter = posted.length
       }

@@ -506,28 +506,55 @@ describe('createIssueComment', () => {
     expect(res).toEqual({ posted: true, issue: 'ENG-42', commentId: 'c-9', url: 'u9', createdAt: 't9' })
   })
 
-  it('appends the turn’s standard footer — once, and only to what the model wrote', async () => {
+  /** The same client, on a connection that saw this session opened on `issueId`. */
+  const sessionOn = (c: ReturnType<typeof commenting>, issueId: string): LinearToolClient => ({
+    ...c.impl,
+    issueOfSession: (sessionId) => (sessionId === ctx.thread ? issueId : undefined)
+  })
+
+  it('posts no footer on the session’s own issue — its Resources already link the session', async () => {
     const c = commenting()
-    await run('createIssueComment', { issue: 'ENG-42', body: 'Fixed the retry path.' }, c.impl, {
+    await run('createIssueComment', { issue: 'ENG-42', body: 'Fixed the retry path.' }, sessionOn(c, ISSUE_ID), {
+      attribution: async () => attribution
+    })
+    expect(posted(c)).toBe('Fixed the retry path.')
+  })
+
+  it('still strips the signature the model wrote on the session’s own issue', async () => {
+    for (const signature of ['— atlas', '-- atlas', '— atlas (Claude Code · opus-5)', '*— atlas*']) {
+      const c = commenting()
+      await run(
+        'createIssueComment',
+        { issue: 'ENG-42', body: `Shipped it.\n\n${signature}` },
+        sessionOn(c, ISSUE_ID),
+        {
+          attribution: async () => attribution
+        }
+      )
+      expect(posted(c), signature).toBe('Shipped it.')
+    }
+  })
+
+  it('appends the turn’s standard footer on any OTHER issue — once, and only to what the model wrote', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: 'Fixed the retry path.' }, sessionOn(c, 'issue-other'), {
       attribution: async () => attribution
     })
     expect(posted(c)).toBe(`Fixed the retry path.${FOOTER}`)
     expect(posted(c).match(/sent by/g)).toHaveLength(1)
   })
 
-  it('strips the signature the model wrote before appending the footer', async () => {
-    for (const signature of ['— atlas', '-- atlas', '— atlas (Claude Code · opus-5)', '*— atlas*']) {
-      const c = commenting()
-      await run('createIssueComment', { issue: 'ENG-42', body: `Shipped it.\n\n${signature}` }, c.impl, {
-        attribution: async () => attribution
-      })
-      expect(posted(c), signature).toBe(`Shipped it.${FOOTER}`)
-    }
-  })
-
-  it('posts no footer when the agent’s footer chrome is off', async () => {
+  it('appends the footer when the connection never saw which issue this session sits on', async () => {
     const c = commenting()
     await run('createIssueComment', { issue: 'ENG-42', body: 'Shipped it.\n\n— atlas' }, c.impl, {
+      attribution: async () => attribution
+    })
+    expect(posted(c)).toBe(`Shipped it.${FOOTER}`)
+  })
+
+  it('posts no footer anywhere when the agent’s footer chrome is off', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: 'Shipped it.\n\n— atlas' }, sessionOn(c, 'issue-other'), {
       attribution: async () => undefined
     })
     // The signature still goes: the model was told not to sign, footer or no footer.
@@ -542,7 +569,7 @@ describe('createIssueComment', () => {
 
   it('closes an unterminated code fence before the footer', async () => {
     const c = commenting()
-    await run('createIssueComment', { issue: 'ENG-42', body: '```\nnot closed' }, c.impl, {
+    await run('createIssueComment', { issue: 'ENG-42', body: '```\nnot closed' }, sessionOn(c, 'issue-other'), {
       attribution: async () => attribution
     })
     expect(posted(c)).toBe(`\`\`\`\nnot closed\n\`\`\`${FOOTER}`)

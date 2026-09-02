@@ -1826,22 +1826,33 @@ none` skips it along with everything else Linear-visible. There is **no
   session's own connection (a session on another platform is refused at call
   time), and shares the app's hourly budget through the paced queue.
 
-- **A comment's attribution is daemon-authored, like the response footer.**
-  Linear posts every agent's comment as the one deployment app (§4.3), so a
-  reader can only tell the agents apart from the content — and a model asked
-  to name itself will write whatever it likes. `createIssueComment` therefore
-  appends the SAME muted footer the settling `response` activity carries
-  (`linearAttributionFooter`: agent link, runtime · model, session link),
-  built from the turn's own attribution record rather than from any tool
-  argument, and honouring the same per-agent `showFooter` switch — off means
-  no footer here either. The facts reach the tool as a lazy resolver on the
-  session-tool environment (`PlatformSessionToolEnv.attribution`, wired from
-  `daemon.ts` as `sessionToolAttributionFor`), so a tool that publishes
-  nothing pays no lookup and identity stays a daemon fact on a path the model
-  cannot address. A trailing signature line naming the acting agent is
-  stripped from the body first, since agents that had seen the response
-  footer copied it by hand. Descriptions are untouched: an issue's
-  description is the ticket's own text, not the agent's post.
+- **A comment on the session's own issue carries no footer; anywhere else it
+  carries the response footer.** Linear posts every agent's comment as the
+  one deployment app (§4.3), so the reader's only way to tell who wrote one is
+  an association the daemon made. On the issue the session was opened on that
+  association already exists: the Resources entry links the session (§10.2),
+  and the agent, runtime, model and transcript are one click away, so a
+  footer would only repeat that row under every post. `createIssueComment`
+  can address any issue in the workspace, though, and a comment on another
+  issue has no such entry — nor does a session whose issue this daemon never
+  saw delivered — so there the tool appends the same muted footer the settling
+  `response` carries (`linearAttributionFooter`, built from the turn's own
+  attribution record and honouring `showFooter`). The association is a
+  confirmed one, not an inferred one: the applier calls the connection's
+  `noteSessionIssue(thread, issueId)` only after the `attachment` action's
+  `attachmentCreate` returned, so a Resources write that failed (the apply
+  chain logs and swallows it) leaves the session unlinked and its comments
+  footered; the tool compares the resolved target with
+  `issueOfSession(thread)`. Several sessions on one issue — different agents
+  delegated in turn — each add their own Resources entry, titled with the
+  agent, runtime and model, and a comment there is not pinned to one of them
+  by its body; that is accepted as the same reading Linear's own agent
+  integrations give (the session feeds show which one posted it), and it is
+  the trade the no-footer decision makes on purpose. In both cases a
+  trailing signature line naming the acting agent is stripped first (agents
+  that had seen the response footer copied it by hand), and the §8 convention
+  tells the model not to sign. Descriptions are untouched: an issue's
+  description is the ticket's own text.
 
 - Signing secret: relay-only, via the `rc/bot-assign` secrets bag — never in
   daemon specs, logs, or DTOs. Client secret: CP-only. Refresh token:

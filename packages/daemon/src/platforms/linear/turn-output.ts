@@ -84,6 +84,8 @@ export interface LinearEgressPort {
   updateSession(sessionId: string, update: LinearSessionUpdateInput): Promise<void>
   /** Add (or refresh, by URL) one entry in the issue's Resources. */
   createIssueAttachment(input: LinearAttachmentInput): Promise<void>
+  /** Record that the issue's Resources now link this session — only ever after that write landed (§12). */
+  noteSessionIssue(sessionId: string, issueId: string): void
 }
 
 /** The core turn, as Linear's applier sees it. `Pending` satisfies it structurally. */
@@ -790,6 +792,9 @@ export async function applyLinearAction<TTurn extends LinearTurn>(
     case 'attachment': {
       // Issue-scoped, not feed chrome: it never draws on the activity budget.
       await port.createIssueAttachment(action.input)
+      // The association the comment tool checks exists from here on, not from the delivery
+      // that named the issue: a swallowed failure above leaves the session unlinked.
+      if (turn.plan.thread) port.noteSessionIssue(turn.plan.thread, action.input.issueId)
       return
     }
   }
