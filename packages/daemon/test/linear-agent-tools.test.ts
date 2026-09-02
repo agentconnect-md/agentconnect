@@ -153,6 +153,7 @@ describe('getIssue', () => {
 describe('listIssues', () => {
   it('builds the filter from the named fields and pages newest-updated first', async () => {
     const c = client({
+      TeamsByRef: { teams: { nodes: [{ id: TEAM_ID, key: 'ENG' }] } },
       ListIssues: {
         issues: {
           nodes: [issueNode({ description: 'x'.repeat(400) })],
@@ -174,9 +175,11 @@ describe('listIssues', () => {
       },
       c.impl
     )) as { issues: { description: string }[]; nextCursor?: string }
-    expect(c.calls[0]!.variables).toEqual({
+    // The team reference resolves first (key, name or id), so the filter is always by id.
+    expect(c.calls.map((x) => x.op)).toEqual(['TeamsByRef', 'ListIssues'])
+    expect(c.calls[1]!.variables).toEqual({
       filter: {
-        team: { key: { eqIgnoreCase: 'eng' } },
+        team: { id: { eq: TEAM_ID } },
         state: { name: { eqIgnoreCase: 'In Progress' }, type: { eq: 'started' } },
         assignee: { email: { eqIgnoreCase: 'dana@example.test' } },
         labels: { name: { eqIgnoreCase: 'Bug' } },
@@ -192,11 +195,15 @@ describe('listIssues', () => {
   })
 
   it('sends no filter when nothing narrows the list, and a UUID team by id', async () => {
-    const c = client({ ListIssues: { issues: { nodes: [], pageInfo: { hasNextPage: false } } } })
+    const c = client({
+      ListIssues: { issues: { nodes: [], pageInfo: { hasNextPage: false } } },
+      TeamById: { team: { id: TEAM_ID, key: 'ENG' } }
+    })
     await run('listIssues', {}, c.impl)
     expect(c.calls[0]!.variables).toEqual({ filter: null, first: 25, after: null })
     await run('listIssues', { team: TEAM_ID, assignee: 'Dana Example' }, c.impl)
-    expect(c.calls[1]!.variables.filter).toEqual({
+    expect(c.calls[1]!.op).toBe('TeamById')
+    expect(c.calls[2]!.variables.filter).toEqual({
       team: { id: { eq: TEAM_ID } },
       assignee: { or: [{ displayName: { eqIgnoreCase: 'Dana Example' } }, { name: { eqIgnoreCase: 'Dana Example' } }] }
     })
@@ -526,11 +533,15 @@ describe('projects, cycles and documents', () => {
   }
 
   it('lists projects filtered by team, state and name, newest-updated first', async () => {
-    const c = client({ ListProjects: { projects: { nodes: [projectNode], pageInfo: { hasNextPage: false } } } })
-    const res = await run('listProjects', { team: 'ENG', state: 'started', query: 'oss' }, c.impl)
-    expect(c.calls[0]!.variables).toEqual({
+    const c = client({
+      TeamsByRef: { teams: { nodes: [{ id: TEAM_ID, key: 'ENG' }] } },
+      ListProjects: { projects: { nodes: [projectNode], pageInfo: { hasNextPage: false } } }
+    })
+    const res = await run('listProjects', { team: 'Engineering', state: 'started', query: 'oss' }, c.impl)
+    // A collection filter takes its predicate under `some`; the team name resolved to an id first.
+    expect(c.calls[1]!.variables).toEqual({
       filter: {
-        accessibleTeams: { key: { eqIgnoreCase: 'ENG' } },
+        accessibleTeams: { some: { id: { eq: TEAM_ID } } },
         state: { eq: 'started' },
         name: { containsIgnoreCase: 'oss' }
       },
@@ -591,6 +602,7 @@ describe('projects, cycles and documents', () => {
 
   it('lists a team’s cycles, narrowing to the active one on request', async () => {
     const c = client({
+      TeamsByRef: { teams: { nodes: [{ id: TEAM_ID, key: 'ENG' }] } },
       ListCycles: {
         cycles: {
           nodes: [
@@ -610,8 +622,8 @@ describe('projects, cycles and documents', () => {
       }
     })
     const res = await run('listCycles', { team: 'ENG', active: true }, c.impl)
-    expect(c.calls[0]!.variables).toEqual({
-      filter: { team: { key: { eqIgnoreCase: 'ENG' } }, isActive: { eq: true } },
+    expect(c.calls[1]!.variables).toEqual({
+      filter: { team: { id: { eq: TEAM_ID } }, isActive: { eq: true } },
       first: 25,
       after: null
     })
