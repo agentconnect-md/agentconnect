@@ -268,10 +268,13 @@ user turn when the row's `text` is not the whole story. It has two parts.
   revision, body, how the delivery is answered). Facts, never instructions.
 
 The strategy that assembles a prompt puts both on `NormalizedMessage.turnBody`.
-Every writer of the row persists it — the ingest, the live observer, the
-coalesce path — and because the observer often wins the insert race, the body
-upgrades in place like the post id: added once, never changed or cleared. The
-session manager prompts from `turnBody.prompt ?? text`; the review
+The authoritative ingest and the coalesce path persist it — never the live
+observer, which can run before the review batch and the review workspace have
+finished rewriting the prompt. The observer often wins the insert race, so the
+body upgrades in place like the post id: added once by the ingest, never
+changed or cleared. The session manager prompts from `turnBody.prompt ?? text`,
+and every transcript-to-model render — cold replay and both live
+context-refresh renderers — goes through `transcriptPromptText`; the review
 orchestrator's workspace block and a submitted-review batch rewrite both seats
 together. The reader carries a text row's body inline when it fits the preview
 cap; an oversized one keeps the facts and drops the prompt under
