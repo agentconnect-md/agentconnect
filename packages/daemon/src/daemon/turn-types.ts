@@ -554,6 +554,9 @@ export interface Pending {
    *  session metadata, but housekeeping must not appear in platform/webchat output
    *  or the persisted user-visible activity log. */
   hiddenSessionTitleToolCallIds: Set<string>
+  /** Bounded fingerprint of the prompt text this turn sent, for recognizing a runtime
+   *  fallback title that is only that prompt read back (session/derive-title.ts). */
+  promptEchoPrefix?: string
   /** The live ACP session id for this turn (part of the `this.pending` map key). */
   acpSessionId: string
   /** The same session's OUTWARD id (session-concept.md §1.1) — what the console knows it by, so

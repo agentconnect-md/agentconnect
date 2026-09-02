@@ -424,6 +424,45 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
     await daemon.stop()
   })
 
+  it('streams the SAME clamped title it persists, so live and reloaded labels agree', async () => {
+    // The runtime title is clamped once at the update entry point, not per sink. Were it
+    // clamped only on the way to the store, a live playground would adopt the raw
+    // multi-line title and then silently change on the next reload.
+    const sprawling = `Roll back the deploy\n\n${'and audit every changed manifest '.repeat(8)}`
+    const { factory } = streamingHost([sessionInfo(sprawling), text('done')])
+    const daemon = new Daemon({ root: scaffold(), hostFactory: factory })
+    await daemon.start()
+    const cp = fakeCpClient()
+    ;(daemon as any).cpClient = cp
+
+    const turnId = '77777777-7777-4777-8777-777777777777'
+    await (daemon as any).dispatch(
+      AGENT_ID,
+      {
+        msgId: `webchat:${CONV}`,
+        traceId: turnId,
+        source: 'user' as const,
+        platform: 'webchat' as const,
+        channel: CONV,
+        sender: { id: 'alice', isBot: false },
+        text: 'go',
+        mentionedBots: [] as string[],
+        isDm: true,
+        trigger: 'dm' as const
+      },
+      undefined,
+      { conversationId: CONV, turnId, sink: cp.sink }
+    )
+
+    const streamed = cp.outputs.find((o) => o.event?.kind === 'session_info')?.event as { title: string }
+    const list = (await (daemon as any).store.listSessions(AGENT_ID)) as { title: string | null }[]
+    expect(streamed.title).toBe(list[0]?.title)
+    expect([...streamed.title].length).toBeLessThanOrEqual(80)
+    expect(streamed.title).not.toContain('\n')
+    expect(streamed.title.startsWith('Roll back the deploy and audit')).toBe(true)
+    await daemon.stop()
+  })
+
   it('streams a session title emitted during session initialization', async () => {
     const { factory } = streamingHost([text('done')], {
       initialUpdates: [sessionInfo('Inspect startup state')]

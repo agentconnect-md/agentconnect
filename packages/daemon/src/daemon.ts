@@ -36,6 +36,7 @@ import {
   slackTsForWallClock,
   quotedSourceBlock
 } from './session/session-manager.js'
+import { clampRuntimeTitle, isPromptEchoTitle, promptEchoPrefix } from './session/derive-title.js'
 import {
   ThreadContextCoordinator,
   contextUpdateText,
@@ -11204,6 +11205,11 @@ export class Daemon {
     while (true) {
       if (p.plan.stageAnswer) this.discardStagedAttempt(p)
 
+      // Fingerprint what this attempt sends, so a runtime fallback title that merely joins
+      // these blocks is recognized as an echo when it streams back (onAcpUpdate).
+      p.promptEchoPrefix = promptEchoPrefix(
+        promptBlocks.flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : []))
+      )
       // Start-fence linearization: no await occurs between queue coalescing above
       // (or the prior regeneration decision) and initiating this ACP request.
       const promptPromise = host.prompt(sessionId, promptBlocks)
@@ -13321,17 +13327,26 @@ export class Daemon {
     })
     if (p?.outputSuppressed) return
     // codex-acp >= 1.1.3 auto-titles an untitled session from its raw prompt text
-    // (all first-prompt text blocks joined, unbounded). For runtimes that carry the
-    // standing context inline as the first prompt block, that "title" is an echo of
-    // internal agent/memory context — drop the whole update before it is buffered,
-    // persisted, streamed to webchat, or recorded (issue #659). Real titles (a user
-    // rename, a semantic runtime summary) do not start with the agent-meta block.
+    // (all first-prompt text blocks joined, unbounded). Whatever that prompt led with, the
+    // "title" is an echo of what we just sent — internal agent/memory context on a session
+    // that inlined standing context, the caller's whole message on one that did not (a turn
+    // after `session/load`). Drop it before it is buffered, persisted, streamed to webchat,
+    // or recorded (issue #659). Real titles do not begin with the prompt we sent.
     if (
       update?.sessionUpdate === 'session_info_update' &&
       typeof update.title === 'string' &&
-      isStandingContextTitleEcho(update.title)
+      (isStandingContextTitleEcho(update.title) || isPromptEchoTitle(update.title, p?.promptEchoPrefix ?? ''))
     )
       return
+    // Clamp a surviving runtime title ONCE, here, to the one-line 80-character shape every
+    // other title source produces — like the secret mask above, so the persisted row, Slack,
+    // the live webchat stream, and the recorder cannot disagree. A whitespace-only push sets
+    // nothing anywhere. Must follow the echo test, which reads the unclamped title.
+    if (update?.sessionUpdate === 'session_info_update' && typeof update.title === 'string') {
+      const clamped = clampRuntimeTitle(update.title)
+      if (clamped === undefined) return
+      update = { ...update, title: clamped }
+    }
     const isEarlyMetadata =
       update?.sessionUpdate === 'usage_update' ||
       (update?.sessionUpdate === 'session_info_update' && update.title !== undefined)
@@ -13380,8 +13395,8 @@ export class Daemon {
       // both before touching another logical session if two adapters reuse an id.
       if (rec?.agentId === agentId && rec.acpSessionId === sessionId) {
         await this.persistSessionTitle(rec, update.title)
-        // Runtime title verbatim (trimmed) — never the console's first-message fallback.
-        const slackTitle = typeof update.title === 'string' ? update.title.trim() : ''
+        // The clamped runtime title — never the console's first-message fallback.
+        const slackTitle = typeof update.title === 'string' ? update.title : ''
         if (p && turnChromeFor(p.plan.platform).sessionTitle && slackTitle) {
           this.enqueueApply(p, { kind: 'set-title', text: slackTitle })
         } else if (!p && slackTitle) {
