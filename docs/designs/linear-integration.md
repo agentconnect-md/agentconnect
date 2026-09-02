@@ -1163,7 +1163,8 @@ tile.
     unnecessary — the agent surface is four mutations and two queries); token
     cache + `linearcred` renewal; `PlatformSendQueue`; self-echo guard on
     `appUserId`. The read port answers what Linear affords — `getChannelInfo`
-    resolves the issue, `getUserProfile` the Linear user — and returns
+    names the connected workspace (the channel, §4.5), `getUserProfile` the
+    Linear user behind a `linear:`-prefixed sender id — and returns
     empty/`null` elsewhere (no `listBotChannels`, no `leaveChannel`,
     `downloadFile` deferred).
   - `turn-output.ts` — the streaming Layer-2 surface + `LinearConverger` +

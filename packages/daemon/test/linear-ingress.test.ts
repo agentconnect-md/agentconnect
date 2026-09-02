@@ -372,6 +372,42 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     await daemon.stop()
   })
 
+  it('names the delegator in the §8 header when the event carried only an id', async () => {
+    // A `created` event has no activity user — only `creatorId` — so the relay ships the id
+    // alone and the daemon fills the name with one bounded lookup, keyed as the relay keyed it.
+    const { daemon } = await boot()
+    const asked: string[] = []
+    ;(daemon as any).lnConnByIntegration.get(INTEGRATION).getUserProfile = async (id: string) => {
+      asked.push(id)
+      return { id, name: 'ada', isBot: false }
+    }
+    const dispatched: { text: string }[] = []
+    ;(daemon as any).dispatch = vi.fn(async (_a: string, msg: any) => {
+      dispatched.push(msg)
+      return null
+    })
+    await im(daemon, delivery({ sender: { id: 'linear:user-1', isBot: false } }))
+    expect(dispatched[0]!.text.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by ada')
+    expect(asked).toContain('linear:user-1')
+    await daemon.stop()
+  })
+
+  it('reads the delegator’s name from the display cache before asking Linear', async () => {
+    const { daemon, store } = await boot()
+    await store.setDisplayName('linear:user-1', 'Dana (cached)', Date.now())
+    ;(daemon as any).lnConnByIntegration.get(INTEGRATION).getUserProfile = async () => {
+      throw new Error('the cache should have answered')
+    }
+    const dispatched: { text: string }[] = []
+    ;(daemon as any).dispatch = vi.fn(async (_a: string, msg: any) => {
+      dispatched.push(msg)
+      return null
+    })
+    await im(daemon, delivery({ sender: { id: 'linear:user-1', isBot: false } }))
+    expect(dispatched[0]!.text.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by Dana (cached)')
+    await daemon.stop()
+  })
+
   it('rewrites the dispatched text into the §8 prompt', async () => {
     const { daemon } = await boot()
     const dispatched: { text: string; headless?: boolean }[] = []

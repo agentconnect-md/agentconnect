@@ -749,20 +749,32 @@ describe('linear graphql client (§9.4)', () => {
 })
 
 describe('linear read port (§9.4 — what Linear affords)', () => {
-  it('resolves the issue behind a channel id into identifier · title', async () => {
-    const { conn, calls } = harness({
-      respond: () => jsonResponse({ data: { issue: { id: ISSUE, identifier: 'TEAM-123', title: 'Fix the parser' } } })
-    })
-    expect(await conn.getChannelInfo(ISSUE)).toEqual({ id: ISSUE, name: 'TEAM-123 · Fix the parser', isIm: false })
-    expect(calls[0]!.query).toContain('issue(')
-    expect(calls[0]!.variables).toEqual({ id: ISSUE })
+  it('names the channel after the connected workspace, with no lookup and never an issue', async () => {
+    // The one display slot is shared by every session in the workspace (§4.5): an issue-derived
+    // answer here would relabel all of them with whichever issue was read last.
+    const { conn, calls } = harness()
+    expect(await conn.getChannelInfo(WORKSPACE)).toEqual({ id: WORKSPACE, name: 'Example Workspace', isIm: false })
+    expect(calls).toHaveLength(0)
   })
 
-  it('answers the bare id for a session with no issue, and for a failed lookup', async () => {
-    const missing = harness({ respond: () => jsonResponse({ data: { issue: null } }) })
-    expect(await missing.conn.getChannelInfo(SESSION)).toEqual({ id: SESSION, isIm: false })
-    const failing = harness({ respond: () => jsonResponse({}, 500) })
-    expect(await failing.conn.getChannelInfo(SESSION)).toEqual({ id: SESSION, isIm: false })
+  it('omits the channel name when the spec carried none, still without a lookup', async () => {
+    const config = { ...linearConfig() } as Record<string, unknown>
+    delete config.workspaceName
+    const { conn, calls } = harness({ config })
+    expect(await conn.getChannelInfo(WORKSPACE)).toEqual({ id: WORKSPACE, isIm: false })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('strips the relay’s linear: prefix for the user query and answers under the caller’s key', async () => {
+    const { conn, calls } = harness({
+      respond: () => jsonResponse({ data: { user: { id: 'user-9', name: 'Ada Lovelace', displayName: 'ada' } } })
+    })
+    // The display cache is keyed by the id the message carried, so the answer keeps it.
+    expect(await conn.getUserProfile('linear:user-9')).toMatchObject({ id: 'linear:user-9', name: 'ada' })
+    expect(calls[0]!.variables).toEqual({ id: 'user-9' })
+    // The self-echo guard compares bare ids on both sides.
+    const self = harness({ respond: () => jsonResponse({ data: { user: { id: 'app-user-1', name: 'Agent' } } }) })
+    expect((await self.conn.getUserProfile('linear:app-user-1')).isBot).toBe(true)
   })
 
   it('resolves a Linear user, preferring the display name and keeping the full name', async () => {
