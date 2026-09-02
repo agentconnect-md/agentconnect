@@ -265,10 +265,12 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       host.cpClient()?.emitMemoryConnectionFacts(host.memoryConnections()?.facts() ?? [])
       await host.replayHookTerminalReports()
       await host.replayChannelSnapshots()
-      host.replayApprovalActivity()
       // Only snapshots written to the durable outbox by this build are
       // replayed. Historical session rows are never scanned or backfilled.
-      void host.sessionMetadataOutbox().drainSessionMetadataSnapshots()
+      // The approval replay follows the drain: a wait for a session whose `start` snapshot is still in
+      // the outbox would be dropped by the CP (no row to flag) and never re-asserted (§7).
+      const replayApprovals = () => host.replayApprovalActivity()
+      void host.sessionMetadataOutbox().drainSessionMetadataSnapshots().then(replayApprovals, replayApprovals)
       // Replay remote MCP revocations that could not reach the CP (revokes
       // queued while disconnected or left over from a previous process).
       void host.webchatMcpRevocations().drainWebchatMcpRevocations()

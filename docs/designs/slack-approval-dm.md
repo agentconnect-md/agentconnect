@@ -353,10 +353,13 @@ publishes a `session-state` event on the org SSE stream after commit. Two
 guards keep the column honest: the CP resets a daemon's `awaiting_permission`
 rows to `idle` when that daemon's connection closes and when a session's `end`
 milestone lands, and the daemon re-asserts its live waits from the
-coordinator's in-memory set on every (re)connect. The disconnect clear is
-queued per daemon in the connection registry and the `agent/activity` handler
-waits for that queue, so a fast reconnect's replay always writes after the
-old socket's clear rather than under it.
+coordinator's in-memory set on every (re)connect, after its durable session
+metadata outbox has drained, so every replayed wait has a row to land on.
+Every approval-state write on the CP — the handler's persist, the close
+clear, and a silent clear on `register` — runs on one per-daemon tail in the
+connection registry, so the last mutation a connection makes is always its
+clear, a fast reconnect's replay always writes after it, and a superseded
+socket's leftovers cannot outlive the connection that made them.
 
 **Feed.** `GET /orgs/:orgId/sessions?view=flat&activityState=awaiting_permission`
 — an activity-state filter on the existing list route, whose rows now carry

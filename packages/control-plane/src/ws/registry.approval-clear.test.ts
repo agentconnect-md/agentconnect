@@ -1,49 +1,54 @@
 import { describe, expect, it } from 'vitest'
 import { ConnectionRegistry } from './registry.js'
 
-describe('ConnectionRegistry approval-clear chain (slack-approval-dm.md §7)', () => {
+describe('ConnectionRegistry approval-state tail (slack-approval-dm.md §7)', () => {
   it('settles immediately when nothing is in flight', async () => {
     const reg = new ConnectionRegistry()
-    await expect(reg.approvalClearsSettled('d1')).resolves.toBeUndefined()
+    await expect(reg.approvalMutationsSettled('d1')).resolves.toBeUndefined()
   })
 
-  it('waiters resolve only after every queued clear ran, in order, per daemon', async () => {
+  it('runs mutations in arrival order per daemon and hands each caller its own result', async () => {
     const reg = new ConnectionRegistry()
     const order: string[] = []
     let releaseFirst!: () => void
     const first = new Promise<void>((resolve) => (releaseFirst = resolve))
-    reg.runApprovalClear('d1', async () => {
+    const a = reg.runApprovalMutation('d1', async () => {
       await first
       order.push('first')
+      return 'a'
     })
-    reg.runApprovalClear('d1', async () => {
+    const b = reg.runApprovalMutation('d1', async () => {
       order.push('second')
+      return 'b'
     })
-    reg.runApprovalClear('d2', async () => {
+    await reg.runApprovalMutation('d2', async () => {
       order.push('other-daemon')
     })
     let settled = false
-    const waiter = reg.approvalClearsSettled('d1').then(() => (settled = true))
-    await reg.approvalClearsSettled('d2')
+    const waiter = reg.approvalMutationsSettled('d1').then(() => (settled = true))
     expect(order).toEqual(['other-daemon'])
     expect(settled).toBe(false)
     releaseFirst()
+    await expect(a).resolves.toBe('a')
+    await expect(b).resolves.toBe('b')
     await waiter
     expect(order).toEqual(['other-daemon', 'first', 'second'])
-    // The chain is released once drained, so the next waiter does not wait on history.
-    await expect(reg.approvalClearsSettled('d1')).resolves.toBeUndefined()
+    // The tail is released once drained, so the next waiter does not wait on history.
+    await expect(reg.approvalMutationsSettled('d1')).resolves.toBeUndefined()
   })
 
-  it('a failing clear does not wedge the chain or reject waiters', async () => {
+  it('a failing mutation rejects only its own caller and never wedges the tail', async () => {
     const reg = new ConnectionRegistry()
-    reg.runApprovalClear('d1', async () => {
+    const failed = reg.runApprovalMutation('d1', async () => {
       throw new Error('pool closed')
     })
     let ran = false
-    reg.runApprovalClear('d1', async () => {
+    const next = reg.runApprovalMutation('d1', async () => {
       ran = true
     })
-    await expect(reg.approvalClearsSettled('d1')).resolves.toBeUndefined()
+    await expect(failed).rejects.toThrow('pool closed')
+    await expect(next).resolves.toBeUndefined()
+    await expect(reg.approvalMutationsSettled('d1')).resolves.toBeUndefined()
     expect(ran).toBe(true)
   })
 })

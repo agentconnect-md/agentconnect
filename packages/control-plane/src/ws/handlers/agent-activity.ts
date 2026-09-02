@@ -11,12 +11,15 @@ export const handleAgentActivity: Handler = async (frame, conn, deps) => {
   if (!orgId) return
   const { agentId, sessionId, state } = frame.payload
   const daemonId = DaemonId(conn.daemonId)
-  // Order behind the previous connection's disconnect clear: its late `idle` must not outlive this replay.
-  await deps.connReg.approvalClearsSettled(conn.daemonId)
-  await runForReportingAgent(orgId, AgentId(agentId), daemonId, deps, async () => {
-    // A row that never committed has no visibility to check, so it is not published either.
-    if (await deps.session.setActivityState(SessionId(sessionId), AgentId(agentId), state)) {
-      deps.events.publishState(daemonId, frame.payload)
-    }
+  // On the per-daemon tail: behind a predecessor socket's close clear and this socket's register
+  // clear, and ahead of its own close clear, so the last mutation a connection makes is its clear.
+  await deps.connReg.runApprovalMutation(conn.daemonId, async () => {
+    if (conn.state === 'CLOSED') return
+    await runForReportingAgent(orgId, AgentId(agentId), daemonId, deps, async () => {
+      // A row that never committed has no visibility to check, so it is not published either.
+      if (await deps.session.setActivityState(SessionId(sessionId), AgentId(agentId), state)) {
+        deps.events.publishState(daemonId, frame.payload)
+      }
+    })
   })
 }

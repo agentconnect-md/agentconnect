@@ -14,6 +14,8 @@ import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { InMemorySessionEventSink, type SessionEventEnvelope } from '../../src/events/sink.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
 import { ConnectionRegistry } from '../../src/ws/registry.js'
+import { FakeClock } from '../fakes/fake-clock.js'
+import { clearAwaitingApprovals } from '../../src/ws/approval-waits.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 
@@ -67,13 +69,18 @@ async function reportActivity(
   events: InMemorySessionEventSink,
   state: string,
   daemonId = DAEMON,
-  connReg = new ConnectionRegistry()
+  connReg = new ConnectionRegistry(),
+  connState: 'READY' | 'CLOSED' = 'READY'
 ) {
   await handleAgentActivity(
     frame('agent/activity', { agentId: AGENT, sessionId: SESSION, state, ts: '2026-07-05T00:00:01.000Z' }),
-    { daemonId, orgId: DEFAULT_ORG_ID } as DaemonConnection,
+    { daemonId, orgId: DEFAULT_ORG_ID, state: connState } as DaemonConnection,
     deps(events, connReg)
   )
+}
+
+function clearDeps(events: InMemorySessionEventSink) {
+  return { session: new PgSessionRepo(prisma), events, clock: new FakeClock(Date.parse('2026-07-05T00:00:02.000Z')) }
 }
 
 async function awaitingSessions(app: HttpApp): Promise<string[]> {
@@ -167,7 +174,7 @@ describe('agent/activity → SessionMeta.activityState → GET /sessions?activit
     let release!: () => void
     const gate = new Promise<void>((resolve) => (release = resolve))
     let cleared: Array<{ id: string }> = []
-    connReg.runApprovalClear(DAEMON, async () => {
+    void connReg.runApprovalMutation(DAEMON, async () => {
       await gate
       cleared = await repo.clearAwaitingPermissionForDaemon(DaemonId(DAEMON))
     })
@@ -180,7 +187,47 @@ describe('agent/activity → SessionMeta.activityState → GET /sessions?activit
     expect(cleared.map((row) => row.id)).toEqual([SESSION])
     // The clear committed `idle` first; the replay's `awaiting_permission` is the final word.
     expect(await storedState()).toBe('awaiting_permission')
-    await connReg.approvalClearsSettled(DAEMON)
+    await connReg.approvalMutationsSettled(DAEMON)
+  })
+
+  it('a closing socket’s in-flight write is outlived by its own close clear, never the reverse', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedLaunch(prisma, LAUNCH, AGENT, DAEMON)
+    const events = new InMemorySessionEventSink()
+    const connReg = new ConnectionRegistry()
+    await reportSession(events, 'start')
+
+    // The write was accepted before the close; the close clear queues behind it on the same tail.
+    const write = reportActivity(events, 'awaiting_permission', DAEMON, connReg)
+    const clear = connReg.runApprovalMutation(DAEMON, () => clearAwaitingApprovals(clearDeps(events), DAEMON, true))
+    await Promise.all([write, clear])
+    expect(await storedState()).toBe('idle')
+
+    // A frame whose connection already closed before its turn on the tail writes nothing at all.
+    const publishState = vi.spyOn(events, 'publishState')
+    await reportActivity(events, 'awaiting_permission', DAEMON, connReg, 'CLOSED')
+    expect(await storedState()).toBe('idle')
+    expect(publishState).not.toHaveBeenCalled()
+  })
+
+  it('the register-time clear resets silently; the replay that follows publishes the live wait', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedLaunch(prisma, LAUNCH, AGENT, DAEMON)
+    const events = new InMemorySessionEventSink()
+    const connReg = new ConnectionRegistry()
+    await reportSession(events, 'start')
+    await reportActivity(events, 'awaiting_permission', DAEMON, connReg)
+
+    const seen: SessionEventEnvelope[] = []
+    events.subscribe((e) => seen.push(e))
+    await connReg.runApprovalMutation(DAEMON, () => clearAwaitingApprovals(clearDeps(events), DAEMON, false))
+    expect(await storedState()).toBe('idle')
+    expect(seen).toEqual([])
+    await reportActivity(events, 'awaiting_permission', DAEMON, connReg)
+    expect(await storedState()).toBe('awaiting_permission')
+    expect(seen.map((e) => e.state?.state)).toEqual(['awaiting_permission'])
   })
 
   it('a disconnected daemon has its waits cleared, and only its own', async () => {

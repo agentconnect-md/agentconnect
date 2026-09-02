@@ -105,21 +105,27 @@ export class ConnectionRegistry {
     return this.byDaemon.has(daemonId)
   }
 
-  /** Per-daemon chain of disconnect clears of approval waits; a reconnect's replay writes only after it (slack-approval-dm.md §7). */
-  private readonly approvalClears = new Map<string, Promise<void>>()
+  /** Per-daemon tail of approval-state writes — `agent/activity` persists and the register/close clears — so they commit in arrival order (slack-approval-dm.md §7). */
+  private readonly approvalMutations = new Map<string, Promise<unknown>>()
 
-  /** Queue a clear behind any still in flight for the daemon, so two closes never interleave their writes. */
-  runApprovalClear(daemonId: string, clear: () => Promise<void>): void {
-    const chained = (this.approvalClears.get(daemonId) ?? Promise.resolve()).then(clear).catch(() => undefined)
-    const tracked: Promise<void> = chained.finally(() => {
-      if (this.approvalClears.get(daemonId) === tracked) this.approvalClears.delete(daemonId)
+  /** Run one approval-state mutation after every earlier one for the daemon; a failed predecessor never blocks the next. */
+  runApprovalMutation<T>(daemonId: string, mutate: () => Promise<T>): Promise<T> {
+    const prior = this.approvalMutations.get(daemonId) ?? Promise.resolve()
+    const run = prior.then(mutate, mutate)
+    const tracked: Promise<unknown> = run.then(
+      () => undefined,
+      () => undefined
+    )
+    void tracked.then(() => {
+      if (this.approvalMutations.get(daemonId) === tracked) this.approvalMutations.delete(daemonId)
     })
-    this.approvalClears.set(daemonId, tracked)
+    this.approvalMutations.set(daemonId, tracked)
+    return run
   }
 
-  /** Resolves once every queued clear for the daemon has committed; immediately when none is in flight. */
-  approvalClearsSettled(daemonId: string): Promise<void> {
-    return this.approvalClears.get(daemonId) ?? Promise.resolve()
+  /** Resolves once every queued approval-state mutation for the daemon has settled; immediately when none is in flight. */
+  approvalMutationsSettled(daemonId: string): Promise<void> {
+    return (this.approvalMutations.get(daemonId) ?? Promise.resolve()).then(() => undefined)
   }
 
   /** Publish the point at which a newly-authenticated connection may accept
