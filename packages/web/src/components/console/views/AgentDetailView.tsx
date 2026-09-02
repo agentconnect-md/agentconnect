@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
@@ -143,6 +143,11 @@ const HOOK_REFRESH_MS = 30_000
 // triggers: always offered. Their one-liners (`INTEGRATION_BLURB`) are a host
 // projection over the same axis, drift-tested beside the picker's tiles.
 const HOOK_RUN_REFRESH_MS = 10_000
+
+// A module with no card-scope state still renders through a wrapper, so the card is written once.
+function PlainCardScope({ children }: { integration: IntegrationRow; children: ReactNode }) {
+  return <>{children}</>
+}
 
 function FeishuRegionBadge({ integration }: { integration: Pick<IntegrationRow, 'platform' | 'region'> }) {
   if (integration.platform !== 'feishu') return null
@@ -1373,70 +1378,84 @@ export default function AgentDetailView() {
             </div>
             {hasInt ? (
               <>
-                {/* Dual-rendered lists: mobile flat rows (no delete, padX 16) vs
-                    desktop bordered sub-cards (delete iconbtn, padX 14). */}
+                {/* Dual-rendered lists: mobile flat rows (padX 16) vs desktop
+                    bordered sub-cards (padX 14); both unlink from the header. */}
                 <div className="desktop:hidden">
                   {agentInts.map((g, i) => {
                     // A module with its own card body replaces the generic conversation
                     // list — and, with it, the header's first-channel subline.
-                    const AgentCardBody = platformAgentCard(g.platform)?.Body
+                    const card = platformAgentCard(g.platform)
+                    const AgentCardBody = card?.Body
+                    const HeaderActions = card?.HeaderActions
+                    const CardScope = card?.CardProvider ?? PlainCardScope
                     return (
                       <div key={i} className={i > 0 ? 'border-t border-(--border-subtle)' : undefined}>
-                        <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3">
-                          <Link
-                            href={botSettingsHref(g.botId)}
-                            className="group flex min-w-0 flex-1 items-center gap-3"
-                          >
-                            <span className="imark h-9 w-9 flex-none rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
-                              <PlatformMark platform={g.platform} />
-                            </span>
-                            <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
-                              <span className="flex min-w-0 items-center gap-2">
-                                <span className="truncate font-sans text-[14px] font-semibold leading-normal group-hover:underline">
-                                  {g.name}
-                                </span>
-                                <FeishuRegionBadge integration={g} />
-                              </span>
-                              {!AgentCardBody && g.channels[0] && (
-                                <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                                  {roomGlyph(g.channels[0].kind, g.platform)}
-                                  {rowLabel(g.channels[0])}
-                                </span>
-                              )}
-                            </span>
-                          </Link>
-                          <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--brand-soft) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--brand-soft-text)">
-                            <span className="h-[6px] w-[6px] rounded-full bg-(--status-online)" />
-                            connected
-                          </span>
-                          {g.platform === 'discord' && g.discordAppId && (
-                            <a
-                              href={discordBotInviteUrl(g.discordAppId)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              title="Invite this bot to a Discord server — preset scopes &amp; permissions"
-                              aria-label="Add this bot to a Discord server"
-                              className="iconbtn h-7 w-7 flex-none"
-                              onClick={(e) => e.stopPropagation()}
+                        <CardScope integration={g}>
+                          <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3">
+                            <Link
+                              href={botSettingsHref(g.botId)}
+                              className="group flex min-w-0 flex-1 items-center gap-3"
                             >
-                              <Icon name="external-link" size={12} />
-                            </a>
+                              <span className="imark h-9 w-9 flex-none rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
+                                <PlatformMark platform={g.platform} />
+                              </span>
+                              <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <span className="truncate font-sans text-[14px] font-semibold leading-normal group-hover:underline">
+                                    {g.name}
+                                  </span>
+                                  <FeishuRegionBadge integration={g} />
+                                </span>
+                                {!AgentCardBody && g.channels[0] && (
+                                  <span className="font-mono text-[12px] font-normal leading-normal text-(--text-tertiary)">
+                                    {roomGlyph(g.channels[0].kind, g.platform)}
+                                    {rowLabel(g.channels[0])}
+                                  </span>
+                                )}
+                              </span>
+                            </Link>
+                            <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--brand-soft) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--brand-soft-text)">
+                              <span className="h-[6px] w-[6px] rounded-full bg-(--status-online)" />
+                              connected
+                            </span>
+                            {g.platform === 'discord' && g.discordAppId && (
+                              <a
+                                href={discordBotInviteUrl(g.discordAppId)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="Invite this bot to a Discord server — preset scopes &amp; permissions"
+                                aria-label="Add this bot to a Discord server"
+                                className="iconbtn h-7 w-7 flex-none"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <Icon name="external-link" size={12} />
+                              </a>
+                            )}
+                            {HeaderActions && <HeaderActions integration={g} />}
+                            <button
+                              className="iconbtn h-7 w-7 flex-none"
+                              title="Delete integration"
+                              aria-label={`Delete the ${g.name} integration`}
+                              onClick={() => openModal('deleteIntegration', g)}
+                            >
+                              <Icon name="unplug" size={14} />
+                            </button>
+                          </div>
+                          {AgentCardBody ? (
+                            <AgentCardBody integration={g} padX={16} />
+                          ) : (
+                            <IntegrationChannelList
+                              integrationId={g.id}
+                              channels={g.channels}
+                              botId={g.botId}
+                              agentId={da.id}
+                              platform={g.platform}
+                              shareable={g.shareable}
+                              gated={da.visibility === 'restricted'}
+                              padX={16}
+                            />
                           )}
-                        </div>
-                        {AgentCardBody ? (
-                          <AgentCardBody integration={g} padX={16} />
-                        ) : (
-                          <IntegrationChannelList
-                            integrationId={g.id}
-                            channels={g.channels}
-                            botId={g.botId}
-                            agentId={da.id}
-                            platform={g.platform}
-                            shareable={g.shareable}
-                            gated={da.visibility === 'restricted'}
-                            padX={16}
-                          />
-                        )}
+                        </CardScope>
                       </div>
                     )
                   })}
@@ -1606,74 +1625,81 @@ export default function AgentDetailView() {
                 </div>
                 <div className="hidden flex-col gap-3 px-4 py-[14px] desktop:flex">
                   {agentInts.map((g, i) => {
-                    const AgentCardBody = platformAgentCard(g.platform)?.Body
+                    const card = platformAgentCard(g.platform)
+                    const AgentCardBody = card?.Body
+                    const HeaderActions = card?.HeaderActions
+                    const CardScope = card?.CardProvider ?? PlainCardScope
                     return (
                       <div key={i} className="overflow-hidden rounded-[9px] border border-(--border-subtle)">
-                        <div className="flex items-center gap-3 px-[14px] py-3">
-                          <Link
-                            href={botSettingsHref(g.botId)}
-                            className="group flex min-w-0 flex-1 items-center gap-3"
-                          >
-                            <span className="imark h-[34px] w-[34px] rounded-md">
-                              <PlatformMark platform={g.platform} />
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2">
-                                <span className="truncate font-sans text-[13.5px] font-semibold leading-normal group-hover:underline">
-                                  {g.name}
-                                </span>
-                                <FeishuRegionBadge integration={g} />
-                                <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
-                                  <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
-                                  connected
-                                </span>
-                                {g.shareable && (
-                                  <span
-                                    className="badge bg-(--surface-app) text-(--text-tertiary)"
-                                    title="Shared bot — used by multiple agents, inbound via a relay. Each channel dispatches to one of them by default."
-                                  >
-                                    <Icon name="users" size={11} />
-                                    shared · {g.agentCount} {g.agentCount === '1' ? 'agent' : 'agents'}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </Link>
-                          {g.platform === 'discord' && g.discordAppId && (
-                            <a
-                              href={discordBotInviteUrl(g.discordAppId)}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              title="Invite this bot to a Discord server — preset scopes &amp; permissions"
-                              aria-label="Add this bot to a Discord server"
-                              className="iconbtn flex-none"
-                              onClick={(e) => e.stopPropagation()}
+                        <CardScope integration={g}>
+                          <div className="flex items-center gap-3 px-[14px] py-3">
+                            <Link
+                              href={botSettingsHref(g.botId)}
+                              className="group flex min-w-0 flex-1 items-center gap-3"
                             >
-                              <Icon name="external-link" size={14} />
-                            </a>
+                              <span className="imark h-[34px] w-[34px] rounded-md">
+                                <PlatformMark platform={g.platform} />
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="truncate font-sans text-[13.5px] font-semibold leading-normal group-hover:underline">
+                                    {g.name}
+                                  </span>
+                                  <FeishuRegionBadge integration={g} />
+                                  <span className="badge bg-(--brand-soft) text-(--brand-soft-text)">
+                                    <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
+                                    connected
+                                  </span>
+                                  {g.shareable && (
+                                    <span
+                                      className="badge bg-(--surface-app) text-(--text-tertiary)"
+                                      title="Shared bot — used by multiple agents, inbound via a relay. Each channel dispatches to one of them by default."
+                                    >
+                                      <Icon name="users" size={11} />
+                                      shared · {g.agentCount} {g.agentCount === '1' ? 'agent' : 'agents'}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </Link>
+                            {g.platform === 'discord' && g.discordAppId && (
+                              <a
+                                href={discordBotInviteUrl(g.discordAppId)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="Invite this bot to a Discord server — preset scopes &amp; permissions"
+                                aria-label="Add this bot to a Discord server"
+                                className="iconbtn flex-none"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <Icon name="external-link" size={14} />
+                              </a>
+                            )}
+                            {HeaderActions && <HeaderActions integration={g} />}
+                            <button
+                              className="iconbtn"
+                              title="Delete integration"
+                              aria-label={`Delete the ${g.name} integration`}
+                              onClick={() => openModal('deleteIntegration', g)}
+                            >
+                              <Icon name="unplug" size={15} />
+                            </button>
+                          </div>
+                          {AgentCardBody ? (
+                            <AgentCardBody integration={g} padX={14} />
+                          ) : (
+                            <IntegrationChannelList
+                              integrationId={g.id}
+                              channels={g.channels}
+                              botId={g.botId}
+                              agentId={da.id}
+                              platform={g.platform}
+                              shareable={g.shareable}
+                              gated={da.visibility === 'restricted'}
+                              padX={14}
+                            />
                           )}
-                          <button
-                            className="iconbtn"
-                            title="Delete integration"
-                            onClick={() => openModal('deleteIntegration', g)}
-                          >
-                            <Icon name="unplug" size={15} />
-                          </button>
-                        </div>
-                        {AgentCardBody ? (
-                          <AgentCardBody integration={g} padX={14} />
-                        ) : (
-                          <IntegrationChannelList
-                            integrationId={g.id}
-                            channels={g.channels}
-                            botId={g.botId}
-                            agentId={da.id}
-                            platform={g.platform}
-                            shareable={g.shareable}
-                            gated={da.visibility === 'restricted'}
-                            padX={14}
-                          />
-                        )}
+                        </CardScope>
                       </div>
                     )
                   })}

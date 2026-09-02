@@ -107,6 +107,27 @@ describe('the linear transcript and card semantics', () => {
     }
   })
 
+  it('puts its one repair in the header’s action track, over card-scoped state', () => {
+    // The header already names the workspace and unlinks it, so the module adds Reconnect
+    // there rather than drawing a second row — and the provider is what lets the button and
+    // the body's band report one round trip.
+    expect(platformAgentCard('linear')?.HeaderActions).toBeDefined()
+    expect(platformAgentCard('linear')?.CardProvider).toBeDefined()
+  })
+
+  it('says why a private agent stays quiet in a team, in one clause', () => {
+    // §4.3: a gated member acts in a team only as its default; the host's generic banner
+    // would promise a per-member enable the model does not have.
+    const note = channelListSemantics('linear').gatedNote
+    expect(note).toBe('Private agent: it answers in a team only where it is the default and the team is not off.')
+  })
+
+  it('keeps the footer to what the rows do not already say', () => {
+    const footerNote = channelListSemantics('linear').footerNote ?? ''
+    expect(footerNote).toContain('Every team of this workspace is listed here')
+    expect(footerNote.split('. ').length).toBe(1)
+  })
+
   it('is the only module whose roster is derived, or whose triggers are narrowed', () => {
     // Both are capabilities core reads; neither may become "the platform is Linear".
     for (const m of platformRegistry.all()) {
@@ -114,6 +135,7 @@ describe('the linear transcript and card semantics', () => {
       expect(m.channelList?.roster, m.platformId).toBeUndefined()
       expect(m.channelList?.triggers, m.platformId).toBeUndefined()
       expect(m.channelList?.ownerChangeWarning, m.platformId).toBeUndefined()
+      expect(m.channelList?.gatedNote, m.platformId).toBeUndefined()
     }
   })
 
