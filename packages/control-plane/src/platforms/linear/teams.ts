@@ -12,6 +12,7 @@
  * member's sibling rows are the shared-bot replication `HttpBot` already performs on the next
  * compile — one trigger per team for the whole bot, never a per-member value.
  */
+import { conversationLink } from '@agentconnect.md/protocol'
 import type { AgentId, IntegrationId } from '../../domain/ids.js'
 import { isGatedAgent } from '../../orchestrator/placement.js'
 import type { AgentRecord, ChannelTrigger, IntegrationChannelRepo } from '../../persistence/ports.js'
@@ -33,6 +34,13 @@ export const linearTeamChannelName = (team: LinearTeam, workspaceName?: string |
   return space ? `${space}${LINEAR_LABEL_SEPARATOR}${flat(team.name)}` : flat(team.name)
 }
 
+/** The team's handle and page as the row stores them (§4.5), narrowed through the wire
+ *  contract's own helper and stated as explicit nulls for `seedLinearTeamRows`' reason. */
+export const linearTeamRowLink = (team: LinearTeam): { key: string | null; url: string | null } => {
+  const link = conversationLink(team.key, team.url)
+  return { key: link.key ?? null, url: link.url ?? null }
+}
+
 /**
  * What a freshly seeded team row's trigger is — the same §14 arm every other conversation seat
  * takes, asked of the members that could own the row: `mention` when any of them is unrestricted,
@@ -45,9 +53,9 @@ export const linearTeamSeedTrigger = (candidates: readonly Pick<AgentRecord, 'vi
 /**
  * Write one row per team on one install — the connect tail's step (§7.1) and the reconciler tick's
  * seed for a team discovered later. Two writes per team when there is an owner, because they carry
- * different halves: `upsertConversation` is the only one that takes the team NAME and its glyph,
- * `upsertAgent` the only one that marks the owner. Ordered so the row is born with its trigger,
- * which the ownership write then preserves.
+ * different halves: `upsertConversation` is the only one that takes the team NAME, its glyph and
+ * its link; `upsertAgent` the only one that marks the owner. Ordered so the row is born with its
+ * trigger, which the ownership write then preserves.
  *
  * `owner` is OPTIONAL, and its absence is a real state rather than a failure: a row whose owner
  * would be a member the route compile cannot route to must be born ownerless instead, because the
@@ -71,6 +79,7 @@ export async function seedLinearTeamRows(
         // that carries no glyph says so — and an existing row that had one is cleared.
         icon: team.icon ?? null,
         color: team.color ?? null,
+        ...linearTeamRowLink(team),
         kind: 'channel'
       },
       { defaultTrigger: opts.trigger }

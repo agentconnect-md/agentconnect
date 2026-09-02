@@ -63,6 +63,27 @@ describe('observePlatformChats — the conversation row a platform reports as ob
     expect(reports).toHaveLength(1)
   })
 
+  it('carries the chat’s handle and link onto the row, learned once like the glyph', async () => {
+    const { sync, snapshots, reports } = harness()
+    const linked = {
+      id: 'team-1',
+      name: 'Acme / Engineering',
+      key: 'ENG',
+      url: 'https://linear.app/example-workspace/team/ENG',
+      isPrivate: false
+    }
+    await sync.observePlatformChats('linear', [linked], [INTEGRATION])
+    expect(rows(snapshots)[0]).toMatchObject({ key: 'ENG', url: 'https://linear.app/example-workspace/team/ENG' })
+    // A later observation that resolved neither leaves the linked row standing, and reports nothing.
+    await sync.observePlatformChats(
+      'linear',
+      [{ id: 'team-1', name: 'Acme / Engineering', isPrivate: false }],
+      [INTEGRATION]
+    )
+    expect(rows(snapshots)[0]).toMatchObject({ key: 'ENG', url: 'https://linear.app/example-workspace/team/ENG' })
+    expect(reports).toHaveLength(1)
+  })
+
   it('reports again when only the glyph changed — a renamed row is not the only thing the console redraws', async () => {
     const { sync, snapshots, reports } = harness()
     const chat = { id: 'team-1', name: 'Acme / Engineering', isPrivate: false }

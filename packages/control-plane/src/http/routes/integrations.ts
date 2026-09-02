@@ -59,6 +59,8 @@ function toChannelDto(c: IntegrationChannelRecord): IntegrationChannelDtoT {
     space: c.space,
     icon: c.icon,
     color: c.color,
+    key: c.key,
+    url: c.url,
     isPrivate: c.isPrivate,
     kind: c.kind,
     trigger: c.trigger,

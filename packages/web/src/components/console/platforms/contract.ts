@@ -602,6 +602,14 @@ export interface WebChannelListSemantics {
    * leads with {@link roomGlyph} alone, which is every other platform.
    */
   RowMark?: ComponentType<{ name: string; icon?: string; color?: string; size?: number }>
+  /**
+   * How a room row prints its NAME, where the platform gives the conversation more than a label
+   * — a Linear team is followed by its key and opens in Linear. It renders INTO the host's own
+   * baseline row (a fragment, not a box), taking the row's DISPLAYED name (post-{@link
+   * splitRowLabel}) plus the row's `key` and `url`. Absent ⇒ the host prints the name itself,
+   * which is every other platform; direct rows never take it, as with {@link RowMark}.
+   */
+  RowName?: ComponentType<{ name: string; channelKey?: string; url?: string }>
 }
 
 /**

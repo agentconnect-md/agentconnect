@@ -90,6 +90,8 @@ const INSTALL: IntegrationRow = {
       name: 'Acme / Design',
       icon: '🎨',
       color: '#26B5CE',
+      key: 'DES',
+      url: 'https://linear.app/example-workspace/team/DES',
       kind: 'channel',
       trigger: 'off',
       agentId: 'agent-b'
@@ -99,6 +101,8 @@ const INSTALL: IntegrationRow = {
       name: 'Acme / Engineering',
       icon: 'Feather',
       color: '#5E6AD2',
+      key: 'ENG',
+      url: 'https://linear.app/example-workspace/team/ENG',
       kind: 'channel',
       trigger: 'mention',
       agentId: 'agent-a'
@@ -117,17 +121,24 @@ const pickers = (view: HTMLElement) => [...view.querySelectorAll<HTMLButtonEleme
 const menuItem = (label: string) =>
   [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) => b.textContent?.includes(label))
 
-/** Render, switch to the Linear tab, and expand the workspace's row. */
-async function expandWorkspace(): Promise<HTMLElement> {
+/** Render, switch to `tabLabel`'s platform, and expand that bot's row. */
+async function expandBot(tabLabel: string, botId: string): Promise<HTMLElement> {
   await act(async () => root.render(<IntegrationsView />))
-  const tab = [...host.querySelectorAll('button[role="tab"]')].find((b) => b.textContent?.includes('Linear'))
-  if (!tab) throw new Error('no Linear Bots tab')
+  const tab = [...host.querySelectorAll('button[role="tab"]')].find((b) => b.textContent?.includes(tabLabel))
+  if (!tab) throw new Error(`no ${tabLabel} Bots tab`)
   await act(async () => (tab as HTMLButtonElement).click())
-  const row = host.querySelector<HTMLElement>('#integration-bot-ws-1')
-  if (!row) throw new Error('no bot row for the workspace')
+  const row = host.querySelector<HTMLElement>(`#integration-bot-${botId}`)
+  if (!row) throw new Error(`no bot row for ${botId}`)
   await act(async () => row.click())
   return host
 }
+
+const expandWorkspace = (): Promise<HTMLElement> => expandBot('Linear', 'ws-1')
+
+/** The expanded roster's column header over the conversation rows. */
+const columnHeader = (view: HTMLElement): string | undefined =>
+  [...view.querySelectorAll('span')].find((el) => /^(Teams|Channels|Chats|Conversations?)$/.test(el.textContent ?? ''))
+    ?.textContent ?? undefined
 
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -156,8 +167,7 @@ describe('the Linear workspace’s Bots row', () => {
     // Named the way an operator says it: the team alone, under the workspace's own row.
     expect(view.textContent).toContain('Design')
     expect(view.textContent).toContain('Engineering')
-    // Never the team KEY, and never the "#" of a platform whose rooms are channels.
-    expect(view.textContent).not.toContain('ENG')
+    // Never the "#" of a platform whose rooms are channels.
     expect(view.querySelector('.lucide-hash')).toBeNull()
     // Not the retired single line that stood for the whole workspace.
     expect(pickers(view)).toHaveLength(2)
@@ -174,6 +184,41 @@ describe('the Linear workspace’s Bots row', () => {
     expect(marks.map((el) => el.textContent)).toEqual(['🎨', 'E'])
     expect(marks[0]!.getAttribute('style')).toContain('#26B5CE')
     expect(marks[1]!.getAttribute('style')).toContain('#5E6AD2')
+  })
+
+  it('prints each team’s key after its name, and links the NAME to the team in Linear', async () => {
+    const view = await expandWorkspace()
+
+    const links = [...view.querySelectorAll('a')].filter((a) => a.getAttribute('href')?.includes('linear.app'))
+    expect(links.map((a) => a.textContent)).toEqual(['Design', 'Engineering'])
+    expect(links[1]!.getAttribute('href')).toBe('https://linear.app/example-workspace/team/ENG')
+    expect(links[1]!.getAttribute('rel')).toBe('noopener noreferrer')
+    // The key is muted text beside the link, never inside it and never inside the label.
+    const key = [...view.querySelectorAll('span')].filter((el) => el.textContent === 'ENG')
+    expect(key).toHaveLength(1)
+    expect(key[0]!.closest('a')).toBeNull()
+  })
+
+  it('heads the rows with Linear’s own noun, while Slack’s roster still reads Channels', async () => {
+    expect(columnHeader(await expandWorkspace())).toBe('Teams')
+
+    await act(async () => root.unmount())
+    host.remove()
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    mocks.bots = [{ ...WORKSPACE, id: 'sl-1', platform: 'slack', name: 'support', agentIds: ['agent-a'] }]
+    mocks.integrations = [
+      {
+        ...INSTALL,
+        id: 'int-slack',
+        botId: 'sl-1',
+        platform: 'slack',
+        channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention', agentId: 'agent-a' }]
+      }
+    ]
+
+    expect(columnHeader(await expandBot('Slack', 'sl-1'))).toBe('Channels')
   })
 
   it('drops the dispatch column when one agent is the only member', async () => {

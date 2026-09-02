@@ -2460,6 +2460,10 @@ model IntegrationChannel {
   // team's icon (a provider icon name or an emoji) and hex color. Null on every other platform.
   icon          String?
   color         String?
+  // The conversation's short platform handle and the page it opens there — a Linear team's key
+  // and its team URL. Display metadata like the pair above; null on every other platform.
+  key           String?
+  url           String?
   isPrivate     Boolean          @default(false)
   kind          ConversationKind @default(channel)
   // The 1:1 DM counterpart's platform member id (resource-visibility.md §14.8). Control

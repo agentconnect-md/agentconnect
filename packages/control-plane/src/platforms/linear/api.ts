@@ -10,7 +10,7 @@
  * only a rejection may spend the reload-retry, and only a rejection may flip a workspace to
  * "reconnect required".
  */
-import { conversationGlyph } from '@agentconnect.md/protocol'
+import { conversationGlyph, conversationLink } from '@agentconnect.md/protocol'
 import type { FetchLike } from '../../github/api.js'
 import { systemClock, type Clock } from '../../domain/clock.js'
 
@@ -43,16 +43,25 @@ export interface LinearGrant {
   expiresAt: Date
 }
 
+/** Where a Linear workspace lives on the web — the base every team link is built on. */
+const LINEAR_APP_BASE = 'https://linear.app'
+
 /** One team of a connected workspace — the conversation a Linear bot routes on (§4.5).
  *  `icon` is a Linear icon name ("Feather") or an emoji and `color` the team's hex tint;
- *  both are display metadata the console draws, and either may be absent. */
+ *  both are display metadata the console draws, and either may be absent. `url` is the team's
+ *  own page, absent when the workspace read did not name its URL segment. */
 export interface LinearTeam {
   id: string
   key: string
   name: string
   icon?: string
   color?: string
+  url?: string
 }
+
+/** A team's page in Linear — the workspace's URL segment plus the team's key (§4.5). */
+const linearTeamUrl = (urlKey: string | undefined, key: string): string | undefined =>
+  urlKey ? `${LINEAR_APP_BASE}/${encodeURIComponent(urlKey)}/team/${encodeURIComponent(key)}` : undefined
 
 /** The app's own identity inside the workspace that just authorized it. */
 export interface LinearViewer {
@@ -187,6 +196,9 @@ export class LinearApiClient {
    * conversations (§4.5). One page: a workspace past 100 teams keeps the rows it has and the
    * reconciler tick re-asks each pass, so the cap degrades to "the first hundred", never to a
    * failure. Called once per workspace per connect and per tick, never on the message path.
+   *
+   * It asks for the workspace's own URL segment in the same round trip, because that plus the
+   * team's key is the team's page — the link the console gives the row's name (§4.5).
    */
   async teams(accessToken: string): Promise<LinearApiResult<LinearTeam[]>> {
     let res: Response
@@ -196,7 +208,9 @@ export class LinearApiClient {
         withTimeout({
           method: 'POST',
           headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ query: 'query { teams(first: 100) { nodes { id key name icon color } } }' })
+          body: JSON.stringify({
+            query: 'query { viewer { organization { urlKey } } teams(first: 100) { nodes { id key name icon color } } }'
+          })
         })
       )
     } catch (err) {
@@ -204,7 +218,11 @@ export class LinearApiClient {
     }
     if (!res.ok)
       return { ok: false, error: res.status >= 500 ? 'unreachable' : 'rejected', detail: `http ${res.status}` }
-    const body = (await res.json().catch(() => undefined)) as { data?: { teams?: { nodes?: unknown } } } | undefined
+    const body = (await res.json().catch(() => undefined)) as
+      | { data?: { teams?: { nodes?: unknown }; viewer?: { organization?: { urlKey?: unknown } | null } | null } }
+      | undefined
+    const rawUrlKey = body?.data?.viewer?.organization?.urlKey
+    const urlKey = typeof rawUrlKey === 'string' && rawUrlKey.trim() ? rawUrlKey.trim() : undefined
     const nodes = body?.data?.teams?.nodes
     if (!Array.isArray(nodes)) return { ok: false, error: 'rejected', detail: 'teams query returned no nodes' }
     // A node missing any of the three cannot be keyed or named, so it is dropped rather than
@@ -213,7 +231,15 @@ export class LinearApiClient {
     const teams = nodes.flatMap((node) => {
       const n = node as { id?: unknown; key?: unknown; name?: unknown; icon?: unknown; color?: unknown }
       return typeof n?.id === 'string' && typeof n?.key === 'string' && typeof n?.name === 'string'
-        ? [{ id: n.id, key: n.key, name: n.name, ...conversationGlyph(n.icon, n.color) }]
+        ? [
+            {
+              id: n.id,
+              key: n.key,
+              name: n.name,
+              ...conversationGlyph(n.icon, n.color),
+              ...conversationLink(undefined, linearTeamUrl(urlKey, n.key))
+            }
+          ]
         : []
     })
     return { ok: true, result: teams }

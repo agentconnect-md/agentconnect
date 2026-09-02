@@ -99,6 +99,9 @@ interface BootOpts {
   expiresAt?: string
 }
 
+/** Linear's own URL segment for the connected workspace — half of every team link (§4.5). */
+const WORKSPACE_URL_KEY = 'example-workspace'
+
 /** The workspace's teams, as the reconcile-time `listChannels` read sees them (§9.4). */
 const TEAM_NODES = [
   { id: TEAM, key: 'ENG', name: 'Engineering', icon: 'Feather', color: '#5E6AD2' },
@@ -134,7 +137,10 @@ beforeEach(() => {
         signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
       })
     }
-    const data = teamList ? { teams: { nodes: TEAM_NODES } } : {}
+    // Both team reads ask for the workspace's URL segment alongside the team (§4.5).
+    const data = teamList
+      ? { viewer: { organization: { urlKey: WORKSPACE_URL_KEY } }, teams: { nodes: TEAM_NODES } }
+      : {}
     return {
       ok: true,
       status: 200,
@@ -175,6 +181,8 @@ async function boot(opts: BootOpts = {}) {
     botUserId: 'app-user-1',
     workspaceId: () => WORKSPACE,
     workspaceName: 'Example Workspace',
+    // What the real connection remembers off the reconcile's team read — the link's other half.
+    workspaceUrlKey: WORKSPACE_URL_KEY,
     async postActivity(sessionId: string, activity: LinearActivityInput) {
       // The ordering assertion itself: read the durable inbox AT POST TIME, so a row that
       // only lands later cannot make an out-of-order first activity look admitted.
@@ -304,6 +312,8 @@ describe('§4.5 the teams as the observed conversations', () => {
             name: 'Example Workspace / Engineering',
             icon: 'Feather',
             color: '#5E6AD2',
+            key: 'ENG',
+            url: 'https://linear.app/example-workspace/team/ENG',
             isPrivate: false,
             kind: 'channel'
           },
@@ -312,6 +322,8 @@ describe('§4.5 the teams as the observed conversations', () => {
             name: 'Example Workspace / Docs',
             icon: '📚',
             color: '#26B5CE',
+            key: 'DOCS',
+            url: 'https://linear.app/example-workspace/team/DOCS',
             isPrivate: false,
             kind: 'channel'
           }
@@ -362,9 +374,12 @@ describe('§4.5 the teams as the observed conversations', () => {
       expect(reports.at(-1)?.channels).toContainEqual({
         id: fresh.id,
         name: 'Example Workspace / New Team',
-        // The bag carries the team's glyph, so the fast-path row is born with it too.
+        // The bag carries the team's glyph and its key, and the connection remembers the
+        // workspace URL segment from the reconcile read: the fast-path row is born linked.
         icon: '🚀',
         color: '#F2994A',
+        key: 'NEW',
+        url: 'https://linear.app/example-workspace/team/NEW',
         isPrivate: false,
         kind: 'channel'
       })

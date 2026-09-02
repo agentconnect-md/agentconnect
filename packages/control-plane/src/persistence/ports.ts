@@ -4763,6 +4763,10 @@ export interface IntegrationChannelRecord {
    *  Linear team's icon (a provider icon name or an emoji) and hex color. Null elsewhere. */
   icon: string | null
   color: string | null
+  /** The conversation's short platform handle and the page it opens there — a Linear team's
+   *  key and team URL. Display metadata, never a coordinate; null elsewhere. */
+  key: string | null
+  url: string | null
   isPrivate: boolean
   kind: ConversationKind
   /** Repeated across shared-bot sibling rows; per-integration for non-shared bots. */
@@ -4790,6 +4794,10 @@ export interface ReportedChannel {
    *  and clears it. Only a reporter that enumerates the platform's own state may send `null`. */
   icon?: string | null
   color?: string | null
+  /** The conversation's handle and the page it opens on the platform (a Linear team), on the
+   *  same tri-state as the glyph: absent is "unknown", `null` an enumerating "it has none". */
+  key?: string | null
+  url?: string | null
   isPrivate?: boolean
   /** Absent = 'channel' (wire compatibility). */
   kind?: ConversationKind

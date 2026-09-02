@@ -21,7 +21,7 @@
  * affordance, and attachment download is deferred.
  */
 import { randomUUID } from 'node:crypto'
-import { linearChannelName, linearTeamGlyph } from './message-strategy.js'
+import { linearChannelName, linearTeamGlyph, linearTeamLink } from './message-strategy.js'
 import type { LinearTeamRef } from './message-strategy.js'
 import type { LinearAttachmentInput, LinearActivityInput } from './turn-output.js'
 import type { IntegrationLinearConfig, LinearCredGrant } from '@agentconnect.md/protocol'
@@ -242,6 +242,10 @@ export class LinearConnection implements PlatformConnection {
   /** Linear exposes no per-workspace permalink base here, so the daemon's deep-link base
    *  falls through to the configured Web App URL — same posture as Feishu. */
   readonly workspaceUrl = ''
+  /** The workspace's own URL segment, learned off the team reads and cached for the life of the
+   *  connection — it is what a team's Linear link is built on (§4.5), and the ingress fast path
+   *  has only the event bag to work from. Absent until the first team read answers. */
+  private urlKey: string | undefined
 
   constructor(private readonly deps: LinearDeps) {
     const { config } = deps.group
@@ -263,6 +267,11 @@ export class LinearConnection implements PlatformConnection {
 
   workspaceId(): string {
     return this.organizationId
+  }
+
+  /** Linear's URL segment for this workspace, once a team read has answered with it. */
+  get workspaceUrlKey(): string | undefined {
+    return this.urlKey
   }
 
   /** Is this Linear user the app itself? The ingress self-echo guard (§7.2 `appUserId`). */
@@ -434,9 +443,20 @@ export class LinearConnection implements PlatformConnection {
     }
     try {
       const signal = opts.signal ?? AbortSignal.timeout(LINEAR_READ_DEADLINE_MS)
-      const data = await this.graphql<{ team?: LinearTeamRef | null }>(TEAM_QUERY, { id: channel }, signal)
+      const data = await this.graphql<TeamPayload & { team?: LinearTeamRef | null }>(
+        TEAM_QUERY,
+        { id: channel },
+        signal
+      )
+      this.noteUrlKey(data)
       const name = data.team ? linearChannelName({ ...data.team, id: channel }, this) : ''
-      return { id: channel, ...(name && name !== channel ? { name } : {}), ...linearTeamGlyph(data.team), isIm: false }
+      return {
+        id: channel,
+        ...(name && name !== channel ? { name } : {}),
+        ...linearTeamGlyph(data.team),
+        ...linearTeamLink(data.team, this),
+        isIm: false
+      }
     } catch (err) {
       this.deps.log?.debug(`linear: team lookup failed (${channel}): ${(err as Error).message}`)
       return { id: channel, isIm: false }
@@ -482,7 +502,12 @@ export class LinearConnection implements PlatformConnection {
   async listChannels(opts: { signal?: AbortSignal } = {}): Promise<PlatformChannelRef[]> {
     try {
       const signal = opts.signal ?? AbortSignal.timeout(LINEAR_READ_DEADLINE_MS)
-      const data = await this.graphql<{ teams?: { nodes?: LinearTeamRef[] } | null }>(TEAMS_QUERY, {}, signal)
+      const data = await this.graphql<TeamPayload & { teams?: { nodes?: LinearTeamRef[] } | null }>(
+        TEAMS_QUERY,
+        {},
+        signal
+      )
+      this.noteUrlKey(data)
       return (data.teams?.nodes ?? [])
         .filter((node) => Boolean(node?.id))
         .map((node) => {
@@ -491,6 +516,7 @@ export class LinearConnection implements PlatformConnection {
             id: node.id,
             ...(name && name !== node.id ? { name } : {}),
             ...linearTeamGlyph(node),
+            ...linearTeamLink(node, this),
             isPrivate: false
           }
         })
@@ -498,6 +524,13 @@ export class LinearConnection implements PlatformConnection {
       this.deps.log?.debug(`linear: team list failed for integration ${this.integrationId}: ${(err as Error).message}`)
       return []
     }
+  }
+
+  /** Learn the workspace's URL segment off a team read, and never unlearn it: a response that
+   *  omits it leaves the links already built standing. */
+  private noteUrlKey(data: TeamPayload): void {
+    const urlKey = data.viewer?.organization?.urlKey
+    if (typeof urlKey === 'string' && urlKey.trim()) this.urlKey = urlKey.trim()
   }
 
   /** Attachment download is deferred (§9.4) — `null` is "unavailable", never a throw. */
@@ -753,10 +786,17 @@ const USER_QUERY = `query User($id: String!) {
   user(id: $id) { id name displayName avatarUrl }
 }`
 
+/** The workspace half both team reads ask for alongside the team — one round trip, not two. */
+interface TeamPayload {
+  viewer?: { organization?: { urlKey?: string } | null } | null
+}
+
 const TEAM_QUERY = `query Team($id: String!) {
+  viewer { organization { urlKey } }
   team(id: $id) { id key name icon color }
 }`
 
 const TEAMS_QUERY = `query Teams {
+  viewer { organization { urlKey } }
   teams(first: ${MAX_LISTED_TEAMS}) { nodes { id key name icon color } }
 }`

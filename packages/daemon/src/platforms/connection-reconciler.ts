@@ -837,6 +837,8 @@ export class ConnectionReconciler {
         ...(team.name ? { name: team.name } : {}),
         ...(team.icon ? { icon: team.icon } : {}),
         ...(team.color ? { color: team.color } : {}),
+        ...(team.key ? { key: team.key } : {}),
+        ...(team.url ? { url: team.url } : {}),
         isPrivate: false
       }))
       await this.host.observePlatformChats(

@@ -863,6 +863,10 @@ export const IntegrationChannelDto = z.object({
    *  console draws a colored mark from the pair; null on every platform without the notion. */
   icon: z.string().nullable(),
   color: z.string().nullable(),
+  /** The conversation's short platform handle and the page it opens there — a Linear team's
+   *  key, printed after the name, and the team URL the name links to. Null elsewhere. */
+  key: z.string().nullable(),
+  url: z.string().nullable(),
   isPrivate: z.boolean(),
   kind: z.enum(['channel', 'im', 'mpim']),
   trigger: z.enum(['off', 'mention', 'any']),

@@ -83,6 +83,8 @@ const TEAMS: IntegrationChannelRow[] = [
     name: 'Acme / Engineering',
     icon: 'Feather',
     color: '#5E6AD2',
+    key: 'ENG',
+    url: 'https://linear.app/example-workspace/team/ENG',
     kind: 'channel',
     trigger: 'mention',
     agentId: 'agent-b'
@@ -92,6 +94,8 @@ const TEAMS: IntegrationChannelRow[] = [
     name: 'Acme / Design',
     icon: '🎨',
     color: '#26B5CE',
+    key: 'DES',
+    url: 'https://linear.app/example-workspace/team/DES',
     kind: 'channel',
     trigger: 'off',
     agentId: 'agent-c'
@@ -236,8 +240,23 @@ describe('the team rows', () => {
     // The row reads "Engineering" — never the team KEY, which is an identifier, never the
     // workspace prefix this card already prints above, and never a "#" Linear has no use for.
     expect(eng!.parentElement!.textContent).toContain('Engineering')
-    expect(host.textContent).not.toContain('ENG')
+    // The KEY is printed beside the name, never spliced into the label, and never a "#".
+    expect(eng!.textContent).toBe('Engineering')
     expect(host.textContent).not.toContain('#')
+  })
+
+  it('prints the team’s key after its name, and links the NAME to the team in Linear', async () => {
+    await render()
+
+    const links = [...host.querySelectorAll('a')].filter((a) => a.getAttribute('href')?.includes('linear.app'))
+    expect(links.map((a) => a.textContent)).toEqual(['Engineering', 'Design'])
+    expect(links[0]!.getAttribute('href')).toBe('https://linear.app/example-workspace/team/ENG')
+    expect(links[0]!.getAttribute('target')).toBe('_blank')
+    expect(links[0]!.getAttribute('rel')).toBe('noopener noreferrer')
+    // The key is muted text beside the link, not part of it.
+    const keys = [...host.querySelectorAll('span')].filter((el) => el.textContent === 'ENG')
+    expect(keys).toHaveLength(1)
+    expect(keys[0]!.closest('a')).toBeNull()
   })
 
   it('leads each team row with its own colored mark, the way Linear’s team picker does', async () => {

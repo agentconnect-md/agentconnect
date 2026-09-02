@@ -348,7 +348,14 @@ describe('LinearCredentialReconciler (§10.6)', () => {
 describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
   const ALICE = '44444444-4444-4444-8444-444444444444'
   const BOB = '55555555-5555-4555-8555-555555555555'
-  const TEAM = { id: 'team_ops', key: 'OPS', name: 'Operations', icon: 'Feather', color: '#5E6AD2' }
+  const TEAM = {
+    id: 'team_ops',
+    key: 'OPS',
+    name: 'Operations',
+    icon: 'Feather',
+    color: '#5E6AD2',
+    url: 'https://linear.app/example-workspace/team/OPS'
+  }
 
   interface SeedHarness {
     reconciler: LinearCredentialReconciler
@@ -373,6 +380,8 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
       name: string | null
       icon: string | null
       color: string | null
+      key: string | null
+      url: string | null
     }[] = [],
     /** What Linear answers for the team — overridden to drop a glyph the row still carries. */
     answer: LinearTeam = TEAM
@@ -437,7 +446,15 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
 
     expect(h.upsertConversation).toHaveBeenCalledWith(
       'i-alice',
-      { id: TEAM.id, name: 'Acme / Operations', icon: 'Feather', color: '#5E6AD2', kind: 'channel' },
+      {
+        id: TEAM.id,
+        name: 'Acme / Operations',
+        icon: 'Feather',
+        color: '#5E6AD2',
+        key: 'OPS',
+        url: TEAM.url,
+        kind: 'channel'
+      },
       { defaultTrigger: 'mention' }
     )
     expect(h.upsertAgent).not.toHaveBeenCalled()
@@ -478,13 +495,25 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
     expect(conversation).toMatchObject({ icon: 'Feather', color: '#5E6AD2' })
   })
 
+  it('seeds the row with the team’s key and its page in Linear, which the console links the name to', async () => {
+    const h = seedHarness([{ id: 'i-alice', agentId: ALICE }], [agent(ALICE)], new Set([ALICE]))
+
+    await h.reconciler.tick()
+
+    const [, conversation] = h.upsertConversation.mock.calls[0] as unknown as [string, { key?: string; url?: string }]
+    // The key is carried as its own field — it is never spliced into the label (§4.5).
+    expect(conversation).toMatchObject({ key: 'OPS', url: 'https://linear.app/example-workspace/team/OPS' })
+  })
+
   it('refreshes a KNOWN row whose glyph changed, and writes nothing when name and glyph already match', async () => {
     const row = (icon: string | null, color: string | null) => ({
       integrationId: 'i-alice',
       channelId: TEAM.id,
       name: 'Acme / Operations',
       icon,
-      color
+      color,
+      key: 'OPS',
+      url: TEAM.url
     })
     const stale = seedHarness([{ id: 'i-alice', agentId: ALICE }], [agent(ALICE)], new Set([ALICE]), {}, [
       row(null, null)
@@ -495,6 +524,8 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
       name: 'Acme / Operations',
       icon: 'Feather',
       color: '#5E6AD2',
+      key: 'OPS',
+      url: TEAM.url,
       kind: 'channel'
     })
 
@@ -511,7 +542,15 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
     // would leave the row carrying the old value and make this same mismatch true every tick.
     const bare = { id: TEAM.id, key: TEAM.key, name: TEAM.name }
     const rows = [
-      { integrationId: 'i-alice', channelId: TEAM.id, name: 'Acme / Operations', icon: 'Feather', color: '#5E6AD2' }
+      {
+        integrationId: 'i-alice',
+        channelId: TEAM.id,
+        name: 'Acme / Operations',
+        icon: 'Feather',
+        color: '#5E6AD2',
+        key: 'OPS',
+        url: TEAM.url
+      }
     ]
     const h = seedHarness([{ id: 'i-alice', agentId: ALICE }], [agent(ALICE)], new Set([ALICE]), {}, rows, bare)
 
@@ -522,6 +561,10 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
       name: 'Acme / Operations',
       icon: null,
       color: null,
+      // The same enumerating clear reaches the link: this read named no URL segment for the
+      // workspace, so the team has no page to point at any more.
+      key: 'OPS',
+      url: null,
       kind: 'channel'
     })
 
@@ -531,7 +574,17 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
       [agent(ALICE)],
       new Set([ALICE]),
       {},
-      [{ integrationId: 'i-alice', channelId: TEAM.id, name: 'Acme / Operations', icon: null, color: null }],
+      [
+        {
+          integrationId: 'i-alice',
+          channelId: TEAM.id,
+          name: 'Acme / Operations',
+          icon: null,
+          color: null,
+          key: 'OPS',
+          url: null
+        }
+      ],
       bare
     )
     await settled.reconciler.tick()

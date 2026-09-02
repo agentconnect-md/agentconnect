@@ -72,6 +72,9 @@ export interface PlatformChannelInfo {
   /** Display glyph and tint where the platform gives the conversation one (a Linear team). */
   icon?: string
   color?: string
+  /** The conversation's short platform handle and the page it opens there (a Linear team). */
+  key?: string
+  url?: string
 }
 
 /** A conversation in an enumeration (`listChannels` / `listBotChannels`). */
@@ -82,6 +85,9 @@ export interface PlatformChannelRef {
   /** Display glyph and tint where the platform gives the conversation one (a Linear team). */
   icon?: string
   color?: string
+  /** The conversation's short platform handle and the page it opens there (a Linear team). */
+  key?: string
+  url?: string
 }
 
 /** A conversation member — enough to resolve a mention and drop bots. */

@@ -421,8 +421,9 @@ install.
 name>`, e.g. `Acme / Engineering`: the two NAMES a member says out loud,
     the workspace first because a session list spans every connected
     workspace. The team **key** is an identifier, not a label, so it never
-    leads and never appears here at all; it reaches the agent on the §8
-    context block instead, and reaches an operator through Linear itself. The
+    leads and never appears in this string at all; it reaches the agent on the
+    §8 context block, and an operator through the row's own `key` field
+    (below) — never by being parsed back out of the label. The
     label degrades one name at a time — an unnamed workspace leaves the
     team's own name, an unnamed team falls back to its key and then to its
     bare id. It is the display slot of the `channel` coordinate — one label shared by
@@ -452,6 +453,24 @@ name>`, e.g. `Acme / Engineering`: the two NAMES a member says out loud,
     The console does **not** vendor Linear's icon set: an emoji is rendered as
     itself, and a named icon falls back to the team's initial on the team's own
     color (§9.5).
+  - **A team carries its key and its page, as fields.** `IntegrationChannel.key`
+    / `.url` and `integration_channel.key` / `.url` hold the team's short handle
+    (`ENG`) and `https://linear.app/<workspace urlKey>/team/<KEY>`, on exactly
+    the glyph's terms: display-only, bounded on the wire (`key` ≤ 32 chars,
+    `url` an `https` origin ≤ 512), narrowed at the source through the contract's
+    own `conversationLink`, and on the same tri-state, so the enumerating `teams`
+    pass may clear what a daemon observation may only add. The console prints the
+    key after the team name in muted text and links the NAME to the page (§9.5).
+    They are FIELDS and not a richer label for one reason: the label is one
+    string two hosts write and a third takes apart, so a reader that recovered
+    `ENG` by parsing `Acme / Engineering ENG` would break the first time a team
+    was named after its key. The `url`'s other half is the workspace's own
+    `urlKey`, which neither side stores: the CP asks for it in the same round
+    trip as `teams`, and the daemon in the same round trip as `team`/`teams`,
+    caching it on the connection beside `workspaceName` so the §9.2 fast path
+    can link a team off the event bag alone. A workspace read that named no
+    segment simply leaves the row unlinked — half a link is not a link — and the
+    row still prints its key.
   - **The issue is display metadata, not a coordinate.** `TEAM-123` is a
     human identifier that changes when an issue moves teams, and its
     immutable UUID would be stable but buys nothing, because nothing is ever
@@ -1227,7 +1246,11 @@ tile.
   `color`, the conversation's own display glyph and tint (§4.5). Bounded
   (`icon` ≤ 64 chars, `color` matching `#?[0-9a-fA-F]{6}`) so one oddly spelled
   team cannot cost a whole `integration/channels` report, and absent on every
-  platform without the notion.
+  platform without the notion. It gains `key` and `url` on the same terms — the
+  conversation's short platform handle and the page it opens there (`key` ≤ 32
+  chars, `url` an `https` origin ≤ 512) — with `conversationLink` as
+  `conversationGlyph`'s sibling, so every writer narrows THROUGH the contract
+  rather than restating its bounds.
 - The opaque integration-config payload shape (§7.2) is documented beside its
   peers in `frames/integration.ts`.
 - `frames/cron.ts` — **not** extended in v1 (no cron target).
@@ -1253,13 +1276,16 @@ tile.
     workspace display metadata in `platformConfig`).
   - **The install paths write the team conversation rows**, synchronously
     and before any traffic: the connect tail (§7.1) asks Linear for the
-    workspace's teams with the fresh token (`teams { id key name icon color }`,
-    through the provider's `api.ts`) and creates `(integrationId, teamId)` for
+    workspace's teams with the fresh token (`viewer { organization { urlKey } }`
+    plus `teams { id key name icon color }` in ONE round trip, through the
+    provider's `api.ts`) and creates `(integrationId, teamId)` for
     each, named `<Workspace name> / <Team name>` — the same string the daemon
     writes, since both sides write this one `integration_channel.name`, and
     the workspace half comes from the bot's own stored workspace name — and
-    stamped with the team's own glyph (§4.5), so a seeded row is drawn before
-    any daemon has reported; with the linking agent as owner; each
+    stamped with the team's own glyph, its key and its page (§4.5), so a seeded
+    row is drawn and linked before any daemon has reported; the URL segment is
+    read rather than stored, because only the row it builds outlives the call;
+    with the linking agent as owner; each
     add-member writes its sibling rows, the shared-bot shape where every
     active integration repeats a conversation's state and exactly one row
     per team carries the owner. The trigger is one per team for the whole bot: born `mention` when the
@@ -1354,10 +1380,11 @@ tile.
     conversation row, and a team row is one.
 - Prisma: new `linear_token` and `linear_install_state` tables — Bot identity
   rides the existing D6 columns, and `platform` columns are already text —
-  plus nullable `integration_channel.icon` / `.color` for the team's glyph
-  (§4.5), which every other platform leaves null. The channel DTO exposes both
-  (a Fastify/Zod response schema silently drops what it does not declare, so
-  the pair is declared as well as projected).
+  plus nullable `integration_channel.icon` / `.color` for the team's glyph and
+  `.key` / `.url` for its handle and page (§4.5), which every other platform
+  leaves null. The channel DTO exposes all four (a Fastify/Zod response schema
+  silently drops what it does not declare, so they are declared as well as
+  projected).
 - Tests: provider unit (schema guards, projector shapes incl. keyword
   routes); connect-funnel + OAuth callback + broker integration tests
   against a fake Linear token endpoint; workspace-claim and
@@ -1459,7 +1486,14 @@ tile.
     both reads, narrowed to the wire's bounds at this edge (`linearTeamGlyph`)
     so one over-long icon or oddly spelled color costs its own field and never
     the report, and reaches the conversation row through `observeLinearTeams`
-    and, off the event bag, `noteLinearTeam`'s §9.2 fast path.
+    and, off the event bag, `noteLinearTeam`'s §9.2 fast path. Both reads also
+    carry `viewer { organization { urlKey } }`, and the connection REMEMBERS the
+    answer beside `workspaceName` — the reconcile's `listChannels` fills it, and
+    `linearTeamLink` then builds the team's page from it plus the key, on the
+    read path and on the fast path, which has only the bag. It is never
+    unlearned: a later response that omits it leaves the links already built
+    standing, and a connection that has not learned it yet reports a key with no
+    page rather than a broken one.
   - `turn-output.ts` — the streaming Layer-2 surface + `LinearConverger` +
     `LinearAction` (§5).
   - message strategy — `adapterExt.linear` → prompt assembly and fencing
@@ -1652,11 +1686,31 @@ tile.
     explicit union (pictographic base | regional-indicator pair | keycap
     sequence) for an engine without `v`-mode sequence properties. Direct rows never
     take it — their label is a person, and the `@`/`@@` markers already lead
-    them — and every other platform declares none, so its rows are untouched. Linear's `roomGlyph` is empty, and the
+    them — and every other platform declares none, so its rows are untouched. A
+    seventh, `RowName`, is how the row prints that label: the team's NAME, which
+    OPENS the team in Linear, then its **key** in muted text after it (§4.5).
+    Only the name is the anchor — a key beside a link is an identifier a reader
+    can take, while a key inside one is a second thing to click by accident —
+    and the member renders a fragment into the host's own baseline row, so the
+    key sits on the same 6 px gap a label hint would and both hosts (the agent
+    card's list, the org roster) get it from one place. A row whose workspace
+    URL segment is not known prints the key with a plain name. Linear's
+    `roomGlyph` is empty, and the
     session list reads the same per-platform sigil, so no Linear conversation
     is ever written with a channel's `#`. The org Bots row expands to the same team rows: the
     workspace-shaped "Default dispatch" line it used to show is gone with the
-    flag, and Reconnect / Disconnect stay row actions. Both surfaces drop the
+    flag, and Reconnect / Disconnect stay row actions. That expanded roster's
+    column header is the platform's own noun, pluralised (`roomPlural` beside
+    `roomArticle`), so a Linear workspace heads its rows **Teams** where a Slack
+    bot heads its **Channels** — the header was the last place the host still
+    said "Conversation" over rows the module had already named. Two conventions
+    of the console at large were fixed here for the same reason a mark is
+    per-platform but a CONTROL is not: the per-conversation default-dispatch
+    button now leads with a FIXED glyph (`corner-down-right`, the console's word
+    for a hand-off) and the current default's NAME, the way the trigger leads
+    with a bell. It led with the current agent's avatar, so the control changed
+    shape per agent and could be read as whatever that mark suggested; the
+    avatars stay in the menu, where they identify rows rather than the control. Both surfaces drop the
     per-team dispatch selector while the workspace has a single member — with
     one agent it names that agent and offers nothing to pick. The session list
     needed nothing: it already buckets by the session's channel, which is the

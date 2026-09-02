@@ -8,10 +8,12 @@ import {
   placePopover,
   roomArticle,
   roomGlyph,
+  roomPlural,
   rowLabel,
   rowLabelParts,
   rowMark,
-  rowMenuAction
+  rowMenuAction,
+  rowName
 } from './IntegrationChannelList'
 import type { IntegrationChannelRow, IntegrationRow } from '@/lib/data'
 
@@ -407,6 +409,37 @@ describe('rowLabelParts', () => {
   })
 })
 
+describe('rowName', () => {
+  it('is the platform’s own, and only where the platform declares one', () => {
+    // Linear prints a team's key after its name and links the name; nobody else has either.
+    expect(rowName('channel', 'linear')).toBeDefined()
+    for (const platform of ['slack', 'discord', 'telegram', 'feishu', undefined]) {
+      expect(rowName('channel', platform)).toBeUndefined()
+    }
+  })
+
+  it('never renames a direct row — its label is a person, with no handle and no page', () => {
+    expect(rowName('im', 'linear')).toBeUndefined()
+    expect(rowName('mpim', 'linear')).toBeUndefined()
+  })
+})
+
+describe('roomPlural', () => {
+  it('heads a list of rows with the platform’s own noun, pluralised', () => {
+    // The three nouns the modules declare today.
+    expect(roomPlural('team')).toBe('teams')
+    expect(roomPlural('channel')).toBe('channels')
+    expect(roomPlural('chat')).toBe('chats')
+  })
+
+  it('keeps the sibilant arm honest for a noun no module declares yet', () => {
+    expect(roomPlural('inbox')).toBe('inboxes')
+    expect(roomPlural('branch')).toBe('branches')
+    // The host capitalises before pluralising, so the header reads "Teams", not "teamS".
+    expect(roomPlural('Team')).toBe('Teams')
+  })
+})
+
 describe('rowMark', () => {
   it('is the platform’s own, and only where the platform declares one', () => {
     expect(rowMark('channel', 'linear')).toBeDefined()
@@ -449,6 +482,35 @@ describe('IntegrationChannelList default dispatch on a one-member bot', () => {
   })
 })
 
+// A CONTROL has one shape wherever it appears — the trigger's bell, and this. The button used
+// to lead with the current agent's avatar, which varies per agent: the control had no
+// recognisable form, and one agent's mark could read as a different control entirely.
+describe('IntegrationChannelList default dispatch control', () => {
+  const render = (agentId: string) =>
+    renderToStaticMarkup(
+      createElement(IntegrationChannelList, {
+        integrationId: 'int_alice',
+        botId: 'bot_shared',
+        agentId: 'alice',
+        platform: 'slack',
+        shareable: true,
+        channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention', agentId }]
+      })
+    )
+
+  it('reads as a FIXED glyph plus the current default’s NAME, on every agent', () => {
+    const alice = render('alice')
+    const bob = render('bob')
+    for (const html of [alice, bob]) expect(html).toContain('lucide-corner-down-right')
+    expect(alice).toContain('>Alice</span>')
+    expect(bob).toContain('>Bob</span>')
+  })
+
+  it('prints the name on the desktop row too, rather than hiding it behind a mark', () => {
+    expect(render('alice')).not.toContain('desktop:hidden')
+  })
+})
+
 describe('IntegrationChannelList direct rows', () => {
   it('renders an Everyone DM with its on/off trigger dropdown', () => {
     const html = renderToStaticMarkup(
@@ -476,6 +538,50 @@ describe('IntegrationChannelList direct rows', () => {
       })
     )
     expect(html).toContain('Default dispatch — Bob')
+  })
+})
+
+// A platform may give a conversation more than a label: a Linear team has a KEY and a page.
+// Both ride the row as their own fields — neither is ever read back out of the stored label.
+describe('IntegrationChannelList row name, where the platform gives one', () => {
+  const render = (row: Partial<IntegrationChannelRow> = {}) =>
+    renderToStaticMarkup(
+      createElement(IntegrationChannelList, {
+        platform: 'linear',
+        gated: false,
+        channels: [
+          {
+            channelId: 'team-eng',
+            name: 'Acme / Engineering',
+            kind: 'channel',
+            trigger: 'mention',
+            key: 'ENG',
+            url: 'https://linear.app/example-workspace/team/ENG',
+            ...row
+          }
+        ]
+      })
+    )
+
+  it('prints the team’s key after its name and links the NAME to the team in Linear', () => {
+    const html = render()
+    expect(html).toContain('href="https://linear.app/example-workspace/team/ENG"')
+    expect(html).toContain('>Engineering</span>')
+    expect(html).toContain('>ENG<')
+    // The stored label still carries the workspace and never the key (§4.5).
+    expect(html).not.toContain('Acme / Engineering</span>')
+  })
+
+  it('leaves every other platform’s row exactly as it was', () => {
+    const slack = renderToStaticMarkup(
+      createElement(IntegrationChannelList, {
+        platform: 'slack',
+        gated: false,
+        channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
+      })
+    )
+    expect(slack).not.toContain('<a ')
+    expect(slack).toContain('>deploys</span>')
   })
 })
 
