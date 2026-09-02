@@ -428,6 +428,7 @@ export default function AddIntegrationModal({
   // factor; when selected, the row carries the ONE-TIME signing-secret echo.
   // Once created the platform is locked so the completed hook is not orphaned.
   const [hookName, setHookName] = useState('')
+  const [hookSessionMode, setHookSessionMode] = useState<'perDelivery' | 'perSubject' | 'shared'>('perDelivery')
   const [hookHmac, setHookHmac] = useState(false)
   const [createdHook, setCreatedHook] = useState<CreatedHookDto | null>(null)
   const [copiedHook, setCopiedHook] = useState<'url' | 'secret' | 'curl' | null>(null)
@@ -775,6 +776,7 @@ export default function AddIntegrationModal({
       const created = await createHook({
         agentId: agent.id,
         name: hookName.trim() || `${agent.name}-webhook`,
+        sessionMode: hookSessionMode,
         hmac: hookHmac
       })
       setCreatedHook(created)
@@ -1306,6 +1308,24 @@ export default function AddIntegrationModal({
                 value={hookName}
                 onChange={(e) => setHookName(e.target.value)}
               />
+            </div>
+            <div className="fld mt-3">
+              <span className="fldlbl">Session continuity</span>
+              <select
+                className="inp mn"
+                value={hookSessionMode}
+                onChange={(e) => setHookSessionMode(e.target.value as 'perDelivery' | 'perSubject' | 'shared')}
+              >
+                <option value="perDelivery">New session per delivery</option>
+                <option value="perSubject">One session per subject (X-AC-Session-Key header)</option>
+                <option value="shared">One shared session for the whole hook</option>
+              </select>
+              {hookSessionMode === 'perSubject' && (
+                <div className="mt-1.5 font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+                  Deliveries carrying the same <span className="mono">X-AC-Session-Key</span> header continue one
+                  session — one ticket, one conversation. A delivery without the header starts its own session.
+                </div>
+              )}
             </div>
             <label className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-md border border-(--border-default) bg-(--surface-card) px-3 py-[10px]">
               <input

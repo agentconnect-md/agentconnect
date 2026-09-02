@@ -2477,7 +2477,7 @@ export const CronListDto = z.array(CronDto)
 // webhook-triggers-and-github-events.md. Two kinds, discriminated on `kind`:
 // the generic `webhook` (P1) and the GitHub event subscription (P2).
 
-export const HookSessionModeEnum = z.enum(['perDelivery', 'perThread', 'shared'])
+export const HookSessionModeEnum = z.enum(['perDelivery', 'perThread', 'perSubject', 'shared'])
 
 /** `event:action` with an `event:*` family wildcard; only the three subscribed
  *  families are accepted (the relay routes nothing else to the matcher). The
@@ -2505,8 +2505,9 @@ const HookBodyBase = z.object({
 
 export const CreateWebhookHookBody = HookBodyBase.extend({
   kind: z.literal('webhook'),
-  // perThread is github-only (source-thread affinity needs a thread key).
-  sessionMode: z.enum(['perDelivery', 'shared']).default('perDelivery'),
+  // perThread is code-host-only (source-thread affinity needs a thread key);
+  // perSubject is the generic equivalent — the caller keys it via X-AC-Session-Key.
+  sessionMode: z.enum(['perDelivery', 'perSubject', 'shared']).default('perDelivery'),
   // Mint a per-hook HMAC signing secret (X-AC-Signature); echoed EXACTLY ONCE in
   // the create response, never retrievable after.
   hmac: z.boolean().default(false)

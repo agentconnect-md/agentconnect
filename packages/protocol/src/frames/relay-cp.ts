@@ -334,7 +334,7 @@ export const RcHookAssign = z
     ...OptionalHookConfigSnapshot.shape,
     // No prompt: the agent's description is its standing context; the delivery
     // payload carries the caller's message (design security boundary 1).
-    sessionMode: z.enum(['perDelivery', 'perThread', 'shared']),
+    sessionMode: z.enum(['perDelivery', 'perThread', 'perSubject', 'shared']),
     target: CronTarget.optional(), // output anchoring; absent ⇒ headless
     // kind=webhook — required for that kind (enforced at the CP compile site)
     webhook: z
