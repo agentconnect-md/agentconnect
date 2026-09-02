@@ -5,7 +5,6 @@ import { join } from 'node:path'
 import {
   findRepairableTrees,
   missingRuntimePackage,
-  npmRepairEnv,
   planRuntimeInstallRepair,
   repairRuntimeInstall
 } from '../src/runtimes/runtime-install-repair.js'
@@ -24,8 +23,9 @@ const CODEX_FAILURE = [
   '    at findCodexExecutable (file:///home/dev/.npm/_npx/8b5/node_modules/@openai/codex/bin/codex.js:105:9)'
 ].join('\n')
 
-function tree(home: string, name: string, opts: { declares?: boolean; installed?: boolean }): string {
-  const dir = join(home, '.npm', '_npx', name)
+// The store nests a scoped package one level deeper, which is the depth the repair scan must reach.
+function tree(root: string, name: string, opts: { declares?: boolean; installed?: boolean }): string {
+  const dir = join(root, 'runtimes', '@agentconnect.md', name)
   mkdirSync(dir, { recursive: true })
   if (opts.declares) {
     writeFileSync(
@@ -49,60 +49,55 @@ describe('runtime install repair', () => {
     expect(missingRuntimePackage('Missing optional dependency @openai/codex@file:/tmp/x')).toBeUndefined()
   })
 
-  it('repairs only a tree that declares the package and has not installed it', () => {
-    const home = mkdtempSync(join(tmpdir(), 'ac-repair-'))
-    const broken = tree(home, 'broken', { declares: true })
-    tree(home, 'healthy', { declares: true, installed: true })
-    tree(home, 'unrelated', {})
-    expect(findRepairableTrees(home, PKG)).toEqual([broken])
-    expect(planRuntimeInstallRepair(home, CODEX_FAILURE)).toEqual({ tree: broken, pkg: PKG })
+  it('repairs only a daemon-owned tree that declares the package and has not installed it', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-repair-'))
+    const broken = tree(root, 'broken@1.0.0', { declares: true })
+    tree(root, 'healthy@1.0.0', { declares: true, installed: true })
+    tree(root, 'unrelated@1.0.0', {})
+    expect(findRepairableTrees(root, PKG)).toEqual([broken])
+    expect(planRuntimeInstallRepair(root, CODEX_FAILURE)).toEqual({ tree: broken, pkg: PKG })
+  })
+
+  it('looks in the daemon-owned store, never in an agent HOME', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-repair-'))
+    const home = join(root, 'agents', 'a', 'home')
+    const npx = join(home, '.npm', '_npx', 'deadbeef')
+    mkdirSync(npx, { recursive: true })
+    writeFileSync(
+      join(npx, 'package-lock.json'),
+      JSON.stringify({ packages: { [`node_modules/${PKG}`]: { optional: true } } })
+    )
+    expect(findRepairableTrees(root, PKG)).toEqual([])
+    expect(planRuntimeInstallRepair(root, CODEX_FAILURE)).toBeUndefined()
   })
 
   it('plans nothing when the failure is unrelated or the tree is already whole', () => {
-    const home = mkdtempSync(join(tmpdir(), 'ac-repair-'))
-    tree(home, 'healthy', { declares: true, installed: true })
-    expect(planRuntimeInstallRepair(home, CODEX_FAILURE)).toBeUndefined()
-    expect(planRuntimeInstallRepair(home, 'ECONNREFUSED')).toBeUndefined()
+    const root = mkdtempSync(join(tmpdir(), 'ac-repair-'))
+    tree(root, 'healthy@1.0.0', { declares: true, installed: true })
+    expect(planRuntimeInstallRepair(root, CODEX_FAILURE)).toBeUndefined()
+    expect(planRuntimeInstallRepair(root, 'ECONNREFUSED')).toBeUndefined()
   })
 
-  it('never lets npm run lifecycle scripts, and reports whether the package landed', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'ac-repair-'))
-    const broken = tree(home, 'broken', { declares: true })
+  it('reifies the tree in place and reports whether the package landed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-repair-'))
+    const broken = tree(root, 'broken@1.0.0', { declares: true })
     const plan = { tree: broken, pkg: PKG }
-    const seen: string[][] = []
-    const installing = await repairRuntimeInstall(plan, {}, async (dir, args) => {
-      seen.push(args)
-      mkdirSync(join(dir, 'node_modules', PKG), { recursive: true })
+    const seen: { args: string[]; cwd?: string }[] = []
+    const installing = await repairRuntimeInstall(plan, async (args, opts) => {
+      seen.push({ args, cwd: opts?.cwd })
+      mkdirSync(join(opts!.cwd!, 'node_modules', PKG), { recursive: true })
+      return ''
     })
     expect(installing).toBe(true)
-    expect(seen[0]).toContain('--ignore-scripts')
-    expect(seen[0]).toContain('--include=optional')
+    expect(seen[0]!.cwd).toBe(broken)
+    expect(seen[0]!.args).toContain('--ignore-scripts')
+    expect(seen[0]!.args).toContain('--include=optional')
 
     const idle = await repairRuntimeInstall(
-      { tree: tree(home, 'other', { declares: true }), pkg: PKG },
-      {},
-      async () => {}
+      { tree: tree(root, 'other@1.0.0', { declares: true }), pkg: PKG },
+      async () => ''
     )
     expect(idle).toBe(false)
-  })
-
-  it('hands npm an allowlist, so an agent-authored .npmrc has no daemon secret to interpolate', () => {
-    const env = npmRepairEnv('/agents/a/home', {
-      PATH: '/bin',
-      HTTPS_PROXY: 'http://proxy:3128',
-      npm_config_cache: '/elsewhere',
-      NPM_CONFIG_PREFIX: '/x',
-      ANTHROPIC_API_KEY: 'sk-secret',
-      GITHUB_TOKEN: 'ghp_secret',
-      HOME: '/root'
-    })
-    // The repair env pins USERPROFILE alongside HOME on Windows, where that is the one `~` reads.
-    expect(env).toEqual({
-      PATH: '/bin',
-      HTTPS_PROXY: 'http://proxy:3128',
-      HOME: '/agents/a/home',
-      ...(process.platform === 'win32' ? { USERPROFILE: '/agents/a/home' } : {})
-    })
   })
 })
 

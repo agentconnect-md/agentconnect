@@ -231,7 +231,7 @@ import {
   type HookQueueCandidate,
   type RevisionAdmissionPlan
 } from './codehost/hook-admission.js'
-import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog } from './runtimes/registry.js'
+import { resolveRuntimeCatalog, type ResolvedRuntimeCatalog, type RuntimeSource } from './runtimes/registry.js'
 import {
   internalPassSlot,
   InternalPassSessions,
@@ -262,7 +262,8 @@ import { ModelCatalogService } from './runtimes/model-catalog.js'
 import { makeModelEnumerator } from './runtimes/model-enumerator.js'
 import { clusterProbeHostFactory, defaultProbeHostFactory } from './acp/probe-host-factory.js'
 import { runtimeHomePath } from './runtimes/runtime-home.js'
-import { npmRepairEnv, planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
+import { planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
+import { RuntimeStore, parseNpxLaunch, storedRuntimeDef } from './runtimes/runtime-store.js'
 import {
   applyCodexSessionFloor,
   applyModelCredential,
@@ -772,9 +773,9 @@ export class Daemon {
     string,
     { agentDir: string; childEnv?: Record<string, string | undefined>; materialized: boolean }
   >()
-  // HOME the last built host launched with, so a start failure can be diagnosed against the exact
-  // package tree the child resolved — private for an isolated runtime, the daemon's own otherwise.
-  private hostRuntimeHome = new Map<string, string>()
+  // Why a daemon-supplied adapter has no install in the runtime store, so a refusal can name its tree.
+  private runtimeStoreFailures = new Map<string, string>()
+  private runtimeStore?: Pick<RuntimeStore, 'ensure'>
   // Terminal ACP start failure per agent, so a later refusal can say the runtime did not start
   // instead of reporting the agent as absent. Cleared once the agent starts or leaves the roster.
   private lastStartFailure = new Map<string, string>()
@@ -1301,6 +1302,8 @@ export class Daemon {
       /** Test seams for local catalog resolution and executable/state filtering. */
       resolveCatalog?: typeof resolveRuntimeCatalog
       installed?: typeof installedRuntimes
+      /** Test seam for the daemon-owned adapter store; production builds one over the daemon root. */
+      runtimeStore?: Pick<RuntimeStore, 'ensure'>
       /** Test seam: null simulates a host without Linux SRT/bwrap. */
       sandboxMechanism?: SandboxMechanism | null
       /** `--k8s`: runtimes live in sandbox pods, not on this host. Disables runtime
@@ -2165,8 +2168,14 @@ export class Daemon {
       : this.k8s
         ? this.declaredPoolCatalog(root, resolvedCatalog)
         : installedRuntimeCatalog(resolvedCatalog)
-    const { runtimes: installed, entries: installedEntries } = installedCatalog
-    this.runtimeCatalog = installedCatalog
+    // Only what this daemon's agents actually run: a runtime assigned later is installed before its
+    // first host start instead, so a host with six logged-in harnesses does not fetch all six here.
+    const storedCatalog = await this.installManagedRuntimePackages(
+      installedCatalog,
+      discoveredAgents.map((agent) => agent.runtime)
+    )
+    const { runtimes: installed, entries: installedEntries } = storedCatalog
+    this.runtimeCatalog = storedCatalog
     this.refreshAdmittedRuntimes()
     this.runtimeFacts.setInstalled(installedEntries)
     this.log.info(`runtimes ready: ${Object.keys(this.runtimes).join(', ') || '(none)'}`)
@@ -2174,6 +2183,71 @@ export class Daemon {
     if (pendingCurated.length) this.log.info(`runtimes pending ACP admission: ${pendingCurated.join(', ')}`)
     const skipped = Object.keys(resolvedCatalog.runtimes).filter((id) => !installed[id])
     if (skipped.length) this.log.info(`runtimes not installed (skipped): ${skipped.join(', ')}`)
+  }
+
+  // Sources whose launch spec the daemon itself supplies. Explicit `user` config is the operator's
+  // final authority, and `image` is declared by a sandbox image this daemon does not install into.
+  private static readonly STORE_MANAGED_SOURCES: ReadonlySet<RuntimeSource> = new Set([
+    'curated',
+    'registry',
+    'managed'
+  ])
+
+  /** The store this daemon installs adapters into. A pool launch resolves its packages inside the
+   *  sandbox pod and an injected host factory never spawns a runtime child, so neither gets one. */
+  private adapterStore(root: string): Pick<RuntimeStore, 'ensure'> | undefined {
+    if (this.k8s || this.opts.hostFactory) return undefined
+    this.runtimeStore ??= this.opts.runtimeStore ?? new RuntimeStore({ root, log: this.log })
+    return this.runtimeStore
+  }
+
+  /** Install each id's daemon-supplied `npx` adapter into the daemon-owned store and launch it from
+   *  there, so no agent launch resolves a package and none loads adapter code out of a writable HOME.
+   *  An adapter with no install leaves the catalog: {@link runtimeUnavailableMessage} names its tree. */
+  private async installManagedRuntimePackages(
+    catalog: ResolvedRuntimeCatalog,
+    ids: Iterable<string>
+  ): Promise<ResolvedRuntimeCatalog> {
+    const store = this.adapterStore(this.root)
+    if (!store) return catalog
+    const entries = { ...catalog.entries }
+    for (const id of new Set(ids)) {
+      const entry = entries[id]
+      const launch = entry && Daemon.STORE_MANAGED_SOURCES.has(entry.source) ? parseNpxLaunch(entry.runtime) : undefined
+      if (!entry || !launch) continue
+      try {
+        const installed = await store.ensure(launch)
+        entries[id] = { ...entry, runtime: storedRuntimeDef(entry.runtime, launch, installed) }
+        this.runtimeStoreFailures.delete(id)
+        this.log.info(`runtimes: "${id}" launches ${launch.name}@${installed.version} from ${installed.tree}`)
+      } catch (err) {
+        delete entries[id]
+        // This detail reaches a console reader through the refusal, so it is the bounded, path-free
+        // line the convention requires; the full diagnostic stays in the daemon log beside it.
+        this.runtimeStoreFailures.set(id, startFailureDetail(err))
+        this.log.warn(`runtimes: "${id}" has no daemon-owned install — ${formatErr(err)}`)
+      }
+    }
+    return {
+      entries,
+      runtimes: Object.fromEntries(Object.entries(entries).map(([id, entry]) => [id, entry.runtime]))
+    }
+  }
+
+  /** Install the adapter for a runtime the start-time sweep did not cover — an agent the CP assigned
+   *  after boot. The store memoizes, so this resolves once for the runtime and never once per spawn. */
+  private async ensureRuntimeInstalled(runtimeId: string): Promise<void> {
+    const entry = this.runtimeCatalog.entries[runtimeId]
+    if (!entry || !Daemon.STORE_MANAGED_SOURCES.has(entry.source) || !parseNpxLaunch(entry.runtime)) return
+    this.runtimeCatalog = await this.installManagedRuntimePackages(this.runtimeCatalog, [runtimeId])
+    this.refreshAdmittedRuntimes()
+  }
+
+  /** Why a runtime cannot launch: a failed daemon-owned install names its tree, else it is simply absent. */
+  private runtimeUnavailableMessage(id: string): string {
+    const failure = this.runtimeStoreFailures.get(id)
+    if (failure) return `runtime "${id}" has no daemon-owned install: ${failure}`
+    return `runtime "${id}" not available: not installed on this host, or absent from config.runtimes / the ACP registry`
   }
 
   /** Phase 14 — strip the reserved bridge key ONCE, so every consumer sees a clean MCP server map. */
@@ -3229,7 +3303,6 @@ export class Daemon {
       this.drainingAgents.add(id)
       await this.interruptAgentTurns(id, 'stop')
       this.agents.delete(id)
-      this.hostRuntimeHome.delete(id)
       // A stage-out leaves the roster for exactly the reason a later refusal must explain, so the
       // recorded cause survives it. A genuine removal clears it where the tombstone is taken.
       if (!this.moveStagedAgents.has(id)) this.lastStartFailure.delete(id)
@@ -3848,7 +3921,6 @@ export class Daemon {
     this.hosts.set(agentId, built.host)
     this.hostStartedAt.set(agentId, this.clock.now())
     this.hostConfigFiles.set(agentId, { agentDir: agent.dir, ...built.configFileState })
-    if (built.runtimeHome) this.hostRuntimeHome.set(agentId, built.runtimeHome)
     return built.host
   }
 
@@ -3879,8 +3951,6 @@ export class Daemon {
   ): {
     host: AcpHost
     configFileState: { childEnv?: Record<string, string | undefined>; materialized: boolean }
-    /** HOME the child resolves its packages under; absent only for an injected host factory. */
-    runtimeHome?: string
   } {
     const agentId = agent.id
     const onUpdate = (sid: string, u: any) => this.enqueueAcpUpdate(agentId, sid, u)
@@ -3909,10 +3979,7 @@ export class Daemon {
       return { host: this.opts.hostFactory(agent, onUpdate), configFileState }
     }
     const runtime = this.runtimes[agent.runtime]
-    if (!runtime)
-      throw new Error(
-        `runtime "${agent.runtime}" not available: not installed on this host, or absent from config.runtimes / the ACP registry`
-      )
+    if (!runtime) throw new Error(this.runtimeUnavailableMessage(agent.runtime))
     // A dream reads only its materialized inputs to produce a memory proposal, so
     // it never needs the agent's TOOL credentials (github-app git helper, gh
     // wrapper, or materialized `*_DATA` config-file secrets like KUBECONFIG /
@@ -4140,10 +4207,7 @@ export class Daemon {
       log: this.log
     })
     constructed.host = host
-    // What HOME the child actually got, since that is where it resolves its packages: the private
-    // runtime home when isolated, otherwise whatever the inherited daemon environment points at.
-    const runtimeHome = launch.env.HOME ?? (launch.inheritProcessEnv ? process.env.HOME : undefined)
-    return { host, configFileState, ...(runtimeHome ? { runtimeHome } : {}) }
+    return { host, configFileState }
   }
 
   /**
@@ -13666,6 +13730,7 @@ export class Daemon {
       // immutable skill receipts after it is fully reaped and before constructing
       // its replacement, rather than trusting the first attempt's gate.
       await this.prepareAgentWorkspace(agent, undefined, undefined, allowAgentDrain)
+      await this.ensureRuntimeInstalled(agent.runtime)
       if (this.hostStartGeneration.get(agentId) !== generation) {
         throw new Error(`host start superseded for ${agentId}`)
       }
@@ -13690,7 +13755,6 @@ export class Daemon {
         // resting on disk. Generation-fenced above, so this can't touch a
         // superseding host's files; the next attempt re-materializes its own.
         const failedSpawnDir = this.hostConfigFiles.get(agentId)?.agentDir
-        const failedRuntimeHome = this.hostRuntimeHome.get(agentId)
         this.hostConfigFiles.delete(agentId)
         if (failedSpawnDir) {
           const cleanupErr = cleanupConfigFiles(failedSpawnDir)
@@ -13699,8 +13763,8 @@ export class Daemon {
         // Retrying an incomplete package tree just reproduces the same crash, so repair it once and
         // let the loop try again rather than burning every attempt and staging the agent out. An
         // attempt that failed for some other reason must not spend the one repair.
-        if (!repairTried && failedRuntimeHome) {
-          const outcome = await this.repairAgentRuntimeInstall(agentId, failedRuntimeHome, err)
+        if (!repairTried) {
+          const outcome = await this.repairAgentRuntimeInstall(agentId, err)
           if (outcome !== 'declined') repairTried = true
           if (outcome === 'repaired') extraAttempts = 1
         }
@@ -13720,22 +13784,17 @@ export class Daemon {
     throw lastErr
   }
 
-  // Agents on a non-isolated runtime share one npx tree, so their simultaneous failures would
+  // Every agent on a runtime shares its one store tree, so their simultaneous failures would
   // otherwise run concurrent installs in the same directory and leave it worse than they found it.
   private readonly runtimeInstallRepairs = new Map<string, Promise<boolean>>()
 
-  /** Reinstall a runtime package the adapter reported missing, in the tree the child resolved.
-   *  Repairs only what an installed lockfile already declares, and never runs npm lifecycle
-   *  scripts — the tree sits in the agent's own writable HOME. Cluster launches resolve their
-   *  packages inside the agent's pod, so there is nothing here to repair. `declined` means no
-   *  repair was applicable, and leaves the one repair a start sequence gets unspent. */
-  private async repairAgentRuntimeInstall(
-    agentId: string,
-    home: string,
-    err: unknown
-  ): Promise<'declined' | 'failed' | 'repaired'> {
+  /** Reinstall a runtime package the adapter reported missing, in the daemon-owned store tree it
+   *  launched from. Repairs only what an installed lockfile already declares. Cluster launches
+   *  resolve their packages inside the agent's pod, so there is nothing here to repair. `declined`
+   *  means no repair was applicable, and leaves the one repair a start sequence gets unspent. */
+  private async repairAgentRuntimeInstall(agentId: string, err: unknown): Promise<'declined' | 'failed' | 'repaired'> {
     if (this.k8sPlane) return 'declined'
-    const plan = planRuntimeInstallRepair(home, (err as { message?: string })?.message ?? '')
+    const plan = planRuntimeInstallRepair(this.root, (err as { message?: string })?.message ?? '')
     if (!plan) return 'declined'
     const inFlight = this.runtimeInstallRepairs.get(plan.tree)
     if (inFlight) {
@@ -13743,7 +13802,7 @@ export class Daemon {
       return (await inFlight.catch(() => false)) ? 'repaired' : 'failed'
     }
     this.log.warn(`acp: agent "${agentId}" is missing runtime package "${plan.pkg}" — reinstalling ${plan.tree}`)
-    const run = repairRuntimeInstall(plan, npmRepairEnv(home))
+    const run = repairRuntimeInstall(plan)
     this.runtimeInstallRepairs.set(plan.tree, run)
     try {
       const repaired = await run
