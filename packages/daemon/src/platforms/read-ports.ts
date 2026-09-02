@@ -37,7 +37,10 @@
  * names do not move. They live in their platform's own module now, which is the
  * whole point — core no longer knows that either name exists.
  */
+import type { ZodType } from 'zod'
+import type { SessionContext } from '../mcp/ops/context.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
+import { LINEAR_SESSION_TOOLS } from './linear/agent-tools.js'
 import { SLACK_ATTACHMENT_TOOL } from './slack/attachments.js'
 import { TELEGRAM_ATTACHMENT_TOOL } from './telegram/attachments.js'
 
@@ -59,6 +62,19 @@ export type ReadPortBearer = object
  *  A missing bearer answers false, so callers keep their one-line gate. */
 export function offersReadPort(bearer: ReadPortBearer | undefined, port: ReadPort): boolean {
   return typeof (bearer as Partial<Record<ReadPort, unknown>> | undefined)?.[port] === 'function'
+}
+
+/**
+ * A platform's OWN agent tools — descriptors, their validators, and the dispatch — injected
+ * only into a session ON that platform and executed through that session's connection. The
+ * seat for a platform-shaped tool family (an issue tracker's reads and writes) that no port on
+ * the chat contract describes; core learns the names from here and nothing else.
+ */
+export interface PlatformSessionTools {
+  readonly descriptors: readonly ToolDescriptor[]
+  /** The dispatch-boundary validator per tool name; the parity test holds both sides together. */
+  readonly argSchemas: ReadonlyMap<string, ZodType>
+  execute(name: string, ctx: SessionContext, args: Record<string, unknown>, connection: unknown): Promise<unknown>
 }
 
 /** One platform's read-port declaration — the pre-connection half of the ask. */
@@ -97,6 +113,8 @@ export interface PlatformReadPorts {
    *  registration in its own module rather than a third `platform === …` arm in
    *  `mcp/tools.ts`. */
   readonly attachmentReadTool?: ToolDescriptor
+  /** The platform's own session-scoped tool family, when it has one. */
+  readonly sessionTools?: PlatformSessionTools
 }
 
 /**
@@ -148,6 +166,14 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       platform: 'feishu',
       label: 'Lark / Feishu',
       channelHistory: true
+    }
+  ],
+  [
+    'linear',
+    {
+      platform: 'linear',
+      label: 'Linear',
+      sessionTools: LINEAR_SESSION_TOOLS
     }
   ]
 ])
@@ -239,4 +265,23 @@ export function allPortPlatforms(): string[] {
 export function isAttachmentReadTool(name: string): boolean {
   for (const decl of READ_PORTS.values()) if (decl.attachmentReadTool?.name === name) return true
   return false
+}
+
+/** The session-scoped tool family of `platform`, when it declares one. */
+export function sessionToolsFor(platform: string | undefined): PlatformSessionTools | undefined {
+  return platform === undefined ? undefined : READ_PORTS.get(platform)?.sessionTools
+}
+
+/** Every platform's session tools, in registry order — the permission auto-allow set needs
+ *  the names an agent will only ever see on one platform. */
+export function allSessionToolDescriptors(): ToolDescriptor[] {
+  return [...READ_PORTS.values()].flatMap((d) => [...(d.sessionTools?.descriptors ?? [])])
+}
+
+/** The platform whose session tools include `name`, for the dispatcher's call-time gate. */
+export function sessionToolOwner(name: string): PlatformReadPorts | undefined {
+  for (const decl of READ_PORTS.values()) {
+    if (decl.sessionTools?.descriptors.some((t) => t.name === name)) return decl
+  }
+  return undefined
 }

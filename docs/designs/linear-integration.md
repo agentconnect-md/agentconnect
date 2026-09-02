@@ -1184,6 +1184,23 @@ tile.
     bag says the turn is the session-opening `created` and names an issue.
   - `codeHostLinks` in `turn-output.ts`: the §10.3 collector over the turn's
     message text, emitted as one `external-urls` action before the response.
+  - `agent-tools.ts` — the §13 P2 tool family, registered on the platform's
+    `read-ports.ts` line as `sessionTools` (descriptors + validators +
+    dispatch). Core injects a platform's `sessionTools` only into a session ON
+    that platform (`mcp/tools.ts`) and refuses them at call time from any
+    other session (`mcp/ops.ts`), executing through the session's own
+    connection — `LinearConnection.request`, the one paced, authenticated
+    GraphQL call the tools get. The first cut is issue-centric: `getIssue`,
+    `listIssues`, `listIssueComments`, `listIssueStatuses`, `listIssueLabels`,
+    `listTeams`, `listUsers`, `createIssue`, `updateIssue`,
+    `createIssueComment`. Every write resolves names to ids itself (team key,
+    state name, assignee name/email, label names, project name, parent
+    identifier) and a miss answers with the valid names, so "move it to In
+    Progress" is one call. Results are bounded (8 000-char description on a
+    full read, 300-char snippets in lists, 4 000-char comments, ≤50 rows a
+    page) and every read tool's description says the text is data, not
+    instructions. Writes act as the app (§4.3) — the comment tool tells the
+    model to sign if the reader must know which agent wrote it.
   - **The conversation report is a name refresh, not the seeder.** The
     connection reports the workspace as its single conversation — one
     `integration/channels` row, `id` = the `organizationId`, `name` = the
@@ -1334,6 +1351,17 @@ none` skips it along with everything else Linear-visible. There is **no
 
 ## 12. Security checklist
 
+- **Agent tools widen the write surface, not the trust boundary.** The §13
+  tool family lets the session's agent read and change any issue the app can
+  reach in its workspace — the same reach Linear's own MCP server grants a
+  user token. The prompt's issue body and comments remain fenced untrusted
+  context (§8), so an injected instruction to "update issue X" is exactly the
+  kind of thing the agent's `permissionMode` and the operator's judgment of
+  what to connect must govern; the tools do no content filtering. Every write
+  is attributed to the deployment app (§4.3), reaches Linear only through the
+  session's own connection (a session on another platform is refused at call
+  time), and shares the app's hourly budget through the paced queue.
+
 - Signing secret: relay-only, via the `rc/bot-assign` secrets bag — never in
   daemon specs, logs, or DTOs. Client secret: CP-only. Refresh token:
   CP-only, `SecretCipher`-encrypted. Access token: daemon memory +
@@ -1401,9 +1429,12 @@ none` skips it along with everything else Linear-visible. There is **no
      session-platform-scoped, so a Linear-connected agent's Slack sessions
      carry none of these; cross-platform reach ("open a Linear issue from
      Slack") was considered and deferred until someone asks, because no other
-     platform offers it either. Not in the first cut: initiatives, project
-     updates, milestones, Linear's own documentation search, image loading
-     (attachment download stays deferred, §9.4).
+     platform offers it either. **Landed in two cuts**: the issue-centric ten
+     above minus `listProjects`/`getProject`/`listCycles`/`listDocuments`/
+     `getDocument` first (§9.4 `agent-tools.ts`), those five next. Not
+     planned: initiatives, project updates, milestones, Linear's own
+     documentation search, image loading (attachment download stays
+     deferred, §9.4).
   3. **A daemon-authored Linear context block** in the §8 trusted header:
      the issue's UUID, identifier, team, current state, assignee and labels
      (the coordinates the tools take), plus a few lines of working convention

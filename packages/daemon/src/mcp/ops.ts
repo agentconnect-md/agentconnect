@@ -1,6 +1,6 @@
 import { z, type ZodType } from 'zod'
 import { MEMORY_ACCESS_BLOCKED } from '../memory/tools.js'
-import { allAttachmentReadTools, isAttachmentReadTool } from '../platforms/read-ports.js'
+import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
 import { listAgents, LIST_AGENTS_ARGS, type DirectoryDeps } from './ops/directory.js'
 import {
@@ -322,6 +322,17 @@ export async function executeTool(
   }
   const handler = HANDLERS.get(name)
   if (handler) return await handler(ctx, args, deps)
+
+  // A platform's own session tools (read-ports.ts `sessionTools`): injected only into a session
+  // ON that platform, and refused at call time from anywhere else — they act through THIS
+  // session's connection, so a session elsewhere has nothing they could reach.
+  const owner = sessionToolOwner(name)
+  if (owner?.sessionTools) {
+    if (ctx.platform !== owner.platform) throw new Error(`${name} is only available in a ${owner.label} session`)
+    const conn = ctx.integrationId ? deps.gatewayFor(ctx.integrationId) : undefined
+    if (!conn) throw new Error(`no live ${owner.label} connection for integration ${ctx.integrationId ?? '(none)'}`)
+    return await owner.sessionTools.execute(name, ctx, args, conn)
+  }
 
   // Past this point are the session-bound read tools — they need the session's message
   // gateway (bound to the integration that triggered this session). A memory-only

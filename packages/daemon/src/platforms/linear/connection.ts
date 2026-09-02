@@ -353,6 +353,13 @@ export class LinearConnection implements PlatformConnection {
     await this.updateSession(agentSessionId, { plan: entries })
   }
 
+  /** One authenticated GraphQL request for the agent-facing tools (`agent-tools.ts`), on the
+   *  paced queue with the bounded retry: the agent shares the workspace's hourly budget with
+   *  every feed write, so its reads and writes take a slot like anything else. */
+  async request<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    return await this.enqueueGraphql<T>(query, variables)
+  }
+
   /** Additive link publication, so a later turn never drops an earlier turn's links. */
   async addSessionExternalUrls(agentSessionId: string, urls: LinearExternalUrl[]): Promise<void> {
     if (urls.length === 0) return
