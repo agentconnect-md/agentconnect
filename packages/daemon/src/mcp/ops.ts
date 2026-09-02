@@ -1,6 +1,5 @@
 import { z, type ZodType } from 'zod'
 import { MEMORY_ACCESS_BLOCKED } from '../memory/tools.js'
-import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import { allAttachmentReadTools, isAttachmentReadTool, sessionToolOwner } from '../platforms/read-ports.js'
 import type { SessionContext, ToolHandler } from './ops/context.js'
 import { listAgents, LIST_AGENTS_ARGS, type DirectoryDeps } from './ops/directory.js'
@@ -171,7 +170,6 @@ export interface OpsDeps
   sessionToolConnectionFor?: (integrationId: string) => unknown
   /** This turn's footer identity for a session tool that publishes agent-authored text
    *  (Linear's `createIssueComment`). Undefined when the agent's footer chrome is off. */
-  sessionToolAttributionFor?: (ctx: SessionContext) => Promise<ReplyAttributionInfo | undefined>
   /** Collaboration Arena §6: resolve + execute an evaluation-registry tool.
    *  Returns undefined when `name` is not an evaluation tool. Visibility and
    *  role-aware authorization live behind this seam (the daemon guarantees
@@ -346,11 +344,7 @@ export async function executeTool(
     if (!deps.sessionToolConnectionFor) throw new Error(`${name} is not wired on this daemon`)
     const conn = ctx.integrationId ? deps.sessionToolConnectionFor(ctx.integrationId) : undefined
     if (!conn) throw new Error(`no live ${owner.label} connection for integration ${ctx.integrationId ?? '(none)'}`)
-    const attribution = deps.sessionToolAttributionFor
-    return await owner.sessionTools.execute(name, ctx, args, {
-      connection: conn,
-      ...(attribution ? { attribution: () => attribution(ctx) } : {})
-    })
+    return await owner.sessionTools.execute(name, ctx, args, { connection: conn })
   }
 
   // Past this point are the session-bound read tools — they need the session's message

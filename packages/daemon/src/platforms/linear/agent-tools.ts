@@ -12,13 +12,10 @@
  */
 import { randomUUID } from 'node:crypto'
 import { z, type ZodType } from 'zod'
-import { appendGithubMarkdownChrome } from '../../github/poster.js'
 import { optionalBoundedInt, optionalNumber, optionalString, parseArgs, requiredString } from '../../mcp/ops/args.js'
 import type { SessionContext } from '../../mcp/ops/context.js'
-import type { ReplyAttributionInfo } from '../../messages/attribution.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import type { PlatformSessionTools, PlatformSessionToolEnv } from '../read-ports.js'
-import { linearAttributionFooter, linearAttributionOf } from './turn-output.js'
 
 /** The slice of the connection these tools need: one paced, authenticated GraphQL request. A
  *  create passes `onDuplicateKey` with a client-minted id in its input, so the connection's
@@ -240,8 +237,8 @@ export const LINEAR_TOOLS: ToolDescriptor[] = [
     name: 'createIssueComment',
     description:
       'Comment on an issue, Markdown; `parent` replies inside a comment thread. Post the OUTCOME of finished ' +
-      'work, never a plan — the session already shows that. Do not sign the comment: your attribution footer ' +
-      'is appended for you.',
+      'work, never a plan — the session already shows that. Do not sign the comment: the issue’s Resources ' +
+      'already link this session.',
     inputSchema: obj({ issue: issueRef, body: str('Comment body, Markdown.'), parent: str('Parent comment id.') }, [
       'issue',
       'body'
@@ -835,14 +832,13 @@ async function updateIssue(client: LinearToolClient, args: Record<string, unknow
 /** What a write tool knows about the acting turn beyond its arguments — daemon facts only. */
 interface LinearToolCall {
   agentName?: string
-  attribution?: () => Promise<ReplyAttributionInfo | undefined>
 }
 
 /** A trailing dash line naming the acting agent — the signature the model used to be told to
  *  write, and still reaches for. A single `-` is never matched: that is a list item. */
 const SIGNATURE_LINE = /^\s*[*_]{0,2}\s*(?:\u2014|\u2013|--)\s*(.+?)\s*[*_]{0,2}\s*$/
 
-/** Drop that line so the appended footer is the comment's only attribution. */
+/** Drop that line — the session linked from the issue's Resources is the comment's attribution. */
 export function stripAgentSignature(body: string, names: readonly (string | undefined)[]): string {
   const wanted = names.flatMap((n) => (n?.trim() ? [n.trim().toLowerCase()] : []))
   if (wanted.length === 0) return body
@@ -863,14 +859,9 @@ async function createIssueComment(client: LinearToolClient, args: Record<string,
   const a = parseArgs(CREATE_ISSUE_COMMENT_ARGS, args)
   const target = await resolveIssue(client, a.issue)
   const id = randomUUID()
-  const info = await call.attribution?.()
-  // Attribution is the DAEMON's line, not the model's: strip whatever it signed with, then append
-  // the same muted footer the turn's `response` activity carries (§5) — every agent posts through
-  // the one deployment app, so identity can live nowhere but the content.
-  const body = appendGithubMarkdownChrome(
-    stripAgentSignature(a.body, [call.agentName, info?.botName]),
-    info ? linearAttributionFooter(linearAttributionOf(info)) : ''
-  )
+  // No footer: the issue's Resources already link the session, so the comment reads as the app's
+  // own post — only a signature the model wrote by hand is stripped.
+  const body = stripAgentSignature(a.body, [call.agentName])
   const input = { id, issueId: target.id, body, ...(a.parent ? { parentId: a.parent.trim() } : {}) }
   type Payload = {
     commentCreate?: { success?: boolean; comment?: { id?: string; url?: string; createdAt?: string } | null }
@@ -1211,8 +1202,7 @@ export const LINEAR_SESSION_TOOLS: PlatformSessionTools = {
     const tool = TOOLS[name]
     if (!tool) throw new Error(`unknown tool: ${name}`)
     return await tool(asClient(env.connection), args, {
-      ...(ctx.agentName ? { agentName: ctx.agentName } : {}),
-      ...(env.attribution ? { attribution: env.attribution } : {})
+      ...(ctx.agentName ? { agentName: ctx.agentName } : {})
     })
   }
 }

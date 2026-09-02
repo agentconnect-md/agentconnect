@@ -201,13 +201,11 @@ function trustedHeader(msg: Pick<NormalizedMessage, 'sender' | 'threadUrl'>, ext
 
 /** The working convention the standing block closes with — the tool names are the model's entry points. */
 const LINEAR_WORKING_CONVENTION =
-  'Working here: the title and description are the brief — work the ticket as written, choosing sensible ' +
-  'defaults over questions, and ask only if you truly cannot proceed (once, briefly, in your response). ' +
-  'Your plan is already live in this session, so never post it as a comment — `createIssueComment` is for ' +
-  'the OUTCOME once work is done, or for the scope you had to decide yourself on an empty ticket, and you ' +
-  'never sign it (attribution is appended for you). Name the branch and the PR after the identifier so Linear links them; ' +
-  'the team’s workflow state NAMES are what `updateIssue` takes for `state` (`listIssueStatuses`); read ' +
-  'the current state, assignee and labels with `getIssue` rather than assuming them.'
+  'Work the ticket as written: pick sensible defaults, and ask only if you truly cannot proceed. ' +
+  'Comment (`createIssueComment`) only with the outcome — never a plan, the session already shows it — ' +
+  'and never sign it. Name the branch and the PR after the identifier so Linear links them. ' +
+  '`updateIssue` takes the team’s workflow state NAMES for `state` (`listIssueStatuses`); read the ' +
+  'current state, assignee and labels with `getIssue` rather than assuming them.'
 
 /** `- Key: value`, or nothing at all — the block omits an absent fact instead of printing a dash. */
 function fact(key: string, value: string): string {

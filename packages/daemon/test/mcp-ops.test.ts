@@ -2318,26 +2318,7 @@ describe('executeTool: platform session tools', () => {
     return { request, seen }
   }
 
-  it('hands the tool this turn’s footer identity, resolved against the trusted context', async () => {
-    const { request, seen } = commenting()
-    const sessionToolAttributionFor = vi.fn(async () => ({
-      botName: 'agent-one',
-      botUrl: 'https://console.example.test/agents/a1',
-      runtime: 'Claude Code',
-      model: 'opus-5',
-      sessionUrl: 'https://console.example.test/sessions/s1'
-    }))
-    const d = makeDeps({ sessionToolConnectionFor: () => ({ request }), sessionToolAttributionFor })
-    await executeTool(linearCtx, 'createIssueComment', { issue: 'ENG-1', body: 'shipped' }, d)
-    // Resolved from the SESSION context, never from a tool argument.
-    expect(sessionToolAttributionFor).toHaveBeenCalledWith(linearCtx)
-    expect(seen.body).toBe(
-      'shipped\n\nsent by [agent-one](https://console.example.test/agents/a1) (Claude Code · opus-5) · ' +
-        '[open in session](https://console.example.test/sessions/s1)'
-    )
-  })
-
-  it('leaves the comment unfootered when no attribution resolver is wired', async () => {
+  it('posts the comment body as written', async () => {
     const { request, seen } = commenting()
     const d = makeDeps({ sessionToolConnectionFor: () => ({ request }) })
     await executeTool(linearCtx, 'createIssueComment', { issue: 'ENG-1', body: 'shipped' }, d)
