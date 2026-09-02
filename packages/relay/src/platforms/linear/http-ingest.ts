@@ -145,6 +145,8 @@ export function linearIsStop(event: LinearAgentSessionEvent): boolean {
 /** §6.4 adapter-extension bag: opaque to relay core, round-tripped to the daemon's linear module. */
 export interface LinearAdapterExt {
   agentSessionId: string
+  /** The issue's UUID — what `attachmentCreate` keys on; the identifier is display-only. */
+  issueId?: string
   issueIdentifier?: string
   issueTitle?: string
   promptContext?: string
@@ -225,6 +227,7 @@ export function normalizeLinearEvent(
   )
   const adapterExt: LinearAdapterExt = {
     agentSessionId: session.id,
+    ...(issue?.id ? { issueId: issue.id } : {}),
     ...(issue?.identifier ? { issueIdentifier: issue.identifier } : {}),
     ...(issue?.title ? { issueTitle: issue.title } : {}),
     ...(context.promptContext !== undefined ? { promptContext: context.promptContext } : {}),

@@ -326,6 +326,7 @@ describe('linear ingress plugin — normalized message', () => {
     const bag = forwarded!.adapterExt!.linear as LinearAdapterExt
     expect(bag).toMatchObject({
       agentSessionId: SESSION_ID,
+      issueId: issue.id,
       issueIdentifier: 'AGE-5',
       issueTitle: issue.title,
       guidance: 'Always open a draft PR.'

@@ -719,6 +719,18 @@ describe('linear graphql client (§9.4)', () => {
     expect(calls[0]!.variables).toEqual({ id: SESSION, input: { plan: [{ content: 'step', status: 'pending' }] } })
   })
 
+  it('sends the issue resource as one attachmentCreate, keyed by Linear on the URL', async () => {
+    const { conn, calls } = harness()
+    const input = {
+      issueId: 'issue-uuid',
+      url: 'https://console.example.test/sessions/s1',
+      title: 'AgentConnect session'
+    }
+    await conn.createIssueAttachment(input)
+    expect(calls[0]!.query).toContain('attachmentCreate(')
+    expect(calls[0]!.variables).toEqual({ input })
+  })
+
   it('never retries a terminal refusal', async () => {
     const { conn, calls } = harness({
       respond: () =>

@@ -40,6 +40,16 @@ export type LinearAction =
   | { kind: 'activity'; type: 'elicitation'; body: string }
   | { kind: 'plan'; entries: LinearPlanEntry[] }
   | { kind: 'external-urls'; add: LinearExternalUrl[] }
+  | { kind: 'attachment'; input: LinearAttachmentInput }
+
+/** One `attachmentCreate` input — the issue's Resources entry. Linear keys it on `(issueId, url)`,
+ *  so re-sending the same URL updates the entry rather than adding a second one. */
+export interface LinearAttachmentInput {
+  issueId: string
+  url: string
+  title: string
+  subtitle?: string
+}
 
 /** One `agentActivityCreate` input, flattened. The egress port owns the GraphQL shape. */
 export interface LinearActivityInput {
@@ -69,6 +79,8 @@ export interface LinearEgressPort {
   postActivity(sessionId: string, activity: LinearActivityInput): Promise<void>
   /** Patch the AgentSession's plan / external URLs. */
   updateSession(sessionId: string, update: LinearSessionUpdateInput): Promise<void>
+  /** Add (or refresh, by URL) one entry in the issue's Resources. */
+  createIssueAttachment(input: LinearAttachmentInput): Promise<void>
 }
 
 /** The core turn, as Linear's applier sees it. `Pending` satisfies it structurally. */
@@ -635,6 +647,11 @@ export async function applyLinearAction<TTurn extends LinearTurn>(
     case 'external-urls': {
       if (action.add.length === 0) return
       await port.updateSession(sessionId, { addedExternalUrls: action.add })
+      return
+    }
+    case 'attachment': {
+      // Issue-scoped, not feed chrome: it never draws on the activity budget.
+      await port.createIssueAttachment(action.input)
       return
     }
   }
