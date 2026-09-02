@@ -4030,6 +4030,12 @@ export class Daemon {
       }
       launch = assembled.launch
       launchRuntime = assembled.runtime
+      // The grant is computed once per host and lives only in the child's argv; name it here so a
+      // session that later fails a Git write can be matched against what its host was given.
+      const reopened = launch.gitMetadataWriteRoots.length > 0 ? launch.gitMetadataWriteRoots.join(', ') : 'none'
+      this.log.info(
+        `acp: agent "${agentId}" host launch — sandbox ${runInSandbox ? 'on' : 'off'}, cwd ${opts.cwd}, git metadata reopened: ${reopened}`
+      )
     } catch (err) {
       if (err instanceof SandboxError) {
         throw new Error(

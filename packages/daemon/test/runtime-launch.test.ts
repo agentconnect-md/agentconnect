@@ -48,6 +48,31 @@ function coveredBy(paths: string[], target: string): boolean {
 }
 
 describe('prepareRuntimeLaunch', () => {
+  // The grant only exists in the child's argv otherwise; a spawn log line reads it from here.
+  it('reports the Git metadata it reopened, on every launch shape', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const base = {
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      daemonRoot: dirname(scopeDir),
+      credentialPlatform: 'linux' as const,
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    }
+    // A scratch workspace has no `.git`: nothing to reopen, and the field says so rather than lying.
+    expect(prepareRuntimeLaunch({ ...base, runInSandbox: false }).gitMetadataWriteRoots).toEqual([])
+
+    const primaryGit = join(cwd, '.git')
+    mkdirSync(primaryGit)
+    expect(prepareRuntimeLaunch({ ...base, runInSandbox: false }).gitMetadataWriteRoots).toEqual([
+      realpathSync(primaryGit)
+    ])
+    expect(
+      prepareRuntimeLaunch({ ...base, runInSandbox: true, sandboxMechanism: 'bwrap' }).gitMetadataWriteRoots
+    ).toEqual([realpathSync(primaryGit)])
+  })
+
   it('inherits the daemon environment and creates no private HOME when the effective sandbox is off', () => {
     const { scopeDir, cwd, hostHome } = fixture()
     const launch = prepareRuntimeLaunch({
@@ -60,7 +85,7 @@ describe('prepareRuntimeLaunch', () => {
       hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
     })
 
-    expect(launch).toEqual({ env: { AGENT_VALUE: 'yes' }, inheritProcessEnv: true })
+    expect(launch).toEqual({ env: { AGENT_VALUE: 'yes' }, inheritProcessEnv: true, gitMetadataWriteRoots: [] })
     expect(existsSync(join(scopeDir, 'home'))).toBe(false)
   })
 
