@@ -3607,8 +3607,9 @@ export class Daemon {
     return this.hosts.get(agentHostKey(agentId))
   }
 
-  private hostKeyOfHost(host: AcpHost): HostKey | undefined {
-    for (const [key, candidate] of this.hosts) if (candidate === host) return key
+  /** The agent's key for `host` — scoped to the agent, since a test factory may hand one object to several agents. */
+  private hostKeyOfHost(agentId: string, host: AcpHost): HostKey | undefined {
+    for (const [key, candidate] of this.hosts) if (candidate === host && hostKeyAgentId(key) === agentId) return key
     return undefined
   }
 
@@ -3888,8 +3889,8 @@ export class Daemon {
       throw new Error(`workspace preparation blocked for superseded agent authority (${agent.id})`)
     }
     if (expectedWarmHost) {
-      const key = this.hostKeyOfHost(expectedWarmHost)
-      if (key === undefined || hostKeyAgentId(key) !== agent.id || !this.readyHosts.has(key)) {
+      const key = this.hostKeyOfHost(agent.id, expectedWarmHost)
+      if (key === undefined || !this.readyHosts.has(key)) {
         throw new Error(`workspace preparation blocked for superseded warm host (${agent.id})`)
       }
     }
