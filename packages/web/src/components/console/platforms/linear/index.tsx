@@ -9,6 +9,7 @@ import { LinearMark } from './mark'
 import { LinearTeamGlyph } from './team-glyph'
 import { LinearTeamName } from './team-name'
 import { linearSettingsFragments } from './settings'
+import { LinearTurnFacts } from './turn-facts'
 
 /** Linear's provider-native activity id: a v4 UUID. A daemon-local numeric stamp
  *  can never match it, and neither can any other platform's id shape. */
@@ -47,6 +48,8 @@ export const linearModule: WebPlatformModule<LinearApi> = {
   },
   settingsFragments: linearSettingsFragments,
   apiBindings: linearApi,
+  // What a delegation bubble folds behind "more": the issue, the team, the delegator, the description.
+  turnFacts: LinearTurnFacts,
   // The TEAM is the channel (§4.3): one row per team, each with its dispatch default and an Off.
   // The roster is the workspace's own, so nothing is left or dropped from here — a team goes
   // quiet by turning its row Off, or the whole workspace by unlinking the agent.

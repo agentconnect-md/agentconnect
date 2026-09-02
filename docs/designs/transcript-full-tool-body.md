@@ -285,8 +285,12 @@ The Linear and code-host strategies put the console's short form on the row's
 naming what happened (`Delegated ENG-3 · title`, `Opened PR #42 · title`) —
 and the assembled prompt on `prompt`, so the model reads exactly what it did
 before while the bubble shows what a person would say. A turn without a body
-still has its text as its prompt. The remaining step is the console: the facts
-fold behind a "more" control with one formatter per platform.
+still has its text as its prompt. The console folds the facts behind a bare
+"more" under the bubble text (`UserTurnDetails`): a Linear row renders its
+module's `turnFacts` formatter (issue, team, delegator, the description as the
+markdown it is), a code-host row the host's own (subject, author, revision,
+how it is answered, the body), and a body no formatter claims stays the plain
+bubble. The prompt is never rendered — it is the model's, not the reader's.
 
 ## 10. Compatibility
 

@@ -1,5 +1,6 @@
 // No 'use client' here: reached only from ModalProvider's tree (the client boundary).
 
+import type { UserTurnBody } from '@agentconnect.md/protocol'
 import type { ComponentType } from 'react'
 import type { BotDto, SessionMessageDto } from '@/lib/api'
 import type {
@@ -176,6 +177,12 @@ export function botSharingEditable(bot: Pick<BotDto, 'platform' | 'transport' | 
  */
 export function platformTextRenderer(platformId?: string): ComponentType<{ text: string }> | undefined {
   return platformId ? platformRegistry.get(platformId)?.textRenderer : undefined
+}
+
+/** The module's formatter for the facts behind one of its user turns, or undefined when it
+ *  declares none — see {@link WebPlatformModule.turnFacts}. */
+export function platformTurnFacts(platformId?: string): ComponentType<{ body: UserTurnBody }> | undefined {
+  return platformId ? platformRegistry.get(platformId)?.turnFacts : undefined
 }
 
 /**

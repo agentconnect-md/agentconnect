@@ -84,6 +84,37 @@ export const SlackMrkdwnText: ComponentType<{ text: string }> = function SlackMr
   )
 }
 
+/** CommonMark as written — a GitHub or GitLab body — with the same link policy and the same
+ *  `.mdtxt` styling, and none of the Slack control-syntax normalization the default applies. */
+export const MarkdownText: ComponentType<{ text: string }> = function MarkdownText({ text }) {
+  if (text.length > MAX_PARSE) {
+    return (
+      <div className="mdtxt">
+        <p className="whitespace-pre-wrap">{text}</p>
+      </div>
+    )
+  }
+  return (
+    <div className="mdtxt">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ children, node: _node, ...props }) =>
+            WEB_HREF.test(props.href ?? '') ? (
+              <a {...props} target="_blank" rel="noopener noreferrer">
+                {children}
+              </a>
+            ) : (
+              <>{children}</>
+            )
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  )
+}
+
 // memo: the transcript re-renders on every unrelated state change in
 // SessionDetailView (composer keystrokes, the 1s duration tick, expanding one turn's
 // work), and without this EVERY row re-runs the resolved renderer's whole pipeline.

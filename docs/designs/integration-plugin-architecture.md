@@ -714,6 +714,7 @@ interface WebPlatformModule {
   settingsFragments?: { botCard?; lifecycleActions? }
   apiBindings: { ... }                   // typed CP client calls
   textRenderer?: (text, ctx) => ReactNode
+  turnFacts?: ComponentType<{ body: UserTurnBody }> // the facts a delivery bubble folds behind "more"
   Mark: ComponentType                    // inline SVG
 }
 

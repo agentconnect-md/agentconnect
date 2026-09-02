@@ -10,6 +10,7 @@ import { sessionChannelFilterValue } from '@/lib/data'
 import { PLATFORM_MARK_IDS } from '../marks'
 import { BOT_PLATFORMS, INTEGRATION_BLURB, isCoreTriggerKind } from '../host-projections'
 import {
+  platformTurnFacts,
   DEFAULT_CHANNEL_LIST,
   botSharingEditable,
   channelListSemantics,
@@ -95,6 +96,12 @@ describe('the linear transcript and card semantics', () => {
     const body = warning!.body({ owner: 'triage-bot', room: 'Acme / Engineering' })
     expect(body).toContain('triage-bot is a private agent')
     expect(body).toContain('can still be stopped, but it will not answer in them again')
+  })
+
+  it('formats the facts behind a delegation bubble, and is resolvable from the row’s platform', () => {
+    expect(linearModule.turnFacts).toBeDefined()
+    expect(platformTurnFacts('linear')).toBe(linearModule.turnFacts)
+    expect(platformTurnFacts('slack')).toBeUndefined()
   })
 
   it('wraps that list in its own card body, and is the only module that does', () => {

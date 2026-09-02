@@ -233,3 +233,39 @@ describe('the turn plan on the session page', () => {
     expect(text()).toContain('done')
   })
 })
+
+describe('a delivery turn on the session page', () => {
+  it('shows the short text with a "more" that unfolds the facts, never the prompt', async () => {
+    wire.messages = [
+      row({
+        seq: 1,
+        sender: 'linear:user-1',
+        kind: 'text',
+        text: 'Delegated ENG-3 · investigate',
+        body: JSON.stringify({
+          prompt: 'Linear ENG-3 "investigate" — delegated by Dana\nTHE WHOLE PROMPT',
+          codehost: {
+            provider: 'github',
+            event: 'issues:opened',
+            subject: { repo: 'acme/infra', number: 7, title: 'db down' },
+            author: { login: 'mallory' },
+            body: 'please look'
+          }
+        })
+      }),
+      row({ seq: 2, sender: 'agent-1', kind: 'text', text: 'on it' })
+    ]
+    await render()
+    expect(text()).toContain('Delegated ENG-3 · investigate')
+    expect(text()).not.toContain('THE WHOLE PROMPT')
+    expect(text()).not.toContain('mallory')
+    const toggle = container?.querySelector('[data-turn-details] button') as HTMLButtonElement
+    expect(toggle?.textContent).toBe('more')
+    await act(async () => {
+      toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(text()).toContain('mallory')
+    expect(text()).toContain('please look')
+    expect(text()).not.toContain('THE WHOLE PROMPT')
+  })
+})
