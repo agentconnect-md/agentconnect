@@ -104,7 +104,9 @@ again when implementing):
 - **Identity.** A standard Linear OAuth application, authorized with
   `actor=app`, becomes an **app user** in the workspace: it appears in the
   assignee/delegate and mention menus with the app's own name and icon. Scopes
-  `app:assignable` and `app:mentionable` gate those surfaces. Installation
+  `app:assignable` and `app:mentionable` gate those surfaces, and
+  `initiative:write` gates initiatives, which `read`/`write` do not cover
+  (§7.1). Installation
   requires a workspace admin; each workspace install yields its own token.
 - **Sessions.** Delegating an issue or mentioning the app creates an
   **AgentSession**. Linear pushes `AgentSessionEvent` webhooks (enabled per
@@ -815,7 +817,8 @@ selector (§6.2), not an install decision. The admin is sent to
 
 ```text
 https://linear.app/oauth/authorize?client_id=…&redirect_uri=…&response_type=code
-  &scope=read,write,app:assignable,app:mentionable&actor=app&state=<nonce>
+  &scope=read,write,app:assignable,app:mentionable,initiative:write&actor=app
+  &state=<nonce>
 ```
 
 with a one-shot `state` nonce persisted in `linear_install_state`
@@ -834,6 +837,17 @@ funnel start, and so does the daemon `linear`-capability gate of §4.2.
 an `http` bot immediately, which would drive `projectIntegrationConfig`
 before any `linear_token` exists — the funnel-creates-the-rows shape is the
 Feishu one-click and Slack platform-app precedent.
+
+**On `initiative:write`.** It is Linear's own dedicated initiative grant
+("Read and write data about initiatives in the workspace" on the install
+screen) and covers reading them as well as writing; plain `read`/`write` do
+**not** reach the `initiatives` query or the `initiativeUpdate` mutation,
+which is why the initiative tools (§13 P2 layer 2) need it named. Nothing
+re-checks the granted set after the fact, and a **workspace connected before
+the scope was added is not broken by it**: every other tool keeps working and
+only the three initiative tools refuse — answering with the **Reconnect**
+repair in their own words rather than passing on Linear's bare "Access
+denied". Reconnecting is the §7.4 route below, unchanged.
 
 The public callback exchanges the code at
 `https://api.linear.app/oauth/token`, queries
@@ -1425,7 +1439,14 @@ tile.
     `listTeams`, `listUsers`, `createIssue`, `updateIssue`,
     `createIssueComment`; the second adds the read-only planning surface,
     `listProjects`, `getProject` (write-up and milestones), `listCycles`,
-    `listDocuments`, `getDocument`. Every write resolves names to ids itself (team key,
+    `listDocuments`, `getDocument`; the third reaches initiatives —
+    `listInitiatives`, `getInitiative` (write-up plus the projects under it)
+    and `updateInitiative` (name, description, write-up, status, target date,
+    owner) — behind the `initiative:write` scope §7.1 now requests, each call
+    routed through one refusal mapping so a grant minted before that scope
+    answers "reconnect the Linear workspace to grant initiatives access"
+    instead of Linear's bare "Access denied".
+    Every write resolves names to ids itself (team key,
     state name, assignee name/email, label names, project name, parent
     identifier) and a miss answers with the valid names, so "move it to In
     Progress" is one call. Results are bounded (8 000-char description on a
@@ -1659,8 +1680,9 @@ none` skips it along with everything else Linear-visible. There is **no
 ## 12. Security checklist
 
 - **Agent tools widen the write surface, not the trust boundary.** The §13
-  tool family lets the session's agent read and change any issue the app can
-  reach in its workspace — the same reach Linear's own MCP server grants a
+  tool family lets the session's agent read and change any issue — and, since
+  the workspace grants `initiative:write` (§7.1), any initiative — the app
+  can reach in its workspace, the same reach Linear's own MCP server grants a
   user token. The prompt's issue body and comments remain fenced untrusted
   context (§8), so an injected instruction to "update issue X" is exactly the
   kind of thing the agent's `permissionMode` and the operator's judgment of
@@ -1729,7 +1751,8 @@ none` skips it along with everything else Linear-visible. There is **no
      models need no learning (`listIssues`, `getIssue`, `createIssue`,
      `updateIssue`, `listIssueStatuses`, `listIssueLabels`,
      `createIssueComment`, `listIssueComments`, `listProjects`, `getProject`,
-     `listTeams`, `listUsers`, `listCycles`, `listDocuments`, `getDocument`).
+     `listTeams`, `listUsers`, `listCycles`, `listDocuments`, `getDocument`,
+     `listInitiatives`, `getInitiative`, `updateInitiative`).
      `updateIssue` accepts state, assignee and labels **by name** and
      resolves them against the team, so the agent can "move it to In
      Progress" without a second lookup. **Injected only into a session ON
@@ -1737,12 +1760,15 @@ none` skips it along with everything else Linear-visible. There is **no
      session-platform-scoped, so a Linear-connected agent's Slack sessions
      carry none of these; cross-platform reach ("open a Linear issue from
      Slack") was considered and deferred until someone asks, because no other
-     platform offers it either. **Landed** in two cuts (§9.4
+     platform offers it either. **Landed** in three cuts (§9.4
      `agent-tools.ts`): the issue-centric ten, then `listProjects`,
-     `getProject`, `listCycles`, `listDocuments`, `getDocument`. Not planned:
-     initiatives, project updates, milestone writes, Linear's own
-     documentation search, image loading (attachment download stays
-     deferred, §9.4).
+     `getProject`, `listCycles`, `listDocuments`, `getDocument`, then
+     `listInitiatives`, `getInitiative`, `updateInitiative` — the one Linear
+     surface a competing agent app is granted and we were not, which is why
+     §7.1 now asks for `initiative:write` and a pre-existing grant is told to
+     reconnect rather than shown a raw GraphQL refusal. Not planned: project
+     updates, milestone writes, Linear's own documentation search, image
+     loading (attachment download stays deferred, §9.4).
   3. **A daemon-authored Linear context block** in the §8 trusted header
      (**landed**): the issue's UUID, identifier, team, current state,
      assignee and labels (the coordinates the tools take), plus a few lines

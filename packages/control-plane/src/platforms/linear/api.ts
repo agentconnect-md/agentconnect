@@ -29,8 +29,10 @@ export const LINEAR_ENDPOINTS: LinearOAuthEndpoints = {
 }
 
 /** The scopes a connected workspace grants (§7.1). `actor=app` is what makes the grant an APP
- *  actor, which is the whole premise of the agent surface. */
-export const LINEAR_OAUTH_SCOPES = ['read', 'write', 'app:assignable', 'app:mentionable'] as const
+ *  actor, which is the whole premise of the agent surface. `initiative:write` is Linear's own
+ *  dedicated initiative grant and covers reading them too — plain `read`/`write` do not reach
+ *  initiatives, so a workspace connected before it was requested must reconnect. */
+export const LINEAR_OAUTH_SCOPES = ['read', 'write', 'app:assignable', 'app:mentionable', 'initiative:write'] as const
 
 /** A grant as Linear issued it. `refreshToken` is null when the response carried none — nothing to
  *  rotate with, so the workspace can only be repaired by re-connecting. */
