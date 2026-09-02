@@ -3843,6 +3843,8 @@ describe('buildHookMessage', () => {
       expect(withThread).toContain('Do NOT create, update, or delete GitHub comments or formal reviews')
       expect(withThread).toContain('`gh`, another CLI, a connector, or a direct API call')
       expect(withThread).toContain('Other GitHub tools are for READ-only inspection')
+      // Read-only inspection must not read as a ban on the one write the agent owns: its branch and PR.
+      expect(withThread).toContain('opening a pull request (`git push`, `gh pr create`) is allowed')
       // Ordinary PR conversations preserve their worktree and cannot submit a
       // formal verdict. A mention identified by the relay opens a review below.
       const issueComment = buildHookText(ghFire({ event: 'issue_comment', action: 'created' }))
@@ -3951,6 +3953,7 @@ describe('buildHookMessage', () => {
       )
       expect(inlineReply).toContain('daemon posts it back to the existing review thread automatically')
       expect(inlineReply).toContain('exclusively owns every inline reply')
+      expect(inlineReply).toContain('opening a pull request (`git push`, `gh pr create`) is allowed')
       expect(inlineReply).not.toContain('submitCodeReview')
       expect(inlineReply).not.toContain('ordinary GitHub comment')
       const batchableInline = buildHookText(
