@@ -2371,13 +2371,16 @@ The Setup Server card gains the instance URL with a staged probe (invalid
 shape blocks the save; unreachable, untrusted TLS, and not-an-API-root
 warn), host-aware application links, and one line of authority copy it is
 honest about not being able to verify. The connection DTO gains a non-secret
-`instanceUrl` and `instanceVersion`; the Console's host badge, its tooltip
-carrying the version, the below-floor row, and the bot rows' group-chip links
-follow it. A version that clears the floor is not news and takes no row of the
-card — the badge tooltip is where an operator reads it, and only a below-floor
-one earns a line, because only it has an action attached. Everything
-else is already host-correct because provider-supplied identity beats
-composed identity.
+`instanceUrl` and `instanceVersion`; the Console's instance hint, its
+below-floor banner, and the bot rows' group-chip links follow it. One
+deployment talks to one instance, and many identities connect to that one
+instance, so the instance is the CARD's fact and never an identity row's: the
+header carries the base URL and the observed version in a single hover hint,
+and the below-floor warning states itself once above the identities rather
+than once per identity. A version that clears the floor is not news and takes
+no row at all — only a below-floor one earns a line, because only it has an
+action attached. Everything else is already host-correct because
+provider-supplied identity beats composed identity.
 
 Merge order, GitLab.com green at every step:
 
