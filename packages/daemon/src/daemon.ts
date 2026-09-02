@@ -8400,8 +8400,8 @@ export class Daemon {
       maskAgentSecrets: <T>(agentId: string, payload: T): T => this.maskAgentSecrets(agentId, payload),
       logSessionAction: (verb, sessionKey, actor) => this.commands.logSessionAction(verb, sessionKey, actor),
       emitApprovalActivity: (agentId, acpSessionId, state) => this.emitApprovalActivity(agentId, acpSessionId, state),
-      approvalGateOpened: (p, request) => this.openApprovalGateSurface(p, request),
-      approvalGateResolved: (p, allowed) => this.settleApprovalGateSurface(p, allowed),
+      approvalGateOpened: (p, gateId, request) => this.openApprovalGateSurface(p, gateId, request),
+      approvalGateClosed: (p, gateId, allowed) => this.settleApprovalGateSurface(p, gateId, allowed),
       // ── approval-DM routing (slack-approval-dm.md §4–§6) ──
       cpApprovalRoute: () =>
         this.cpClient?.supportsServerFeature?.(APPROVAL_DM_ROUTE_V1_FEATURE) === true ? this.cpClient : undefined,
@@ -8421,25 +8421,18 @@ export class Daemon {
     }
   }
 
-  /**
-   * The turn's OWN permission-gate notice (linear-integration.md §5.1, §10.4).
-   *
-   * Only Linear has one: its feed is the whole surface, with no chat transport for the neutral
-   * notice to ride, so a gated turn used to post nothing and the session sat active until it went
-   * stale. The elicitation names what needs approving and deep-links the console. Returns false
-   * everywhere else, where the neutral chat notice is still the right answer.
-   */
-  private openApprovalGateSurface(p: Pending, request: ApprovalRequestParts): boolean {
+  /** The turn's OWN gate notice — only Linear has one; false means post the neutral chat notice (§5.1, §10.4). */
+  private openApprovalGateSurface(p: Pending, gateId: string, request: ApprovalRequestParts): boolean {
     if (!(p.conv instanceof LinearConverger)) return false
     const url = this.sessionLink(p.outwardSessionId, this.sessionLinkSource(p.plan.platform, p.plan.integrationId))
-    for (const action of p.conv.onPermissionBlocked(url, request)) this.enqueueApply(p, action)
+    for (const action of p.conv.onPermissionBlocked(gateId, url, request)) this.enqueueApply(p, action)
     return true
   }
 
-  /** The gate closed on a human decision: follow it through on the same surface, once (§10.4). */
-  private settleApprovalGateSurface(p: Pending, allowed: boolean): void {
+  /** One gate closed: follow a human decision through on the same surface, once per gate (§10.4). */
+  private settleApprovalGateSurface(p: Pending, gateId: string, allowed?: boolean): void {
     if (!(p.conv instanceof LinearConverger)) return
-    for (const action of p.conv.onPermissionResolved(allowed)) this.enqueueApply(p, action)
+    for (const action of p.conv.onPermissionResolved(gateId, allowed)) this.enqueueApply(p, action)
   }
 
   /** Serializes `agent/activity` emits: two flips on one session must reach the CP in order. */

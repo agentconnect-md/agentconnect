@@ -515,7 +515,7 @@ coalesce aggressively, post meaningfully.
 | a pull/merge-request URL anywhere in the agent's message text            | `external-urls` (`addedExternalUrls`)          | Collected over the whole turn, each URL once, labelled `PR #123` / `MR !45`; published once, immediately before the settling `response` (§10.3)                                                                                                                                             |
 | turn end                                                                 | `response`                                     | The accumulated final answer (final-answer selection reuses the GitHub Layer-2 heuristics: `_meta.codex.phase === 'final_answer'`, else message grouping, else last text run). Attribution footer appended per `output.showFooter`, Markdown-safe via the shared fence-aware chrome helpers |
 | turn failure (quota / auth / crash)                                      | `error`                                        | Reuses `turnFailureReason`/`turnFailureCode`; converger buffer flushed first so runtime-narrated errors are not duplicated                                                                                                                                                                  |
-| permission gate would block the turn                                     | `elicitation`, then one `thought`              | v1 posts `This step needs approval — <action>: "<input>" · open in session`, the summary sanitized like the §8 header and the pointer carrying the console deep link; one non-ephemeral `thought` follows the decision. Interactive approval from Linear is out of scope (§13)              |
+| permission gate would block the turn                                     | `elicitation`, then one `thought`              | v1 posts `This step needs approval — <action>: "<input>" · open in session`, the summary sanitized like the §8 header and the pointer carrying the console deep link; one non-ephemeral `thought` follows EACH gate's own decision. Interactive approval from Linear is out of scope (§13)  |
 | `session_info_update` (title)                                            | —                                              | Persisted locally for the console; Linear names sessions itself                                                                                                                                                                                                                             |
 | stop (`prompted` + `signal: "stop"`)                                     | `response` "Stopped — reply here to continue." | After `interruptTurn` completes; a `response` settles the Linear session state instead of leaving it `active`                                                                                                                                                                               |
 
@@ -1586,7 +1586,10 @@ none` skips it along with everything else Linear-visible. There is **no
    sanitizer the §8 header uses — next to the console deep link, and one
    non-ephemeral `thought` when the decision lands ("Approved — continuing."
    / "Denied — the step was skipped."), so an append-only feed never ends on
-   an open question. Identical gates collapse; the follow-through rides
+   an open question. Gates are tracked one by one, so overlapping ones each
+   get their own decision reported; two gates reading identically collapse
+   onto one row only while both are open, and an identical gate that arrives
+   after the first closed opens a fresh row. The follow-through rides
    progress chrome, so `minimal` posts the pointer alone and `none` neither.
    A request nobody answers is settled by the turn's own `response`/`error`
    instead, and is never re-posted. True interactive approval (Linear reply →
