@@ -450,8 +450,9 @@ name>`, e.g. `Acme / Engineering`: the two NAMES a member says out loud,
     daemon report can add or replace a glyph and never retract one. Without that
     split, a team whose icon was removed in Linear would keep the old one
     forever and the reconciler would re-run the same no-op write on every tick.
-    The console does **not** vendor Linear's icon set: an emoji is rendered as
-    itself, and a named icon falls back to the team's initial on the team's own
+    The console does **not** vendor Linear's icon set: a named icon is drawn
+    as the console's own counterpart of that name, an emoji as itself, and a
+    name with no counterpart as the team's initial, all on the team's own
     color (§9.5).
   - **A team carries its key and its page, as fields.** `IntegrationChannel.key`
     / `.url` and `integration_channel.key` / `.url` hold the team's short handle
@@ -1679,10 +1680,14 @@ tile.
     as the row's accessible name. A sixth, `RowMark`, is the colored glyph the
     row leads with — the way Linear's own team picker draws a team (§4.5). We
     do **not** vendor Linear's icon set: shipping someone else's icon font to
-    fill a 16 px square would go stale the moment they add one, so the mark
-    renders the team's **emoji** when the icon is one and otherwise the team's
-    **initial**, either way on the team's own color (a translucent ground of
-    the same value, so it sits correctly in both themes). Both halves are
+    fill a 16 px square would go stale the moment they add one. Linear names
+    its icons (`Gears`, `Present`, `Australia` — the 180-odd names its team
+    picker offers), so the mark draws the console's own counterpart of the
+    name out of the icon set it already ships (`team-icons.ts`, one lucide
+    glyph per name; a name with no honest counterpart is left out on purpose),
+    the team's **emoji** when the icon is one, and otherwise the team's
+    **initial** — either way on the team's own color (a translucent ground of
+    the same value, so it sits correctly in both themes). Emoji and initial are
     **grapheme** work: a flag is a pair of regional indicators and a keycap is a
     digit plus a combining mark, so a code-point read draws half of each, and
     `Extended_Pictographic` calls neither an emoji. The mark segments with

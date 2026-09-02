@@ -27,10 +27,17 @@ describe('the Linear team mark', () => {
     expect(html({ name: 'Wave', icon: '👋🏽' })).toContain('👋🏽')
   })
 
-  it('falls back to the team’s initial for a Linear icon NAME, rather than a vendored glyph', () => {
-    const out = html({ name: 'Engineering', icon: 'Feather' })
+  it('draws the console’s counterpart of a Linear icon NAME, on the team’s color', () => {
+    const out = html({ name: 'Engineering', icon: 'Gears', color: '#f7c8c1' })
+    expect(out).toContain('lucide-settings')
+    expect(out).toContain('stroke="#f7c8c1"')
+    expect(out).not.toContain('>E<')
+  })
+
+  it('falls back to the team’s initial for a NAME the console has no counterpart for', () => {
+    const out = html({ name: 'Engineering', icon: 'Dino' })
     expect(out).toContain('>E<')
-    expect(out).not.toContain('Feather')
+    expect(out).not.toContain('Dino')
   })
 
   it('uses the initial when there is no icon at all, and stays drawn for a nameless row', () => {

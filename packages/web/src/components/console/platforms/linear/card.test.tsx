@@ -265,9 +265,10 @@ describe('the team rows', () => {
     const marks = [...host.querySelectorAll('[aria-hidden]')].filter((el) =>
       (el.getAttribute('style') ?? '').includes('background')
     )
-    // Engineering's icon is a NAME we ship no glyph for, so the mark falls back to its initial;
-    // Design's is an emoji, which is drawn as itself. Both wear the team's own color.
-    expect(marks.map((el) => el.textContent)).toEqual(['E', '🎨'])
+    // Engineering's icon is a Linear NAME, drawn as the console's counterpart; Design's is an
+    // emoji, drawn as itself. Both wear the team's own color.
+    expect(marks[0]!.querySelector('svg.lucide-feather')).not.toBeNull()
+    expect(marks[1]!.textContent).toBe('🎨')
     expect(marks[0]!.getAttribute('style')).toContain('#5E6AD2')
     expect(marks[1]!.getAttribute('style')).toContain('#26B5CE')
   })

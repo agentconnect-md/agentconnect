@@ -1,14 +1,17 @@
 'use client'
 
+import { Icon } from '@/components/ui'
+import { linearTeamIcon } from './team-icons'
+
 // The team mark ({@link WebChannelListSemantics.RowMark}, §4.5): the colored glyph Linear's own
-// team picker leads a team with. Linear names the icon out of an icon set we deliberately do NOT
-// vendor — shipping someone else's icon font to fill a 16px square is a poor trade, and it would
-// go stale the moment they add one — so the mark renders the team's EMOJI when the icon is one,
+// team picker leads a team with. Linear names the icon out of its own library, so the mark draws
+// the console's counterpart of that name (`team-icons.ts`), the team's EMOJI when the icon is one,
 // and otherwise the team's initial. Either way it sits on the team's own color, which is the half
 // of the pair that actually tells two teams apart at a glance.
 //
-// Both halves are GRAPHEME work, not code-point work: a flag is a pair of regional indicators and
-// a keycap is a digit plus a combining mark, so the naive reads split them and draw a fragment.
+// Both emoji and initial are GRAPHEME work, not code-point work: a flag is a pair of regional
+// indicators and a keycap is a digit plus a combining mark, so the naive reads split them and
+// draw a fragment.
 
 /**
  * Whether one GRAPHEME is a picture rather than a letter. `RGI_Emoji` is a sequence property, so
@@ -60,10 +63,17 @@ export function LinearTeamGlyph({
   size?: number
 }) {
   const tint = hexColor(color)
-  // The icon is drawn only when it is a picture: a Linear icon NAME has no glyph here (we ship
-  // none, deliberately), and the team's initial says more than the word "Feather" in an 18px box.
-  const picture = icon ? firstGrapheme(icon) : ''
-  const glyph = picture && isPicture(picture) ? picture : initial(name)
+  // A library NAME draws its console counterpart; a picture draws itself; anything else — an
+  // unmapped name, or no icon at all — is the initial, which says more than "Dino" in an 18px box.
+  const named = linearTeamIcon(icon)
+  const picture = icon && !named ? firstGrapheme(icon) : ''
+  const glyph = named ? (
+    <Icon name={named} size={Math.round(size * 0.72)} color={tint ?? 'var(--text-tertiary)'} strokeWidth={2} />
+  ) : picture && isPicture(picture) ? (
+    picture
+  ) : (
+    initial(name)
+  )
   return (
     <span
       aria-hidden
