@@ -164,16 +164,17 @@ describe('LinearConverger — §5.1 event translation', () => {
         body: `${PERMISSION_ELICITATION_BODY} — Bash: "pnpm publish" · [open in session](${SESSION_URL})`
       }
     ])
-    // An append-only feed would stack an identical gate, so a repeat collapses.
+    // Re-announcing the SAME gate collapses; an append-only feed would otherwise stack it.
     expect(c.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash', detail: 'pnpm publish' })).toEqual([])
-    expect(c.onPermissionBlocked('g2', SESSION_URL, { tool: 'Bash', detail: 'pnpm publish' })).toEqual([])
   })
 
-  it('reopens an identical gate once the first one has closed', () => {
+  it('gives a second gate its own row even when it reads the same as the first', () => {
+    // Two requests that read alike are still two things a human must decide, open or closed.
     const c = conv('low')
     expect(types(c.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash' }))).toEqual(['elicitation'])
-    expect(types(c.onPermissionResolved('g1', true))).toEqual(['thought'])
     expect(types(c.onPermissionBlocked('g2', SESSION_URL, { tool: 'Bash' }))).toEqual(['elicitation'])
+    expect(types(c.onPermissionResolved('g1', false))).toEqual(['thought'])
+    expect(types(c.onPermissionResolved('g2', true))).toEqual(['thought'])
   })
 
   it('flattens provider text to one fence-inert line, and names the action alone when there is no input', () => {
@@ -202,6 +203,7 @@ describe('LinearConverger — §5.1 event translation', () => {
     ])
     // One gate, one closure: the same decision arriving twice does not repeat it.
     expect(c.onPermissionResolved('g1', true)).toEqual([])
+    expect(c.onPermissionResolved('g1', false)).toEqual([])
   })
 
   it('answers every overlapping gate with its own decision', () => {
@@ -220,8 +222,8 @@ describe('LinearConverger — §5.1 event translation', () => {
     const c = conv('low')
     c.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash' })
     expect(c.onPermissionResolved('g1')).toEqual([])
-    // …and the row it held is free again, so the next identical gate posts.
-    expect(types(c.onPermissionBlocked('g2', SESSION_URL, { tool: 'Bash' }))).toEqual(['elicitation'])
+    // …and it is closed for good: a late decision on the same gate says nothing either.
+    expect(c.onPermissionResolved('g1', true)).toEqual([])
   })
 
   it('posts the follow-through only in the modes that carry progress chrome', () => {

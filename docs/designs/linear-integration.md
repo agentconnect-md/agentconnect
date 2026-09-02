@@ -1586,10 +1586,11 @@ none` skips it along with everything else Linear-visible. There is **no
    sanitizer the §8 header uses — next to the console deep link, and one
    non-ephemeral `thought` when the decision lands ("Approved — continuing."
    / "Denied — the step was skipped."), so an append-only feed never ends on
-   an open question. Gates are tracked one by one, so overlapping ones each
-   get their own decision reported; two gates reading identically collapse
-   onto one row only while both are open, and an identical gate that arrives
-   after the first closed opens a fresh row. The follow-through rides
+   an open question. A gate is one row and one closure, keyed by its request
+   id: overlapping gates each report their own decision, two gates that read
+   alike still get a row each because they are two things a human must
+   decide, and only a re-announcement of a gate already open collapses. A
+   gate that goes away undecided closes quietly. The follow-through rides
    progress chrome, so `minimal` posts the pointer alone and `none` neither.
    A request nobody answers is settled by the turn's own `response`/`error`
    instead, and is never re-posted. True interactive approval (Linear reply →

@@ -398,7 +398,7 @@ export class LinearConverger {
   private planEntries?: LinearPlanEntry[]
   private planDirty = false
   private lastPlanKey?: string
-  private readonly openGates = new Map<string, string>()
+  private readonly openGates = new Set<string>()
   private settled = false
 
   constructor(
@@ -526,34 +526,24 @@ export class LinearConverger {
   }
 
   /** A permission gate blocks the turn: name what is being approved and point at the console (§10.4).
-   *  Gates are tracked by id, so overlapping ones each get their own closure; two open gates reading
-   *  identically collapse onto one row, because an append-only feed would stack them. */
+   *  One row per gate id — two gates that read the same are two things a human must decide, so each
+   *  owns a row and a closure; only a RE-announcement of a gate already open collapses. */
   onPermissionBlocked(gateId: string, sessionUrl?: string, request?: LinearApprovalRequest): LinearAction[] {
     if (this.settled || !this.policy.response || this.openGates.has(gateId)) return []
     const link = httpUrl(sessionUrl)
     const pointer = link ? markdownLink(PERMISSION_ELICITATION_POINTER, link) : PERMISSION_ELICITATION_FALLBACK
     const body = `${PERMISSION_ELICITATION_BODY}${elicitationRequestClause(request)} · ${pointer}`
-    const collapsed = this.gateBodyOpen(body)
-    this.openGates.set(gateId, body)
-    if (collapsed) return []
+    this.openGates.add(gateId)
     return [...this.flushNarration(true), ...this.takePending(), { kind: 'activity', type: 'elicitation', body }]
   }
 
   /** One gate closed: a human decision is announced so the feed never stops at the question, while a
-   *  gate that went away without one just frees its row for a later identical gate. Progress chrome,
-   *  so `minimal` posts the response only (§5.2). */
+   *  gate that went away without one (turn cancelled, request abandoned) closes quietly. Progress
+   *  chrome, so `minimal` posts the response only (§5.2). */
   onPermissionResolved(gateId: string, allowed?: boolean): LinearAction[] {
-    const body = this.openGates.get(gateId)
-    if (body === undefined) return []
-    this.openGates.delete(gateId)
-    if (allowed === undefined || this.settled || !this.policy.progress || this.gateBodyOpen(body)) return []
+    if (!this.openGates.delete(gateId)) return []
+    if (allowed === undefined || this.settled || !this.policy.progress) return []
     return [{ kind: 'activity', type: 'thought', body: allowed ? PERMISSION_APPROVED_BODY : PERMISSION_DENIED_BODY }]
-  }
-
-  /** Is some still-open gate already showing this exact row? */
-  private gateBodyOpen(body: string): boolean {
-    for (const open of this.openGates.values()) if (open === body) return true
-    return false
   }
 
   private discard(): LinearAction[] {
