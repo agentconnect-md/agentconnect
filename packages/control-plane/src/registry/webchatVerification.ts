@@ -1,5 +1,7 @@
 import {
+  continuableOrigin,
   originKindOf,
+  WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   type RcVerifyResult,
@@ -107,7 +109,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
         return { ok: false, reason: 'continuation unavailable' }
       }
       if (session.contentPurgedAt !== null) return { ok: false, reason: 'continuation unavailable' }
-      if (originKindOf(session.platform ?? '') !== 'chat') return { ok: false, reason: 'continuation unavailable' }
+      if (!continuableOrigin(session.platform ?? '')) return { ok: false, reason: 'continuation unavailable' }
       const role = await deps.orgs.roleOf(claims.orgId, claims.userId)
       if (!role || role === 'viewer') return { ok: false, reason: 'continuation unavailable' }
       // Fence the exact owner proved by mint-time provider-identity expansion against the live row.
@@ -125,6 +127,13 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
         return { ok: false, reason: 'continuation unavailable' }
       }
       if (!daemon.capabilities?.features.includes(WEBCHAT_SESSION_CONTINUATION_FEATURE)) {
+        return { ok: false, reason: 'continuation unavailable' }
+      }
+      // Console-only hook continuation is a strictly newer daemon behavior (§9).
+      if (
+        originKindOf(session.platform ?? '') === 'hook' &&
+        !daemon.capabilities.features.includes(WEBCHAT_HOOK_CONTINUATION_FEATURE)
+      ) {
         return { ok: false, reason: 'continuation unavailable' }
       }
       // Single fixed participant; no roster growth, no remote MCP entitlement.

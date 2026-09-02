@@ -61,6 +61,16 @@ export function originKindOf(p: string): OriginKind | undefined {
   if (isSessionIdentityPlatform(p)) return p
   return isKnownPlatform(p) ? 'chat' : undefined
 }
+
+/** The origin kinds a console composer may continue (webchat-cross-integration-continuation.md
+ *  §2.2, §9): a chat thread, whose human turn is mirrored back to the platform, and a hook
+ *  session — a code-host event or a generic webhook — whose only human surface IS the console.
+ *  `webchat` continues in place and `dream` is not a conversation; an id this build cannot
+ *  classify stays refused, like every other fail-closed coordinate check. */
+export function continuableOrigin(platform: string): boolean {
+  const kind = originKindOf(platform)
+  return kind === 'chat' || kind === 'hook'
+}
 export const Platform = z.string().min(1)
 export type Platform = z.infer<typeof Platform>
 

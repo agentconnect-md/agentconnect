@@ -15,7 +15,7 @@ import type {
   WebchatRemoteMcpEntitlement,
   WebchatRuntimeConfig
 } from '@agentconnect.md/protocol'
-import { originKindOf } from '@agentconnect.md/protocol'
+import { continuableOrigin, originKindOf } from '@agentconnect.md/protocol'
 import type { LoadedAgent } from '../agents/load-agents.js'
 import { sessionKey, transcriptChannelKey, type LocalStore } from '../store/local-store.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
@@ -320,15 +320,40 @@ export class WebchatTransport {
     return { accepted: true, turnId }
   }
 
+  /** The live platform transport a chat-origin continuation mirrors through, plus the bot identity
+   *  the mirrored turn addresses. `undefined` ⇒ this session's integration is not connected here. */
+  private continuationIntegration(
+    agentId: string,
+    local: { platform: string; transportScope?: string | null }
+  ): { integrationId: string; conn: WebchatReplyConnection; botUserId?: string } | undefined {
+    const integrationId = this.host.integrationIdForSessionTransport(
+      agentId,
+      local.platform,
+      local.transportScope ?? undefined
+    )
+    const conn = integrationId ? this.host.connForIntegration(integrationId) : undefined
+    if (!integrationId || !conn) return undefined
+    const botUserId =
+      this.host.botUserIds()[integrationId] ?? this.host.resolveCpAgent(agentId, local.platform)?.botUserId
+    return { integrationId, conn, ...(botUserId ? { botUserId } : {}) }
+  }
+
   /**
    * Session-targeted continuation turn (webchat-cross-integration-continuation.md
-   * §5.2/§6.4): dispatch one browser turn INTO an existing chat-origin session on
-   * its own local coordinates — the `replyToSession` local shape with a human
-   * sender — with the webchat stream attached as an additional sink. The human
-   * turn is mirrored to the origin thread BEFORE dispatch, so platform
-   * participants never miss input that changed the agent's context; a failed
+   * §5.2/§6.4/§9): dispatch one browser turn INTO an existing session on its own
+   * local coordinates — the `replyToSession` local shape with a human sender —
+   * with the webchat stream attached as a sink.
+   *
+   * A CHAT-origin session keeps its platform connection as a second sink: the
+   * human turn is mirrored to the origin thread BEFORE dispatch, so platform
+   * participants never miss input that changed the agent's context, and a failed
    * mirror refuses the turn. The crash window between a delivered mirror and the
    * committed dispatch is the ordinary projection-failure boundary (not atomic).
+   *
+   * A HOOK-origin session (GitHub, GitLab, a generic webhook) has no platform
+   * connection and no thread that would read a human turn, so the console is its
+   * only surface: no mirror, no renderer, and the browser stream is the whole
+   * output path — the same null-connection seam an ordinary webchat turn takes.
    */
   async dispatchWebchatContinuationTurn(
     agentId: string,
@@ -349,15 +374,13 @@ export class WebchatTransport {
     // agent-scoped, and use ONLY the local row's coordinates. A miss means the CP verdict is
     // stale (retention GC / metadata replacement) — fail closed.
     const local = await this.host.store().getSessionByOutwardId(targetSessionId, agentId)
-    if (!local || originKindOf(local.platform) !== 'chat') return { accepted: false, turnId, reason: 'not_found' }
+    if (!local || !continuableOrigin(local.platform)) return { accepted: false, turnId, reason: 'not_found' }
     if (this.host.paused(agentId)) return { accepted: false, turnId, reason: 'paused' }
     if (this.host.safetyDraining(agentId)) return { accepted: false, turnId, reason: 'busy' }
     if (this.host.draining() || this.host.agentDraining(agentId)) return { accepted: false, turnId, reason: 'draining' }
-    const integrationId = this.host.integrationIdForSessionTransport(agentId, local.platform, local.transportScope)
-    const conn = integrationId ? this.host.connForIntegration(integrationId) : undefined
-    if (!integrationId || !conn) return { accepted: false, turnId, reason: 'integration_offline' }
-    const botUserId =
-      this.host.botUserIds()[integrationId] ?? this.host.resolveCpAgent(agentId, local.platform)?.botUserId
+    // Hook origin has nobody to mirror to and no transport to reach: `null` IS that console-only branch, `undefined` a chat session whose integration is not connected here.
+    const integration = originKindOf(local.platform) === 'hook' ? null : this.continuationIntegration(agentId, local)
+    if (integration === undefined) return { accepted: false, turnId, reason: 'integration_offline' }
     await this.rememberAuthorName(author)
     const msg: NormalizedMessage = {
       msgId: `webchat-cont:${chatId}:${turnId}`,
@@ -371,9 +394,11 @@ export class WebchatTransport {
       transcriptTs: monotonicTs(),
       sender: { id: author.id, isBot: false, name: author.name },
       text,
-      mentionedBots: botUserId ? [botUserId] : [],
+      mentionedBots: integration?.botUserId ? [integration.botUserId] : [],
       isDm: local.conversationKind === 'dm',
-      trigger: local.conversationKind === 'dm' ? 'dm' : 'mention'
+      trigger: local.conversationKind === 'dm' ? 'dm' : 'mention',
+      // The CP authorized THIS session and the key below must rebuild its stored one, so the source gate reads the turn as the session's own; on the MESSAGE, so a restart replays it with the same standing.
+      adoptedSession: true
     }
     // The synthesized coordinates must rebuild the EXACT stored key, or dispatch
     // would mint a sibling session instead of continuing this one.
@@ -391,6 +416,18 @@ export class WebchatTransport {
       return { accepted: false, turnId, reason: 'busy' }
     }
     const stream = this.createWebchatTurnStream(agentId, chatId, turnId, sink)
+    // Console-only: leaving `continuation` unset takes the ordinary webchat shape — the reply is recorded once into THIS session's transcript and streamed to the browser, with no renderer and no mirror to admit behind.
+    if (!integration) {
+      void this.host.dispatch(agentId, msg, undefined, stream).catch((err) => {
+        if (!(err instanceof LifecycleCleanupBlockedError))
+          this.host.error(`webchat continuation dispatch failed for agent "${agentId}": ${formatErr(err)}`)
+      })
+      this.host.info(
+        `webchat continuation: ${author.name} → hook session ${local.key} (conversation ${chatId}, turn ${turnId})`
+      )
+      return { accepted: true, turnId }
+    }
+    const conn = integration.conn
     stream.continuation = true
     let settleMirror!: (mirrored: boolean) => void
     const mirrorAdmission = new Promise<boolean>((resolve) => {
@@ -400,7 +437,7 @@ export class WebchatTransport {
     const admitted = new Promise<{ accepted: boolean; reason?: string }>((resolve) => {
       settleAdmission = resolve
     })
-    const turn = this.host.dispatch(agentId, msg, integrationId, stream, undefined, {
+    const turn = this.host.dispatch(agentId, msg, integration.integrationId, stream, undefined, {
       admissionWait: mirrorAdmission,
       deferObservedInbound: true,
       onAdmission: (result) => settleAdmission(result)

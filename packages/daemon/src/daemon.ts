@@ -287,6 +287,7 @@ import {
   AgentSkillEntry as AgentSkillEntrySchema,
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
+  WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   CODEHOST_NOTE_PROJECTION_V1_FEATURE,
   CODEHOST_REVIEW_V1_FEATURE,
@@ -4175,6 +4176,8 @@ export class Daemon {
       // Session-targeted webchat continuation: RdMsgWebchat.targetSessionId is
       // resolved onto the target session's own local coordinates. Static.
       WEBCHAT_SESSION_CONTINUATION_FEATURE,
+      // Its hook-origin twin: a GitHub / GitLab / webhook session is continued console-only — no platform connection, no mirror. Static.
+      WEBCHAT_HOOK_CONTINUATION_FEATURE,
       // This bit attests to daemon-side grant + ACP descriptor delivery, not to
       // a runtime artifact, capability probe, or sandbox policy. The CP remains
       // authoritative for deciding whether a conversation belongs to the
@@ -13728,6 +13731,8 @@ export class Daemon {
     callMeta: CallMeta | undefined,
     hookContext: HookDispatchContext | undefined
   ): Promise<'unchanged' | 'mismatch' | 'unavailable'> {
+    // A console continuation onto a hook session is not a new audience claiming a runtime — it IS that session, and nothing re-derives a hook audience without the delivery's trusted metadata, so the row keeps its binding (§9).
+    if (msg.adoptedSession && originKindOf(msg.platform) === 'hook') return 'unchanged'
     const direct =
       this.githubExternalSource(hookContext) ??
       (await this.conversationExternalSource(agentId, msg, callMeta !== undefined && callMeta.platformOrigin !== true))

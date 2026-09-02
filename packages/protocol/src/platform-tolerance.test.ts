@@ -7,7 +7,8 @@ import {
   IntegrationSpec,
   KNOWN_PLATFORMS,
   isKnownPlatform,
-  originKindOf
+  originKindOf,
+  continuableOrigin
 } from './index.js'
 
 /**
@@ -416,6 +417,16 @@ describe('§6.1 origin-kind classification on the wire', () => {
     expect(originKindOf('dream')).toBe('dream')
     expect(originKindOf('webchat')).toBe('webchat')
     expect(originKindOf(UNKNOWN)).toBeUndefined()
+  })
+
+  // The console composer's platform gate (webchat-cross-integration-continuation.md §9).
+  it('continuableOrigin admits chat and hook, and nothing it cannot classify', () => {
+    for (const chat of ['slack', 'telegram', 'discord', 'feishu']) expect(continuableOrigin(chat)).toBe(true)
+    expect(continuableOrigin('hook')).toBe(true)
+    // webchat continues in place, dream is not a conversation, and an unknown id fails closed.
+    expect(continuableOrigin('webchat')).toBe(false)
+    expect(continuableOrigin('dream')).toBe(false)
+    expect(continuableOrigin(UNKNOWN)).toBe(false)
   })
 })
 

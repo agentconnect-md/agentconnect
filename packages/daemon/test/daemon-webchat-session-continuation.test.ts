@@ -82,6 +82,13 @@ async function boot(reply: (prompt: string) => string = () => 'done') {
       upsertSession(rec: Record<string, unknown>): void
       setSessionClassification(key: string, c: Record<string, unknown>): void
       getSession(key: string): { acpSessionId: string | null } | undefined
+      transcriptPage(
+        channel: string,
+        thread: string,
+        beforeSeq: number | null,
+        limit: number,
+        agentId?: string
+      ): Promise<{ rows: { text: string }[] }>
       sessionsForAgent?(agentId: string): unknown[]
     }
     connByIntegration: Map<string, unknown>
@@ -294,6 +301,73 @@ describe('webchat session-targeted continuation — mirror routing claim', () =>
     expect(author).toBe(AGENT)
     expect(response).toMatchObject({ deliveryState: 'final', hopCount: 0, mentionedAgentIds: [] })
     expect((response as { responseId: string }).responseId).toMatch(/^webchat-cont:/)
+    await daemon.stop()
+  })
+})
+
+// ── hook-origin continuation (§9) ────────────────────────────────────────────
+// A GitHub / GitLab / webhook session has no platform connection and nobody on the
+// far side to read a human turn: the console is its only surface. The turn runs on
+// the hook session's own coordinates with the browser stream as the whole output
+// path — no mirror, no platform renderer.
+
+const HOOK_ACP = 'acp-target-hook'
+const HOOK_KEY = `hook:github:42:1552:${AGENT}`
+
+describe('webchat session-targeted continuation — hook origin', () => {
+  it('runs the turn on the hook session, mirrors nothing, and records the reply in its transcript', async () => {
+    const { daemon, d, prompts, postMessage } = await boot(() => 'looked again — still fine')
+    await d.store.upsertSession({
+      key: HOOK_KEY,
+      agentId: AGENT,
+      platform: 'hook',
+      channel: 'github:42',
+      thread: '1552',
+      acpSessionId: HOOK_ACP,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    // The binding a real GitHub fire leaves behind. Nothing re-derives a hook audience without
+    // the delivery's trusted metadata, so an unmarked continuation would read as a foreign
+    // audience claiming this runtime and be rejected as a source mismatch.
+    await d.store.setSessionClassification(HOOK_KEY, {
+      sourceBindingKind: 'external',
+      externalProvider: 'github',
+      externalRealmKey: 'github.com',
+      externalResourceKind: 'repository',
+      externalResourceKey: '42'
+    })
+    const events: RdChatEvent[] = []
+
+    const ack = await d.handleRelayMsg(turn('look at the diff again', { targetSessionId: HOOK_ACP }), (e) =>
+      events.push(e)
+    )
+    expect(ack).toMatchObject({ accepted: true })
+    await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
+
+    // The PR thread never sees the console turn — there is no mirror and no platform post.
+    expect(postMessage).not.toHaveBeenCalled()
+    // The turn entered the hook session itself, not a fresh webchat sibling.
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]!.text).toContain('look at the diff again')
+    expect(await d.store.getSession(HOOK_KEY)).toBeDefined()
+    expect(await d.store.getSession(`webchat:${CONV}:webchat:${CONV}:${AGENT}`)).toBeUndefined()
+    // The reply streamed to the browser AND landed once in the hook session's own transcript.
+    expect(events.some((e) => e.kind === 'output')).toBe(true)
+    const page = await d.store.transcriptPage('github:42', '1552', null, 50, AGENT)
+    const texts = page.rows.map((r) => r.text)
+    expect(texts).toContain('look at the diff again')
+    expect(texts.filter((t) => t === 'looked again — still fine')).toHaveLength(1)
+    await daemon.stop()
+  })
+
+  it('refuses a hook target that no longer resolves, without touching the platform', async () => {
+    const { daemon, d, prompts, postMessage } = await boot()
+    const ack = await d.handleRelayMsg(turn('x', { targetSessionId: HOOK_ACP }), () => {})
+    expect(ack).toMatchObject({ accepted: false, reason: 'not_found' })
+    expect(prompts).toHaveLength(0)
+    expect(postMessage).not.toHaveBeenCalled()
     await daemon.stop()
   })
 })
