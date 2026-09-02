@@ -24,17 +24,23 @@ const ctx: SessionContext = {
 interface Recorded {
   op: string
   variables: Record<string, unknown>
+  idempotent?: boolean
 }
+
+/** Script value: the mutation's first attempt committed, and the retry was refused on the id. */
+const DUPLICATE = Symbol('duplicate-key')
 
 /** A client that answers each request from a script keyed by the operation name. */
 function client(script: Record<string, unknown | ((vars: Record<string, unknown>) => unknown)>) {
   const calls: Recorded[] = []
   const impl: LinearToolClient = {
-    request: async <T>(query: string, variables: Record<string, unknown>) => {
+    request: async <T>(query: string, variables: Record<string, unknown>, opts?: { onDuplicateKey?: () => T }) => {
       const op = /^\s*(?:query|mutation)\s+(\w+)/.exec(query)?.[1] ?? 'unknown'
-      calls.push({ op, variables })
+      calls.push({ op, variables, ...(opts?.onDuplicateKey ? { idempotent: true } : {}) })
       const answer = script[op]
-      if (answer === undefined) throw new Error(`unscripted operation ${op}`)
+      if (answer === undefined) throw new Error(`unscripted operation `)
+      // The sentinel plays the connection recognising a duplicate-key refusal on a RETRY.
+      if (answer === DUPLICATE) return opts!.onDuplicateKey!()
       return (typeof answer === 'function' ? answer(variables) : answer) as T
     }
   }
@@ -352,8 +358,10 @@ describe('createIssue', () => {
     )) as { created: boolean; issue: { identifier: string } }
     expect(c.calls.at(-1)).toEqual({
       op: 'IssueCreate',
+      idempotent: true,
       variables: {
         input: {
+          id: expect.any(String),
           teamId: TEAM_ID,
           title: 'New',
           description: 'Body',
@@ -449,8 +457,50 @@ describe('createIssueComment', () => {
     const res = await run('createIssueComment', { issue: 'ENG-42', body: 'Done — see PR', parent: 'c-1' }, c.impl)
     expect(c.calls.at(-1)).toEqual({
       op: 'CommentCreate',
-      variables: { input: { issueId: ISSUE_ID, body: 'Done — see PR', parentId: 'c-1' } }
+      idempotent: true,
+      variables: { input: { id: expect.any(String), issueId: ISSUE_ID, body: 'Done — see PR', parentId: 'c-1' } }
     })
     expect(res).toEqual({ posted: true, issue: 'ENG-42', commentId: 'c-9', url: 'u9', createdAt: 't9' })
+  })
+})
+
+describe('creates are idempotent across the connection’s retry', () => {
+  it('mints the issue id itself, passes the duplicate-key hook, and reads the issue back on a committed retry', async () => {
+    const c = client({
+      TeamsByRef: { teams: { nodes: [{ id: TEAM_ID, key: 'ENG' }] } },
+      IssueCreate: DUPLICATE,
+      GetIssue: (vars: Record<string, unknown>) => ({ issue: issueNode({ id: vars.id, identifier: 'ENG-77' }) })
+    })
+    const res = (await run('createIssue', { team: 'ENG', title: 'Once' }, c.impl)) as { issue: { identifier: string } }
+    const create = c.calls.find((x) => x.op === 'IssueCreate')!
+    expect(create.idempotent).toBe(true)
+    const minted = (create.variables.input as { id: string }).id
+    expect(minted).toMatch(/^[0-9a-f-]{36}$/)
+    // The read-back asks for exactly the id the create carried.
+    expect(c.calls.at(-1)).toEqual({ op: 'GetIssue', variables: { id: minted } })
+    expect(res.issue.identifier).toBe('ENG-77')
+  })
+
+  it('answers a committed comment retry with the id it minted, without a second post', async () => {
+    const c = client({
+      IssueRef: { issue: { id: ISSUE_ID, identifier: 'ENG-42', team: { id: TEAM_ID } } },
+      CommentCreate: DUPLICATE
+    })
+    const res = (await run('createIssueComment', { issue: 'ENG-42', body: 'hi' }, c.impl)) as { commentId: string }
+    const create = c.calls.find((x) => x.op === 'CommentCreate')!
+    expect(create.idempotent).toBe(true)
+    expect(res.commentId).toBe((create.variables.input as { id: string }).id)
+    expect(c.calls.filter((x) => x.op === 'CommentCreate')).toHaveLength(1)
+  })
+
+  it('never gives an update or a read the duplicate-key hook — those retry plainly', async () => {
+    const c = client({
+      IssueRef: { issue: { id: ISSUE_ID, identifier: 'ENG-42', team: { id: TEAM_ID } } },
+      IssueUpdate: { issueUpdate: { success: true, issue: issueNode() } },
+      GetIssue: { issue: issueNode() }
+    })
+    await run('updateIssue', { issue: 'ENG-42', title: 'x' }, c.impl)
+    await run('getIssue', { issue: 'ENG-42' }, c.impl)
+    expect(c.calls.every((x) => !x.idempotent)).toBe(true)
   })
 })

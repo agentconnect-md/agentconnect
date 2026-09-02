@@ -2380,6 +2380,9 @@ export class Daemon {
       canRun: (ctx) => this.toolTurnRunnable(ctx),
       setSessionTitle: (req) => this.setSessionTitleFromTool(req),
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
+      // A platform's own session tools act through ANY platform's connection — including the one
+      // the reply-surface registry above omits (Linear, §4.6).
+      sessionToolConnectionFor: (integrationId) => this.anyConnForIntegration(integrationId),
       // History-backed discovery for platforms whose bot API can't enumerate chats/users
       // (Telegram): only the sole current physical bot's scoped history is reachable.
       observedChannels: async (agentId, platform) => {
@@ -14263,7 +14266,13 @@ export class Daemon {
   private commandConnFor(agentId: string, integrationId?: string): PlatformConnection | undefined {
     const intId = integrationId ?? this.agents.get(agentId)?.integrations[0]?.id
     if (!intId) return undefined
-    return this.connForIntegration(intId) ?? this.lnConnByIntegration.get(intId)
+    return this.anyConnForIntegration(intId)
+  }
+
+  /** The live connection serving `integrationId` on ANY platform — the reply-capable registry
+   *  plus Linear, whose connection renders chrome and serves its session tools itself. */
+  private anyConnForIntegration(integrationId: string): PlatformConnection | undefined {
+    return this.connForIntegration(integrationId) ?? this.lnConnByIntegration.get(integrationId)
   }
 
   /** CP-owned cron ids currently held in memory. */

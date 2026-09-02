@@ -1190,7 +1190,14 @@ tile.
     that platform (`mcp/tools.ts`) and refuses them at call time from any
     other session (`mcp/ops.ts`), executing through the session's own
     connection — `LinearConnection.request`, the one paced, authenticated
-    GraphQL call the tools get. The first cut is issue-centric: `getIssue`,
+    GraphQL call the tools get. That connection comes from a dedicated
+    any-platform resolver (`sessionToolConnectionFor`), **not** the reply
+    surface registry `gatewayFor` reads, which omits Linear by design (§4.6).
+    The two creates (`createIssue`, `createIssueComment`) mint their own
+    UUID into the input and pass the duplicate-key hook, so the queue's
+    indeterminate retry recognises a committed first attempt instead of
+    creating twice — the `createActivity` contract, reused. The first cut is
+    issue-centric: `getIssue`,
     `listIssues`, `listIssueComments`, `listIssueStatuses`, `listIssueLabels`,
     `listTeams`, `listUsers`, `createIssue`, `updateIssue`,
     `createIssueComment`. Every write resolves names to ids itself (team key,

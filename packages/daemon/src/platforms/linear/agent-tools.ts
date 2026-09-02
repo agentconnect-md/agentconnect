@@ -10,15 +10,18 @@
  * Injected only into a session ON the Linear platform (`read-ports.ts` `sessionTools`) and
  * refused from anywhere else; the connection the tools act through is the session's own.
  */
+import { randomUUID } from 'node:crypto'
 import { z, type ZodType } from 'zod'
 import { optionalBoundedInt, optionalNumber, optionalString, parseArgs, requiredString } from '../../mcp/ops/args.js'
 import type { SessionContext } from '../../mcp/ops/context.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
 import type { PlatformSessionTools } from '../read-ports.js'
 
-/** The slice of the connection these tools need: one paced, authenticated GraphQL request. */
+/** The slice of the connection these tools need: one paced, authenticated GraphQL request. A
+ *  create passes `onDuplicateKey` with a client-minted id in its input, so the connection's
+ *  indeterminate retry can recognise "the first attempt committed" instead of creating twice. */
 export interface LinearToolClient {
-  request<T>(query: string, variables: Record<string, unknown>): Promise<T>
+  request<T>(query: string, variables: Record<string, unknown>, opts?: { onDuplicateKey?: () => T }): Promise<T>
 }
 
 /** List page bounds — Linear's own `first` cap is 250; 50 keeps a page inside a tool result. */
@@ -616,12 +619,19 @@ async function listUsers(client: LinearToolClient, args: Record<string, unknown>
 async function createIssue(client: LinearToolClient, args: Record<string, unknown>) {
   const { team, ...fields } = parseArgs(CREATE_ISSUE_ARGS, args)
   const resolved = await resolveTeam(client, team)
-  const input = { teamId: resolved.id, ...(await issueInput(client, resolved.id, fields)) }
-  const data = await client.request<{ issueCreate?: { success?: boolean; issue?: IssueNode | null } }>(ISSUE_CREATE, {
-    input
-  })
-  const issue = data.issueCreate?.issue
-  if (!data.issueCreate?.success || !issue) throw new Error('Linear did not create the issue')
+  // The id is minted HERE so a retry after a lost response finds the issue it already made.
+  const id = randomUUID()
+  const input = { id, teamId: resolved.id, ...(await issueInput(client, resolved.id, fields)) }
+  type Payload = { issueCreate?: { success?: boolean; issue?: IssueNode | null } }
+  const data = await client.request<Payload>(
+    ISSUE_CREATE,
+    { input },
+    { onDuplicateKey: () => ({ issueCreate: { success: true, issue: null } }) }
+  )
+  if (!data.issueCreate?.success) throw new Error('Linear did not create the issue')
+  // A duplicate-key answer proved the first attempt committed but carried no issue: read it back.
+  const issue = data.issueCreate.issue ?? (await client.request<{ issue?: IssueNode | null }>(GET_ISSUE, { id })).issue
+  if (!issue) throw new Error('Linear did not create the issue')
   return { created: true, issue: projectIssue(issue, SNIPPET_MAX) }
 }
 
@@ -643,11 +653,17 @@ async function updateIssue(client: LinearToolClient, args: Record<string, unknow
 async function createIssueComment(client: LinearToolClient, args: Record<string, unknown>) {
   const a = parseArgs(CREATE_ISSUE_COMMENT_ARGS, args)
   const target = await resolveIssue(client, a.issue)
-  const input = { issueId: target.id, body: a.body, ...(a.parent ? { parentId: a.parent.trim() } : {}) }
+  const id = randomUUID()
+  const input = { id, issueId: target.id, body: a.body, ...(a.parent ? { parentId: a.parent.trim() } : {}) }
   type Payload = {
     commentCreate?: { success?: boolean; comment?: { id?: string; url?: string; createdAt?: string } | null }
   }
-  const data = await client.request<Payload>(COMMENT_CREATE, { input })
+  // A duplicate-key answer on retry means the first attempt posted it; answer with the id we minted.
+  const data = await client.request<Payload>(
+    COMMENT_CREATE,
+    { input },
+    { onDuplicateKey: () => ({ commentCreate: { success: true, comment: { id } } }) }
+  )
   const comment = data.commentCreate?.comment
   if (!data.commentCreate?.success || !comment)
     throw new Error(`Linear did not post the comment on ${target.identifier ?? a.issue}`)
