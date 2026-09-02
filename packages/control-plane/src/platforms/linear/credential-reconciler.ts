@@ -294,7 +294,12 @@ export class LinearCredentialReconciler {
 
   /** Display-only refresh, on every sibling row that carries the team — its label and the glyph
    *  the console draws it with: `upsertConversation` preserves the stored trigger, and a row that
-   *  already matches on all three is not written. */
+   *  already matches on all three is not written.
+   *
+   *  AUTHORITATIVE, unlike a daemon observation: `teams` answered, so a team with no icon or color
+   *  genuinely has none, and the row is CLEARED rather than left carrying a glyph Linear dropped.
+   *  The write therefore states both fields — omitting them would make the mismatch above true
+   *  forever and re-run this same no-op write on every tick. */
   private async refreshTeamName(
     seams: NonNullable<LinearCredentialReconcilerDeps['teams']>,
     rows: readonly {
@@ -314,8 +319,8 @@ export class LinearCredentialReconciler {
       await seams.channels.upsertConversation(row.integrationId, {
         id: team.id,
         name,
-        ...(team.icon ? { icon: team.icon } : {}),
-        ...(team.color ? { color: team.color } : {}),
+        icon: team.icon ?? null,
+        color: team.color ?? null,
         kind: 'channel'
       })
     }

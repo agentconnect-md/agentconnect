@@ -874,8 +874,10 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         ...(conversation.name ? { name: conversation.name } : {}),
         ...(conversation.spaceId ? { spaceId: conversation.spaceId } : {}),
         ...(conversation.space ? { space: conversation.space } : {}),
-        ...(conversation.icon ? { icon: conversation.icon } : {}),
-        ...(conversation.color ? { color: conversation.color } : {}),
+        // Absent leaves the stored glyph standing; an explicit `null` from a reporter that
+        // enumerates the platform's own state clears it.
+        ...(conversation.icon !== undefined ? { icon: conversation.icon } : {}),
+        ...(conversation.color !== undefined ? { color: conversation.color } : {}),
         ...(conversation.dmUserId ? { dmUserId: conversation.dmUserId } : {})
       }
     })

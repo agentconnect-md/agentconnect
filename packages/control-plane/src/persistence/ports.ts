@@ -4785,9 +4785,11 @@ export interface ReportedChannel {
    *  platforms and until resolved. */
   spaceId?: string
   space?: string
-  /** The conversation's own display glyph and tint (a Linear team). Absent elsewhere. */
-  icon?: string
-  color?: string
+  /** The conversation's own display glyph and tint (a Linear team). Tri-state: ABSENT is
+   *  "unknown" and leaves a stored glyph standing, `null` is an authoritative "it has none"
+   *  and clears it. Only a reporter that enumerates the platform's own state may send `null`. */
+  icon?: string | null
+  color?: string | null
   isPrivate?: boolean
   /** Absent = 'channel' (wire compatibility). */
   kind?: ConversationKind

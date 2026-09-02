@@ -67,8 +67,10 @@ export async function seedLinearTeamRows(
       {
         id: team.id,
         name: linearTeamChannelName(team, opts.workspaceName),
-        ...(team.icon ? { icon: team.icon } : {}),
-        ...(team.color ? { color: team.color } : {}),
+        // Explicit nulls, not omissions: `teams` enumerates the workspace's own state, so a team
+        // that carries no glyph says so — and an existing row that had one is cleared.
+        icon: team.icon ?? null,
+        color: team.color ?? null,
         kind: 'channel'
       },
       { defaultTrigger: opts.trigger }

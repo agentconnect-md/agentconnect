@@ -6,16 +6,47 @@
 // go stale the moment they add one — so the mark renders the team's EMOJI when the icon is one,
 // and otherwise the team's initial. Either way it sits on the team's own color, which is the half
 // of the pair that actually tells two teams apart at a glance.
+//
+// Both halves are GRAPHEME work, not code-point work: a flag is a pair of regional indicators and
+// a keycap is a digit plus a combining mark, so the naive reads split them and draw a fragment.
 
-/** An icon Linear stores as a picture rather than as a name — anything else is a set member. */
-const EMOJI = /\p{Extended_Pictographic}/u
+/**
+ * Whether one GRAPHEME is a picture rather than a letter. `RGI_Emoji` is a sequence property, so
+ * it needs `v` mode and must stand alone in its pattern; it is built once and reused, and an
+ * engine without it falls back to the union below.
+ */
+const RGI_EMOJI = ((): RegExp | null => {
+  try {
+    return new RegExp('^\\p{RGI_Emoji}$', 'v')
+  } catch {
+    return null
+  }
+})()
+
+/** The fallback's three shapes. `Extended_Pictographic` alone matches only the first: a flag is a
+ *  PAIR of regional indicators and a keycap is an ASCII digit plus U+20E3, and neither carries it.
+ *  Exported because the primary path shadows it wherever `v` mode exists, which is everywhere we
+ *  run — a test is the only thing that would ever exercise the shapes it has to cover. */
+export const EMOJI_FALLBACK = /^(?:\p{Extended_Pictographic}|[\u{1F1E6}-\u{1F1FF}]{2}|[0-9#*]\uFE0F?\u20E3)/u
+
+const isPicture = (grapheme: string): boolean => (RGI_EMOJI ? RGI_EMOJI.test(grapheme) : EMOJI_FALLBACK.test(grapheme))
+
+/** Graphemes, not code points: `🇺🇸` is two of them and `1️⃣` is three, so indexing by code point
+ *  draws half a flag. One segmenter for the module — constructing one per render is not free. */
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+/** The first whole grapheme of a value, or '' when it has none. */
+function firstGrapheme(value: string): string {
+  for (const { segment } of GRAPHEMES.segment(value.trim())) return segment
+  return ''
+}
 
 /** Linear stores `#rrggbb`; a value that lost its hash is still a color, so it is given one back. */
 const hexColor = (color?: string): string | undefined =>
   color ? (color.startsWith('#') ? color : `#${color}`) : undefined
 
-/** The team's initial — code points, so an emoji-led or accented name yields one whole character. */
-const initial = (name: string): string => [...name.trim()][0]?.toUpperCase() ?? '?'
+/** The team's initial — one grapheme, so an emoji-led or accented name yields a whole character. */
+const initial = (name: string): string => firstGrapheme(name).toUpperCase() || '?'
 
 export function LinearTeamGlyph({
   name,
@@ -29,7 +60,10 @@ export function LinearTeamGlyph({
   size?: number
 }) {
   const tint = hexColor(color)
-  const glyph = icon && EMOJI.test(icon) ? icon : initial(name)
+  // The icon is drawn only when it is a picture: a Linear icon NAME has no glyph here (we ship
+  // none, deliberately), and the team's initial says more than the word "Feather" in an 18px box.
+  const picture = icon ? firstGrapheme(icon) : ''
+  const glyph = picture && isPicture(picture) ? picture : initial(name)
   return (
     <span
       aria-hidden

@@ -439,11 +439,19 @@ name>`, e.g. `Acme / Engineering`: the two NAMES a member says out loud,
     on them, and a row that has neither renders exactly as it did before they
     existed. Both writers of the row carry them — the CP's connect tail and
     reconciler team pass off its own `teams` query, the daemon off
-    `listChannels` and the event bag — and, like the Discord space, they are
-    learned once and never unlearned: a report that could not resolve the pair
-    leaves the drawn row standing. The console does **not** vendor Linear's
-    icon set: an emoji is rendered as itself, and a named icon falls back to
-    the team's initial on the team's own color (§9.5).
+    `listChannels` and the event bag. The two are not equally authoritative, and
+    the row's write is a **tri-state** because of it: an ABSENT field means
+    "unknown" and, like the Discord space, leaves a drawn row standing — a
+    daemon lookup that resolved nothing may not blank one — while an explicit
+    `null` means "the platform says it has none" and clears it. Only a writer
+    that ENUMERATES the platform's own state may send `null`, which is the CP's
+    `teams` pass and nothing on the wire: `IntegrationChannel` has no null, so a
+    daemon report can add or replace a glyph and never retract one. Without that
+    split, a team whose icon was removed in Linear would keep the old one
+    forever and the reconciler would re-run the same no-op write on every tick.
+    The console does **not** vendor Linear's icon set: an emoji is rendered as
+    itself, and a named icon falls back to the team's initial on the team's own
+    color (§9.5).
   - **The issue is display metadata, not a coordinate.** `TEAM-123` is a
     human identifier that changes when an issue moves teams, and its
     immutable UUID would be stable but buys nothing, because nothing is ever
@@ -1257,7 +1265,9 @@ tile.
     the guarantee.** The `LinearCredentialReconciler` tick (already running
     per deployment app) also asks each connected workspace for its teams and
     upserts a row for any it has not seen — a name-and-glyph refresh for the
-    rest, which writes nothing when both already match — so a
+    rest, which states the glyph as the tri-state of §4.5 (an answered `teams`
+    is authoritative, so a team that dropped its icon has the row cleared) and
+    writes nothing when the row already matches — so a
     team created after the install has a row within one tick whatever the
     bot's membership looks like. The fast path is the daemon's observed
     report (§9.4): on a delivery for a team it has no row for, the daemon
@@ -1624,7 +1634,13 @@ tile.
     fill a 16 px square would go stale the moment they add one, so the mark
     renders the team's **emoji** when the icon is one and otherwise the team's
     **initial**, either way on the team's own color (a translucent ground of
-    the same value, so it sits correctly in both themes). Direct rows never
+    the same value, so it sits correctly in both themes). Both halves are
+    **grapheme** work: a flag is a pair of regional indicators and a keycap is a
+    digit plus a combining mark, so a code-point read draws half of each, and
+    `Extended_Pictographic` calls neither an emoji. The mark segments with
+    `Intl.Segmenter` and tests the whole grapheme against `RGI_Emoji`, with an
+    explicit union (pictographic base | regional-indicator pair | keycap
+    sequence) for an engine without `v`-mode sequence properties. Direct rows never
     take it — their label is a person, and the `@`/`@@` markers already lead
     them — and every other platform declares none, so its rows are untouched. Linear's `roomGlyph` is empty, and the
     session list reads the same per-platform sigil, so no Linear conversation
