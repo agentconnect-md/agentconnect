@@ -34,8 +34,8 @@ const LinearPreviousComment = z.object({
 export const LinearAdapterExtSchema = z.object({
   agentSessionId: z.string().min(1),
   event: z.enum(['created', 'prompted']).optional(),
-  // The issue's team — the channel coordinate itself (§4.5). Read tolerantly here; the
-  // coordinates, `channelName` and the §8 header adopt it in their own change.
+  // The issue's team — the channel coordinate itself (§4.5), and the `channelName` this side
+  // renders. Read tolerantly: an older relay omits it, and the label degrades to the id.
   team: z.object({ id: z.string(), key: z.string().optional(), name: z.string().optional() }).optional(),
   issueId: z.string().optional(),
   issueIdentifier: z.string().optional(),
@@ -46,6 +46,19 @@ export const LinearAdapterExtSchema = z.object({
   truncated: z.boolean().optional()
 })
 export type LinearAdapterExt = z.infer<typeof LinearAdapterExtSchema>
+
+/** One Linear team — the channel (§4.5) — as the bag and the connection's read port name it. */
+export interface LinearTeamRef {
+  id: string
+  key?: string
+  name?: string
+}
+
+/** The connected workspace: all that is left to label the issue-less channel (§4.5). */
+export interface LinearWorkspaceRef {
+  workspaceName?: string
+  workspaceId(): string
+}
 
 /** The stop payload the relay puts on `platform_action` (§6.3). */
 export const LinearStopActionSchema = z.object({
@@ -110,19 +123,28 @@ export function readLinearExt(msg: Pick<NormalizedMessage, 'adapterExt'>): Linea
   return parsed.success ? parsed.data : undefined
 }
 
-/** §4.5 session `channelName`: the connected WORKSPACE, since the workspace is the channel.
- *  Degrades to the organization id — a session labelled by its tenant beats one labelled
- *  `undefined`, and the issue rides `threadUrl` plus the §8 header either way. */
-export function linearChannelName(conn: { workspaceName?: string; workspaceId(): string }): string {
-  const name = conn.workspaceName ? sanitizeTitle(conn.workspaceName) : ''
-  return name || conn.workspaceId()
+/**
+ * §4.5 session `channelName`: the issue's TEAM, `<KEY> · <Team name>` — key first so the label
+ * sorts and scans like the identifiers it prefixes.
+ *
+ * Read from the BAG, never re-derived: the relay already keys `channel` on the team id, so this
+ * side only labels a coordinate it is handed. Degrades to the bare team id, and — for the
+ * issue-less channel alone, which has no team — to the connected workspace's own label.
+ */
+export function linearChannelName(team: LinearTeamRef | undefined, workspace?: LinearWorkspaceRef): string {
+  if (team) {
+    const label = [short(team.key), short(team.name)].filter(Boolean).join(' · ')
+    return label || team.id
+  }
+  if (!workspace) return ''
+  return (workspace.workspaceName ? sanitizeTitle(workspace.workspaceName) : '') || workspace.workspaceId()
 }
 
 /**
  * §4.5: the session Linear opened carries no issue — `app:mentionable` also covers documents
  * and other editor surfaces. v1 answers such a surface once and starts no turn. Read off the
- * ABSENCE of issue metadata in the bag: the channel is the workspace now, so the coordinates
- * no longer say anything about which surface the session was opened on.
+ * ABSENCE of issue metadata in the bag: the channel is the team (or, here, the workspace), so
+ * the coordinates no longer say anything about which surface the session was opened on.
  */
 export function isLinearIssuelessSurface(ext: LinearAdapterExt): boolean {
   return ext.issueIdentifier === undefined && ext.issueTitle === undefined

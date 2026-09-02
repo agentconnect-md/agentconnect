@@ -51,7 +51,6 @@ import {
 import { consolidateDiscord, discordConnKey, DiscordConnection, type DiscordDeps } from '../discord/connection.js'
 import { consolidateFeishu, feishuConnKey, FeishuConnection } from '../feishu/connection.js'
 import { consolidateLinear, linearConnKey, LinearConnection } from './linear/connection.js'
-import { linearChannelName } from './linear/message-strategy.js'
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
 
@@ -137,6 +136,12 @@ export interface ConnectionReconcilerHost extends PlatformActionSink {
   observeTelegramChat(chat: TelegramObservedChat, integrationIds: readonly string[]): Promise<void>
   /** Report one conversation a connection knows it reaches, ahead of any session row. */
   observePlatformChat(platform: string, chat: ObservedChat, integrationIds: readonly string[]): Promise<void>
+  /** The same, for a whole set at once — one report per integration, not one per conversation. */
+  observePlatformChats(
+    platform: string,
+    chats: readonly ObservedChat[],
+    integrationIds: readonly string[]
+  ): Promise<void>
   refreshObservedChannels(): Promise<void>
   retractChannels(integrationId: string, channelIds: readonly string[]): Promise<void>
   integrationConfigById(integrationId: string): Integration | undefined
@@ -746,10 +751,10 @@ export class ConnectionReconciler {
    * nothing to send through. A re-pushed spec converges through `applySnapshot` rather than a
    * teardown, because rotation does not change the connection's identity (§7.5).
    *
-   * Every client also REPORTS its workspace as the one conversation it observes (§4.5): the
-   * workspace IS the channel, so the console row — and the CP dispatch row the compile turns
-   * into this integration's channel-scoped route — must exist before the first delegation, not
-   * after the first session lands in history.
+   * Every client also REPORTS the workspace's teams as the conversations it observes (§4.5):
+   * the team IS the channel. The report is a name refresh, not the seeder — the CP writes those
+   * rows synchronously in the install paths, because a dispatch default that waited on a live
+   * daemon would be missing exactly when the first delegation lands (§9.2).
    */
   async reconcileLinearConnections(): Promise<void> {
     for (const group of consolidateLinear(this.host.transportAgents(), this.log).values()) {
@@ -763,7 +768,7 @@ export class ConnectionReconciler {
             this.log.info(`linear: bound integration ${integrationId} onto existing workspace client`)
           }
         }
-        await this.observeLinearWorkspace(existing, group.integrations)
+        await this.observeLinearTeams(existing, group.integrations)
         continue
       }
       if (!this.linearPool.beginConnect(group.key)) continue
@@ -794,26 +799,33 @@ export class ConnectionReconciler {
       }
       // Outside the try: the report describes the INSTALL, not the token, so a warm-up that
       // failed must still mint the conversation row every later delegation routes through.
-      await this.observeLinearWorkspace(conn, group.integrations)
+      await this.observeLinearTeams(conn, group.integrations)
     }
   }
 
-  /** The connected workspace as this integration's single observed conversation. The name
-   *  degrades to the organization id — a row the console cannot label still routes. */
-  private async observeLinearWorkspace(
+  /** The workspace's teams as this integration's observed conversations (§4.5) — one row per
+   *  team, named `<KEY> · <Team name>`. A NAME REFRESH, not the seeder: the CP writes these rows
+   *  synchronously in the install paths, so an empty answer (no token yet, a refusal) costs a
+   *  refresh, never a route. */
+  private async observeLinearTeams(
     conn: LinearConnection,
     integrations: readonly { integrationId: string }[]
   ): Promise<void> {
-    const id = conn.workspaceId()
-    const chat: ObservedChat = { id, name: linearChannelName(conn), isPrivate: false }
     try {
-      await this.host.observePlatformChat(
+      const teams = await conn.listChannels()
+      if (teams.length === 0) return
+      const chats: ObservedChat[] = teams.map((team) => ({
+        id: team.id,
+        ...(team.name ? { name: team.name } : {}),
+        isPrivate: false
+      }))
+      await this.host.observePlatformChats(
         'linear',
-        chat,
+        chats,
         integrations.map((i) => i.integrationId)
       )
     } catch (err) {
-      this.log.warn(`linear: reporting workspace ${id} as an observed conversation failed: ${formatErr(err)}`)
+      this.log.warn(`linear: reporting the team list as observed conversations failed: ${formatErr(err)}`)
     }
   }
 

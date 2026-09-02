@@ -2053,6 +2053,24 @@ export class LocalStore {
       .get(agentId, platform, channel, thread, transportScope ?? '')) as SessionRecord | undefined
   }
 
+  /** The same, CHANNEL-BLIND: for a platform whose thread id is unique on its own — Linear's
+   *  AgentSession UUID, whose channel (the team, §4.5) no stop payload carries. */
+  async latestSessionForPlatformThread(
+    agentId: string,
+    platform: string,
+    thread: string,
+    transportScope?: string
+  ): Promise<SessionRecord | undefined> {
+    return (await this.db
+      .prepare(
+        `SELECT * FROM sessions
+         WHERE agentId = ? AND platform = ? AND thread = ?
+           AND COALESCE(transportScope, '') = ?
+         ORDER BY updatedAt DESC LIMIT 1`
+      )
+      .get(agentId, platform, thread, transportScope ?? '')) as SessionRecord | undefined
+  }
+
   /** The most recently active addressable session (has an ACP id) in a channel, across
    *  ALL agents — or undefined. Used to resolve which agent a bare command targets when
    *  routing can't (e.g. a group `/status@bot` with no mention entity / thread). */

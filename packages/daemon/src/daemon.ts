@@ -421,10 +421,12 @@ import {
   applyLinearMessageStrategy,
   isLinearIssuelessSurface,
   linearAckBody,
+  linearChannelName,
   linearDeliveryReceiptId,
   linearFailureBody,
   readLinearExt,
   LinearStopActionSchema,
+  type LinearAdapterExt,
   type LinearIssueFacts,
   type LinearStopAction,
   LINEAR_STOP_RESPONSE_BODY,
@@ -1023,6 +1025,9 @@ export class Daemon {
   // Sessions whose console link already sits in the issue's Resources (Linear keys the entry
   // on the URL, so a restart re-sending it refreshes rather than duplicates).
   private readonly linearResourcesAttached = new Set<string>()
+  // `<integrationId> <teamId>` for every team already reported on the delivery fast path (§9.2),
+  // so a team earns at most one report per integration however much traffic it carries.
+  private readonly linearReportedTeams = new Set<string>()
   // agentId → the in-flight (or resolved) host-startup promise. Resolves to the
   // STARTED host (startHostWithRetry may build several across retries — the last,
   // successful one wins). `.has()` doubles as "is this agent starting / started?".
@@ -1508,6 +1513,8 @@ export class Daemon {
         this.observedChannelsSync.observeTelegramChat(chat, integrationIds),
       observePlatformChat: (platform, chat, integrationIds) =>
         this.observedChannelsSync.observePlatformChat(platform, chat, integrationIds),
+      observePlatformChats: (platform, chats, integrationIds) =>
+        this.observedChannelsSync.observePlatformChats(platform, chats, integrationIds),
       refreshObservedChannels: () => this.observedChannelsSync.refreshObservedChannels(),
       retractChannels: (integrationId, channelIds) =>
         this.observedChannelsSync.retractChannels(integrationId, channelIds),
@@ -6719,11 +6726,35 @@ export class Daemon {
     // miss loses the block, never the turn — the header still names the issue from the bag.
     const facts = conn && ext.issueId ? await this.linearIssueFacts(conn, ext.issueId) : undefined
     applyLinearMessageStrategy(normalized, facts)
-    // No per-event channel name: the channel is the WORKSPACE, so its label is install-scoped and
-    // already written when the connection reported the workspace (§4.5). Writing the issue here
-    // would thrash the one display slot and relabel every sibling session in the workspace; the
-    // issue rides `threadUrl` and the §8 trusted header, which are session-scoped.
+    // §9.2's fast path for a team created after the install: the label is the TEAM's, so it comes
+    // off the bag — never the issue, which would thrash the one display slot every sibling session
+    // in the team shares. The issue rides `threadUrl` and the §8 trusted header, both session-scoped.
+    this.noteLinearTeam(msg.integrationId, ext)
     return 'dispatch'
+  }
+
+  /**
+   * §9.2 fast path: the first delivery for a team this daemon has not reported on this
+   * integration mints its conversation row from the bag, so a team created after the install has
+   * one from its first event instead of waiting for the CP reconciler tick that guarantees it.
+   *
+   * Non-authoritative and bounded: one report per (integration, team), tracked in memory and
+   * released again on failure so a later delivery retries. Fire-and-forget — the report is
+   * console bookkeeping and must never sit inside the ≤10 s acknowledgement budget (§10.1).
+   */
+  private noteLinearTeam(integrationId: string, ext: LinearAdapterExt): void {
+    const team = ext.team
+    if (!team?.id) return
+    const key = `${integrationId} ${team.id}`
+    if (this.linearReportedTeams.has(key)) return
+    this.linearReportedTeams.add(key)
+    const name = linearChannelName(team)
+    void this.observedChannelsSync
+      .observePlatformChat('linear', { id: team.id, ...(name ? { name } : {}), isPrivate: false }, [integrationId])
+      .catch((err: unknown) => {
+        this.linearReportedTeams.delete(key)
+        this.log.warn(`linear: reporting team ${team.id} as an observed conversation failed: ${formatErr(err)}`)
+      })
   }
 
   /** The delegator's display name for the §8 header: the cache, else one lookup bounded by
@@ -6931,12 +6962,12 @@ export class Daemon {
       return { msgId: msg.msgId, accepted: false, reason: 'unavailable' }
     }
     const transportScope = this.transportScopeForIntegrationIds([msg.integrationId])
-    // The workspace is the channel (§4.5), so the connection's own tenant is the coordinate —
-    // never the relay's `sessionKey`, which this daemon has not verified.
-    const rec = await this.store.latestSessionForThread(
+    // The channel is the issue's TEAM (§4.5) and no stop payload names it, so the lookup is
+    // channel-blind: the AgentSession UUID is unique on its own, and the agent, platform and
+    // transport scope are this daemon's own facts — never the relay's unverified `sessionKey`.
+    const rec = await this.store.latestSessionForPlatformThread(
       msg.agentId,
       'linear',
-      conn.workspaceId(),
       payload.agentSessionId,
       transportScope
     )
