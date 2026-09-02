@@ -105,6 +105,7 @@ async function boot(opts: BootOpts = {}) {
   // then take the binding over with a recording fake — no GraphQL leaves this test.
   await (daemon as any).connections.reconcileLinearConnections()
   const posted: Posted[] = []
+  const attached: { issueId: string; url: string; title: string; subtitle?: string }[] = []
   const store = (daemon as any).store
   const conn = {
     integrationId: INTEGRATION,
@@ -117,7 +118,10 @@ async function boot(opts: BootOpts = {}) {
       const rows = await store.listInboxBySessionKeyFifo()
       posted.push({ sessionId, activity, inboxAdmitted: rows.length > 0 })
     },
-    async updateSession() {}
+    async updateSession() {},
+    async createIssueAttachment(input: { issueId: string; url: string; title: string; subtitle?: string }) {
+      attached.push(input)
+    }
   }
   ;(daemon as any).lnConnByIntegration.set(INTEGRATION, conn)
   /** Rows for work still owed. A born-completed receipt is excluded — outliving the turn is
@@ -158,7 +162,7 @@ async function boot(opts: BootOpts = {}) {
     for (let i = 0; i < 4; i += 1) await pendingRows()
     expect(await pendingRows()).toBe(0)
   }
-  return { daemon, posted, store, pendingRows, turnSettled }
+  return { daemon, posted, attached, store, pendingRows, turnSettled }
 }
 
 const transportScope = (daemon: Daemon): string | undefined =>
@@ -405,6 +409,28 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     })
     await im(daemon, delivery({ sender: { id: 'linear:user-1', isBot: false } }))
     expect(dispatched[0]!.text.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by Dana (cached)')
+    await daemon.stop()
+  })
+
+  it('puts the console session in the issue’s Resources at the first turn, once per session', async () => {
+    const { daemon, attached, turnSettled } = await boot()
+    await im(daemon, delivery({}, { issueId: 'issue-uuid' }))
+    await turnSettled()
+    expect(attached).toHaveLength(1)
+    expect(attached[0]).toMatchObject({ issueId: 'issue-uuid', title: 'AgentConnect session' })
+    expect(attached[0]!.url).toMatch(/^https?:\/\/.+\/sessions\//)
+    // The follow-up on the same session does not re-send it.
+    await im(daemon, delivery({ msgId: 'linear:activity-2' }, { issueId: 'issue-uuid' }))
+    await turnSettled()
+    expect(attached).toHaveLength(1)
+    await daemon.stop()
+  })
+
+  it('skips the resource when the bag names no issue', async () => {
+    const { daemon, attached, turnSettled } = await boot()
+    await im(daemon, delivery())
+    await turnSettled()
+    expect(attached).toEqual([])
     await daemon.stop()
   })
 

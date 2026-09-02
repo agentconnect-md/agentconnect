@@ -1014,6 +1014,9 @@ export class Daemon {
   // integrationId -> the LinearConnection that owns it. Linear's only reply surface is the
   // agent activity feed (§4.6), so this is the egress port every Linear write resolves through.
   private lnConnByIntegration = new Map<string, LinearConnection>()
+  // Sessions whose console link already sits in the issue's Resources (Linear keys the entry
+  // on the URL, so a restart re-sending it refreshes rather than duplicates).
+  private readonly linearResourcesAttached = new Set<string>()
   // agentId → the in-flight (or resolved) host-startup promise. Resolves to the
   // STARTED host (startHostWithRetry may build several across retries — the last,
   // successful one wins). `.has()` doubles as "is this agent starting / started?".
@@ -10827,6 +10830,20 @@ export class Daemon {
     // replace that same card. `none` mode returns no start action.
     if (p.conv instanceof FeishuConverger) {
       for (const action of p.conv.onStart()) this.enqueueApply(p, action)
+    }
+    // Linear: the session shows up in the issue's Resources from the first turn on — the same
+    // console deep link the footer carries, keyed on the issue UUID the relay put in the bag.
+    if (p.conv instanceof LinearConverger && !this.linearResourcesAttached.has(run.key)) {
+      const issueId = readLinearExt(entry.msg)?.issueId
+      if (issueId) {
+        const info = await currentAttributionInfo()
+        const subtitle = [info.botName, info.runtime, info.model].filter((s) => s.trim()).join(' · ')
+        this.linearResourcesAttached.add(run.key)
+        this.enqueueApply(p, {
+          kind: 'attachment',
+          input: { issueId, url: info.sessionUrl, title: 'AgentConnect session', ...(subtitle ? { subtitle } : {}) }
+        })
+      }
     }
     // The pod wait ENDED inside openSession, so its label must not outlive it: a bootstrap turn
     // transitions to "is thinking…" here even when its host was already running (a suspended pod

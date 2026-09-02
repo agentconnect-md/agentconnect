@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import {
   applyLinearAction,
+  type LinearAttachmentInput,
   createLinearConverger,
   initialLinearTurnState,
   LinearConverger,
@@ -486,6 +487,10 @@ class FakePort {
   async updateSession(sessionId: string, update: LinearSessionUpdateInput): Promise<void> {
     this.updates.push({ sessionId, update })
   }
+  readonly attachments: LinearAttachmentInput[] = []
+  async createIssueAttachment(input: LinearAttachmentInput): Promise<void> {
+    this.attachments.push(input)
+  }
 }
 
 const turnFor = (port: FakePort | undefined, thread: string | undefined) => ({
@@ -540,6 +545,22 @@ describe('applyLinearAction', () => {
       { plan: [{ content: 'ship it', status: 'completed' }] },
       { addedExternalUrls: [{ label: 'PR #123', url: 'https://code.example.test/pr/123' }] }
     ])
+  })
+
+  it('adds the issue resource through attachmentCreate without spending the activity budget', async () => {
+    const port = new FakePort()
+    const turn = linearTurn(port)
+    const state = initialLinearTurnState()
+    const before = state.activityBudget
+    const input = {
+      issueId: 'issue-uuid',
+      url: 'https://console.example.test/sessions/s1',
+      title: 'AgentConnect session'
+    }
+    await applyLinearAction(turn, state, { kind: 'attachment', input })
+    expect(port.attachments).toEqual([input])
+    expect(port.activities).toEqual([])
+    expect(state.activityBudget).toBe(before)
   })
 
   it('enforces the per-turn activity budget as the hard egress backstop', async () => {

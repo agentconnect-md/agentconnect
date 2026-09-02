@@ -60,21 +60,22 @@ rather than inventing a Linear-shaped side channel.
 
 ### Feature checklist
 
-| Linear agent experience                             | This design                                                  | Phase |
-| --------------------------------------------------- | ------------------------------------------------------------ | ----- |
-| Assign/delegate an issue to the app                 | `created` → session with the workspace's dispatch default    | P1    |
-| Address a specific agent with instructions          | Same webhook; `@<agent-name>` in the mention text routes     | P1    |
-| Instant acknowledgement in the feed                 | Daemon-side auto-ack `thought` before the turn starts        | P1    |
-| Real-time activity feed (commands, files, progress) | `LinearConverger` → `agentActivityCreate`                    | P1    |
-| Follow-up messages in the session thread            | `prompted` → same AgentConnect session                       | P1    |
-| Stop signal puts the agent to sleep                 | `prompted` + `signal:"stop"` → `interruptTurn`               | P1    |
-| Link to the agent's own session view                | `externalUrls` → console session deep link                   | P1    |
-| Todo list synced to Linear's plan UI                | ACP `plan` updates → `agentSessionUpdate.plan`               | P2    |
-| PR URL attached to the session                      | Detected PR links → `addedExternalUrls`                      | P2    |
-| Moves the issue into a started status               | Workflow-state transition on delegation (config toggle)      | P2    |
-| Playbook labels (`!plan`, `!implement`, …)          | Label → skill/prompt-preset mapping                          | P3    |
-| Repo suggestions for multi-repo orgs                | `issueRepositorySuggestions`                                 | P3    |
-| Linear-side automation triggers delegate issues     | Free — automation delegation raises the same `created` event | P1    |
+| Linear agent experience                             | This design                                                                          | Phase |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------ | ----- |
+| Assign/delegate an issue to the app                 | `created` → session with the workspace's dispatch default                            | P1    |
+| Address a specific agent with instructions          | Same webhook; `@<agent-name>` in the mention text routes                             | P1    |
+| Instant acknowledgement in the feed                 | Daemon-side auto-ack `thought` before the turn starts                                | P1    |
+| Real-time activity feed (commands, files, progress) | `LinearConverger` → `agentActivityCreate`                                            | P1    |
+| Follow-up messages in the session thread            | `prompted` → same AgentConnect session                                               | P1    |
+| Stop signal puts the agent to sleep                 | `prompted` + `signal:"stop"` → `interruptTurn`                                       | P1    |
+| Link to the agent's own session view                | `externalUrls` → console session deep link                                           | P1    |
+| Session listed in the issue's Resources             | `attachmentCreate` at the first turn (URL-idempotent per issue) → the same deep link | P1    |
+| Todo list synced to Linear's plan UI                | ACP `plan` updates → `agentSessionUpdate.plan`                                       | P2    |
+| PR URL attached to the session                      | Detected PR links → `addedExternalUrls`                                              | P2    |
+| Moves the issue into a started status               | Workflow-state transition on delegation (config toggle)                              | P2    |
+| Playbook labels (`!plan`, `!implement`, …)          | Label → skill/prompt-preset mapping                                                  | P3    |
+| Repo suggestions for multi-repo orgs                | `issueRepositorySuggestions`                                                         | P3    |
+| Linear-side automation triggers delegate issues     | Free — automation delegation raises the same `created` event                         | P1    |
 
 **Non-goals for v1:** working document/project mentions without an attached
 issue (they receive a bounded unsupported-surface response, §4.5 — never a

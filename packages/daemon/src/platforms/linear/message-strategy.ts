@@ -32,6 +32,7 @@ const LinearPreviousComment = z.object({
  *  older relay may omit any optional field, and none of them is load-bearing for the turn. */
 export const LinearAdapterExtSchema = z.object({
   agentSessionId: z.string().min(1),
+  issueId: z.string().optional(),
   issueIdentifier: z.string().optional(),
   issueTitle: z.string().optional(),
   promptContext: z.string().optional(),

@@ -20,6 +20,7 @@
  * enumeration, no leave affordance, and attachment download is deferred.
  */
 import { randomUUID } from 'node:crypto'
+import type { LinearAttachmentInput, LinearActivityInput } from './turn-output.js'
 import type { IntegrationLinearConfig, LinearCredGrant } from '@agentconnect.md/protocol'
 import type { Agent } from '../../agents/agent-schema.js'
 import type { Logger } from '../../log.js'
@@ -32,7 +33,6 @@ import type {
 } from '../contract.js'
 import { platformIntegrationConfig } from '../integration-config.js'
 import { PlatformSendQueue } from '../send-queue.js'
-import type { LinearActivityInput } from './turn-output.js'
 
 /** Linear's single GraphQL endpoint (§2). Overridable per connection for tests only. */
 export const LINEAR_GRAPHQL_ENDPOINT = 'https://api.linear.app/graphql'
@@ -336,6 +336,12 @@ export class LinearConnection implements PlatformConnection {
     })
   }
 
+  /** `attachmentCreate` — the issue's Resources entry. Needs no idempotency key of ours: Linear
+   *  treats the URL as one per issue, so a retry or a later turn refreshes the same entry. */
+  async createIssueAttachment(input: LinearAttachmentInput): Promise<void> {
+    await this.enqueueGraphql<{ attachmentCreate?: { success?: boolean } }>(ATTACHMENT_CREATE, { input })
+  }
+
   /** Full-array plan replace — both sides have the same semantics (§5.1). */
   async updateSessionPlan(agentSessionId: string, entries: LinearPlanEntry[]): Promise<void> {
     await this.updateSession(agentSessionId, { plan: entries })
@@ -586,6 +592,10 @@ const AGENT_ACTIVITY_CREATE = `mutation AgentActivityCreate($input: AgentActivit
 
 const AGENT_SESSION_UPDATE = `mutation AgentSessionUpdate($id: String!, $input: AgentSessionUpdateInput!) {
   agentSessionUpdate(id: $id, input: $input) { success }
+}`
+
+const ATTACHMENT_CREATE = `mutation AttachmentCreate($input: AttachmentCreateInput!) {
+  attachmentCreate(input: $input) { success }
 }`
 
 const USER_QUERY = `query User($id: String!) {
