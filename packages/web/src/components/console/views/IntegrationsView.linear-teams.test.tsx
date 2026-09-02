@@ -179,9 +179,10 @@ describe('the Linear workspace’s Bots row', () => {
     const marks = [...view.querySelectorAll('[aria-hidden]')].filter((el) =>
       (el.getAttribute('style') ?? '').includes('background')
     )
-    // Design's emoji icon is drawn as itself; Engineering's is a Linear icon NAME we ship no
-    // glyph for, so the mark falls back to the team's initial. Both wear the team's color.
-    expect(marks.map((el) => el.textContent)).toEqual(['🎨', 'E'])
+    // Design's emoji icon is drawn as itself; Engineering's is a Linear icon NAME, drawn as the
+    // console's counterpart. Both wear the team's color.
+    expect(marks[0]!.textContent).toBe('🎨')
+    expect(marks[1]!.querySelector('svg.lucide-feather')).not.toBeNull()
     expect(marks[0]!.getAttribute('style')).toContain('#26B5CE')
     expect(marks[1]!.getAttribute('style')).toContain('#5E6AD2')
   })
