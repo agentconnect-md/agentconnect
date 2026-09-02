@@ -108,8 +108,15 @@ async function boot(reply: (prompt: string) => string = () => 'done') {
     externalIntegrationId: 'int-a'
   })
   const postMessage = vi.fn(async () => '100.200000')
-  d.connByIntegration.set('int-a', { postMessage, workspaceId: () => 'T1' })
-  return { daemon, d, prompts, postMessage }
+  // The Slack mirror boundary: resolves the ts and the body that landed (bare, or attributed on fallback).
+  const postAsAuthor = vi.fn(
+    async (_c: string, _t: string | undefined, body: { text: string; attributedText: string }) => ({
+      ts: '100.200000',
+      text: body.text
+    })
+  )
+  d.connByIntegration.set('int-a', { postMessage, postAsAuthor, workspaceId: () => 'T1' })
+  return { daemon, d, prompts, postMessage, postAsAuthor }
 }
 
 const PICTURE = 'https://cdn.example.test/avatars/user-1.png'
@@ -128,15 +135,15 @@ const turn = (text: string, over: Partial<RdMsgWebchat> = {}): RdMsgWebchat => (
 describe('webchat session-targeted continuation', () => {
   it('mirrors the human turn first, dispatches onto the target session key, and streams the reply', async () => {
     const order: string[] = []
-    const { daemon, d, prompts, postMessage } = await boot(() => {
+    const { daemon, d, prompts, postAsAuthor } = await boot(() => {
       order.push('prompt')
       return 'continued!'
     })
     let releaseMirror!: () => void
-    const mirror = new Promise<string>((resolve) => {
-      releaseMirror = () => resolve('100.200000')
+    const mirror = new Promise<{ ts: string; text: string }>((resolve) => {
+      releaseMirror = () => resolve({ ts: '100.200000', text: 'hello from console' })
     })
-    postMessage.mockImplementation(() => {
+    postAsAuthor.mockImplementation(() => {
       order.push('mirror')
       return mirror
     })
@@ -151,11 +158,12 @@ describe('webchat session-targeted continuation', () => {
 
     await vi.waitFor(() => expect(events.some((e) => e.kind === 'done')).toBe(true), WAIT)
     // Mirror is attributed and lands on the origin thread BEFORE the model runs.
-    expect(postMessage).toHaveBeenCalledWith(
+    expect(postAsAuthor).toHaveBeenCalledWith(
       'C1',
-      'hello from console',
       '100.1',
-      expect.objectContaining({ agentAuthorId: AGENT, username: 'owner' })
+      { text: 'hello from console', attributedText: '[owner via console] hello from console' },
+      { name: 'owner' },
+      { agentAuthorId: AGENT }
     )
     expect(order[0]).toBe('mirror')
     expect(order).toContain('prompt')
@@ -172,10 +180,14 @@ describe('webchat session-targeted continuation', () => {
 
   it('delivers the agent reply to the origin platform AND the browser sink (§5.2 dual sinks)', async () => {
     const order: string[] = []
-    const { daemon, d, postMessage } = await boot(() => 'dual-sink reply!')
+    const { daemon, d, postMessage, postAsAuthor } = await boot(() => 'dual-sink reply!')
     postMessage.mockImplementation(async (...args: unknown[]) => {
       order.push(`slack:${args[1]}`)
       return '100.200000'
+    })
+    postAsAuthor.mockImplementation(async (_c, _t, body) => {
+      order.push(`slack:${body.text}`)
+      return { ts: '100.200000', text: body.text }
     })
     const events: RdChatEvent[] = []
 
@@ -198,8 +210,8 @@ describe('webchat session-targeted continuation', () => {
   })
 
   it('refuses the turn when the platform mirror fails — the agent never consumes hidden input', async () => {
-    const { daemon, d, prompts, postMessage } = await boot()
-    postMessage.mockRejectedValue(new Error('channel_not_found'))
+    const { daemon, d, prompts, postAsAuthor } = await boot()
+    postAsAuthor.mockRejectedValue(new Error('channel_not_found'))
 
     const ack = await d.handleRelayMsg(turn('hidden?'), () => {})
     expect(ack).toMatchObject({ accepted: false, reason: 'integration_delivery_failed' })
@@ -252,9 +264,9 @@ describe('webchat session-targeted continuation', () => {
   })
 
   it('treats an undefined provider result as a failed mirror — delivery must be proven by a message id', async () => {
-    const { daemon, d, prompts, postMessage } = await boot()
+    const { daemon, d, prompts, postAsAuthor } = await boot()
     // Discord/Feishu swallow send errors and resolve undefined; Slack can land nothing.
-    postMessage.mockResolvedValue(undefined as never)
+    postAsAuthor.mockResolvedValue(undefined as never)
 
     const ack = await d.handleRelayMsg(turn('unproven'), () => {})
     expect(ack).toMatchObject({ accepted: false, reason: 'integration_delivery_failed' })
@@ -274,8 +286,8 @@ describe('webchat session-targeted continuation', () => {
 // and gets the targeted dispatch instead.
 
 describe('webchat session-targeted continuation — mirror identity', () => {
-  it("posts the Slack mirror under the console author's own name and avatar, with no attribution prefix", async () => {
-    const { daemon, d, postMessage } = await boot()
+  it("hands Slack the bare body plus the console author's name and avatar, with the attributed fallback", async () => {
+    const { daemon, d, postAsAuthor } = await boot()
     const ack = await d.handleRelayMsg(
       turn('looks off?', {
         payload: { op: 'turn', text: 'looks off?', user: 'Ada', userId: 'user-1', userPicture: PICTURE }
@@ -283,47 +295,56 @@ describe('webchat session-targeted continuation — mirror identity', () => {
       () => {}
     )
     expect(ack).toMatchObject({ accepted: true })
-    expect(postMessage).toHaveBeenCalledWith('C1', 'looks off?', '100.1', {
-      username: 'Ada',
-      icon_url: PICTURE,
-      agentAuthorId: AGENT
-    })
+    expect(postAsAuthor).toHaveBeenCalledWith(
+      'C1',
+      '100.1',
+      { text: 'looks off?', attributedText: '[Ada via console] looks off?' },
+      { name: 'Ada', iconUrl: PICTURE },
+      { agentAuthorId: AGENT }
+    )
     await daemon.stop()
   })
 
-  it('keeps the `[<user> via console]` attribution once the workspace has proven it cannot customize identity', async () => {
-    const { daemon, d, postMessage } = await boot()
-    d.connByIntegration.set('int-a', {
-      postMessage,
-      workspaceId: () => 'T1',
-      identityCustomizationSuppressed: () => true
-    })
+  it('finalizes with the body that actually landed when Slack fell back to the attributed text', async () => {
+    const { daemon, d, postMessage, postAsAuthor } = await boot()
+    const finalizeResponse = vi.fn(async () => true)
+    d.connByIntegration.set('int-a', { postMessage, postAsAuthor, workspaceId: () => 'T1', finalizeResponse })
+    // The send boundary proved the customize scope missing on this very post and landed the attribution.
+    postAsAuthor.mockImplementation(async (_c, _t, body) => ({
+      ts: '100.200000',
+      text: body.attributedText
+    }))
     const ack = await d.handleRelayMsg(
       turn('looks off?', { payload: { op: 'turn', text: 'looks off?', user: 'Ada', userPicture: PICTURE } }),
       () => {}
     )
     expect(ack).toMatchObject({ accepted: true })
-    // The app identity is what Slack will render, so the body itself must name the human.
-    expect(postMessage).toHaveBeenCalledWith('C1', '[Ada via console] looks off?', '100.1', { agentAuthorId: AGENT })
+    // The routing re-stamp must re-supply the attributed body, or chat.update would strip the attribution.
+    const [, , blocks, text] = finalizeResponse.mock.calls[0]! as unknown[]
+    expect(text).toBe('[Ada via console] looks off?')
+    expect(blocks).toEqual([{ type: 'markdown', text: '[Ada via console] looks off?' }])
     await daemon.stop()
   })
 })
 
 describe('webchat session-targeted continuation — mirror routing claim', () => {
   it('posts the attributed mirror, then finalizes it with the target-authored routing claim', async () => {
-    const { daemon, d, postMessage } = await boot()
+    const { daemon, d, postMessage, postAsAuthor } = await boot()
     const finalizeResponse = vi.fn(async () => true)
-    d.connByIntegration.set('int-a', { postMessage, workspaceId: () => 'T1', finalizeResponse })
+    d.connByIntegration.set('int-a', { postMessage, postAsAuthor, workspaceId: () => 'T1', finalizeResponse })
 
     const ack = await d.handleRelayMsg(turn('hello everyone'), () => {})
     expect(ack).toMatchObject({ accepted: true })
 
     // Step 1: the visible body post carries authorship but no routable claim.
-    expect(postMessage).toHaveBeenCalledTimes(1)
-    expect(postMessage).toHaveBeenCalledWith('C1', 'hello everyone', '100.1', {
-      username: 'owner',
-      agentAuthorId: AGENT
-    })
+    expect(postAsAuthor).toHaveBeenCalledTimes(1)
+    expect(postAsAuthor).toHaveBeenCalledWith(
+      'C1',
+      '100.1',
+      { text: 'hello everyone', attributedText: '[owner via console] hello everyone' },
+      { name: 'owner' },
+      { agentAuthorId: AGENT }
+    )
     // Step 2: the chat.update finalization carries the final routing claim.
     expect(finalizeResponse).toHaveBeenCalledTimes(1)
     const [channel, ts, , text, author, response] = finalizeResponse.mock.calls[0]! as unknown[]

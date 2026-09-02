@@ -297,6 +297,22 @@ export class VirtualSlackConnection implements PlatformConnection {
     return result.messageId
   }
 
+  /** The console-mirror path: a virtual workspace always honors the per-message identity. */
+  async postAsAuthor(
+    channel: string,
+    threadTs: string | undefined,
+    body: { text: string; attributedText: string },
+    author: { name: string; iconUrl?: string },
+    options?: Pick<VirtualPostOptions, 'agentAuthorId'>
+  ): Promise<{ ts: string; text: string } | undefined> {
+    const ts = await this.postMessage(channel, body.text, threadTs, {
+      ...options,
+      username: author.name,
+      ...(author.iconUrl ? { icon_url: author.iconUrl } : {})
+    })
+    return ts ? { ts, text: body.text } : undefined
+  }
+
   /**
    * Close a logical response (send-message-routing-rework.md §5): re-stamp the
    * last delivered message with the finalized routing metadata. The real

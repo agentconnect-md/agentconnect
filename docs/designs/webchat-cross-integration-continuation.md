@@ -223,9 +223,12 @@ the existing output rules.**
   per-message `username` / `icon_url` (the same `chat:write.customize` path agent
   replies use), with the body left as typed; the avatar is the profile picture the
   Control Plane already knows and travels inside the verified token, never as
-  browser input. Where the platform cannot render a per-message identity — every
-  other platform, and a Slack workspace that has proven the scope missing — the
-  body is attributed instead: `[<user> via console] <text>`. This uses the same
+  browser input. Where the platform cannot render a per-message identity the
+  body is attributed instead: `[<user> via console] <text>` — every other
+  platform, and a Slack send whose identity is dropped for a missing scope, where
+  the Slack send boundary swaps in the attributed body atomically (on the very
+  post that proves the scope missing, not only once latched) and reports which
+  body landed so the routing re-stamp re-supplies it. This uses the same
   integration client the session's replies use.
 - The mirror is an ordinary authenticated platform message, and delivery must
   be PROVEN: only a returned provider message id counts — an undefined result
