@@ -628,10 +628,10 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     // Standing: the issue UUID and the team, read once on the system-prompt channel, never a row.
     expect(dispatched[0]!.standingContext).toContain('- Issue: TEAM-123 (id issue-uuid)')
     expect(dispatched[0]!.standingContext).toContain('- Team: Engineering (key ENG')
-    expect(dispatched[0]!.standingContext).toContain('Working here:')
+    expect(dispatched[0]!.standingContext).toContain('Work the ticket as written')
     // Per turn: what the console transcript shows is the header, the URL and the member's words.
     expect(dispatched[0]!.turnBody!.prompt!).not.toContain('issue-uuid')
-    expect(dispatched[0]!.turnBody!.prompt!).not.toContain('Working here:')
+    expect(dispatched[0]!.turnBody!.prompt!).not.toContain('Work the ticket as written')
     expect(dispatched[0]!.turnBody!.prompt!.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by Dana')
     await daemon.stop()
   })

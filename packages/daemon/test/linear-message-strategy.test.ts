@@ -211,7 +211,7 @@ describe('§8 daemon-authored standing block', () => {
       `- Issue: TEAM-123 (id ${ISSUE_UUID}) — "Ship the thing" — ${ISSUE_URL}`,
       `- Team: Engineering (key ENG, id ${TEAM})`,
       '',
-      expect.stringContaining('Working here: your plan is already live in this session')
+      expect.stringContaining('Work the ticket as written: pick sensible defaults')
     ])
   })
 
@@ -225,9 +225,12 @@ describe('§8 daemon-authored standing block', () => {
   // renders, and signed their comments by hand because they had seen the response footer.
   it('sends the plan to the session and the outcome to a comment, and forbids a hand-written signature', () => {
     const convention = lines().at(-1) ?? ''
-    expect(convention).toContain('never post it as a comment')
-    expect(convention).toContain('OUTCOME')
-    expect(convention).toContain('you never sign it')
+    expect(convention).toContain('never a plan, the session already shows it')
+    // The brief is worked as written: no standing invitation to ask before starting.
+    expect(convention).toContain('ask only if you cannot proceed')
+    expect(convention).not.toContain('ask in your response before working')
+    expect(convention).toContain('only with the outcome')
+    expect(convention).toContain('never sign it')
     expect(convention).not.toContain('put the plan')
   })
 
@@ -257,7 +260,7 @@ describe('§8 daemon-authored standing block', () => {
   it('is standing, not prompt: the per-turn text is the header, the instruction and the fence alone', () => {
     const text = buildLinearPromptText(message(), ext({ issueId: ISSUE_UUID }))
     expect(text).not.toContain('# Linear')
-    expect(text).not.toContain('Working here')
+    expect(text).not.toContain('Work the ticket as written')
     expect(text).not.toContain(ISSUE_UUID)
     expect(text.split('\n\n')).toEqual([
       `Linear TEAM-123 "Ship the thing" — delegated by Dana\n${ISSUE_URL}`,
