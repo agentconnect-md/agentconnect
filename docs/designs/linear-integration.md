@@ -1129,19 +1129,18 @@ by <actor>` + issue URL, with `sanitizeTitle` flattening.
   message from stored coordinates without the bag, and a cold resume or a
   failed-load recreate must still re-assert the coordinates that the
   transcript, by design, no longer holds. That is what keeps the console's user bubble to the header, the URL
-  and the member's own words. The convention: the plan is already live in the
-  session — the converger pushes the runtime's ACP plan entries onto the
-  AgentSession itself (§5) — so it is never a comment, and
-  `createIssueComment` is for the OUTCOME once work is done, or for the scope
-  the agent had to decide itself on an empty ticket, which is a deliverable
-  rather than a step list; an ambiguous ticket earns a clarifying response
-  before work; the branch and the PR carry the identifier so Linear links
-  them; `updateIssue` takes `state` by workflow state NAME
-  (`listIssueStatuses`); current state, assignee and labels are `getIssue`'s
-  answer. The convention also tells the model NOT to sign a comment: the
-  earlier wording invited both a "here is my plan" comment the feed already
-  rendered and a free-text `— <agent>` signature, and the tool now appends
-  the standard footer itself (§12). Mutable issue state is deliberately NOT
+  and the member's own words. The convention is five short sentences: work
+  the ticket as written, picking sensible defaults and asking only when the
+  agent cannot proceed; comment only with the outcome — the plan is
+  already live in the session, since the converger pushes the runtime's ACP
+  plan entries onto the AgentSession itself (§5) — and never sign it (the
+  tool appends the standard footer itself, §12); name the branch and the
+  PR after the identifier so Linear links them; `updateIssue` takes `state`
+  by workflow state NAME (`listIssueStatuses`); current state, assignee and
+  labels are `getIssue`'s answer. It is kept that short on purpose: an
+  earlier, more cautious wording had the agent treat a clear ticket as
+  ambiguous and ask before working, and a longer one written to correct
+  that over-explained the brief. Mutable issue state is deliberately NOT
   rendered anywhere: a snapshot goes stale within the session, and standing context
   is composed once, so the block is built from the bag alone — no
   `issueFacts` read, no deadline, nothing to degrade. Being daemon-authored
@@ -1924,11 +1923,11 @@ none` skips it along with everything else Linear-visible. There is **no
   3. **A daemon-authored Linear standing block** (§8, **landed**; moved
      from the per-turn prompt to standing context 2026-09-02): the issue's
      UUID, identifier, title, URL and team (the coordinates the tools take),
-     plus a few lines of working convention — the issue is the record, so
-     plans and outcomes go into its description or a comment; branch and PR
-     names carry the identifier so Linear's own GitHub integration links
-     them; an empty ticket earns a clarifying `response` before work; state,
-     assignee and labels are read live with `getIssue`, never snapshotted.
+     plus five sentences of working convention — work the ticket as written
+     with sensible defaults; comment only with the outcome, never a plan,
+     never signed; branch and PR names carry the identifier so Linear's own
+     GitHub integration links them; state, assignee and labels are read live
+     with `getIssue`, never snapshotted.
      **Not a skill**: the tools only exist in Linear sessions, so the
      session's standing context is the deterministic seat, and the
      customer-side customization seat is Linear's own admin `guidance`,
