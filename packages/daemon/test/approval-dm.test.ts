@@ -81,6 +81,8 @@ async function world(over?: {
     maskAgentSecrets: (_agentId, payload) => payload,
     logSessionAction: vi.fn(),
     emitApprovalActivity: over?.activity ?? vi.fn(),
+    approvalGateOpened: () => false,
+    approvalGateResolved: vi.fn(),
     cpApprovalRoute: () => ({ approvalRoute: route as never }),
     orgForAgent: () => 'org-1',
     sessionLink: (sessionId) => `https://console.example/sessions/${sessionId}`,

@@ -15,6 +15,7 @@ import { splitAtParagraphBoundary } from '../../messages/stream-boundary.js'
 import { isNoResponseBody, isNoResponsePrefix } from '../../session/no-response.js'
 import { extractToolOutput } from '../../session/tool-output.js'
 import type { TurnOutputContext } from '../turn-output.js'
+import { sanitizeTitle } from './message-strategy.js'
 
 /** Linear's plan-entry vocabulary. `canceled` has no ACP source today; it exists because
  *  the plan array is a full replace and a future entry may need it. */
@@ -242,7 +243,22 @@ const SENTINEL_TAIL_CHARS = 512
 /** Posted when the turn produced no final text but still owes Linear a settling `response`. */
 export const EMPTY_RESPONSE_BODY = 'Done.'
 /** v1 elicitation copy (§10.4): a pointer to the console, not an approval protocol. */
-export const PERMISSION_ELICITATION_BODY = 'This step needs approval — open the session in the console.'
+export const PERMISSION_ELICITATION_BODY = 'This step needs approval'
+/** The pointer's label — a link when the turn knows its console URL, a plain sentence when it does not. */
+export const PERMISSION_ELICITATION_POINTER = 'open in session'
+const PERMISSION_ELICITATION_FALLBACK = 'open the session in the console'
+/** The gate's follow-through, so an append-only feed never ends on an open question (§10.4). */
+export const PERMISSION_APPROVED_BODY = 'Approved — continuing.'
+export const PERMISSION_DENIED_BODY = 'Denied — the step was skipped.'
+/** Caps on the elicitation's request clause: the action's name, then its one-line input. */
+const MAX_ELICITATION_TOOL = 80
+const MAX_ELICITATION_DETAIL = 200
+
+/** What needs approving, as an approval surface names it: the action, and its one-line input. */
+export interface LinearApprovalRequest {
+  tool: string
+  detail?: string
+}
 
 export function linearModePolicy(mode: LinearOutputMode): LinearModePolicy {
   return MODE_POLICY[mode]
@@ -295,6 +311,15 @@ export function linearAttributionFooter(attribution?: LinearAttribution): string
     ...(sessionUrl ? { renderSession: (label: string) => markdownLink(label, sessionUrl) } : {})
   })
   return `\n\n${message}`
+}
+
+/** The request as one fence-inert, Markdown-inert clause: the action, and its input in quotes when
+ *  the runtime gave one. Provider text, so it is flattened by the same sanitizer the header uses. */
+function elicitationRequestClause(request?: LinearApprovalRequest): string {
+  const tool = escapeMarkdown(sanitizeTitle(request?.tool ?? '', MAX_ELICITATION_TOOL))
+  if (!tool) return ''
+  const detail = escapeMarkdown(sanitizeTitle(request?.detail ?? '', MAX_ELICITATION_DETAIL))
+  return detail ? ` — ${tool}: "${detail}"` : ` — ${tool}`
 }
 
 /** Pull a compact input summary out of a tool call's `rawInput` for the `parameter` field. */
@@ -500,17 +525,23 @@ export class LinearConverger {
     return [...deduped, { kind: 'activity', type: 'error', body: reason }]
   }
 
-  /** A permission gate would block the turn: point at the console (§10.4). Repeated identical
-   *  gates collapse, because an append-only feed would otherwise stack them. */
-  onPermissionBlocked(sessionUrl?: string): LinearAction[] {
+  /** A permission gate would block the turn: name what is being approved and point at the console
+   *  (§10.4). Repeated identical gates collapse, because an append-only feed would stack them. */
+  onPermissionBlocked(sessionUrl?: string, request?: LinearApprovalRequest): LinearAction[] {
     if (this.settled || !this.policy.response) return []
     const link = httpUrl(sessionUrl)
-    const body = link
-      ? `${PERMISSION_ELICITATION_BODY} ${markdownLink('open in session', link)}`
-      : PERMISSION_ELICITATION_BODY
+    const pointer = link ? markdownLink(PERMISSION_ELICITATION_POINTER, link) : PERMISSION_ELICITATION_FALLBACK
+    const body = `${PERMISSION_ELICITATION_BODY}${elicitationRequestClause(request)} · ${pointer}`
     if (this.lastElicitation === body) return []
     this.lastElicitation = body
     return [...this.flushNarration(true), ...this.takePending(), { kind: 'activity', type: 'elicitation', body }]
+  }
+
+  /** The gate closed on a human decision: say so once, so the feed does not stop at the question.
+   *  It is progress chrome, not the turn's answer — `minimal` posts the response only (§5.2). */
+  onPermissionResolved(allowed: boolean): LinearAction[] {
+    if (this.settled || !this.policy.progress || this.lastElicitation === undefined) return []
+    return [{ kind: 'activity', type: 'thought', body: allowed ? PERMISSION_APPROVED_BODY : PERMISSION_DENIED_BODY }]
   }
 
   private discard(): LinearAction[] {

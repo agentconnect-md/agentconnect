@@ -515,7 +515,7 @@ coalesce aggressively, post meaningfully.
 | a pull/merge-request URL anywhere in the agent's message text            | `external-urls` (`addedExternalUrls`)          | Collected over the whole turn, each URL once, labelled `PR #123` / `MR !45`; published once, immediately before the settling `response` (§10.3)                                                                                                                                             |
 | turn end                                                                 | `response`                                     | The accumulated final answer (final-answer selection reuses the GitHub Layer-2 heuristics: `_meta.codex.phase === 'final_answer'`, else message grouping, else last text run). Attribution footer appended per `output.showFooter`, Markdown-safe via the shared fence-aware chrome helpers |
 | turn failure (quota / auth / crash)                                      | `error`                                        | Reuses `turnFailureReason`/`turnFailureCode`; converger buffer flushed first so runtime-narrated errors are not duplicated                                                                                                                                                                  |
-| permission gate would block the turn                                     | `elicitation`                                  | v1 posts "This step needs approval — open the session in the console" + deep link; interactive approval from Linear is out of scope (§13)                                                                                                                                                   |
+| permission gate would block the turn                                     | `elicitation`, then one `thought`              | v1 posts `This step needs approval — <action>: "<input>" · open in session`, the summary sanitized like the §8 header and the pointer carrying the console deep link; one non-ephemeral `thought` follows the decision. Interactive approval from Linear is out of scope (§13)              |
 | `session_info_update` (title)                                            | —                                              | Persisted locally for the console; Linear names sessions itself                                                                                                                                                                                                                             |
 | stop (`prompted` + `signal: "stop"`)                                     | `response` "Stopped — reply here to continue." | After `interruptTurn` completes; a `response` settles the Linear session state instead of leaving it `active`                                                                                                                                                                               |
 
@@ -1567,10 +1567,19 @@ none` skips it along with everything else Linear-visible. There is **no
    it lands in the issue's **Resources** (`attachmentCreate`, keyed by URL)
    on the first turn, so it is visible from the issue itself, not only inside
    the session panel.
-4. **`elicitation` is a pointer, not a protocol, in v1.** True interactive
-   approval (Linear reply → permission grant) needs an approval-card
-   equivalent over activities; deferred (§13). Until then the agent's
-   configured `permissionMode` governs, exactly like GitHub hook turns.
+4. **`elicitation` is a pointer, not a protocol, in v1.** A gate that would
+   block the turn posts one `elicitation` naming the action and its one-line
+   input — provider text, so it is flattened by the same fence-inert
+   sanitizer the §8 header uses — next to the console deep link, and one
+   non-ephemeral `thought` when the decision lands ("Approved — continuing."
+   / "Denied — the step was skipped."), so an append-only feed never ends on
+   an open question. Identical gates collapse; the follow-through rides
+   progress chrome, so `minimal` posts the pointer alone and `none` neither.
+   A request nobody answers is settled by the turn's own `response`/`error`
+   instead, and is never re-posted. True interactive approval (Linear reply →
+   permission grant) needs an approval-card equivalent over activities;
+   deferred (§13). Until then the agent's configured `permissionMode`
+   governs, exactly like GitHub hook turns.
 5. **No Linear-side title push.** Linear names agent sessions from the issue;
    AgentConnect's session titles remain console-local.
 6. **Signing-secret rotation is a deployment action**: update the deployment
@@ -1655,7 +1664,7 @@ none` skips it along with everything else Linear-visible. There is **no
   moves to In Progress on delegation, the PR is linked, the plan is posted,
   an empty ticket gets clarifying questions) and against Linear's own MCP
   server (~25 tools: issue list/get/create/update, statuses, labels,
-  comments, projects, teams, users, cycles, documents). Three layers, in
+  comments, projects, teams, users, cycles, documents). Four layers, in
   merge order:
   1. **Automatic behavior, no agent involvement** (done): plan sync (§5.1),
      the auto-start transition (§10.2), PR links plus the console Resources
@@ -1691,7 +1700,11 @@ none` skips it along with everything else Linear-visible. There is **no
      tools only exist in Linear turns, so a per-turn prompt block is the
      deterministic seat, and the customer-side customization seat is
      Linear's own admin `guidance`, which §8 already passes through.
-     Still in P2: the elicitation deep-link card.
+  4. **The permission-gate `elicitation`** (**landed**, §10.4): the gate now
+     reaches the feed instead of leaving the session active until it goes
+     stale — the deep-link card naming what needs approving, plus the
+     follow-through `thought` on the decision. Interactive approval from
+     Linear (reply → grant) stays out of scope; it is P3.
 - **P2.5 — the team is the channel** (decided 2026-09-02, §15): one
   conversation row per Linear team instead of one per workspace, each with
   its own dispatch default and an Off, compiled onto a new per-conversation

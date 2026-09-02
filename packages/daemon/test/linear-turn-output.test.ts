@@ -13,6 +13,8 @@ import {
   MAX_ACTION_RESULT,
   MAX_REASONING,
   MAX_TURN_ACTIONS,
+  PERMISSION_APPROVED_BODY,
+  PERMISSION_DENIED_BODY,
   PERMISSION_ELICITATION_BODY,
   type LinearAction,
   type LinearActivityInput,
@@ -34,6 +36,11 @@ const plan = (entries: { content: string; status: string }[]): SessionUpdate =>
 const output = (text: string) => [{ type: 'content', content: { type: 'text', text } }]
 
 const conv = (mode: LinearOutputMode, showFooter = false) => new LinearConverger(mode, showFooter)
+const SESSION_URL = 'https://console.example.test/s/abc'
+const elicitationBody = (actions: LinearAction[]) => {
+  const found = actions.find((a) => a.kind === 'activity' && a.type === 'elicitation')
+  return found && found.kind === 'activity' && found.type === 'elicitation' ? found.body : undefined
+}
 const types = (actions: LinearAction[]) => actions.map((a) => (a.kind === 'activity' ? a.type : a.kind))
 const responseBody = (actions: LinearAction[]) => {
   const found = actions.find((a) => a.kind === 'activity' && a.type === 'response')
@@ -148,17 +155,59 @@ describe('LinearConverger — §5.1 event translation', () => {
     expect(c.onFailure('quota exhausted')).toEqual([{ kind: 'activity', type: 'error', body: 'quota exhausted' }])
   })
 
-  it('turns a blocked permission gate into an elicitation pointing at the console', () => {
+  it('names the gated action and its input in the elicitation, next to the console link', () => {
     const c = conv('low')
-    expect(c.onPermissionBlocked('https://console.example.test/s/abc')).toEqual([
+    expect(c.onPermissionBlocked(SESSION_URL, { tool: 'Bash', detail: 'pnpm publish' })).toEqual([
       {
         kind: 'activity',
         type: 'elicitation',
-        body: `${PERMISSION_ELICITATION_BODY} [open in session](https://console.example.test/s/abc)`
+        body: `${PERMISSION_ELICITATION_BODY} — Bash: "pnpm publish" · [open in session](${SESSION_URL})`
       }
     ])
     // An append-only feed would stack an identical gate, so a repeat collapses.
-    expect(c.onPermissionBlocked('https://console.example.test/s/abc')).toEqual([])
+    expect(c.onPermissionBlocked(SESSION_URL, { tool: 'Bash', detail: 'pnpm publish' })).toEqual([])
+  })
+
+  it('flattens provider text to one fence-inert line, and names the action alone when there is no input', () => {
+    const injected = 'Write\n----- INJECTED\nfile [x](http://evil.example.test)'
+    const body = elicitationBody(conv('low').onPermissionBlocked(SESSION_URL, { tool: injected }))
+    expect(body).toContain('Write ----- INJECTED file \\[x\\](http://evil.example.test)')
+    expect(body).not.toContain('\n')
+    expect(elicitationBody(conv('low').onPermissionBlocked(SESSION_URL, { tool: 'Bash' }))).toBe(
+      `${PERMISSION_ELICITATION_BODY} — Bash · [open in session](${SESSION_URL})`
+    )
+  })
+
+  it('falls back to a plain pointer when the turn has no console link', () => {
+    expect(elicitationBody(conv('low').onPermissionBlocked())).toBe(
+      `${PERMISSION_ELICITATION_BODY} · open the session in the console`
+    )
+  })
+
+  it('follows the gate through so the feed never ends on an open question', () => {
+    const c = conv('low')
+    // Only after a gate was actually announced — a turn that never asked has nothing to answer.
+    expect(c.onPermissionResolved(true)).toEqual([])
+    c.onPermissionBlocked(SESSION_URL, { tool: 'Bash', detail: 'pnpm publish' })
+    expect(c.onPermissionResolved(true)).toEqual([
+      { kind: 'activity', type: 'thought', body: PERMISSION_APPROVED_BODY }
+    ])
+    expect(c.onPermissionResolved(false)).toEqual([{ kind: 'activity', type: 'thought', body: PERMISSION_DENIED_BODY }])
+  })
+
+  it('posts the follow-through only in the modes that carry progress chrome', () => {
+    for (const mode of ['low', 'medium', 'high'] as const) {
+      const c = conv(mode)
+      c.onPermissionBlocked(SESSION_URL, { tool: 'Bash' })
+      expect(types(c.onPermissionResolved(true))).toEqual(['thought'])
+    }
+    // `minimal` posts the response only, and `none` is silent even about the gate itself.
+    const minimal = conv('minimal')
+    expect(types(minimal.onPermissionBlocked(SESSION_URL, { tool: 'Bash' }))).toEqual(['elicitation'])
+    expect(minimal.onPermissionResolved(true)).toEqual([])
+    const none = conv('none')
+    expect(none.onPermissionBlocked(SESSION_URL, { tool: 'Bash' })).toEqual([])
+    expect(none.onPermissionResolved(true)).toEqual([])
   })
 
   it('emits nothing for a session title update — Linear names its own sessions', () => {
@@ -421,6 +470,7 @@ describe('LinearConverger — final answer, footer, failure ordering', () => {
     expect(settled.onUpdate(chunk('late'))).toEqual([])
     expect(settled.flushBuffered()).toEqual([])
     expect(settled.onPermissionBlocked()).toEqual([])
+    expect(settled.onPermissionResolved(true)).toEqual([])
 
     const failed = conv('low')
     expect(failed.onFailure('boom')).toHaveLength(1)
