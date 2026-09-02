@@ -425,6 +425,7 @@ import {
   linearFailureBody,
   readLinearExt,
   LinearStopActionSchema,
+  type LinearIssueFacts,
   type LinearStopAction,
   LINEAR_STOP_RESPONSE_BODY,
   LINEAR_UNSUPPORTED_SURFACE_BODY
@@ -613,6 +614,10 @@ type AgentListSnapshot = { agents: LoadedAgent[]; activeFleet: LoadedAgent[] }
 
 /** How long a Linear delivery waits for the delegator's name before dispatching with the id. */
 const LINEAR_ACTOR_LOOKUP_MS = 1500
+
+/** Deadline on the §8 context block's one issue read — it ABORTS the request, and the ≤10 s ack
+ *  (§10.1) is downstream of the delivery this read is part of. */
+const LINEAR_ISSUE_FACTS_MS = 2500
 
 export class Daemon {
   // This daemon's workspace execution plane. Owned per instance, so two daemons in one process
@@ -6709,7 +6714,11 @@ export class Daemon {
         if (name) normalized.sender = { ...normalized.sender, name }
       }
     }
-    applyLinearMessageStrategy(normalized)
+    // §13 layer 3: one deadline-bounded read, off the send queue so it can never sit ahead of the
+    // ack, fills the trusted context block with the coordinates the Linear tool family takes. A
+    // miss loses the block, never the turn — the header still names the issue from the bag.
+    const facts = conn && ext.issueId ? await this.linearIssueFacts(conn, ext.issueId) : undefined
+    applyLinearMessageStrategy(normalized, facts)
     // No per-event channel name: the channel is the WORKSPACE, so its label is install-scoped and
     // already written when the connection reported the workspace (§4.5). Writing the issue here
     // would thrash the one display slot and relabel every sibling session in the workspace; the
@@ -6733,6 +6742,18 @@ export class Daemon {
       timer.unref?.()
     })
     return await Promise.race([lookup, deadline])
+  }
+
+  /** The §8 context block's facts: one direct read off the paced send queue, cancelled at
+   *  {@link LINEAR_ISSUE_FACTS_MS} — a refusal, an abort or an unreadable issue leaves the block
+   *  off, at debug, and the turn dispatches on the header alone. */
+  private async linearIssueFacts(conn: LinearConnection, issueId: string): Promise<LinearIssueFacts | undefined> {
+    try {
+      return await conn.issueFacts(issueId, { signal: AbortSignal.timeout(LINEAR_ISSUE_FACTS_MS) })
+    } catch (err) {
+      this.log.debug(`linear: issue facts lookup failed (${issueId}): ${formatErr(err)}`)
+      return undefined
+    }
   }
 
   /** Has this daemon already served this exact Linear delivery? A read failure answers NO:

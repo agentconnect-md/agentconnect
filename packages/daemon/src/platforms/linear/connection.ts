@@ -20,6 +20,7 @@
  * enumeration, no leave affordance, and attachment download is deferred.
  */
 import { randomUUID } from 'node:crypto'
+import type { LinearIssueFacts } from './message-strategy.js'
 import type { LinearAttachmentInput, LinearActivityInput } from './turn-output.js'
 import type { IntegrationLinearConfig, LinearCredGrant } from '@agentconnect.md/protocol'
 import type { Agent } from '../../agents/agent-schema.js'
@@ -373,6 +374,62 @@ export class LinearConnection implements PlatformConnection {
   }
 
   /**
+   * §8/§13 layer 3: one bounded read of the issue facts the trusted context block renders.
+   *
+   * On the DIRECT read path, like `getUserProfile` — deliberately NOT the paced send queue. This
+   * read runs while a delivery is being prepared, so a queue slot would put it ahead of the ≤10 s
+   * pre-spawn acknowledgement (§10.1) in one FIFO and let a stalled provider hold the ack for the
+   * queue's whole task timeout. `startIssue` may queue because it runs only after the ack posts.
+   *
+   * `signal` is the real deadline, end to end: it bounds the token wait as well as the request,
+   * and cancels rather than abandons, surfacing as a retryable {@link LinearApiError} the caller
+   * degrades on. No retry — the block is optional chrome, and a second attempt would spend the
+   * delivery's budget twice.
+   */
+  async issueFacts(issueId: string, opts: { signal?: AbortSignal } = {}): Promise<LinearIssueFacts | undefined> {
+    type FactsPayload = {
+      issue?: {
+        id?: string
+        identifier?: string
+        title?: string
+        url?: string
+        team?: { id?: string; key?: string; name?: string } | null
+        state?: { name?: string; type?: string } | null
+        assignee?: { name?: string; displayName?: string } | null
+        labels?: { nodes?: { name?: string }[] } | null
+        priority?: number
+        priorityLabel?: string
+        estimate?: number
+        dueDate?: string
+        project?: { name?: string } | null
+        cycle?: { number?: number; name?: string } | null
+        parent?: { identifier?: string } | null
+      } | null
+    }
+    const data = await this.graphql<FactsPayload>(ISSUE_FACTS_QUERY, { id: issueId }, opts.signal)
+    const issue = data.issue
+    if (!issue) return undefined
+    const labels = (issue.labels?.nodes ?? []).map((n) => n.name).filter((n): n is string => Boolean(n))
+    return {
+      ...(issue.id ? { id: issue.id } : {}),
+      ...(issue.identifier ? { identifier: issue.identifier } : {}),
+      ...(issue.title ? { title: issue.title } : {}),
+      ...(issue.url ? { url: issue.url } : {}),
+      ...(issue.team ? { team: issue.team } : {}),
+      ...(issue.state ? { state: issue.state } : {}),
+      ...(issue.assignee ? { assignee: issue.assignee } : {}),
+      ...(labels.length ? { labels } : {}),
+      ...(typeof issue.priority === 'number' ? { priority: issue.priority } : {}),
+      ...(issue.priorityLabel ? { priorityLabel: issue.priorityLabel } : {}),
+      ...(typeof issue.estimate === 'number' ? { estimate: issue.estimate } : {}),
+      ...(issue.dueDate ? { dueDate: issue.dueDate } : {}),
+      ...(issue.project ? { project: issue.project } : {}),
+      ...(issue.cycle ? { cycle: issue.cycle } : {}),
+      ...(issue.parent ? { parent: issue.parent } : {})
+    }
+  }
+
+  /**
    * §10.2 auto-start: move a freshly delegated issue into its team's first `started` state.
    *
    * Reads the issue's current state and the team's workflow, then writes at most once. An issue
@@ -575,14 +632,45 @@ export class LinearConnection implements PlatformConnection {
     })
   }
 
-  private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-    const token = await this.token()
+  /**
+   * The access token, but never past a signalled caller's deadline.
+   *
+   * `token()` can wait on `requestLinearCred()`, whose correlator timeout is far longer than a
+   * read's deadline, so awaiting it plainly would leave a signalled read unbounded. Only THIS
+   * caller gives up: the single-flight renewal keeps running, so the next caller — an ack, say —
+   * still gets the renewed token rather than paying for a fresh round trip.
+   */
+  private async tokenWithin(signal?: AbortSignal): Promise<string> {
+    const pending = this.token()
+    if (!signal) return await pending
+    // This caller is walking away from `pending`; nobody else may see it as unhandled.
+    void pending.catch(() => undefined)
+    let onAbort: (() => void) | undefined
+    try {
+      return await Promise.race([
+        pending,
+        new Promise<never>((_resolve, reject) => {
+          if (signal.aborted) return reject(abortedRead())
+          onAbort = () => reject(abortedRead())
+          signal.addEventListener('abort', onAbort, { once: true })
+        })
+      ])
+    } finally {
+      if (onAbort) signal.removeEventListener('abort', onAbort)
+    }
+  }
+
+  private async graphql<T>(query: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+    const token = await this.tokenWithin(signal)
+    // A token that arrived after the deadline must not become a live fetch.
+    if (signal?.aborted) throw abortedRead()
     let res: Response
     try {
       res = await this.fetchImpl(this.endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ query, variables })
+        body: JSON.stringify({ query, variables }),
+        ...(signal ? { signal } : {})
       })
     } catch (err) {
       throw new LinearApiError(`linear request failed: ${(err as Error).message}`, true)
@@ -615,6 +703,11 @@ export class LinearConnection implements PlatformConnection {
   }
 }
 
+/** The one refusal a blown read deadline raises — retryable, and nothing was ever sent. */
+function abortedRead(): LinearApiError {
+  return new LinearApiError('linear read aborted before it was sent', true)
+}
+
 /** Does this refusal clearly say our idempotency key is already committed? Conservative by
  *  construction — an ambiguous error is surfaced, never read as a silent success. */
 function isDuplicateKeyRefusal(err: unknown): boolean {
@@ -636,7 +729,7 @@ function retryAfterMs(res: Response): number | undefined {
   return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now())
 }
 
-// The four documents this connection sends. Shapes follow Linear's published agent API
+// The documents this connection sends. Shapes follow Linear's published agent API
 // (linear-integration.md §2); anything beyond them is a Layer-2 or later concern.
 const AGENT_ACTIVITY_CREATE = `mutation AgentActivityCreate($input: AgentActivityCreateInput!) {
   agentActivityCreate(input: $input) { success agentActivity { id } }
@@ -648,6 +741,26 @@ const AGENT_SESSION_UPDATE = `mutation AgentSessionUpdate($id: String!, $input: 
 
 const ATTACHMENT_CREATE = `mutation AttachmentCreate($input: AttachmentCreateInput!) {
   attachmentCreate(input: $input) { success }
+}`
+
+const ISSUE_FACTS_QUERY = `query IssueFacts($id: String!) {
+  issue(id: $id) {
+    id
+    identifier
+    title
+    url
+    team { id key name }
+    state { name type }
+    assignee { name displayName }
+    labels(first: 20) { nodes { name } }
+    priority
+    priorityLabel
+    estimate
+    dueDate
+    project { name }
+    cycle { number name }
+    parent { identifier }
+  }
 }`
 
 const ISSUE_STATE_QUERY = `query IssueState($id: String!) {
