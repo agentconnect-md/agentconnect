@@ -27,6 +27,7 @@ import {
 } from '../../messages/hook-message.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { LinearTurnFacts } from '@agentconnect.md/protocol'
+import { clampRuntimeTitle } from '../../session/derive-title.js'
 
 /** One earlier comment the relay budgeted into the bag. Only the fields it forwards exist. */
 const LinearPreviousComment = z.object({
@@ -324,6 +325,35 @@ export function linearAckBody(agentName: string, ext: LinearAdapterExt, opts: { 
   return opts.queued ? `**${name}** · queued behind the current task` : `**${name}** · reading ${subject} …`
 }
 
+/** Linear's own comment on a delegation without one — nothing a person wrote, so nothing to show. */
+const LINEAR_DELEGATION_BOILERPLATE = /^This thread is for an agent session with .+\.$/i
+
+/**
+ * The console's short form of a Linear delivery (`NormalizedMessage.text`). A follow-up is the
+ * member's words verbatim; a delegation is one line naming the issue, followed by the member's
+ * comment when they wrote one — not Linear's boilerplate, and not the issue title the relay falls
+ * back to when there was no comment.
+ */
+export function linearDisplayText(msg: Pick<NormalizedMessage, 'text'>, ext: LinearAdapterExt): string {
+  const said = msg.text.trim()
+  if (ext.event === 'prompted') return said
+  const identifier = ext.issueIdentifier ? sanitizeTitle(ext.issueIdentifier, FACT_MAX_CHARS) : ''
+  const title = ext.issueTitle ? sanitizeTitle(ext.issueTitle) : ''
+  const head = `Delegated ${identifier || 'an issue'}${title ? ` · ${title}` : ''}`
+  const comment =
+    said && said !== (ext.issueTitle ?? '').trim() && !LINEAR_DELEGATION_BOILERPLATE.test(said) ? said : ''
+  return comment ? `${head}\n${comment}` : head
+}
+
+/** `ENG-3: title` — the session's born title, the shape the code-host sessions use, under the
+ *  one session-title bound every other title source honours. */
+export function linearSessionTitle(ext: LinearAdapterExt): string | undefined {
+  if (!ext.issueIdentifier) return undefined
+  const identifier = sanitizeTitle(ext.issueIdentifier, FACT_MAX_CHARS)
+  const title = ext.issueTitle ? sanitizeTitle(ext.issueTitle) : ''
+  return clampRuntimeTitle(title ? `${identifier}: ${title}` : identifier)
+}
+
 /** The Linear facts behind this delivery (`LinearTurnFacts`), for the console's formatter. */
 export function buildLinearTurnFacts(
   msg: Pick<NormalizedMessage, 'sender' | 'threadUrl'>,
@@ -364,10 +394,14 @@ export function buildLinearTurnFacts(
 export function applyLinearMessageStrategy(msg: NormalizedMessage): LinearAdapterExt | undefined {
   const ext = readLinearExt(msg)
   if (!ext) return undefined
-  // The facts read the member's words BEFORE the prompt replaces them on `text`.
+  // The facts and the short form read the member's words BEFORE `text` is replaced.
   const linear = buildLinearTurnFacts(msg, ext)
-  msg.text = buildLinearPromptText(msg, ext)
-  msg.turnBody = { prompt: msg.text, linear }
+  const display = linearDisplayText(msg, ext)
+  const prompt = buildLinearPromptText(msg, ext)
+  msg.turnBody = { prompt, linear }
+  msg.text = display
+  const title = linearSessionTitle(ext)
+  if (title) msg.initialSessionTitle = title
   msg.standingContext = buildLinearStandingContext(msg, ext)
   msg.source = 'user'
   msg.trigger = 'mention'

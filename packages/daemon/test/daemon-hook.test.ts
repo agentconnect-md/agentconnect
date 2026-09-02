@@ -1212,9 +1212,10 @@ describe('Daemon rd/msg hook fires', () => {
         review: { pullNumber: 461, baseSha, headSha }
       })
     )
-    expect(entry.msg.text).toContain('Trusted review workspace')
-    expect(entry.msg.text).toContain('verify `git rev-parse HEAD`')
-    expect(entry.msg.turnBody.prompt).toBe(entry.msg.text)
+    // The block lands on the prompt seat; the row's text stays the console's short form.
+    expect(entry.msg.text).toBe('Review this pull request.')
+    expect(entry.msg.turnBody.prompt).toContain('Trusted review workspace')
+    expect(entry.msg.turnBody.prompt).toContain('verify `git rev-parse HEAD`')
     // A session with no other root has no reference directories to speak of.
     expect(entry.msg.text).not.toContain('Additional repositories are available')
     await daemon.stop()
@@ -1671,7 +1672,12 @@ describe('Daemon rd/msg hook fires', () => {
       }>
       const agentRows = transcript.filter((row) => row.sender === AGENT_ID)
       expect(transcript).toContainEqual(
-        expect.objectContaining({ sender: 'alice', text: expect.stringContaining(`GitHub ${event}:opened`) })
+        // The row's text is the console's short form; the assembled prompt rides its body.
+        expect.objectContaining({
+          sender: 'alice',
+          text: expect.stringMatching(/^Opened (issue |PR )?#\d+ · /),
+          body: expect.stringContaining(`GitHub ${event}:opened`)
+        })
       )
       expect(await (daemon as any).store.getSessionByAcpId(`acp-${event}`)).toMatchObject({
         triggeredBy: `hook:${HOOK_ID}`
@@ -3976,8 +3982,9 @@ describe('buildHookMessage', () => {
         isDraft: false
       }
       const issue = buildHookMessage(ghFire(), 'trace')
-      // The prompt on the body is exactly the text the model reads today.
-      expect(issue.turnBody?.prompt).toBe(issue.text)
+      // The prompt on the body is the assembled hook text; the row's text is the console's short form.
+      expect(issue.turnBody?.prompt).toBe(buildHookText(ghFire()))
+      expect(issue.text).toBe('Opened #42 · db down')
       expect(issue.turnBody?.codehost).toEqual({
         provider: 'github',
         event: 'issues:opened',
@@ -4003,6 +4010,14 @@ describe('buildHookMessage', () => {
         review: 'generation'
       })
       expect(review.turnBody?.codehost?.body).toBeUndefined()
+      expect(review.text).toBe('Pushed to PR #42 · db down')
+      // A comment is what the person said: it stands verbatim.
+      const comment = buildHookMessage(
+        ghFire({ event: 'issue_comment', action: 'created', bodyExcerpt: 'does this still repro?' }, { github: pr }),
+        'trace'
+      )
+      expect(comment.text).toBe('does this still repro?')
+      expect(comment.turnBody?.prompt).toContain('GitHub issue_comment:created')
       const inline = buildHookMessage(
         ghFire(
           { event: 'pull_request_review_comment', action: 'created' },
@@ -4020,6 +4035,16 @@ describe('buildHookMessage', () => {
       )
       expect(push.turnBody?.codehost?.review).toBeUndefined()
       expect(push.turnBody?.codehost?.subject.number).toBeUndefined()
+      // A per-branch push key names the ref; a shared key names no branch, so the repo stands in.
+      const branchPush = buildHookMessage(
+        ghFire(
+          { event: 'push', action: undefined, number: undefined, bodyExcerpt: undefined },
+          { sessionKey: 'acme/infra#refs/heads/main' }
+        ),
+        'trace'
+      )
+      expect(branchPush.text).toBe('Pushed refs/heads/main')
+      expect(push.text).toBe('Pushed to acme/infra')
     })
 
     it('requires a formal verdict for an authorized explicit PR review mention', async () => {
@@ -4118,7 +4143,8 @@ describe('buildHookMessage', () => {
     it('a github fire keys the session to the issue thread and stays headless without a target', async () => {
       const m = buildHookMessage(ghFire(), 'trace-1')
       expect(m).toMatchObject({ channel: 'acme/infra', thread: '42', headless: true, platform: 'hook' })
-      expect(m.text).toContain(UNTRUSTED_CONTENT_BEGIN)
+      expect(m.text).toBe('Opened #42 · db down')
+      expect(m.turnBody?.prompt).toContain(UNTRUSTED_CONTENT_BEGIN)
     })
   })
 })

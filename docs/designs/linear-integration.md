@@ -1156,7 +1156,11 @@ by <actor>` + issue URL, with `sanitizeTitle` flattening.
   (workspace-admin-authored). The assembled prompt and the facts it was built
   from also ride `NormalizedMessage.turnBody`, persisted as the transcript
   row's body (transcript-full-tool-body.md §9) so replay reads the prompt and
-  the console can format the facts.
+  the console can format the facts. `msg.text` itself becomes the console's
+  short form (`linearDisplayText`): the follow-up verbatim, or
+  `Delegated ENG-3 · title` plus the member's own comment when they wrote one
+  — never Linear's boilerplate or the relay's title fallback — and the session
+  is born titled `ENG-3: title`, the shape the code-host sessions use.
 - **Quoted context**: `promptContext` and `previousComments` wrap in the
   existing `UNTRUSTED_CONTENT_BEGIN/END` fence with `neutralizeDelimiters`.
   Issue bodies can contain text authored outside the workspace (customer
