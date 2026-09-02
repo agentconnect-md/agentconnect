@@ -1529,9 +1529,50 @@ describe('the team conversation rows (§4.3, §7.1)', () => {
     expect(eng.find((r) => r.agentId !== null)?.agentId).toBe(second)
   })
 
+  it('seeds a late team to the ROUTABLE default, not the earliest install, when placement differs', async () => {
+    // The seed must make the compile's own choice. Naming the earliest install when no daemon is
+    // serving it would drop that owner from the placed set and mute the team for having an
+    // unavailable owner — suppressing the routable member's own fallback and turning a working
+    // team off the moment it was discovered.
+    const { frames, onFrame } = routingFrames()
+    const h = await harness({ onFrame })
+    const { botId } = await connect(h)
+    const second = await addMember(h, botId)
+    // The linking agent loses its placement: earliest install, no daemon serving it.
+    await prisma.agent.update({ where: { id: h.agentId }, data: { daemonId: null } })
+
+    h.linear.teamNodes = [...h.linear.teamNodes, { id: 'team_ops', key: 'OPS', name: 'Operations' }]
+    await h.app.linearCredentialReconciler.tick()
+
+    const ops = (await rowsFor(botId)).filter((r) => r.channelId === 'team_ops')
+    expect(ops.find((r) => r.agentId !== null)?.agentId).toBe(second)
+    expect(ops.every((r) => r.trigger === 'mention')).toBe(true)
+    // …and the compile keeps routing the new team to that member rather than muting it.
+    const last = frames.at(-1)!
+    expect(last.mutedChannels).not.toContain('team_ops')
+    expect(last.conversationDefaults.find((d) => d.channel === 'team_ops')?.agentId).toBe(second)
+  })
+
+  it('leaves a late team to the generic converger when nothing routable is serving', async () => {
+    // The seed names nobody (asserted at the seam in the reconciler's own unit suite, where the
+    // converger is not in the way); who then inherits an ownerless row is the shipped
+    // `pickConversationOwner` fallback — the earliest active install — on every platform alike.
+    const h = await harness()
+    const { botId } = await connect(h)
+    await prisma.agent.update({ where: { id: h.agentId }, data: { daemonId: null } })
+
+    h.linear.teamNodes = [...h.linear.teamNodes, { id: 'team_ops', key: 'OPS', name: 'Operations' }]
+    await h.app.linearCredentialReconciler.tick()
+
+    const ops = (await rowsFor(botId)).filter((r) => r.channelId === 'team_ops')
+    expect(ops).toHaveLength(1)
+    expect(ops[0]).toMatchObject({ agentId: h.agentId, trigger: 'mention', name: 'OPS · Operations' })
+  })
+
   it('still seeds a row for a bot whose members are ALL gated — the pass that has no other route', async () => {
     // No `defaultAgentId`, so the relay drops the new team's first event and no daemon ever
-    // observes it. The row is born Off for an operator to enable (§15).
+    // observes it — only this pass can seed the row. Born Off, and its owner comes from the
+    // generic converger rather than the seed: a gated member is never a routable default (§15).
     const h = await harness()
     const gated = randomUUID()
     await seedAgent(prisma, gated, { daemonId: DAEMON, name: 'only-private' })

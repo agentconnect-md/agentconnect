@@ -1761,7 +1761,8 @@ export function buildContainer(
       integrations: repos.integration,
       agents: repos.agent,
       channels: repos.integrationChannel,
-      tokens: linearTokenService
+      tokens: linearTokenService,
+      routableDaemon: (agent) => placementResolver.routableDaemon(agent)
     },
     clock,
     intervalMs: 15 * 60 * 1000,

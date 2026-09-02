@@ -37,7 +37,7 @@ import { BotExternalIdentityTaken, BotWorkspaceClaimed } from '../../persistence
 import { ErrorDto, IdParam } from '../../http/dto/index.js'
 import type { LinearRouteSeams } from '../../http/platform-route-seams.js'
 import { buildLinearWorkspaceInstall } from './provider.js'
-import { seedLinearTeamRows } from './teams.js'
+import { linearTeamSeedTrigger, seedLinearTeamRows } from './teams.js'
 
 /** The callback's public path — the value baked into the deployment app's redirect URL (§7.1). */
 export const LINEAR_OAUTH_CALLBACK_PATH = '/integrations/linear/oauth/callback'
@@ -477,8 +477,14 @@ export function linearOauthCallbackRoutes(deps: HttpDeps, linear: LinearRouteSea
             name: viewer.result.organizationName ?? 'Linear workspace',
             transport: 'http',
             ...(row.createdByUserId ? { createdByUserId: row.createdByUserId } : {}),
+            // The linking agent is the workspace's ONLY member here, so it is also the earliest
+            // install — the same row the generic converger would persist as every team's owner a
+            // moment later. There is no routable-vs-earliest mismatch a seed could introduce.
             seedConversations: (integration) =>
-              seedLinearTeamRows(deps.repos.integrationChannel, integration.id, agent, teams.ok ? teams.result : [])
+              seedLinearTeamRows(deps.repos.integrationChannel, integration.id, teams.ok ? teams.result : [], {
+                trigger: linearTeamSeedTrigger([agent]),
+                owner: agent.id
+              })
           })
           await deps.repos.linearInstallState.settle(row.id, { status: 'completed', botId: bot.id })
           return back('connected')

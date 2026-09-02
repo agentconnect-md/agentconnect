@@ -37,6 +37,7 @@ import type { Clock, TimerHandle } from '../../domain/clock.js'
 import type { BotId, IntegrationId } from '../../domain/ids.js'
 import type { LinearPlatformAppConfig } from '../../config/linear-platform.js'
 import type {
+  AgentRecord,
   AgentRepo,
   BotCredentialWriter,
   BotRecord,
@@ -46,9 +47,9 @@ import type {
   IntegrationRepo
 } from '../../persistence/ports.js'
 import type { LinearTeam } from './api.js'
-import { isGatedAgent } from '../../orchestrator/placement.js'
+import { defaultMemberOf, placedMembers } from '../../orchestrator/placement.js'
 import { linearConnectionIdentity } from './provider.js'
-import { linearTeamChannelName, seedLinearTeamRows } from './teams.js'
+import { linearTeamChannelName, linearTeamSeedTrigger, seedLinearTeamRows } from './teams.js'
 import type { LinearTokenService } from './token-service.js'
 
 export interface LinearCredentialReconcilerLog {
@@ -75,6 +76,9 @@ export interface LinearCredentialReconcilerDeps {
     agents: Pick<AgentRepo, 'getUnscoped'>
     channels: Pick<IntegrationChannelRepo, 'listForBot' | 'upsertConversation' | 'upsertAgent'>
     tokens: Pick<LinearTokenService, 'accessToken' | 'teams'>
+    /** The SAME selection the route compile makes, so a seeded owner is never a member the compile
+     *  would drop as unroutable and mute the team for. */
+    routableDaemon(agent: AgentRecord): Promise<string | null>
   }
   clock: Clock
   intervalMs: number
@@ -251,27 +255,37 @@ export class LinearCredentialReconciler {
     if (!answer.ok) return
     const rows = await seams.channels.listForBot(bot.id)
     const known = new Set(rows.map((row) => row.channelId))
-    // The bot's default agent, per §6.2's backstop: `listForBot` is createdAt-ordered, so the
-    // earliest non-gated member is the one a bare delegation would reach. An ALL-GATED bot is the
-    // reason this pass exists at all, so it still gets a row — owned by its earliest member and
-    // born Off, for an operator to enable.
-    const members = await Promise.all(
-      installs.map(async (install) => ({ install, agent: await seams.agents.getUnscoped(install.agentId) }))
-    )
-    const present = members.filter(
-      (m): m is { install: (typeof installs)[number]; agent: NonNullable<typeof m.agent> } => m.agent !== null
-    )
-    const owner = present.find((m) => !isGatedAgent(m.agent)) ?? present[0]
     for (const team of answer.result.filter((team) => known.has(team.id))) {
       await this.refreshTeamName(seams, rows, team)
     }
     const missing = answer.result.filter((team) => !known.has(team.id))
-    if (!owner || missing.length === 0) return
-    // The SAME seeder the connect tail runs, so a team discovered late is born exactly as one
-    // discovered at connect.
-    await seedLinearTeamRows(seams.channels, owner.install.id, owner.agent, missing)
+    if (missing.length === 0) return
+
+    const agentById = new Map<string, AgentRecord>()
+    for (const install of installs) {
+      const agent = await seams.agents.getUnscoped(install.agentId)
+      if (agent) agentById.set(install.agentId, agent)
+    }
+    // The seeded owner is the compile's OWN default member — the earliest non-gated install a
+    // daemon is currently serving — not the earliest active one. Naming an unroutable member here
+    // would be a routing bug rather than a stale label: the compile drops it from the placed set
+    // and then mutes the team for having an unavailable owner, which would also take down the
+    // routable member's `defaultAgentId` fallback. Discovery must never turn a working team off.
+    const placed = await placedMembers(installs, (agentId) => agentById.get(agentId), seams.routableDaemon)
+    const owner = defaultMemberOf(placed)
+    // Ownerless when nothing routable and non-gated is serving — the state the compile tolerates
+    // (no default, no route) while the group's own backstop keeps answering. An ALL-GATED bot is
+    // the reason this pass exists at all, and its row is born Off for an operator to enable.
+    const trigger = linearTeamSeedTrigger([...agentById.values()])
+    await seedLinearTeamRows(seams.channels, owner?.integration.id ?? installs[0]!.id, missing, {
+      trigger,
+      ...(owner ? { owner: owner.integration.agentId } : {})
+    })
     // A new row changes the routes, so publish it the same way every other row change is.
-    this.deps.log?.info({ botId: bot.id, teams: missing.length }, 'linear-credential: seeded team conversation rows')
+    this.deps.log?.info(
+      { botId: bot.id, teams: missing.length, owned: owner !== undefined },
+      'linear-credential: seeded team conversation rows'
+    )
     await this.deps.resync(bot.id)
   }
 

@@ -682,7 +682,8 @@ export function buildHttpApp(
       integrations: integrationRepo,
       agents: agentRepo,
       channels: integrationChannelRepo,
-      tokens: linearTokenService
+      tokens: linearTokenService,
+      routableDaemon: (agent) => placementResolver.routableDaemon(agent)
     },
     clock,
     intervalMs: 15 * 60 * 1000

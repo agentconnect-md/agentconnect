@@ -174,6 +174,53 @@ const DEFAULT_BIND_RULES: IntegrationBindRule[] = [{ match: { kind: 'mention' } 
  *  visibility at spec-assembly time — no stored toggle, no identities on the wire. */
 export const isGatedAgent = (a: { visibility: AgentRecord['visibility'] }): boolean => a.visibility === 'restricted'
 
+/** One member of a shared bot a daemon is currently SERVING — what the route compile routes to. */
+export interface PlacedMember<T> {
+  integration: T
+  agent: AgentRecord
+  daemonId: string
+  gated: boolean
+}
+
+/**
+ * The members of a shared bot that can receive traffic AT ALL: an agent no daemon is currently
+ * serving is dropped, because the relay addresses ingress to one member and a pool agent resolves
+ * to whichever member holds its duty — placement names no machine and would strand the install.
+ *
+ * Order is the caller's (`listForBot` is createdAt-ordered), which is what makes
+ * {@link defaultMemberOf} deterministic.
+ */
+export async function placedMembers<T extends { agentId: string }>(
+  installs: readonly T[],
+  agentOf: (agentId: string) => AgentRecord | null | undefined,
+  routableDaemon: (agent: AgentRecord) => Promise<string | null>
+): Promise<PlacedMember<T>[]> {
+  const placed: PlacedMember<T>[] = []
+  for (const integration of installs) {
+    const agent = agentOf(integration.agentId)
+    if (!agent) continue
+    const daemonId = await routableDaemon(agent)
+    if (!daemonId) continue
+    // The ONE predicate decides the keyword rung, the default, and `gatedAgentIds` together.
+    placed.push({ integration, agent, daemonId, gated: isGatedAgent(agent) })
+  }
+  return placed
+}
+
+/**
+ * The member a bare, unaddressed delivery falls to — the group's `defaultAgentId` (§10.3): the
+ * EARLIEST non-gated member a daemon is serving. A gated agent must never be the fallback (§14:
+ * the bare-@bot/DM rungs are what make an HTTP bot fail-open), and a group with none has no default.
+ *
+ * Every seat that PERSISTS a default owner reads this same function, not "earliest active install".
+ * The two differ exactly when the earliest install is unroutable, and persisting that member as a
+ * conversation's owner is a routing bug: the compile drops it from the placed set, then mutes the
+ * conversation for having an unavailable owner — turning a working conversation off, and taking the
+ * routable member's own fallback down with it.
+ */
+export const defaultMemberOf = <T>(placed: readonly PlacedMember<T>[]): PlacedMember<T> | undefined =>
+  placed.find((p) => !p.gated)
+
 /**
  * Conversation-scoped bind rules for a GATED integration (resource-visibility.md
  * §14.3): only explicitly enabled conversations produce rules — a Mention channel

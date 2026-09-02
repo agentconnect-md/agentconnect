@@ -1191,6 +1191,22 @@ tile.
     only be a second description of it; and an unreachable `teams` answer at
     connect is logged and left to the tick rather than failing a callback
     that has already spent its authorization code.
+  - **A seeded owner is the compile's own default member, never "the earliest
+    install".** The two differ exactly when the earliest install is one no
+    daemon is currently serving, and persisting THAT member as a team's owner
+    is a routing bug rather than a stale label: the compile drops it from the
+    placed set and then mutes the conversation for having an unavailable
+    owner, taking the routable member's `defaultAgentId` fallback down with
+    it — discovery would turn a working team off. So the selection is one
+    shared function (`placedMembers` + `defaultMemberOf` in
+    `orchestrator/placement.ts`), read by the compile's `defaultAgentId`
+    derivation and by the tick's seed alike; with no routable non-gated
+    member the tick seeds the row OWNERLESS, which the compile tolerates (no
+    default, no route), rather than naming one it would mute. The connect
+    tail needs no such probe: its linking agent is the workspace's only
+    member and therefore also the earliest install, so it is exactly the row
+    the generic converger (`pickConversationOwner`) would persist a moment
+    later — there is no seed-specific mismatch to remove there.
   - `installRoutes('org')` — connect-workspace funnel start (records the
     **linking agent**, §7.1), connect status, reconnect (§7.4), and member
     management; `installRoutes('public-callback')` — the OAuth callback

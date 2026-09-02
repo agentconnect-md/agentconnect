@@ -27,7 +27,7 @@ import {
 } from '../../src/persistence/index.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { gatedDmSeeds, type GatedDmSeedResolver } from '../../src/orchestrator/linkedDm.js'
-import { seedLinearTeamRows } from '../../src/platforms/linear/teams.js'
+import { linearTeamSeedTrigger, seedLinearTeamRows } from '../../src/platforms/linear/teams.js'
 import { reconcileAgentLinkedDms, reconcileLinkedDms } from '../../src/orchestrator/linkedDmReconcile.js'
 import type { SlackIdentity } from '../../src/github/logto-identity.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
@@ -144,7 +144,10 @@ async function installLinear(
       botUserId: 'lin-app-user'
     },
     seedConversations: (integration: { id: string }) =>
-      seedLinearTeamRows(app.deps.repos.integrationChannel, integration.id as never, agent as never, LINEAR_TEAMS)
+      seedLinearTeamRows(app.deps.repos.integrationChannel, integration.id as never, LINEAR_TEAMS, {
+        trigger: linearTeamSeedTrigger([agent as never]),
+        owner: agentId as never
+      })
   } as never)
   return { integrationId: integration.id, botId: integration.botId, agentId }
 }

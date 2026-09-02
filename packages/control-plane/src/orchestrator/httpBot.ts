@@ -46,7 +46,7 @@ import type {
 } from '../persistence/ports.js'
 import type { RelayChannel, RelayRegistry } from '../ws/relay-registry.js'
 import { ControlSender, NoConnection } from './outbound.js'
-import { isGatedAgent, httpIntegrationToSpec } from './placement.js'
+import { defaultMemberOf, isGatedAgent, httpIntegrationToSpec, placedMembers } from './placement.js'
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import type { AgentDelivery } from './agentDelivery.js'
 import { PLACEMENT_ONLY, type PlacementResolver } from './placementResolver.js'
@@ -943,18 +943,13 @@ export class HttpBotOrchestrator {
       const a = await this.agents.getUnscoped(i.agentId)
       if (a) agentById.set(i.agentId, a)
     }
-    // Only agents a daemon is currently SERVING can receive traffic. The relay addresses ingress
-    // to one member, so a pool agent resolves to whichever member holds its duty — placement
-    // names no machine and would strand the whole install.
-    const placed: { integration: IntegrationRecord; agent: AgentRecord; daemonId: string; gated: boolean }[] = []
-    for (const integration of integrations) {
-      const agent = agentById.get(integration.agentId)
-      if (!agent) continue
-      const daemonId = await this.placement.routableDaemon(agent)
-      if (!daemonId) continue
-      // The ONE predicate decides the keyword rung, the default, and `gatedAgentIds` together.
-      placed.push({ integration, agent, daemonId, gated: isGatedAgent(agent) })
-    }
+    // Only agents a daemon is currently SERVING can receive traffic — the shared selection every
+    // seat that names a default reads, so a persisted owner can never be one this compile drops.
+    const placed = await placedMembers(
+      integrations,
+      (agentId) => agentById.get(agentId),
+      (agent) => this.placement.routableDaemon(agent)
+    )
     if (placed.length === 0) return null
     // linear-integration.md §6.2: a row's owner rides the relay's PER-CONVERSATION default
     // rung instead of a channel-scoped route — which would otherwise shadow keyword selection
@@ -1033,12 +1028,10 @@ export class HttpBotOrchestrator {
       })
     }
 
-    // 3. default agent (§10.3): the earliest NON-GATED install of the group catches
+    // 3. default agent (§10.3): the earliest NON-GATED install a daemon serves catches
     //    a bare @bot + DMs. Delivered as `defaultAgentId` (the relay's fallback
-    //    rung), not a route, so it never pre-empts keyword/channel arbitration. A
-    //    gated agent must never be the fallback (§14: the bare-@bot/DM rungs are
-    //    what make an HTTP bot fail-open); a group of only gated agents has none.
-    const first = placed.find((p) => !p.gated)
+    //    rung), not a route, so it never pre-empts keyword/channel arbitration.
+    const first = defaultMemberOf(placed)
     // Each row's owner as the relay's per-conversation default (§6.2) — the rung between the
     // keyword slug and `defaultAgentId`, and, for a gated owner, its grant in that channel.
     // An Off row contributes none: a muted channel resolves to nothing at every rung.

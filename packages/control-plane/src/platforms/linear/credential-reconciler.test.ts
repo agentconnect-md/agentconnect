@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { FakeClock } from '../../../test/fakes/fake-clock.js'
 import { BotId, OrgId } from '../../domain/ids.js'
 import type { LinearPlatformAppConfig } from '../../config/linear-platform.js'
-import type { BotRecord, BotSecretMaterial } from '../../persistence/ports.js'
+import type { AgentRecord, BotRecord, BotSecretMaterial } from '../../persistence/ports.js'
 import { LinearCredentialReconciler, type LinearCredentialReconcilerDeps } from './credential-reconciler.js'
 
 const ORG = OrgId('11111111-1111-4111-8111-111111111111')
@@ -335,5 +335,104 @@ describe('LinearCredentialReconciler (§10.6)', () => {
     await vi.waitFor(() => expect(clock.pendingTimers()).toBe(1))
     reconciler.stop()
     expect(clock.pendingTimers()).toBe(0)
+  })
+})
+
+/**
+ * Which member the tick's late-team seed NAMES as the row's owner (§15, §6.2's backstop).
+ *
+ * The stub harness is the point: at this seam the seed's own write is visible, before the route
+ * compile's generic converger gets a say about an ownerless row.
+ */
+describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
+  const ALICE = '44444444-4444-4444-8444-444444444444'
+  const BOB = '55555555-5555-4555-8555-555555555555'
+  const TEAM = { id: 'team_ops', key: 'OPS', name: 'Operations' }
+
+  interface SeedHarness {
+    reconciler: LinearCredentialReconciler
+    upsertConversation: ReturnType<typeof vi.fn>
+    upsertAgent: ReturnType<typeof vi.fn>
+  }
+
+  const agent = (id: string, visibility: 'org' | 'restricted' = 'org') =>
+    ({ id, visibility, name: `agent-${id.slice(0, 4)}` }) as unknown as AgentRecord
+
+  /** `installs` is createdAt-ordered, exactly as `listForBot` answers. `routable` is the set of
+   *  agents a daemon is currently serving. */
+  function seedHarness(installs: { id: string; agentId: string }[], agents: AgentRecord[], routable: Set<string>) {
+    const upsertConversation = vi.fn(async () => ({}) as never)
+    const upsertAgent = vi.fn(async () => ({}) as never)
+    const teams: LinearCredentialReconcilerDeps['teams'] = {
+      integrations: { listForBot: async () => installs as never },
+      agents: { getUnscoped: async (agentId: string) => agents.find((a) => a.id === agentId) ?? null } as never,
+      channels: { listForBot: async () => [], upsertConversation, upsertAgent } as never,
+      tokens: {
+        accessToken: async () => ({ ok: true as const, accessToken: 'tok', expiresAt: new Date(), rotated: false }),
+        teams: async () => ({ ok: true as const, result: [TEAM] })
+      } as never,
+      routableDaemon: async (a: AgentRecord) => (routable.has(a.id) ? 'daemon-1' : null)
+    }
+    const secrets = new Map([[String(BOT), stamped(APP)]])
+    const { reconciler } = harness([bot()], secrets, { teams })
+    return { reconciler, upsertConversation, upsertAgent } satisfies SeedHarness
+  }
+
+  it('names the earliest ROUTABLE non-gated member, not the earliest install', async () => {
+    // The compile drops an unroutable member from its placed set and then mutes any conversation
+    // whose persisted owner is missing from it — so seeding the earliest install here would turn
+    // the freshly discovered team off and suppress the routable member's own fallback with it.
+    const h = seedHarness(
+      [
+        { id: 'i-alice', agentId: ALICE },
+        { id: 'i-bob', agentId: BOB }
+      ],
+      [agent(ALICE), agent(BOB)],
+      new Set([BOB])
+    )
+
+    await h.reconciler.tick()
+
+    expect(h.upsertAgent).toHaveBeenCalledWith('i-bob', TEAM.id, BOB, { defaultTrigger: 'mention', kind: 'channel' })
+    expect(h.upsertAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it('skips a routable GATED member for the seat, since it can never be the fallback', async () => {
+    const h = seedHarness(
+      [
+        { id: 'i-alice', agentId: ALICE },
+        { id: 'i-bob', agentId: BOB }
+      ],
+      [agent(ALICE, 'restricted'), agent(BOB)],
+      new Set([ALICE, BOB])
+    )
+
+    await h.reconciler.tick()
+
+    expect(h.upsertAgent).toHaveBeenCalledWith('i-bob', TEAM.id, BOB, { defaultTrigger: 'mention', kind: 'channel' })
+  })
+
+  it('names NOBODY when no member is both routable and unrestricted', async () => {
+    // An ownerless row is a state the compile tolerates — no default, no route — and what happens
+    // to it next is the generic converger's business, not a choice this seed had any basis to make.
+    const h = seedHarness([{ id: 'i-alice', agentId: ALICE }], [agent(ALICE)], new Set())
+
+    await h.reconciler.tick()
+
+    expect(h.upsertConversation).toHaveBeenCalledWith(
+      'i-alice',
+      { id: TEAM.id, name: 'OPS · Operations', kind: 'channel' },
+      { defaultTrigger: 'mention' }
+    )
+    expect(h.upsertAgent).not.toHaveBeenCalled()
+  })
+
+  it('seeds an ALL-GATED bot Off — the §14 arm, asked of the members that could own the row', async () => {
+    const h = seedHarness([{ id: 'i-alice', agentId: ALICE }], [agent(ALICE, 'restricted')], new Set([ALICE]))
+
+    await h.reconciler.tick()
+
+    expect(h.upsertConversation).toHaveBeenCalledWith('i-alice', expect.anything(), { defaultTrigger: 'off' })
+    expect(h.upsertAgent).not.toHaveBeenCalled()
   })
 })
