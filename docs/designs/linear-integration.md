@@ -1285,7 +1285,9 @@ tile.
    issue's state and the team's workflow, then at most one `issueUpdate`).
    Skipped for triage-status issues so Linear-side automation delegations
    keep human triage, and for a team with no `started` state. It runs from
-   the same post-admission hook as the ack, so the receipt CAS that collapses
+   the same post-admission hook as the ack, **after the ack has posted** —
+   both ride the connection's one FIFO queue, so the state read must not sit
+   ahead of the ≤10 s acknowledgement — and the receipt CAS that collapses
    redeliveries also keeps the issue from moving twice; a follow-up
    `prompted` never touches the state the humans left it in. `output.mode:
 none` skips it along with everything else Linear-visible. There is **no

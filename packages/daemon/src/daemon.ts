@@ -6749,8 +6749,15 @@ export class Daemon {
       // `none` is truly silent (§5.2): no ack, no activities, no issue write — transcript only.
       const mode = (await this.store.getOutputModeOverride(key)) ?? agent?.output?.mode ?? 'low'
       if (mode === 'none') return
-      // The session opened on this delivery: the issue moves to "started" alongside the ack,
-      // and a follow-up on an existing session leaves the state where the humans put it.
+      await conn.postActivity(ext.agentSessionId, {
+        type: 'thought',
+        body: linearAckBody(agentName, ext, { queued: busy }),
+        ephemeral: true
+      })
+      // The session opened on this delivery: the issue moves to "started" once the ack is OUT —
+      // both ride the connection's one FIFO queue, so enqueuing the state read first would let a
+      // slow or retried read eat the ≤10 s acknowledgement budget (§10.1). A follow-up on an
+      // existing session leaves the state where the humans put it.
       if (ext.event === 'created' && ext.issueId) {
         const issue = ext.issueIdentifier ?? ext.issueId
         conn
@@ -6765,11 +6772,6 @@ export class Daemon {
           })
           .catch((err: unknown) => this.log.warn(`linear: auto-start of ${issue} failed: ${formatErr(err)}`))
       }
-      await conn.postActivity(ext.agentSessionId, {
-        type: 'thought',
-        body: linearAckBody(agentName, ext, { queued: busy }),
-        ephemeral: true
-      })
     })().catch((err: unknown) => this.log.warn(`linear: acknowledgement failed: ${formatErr(err)}`))
   }
 
