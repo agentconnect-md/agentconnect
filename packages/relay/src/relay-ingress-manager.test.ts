@@ -11,7 +11,12 @@ import type {
   WireFeishuCardActionEvent,
   WireNormalizedMessage
 } from '@agentconnect.md/protocol'
-import { RD_ACK_NOT_HOLDER, MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
+import {
+  RD_ACK_NOT_HOLDER,
+  MAX_AGENT_CALL_HOPS,
+  buildRelayCpFrame,
+  decodeRelayCpFrame
+} from '@agentconnect.md/protocol'
 import { FakeClock } from '@agentconnect.md/connection'
 import { RelayIngressManager, type RelayIngressManagerDeps } from './relay-ingress-manager.js'
 // The dedup-id minters belong to their platform plugins (§8: the plugin mints
@@ -28,7 +33,7 @@ import {
 import { forwardFeishuCardAction, httpFeishuActionMsgId } from './platforms/feishu/ingress-plugin.js'
 import { DemuxIndex, relayIngressPlugins } from './platforms/registry.js'
 import type { RelayBotIngress, RelayPlatformIngressPlugin } from './platforms/contract.js'
-import { BotArbitrationRouter, mapAgentDirectory, type BotAssignment } from './bot-arbitration.js'
+import { BotArbitrationRouter, mapAgentDirectory, toRoutesPatch, type BotAssignment } from './bot-arbitration.js'
 import type {
   HttpSlackSessionAction,
   HttpSlackSessionShortcut,
@@ -1406,6 +1411,237 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(sendMsg).toHaveBeenCalledTimes(1)
     // A CP-seeded route is NOT reported back to the CP.
     expect(reportThreadAssign).not.toHaveBeenCalled()
+  })
+
+  describe('rc/routes carries a conversation-default edit end to end', () => {
+    const TEAM = '00000000-0000-4000-8000-0000000000t1'
+    const APP_USER = '00000000-0000-4000-8000-0000000000a1'
+
+    /** Two placed members, TEAM defaulting to AGENT_ID, no scoped route — the compile's
+     *  output for an `ownerAsDefault` platform. */
+    const linearAssignment = (): BotAssignment => ({
+      botId: BOT_ID,
+      platform: 'linear',
+      secrets: { signingSecret: 'lin_wh_secret' },
+      botUserId: APP_USER,
+      members: [
+        { daemonId: DAEMON_ID, agentIds: [AGENT_ID] },
+        { daemonId: OTHER_DAEMON_ID, agentIds: [OTHER_AGENT_ID] }
+      ],
+      agents: [
+        { agentId: AGENT_ID, name: 'agent', daemonId: DAEMON_ID, integrationId: INTEGRATION_ID },
+        { agentId: OTHER_AGENT_ID, name: 'other', daemonId: OTHER_DAEMON_ID, integrationId: OTHER_INTEGRATION_ID }
+      ],
+      routes: [
+        {
+          agentId: AGENT_ID,
+          daemonId: DAEMON_ID,
+          integrationId: INTEGRATION_ID,
+          match: { kind: 'keyword', value: 'agent' }
+        },
+        {
+          agentId: OTHER_AGENT_ID,
+          daemonId: OTHER_DAEMON_ID,
+          integrationId: OTHER_INTEGRATION_ID,
+          match: { kind: 'keyword', value: 'other' }
+        }
+      ],
+      conversationDefaults: [{ channel: TEAM, agentId: AGENT_ID, daemonId: DAEMON_ID, integrationId: INTEGRATION_ID }],
+      ownerAsDefault: true
+    })
+
+    /** A bare delegation: no member named, so only the default rung can answer it. */
+    const delegation = (thread: string): WireNormalizedMessage => ({
+      msgId: `linear:${thread}:created`,
+      traceId: 't',
+      source: 'user',
+      platform: 'linear',
+      channel: TEAM,
+      thread,
+      sender: { id: 'linear:U1', isBot: false },
+      text: 'take a look at the failing job',
+      mentionedBots: [APP_USER],
+      isDm: false
+    })
+
+    /** The wire frame the CP's `syncRoutes` broadcasts after an owner edit, decoded through
+     *  the real codec so the test cannot pass on a field the schema does not carry. */
+    const routesFrame = (
+      owner: { agentId: string; daemonId: string; integrationId: string },
+      gatedAgentIds: string[] = []
+    ) => {
+      const a = linearAssignment()
+      const built = buildRelayCpFrame('rc/routes', {
+        botId: BOT_ID,
+        members: a.members,
+        agents: a.agents.map((entry) => ({
+          agentId: entry.agentId,
+          name: entry.name,
+          daemonId: entry.daemonId!,
+          integrationId: entry.integrationId!
+        })),
+        routes: a.routes,
+        gatedAgentIds,
+        conversationDefaults: [{ channel: TEAM, ...owner }]
+      })
+      const decoded = decodeRelayCpFrame(JSON.stringify(built))
+      if (!decoded.ok || decoded.frame.type !== 'rc/routes') throw new Error('expected a decodable rc/routes')
+      return decoded.frame.payload
+    }
+
+    it('re-targets the next bare delegation without a new rc/bot-assign', async () => {
+      // The bug this pins: the CP emits the edit on `rc/routes`, but if any hand-off between
+      // the frame and the router drops `conversationDefaults`, every connected relay keeps
+      // routing the team at its OLD default until a reassignment or a restart.
+      const first = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const second = vi.fn(async (m: { msgId: string }): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
+      const daemons: Record<string, RelayDaemonConnection> = {
+        [DAEMON_ID]: { sendMsg: first } as unknown as RelayDaemonConnection,
+        [OTHER_DAEMON_ID]: { sendMsg: second } as unknown as RelayDaemonConnection
+      }
+      const manager = new RelayIngressManager(deps({ getDaemon: (id) => daemons[id] }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(linearAssignment())
+
+      await internals.forward(BOT_ID, delegation('agent-session-1'))
+      expect(first).toHaveBeenCalledTimes(1)
+      expect(second).not.toHaveBeenCalled()
+
+      // The owner edit, through the exact path index.ts runs: frame → toRoutesPatch → manager.
+      manager.updateRoutes(
+        BOT_ID,
+        toRoutesPatch(
+          routesFrame({
+            agentId: OTHER_AGENT_ID,
+            daemonId: OTHER_DAEMON_ID,
+            integrationId: OTHER_INTEGRATION_ID
+          })
+        )
+      )
+
+      await internals.forward(BOT_ID, delegation('agent-session-2'))
+      expect(second).toHaveBeenCalledTimes(1)
+      expect(first).toHaveBeenCalledTimes(1)
+      const [sent] = second.mock.calls[0]! as [RdMsgIm]
+      expect(sent).toMatchObject({ agentId: OTHER_AGENT_ID, integrationId: OTHER_INTEGRATION_ID })
+    })
+
+    it('withdraws the old gated grant in the same update, so a bound follow-up is refused', async () => {
+      // The default seat IS the grant on such a platform, so the hot update has to move both
+      // facts together — a stale default would keep honouring a withdrawn binding.
+      const { daemon, sendMsg } = online()
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon }))
+      const internals = internalsOf(manager)
+      internals.router.upsert({ ...linearAssignment(), gatedAgentIds: [AGENT_ID] })
+      internals.router.setAffinity(BOT_ID, `${TEAM}/agent-session-1`, {
+        agentId: AGENT_ID,
+        daemonId: DAEMON_ID,
+        integrationId: INTEGRATION_ID
+      })
+
+      expect(await internals.forward(BOT_ID, delegation('agent-session-1'))).toBe('accepted')
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+
+      // The CP keeps emitting the gating fence on the hot update; only the seat moves.
+      manager.updateRoutes(
+        BOT_ID,
+        toRoutesPatch(
+          routesFrame({ agentId: OTHER_AGENT_ID, daemonId: OTHER_DAEMON_ID, integrationId: OTHER_INTEGRATION_ID }, [
+            AGENT_ID
+          ])
+        )
+      )
+
+      expect(await internals.forward(BOT_ID, delegation('agent-session-1'))).toBe('refused')
+      expect(sendMsg).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('directory.resolveBoundTarget — the Stop-only lookup (linear-integration.md §9.3)', () => {
+    const SESSION_KEY = 'C123/agent-session-1'
+    const BOUND = { agentId: AGENT_ID, daemonId: DAEMON_ID, integrationId: INTEGRATION_ID }
+
+    it('answers the memory hit without ever asking the CP', async () => {
+      const { daemon } = online()
+      const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
+        botId: BOT_ID,
+        sessionKey: SESSION_KEY,
+        target: null,
+        participants: []
+      }))
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(channelOwned())
+      internals.router.setAffinity(BOT_ID, SESSION_KEY, BOUND)
+
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toEqual(BOUND)
+      expect(lookupThread).not.toHaveBeenCalled()
+    })
+
+    it('asks the CP in STOP mode on a memory miss and caches the validated hit back', async () => {
+      const { daemon } = online()
+      const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
+        botId: BOT_ID,
+        sessionKey: SESSION_KEY,
+        target: { agentId: AGENT_ID, daemonId: DAEMON_ID, integrationId: INTEGRATION_ID },
+        participants: []
+      }))
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(channelOwned())
+
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toEqual(BOUND)
+      expect(lookupThread).toHaveBeenCalledWith({ botId: BOT_ID, sessionKey: SESSION_KEY, mode: 'stop' })
+      // Cached: a second stop on the same session costs no round trip.
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toEqual(BOUND)
+      expect(lookupThread).toHaveBeenCalledTimes(1)
+    })
+
+    it('answers NOBODY when the CP holds no binding, and never arbitrates a replacement', async () => {
+      const { daemon } = online()
+      const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
+        botId: BOT_ID,
+        sessionKey: SESSION_KEY,
+        target: null,
+        participants: []
+      }))
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))
+      const internals = internalsOf(manager)
+      // The bot HAS a channel owner and a group default, both of which ordinary arbitration would
+      // happily return — a stop must reach the holder or nobody (§9.3).
+      internals.router.upsert(channelOwned())
+
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toBeUndefined()
+    })
+
+    it('drops a bound holder whose daemon is not connected to this relay', async () => {
+      const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
+        botId: BOT_ID,
+        sessionKey: SESSION_KEY,
+        target: null,
+        participants: []
+      }))
+      const manager = new RelayIngressManager(deps({ getDaemon: () => undefined, lookupThread }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(channelOwned())
+      internals.router.setAffinity(BOT_ID, SESSION_KEY, BOUND)
+
+      // Placement is part of the validation, so an unplaced holder falls to the CP leg and then
+      // to nobody, rather than being handed a route no daemon on this pod can take.
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toBeUndefined()
+    })
+
+    it('answers nobody when the CP link is down', async () => {
+      const { daemon } = online()
+      const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => {
+        throw new Error('cp link down')
+      })
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(channelOwned())
+
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toBeUndefined()
+    })
   })
 
   it('restores every durable participant from CP lookup after a relay restart', async () => {

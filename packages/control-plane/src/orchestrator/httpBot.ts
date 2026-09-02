@@ -18,6 +18,7 @@
 import type {
   AttributedRoute,
   RcBotAssign,
+  RcConversationDefault,
   BindMatch,
   RcThreadAssign,
   RcThreadParticipant,
@@ -87,6 +88,13 @@ interface Compiled {
   noticedDmConversations: string[]
   /** Placed member integrations (spec push targets: daemonId + integration). */
   placed: { integration: IntegrationRecord; agent: AgentRecord; daemonId: string; gated: boolean }[]
+  /** Per-conversation defaults (linear-integration.md §6.2): each row's owner, on a
+   *  platform whose rows compile to the relay's default rung instead of to an ownership
+   *  route. Empty everywhere else, where the owner is a channel-scoped route. */
+  conversationDefaults: RcConversationDefault[]
+  /** Whether that projection is what this platform does with a row's owner — carried on
+   *  the assignment so the relay picks the terminal affinity refusal without a platform name. */
+  ownerAsDefault: boolean
 }
 
 /** Resolve a persisted owner marker to its active integration, falling back to
@@ -230,6 +238,9 @@ export class HttpBotOrchestrator {
         mutedChannels: compiled.mutedChannels,
         gatedOffChannels: compiled.gatedOffChannels,
         noticedDmConversations: compiled.noticedDmConversations,
+        // An owner edit converges here without a re-assign, so the defaults must ride the hot
+        // update too — otherwise a connected relay keeps the old default, and the old grant.
+        conversationDefaults: compiled.conversationDefaults,
         ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
       })
     )
@@ -409,8 +420,15 @@ export class HttpBotOrchestrator {
    *  persisted binding (`target: null` ⇒ the CP holds none). A binding to a GATED
    *  agent is honoured only while its conversation is still enabled (§14) — a
    *  thread bound before the gate was applied must not keep re-seeding relay
-   *  affinity forever. */
+   *  affinity forever.
+   *
+   *  `mode: 'stop'` answers GRANT-BLIND (linear-integration.md §9.3): a stop can only end
+   *  work, so it must still reach the runtime that holds the session after a conversation's
+   *  default moved off its gated holder. It also carries the holder's `integrationId` on
+   *  this bot, because the relay pre-addresses the interaction it builds from the answer.
+   *  Participants stay out of it: a stop is delivered to the one holder, never fanned. */
   async lookupThread(m: RcThreadLookup): Promise<RcThreadLookupOk> {
+    if (m.mode === 'stop') return this.lookupBoundThread(m)
     const channel = m.sessionKey.slice(0, Math.max(m.sessionKey.indexOf('/'), 0)) || m.sessionKey
     const participants = (
       await Promise.all(
@@ -464,6 +482,39 @@ export class HttpBotOrchestrator {
       }
     }
     return { botId: m.botId, sessionKey: m.sessionKey, target: null, participants }
+  }
+
+  /** The Stop-mode answer: the same affinity → `session_meta` ladder, with the §14 grant
+   *  check skipped and the holder's install on this bot attached. */
+  private async lookupBoundThread(m: RcThreadLookup): Promise<RcThreadLookupOk> {
+    const bound = await this.threads.get(BotId(m.botId), m.sessionKey)
+    let agentId: string | undefined = bound?.agentId
+    if (agentId === undefined) {
+      // sessionKey is `channel/thread` (relay `sessionKeyOf`); split on the FIRST '/'.
+      const slash = m.sessionKey.indexOf('/')
+      if (slash <= 0) return { botId: m.botId, sessionKey: m.sessionKey, target: null, participants: [] }
+      const owner = await this.sessions.findThreadOwner(
+        BotId(m.botId),
+        m.sessionKey.slice(0, slash),
+        m.sessionKey.slice(slash + 1)
+      )
+      // The cross-bot ambiguity guard survives the grant-blind mode: it protects against
+      // naming the wrong bot's holder, which no stop may do either.
+      if (!owner || (await this.sessionOwnerHasSiblingBot(m.botId, owner.agentId))) {
+        return { botId: m.botId, sessionKey: m.sessionKey, target: null, participants: [] }
+      }
+      agentId = owner.agentId
+    }
+    const agent = await this.agents.getUnscoped(AgentId(agentId))
+    const daemonId = agent ? await this.placement.routableDaemon({ ...agent, id: agent.id }) : null
+    if (!daemonId) return { botId: m.botId, sessionKey: m.sessionKey, target: null, participants: [] }
+    const install = (await this.integrations.listForBot(BotId(m.botId))).find((i) => i.agentId === agentId)
+    return {
+      botId: m.botId,
+      sessionKey: m.sessionKey,
+      target: { agentId, daemonId, ...(install ? { integrationId: install.id } : {}) },
+      participants: []
+    }
   }
 
   /** Refuse a bot-agnostic SessionMeta fallback when another live bot can route the same agent in this tenant. */
@@ -907,10 +958,12 @@ export class HttpBotOrchestrator {
       placed.push({ integration, agent, daemonId, gated: gatesNewConversations(bot.platform, agent) })
     }
     if (placed.length === 0) return null
-    // §5: the install IS the conversation, so its owner rides the default rung instead of a
-    // channel-scoped route — which would otherwise shadow keyword selection and thread
-    // continuity on a platform whose every event marks the app as mentioned.
-    const soleConversation = manifestFor(bot.platform).soleConversation
+    // linear-integration.md §6.2: a row's owner rides the relay's PER-CONVERSATION default
+    // rung instead of a channel-scoped route — which would otherwise shadow keyword selection
+    // and thread continuity on a platform whose every event marks the app as mentioned.
+    // (Still read through the manifest's `soleConversation` name; the rename lands with the
+    // arms it retires.)
+    const ownerAsDefault = manifestFor(bot.platform).soleConversation
 
     // members: daemonId → agentIds (the daemon connections the relay expects).
     const memberMap = new Map<string, Set<string>>()
@@ -952,9 +1005,9 @@ export class HttpBotOrchestrator {
       const p = byAgent.get(c.agentId)
       if (!p) continue
       if (c.trigger === 'off') continue
-      // The sole conversation's owner is delivered as the group default below; emitting a scoped
-      // rule for it too would make the FIRST rung swallow every addressed message.
-      if (soleConversation) continue
+      // Such an owner is delivered as this conversation's default below; emitting a scoped rule
+      // for it too would make the FIRST rung swallow every addressed message.
+      if (ownerAsDefault) continue
       const match: BindMatch = c.trigger === 'any' ? { kind: 'auto' } : { kind: 'mention' }
       routes.push({
         agentId: p.integration.agentId,
@@ -990,16 +1043,25 @@ export class HttpBotOrchestrator {
     //    rung), not a route, so it never pre-empts keyword/channel arbitration. A
     //    gated agent must never be the fallback (§14: the bare-@bot/DM rungs are
     //    what make an HTTP bot fail-open); a group of only gated agents has none.
-    // On a sole-conversation platform the ROW is the durable choice: its owner is the workspace
-    // default. The Off guard is defence for a row seeded before the trigger-write gate existed —
-    // no write surface can reach that state now.
-    const soleOwner = soleConversation
-      ? chans
-          .flatMap((c) => (c.agentId !== null && c.trigger !== 'off' ? [c.agentId] : []))
-          .map((agentId) => byAgent.get(agentId))
-          .find((p) => p !== undefined)
-      : undefined
-    const first = soleOwner ?? placed.find((p) => !p.gated)
+    const first = placed.find((p) => !p.gated)
+    // Each row's owner as the relay's per-conversation default (§6.2) — the rung between the
+    // keyword slug and `defaultAgentId`, and, for a gated owner, its grant in that channel.
+    // An Off row contributes none: a muted channel resolves to nothing at every rung.
+    const conversationDefaults: RcConversationDefault[] = ownerAsDefault
+      ? chans.flatMap((c) => {
+          if (!c.agentId || c.trigger === 'off') return []
+          const p = byAgent.get(c.agentId)
+          if (!p) return []
+          return [
+            {
+              channel: c.channelId,
+              agentId: p.integration.agentId,
+              daemonId: p.daemonId,
+              integrationId: p.integration.id
+            }
+          ]
+        })
+      : []
     const agents = placed.map((p) => {
       const a = agentById.get(p.integration.agentId)
       return {
@@ -1029,6 +1091,8 @@ export class HttpBotOrchestrator {
       mutedChannels,
       gatedOffChannels,
       noticedDmConversations,
+      conversationDefaults,
+      ownerAsDefault,
       botChannels: chans,
       placed: placed.map((p) => ({
         integration: p.integration,
@@ -1147,6 +1211,8 @@ export class HttpBotOrchestrator {
       mutedChannels: compiled.mutedChannels,
       gatedOffChannels: compiled.gatedOffChannels,
       noticedDmConversations: compiled.noticedDmConversations,
+      conversationDefaults: compiled.conversationDefaults,
+      ownerAsDefault: compiled.ownerAsDefault,
       ...(this.noticeAuthorityFor(bot.id) ? { noticeAuthority: this.noticeAuthorityFor(bot.id) } : {})
     }
   }

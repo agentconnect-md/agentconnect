@@ -106,7 +106,7 @@ export const feishuIngressPlugin: RelayPlatformIngressPlugin<FeishuHttpIngest, V
     }
     const botId = a.botId
     return new FeishuHttpIngest(botId, a.apiAppId, a.secrets, {
-      onMessage: (message) => host.forward(botId, message),
+      onMessage: async (message) => void (await host.forward(botId, message)),
       onCardAction: (action, eventId) => forwardFeishuCardAction(host, botId, action, eventId),
       now: () => host.clock.now()
     })

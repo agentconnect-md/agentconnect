@@ -28,7 +28,7 @@ import { RelayIngressManager } from './relay-ingress-manager.js'
 import { relayIngressPlugins } from './platforms/registry.js'
 import { CollaborationRouter } from './collaboration-router.js'
 import { createAgentMsgRouter } from './agent-msg-router.js'
-import { mapAgentDirectory, toBotAssignment } from './bot-arbitration.js'
+import { toBotAssignment, toRoutesPatch } from './bot-arbitration.js'
 import { HookTable } from './hooks/hook-table.js'
 import { HookRateLimiter } from './hooks/rate-limit.js'
 import { registerHookIngress } from './hooks/ingress.js'
@@ -159,19 +159,10 @@ async function main(): Promise<void> {
       void held.relayIngress
         ?.unassign(a.botId, a.credentialRevision)
         .catch((err) => log.error(`relay: bot-unassign failed: ${String(err)}`)),
-    onRoutes: (r) =>
-      held.relayIngress?.updateRoutes(r.botId, {
-        members: r.members,
-        agents: mapAgentDirectory(r.agents),
-        routes: r.routes,
-        ...(r.defaultAgentId ? { defaultAgentId: r.defaultAgentId } : {}),
-        ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),
-        gatedAgentIds: r.gatedAgentIds,
-        mutedChannels: r.mutedChannels,
-        gatedOffChannels: r.gatedOffChannels,
-        noticeAuthority: r.noticeAuthority,
-        noticedDmConversations: r.noticedDmConversations
-      }),
+    // The patch is assembled by `toRoutesPatch` and nowhere else: a field the CP adds to
+    // the frame but a hand-written mapping here forgets pins every connected relay to the
+    // old value until a re-assign, which is exactly what a hot update exists to avoid.
+    onRoutes: (r) => held.relayIngress?.updateRoutes(r.botId, toRoutesPatch(r)),
     onAssign: (a) => {
       const target = { agentId: a.agentId, daemonId: a.daemonId, integrationId: '' }
       held.relayIngress?.setAffinity(a.botId, a.sessionKey, target)

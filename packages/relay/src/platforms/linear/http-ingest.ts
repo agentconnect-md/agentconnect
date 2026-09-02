@@ -145,6 +145,10 @@ export function linearIsStop(event: LinearAgentSessionEvent): boolean {
 /** §6.4 adapter-extension bag: opaque to relay core, round-tripped to the daemon's linear module. */
 export interface LinearAdapterExt {
   agentSessionId: string
+  /** The issue's team — the channel coordinate itself (§4.5), carried so the daemon can
+   *  label and head the session without a second Linear read. Absent on an issue-less
+   *  session, which keys on the workspace instead. */
+  team?: { id: string; key?: string; name?: string }
   /** Which webhook opened this turn: `created` is the delegation or mention that opened the
    *  session (§10.2 auto-start reads it), `prompted` a follow-up on one that already exists. */
   event?: 'created' | 'prompted'
@@ -213,9 +217,15 @@ function actorId(event: LinearAgentSessionEvent): string {
   return event.agentActivity?.user?.id ?? session.creatorId ?? session.id
 }
 
-// One verified `created`/`prompted` event as the message relay core arbitrates: `channel` is the
-// connected WORKSPACE (§4.5), read off the ingest identity rather than the payload — `decode`
-// already refused every delivery whose `organizationId` differs, so the two cannot disagree.
+/** The channel coordinate (§4.5): the issue's TEAM, or the workspace for an issue-less
+ *  session — a channel of its own that never earns a row. The workspace id is read off the
+ *  ingest identity rather than the payload; `decode` already refused every delivery whose
+ *  `organizationId` differs, so the two cannot disagree. */
+export function linearChannelOf(event: LinearAgentSessionEvent, identity: LinearIngestIdentity): string {
+  return event.agentSession.issue?.team?.id ?? identity.organizationId
+}
+
+// One verified `created`/`prompted` event as the message relay core arbitrates.
 export function normalizeLinearEvent(
   event: LinearAgentSessionEvent,
   msgId: string,
@@ -228,8 +238,12 @@ export function normalizeLinearEvent(
     event.previousComments ?? undefined,
     LINEAR_CONTEXT_BUDGET_BYTES
   )
+  const team = issue?.team ?? undefined
   const adapterExt: LinearAdapterExt = {
     agentSessionId: session.id,
+    ...(team?.id
+      ? { team: { id: team.id, ...(team.key ? { key: team.key } : {}), ...(team.name ? { name: team.name } : {}) } }
+      : {}),
     ...(event.action === 'created' || event.action === 'prompted' ? { event: event.action } : {}),
     ...(issue?.id ? { issueId: issue.id } : {}),
     ...(issue?.identifier ? { issueIdentifier: issue.identifier } : {}),
@@ -246,7 +260,7 @@ export function normalizeLinearEvent(
     traceId: msgId,
     source: 'user',
     platform: 'linear',
-    channel: identity.organizationId,
+    channel: linearChannelOf(event, identity),
     thread: session.id,
     ...(issue?.url?.startsWith('https://') ? { threadUrl: issue.url } : {}),
     sender: {

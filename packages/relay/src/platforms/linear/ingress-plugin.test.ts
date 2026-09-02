@@ -15,6 +15,7 @@ const SIBLING_ORG_ID = '00000000-0000-4000-8000-000000000002'
 const APP_USER_ID = '00000000-0000-4000-8000-0000000000a1'
 const ISSUE_ID = '00000000-0000-4000-8000-0000000000i1'
 const SESSION_ID = '00000000-0000-4000-8000-0000000000s1'
+const TEAM_ID = '00000000-0000-4000-8000-0000000000t1'
 const ACTIVITY_ID = '00000000-0000-4000-8000-0000000000c1'
 const USER_ID = '00000000-0000-4000-8000-0000000000u1'
 
@@ -25,7 +26,7 @@ const ROUTE: RouteTarget = {
 }
 
 const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
-  forward: vi.fn(async () => {}),
+  forward: vi.fn(async () => 'accepted' as const),
   forwardAction: vi.fn(async (msg) => ({ msgId: msg.msgId, accepted: true })),
   reportChannels: () => {},
   reportRevoked: vi.fn(),
@@ -34,6 +35,7 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
     channelOwner: () => undefined,
     targetForAgentId: () => undefined,
     resolveTarget: () => ROUTE,
+    resolveBoundTarget: async () => ROUTE,
     conversationParticipants: () => [],
     targetForAgent: () => ROUTE,
     integrationTarget: () => ROUTE,
@@ -71,7 +73,7 @@ const issue = {
   identifier: 'AGE-5',
   title: 'Probe: agent session activity rendering',
   url: 'https://linear.app/example-workspace/issue/AGE-5/probe',
-  team: { id: '00000000-0000-4000-8000-0000000000t1', key: 'AGE', name: 'Example' }
+  team: { id: TEAM_ID, key: 'AGE', name: 'Example' }
 }
 
 function createdEvent(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -310,12 +312,12 @@ describe('linear ingress plugin — dedup identity', () => {
 })
 
 describe('linear ingress plugin — normalized message', () => {
-  it('maps a created event onto workspace/session coordinates with the adapter bag', async () => {
+  it('maps a created event onto TEAM/session coordinates with the adapter bag', async () => {
     const h = host()
     const { forwarded } = await run(h, createdEvent())
     expect(forwarded).toMatchObject({
       platform: 'linear',
-      channel: ORG_ID,
+      channel: TEAM_ID,
       thread: SESSION_ID,
       threadUrl: issue.url,
       sender: { id: `linear:${USER_ID}`, isBot: false },
@@ -329,7 +331,8 @@ describe('linear ingress plugin — normalized message', () => {
       issueId: issue.id,
       issueIdentifier: 'AGE-5',
       issueTitle: issue.title,
-      guidance: 'Always open a draft PR.'
+      guidance: 'Always open a draft PR.',
+      team: { id: TEAM_ID, key: 'AGE', name: 'Example' }
     })
     expect(bag.promptContext).toContain('AGE-5')
     expect(bag.truncated).toBeUndefined()
@@ -351,8 +354,8 @@ describe('linear ingress plugin — normalized message', () => {
   })
 
   it('keeps a session with NO issue on the workspace channel, minus the issue metadata', async () => {
-    // The workspace is the channel whatever surface the session sits on, so an issue-less
-    // session is just a thread whose bag and `threadUrl` carry nothing about an issue.
+    // An issue-less session has no team either (§4.5), so it keys on the workspace as a channel
+    // of its own — never `linear:undefined` — and its bag carries nothing about an issue.
     const h = host()
     const noIssue = createdEvent()
     ;(noIssue.agentSession as Record<string, unknown>).issue = null
@@ -427,22 +430,27 @@ describe('linear ingress plugin — truncation budget', () => {
 })
 
 describe('linear ingress plugin — stop, revocation, and non-session events', () => {
-  it('routes a stop signal as a platform_action on the WORKSPACE coordinates', async () => {
+  it('routes a stop through the BOUND-target lookup on the team coordinates', async () => {
+    const resolveBoundTarget = vi.fn(async () => ROUTE)
     const resolveTarget = vi.fn(() => ROUTE)
-    const h = host({ directory: { ...host().directory, resolveTarget } })
+    const h = host({ directory: { ...host().directory, resolveBoundTarget, resolveTarget } })
     await run(h, promptedEvent({}, { signal: 'stop' }))
     expect(h.forward).not.toHaveBeenCalled()
     expect(h.forwardAction).toHaveBeenCalledTimes(1)
-    // The directory is asked for the workspace channel, never the issue: a stop has to land on
-    // the same conversation the delegation that opened the session routed through.
-    expect(resolveTarget).toHaveBeenCalledWith(expect.any(String), { channelId: ORG_ID, threadTs: SESSION_ID })
+    // The bound lookup, never ordinary arbitration: a stop must reach the runtime that HOLDS
+    // the session, not whoever the team's default currently is (§9.3).
+    expect(resolveTarget).not.toHaveBeenCalled()
+    expect(resolveBoundTarget).toHaveBeenCalledWith(
+      expect.any(String),
+      sessionKeyOf({ channel: TEAM_ID, thread: SESSION_ID })
+    )
     const [msg, route] = vi.mocked(h.forwardAction).mock.calls[0]!
     expect(msg).toMatchObject({
       source: 'platform_action',
       platformId: 'linear',
       agentId: ROUTE.agentId,
       integrationId: ROUTE.integrationId,
-      sessionKey: sessionKeyOf({ channel: ORG_ID, thread: SESSION_ID }),
+      sessionKey: sessionKeyOf({ channel: TEAM_ID, thread: SESSION_ID }),
       msgId: `linear:${ACTIVITY_ID}`,
       userId: USER_ID,
       payload: { kind: 'stop', agentSessionId: SESSION_ID }
@@ -450,12 +458,28 @@ describe('linear ingress plugin — stop, revocation, and non-session events', (
     expect(route).toEqual(ROUTE)
   })
 
-  it('drops a stop the directory can no longer place', async () => {
+  it('drops a stop the bound lookup answers with nobody, and never falls back to arbitration', async () => {
+    const resolveTarget = vi.fn(() => ROUTE)
     const h = host({
-      directory: { ...host().directory, resolveTarget: () => undefined }
+      directory: { ...host().directory, resolveBoundTarget: async () => undefined, resolveTarget }
     })
     await run(h, promptedEvent({}, { signal: 'stop' }))
     expect(h.forwardAction).not.toHaveBeenCalled()
+    expect(resolveTarget).not.toHaveBeenCalled()
+  })
+
+  it('drops a delivery arbitration REFUSED, still answering Linear with a 200', async () => {
+    // §6.2: the team's default moved off the gated agent bound to this session, so the
+    // follow-up is refused rather than handed on. The plugin forwards, logs, and stops.
+    const debug = vi.fn()
+    const h = host({
+      forward: vi.fn(async () => 'refused' as const),
+      log: { debug, info: () => {}, warn: () => {}, error: () => {} }
+    })
+    const handled = await run(h, promptedEvent())
+    expect(handled.verified).toMatchObject({ kind: 'agent-session' })
+    expect(h.forwardAction).not.toHaveBeenCalled()
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining('grant was withdrawn'))
   })
 
   it('rings the revocation doorbell with the OBSERVING assignment revision', async () => {

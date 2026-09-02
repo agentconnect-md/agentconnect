@@ -730,6 +730,19 @@ export const RcAgentDirEntry = z.object({
 })
 export type RcAgentDirEntry = z.infer<typeof RcAgentDirEntry>
 
+// One conversation's DEFAULT agent — the ladder rung consulted after keyword and
+// thread continuity and before the group's `defaultAgentId` (linear-integration.md
+// §6.2). It is what a conversation row's owner compiles to on a platform whose every
+// event already addresses the bot, where a channel-scoped route would instead outrank
+// the keyword and continuity rungs. Empty on every platform without that axis.
+export const RcConversationDefault = z.object({
+  channel: z.string().min(1),
+  agentId: z.string().uuid(),
+  daemonId: z.string().uuid(),
+  integrationId: z.string().uuid()
+})
+export type RcConversationDefault = z.infer<typeof RcConversationDefault>
+
 // C→R EVT — load a shared bot's INBOUND routing + credentials onto this relay:
 // inbound arrives over the shared HTTP Events API endpoints (`/slack/events`,
 // `/slack/interactions`) and is arbitrated against `routes`. Whole-pool: the CP
@@ -803,7 +816,14 @@ export const RcBotAssign = z.object({
   // conversation rows: a row can exist from mere discovery (a mixed bot's DM
   // routed to its public default) with no notice ever posted, and the
   // conversation must still get one if it later becomes unroutable.
-  noticedDmConversations: z.array(z.string()).default([])
+  noticedDmConversations: z.array(z.string()).default([]),
+  // linear-integration.md §6.2 — the per-conversation default rung's table, keyed by
+  // channel id, and the fact the thread-affinity gate reads for a gated agent on an
+  // `ownerAsDefault` platform (its grant is the default seat it holds). Empty elsewhere.
+  conversationDefaults: z.array(RcConversationDefault).default([]),
+  // §9.1's platform axis, projected so the relay can pick the terminal `grant-withdrawn`
+  // affinity refusal over Slack's fall-through without ever reading a platform name.
+  ownerAsDefault: z.boolean().default(false)
 })
 export type RcBotAssign = z.infer<typeof RcBotAssign>
 
@@ -836,7 +856,12 @@ export const RcRoutes = z.object({
   mutedChannels: z.array(z.string()).default([]), // Off channels — see RcBotAssign.mutedChannels
   gatedOffChannels: z.array(z.string()).default([]), // notice-keeping subset — see RcBotAssign.gatedOffChannels
   noticeAuthority: z.string().uuid().optional(), // §14.3 — see RcBotAssign.noticeAuthority
-  noticedDmConversations: z.array(z.string()).default([]) // §14.3 — see RcBotAssign.noticedDmConversations
+  noticedDmConversations: z.array(z.string()).default([]), // §14.3 — see RcBotAssign.noticedDmConversations
+  // Rides the hot update too: an owner edit converges through `syncRoutes` without a
+  // re-assign, so an already-connected relay would otherwise keep the old default —
+  // and with it the old grant fact — after exactly the edit this rung exists for.
+  // The immutable `ownerAsDefault` axis stays assignment-scoped.
+  conversationDefaults: z.array(RcConversationDefault).default([])
 })
 export type RcRoutes = z.infer<typeof RcRoutes>
 
@@ -985,7 +1010,11 @@ export type RcThreadParticipant = z.infer<typeof RcThreadParticipant>
 // persisted owner rather than dropping the message. The relay caches the result.
 export const RcThreadLookup = z.object({
   botId: z.string().uuid(),
-  sessionKey: z.string().min(1)
+  sessionKey: z.string().min(1),
+  // `stop` makes the answer GRANT-BLIND (linear-integration.md §9.3): a stop can only
+  // end work, so it must reach the runtime that holds the session even after the
+  // conversation's default moved off a gated holder. Absent ⇒ the ordinary gated mode.
+  mode: z.literal('stop').optional()
 })
 export type RcThreadLookup = z.infer<typeof RcThreadLookup>
 
@@ -994,7 +1023,12 @@ export type RcThreadLookup = z.infer<typeof RcThreadLookup>
 export const RcThreadLookupOk = z.object({
   botId: z.string().uuid(),
   sessionKey: z.string().min(1),
-  target: z.object({ agentId: z.string().uuid(), daemonId: z.string().uuid() }).nullable(),
+  // `integrationId` is the holder's install ON THIS BOT — carried so a pre-addressed
+  // interaction (the Stop-mode lookup, §9.3) needs no second resolution. Optional:
+  // an older CP omits it and the relay backfills from its own member directory.
+  target: z
+    .object({ agentId: z.string().uuid(), daemonId: z.string().uuid(), integrationId: z.string().uuid().optional() })
+    .nullable(),
   // Durable room membership is independent of the compatibility owner. Default
   // keeps new relays able to read replies from an older CP during rollout.
   participants: z.array(z.object({ agentId: z.string().uuid(), daemonId: z.string().uuid() })).default([])

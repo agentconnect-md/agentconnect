@@ -457,7 +457,31 @@ export interface SharedBotAssignmentFacts {
    *  no missing route can suppress (continuity, the unscoped keyword slug,
    *  `defaultAgentId`), so a muted channel resolves to nothing. */
   mutedChannels?: string[] | undefined
+  /** Per-conversation defaults (linear-integration.md §6.2): a channel's own
+   *  default agent, consulted after keyword and thread continuity and before the
+   *  group's `defaultAgentId`. Also the grant a gated agent holds on such a
+   *  platform — the affinity gate honours a binding while its agent is the
+   *  channel's default. Empty ⇒ the ladder behaves exactly as before. */
+  conversationDefaults?: readonly SharedBotConversationDefault[] | undefined
+  /** True where a conversation row's owner compiles to the default rung above
+   *  rather than to a channel-scoped ownership route. On such an assignment a
+   *  gated binding the affinity gate rejects is TERMINAL (`grant-withdrawn`),
+   *  never a miss that falls through to the channel's new default. */
+  ownerAsDefault?: boolean | undefined
 }
+
+/** One channel's default agent — already attributed, like a route. */
+export interface SharedBotConversationDefault {
+  channel: string
+  agentId: string
+  daemonId: string
+  integrationId: string
+}
+
+/** The ladder's verdict. `refused` is terminal: the caller drops the delivery
+ *  instead of continuing down the ladder or re-arbitrating (§6.2). */
+export type SharedBotArbitration =
+  { kind: 'target'; target: SharedBotRouteTarget } | { kind: 'refused'; reason: 'grant-withdrawn' } | { kind: 'none' }
 
 /** `channel/thread` — the per-conversation affinity + rc/assign key. */
 export function sharedBotSessionKey(msg: { channel: string; thread?: string | undefined }): string {
@@ -506,8 +530,9 @@ const sharedBotTarget = (r: SharedBotRoute): SharedBotRouteTarget => ({
  *    gate-checked (§14), never through a binding that points at the author;
  *  - there is NO unscoped mention rung (it would starve keyword
  *    disambiguation, §10.4) — the bare @bot / DM fallback is the unscoped
- *    keyword slug (§10.2) and then the group's `defaultAgentId` (§10.3), both
- *    gated on the bot actually being ADDRESSED;
+ *    keyword slug (§10.2), then the CHANNEL's own default
+ *    (`conversationDefaults`, linear-integration.md §6.2), then the group's
+ *    `defaultAgentId` (§10.3), all gated on the bot actually being ADDRESSED;
  *  - bot senders are admitted by the platform manifest's `botSenderRouting`
  *    (equivalent today to the daemon ladder's Slack-only admission), and only
  *    through an explicit mention;
@@ -524,23 +549,38 @@ export function arbitrateSharedBot(
   affinity: ReadonlyMap<string, SharedBotRouteTarget>,
   verifiedAgentAuthor?: string
 ): SharedBotRouteTarget | null {
+  const result = arbitrateSharedBotResult(a, msg, affinity, verifiedAgentAuthor)
+  return result.kind === 'target' ? result.target : null
+}
+
+/** {@link arbitrateSharedBot} with the terminal `grant-withdrawn` refusal kept
+ *  distinguishable from an ordinary miss — the shape a caller needs to drop a
+ *  delivery rather than let the next rung answer it (§6.2). */
+export function arbitrateSharedBotResult(
+  a: SharedBotAssignmentFacts,
+  msg: SharedBotMessageFacts,
+  affinity: ReadonlyMap<string, SharedBotRouteTarget>,
+  verifiedAgentAuthor?: string
+): SharedBotArbitration {
+  const hit = (target: SharedBotRouteTarget): SharedBotArbitration => ({ kind: 'target', target })
+  const none: SharedBotArbitration = { kind: 'none' }
   // Own echoes never route. A third-party bot may enter only through an explicit
   // mention, and only on a platform whose manifest admits bot senders at all
   // (§5 botSenderRouting — fail-closed for unknown ids); AgentConnect-managed app
   // messages are removed by the manager using the collaboration snapshot before
   // forwarding.
-  if (a.botUserId !== undefined && msg.sender.id === a.botUserId && verifiedAgentAuthor === undefined) return null
+  if (a.botUserId !== undefined && msg.sender.id === a.botUserId && verifiedAgentAuthor === undefined) return none
   const explicitlyMentioned = a.botUserId !== undefined && msg.mentionedBots.includes(a.botUserId)
   if (
     msg.sender.isBot &&
     verifiedAgentAuthor === undefined &&
     (!manifestFor(msg.platform).botSenderRouting || !explicitlyMentioned)
   ) {
-    return null
+    return none
   }
   // A channel switched Off resolves to no target at all — ahead of every rung, so
   // neither an @-mention nor an existing thread binding can reach into it.
-  if (a.mutedChannels?.includes(msg.channel)) return null
+  if (a.mutedChannels?.includes(msg.channel)) return none
 
   // The author is removed ONCE, so every rung below inherits the exclusion — an agent
   // matching its own route would wake itself on its own reply, an unconditional self-loop.
@@ -559,14 +599,19 @@ export function arbitrateSharedBot(
     verifiedAgentAuthor === undefined
       ? scoped.find((r) => r.match.kind === 'mention' && sharedBotKindMatches(r, msg, a.botUserId))
       : undefined
-  if (ownedMention) return sharedBotTarget(ownedMention)
+  if (ownedMention) return hit(sharedBotTarget(ownedMention))
   // Conversation-scoped keyword (§14.3): slug disambiguation inside a multi-agent DM
   // enabled for several gated agents — outranks the scoped auto so "<slug> …"
   // names its agent; an unslugged message falls through to the first auto route.
   const ownedKeyword = scoped.find((r) => r.match.kind === 'keyword' && sharedBotKindMatches(r, msg, a.botUserId))
-  if (ownedKeyword) return sharedBotTarget(ownedKeyword)
+  if (ownedKeyword) return hit(sharedBotTarget(ownedKeyword))
   const ownedAuto = scoped.find((r) => r.match.kind === 'auto')
-  if (ownedAuto) return sharedBotTarget(ownedAuto)
+  if (ownedAuto) return hit(sharedBotTarget(ownedAuto))
+
+  // This channel's own default (linear-integration.md §6.2) — read here for the gate
+  // below, applied as a rung further down. On an `ownerAsDefault` platform it is also
+  // the only grant a gated agent can hold, the fact the scoped route carries on Slack.
+  const channelDefault = a.conversationDefaults?.find((d) => d.channel === msg.channel)
 
   // 2. Thread continuity: an un-mentioned follow-up in a thread the relay already
   //    routed continues to that agent, provided it is still a member — and, for a
@@ -579,14 +624,25 @@ export function arbitrateSharedBot(
   const cont = remembered && remembered.agentId === verifiedAgentAuthor ? undefined : remembered
   const directControlOk =
     !cont || (!msg.isDm && msg.isGroupDm !== true) || scoped.some((r) => r.agentId === cont.agentId)
-  const contGateOk =
-    directControlOk &&
-    (!cont || !a.gatedAgentIds?.includes(cont.agentId) || scoped.some((r) => r.agentId === cont.agentId))
+  // The gate reads the SAME fact from both carriers: on Slack a gated agent's grant is
+  // its channel-scoped route, on an `ownerAsDefault` platform it is the default seat.
+  const contGrantOk =
+    !cont ||
+    !a.gatedAgentIds?.includes(cont.agentId) ||
+    scoped.some((r) => r.agentId === cont.agentId) ||
+    channelDefault?.agentId === cont.agentId
+  // Terminal, not a miss: a Linear AgentSession has one writer (§4.6), so letting the
+  // channel's new default answer inside a session another runtime still holds would put
+  // two daemons on one feed. Slack, with no such axis, keeps its fall-through.
+  if (cont && directControlOk && !contGrantOk && a.ownerAsDefault === true) {
+    return { kind: 'refused', reason: 'grant-withdrawn' }
+  }
+  const contGateOk = directControlOk && contGrantOk
   if (cont && contGateOk && a.members.some((m) => m.daemonId === cont.daemonId && m.agentIds.includes(cont.agentId))) {
-    if (cont.integrationId) return cont
+    if (cont.integrationId) return hit(cont)
     const route = a.routes.find((r) => r.agentId === cont.agentId)
-    if (route) return { ...cont, integrationId: route.integrationId }
-    return cont
+    if (route) return hit({ ...cont, integrationId: route.integrationId })
+    return hit(cont)
   }
 
   // 3. Keyword disambiguation (§10.2): "@bot <slug> …" → that agent. Only when the
@@ -595,15 +651,33 @@ export function arbitrateSharedBot(
   const addressed = msg.isDm || (verifiedAgentAuthor === undefined && explicitlyMentioned)
   if (addressed) {
     const kw = routes.find((r) => r.match.kind === 'keyword' && !r.scope && sharedBotKindMatches(r, msg, a.botUserId))
-    if (kw) return sharedBotTarget(kw)
+    if (kw) return hit(sharedBotTarget(kw))
 
-    // 4. Default agent (§10.3): a bare @bot / DM with no slug → the group default.
+    // 4. Per-conversation default (linear-integration.md §6.2): the channel's own row
+    //    owner, already attributed. Above the group default and below everything that
+    //    names an agent, which is what keeps a mention and a bound session out of it.
+    if (channelDefault && channelDefault.agentId !== verifiedAgentAuthor) {
+      const member = a.members.some(
+        (m) => m.daemonId === channelDefault.daemonId && m.agentIds.includes(channelDefault.agentId)
+      )
+      if (member) {
+        return hit({
+          agentId: channelDefault.agentId,
+          daemonId: channelDefault.daemonId,
+          integrationId: channelDefault.integrationId
+        })
+      }
+    }
+
+    // 5. Default agent (§10.3): a bare @bot / DM with no slug → the group default.
     if (a.defaultAgentId && a.defaultDaemonId && a.defaultAgentId !== verifiedAgentAuthor) {
       // Resolve the default's integrationId from its (keyword) route.
       const def = routes.find((r) => r.agentId === a.defaultAgentId)
-      if (def) return { agentId: a.defaultAgentId, daemonId: a.defaultDaemonId, integrationId: def.integrationId }
+      if (def) {
+        return hit({ agentId: a.defaultAgentId, daemonId: a.defaultDaemonId, integrationId: def.integrationId })
+      }
     }
   }
 
-  return null
+  return none
 }
