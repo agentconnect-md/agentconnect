@@ -439,17 +439,21 @@ describe('GitlabCard', () => {
     expect(link!.getAttribute('href')).toBe('https://gitlab.example.test:8443/gitlab/gitlab-pilot-5b350c0aeba7-2bivoj')
   })
 
-  it('reports the instance version, and says what a below-floor one still serves (\u00a724.2)', async () => {
+  it('keeps a supported version off the card and in the instance tooltip (\u00a724.2)', async () => {
     mocks.fetchConnections.mockResolvedValue({
       enabled: true,
       connections: [{ ...CONNECTION, instanceVersion: '18.11.4-ee', instanceVersionSupported: true }]
     })
     await render()
     const healthy = connectionRow('conn-1')
-    expect(healthy.textContent).toContain('GitLab 18.11.4-ee')
+    // Nothing to act on, so it takes no line of the card at all.
+    expect(healthy.textContent).not.toContain('GitLab 18.11.4-ee')
     expect(healthy.textContent).not.toContain('below 18.11')
+    // Still one hover away for an operator, on the badge that already names the instance.
+    expect(healthy.querySelector('[title]')!.getAttribute('title')).toBe('https://gitlab.com \u00b7 GitLab 18.11.4-ee')
+  })
 
-    document.body.innerHTML = ''
+  it('says what a below-floor instance still serves (\u00a724.2)', async () => {
     mocks.fetchConnections.mockResolvedValue({
       enabled: true,
       connections: [{ ...CONNECTION, instanceVersion: '18.4.1', instanceVersionSupported: false }]
@@ -468,7 +472,9 @@ describe('GitlabCard', () => {
       connections: [{ ...CONNECTION, instanceVersion: null, instanceVersionSupported: null }]
     })
     await render()
-    expect(connectionRow('conn-1').textContent).not.toContain('GitLab 1')
+    const row = connectionRow('conn-1')
+    expect(row.textContent).not.toContain('GitLab 1')
+    expect(row.querySelector('[title]')!.getAttribute('title')).toBe('https://gitlab.com')
   })
 
   it('tells an operator how to grant withdrawn bot-creation authority (\u00a724.3)', async () => {

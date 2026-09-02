@@ -502,8 +502,11 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                   </span>
                 </span>
                 <span className="mono min-w-0 truncate text-[12.5px]">{c.gitlabUsername}</span>
-                {/* The instance, not a literal: one deployment talks to exactly one. */}
-                <span className="badge bg-(--surface-active) text-(--text-tertiary)" title={c.instanceUrl}>
+                {/* The instance, not a literal: one deployment talks to exactly one; its version rides the tooltip. */}
+                <span
+                  className="badge bg-(--surface-active) text-(--text-tertiary)"
+                  title={c.instanceVersion === null ? c.instanceUrl : `${c.instanceUrl} · GitLab ${c.instanceVersion}`}
+                >
                   {gitlabInstanceHost(c.instanceUrl)}
                 </span>
                 {c.state === 'reauth_required' && (
@@ -557,22 +560,17 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                   : `This account still administers ${c.assignedProjects} projects below. Transfer those projects to your own GitLab account, or reconnect this one to keep managing them, before this row can go.`}
               </div>
             )}
-            {/* What the instance reports, and whether it clears the floor project
-                setup needs. Silent until the first credentialed contact answers. */}
-            {c.instanceVersion !== null && (
+            {/* A version that clears the floor is not news and takes no line; a below-floor one has something to say. */}
+            {c.instanceVersionSupported === false && (
               <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
                 <span>GitLab {c.instanceVersion}</span>
-                {c.instanceVersionSupported === false && (
-                  <>
-                    <span className="badge bg-(--status-paused-soft) text-(--amber-500)">
-                      below {c.instanceVersionFloor}
-                    </span>
-                    <span>
-                      Setting up new projects and bots needs {c.instanceVersionFloor} or later. Projects already set up
-                      keep working until their credentials expire.
-                    </span>
-                  </>
-                )}
+                <span className="badge bg-(--status-paused-soft) text-(--amber-500)">
+                  below {c.instanceVersionFloor}
+                </span>
+                <span>
+                  Setting up new projects and bots needs {c.instanceVersionFloor} or later. Projects already set up keep
+                  working until their credentials expire.
+                </span>
               </div>
             )}
             {c.state === 'reauth_required' && (
