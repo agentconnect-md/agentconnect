@@ -586,6 +586,13 @@ export interface WebChannelListSemantics {
   /** The private-agent banner's sentence, where enabling a row is not the whole gate —
    *  Linear's gated member acts in a team only as its default (§4.3). Absent ⇒ the host's. */
   gatedNote?: string
+  /**
+   * Splits a stored row label into the name the platform leads with and the dim tail it
+   * prints after it. Linear stores a team as `<KEY> · <Team name>` and its own team picker
+   * reads the name first with the key dimmed behind it, so the module — never the host —
+   * knows how to take that label apart. Absent ⇒ the whole label is the name.
+   */
+  splitRowLabel?(label: string): { name: string; hint?: string }
 }
 
 /**

@@ -233,6 +233,20 @@ const platformName = (platform?: string): string => chatPlatformName(platform, '
 export const rowLabel = (row: Pick<IntegrationChannelRow, 'kind' | 'name'>): string =>
   isDirectConversation(row.kind) ? row.name.replace(/^@+/, '') : row.name
 
+/** The row's label as two pieces — the name it leads with, and the dim tail printed after it.
+ *  How a label comes apart is the platform's own (`splitRowLabel`); a module that declares none
+ *  keeps the whole label as the name. Direct rows are never split: their label is a person. */
+export function rowLabelParts(
+  row: Pick<IntegrationChannelRow, 'kind' | 'name'>,
+  platform?: string
+): { name: string; hint?: string } {
+  const label = rowLabel(row)
+  const split = channelListSemantics(platform).splitRowLabel
+  if (!split || isDirectConversation(row.kind)) return { name: label }
+  const parts = split(label)
+  return parts.name ? parts : { name: label }
+}
+
 /** Whether the bot can be made to leave THIS row from here — the platform must have a
  *  per-conversation leave, and the row must be somewhere membership applies at all. */
 export const canLeaveRow = (kind: IntegrationChannelRow['kind'], platform?: string): boolean =>
@@ -545,6 +559,10 @@ export function IntegrationChannelList({
   const derivedRoster = channelListSemantics(platform).roster === 'derived'
   // Where rows come from, plus the platform's tail — which on a derived roster IS the arrival sentence, so it leads.
   const footerNote = channelListSemantics(platform).footerNote
+  // The agents that share this bot — the candidate per-conversation defaults.
+  const memberIds = shareable && botId ? (bots.find((b) => b.id === botId)?.agentIds ?? []) : []
+  // Dispatch is a decision only where there are two agents to decide between.
+  const dispatchable = memberIds.length > 1
   // Why a private agent's rows start off. A platform whose gate is more than the row's own says so itself.
   const gatedNote =
     channelListSemantics(platform).gatedNote ??
@@ -558,7 +576,7 @@ export function IntegrationChannelList({
           `${roomArticle(roomNoun(platform))} ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per conversation.`,
           'Direct messages appear when someone writes to the bot.'
         ]),
-    ...(shareable ? ['Default dispatch is the agent who handles unmatched messages in the conversation.'] : []),
+    ...(dispatchable ? ['Default dispatch is the agent who handles unmatched messages in the conversation.'] : []),
     ...(!derivedRoster && footerNote ? [footerNote] : [])
   ]
   // A platform refusal is the useful half of a failed Leave — a missing scope or a
@@ -573,8 +591,6 @@ export function IntegrationChannelList({
       setError(cause instanceof Error ? cause.message : String(cause))
     }
   }, [])
-  // The agents that share this bot — the candidate per-conversation defaults.
-  const memberIds = shareable && botId ? (bots.find((b) => b.id === botId)?.agentIds ?? []) : []
   const member = (id: string): MemberAgent => {
     const a = agents.find((x) => x.id === id)
     return {
@@ -633,7 +649,9 @@ export function IntegrationChannelList({
     )
   }
   const row = (c: IntegrationChannelRow) => {
-    const def = shareable ? defaultAgent(c) : undefined
+    // One member is no choice: the picker would name this agent and offer nothing, so the row drops it.
+    const def = dispatchable ? defaultAgent(c) : undefined
+    const label = rowLabelParts(c, platform)
     return (
       <div
         key={c.channelId}
@@ -643,7 +661,10 @@ export function IntegrationChannelList({
         <span className="font-mono text-[14px] font-medium leading-normal text-(--text-tertiary)">
           {roomGlyph(c.kind, platform)}
         </span>
-        <span className="mono min-w-0 flex-1 truncate text-[13px] text-(--text-primary)">{rowLabel(c)}</span>
+        <span className="mono flex min-w-0 flex-1 items-baseline gap-[6px] truncate text-[13px] text-(--text-primary)">
+          <span className="min-w-0 truncate">{label.name}</span>
+          {label.hint && <span className="flex-none text-(--text-tertiary)">{label.hint}</span>}
+        </span>
         <div className="ml-auto flex items-center gap-[10px] max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
           {def && (
             <>

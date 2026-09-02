@@ -336,8 +336,6 @@ function integrationRowFromDto(
     workspace: '—',
     daemon: agent?.daemon ?? '—',
     status: d.status === 'active' ? 'online' : 'offline',
-    // A shared bot may serve several agents; show the count so the UI reads right.
-    agentCount: bot?.shareable ? String(Math.max(bot.agentIds.length, 1)) : '1',
     channels: d.channels.map((c) => ({
       channelId: c.channelId,
       name: c.name || c.channelId,

@@ -94,7 +94,6 @@ function integration(over: Partial<IntegrationRow> = {}): IntegrationRow {
     workspace: 'Example Workspace',
     daemon: 'edge-1',
     status: 'online',
-    agentCount: '3',
     channels: TEAMS,
     ...over
   }
@@ -191,8 +190,9 @@ describe('the workspace chrome', () => {
     // The header above this card already names the workspace; repeating it here is the
     // duplicate row this card no longer draws.
     expect(text()).not.toContain('Example Workspace')
-    expect(text()).toContain('ENG · Engineering')
-    expect(text()).toContain('DES · Design')
+    // Each team, named the way Linear names it — the name, then its key.
+    expect(text()).toContain('EngineeringENG')
+    expect(text()).toContain('DesignDES')
   })
 
   it('says the roster is the workspace’s own, not something the bot was added to', async () => {
@@ -211,6 +211,17 @@ describe('the workspace chrome', () => {
 })
 
 describe('the team rows', () => {
+  it('leads with the team’s name and dims its key behind it, as Linear’s own picker does', async () => {
+    await render()
+
+    const [eng] = [...host.querySelectorAll('span')].filter((el) => el.textContent === 'Engineering')
+    expect(eng).toBeDefined()
+    // The key is present but muted — the row reads "Engineering ENG", never "ENG · Engineering".
+    const dim = eng!.parentElement!.querySelector('.text-\\(--text-tertiary\\)')
+    expect(dim?.textContent).toBe('ENG')
+    expect(eng!.parentElement!.textContent).not.toContain('·')
+  })
+
   it('carries a trigger per team, Mention or Off and nothing else', async () => {
     await render()
     await act(async () => buttonWithLabel('Trigger for ENG · Engineering')!.click())

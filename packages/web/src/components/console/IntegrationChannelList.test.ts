@@ -9,6 +9,7 @@ import {
   roomArticle,
   roomGlyph,
   rowLabel,
+  rowLabelParts,
   rowMenuAction
 } from './IntegrationChannelList'
 import type { IntegrationChannelRow, IntegrationRow } from '@/lib/data'
@@ -19,7 +20,10 @@ vi.mock('@/lib/data-context', () => ({
     setChannelAgent: vi.fn(),
     forgetChannel: vi.fn(),
     leaveConversation: vi.fn(),
-    bots: [{ id: 'bot_shared', agentIds: ['alice', 'bob'] }],
+    bots: [
+      { id: 'bot_shared', agentIds: ['alice', 'bob'] },
+      { id: 'bot_solo', agentIds: ['alice'] }
+    ],
     agents: [
       { id: 'alice', name: 'alice', displayName: 'Alice', runtime: 'claude' },
       { id: 'bob', name: 'bob', displayName: 'Bob', runtime: 'codex' }
@@ -49,7 +53,6 @@ describe('conversationOwners', () => {
     workspace: 'acme.example.test',
     daemon: 'edge-1',
     status: 'online',
-    agentCount: '3',
     channels
   })
   const chan = (channelId: string, agentId?: string | null): IntegrationChannelRow => ({
@@ -375,6 +378,52 @@ describe('rowLabel', () => {
     expect(rowLabel({ kind: 'im', name: '@Alice' })).toBe('Alice')
     expect(rowLabel({ kind: 'mpim', name: '@Alice, Bob' })).toBe('Alice, Bob')
     expect(rowLabel({ kind: 'channel', name: 'deploys' })).toBe('deploys')
+  })
+})
+
+describe('rowLabelParts', () => {
+  it('keeps the whole label as the name where the platform declares no split', () => {
+    expect(rowLabelParts({ kind: 'channel', name: 'deploys' }, 'slack')).toEqual({ name: 'deploys' })
+  })
+
+  it('reads a Linear team the way Linear does — the name, then its key', () => {
+    expect(rowLabelParts({ kind: 'channel', name: 'ENG · Engineering' }, 'linear')).toEqual({
+      name: 'Engineering',
+      hint: 'ENG'
+    })
+    // A team the daemon could only label by id has no key to dim.
+    expect(rowLabelParts({ kind: 'channel', name: 'team-9f2' }, 'linear')).toEqual({ name: 'team-9f2' })
+  })
+
+  it('never splits a direct row — that label is a person', () => {
+    expect(rowLabelParts({ kind: 'im', name: '@A · B' }, 'linear')).toEqual({ name: 'A · B' })
+  })
+})
+
+// One member is no choice: the picker would name that agent and offer nothing to pick.
+describe('IntegrationChannelList default dispatch on a one-member bot', () => {
+  const render = (botId: string) =>
+    renderToStaticMarkup(
+      createElement(IntegrationChannelList, {
+        integrationId: 'int_alice',
+        botId,
+        agentId: 'alice',
+        platform: 'slack',
+        shareable: true,
+        channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention', agentId: 'alice' }]
+      })
+    )
+
+  it('drops the picker and the sentence that explains it', () => {
+    const html = render('bot_solo')
+    expect(html).not.toContain('Default dispatch')
+    expect(html).not.toContain('the agent who handles unmatched messages')
+  })
+
+  it('keeps both once a second agent shares the bot', () => {
+    const html = render('bot_shared')
+    expect(html).toContain('Default dispatch — Alice')
+    expect(html).toContain('the agent who handles unmatched messages')
   })
 })
 

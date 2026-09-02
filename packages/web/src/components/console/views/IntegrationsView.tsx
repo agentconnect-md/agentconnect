@@ -29,6 +29,7 @@ import {
   type MeDto
 } from '@/lib/api'
 import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/data'
+import { rowLabelParts } from '@/components/console/IntegrationChannelList'
 import {
   botCardCopy,
   botSharingEditable,
@@ -383,7 +384,8 @@ function BotsCard({
           const free = b.agentIds.length === 0
           const open = openBotId === b.id
           const channels = open ? botChannels(b, integrations) : []
-          const showDefaultDispatch = b.shareable && channels.length > 0
+          // One member is no choice — the column would name that agent on every row and offer nothing.
+          const showDefaultDispatch = b.shareable && channels.length > 0 && b.agentIds.length > 1
           const chanGrid = showDefaultDispatch ? 'grid-cols-[1fr_auto]' : 'grid-cols-[1fr]'
           // The picker's choices: every agent installed on the bot.
           const agentOptions = b.agentIds.map((id) => {
@@ -528,53 +530,59 @@ function BotsCard({
                         {showDefaultDispatch && <span className="justify-self-end">Default dispatch</span>}
                       </div>
                       <div className="overflow-visible rounded-lg border border-(--border-subtle) bg-(--surface-card)">
-                        {channels.map((c, index) => (
-                          <Fragment key={c.channelId}>
-                            {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
-                              <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-                                Direct messages
-                              </div>
-                            )}
-                            <div
-                              className={`grid ${chanGrid} items-center gap-[11px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0`}
-                            >
-                              <span className="mono flex min-w-0 items-center gap-[7px] text-[12px]">
-                                <Icon
-                                  name={c.kind === 'mpim' ? 'users' : c.kind === 'im' ? 'at-sign' : 'hash'}
-                                  size={12}
-                                  color="var(--text-tertiary)"
-                                  className="flex-none"
-                                />
-                                {/* The room's noun is the platform's own; the two direct kinds are platform-free. */}
-                                <span className="sr-only">
-                                  {c.kind === 'mpim' ? 'Group DM' : c.kind === 'im' ? 'Direct message' : roomLabel}
-                                  :{' '}
-                                </span>
-                                <span className="truncate">
-                                  {isDirectConversation(c.kind) ? c.name.replace(/^@+/, '') : c.name}
-                                </span>
-                              </span>
-                              {showDefaultDispatch && (
-                                <DefaultDispatchPicker
-                                  options={agentOptions}
-                                  activeId={c.agentId ?? b.agentIds[0] ?? null}
-                                  disabled={!canWrite || !c.integrationId}
-                                  onPick={(agentId) =>
-                                    ownerGuard.guard(
-                                      {
-                                        platform: b.platform,
-                                        from: owner(c.agentId ?? b.agentIds[0] ?? null),
-                                        toId: agentId,
-                                        room: c.name
-                                      },
-                                      () => setChannelAgent(c.integrationId!, c.channelId, agentId)
-                                    )
-                                  }
-                                />
+                        {channels.map((c, index) => {
+                          const label = rowLabelParts(c, b.platform)
+                          return (
+                            <Fragment key={c.channelId}>
+                              {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
+                                <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-3 py-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
+                                  Direct messages
+                                </div>
                               )}
-                            </div>
-                          </Fragment>
-                        ))}
+                              <div
+                                className={`grid ${chanGrid} items-center gap-[11px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0`}
+                              >
+                                <span className="mono flex min-w-0 items-center gap-[7px] text-[12px]">
+                                  <Icon
+                                    name={c.kind === 'mpim' ? 'users' : c.kind === 'im' ? 'at-sign' : 'hash'}
+                                    size={12}
+                                    color="var(--text-tertiary)"
+                                    className="flex-none"
+                                  />
+                                  {/* The room's noun is the platform's own; the two direct kinds are platform-free. */}
+                                  <span className="sr-only">
+                                    {c.kind === 'mpim' ? 'Group DM' : c.kind === 'im' ? 'Direct message' : roomLabel}
+                                    :{' '}
+                                  </span>
+                                  <span className="flex min-w-0 items-baseline gap-[6px] truncate">
+                                    <span className="min-w-0 truncate">{label.name}</span>
+                                    {label.hint && (
+                                      <span className="flex-none text-(--text-tertiary)">{label.hint}</span>
+                                    )}
+                                  </span>
+                                </span>
+                                {showDefaultDispatch && (
+                                  <DefaultDispatchPicker
+                                    options={agentOptions}
+                                    activeId={c.agentId ?? b.agentIds[0] ?? null}
+                                    disabled={!canWrite || !c.integrationId}
+                                    onPick={(agentId) =>
+                                      ownerGuard.guard(
+                                        {
+                                          platform: b.platform,
+                                          from: owner(c.agentId ?? b.agentIds[0] ?? null),
+                                          toId: agentId,
+                                          room: c.name
+                                        },
+                                        () => setChannelAgent(c.integrationId!, c.channelId, agentId)
+                                      )
+                                    }
+                                  />
+                                )}
+                              </div>
+                            </Fragment>
+                          )
+                        })}
                       </div>
                     </>
                   ) : (

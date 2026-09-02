@@ -1547,10 +1547,17 @@ tile.
     the new default. A fourth, `gatedNote`, carries the one-clause
     private-agent banner: a gated member acts in a team only as its default,
     so the host's "enable each row below" would promise a per-member switch
-    this model has not got. The org Bots row expands to the same team rows: the
+    this model has not got. A fifth, `splitRowLabel`, takes the stored
+    `<KEY> · <Team name>` apart so the row reads the way Linear's own team
+    picker does — the team's name, then its key dimmed behind it; the label
+    itself is unchanged, and the host keeps the whole of it as the row's
+    accessible name. The org Bots row expands to the same team rows: the
     workspace-shaped "Default dispatch" line it used to show is gone with the
-    flag, and Reconnect / Disconnect stay row actions. The session list needed
-    nothing: it already buckets by the session's channel, which is the team.
+    flag, and Reconnect / Disconnect stay row actions. Both surfaces drop the
+    per-team dispatch selector while the workspace has a single member — with
+    one agent it names that agent and offers nothing to pick. The session list
+    needed nothing: it already buckets by the session's channel, which is the
+    team.
   - `messageIdentity` — agent-activity id, else `null` (never dedupes).
   - `transcriptOrdering` — default `'seq'`.
 
