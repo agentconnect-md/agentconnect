@@ -3,7 +3,7 @@
 import type { WebPlatformModule } from '../contract'
 import { linearApi, type LinearApi } from './api'
 import { LinearWizardBody } from './Body'
-import { LinearWorkspaceRows } from './card'
+import { LinearWorkspaceCard, LinearWorkspaceHeaderActions, LinearWorkspaceRows } from './card'
 import { linearLinkInput } from './link'
 import { LinearMark } from './mark'
 import { linearSettingsFragments } from './settings'
@@ -53,7 +53,9 @@ export const linearModule: WebPlatformModule<LinearApi> = {
     // No `any`: every Linear event is addressed by construction (§6.1), so nothing would match it.
     triggers: ['off', 'mention'],
     footerNote:
-      'Every team of this workspace is listed here. Sessions start when someone delegates an issue to the app or mentions it, in a team that is not off.',
+      'Every team of this workspace is listed here; a delegation or a mention starts a session in one that is not off.',
+    // §4.3: a gated member acts in a team only as its default, so enabling the row is half the gate.
+    gatedNote: 'Private agent: it answers in a team only where it is the default and the team is not off.',
     // §6.2: the default seat IS a gated agent's grant, and a Linear AgentSession has one writer (§4.6).
     ownerChangeWarning: {
       title: 'Move this team’s default?',
@@ -62,8 +64,13 @@ export const linearModule: WebPlatformModule<LinearApi> = {
       confirmLabel: 'Move'
     }
   },
-  // The card draws the workspace chrome and mounts the generic list of team rows beneath it.
-  agentCard: { Body: LinearWorkspaceRows },
+  // The host header names the workspace and unlinks it; the module adds Reconnect there and
+  // mounts the generic list of team rows beneath, both reading one card-scoped round trip.
+  agentCard: {
+    CardProvider: LinearWorkspaceCard,
+    HeaderActions: LinearWorkspaceHeaderActions,
+    Body: LinearWorkspaceRows
+  },
   // Agent activities are append-only rows with their own ids (§15), so a duplicate
   // across sources is the same activity; anything else never dedupes.
   messageIdentity: (row) => (LINEAR_ACTIVITY_ID.test(row.ts) ? `ts:${row.ts}` : null),

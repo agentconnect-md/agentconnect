@@ -545,6 +545,10 @@ export function IntegrationChannelList({
   const derivedRoster = channelListSemantics(platform).roster === 'derived'
   // Where rows come from, plus the platform's tail — which on a derived roster IS the arrival sentence, so it leads.
   const footerNote = channelListSemantics(platform).footerNote
+  // Why a private agent's rows start off. A platform whose gate is more than the row's own says so itself.
+  const gatedNote =
+    channelListSemantics(platform).gatedNote ??
+    `Private agent: it answers only in a ${roomNoun(platform)}${derivedRoster ? '' : ' or direct message'} enabled below.`
   const footerSentences = [
     ...(derivedRoster
       ? footerNote
@@ -695,9 +699,7 @@ export function IntegrationChannelList({
           style={{ padding: `9px ${padX}px` }}
         >
           <Icon name="lock" size={13} className="mt-[2px] flex-none" />
-          <span>
-            {`This agent is private: conversations start off. Enable each ${roomNoun(platform)}${derivedRoster ? '' : ' or direct message'} below before the agent responds there.`}
-          </span>
+          <span>{gatedNote}</span>
         </div>
       )}
       {error && (

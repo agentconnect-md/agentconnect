@@ -1,103 +1,95 @@
 'use client'
 
-// The AGENT page's Linear card body ({@link WebAgentIntegrationCardFacet}): the connected
-// workspace as chrome — its name, its grant status, Reconnect, and unlink this agent — over
-// the generic conversation list of the workspace's TEAM rows (§4.3, §9.5). The team is the
-// channel, so the dispatch selector and the trigger live on those rows, not up here.
+// The AGENT page's Linear card ({@link WebAgentIntegrationCardFacet}). The host header
+// already names the connected workspace and carries the unlink, so the module adds only
+// what is Linear's: Reconnect in that header's action track (§7.4) and, beneath it, the
+// generic conversation list of the workspace's TEAM rows (§4.3, §9.5). The team is the
+// channel, so the dispatch selector and the trigger live on those rows.
 // Disconnecting ends the workspace for every agent, so that action is the org view's.
 
-import { useState } from 'react'
+import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import { Icon } from '@/components/ui'
 import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
 import { type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { linearApi } from './api'
-import { useLinearConnect } from './connect'
+import { useLinearConnect, type LinearConnectFlow } from './connect'
 
-export function LinearWorkspaceRows({ integration, padX }: { integration: IntegrationRow; padX: number }) {
-  const { bots, getAgent, deleteIntegration, refresh } = useConsoleData()
-  const [err, setErr] = useState<string | null>(null)
-  const [leaving, setLeaving] = useState(false)
+/** One reconnect round trip per card, shared by the header button that starts it and the
+ *  band that reports it — two halves the host renders in places that share no state. */
+interface LinearCardState {
+  flow: LinearConnectFlow
+  /** A funnel that could not start, as a sentence — the header button has nowhere to put it. */
+  err: string | null
+  /** The grant is known dead (`rc/bot-revoked`), so the repair is the lit one. */
+  dead: boolean
+}
+
+const CardCtx = createContext<LinearCardState | null>(null)
+
+/** Card-scope state carrier, not chrome: it renders its children unchanged. */
+export function LinearWorkspaceCard({ integration, children }: { integration: IntegrationRow; children: ReactNode }) {
+  const { bots, refresh } = useConsoleData()
   const botId = integration.botId ?? ''
   const bot = bots.find((b) => b.id === botId)
   const flow = useLinearConnect(
     () => linearApi.reconnect(botId),
     () => void refresh()
   )
-
-  const name = bot?.workspaceName || bot?.name || integration.name
   const dead = !!bot?.revokedAt
-  const reconnecting = flow.phase === 'authorizing'
-  const connectErr = flow.appMissing ? 'Linear isn’t set up on this deployment.' : flow.err
+  const value = useMemo<LinearCardState>(
+    () => ({ flow, err: flow.appMissing ? 'Linear isn’t set up on this deployment.' : flow.err, dead }),
+    [dead, flow]
+  )
+  return <CardCtx.Provider value={value}>{children}</CardCtx.Provider>
+}
+
+/** The workspace's one repair, in the header's action track beside the host's unlink.
+ *  Haloed while the grant is known dead — the same needs-attention shape Slack's refresh uses. */
+export function LinearWorkspaceHeaderActions() {
+  const card = useContext(CardCtx)
+  if (!card) return null
+  const reconnecting = card.flow.phase === 'authorizing'
+  return (
+    <>
+      {card.dead && (
+        <span className="badge flex-none bg-(--status-error-soft) text-(--status-error)">grant expired</span>
+      )}
+      <button
+        type="button"
+        disabled={reconnecting}
+        title={reconnecting ? 'Waiting for Linear…' : 'Reconnect this workspace'}
+        aria-label="Reconnect this workspace"
+        onClick={card.flow.start}
+        className={`iconbtn h-7 w-7 flex-none ${card.dead ? 'border-(--status-error) text-(--status-error)' : ''} ${
+          reconnecting ? 'cursor-default opacity-55' : 'cursor-pointer'
+        }`}
+      >
+        <Icon name={reconnecting ? 'loader' : 'refresh-cw'} size={13} className={reconnecting ? 'animate-spin' : ''} />
+      </button>
+    </>
+  )
+}
+
+export function LinearWorkspaceRows({ integration, padX }: { integration: IntegrationRow; padX: number }) {
+  const { getAgent } = useConsoleData()
+  const card = useContext(CardCtx)
+  const reconnecting = card?.flow.phase === 'authorizing'
   // The page's agent — a private one starts every team row off, as on any platform.
   const agent = integration.agentId ? getAgent(integration.agentId) : undefined
 
-  const unlink = () => {
-    if (leaving || !integration.id) return
-    if (!window.confirm(`Remove ${name} from this agent? It stays connected for the organization's other agents.`)) {
-      return
-    }
-    setLeaving(true)
-    setErr(null)
-    void (async () => {
-      try {
-        await deleteIntegration(integration.id!)
-      } catch (cause) {
-        setErr(cause instanceof Error ? cause.message : String(cause))
-        setLeaving(false)
-      }
-    })()
-  }
-
   return (
     <>
-      {(err || connectErr) && (
+      {card?.err && (
         <div
           role="alert"
           className="flex items-start gap-2 border-t border-(--border-subtle) bg-(--surface-sunken) font-sans text-[12px] font-normal leading-[1.5] text-(--status-error)"
           style={{ padding: `9px ${padX}px` }}
         >
           <Icon name="triangle-alert" size={13} className="mt-[2px] flex-none" />
-          <span>{err ?? connectErr}</span>
+          <span>{card.err}</span>
         </div>
       )}
-      <div
-        className="flex flex-wrap items-center gap-x-[10px] gap-y-2 border-t border-(--border-subtle) bg-(--surface-app)"
-        style={{ padding: `10px ${padX}px` }}
-      >
-        <span className="mono min-w-0 flex-1 truncate text-[13px] text-(--text-primary)" title={name}>
-          {name}
-        </span>
-        {dead && <span className="badge flex-none bg-(--status-error-soft) text-(--status-error)">grant expired</span>}
-        <div className="ml-auto flex items-center gap-[10px] max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
-          <button
-            type="button"
-            disabled={reconnecting || !botId}
-            title={reconnecting ? 'Waiting for Linear…' : 'Reconnect this workspace'}
-            aria-label="Reconnect this workspace"
-            onClick={flow.start}
-            className={`iconbtn h-7 w-7 flex-none ${dead ? 'border-(--status-error) text-(--status-error)' : ''} ${
-              reconnecting ? 'cursor-default opacity-55' : 'cursor-pointer'
-            }`}
-          >
-            <Icon
-              name={reconnecting ? 'loader' : 'refresh-cw'}
-              size={13}
-              className={reconnecting ? 'animate-spin' : ''}
-            />
-          </button>
-          <button
-            type="button"
-            disabled={leaving || !integration.id}
-            title="Remove this workspace from this agent"
-            aria-label={`Remove ${name} from this agent`}
-            onClick={unlink}
-            className={`iconbtn h-7 w-7 flex-none ${leaving ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
-          >
-            <Icon name="x" size={14} color="var(--text-tertiary)" />
-          </button>
-        </div>
-      </div>
       {reconnecting && (
         <div
           className="flex items-start gap-2 border-t border-(--border-subtle) bg-(--surface-app) font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)"

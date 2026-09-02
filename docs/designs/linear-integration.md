@@ -1499,15 +1499,17 @@ tile.
   - `apiBindings` — connect-funnel, connect-status, reconnect, and member
     calls. The dispatch default is the generic conversation-owner PATCH, not
     a Linear binding.
-  - `settingsFragments` — the agent's **Linear card**: one block per linked
-    workspace, carrying the workspace name, connection status with an inline
-    **Reconnect** when the grant is dead or deliveries have gone silent
-    (§7.4, §15), **unlink this agent**, which removes exactly one membership
-    and nothing else, and beneath it the workspace's **team rows** — the
-    generic conversation list, one row per team with the **dispatch
-    selector** (the row's owner, over any member — §6.2) and the trigger
-    control (Mention / Off). No issue list: there is no per-issue state to
-    show (§4.3).
+  - `agentCard` — the agent page's **Linear card**. The host's own card header
+    already carries the workspace name, the connected badge and **unlink this
+    agent** (the generic integration delete, which removes exactly one
+    membership and nothing else), so the module adds only **Reconnect** to
+    that header's action track — with the `grant expired` badge that lights it
+    (§7.4, §15) — over one card-scoped `CardProvider` the button and the
+    body's status band share. There is **no second chrome row**: the card body
+    is the workspace's **team rows** — the generic conversation list, one row
+    per team with the **dispatch selector** (the row's owner, over any member
+    — §6.2) and the trigger control (Mention / Off). No issue list: there is
+    no per-issue state to show (§4.3).
   - **Whole-workspace teardown lives in the org-level Bots card
     (`IntegrationsView`), not on the agent card.** A connected workspace is
     an **ordinary bot row** there — no Linear-shaped panel — with
@@ -1517,8 +1519,8 @@ tile.
     makes "unlink" and "disconnect" impossible to confuse.
   - `channelList` — `roomNoun: 'team'`, no leave affordance (a team is left
     by turning its row Off or unlinking the workspace). The generic
-    conversation card renders the team rows; the module's own card draws
-    only the workspace-level chrome above them. The module's
+    conversation card renders the team rows; the module's own card adds only
+    Reconnect to the host header above them. The module's
     `soleConversation` flag is gone. **Landed** with the team-as-channel
     change, and the three reads core needed are capabilities rather than a
     platform name: `roster: 'derived'` (the row list is the workspace's own,
@@ -1531,7 +1533,10 @@ tile.
     rows and the org Bots roster) when a move takes a team's default off a
     **restricted** agent — its live sessions there can be stopped but will
     not answer again, and a new mention or delegation opens a session with
-    the new default. The org Bots row expands to the same team rows: the
+    the new default. A fourth, `gatedNote`, carries the one-clause
+    private-agent banner: a gated member acts in a team only as its default,
+    so the host's "enable each row below" would promise a per-member switch
+    this model has not got. The org Bots row expands to the same team rows: the
     workspace-shaped "Default dispatch" line it used to show is gone with the
     flag, and Reconnect / Disconnect stay row actions. The session list needed
     nothing: it already buckets by the session's channel, which is the team.

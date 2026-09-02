@@ -329,6 +329,47 @@ describe('IntegrationChannelList footer', () => {
   })
 })
 
+describe('IntegrationChannelList private-agent banner', () => {
+  const banner = (platform?: string) =>
+    renderToStaticMarkup(
+      createElement(IntegrationChannelList, {
+        platform,
+        gated: true,
+        channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
+      })
+    )
+
+  it('states the gate in one clause, in the platform’s noun', () => {
+    expect(banner('slack')).toContain('Private agent: it answers only in a channel or direct message enabled below.')
+    expect(banner('telegram')).toContain('only in a group or direct message enabled below')
+  })
+
+  it('lets a platform whose gate is more than the row say so itself', () => {
+    // §4.3: a gated Linear member acts in a team only as its default, so the host's
+    // "enable it below" would promise a per-member switch the model does not have.
+    const html = banner('linear')
+    expect(html).toContain('Private agent: it answers in a team only where it is the default and the team is not off.')
+    expect(html).not.toContain('enabled below')
+    expect(html).not.toContain('direct message')
+  })
+})
+
+describe('IntegrationChannelList trigger control', () => {
+  it('does not repeat the lightning glyph an agent avatar may already carry', () => {
+    // `zap` is one of the agent icon glyphs, so a row whose dispatch avatar is a bolt read
+    // as two of one control. The trigger keeps a neutral bell and its own label.
+    const html = renderToStaticMarkup(
+      createElement(IntegrationChannelList, {
+        platform: 'slack',
+        gated: false,
+        channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
+      })
+    )
+    expect(html).toContain('lucide-bell')
+    expect(html).not.toContain('lucide-zap')
+  })
+})
+
 describe('rowLabel', () => {
   it('strips the stored @ from a direct conversation and leaves a channel alone', () => {
     expect(rowLabel({ kind: 'im', name: '@Alice' })).toBe('Alice')

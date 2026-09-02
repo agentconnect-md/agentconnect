@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 
-// The AGENT page's Linear card: the connected workspace as chrome — name, grant status,
-// Reconnect, unlink — over the generic conversation list of its TEAM rows (§4.3, §9.5).
-// What must NOT be there matters as much: no Disconnect (that ends the workspace for every
-// agent, so it is the org view's), no "any message" trigger (the platform emits no
-// unaddressed traffic) and no way to leave or drop a team (the roster is the workspace's).
+// The AGENT page's Linear card: Reconnect in the host header's action track, over the
+// generic conversation list of the workspace's TEAM rows (§4.3, §9.5). What must NOT be
+// there matters as much: no second workspace name or unlink (both are the host header's),
+// no Disconnect (that ends the workspace for every agent, so it is the org view's), no
+// "any message" trigger (the platform emits no unaddressed traffic) and no way to leave
+// or drop a team (the roster is the workspace's).
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -52,7 +53,7 @@ vi.mock('@/lib/data-context', () => ({
   })
 }))
 
-import { LinearWorkspaceRows } from './card'
+import { LinearWorkspaceCard, LinearWorkspaceHeaderActions, LinearWorkspaceRows } from './card'
 
 function bot(over: Partial<BotDto> = {}): BotDto {
   return {
@@ -118,8 +119,16 @@ async function settle(): Promise<void> {
   }
 }
 
+/** The host's shape: one card-scoped provider around the header actions and the team rows. */
 async function render(row: IntegrationRow = integration()): Promise<void> {
-  await act(async () => root.render(<LinearWorkspaceRows integration={row} padX={14} />))
+  await act(async () =>
+    root.render(
+      <LinearWorkspaceCard integration={row}>
+        <LinearWorkspaceHeaderActions />
+        <LinearWorkspaceRows integration={row} padX={14} />
+      </LinearWorkspaceCard>
+    )
+  )
 }
 
 /** The rows' dispatch pickers, in row order — the picker names its OWNER, not its row. */
@@ -176,10 +185,12 @@ afterEach(async () => {
 })
 
 describe('the workspace chrome', () => {
-  it('names the workspace above the team rows', async () => {
+  it('leaves the workspace name to the host header and prints only the team rows', async () => {
     await render()
 
-    expect(text()).toContain('Example Workspace')
+    // The header above this card already names the workspace; repeating it here is the
+    // duplicate row this card no longer draws.
+    expect(text()).not.toContain('Example Workspace')
     expect(text()).toContain('ENG · Engineering')
     expect(text()).toContain('DES · Design')
   })
@@ -324,33 +335,12 @@ describe('the workspace’s repairs', () => {
     expect(text()).toContain('no relay is connected')
   })
 
-  it('unlinks through the generic integration delete, after confirming', async () => {
+  it('offers no unlink of its own — the host header carries the one control', async () => {
     await render()
-    await act(async () => buttonWithLabel('Remove Example Workspace from this agent')!.click())
-    await settle()
 
-    expect(window.confirm).toHaveBeenCalled()
-    expect(mocks.deleteIntegration).toHaveBeenCalledWith('int-a')
-  })
-
-  it('does nothing when the unlink is not confirmed', async () => {
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => false)
-    )
-    await render()
-    await act(async () => buttonWithLabel('Remove Example Workspace from this agent')!.click())
-
+    expect(buttonWithLabel('Remove Example Workspace from this agent')).toBeUndefined()
+    expect(buttonWithLabel('from this agent')).toBeUndefined()
     expect(mocks.deleteIntegration).not.toHaveBeenCalled()
-  })
-
-  it('shows a refused unlink instead of leaving the row looking gone', async () => {
-    mocks.deleteIntegration.mockRejectedValue(new Error('daemon is offline'))
-    await render()
-    await act(async () => buttonWithLabel('Remove Example Workspace from this agent')!.click())
-    await settle()
-
-    expect(text()).toContain('daemon is offline')
   })
 })
 
@@ -361,8 +351,10 @@ describe('a private agent’s own card', () => {
     ] as unknown as Agent[]
     await render()
 
-    expect(text()).toContain('This agent is private: conversations start off.')
-    expect(text()).toContain('Enable each team below')
+    // §4.3: a gated member acts in a team only as its default, so the banner promises no
+    // per-member enabling the model does not have.
+    expect(text()).toContain('Private agent: it answers in a team only where it is the default')
+    expect(text()).toContain('the team is not off')
     // Linear has no direct messages to promise.
     expect(text()).not.toContain('or direct message')
   })

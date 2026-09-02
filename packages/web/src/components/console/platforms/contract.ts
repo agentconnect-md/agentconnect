@@ -583,6 +583,9 @@ export interface WebChannelListSemantics {
     /** Bare verb — the console's modal convention. */
     confirmLabel: string
   }
+  /** The private-agent banner's sentence, where enabling a row is not the whole gate —
+   *  Linear's gated member acts in a team only as its default (§4.3). Absent ⇒ the host's. */
+  gatedNote?: string
 }
 
 /**
@@ -590,16 +593,22 @@ export interface WebChannelListSemantics {
  * of the host's generic conversation list.
  *
  * The generic list assumes the platform's rooms are enumerable things the bot was
- * ADDED to, each with a trigger and a way out. A module whose card needs chrome ABOVE
- * that list — Linear's connected workspace, with its grant status, Reconnect and
- * unlink — supplies a Body that draws the chrome and mounts the generic list itself,
- * so the rows keep the console's one dispatch selector and trigger control.
+ * ADDED to, each with a trigger and a way out. A module whose card has a repair of its
+ * own — Linear's Reconnect, which restores a workspace grant — puts it in the header's
+ * action track and keeps the rows beneath it generic.
  *
- * The host keeps the card CHROME (mark, name, connected badge, delete). The Body gets
- * the integration row — which names its own agent, so there is no second prop for the
+ * The host keeps the card CHROME (mark, name, connected badge, unlink) and never draws
+ * a second one: the workspace name is the header's, not the body's. The Body gets the
+ * integration row — which names its own agent, so there is no second prop for the
  * page's — and reaches the console data layer itself, exactly as the list does.
  */
 export interface WebAgentIntegrationCardFacet {
+  /** Mounts card-scope state around BOTH the header actions and the body — the
+   *  {@link WebBotSettingsFragments.lifecycleActions} idiom: a state carrier, not chrome. */
+  CardProvider?: ComponentType<{ integration: IntegrationRow; children: ReactNode }>
+  /** Controls for the header's action track, beside the host's own unlink — Linear's
+   *  Reconnect and the badge that says why it is lit. Absent ⇒ the host's actions alone. */
+  HeaderActions?: ComponentType<{ integration: IntegrationRow }>
   /** `padX` lines the rows up with the host card that mounts them (16 mobile / 14
    *  desktop detail), the generic list's own prop. */
   Body: ComponentType<{ integration: IntegrationRow; padX: number }>
