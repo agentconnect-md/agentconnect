@@ -1,14 +1,19 @@
 /**
  * Linear's **message strategy** (linear-integration.md §8): the delivered `im` message plus
- * the round-tripped `adapterExt.linear` bag become one dispatch prompt.
+ * the round-tripped `adapterExt.linear` bag become one dispatch prompt and one standing block.
  *
- * The trust split is the whole point. The header and the context block under it are
- * DAEMON-authored and state the actionable identity and coordinates (issue, team, state,
- * assignee, labels, URL); the member's instruction is `text` verbatim, because a
+ * The trust split is the whole point. The header is DAEMON-authored and states the actionable
+ * identity (issue, delegator, URL); the member's instruction is `text` verbatim, because a
  * workspace member is the same trust class as a Slack user; everything else — the issue body
  * Linear hands us as `promptContext`, and the comments before the mention — is quoted context
  * inside the shared untrusted fence, since an issue can carry customer intake or a forwarded
  * email nobody in the workspace wrote.
+ *
+ * What is session-stable — the issue and team coordinates the tool family takes, and the
+ * convention of working inside an issue — rides `standingContext`, read once on the
+ * system-prompt channel and never a transcript row; the per-turn prompt carries only what the
+ * member said this time. Mutable issue state (workflow state, assignee, labels) is deliberately
+ * absent: a snapshot goes stale within the session, and `getIssue` answers it live.
  *
  * Pure by construction: no clock, no store, no connection. The composition lines in
  * `daemon.ts` decide when to run it; this module only decides what the turn reads.
@@ -105,9 +110,6 @@ const TITLE_MAX_CHARS = 200
 /** Cap on a short §8 context-block value (name, key, label, state) — the block is paid every turn. */
 const FACT_MAX_CHARS = 80
 
-/** At most this many labels reach the block; the rest are one `getIssue` away. */
-const MAX_BLOCK_LABELS = 12
-
 /** Flatten a provider string to one capped, fence-inert line so attacker-authored framing can
  *  neither shape the daemon's own lines nor open a new line or an untrusted fence on them. */
 export function sanitizeTitle(raw: string, maxChars = TITLE_MAX_CHARS): string {
@@ -175,103 +177,48 @@ function trustedHeader(msg: Pick<NormalizedMessage, 'sender' | 'threadUrl'>, ext
   return msg.threadUrl ? `${head}\n${msg.threadUrl}` : head
 }
 
-/**
- * §13 layer 3: the issue facts the daemon resolves for the §8 context block.
- *
- * Every field is optional because the whole read is failure-tolerant — a partial answer still
- * hands the model coordinates the `agent-tools.ts` family can take, and no answer at all just
- * leaves the block off. The strings are provider-supplied and attacker-influenced; they become
- * safe only where the block sanitizes them.
- */
-export interface LinearIssueFacts {
-  id?: string
-  identifier?: string
-  title?: string
-  url?: string
-  team?: { id?: string; key?: string; name?: string }
-  state?: { name?: string; type?: string }
-  assignee?: { name?: string; displayName?: string }
-  labels?: string[]
-  priority?: number
-  priorityLabel?: string
-  estimate?: number
-  dueDate?: string
-  project?: { name?: string }
-  cycle?: { number?: number; name?: string }
-  parent?: { identifier?: string }
-}
-
-/** The working convention the block closes with — the tool names are the model's entry points. */
+/** The working convention the standing block closes with — the tool names are the model's entry points. */
 const LINEAR_WORKING_CONVENTION =
   'Working here: the issue is the record — put the plan and the outcome into its description or a comment ' +
   '(`updateIssue` / `createIssueComment`); name the branch and the PR after the identifier so Linear links ' +
   'them; if the ticket is empty or ambiguous, ask in your response before working; the team’s workflow ' +
-  'state NAMES are what `updateIssue` takes for `state` (`listIssueStatuses`).'
+  'state NAMES are what `updateIssue` takes for `state` (`listIssueStatuses`); read the current state, ' +
+  'assignee and labels with `getIssue` rather than assuming them.'
 
-/** `Key: value`, or nothing at all — the block omits an absent fact instead of printing a dash. */
+/** `- Key: value`, or nothing at all — the block omits an absent fact instead of printing a dash. */
 function fact(key: string, value: string): string {
-  return value ? `${key}: ${value}` : ''
+  return value ? `- ${key}: ${value}` : ''
 }
 
-/** One sanitized short value, or '' when the provider did not answer it. */
+/** One sanitized short value, or '' when the bag did not carry it. */
 function short(raw: string | undefined): string {
   return raw ? sanitizeTitle(raw, FACT_MAX_CHARS) : ''
 }
 
-/** A number the provider actually sent, as text — `0` is an answer, `undefined` is not. */
-function num(raw: number | undefined): string {
-  return typeof raw === 'number' && Number.isFinite(raw) ? String(raw) : ''
-}
-
-/** Facts on one line, in the block's inter-fact separator. */
-function factLine(parts: string[]): string {
-  return parts.filter(Boolean).join(' · ')
-}
-
 /**
- * The daemon-authored §8 context block: the coordinates the Linear tool family takes, plus the
- * conventions of working inside an issue. Daemon-authored means every provider string on it is
- * flattened and capped first — a title, a label or a team name may not open a line or a fence.
+ * The daemon-authored §8 standing block: the session-stable coordinates the Linear tool family
+ * takes (issue identifier, UUID, title, URL; team key, name, id), then the working convention.
+ * Built from the bag alone — the session is one issue for its whole life, so nothing here needs
+ * a provider read. Daemon-authored means every provider string is flattened and capped first.
  */
-function linearContextBlock(ext: LinearAdapterExt, facts: LinearIssueFacts | undefined): string {
-  if (!facts) return ''
-  const identifier = short(facts.identifier || ext.issueIdentifier)
-  const title = sanitizeTitle(facts.title || ext.issueTitle || '')
-  const head = [identifier, facts.id ? `(id ${short(facts.id)})` : ''].filter(Boolean).join(' ')
-  const issue = [head, title ? `"${title}"` : '', facts.url ? sanitizeTitle(facts.url) : ''].filter(Boolean).join(' — ')
-  // Name first here too — the key and the id are the machine coordinates the tool family takes,
-  // so they trail in parentheses instead of prefixing the name the member would say out loud.
-  const teamKey = short(facts.team?.key)
-  const teamHead = short(facts.team?.name) || teamKey
+export function buildLinearStandingContext(msg: Pick<NormalizedMessage, 'threadUrl'>, ext: LinearAdapterExt): string {
+  const identifier = short(ext.issueIdentifier)
+  const title = sanitizeTitle(ext.issueTitle ?? '')
+  const head = [identifier, ext.issueId ? `(id ${short(ext.issueId)})` : ''].filter(Boolean).join(' ')
+  const issue = [head, title ? `"${title}"` : '', msg.threadUrl ? sanitizeTitle(msg.threadUrl) : '']
+    .filter(Boolean)
+    .join(' — ')
+  // Name first, as the channel label does — the key and the id are the machine coordinates the
+  // tool family takes, so they trail in parentheses instead of prefixing what a member would say.
+  const teamKey = short(ext.team?.key)
+  const teamHead = short(ext.team?.name) || teamKey
   const teamMeta = [
     teamKey && teamHead !== teamKey ? `key ${teamKey}` : '',
-    facts.team?.id ? `id ${short(facts.team.id)}` : ''
+    ext.team?.id ? `id ${short(ext.team.id)}` : ''
   ].filter(Boolean)
   const team = teamHead ? [teamHead, teamMeta.length ? `(${teamMeta.join(', ')})` : ''].filter(Boolean).join(' ') : ''
-  const stateName = short(facts.state?.name)
-  const stateType = short(facts.state?.type)
-  const state = stateName ? [stateName, stateType ? `(${stateType})` : ''].filter(Boolean).join(' ') : stateType
-  const cycleNumber = num(facts.cycle?.number)
-  const cycleName = short(facts.cycle?.name)
-  const cycle = cycleNumber ? [cycleNumber, cycleName ? `(${cycleName})` : ''].filter(Boolean).join(' ') : cycleName
-  const labels = (facts.labels ?? []).map(short).filter(Boolean).slice(0, MAX_BLOCK_LABELS).join(', ')
-  const status = factLine([
-    fact('State', state),
-    fact('Priority', short(facts.priorityLabel) || num(facts.priority)),
-    fact('Estimate', num(facts.estimate)),
-    fact('Due', short(facts.dueDate))
-  ])
-  const people = factLine([
-    fact('Assignee', short(facts.assignee?.displayName || facts.assignee?.name)),
-    fact('Labels', labels),
-    fact('Project', short(facts.project?.name)),
-    fact('Cycle', cycle),
-    fact('Parent', short(facts.parent?.identifier))
-  ])
-  const lines = [fact('- Issue', issue), fact('- Team', team), status ? `- ${status}` : '', people ? `- ${people}` : '']
-  const body = lines.filter(Boolean)
-  if (body.length === 0) return ''
-  return ['Linear context (trusted, daemon-resolved):', ...body, LINEAR_WORKING_CONVENTION].join('\n')
+  const facts = [fact('Issue', issue), fact('Team', team)].filter(Boolean)
+  return ['# Linear', ...facts, '', LINEAR_WORKING_CONVENTION].join('\n')
 }
 
 type LinearPreviousComment = z.infer<typeof LinearPreviousComment>
@@ -305,19 +252,16 @@ function quotedContext(ext: LinearAdapterExt): string {
 }
 
 /**
- * §8 prompt assembly. Order is the trust order: the daemon's own header and its resolved
- * context block, then the member's instruction (verbatim — a workspace member instructs), then
- * workspace-admin guidance, and only then the fenced context nobody in the workspace need have
- * written. Facts are optional: an unread or unreadable issue simply loses the block.
+ * §8 prompt assembly. Order is the trust order: the daemon's own header, then the member's
+ * instruction (verbatim — a workspace member instructs), then workspace-admin guidance, and only
+ * then the fenced context nobody in the workspace need have written. The coordinates and the
+ * working convention are NOT here — they are standing (`buildLinearStandingContext`).
  */
 export function buildLinearPromptText(
   msg: Pick<NormalizedMessage, 'sender' | 'text' | 'threadUrl'>,
-  ext: LinearAdapterExt,
-  facts?: LinearIssueFacts
+  ext: LinearAdapterExt
 ): string {
   const sections = [trustedHeader(msg, ext)]
-  const block = linearContextBlock(ext, facts)
-  if (block) sections.push(block)
   const instruction = msg.text.trim()
   if (instruction) sections.push(instruction)
   const guidance = ext.guidance?.trim()
@@ -339,20 +283,18 @@ export function linearAckBody(agentName: string, ext: LinearAdapterExt, opts: { 
 }
 
 /**
- * Rewrite one delivered Linear message into the turn's prompt, in place.
+ * Rewrite one delivered Linear message into the turn's prompt and standing block, in place.
  *
  * The relay already sets `source`/`trigger`/`isDm`; they are restated here because §8 names
  * them and this is the seat that owns the turn's shape — a delivery that lost one of them
  * upstream must still dispatch as an explicitly-addressed, non-DM user turn with a live
  * reply surface (`headless: false`).
  */
-export function applyLinearMessageStrategy(
-  msg: NormalizedMessage,
-  facts?: LinearIssueFacts
-): LinearAdapterExt | undefined {
+export function applyLinearMessageStrategy(msg: NormalizedMessage): LinearAdapterExt | undefined {
   const ext = readLinearExt(msg)
   if (!ext) return undefined
-  msg.text = buildLinearPromptText(msg, ext, facts)
+  msg.text = buildLinearPromptText(msg, ext)
+  msg.standingContext = buildLinearStandingContext(msg, ext)
   msg.source = 'user'
   msg.trigger = 'mention'
   msg.isDm = false

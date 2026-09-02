@@ -78,6 +78,24 @@ describe('SessionManager', () => {
     await (await store).close()
   })
 
+  it('seats a platform standing block with the agent meta, once, never beside the user text', async () => {
+    const store = await newStore()
+    const host = fakeHost()
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const standing = '# Linear\n- Issue: ENG-1 (id issue-uuid)\n\nWorking here: the issue is the record.'
+    const first = await sm.handle('bot-a', msg({ ts: '100.1', text: 'first', standingContext: standing }))
+    const texts = (b: any[]): string[] => b.map((block: any) => block.text ?? '')
+    // Non-meta runtime: the standing context inlines as block 0, the platform block inside it.
+    expect(texts(first.blocks)[0]).toContain('# Agent')
+    expect(texts(first.blocks)[0]).toContain(standing)
+    expect(texts(first.blocks).slice(1).join('\n')).not.toContain('# Linear')
+    // A follow-up into the open session restates nothing: the block is standing, not per turn.
+    const second = await sm.handle('bot-a', msg({ ts: '100.2', text: 'second', standingContext: standing }))
+    expect(texts(second.blocks).join('\n')).not.toContain('# Linear')
+    expect(texts(second.blocks).join('\n')).toContain('second')
+    await (await store).close()
+  })
+
   it('passes the ordinary warm host identity to workspace preparation', async () => {
     const store = await newStore()
     const host = fakeHost()
