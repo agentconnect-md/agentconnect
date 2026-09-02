@@ -43,7 +43,7 @@ import {
   sessionHostKey,
   type HostKey
 } from './acp/host-key.js'
-import { effectiveRunInSandbox, prepareRuntimeLaunch } from './launch/prepare.js'
+import { effectiveRunInSandbox, prepareRuntimeLaunch, privateRuntimeHomeFor } from './launch/prepare.js'
 import {
   SessionManager,
   transcriptCoords,
@@ -4201,8 +4201,11 @@ export class Daemon {
           : `acp: agent "${agentId}" requested Run in sandbox but this host has no supported Linux sandbox — running without it (#312)`
       )
     }
+    // Native memory is redirected under the HOME this host actually launches with — a confined session's own (§11).
     const memoryAgent =
-      memoryKindOf(agent) === 'native' && runInSandbox ? { ...agent, dir: runtimeHomePath(agent.dir) } : agent
+      memoryKindOf(agent) === 'native' && runInSandbox
+        ? { ...agent, dir: privateRuntimeHomeFor(agent.dir, opts.hostKey) }
+        : agent
     const runtimeEnv = Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
     // On --k8s the runtime runs in the agent's pod, so the session gitconfig has to be COMPUTED in
     // pod coordinates and WRITTEN there: the file travels with the launch (SpawnRequest.files) and

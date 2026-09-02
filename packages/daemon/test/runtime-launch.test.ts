@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,7 +16,7 @@ import {
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import { effectiveRunInSandbox, prepareRuntimeLaunch } from '../src/launch/prepare.js'
+import { effectiveRunInSandbox, prepareRuntimeLaunch, privateRuntimeHomeFor } from '../src/launch/prepare.js'
 import { composeRuntimeLaunch, runtimeSandboxReadRoots } from '../src/launch/compose.js'
 import { agentHostKey, hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV } from '../src/acp/codex-permission-profiles.js'
@@ -484,6 +485,150 @@ describe('prepareRuntimeLaunch', () => {
     expect(table).not.toContain(realpathSync(primaryGit))
   })
 
+  // §11: the session's HOME lives under its leaf, so runtime state, temp and package caches are the session's alone and go with it.
+  it('gives a confined session its own HOME under its leaf, seeded like the agent one and pointed at by the env', () => {
+    const { scopeDir, hostHome, key, sessionDir, cwd } = sessionCloneFixture()
+    const hostCodex = join(hostHome, '.codex')
+    mkdirSync(hostCodex, { recursive: true })
+    writeFileSync(join(hostCodex, 'config.toml'), 'model = "seeded"\n')
+    writeFileSync(join(hostCodex, 'auth.json'), '{"last_refresh":"2026-01-01T00:00:00Z"}\n')
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: key,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      trustedWorkspaceWriteRoots: [sessionDir],
+      trustedPrimaryCheckout: join(scopeDir, 'workspace'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const home = join(realpathSync(sessionDir), 'home')
+    const agentHome = join(realpathSync(scopeDir), 'home')
+    expect(launch.runtimeHome).toBe(home)
+    expect(launch.env.HOME).toBe(home)
+    expect(launch.env.XDG_CONFIG_HOME).toBe(join(home, '.config'))
+    expect(launch.env.XDG_CACHE_HOME).toBe(join(home, '.cache'))
+    expect(launch.env.XDG_DATA_HOME).toBe(join(home, '.local', 'share'))
+    expect(launch.env.XDG_STATE_HOME).toBe(join(home, '.local', 'state'))
+    expect(launch.env.XDG_RUNTIME_DIR).toBe(join(home, '.run'))
+    expect(launch.env.CODEX_HOME).toBe(join(home, '.codex'))
+    // Seeded as the agent HOME is: config copied in, the credential linked to the shared host file, never copied.
+    expect(readFileSync(join(home, '.codex', 'config.toml'), 'utf8')).toBe('model = "seeded"\n')
+    expect(lstatSync(join(home, '.codex', 'auth.json')).isSymbolicLink()).toBe(true)
+    expect(realpathSync(join(home, '.codex', 'auth.json'))).toBe(realpathSync(join(hostCodex, 'auth.json')))
+    // The agent's own HOME is not this session's: never created for it, and outside its boundary both ways.
+    expect(existsSync(agentHome)).toBe(false)
+    const policy = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
+    expect(coveredBy(policy.filesystem.allowWrite, agentHome)).toBe(false)
+    expect(coveredBy(policy.filesystem.allowRead, agentHome)).toBe(false)
+    // What the provider requires of HOME — an exact write root — and the shared credential's own carve-back beside it.
+    expect(launch.sandbox!.writable).toContain(home)
+    expect(policy.filesystem.allowWrite).toContain(home)
+    expect(policy.filesystem.allowWrite).toContain(realpathSync(join(hostCodex, 'auth.json')))
+    // Runtime-native protected roots follow: the session .codex is what the inner tool sandbox is denied.
+    expect(launch.sandbox!.protectedCredentialRoots).toContain(join(home, '.codex'))
+    const profile = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] }
+    const tables = profile.configOverrides.filter((value) => value.includes('.filesystem='))
+    expect(tables).toHaveLength(3)
+    for (const table of tables) {
+      expect(table).toContain(`"${join(home, '.codex')}" = "deny"`)
+      expect(table).not.toContain(agentHome)
+    }
+  })
+
+  it('follows the session HOME for the Claude config dir and private state roots', () => {
+    const { scopeDir, hostHome, key, sessionDir, cwd } = sessionCloneFixture()
+    writeFileSync(
+      join(hostHome, '.claude.json'),
+      JSON.stringify({
+        additionalModelOptionsCache: [{ value: 'root-fable', label: 'Root Fable', description: 'test' }],
+        mcpToken: 'do-not-copy-global-secret'
+      })
+    )
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: key,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      trustedWorkspaceWriteRoots: [sessionDir],
+      trustedPrimaryCheckout: join(scopeDir, 'workspace'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const home = join(realpathSync(sessionDir), 'home')
+    expect(launch.env.HOME).toBe(home)
+    expect(launch.env.CLAUDE_CONFIG_DIR).toBe(join(home, '.claude'))
+    expect(JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'))).toEqual({
+      additionalModelOptionsCache: [{ value: 'root-fable', label: 'Root Fable', description: 'test' }]
+    })
+    expect(launch.sandbox!.protectedCredentialRoots).toEqual(
+      expect.arrayContaining([join(home, '.claude'), join(home, '.claude.json')])
+    )
+    expect(launch.sandbox!.protectedCredentialRoots.some((root) => root.startsWith(join(scopeDir, 'home')))).toBe(false)
+    expect(existsSync(join(scopeDir, 'home'))).toBe(false)
+  })
+
+  // A dream or a model session runs on a session-keyed host with no session directory: it keeps the agent HOME, and the rest, exactly.
+  it('keeps the agent HOME and policy for a session host that has no session directory', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const base = {
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap' as const,
+      credentialPlatform: 'linux' as const,
+      trustedPrimaryCheckout: join(scopeDir, 'workspace'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    }
+    const shared = prepareRuntimeLaunch({ ...base, hostKey: agentHostKey('bot-a') })
+    const dream = prepareRuntimeLaunch({ ...base, hostKey: sessionHostKey('bot-a', 'dream:d1') })
+
+    expect(shared.env.HOME).toBe(join(scopeDir, 'home'))
+    expect(dream.env.HOME).toBe(join(scopeDir, 'home'))
+    expect(JSON.stringify(dream.env)).toBe(JSON.stringify(shared.env))
+    expect(dream.sandbox!.writable).toEqual(shared.sandbox!.writable)
+    expect(readFileSync(dream.sandbox!.settingsPath, 'utf8')).toBe(readFileSync(shared.sandbox!.settingsPath, 'utf8'))
+  })
+
+  // The daemon redirects native memory under this HOME before the launch exists, so the two derivations must agree.
+  it('names the same HOME for the native-memory redirect as the launch gives the host', () => {
+    const { scopeDir, hostHome, key, sessionDir, cwd } = sessionCloneFixture()
+    expect(privateRuntimeHomeFor(scopeDir, key)).toBe(join(realpathSync(sessionDir), 'home'))
+    expect(privateRuntimeHomeFor(scopeDir, agentHostKey('bot-a'))).toBe(join(scopeDir, 'home'))
+    expect(privateRuntimeHomeFor(scopeDir, sessionHostKey('bot-a', 'dream:d1'))).toBe(join(scopeDir, 'home'))
+    expect(privateRuntimeHomeFor(scopeDir, undefined)).toBe(join(scopeDir, 'home'))
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: key,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      trustedWorkspaceWriteRoots: [sessionDir],
+      trustedPrimaryCheckout: join(scopeDir, 'workspace'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+    expect(launch.env.HOME).toBe(privateRuntimeHomeFor(scopeDir, key))
+  })
+
   // The unconfined tier keeps its linked worktrees and their grants: a session directory on disk and a session-bound host key must change nothing about its policy.
   it('leaves the unconfined policy byte-identical whether or not a session directory exists', () => {
     const { scopeDir, hostHome } = fixture()
@@ -551,6 +696,7 @@ describe('prepareRuntimeLaunch', () => {
     const second = prepareRuntimeLaunch(base)
     expect(readFileSync(second.sandbox!.settingsPath, 'utf8')).toBe(policyBefore)
     expect(JSON.stringify(second.env)).toBe(envBefore)
+    expect(second.env.HOME).toBe(join(scopeDir, 'home'))
     expect(second.gitMetadataWriteRoots).toEqual([realpathSync(primaryGit)])
   })
 

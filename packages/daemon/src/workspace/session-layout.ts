@@ -2,7 +2,7 @@ import { existsSync, lstatSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { isRepoSegment, PRIMARY_CHECKOUT_DIR, SECONDARY_ROOTS_DIR } from './secondary-layout.js'
 
-// The on-disk shape of one confined session's directory, `<agentDir>/sessions/<leaf>/{workspace,repos/<owner>/<repo>}` (git-workspace-model.md §11) — separate from the manager, like secondary-layout.ts, so the launch path derives a session host's grants without the whole workspace module.
+// The on-disk shape of one confined session's directory, `<agentDir>/sessions/<leaf>/{workspace,repos/<owner>/<repo>,home}` (git-workspace-model.md §11) — separate from the manager, like secondary-layout.ts, so the launch path derives a session host's grants without the whole workspace module.
 
 /** Every confined session's directory hangs off one agent-owned parent. */
 export const SESSIONS_DIR = 'sessions'
@@ -21,6 +21,11 @@ export function sessionDirIn(agentRoot: string, leaf: string): string {
 export function sessionRootCloneIn(sessionDir: string, repoFullName?: string): string {
   if (repoFullName === undefined) return join(sessionDir, PRIMARY_CHECKOUT_DIR)
   return join(sessionDir, SECONDARY_ROOTS_DIR, ...repoFullName.split('/'))
+}
+
+/** `<sessionDir>/home` — the session's own runtime HOME (state, temp, XDG, package caches), gone with the leaf. */
+export function sessionHomeIn(sessionDir: string): string {
+  return join(sessionDir, 'home')
 }
 
 /** Every `repos/<owner>/<repo>` clone ON DISK in a session directory, sorted by name; symlinks are skipped. */

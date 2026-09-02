@@ -13,6 +13,7 @@ import {
   workspaceGitLocalEnv
 } from '../src/workspace/git-injection.js'
 import { LocalGitRunner, type GitRunner, type GitLogEntry, type GitPullSummary } from '../src/workspace/git-runner.js'
+import { sessionHomeIn } from '../src/workspace/session-layout.js'
 import { WorkspaceManager, type PrepareSessionWorkspaceRequest } from '../src/workspace/workspace-manager.js'
 
 // Real git against real repositories (git-workspace-model.md §11): the claims are about the disk — where a confined session's clones land, that nothing of theirs reaches the primary, that a review is fetched and verified inside the clone, and what retirement removes or keeps.
@@ -390,14 +391,19 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
 })
 
 describe('retiring a confined session', () => {
-  it('removes the whole session directory when every clone is clean and pushed', async () => {
+  it('removes the whole session directory, its HOME included, when every clone is clean and pushed', async () => {
     const agent = agentFixture({ additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }] })
     serveAll(agent)
     await workspaces.prepareSessionWorkspace(agent, confined())
     expect(existsSync(leafOf(agent))).toBe(true)
+    // What a launch leaves beside the clones (§11): the session's private HOME with runtime state in it — never a clone, never a reason to retain.
+    const home = sessionHomeIn(leafOf(agent))
+    mkdirSync(join(home, '.codex', 'memories'), { recursive: true })
+    writeFileSync(join(home, '.codex', 'memories', 'memories.sqlite'), 'session-only\n')
 
     expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({ outcome: 'removed' })
 
+    expect(existsSync(home)).toBe(false)
     expect(existsSync(leafOf(agent))).toBe(false)
     expect(workspaces.confinedSessionDir(agent, KEY)).toBeUndefined()
     expect(existsSync(join(workspaces.agentRootFor(agent), 'repos', 'acme', 'infra', 'checkout', '.git'))).toBe(true)
