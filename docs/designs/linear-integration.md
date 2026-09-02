@@ -1817,11 +1817,13 @@ emits that report on observed traffic, not on a schedule.
 **Off is open; gating applies.** With several conversations per install the
 "link is the consent, mute is unlink" argument no longer holds — an operator
 who wants review-bot in ENG and not in DESIGN needs the per-row Off Slack
-has. So Linear leaves the `soleConversation` arms: rows are born `mention`
-for an unrestricted member and `off` for a gated one (`gatesNewConversations`
-reverts to plain `isGatedAgent`), the trigger write surfaces accept Linear
-rows (`allowsTriggerControl` and its refusal go), and `any` stays
-meaningless because the platform still emits no unaddressed traffic. What
+has. So Linear leaves the `soleConversation` arms: a team's trigger is one
+value for the whole bot, born `mention` when the linking agent is
+unrestricted and `off` when it is gated (`gatesNewConversations` reverts to
+plain `isGatedAgent`) and copied onto every sibling row, the trigger write
+surfaces accept Linear rows (`allowsTriggerControl` and its refusal go), and
+`any` stays meaningless because the platform still emits no unaddressed
+traffic. What
 does **not** change is the keyword rung: multi-name mentions keep the silent
 first pick, for the reason recorded above.
 
