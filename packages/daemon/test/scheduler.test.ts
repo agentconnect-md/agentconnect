@@ -68,7 +68,16 @@ describe('buildSyntheticMessage', () => {
     const { msg } = buildSyntheticMessage('bot-a', cron('daily', { target: undefined }), 'trace-1', FIRED_AT)
     expect(msg.headless).toBe(true)
     expect(msg.channel).toBe('cron:daily')
+    // The key is platform-shaped for continuity, so the message has to SAY it reaches no conversation.
+    expect(msg.syntheticChannel).toBe(true)
     expect(msg.text.endsWith('post health report')).toBe(true)
+  })
+
+  it('an anchored cron posts to a real channel, so it mints nothing', () => {
+    const { msg } = buildSyntheticMessage('bot-a', cron('daily'), 'trace-1', FIRED_AT)
+    expect(msg.channel).toBe('C1')
+    expect(msg.headless).toBeUndefined()
+    expect(msg.syntheticChannel).toBeUndefined()
   })
 })
 

@@ -13893,6 +13893,9 @@ export class Daemon {
       }
     | undefined
   > {
+    // Daemon-minted coordinates reach no conversation, so they can bind no audience. `headless` is not that fact:
+    // a channel-root seed and a channel intro are headless turns in a REAL channel, and both must still bind.
+    if (msg.syntheticChannel === true) return undefined
     // Which platforms bind sessions to a conversation audience, which of their
     // conversations qualify, and what identifies the realm are platform facts
     // (§7.4 conversation-audience strategy). No registered audience — Telegram,
@@ -13911,11 +13914,7 @@ export class Daemon {
       integrationId,
       integration
     )
-    // Cron and daemon-owned continuation turns can create or resume a real shared
-    // conversation, while synthetic/headless callers may use platform-shaped
-    // coordinates with no connection. Bind those trusted system turns only when
-    // the destination is attributable. Human ingress keeps the incomplete tuple
-    // so the caller below fails closed instead of treating an unverified turn as local.
+    // A system turn binds only when its destination is attributable; human ingress keeps the tuple and fails closed.
     if (msg.source !== 'user' && (!integrationId || !realmKey)) return undefined
     return {
       externalProvider: msg.platform,
