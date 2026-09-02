@@ -120,7 +120,7 @@ export async function probeClusterRuntimes(opts: ClusterProbeOptions): Promise<R
       timeoutMs: opts.timeoutMs ?? CLUSTER_PROBE_TIMEOUT_MS,
       // The pod is the isolation boundary AND a different filesystem: there is no private HOME to
       // compose here, and inheriting this daemon's environment would describe another machine.
-      launchFor: () => ({ env, inheritProcessEnv: false, redactValues })
+      launchFor: () => ({ env, inheritProcessEnv: false, redactValues, gitMetadataWriteRoots: [] })
     })
     // Marked on the result rather than left to the caller, because an adopting member reads the
     // published result and has no other way to know what the prober launched with.

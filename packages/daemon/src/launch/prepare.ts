@@ -149,6 +149,9 @@ export interface PreparedRuntimeLaunch {
   env: Record<string, string>
   /** Sandboxed launches carry a sanitized environment; unsandboxed launches inherit the daemon environment. */
   inheritProcessEnv: boolean
+  /** The `.git` directories this launch reopened for the runtime's Git writes — empty when nothing
+   *  was confined or nothing was found. Logged at spawn so a stale grant is visible after the fact. */
+  gitMetadataWriteRoots: string[]
   runtimeHome?: string
   sandbox?: {
     mechanism: SandboxMechanism
@@ -227,12 +230,14 @@ export function prepareRuntimeLaunch(opts: {
   if (!opts.runInSandbox && !opts.isolateHome) {
     const env = { ...(opts.explicitEnv ?? {}) }
     // No outer boundary here: the Codex profile must both reopen the Git metadata and close hooks/config.
+    const gitMetadataWriteRoots =
+      credentialProfile === 'codex' ? unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout) : []
     if (credentialProfile === 'codex') {
       applyCodexPermissionProfile(
         env,
         {
           protectedRoots: [],
-          writableGitMetadataRoots: unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout),
+          writableGitMetadataRoots: gitMetadataWriteRoots,
           allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true
         },
         (opts.hostEnv ?? process.env).CODEX_CONFIG
@@ -241,7 +246,7 @@ export function prepareRuntimeLaunch(opts: {
     // NOT in k8s: the runtime runs in a sandbox pod, so the daemon's own environment describes a
     // different machine. Inheriting it sent this daemon's HOME across, and the runtime then tried
     // to open its state under a path that exists only here. The pod supplies its own basics.
-    return { env, inheritProcessEnv: opts.k8s !== true }
+    return { env, inheritProcessEnv: opts.k8s !== true, gitMetadataWriteRoots }
   }
   if (opts.runInSandbox && opts.runtime?.externalExecution) {
     throw new Error(
@@ -341,15 +346,17 @@ export function prepareRuntimeLaunch(opts: {
   if (opts.runInSandbox) isolateHostSocketEnvironment(env, runtimeHome)
 
   if (!opts.runInSandbox) {
+    const gitMetadataWriteRoots =
+      credentialProfile === 'codex' ? unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout) : []
     if (credentialProfile === 'codex') {
       const privateCodex = join(runtimeHome, '.codex')
       applyCodexPermissionProfile(env, {
         protectedRoots: existsSync(privateCodex) ? [realpathSync(privateCodex)] : [],
-        writableGitMetadataRoots: unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout),
+        writableGitMetadataRoots: gitMetadataWriteRoots,
         allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true
       })
     }
-    return { env, inheritProcessEnv: false, runtimeHome }
+    return { env, inheritProcessEnv: false, runtimeHome, gitMetadataWriteRoots }
   }
 
   // PATH entries supplied by version managers are commonly symlinks below the
@@ -514,6 +521,7 @@ export function prepareRuntimeLaunch(opts: {
     env,
     inheritProcessEnv: false,
     runtimeHome,
+    gitMetadataWriteRoots,
     sandbox: {
       mechanism: opts.sandboxMechanism!,
       writable: boundary.writable,
