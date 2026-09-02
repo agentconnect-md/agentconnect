@@ -91,7 +91,7 @@ const teamStates = {
 }
 
 describe('Linear session tools — descriptors', () => {
-  it('advertise the ten issue-centric tools under the official MCP vocabulary', () => {
+  it('advertise the fifteen tools under the official MCP vocabulary', () => {
     expect(LINEAR_TOOLS.map((t) => t.name)).toEqual([
       'getIssue',
       'listIssues',
@@ -102,7 +102,12 @@ describe('Linear session tools — descriptors', () => {
       'listUsers',
       'createIssue',
       'updateIssue',
-      'createIssueComment'
+      'createIssueComment',
+      'listProjects',
+      'getProject',
+      'listCycles',
+      'listDocuments',
+      'getDocument'
     ])
     for (const tool of LINEAR_TOOLS) expect(LINEAR_SESSION_TOOLS.argSchemas.has(tool.name), tool.name).toBe(true)
   })
@@ -502,5 +507,183 @@ describe('creates are idempotent across the connection’s retry', () => {
     await run('updateIssue', { issue: 'ENG-42', title: 'x' }, c.impl)
     await run('getIssue', { issue: 'ENG-42' }, c.impl)
     expect(c.calls.every((x) => !x.idempotent)).toBe(true)
+  })
+})
+
+describe('projects, cycles and documents', () => {
+  const projectNode = {
+    id: 'p-1',
+    name: 'OSS',
+    description: 'Open the core',
+    url: 'https://linear.example.test/project/oss',
+    state: 'started',
+    progress: 0.4,
+    startDate: '2026-09-01',
+    targetDate: null,
+    updatedAt: 't',
+    lead: { id: USER_ID, name: 'Dana Example', displayName: 'dana' },
+    teams: { nodes: [{ key: 'ENG' }, { key: 'DOCS' }] }
+  }
+
+  it('lists projects filtered by team, state and name, newest-updated first', async () => {
+    const c = client({ ListProjects: { projects: { nodes: [projectNode], pageInfo: { hasNextPage: false } } } })
+    const res = await run('listProjects', { team: 'ENG', state: 'started', query: 'oss' }, c.impl)
+    expect(c.calls[0]!.variables).toEqual({
+      filter: {
+        accessibleTeams: { key: { eqIgnoreCase: 'ENG' } },
+        state: { eq: 'started' },
+        name: { containsIgnoreCase: 'oss' }
+      },
+      first: 25,
+      after: null
+    })
+    expect(res).toEqual({
+      projects: [
+        {
+          id: 'p-1',
+          name: 'OSS',
+          url: 'https://linear.example.test/project/oss',
+          state: 'started',
+          progress: 0.4,
+          startDate: '2026-09-01',
+          targetDate: null,
+          lead: { id: USER_ID, name: 'dana' },
+          teams: ['ENG', 'DOCS'],
+          updatedAt: 't',
+          description: 'Open the core'
+        }
+      ]
+    })
+  })
+
+  it('reads a project by name — resolving it first — with its write-up and milestones', async () => {
+    const c = client({
+      ProjectsByName: { projects: { nodes: [{ id: 'p-1', name: 'OSS' }] } },
+      GetProject: {
+        project: {
+          ...projectNode,
+          content: 'The plan',
+          projectMilestones: {
+            nodes: [
+              { name: 'License', targetDate: '2026-10-01' },
+              { name: 'Docs', targetDate: null }
+            ]
+          }
+        }
+      }
+    })
+    const res = (await run('getProject', { project: 'OSS' }, c.impl)) as Record<string, unknown>
+    expect(c.calls.map((x) => x.op)).toEqual(['ProjectsByName', 'GetProject'])
+    expect(c.calls[1]!.variables).toEqual({ id: 'p-1' })
+    expect(res).toMatchObject({
+      name: 'OSS',
+      content: 'The plan',
+      milestones: [
+        { name: 'License', targetDate: '2026-10-01' },
+        { name: 'Docs', targetDate: null }
+      ]
+    })
+    // A UUID skips the name lookup and goes straight to the read.
+    const gone = client({ GetProject: { project: null } })
+    await expect(run('getProject', { project: TEAM_ID }, gone.impl)).rejects.toThrow(/no project/)
+    expect(gone.calls.map((x) => x.op)).toEqual(['GetProject'])
+  })
+
+  it('lists a team’s cycles, narrowing to the active one on request', async () => {
+    const c = client({
+      ListCycles: {
+        cycles: {
+          nodes: [
+            {
+              id: 'c-7',
+              number: 7,
+              name: null,
+              startsAt: 's',
+              endsAt: 'e',
+              completedAt: null,
+              progress: 0.5,
+              team: { key: 'ENG' }
+            }
+          ],
+          pageInfo: { hasNextPage: false }
+        }
+      }
+    })
+    const res = await run('listCycles', { team: 'ENG', active: true }, c.impl)
+    expect(c.calls[0]!.variables).toEqual({
+      filter: { team: { key: { eqIgnoreCase: 'ENG' } }, isActive: { eq: true } },
+      first: 25,
+      after: null
+    })
+    expect(res).toEqual({
+      cycles: [
+        { id: 'c-7', number: 7, name: null, team: 'ENG', startsAt: 's', endsAt: 'e', completed: false, progress: 0.5 }
+      ]
+    })
+  })
+
+  it('lists documents within a project or by title, and reads one back in full', async () => {
+    const c = client({
+      ProjectsByName: { projects: { nodes: [{ id: 'p-1', name: 'OSS' }] } },
+      ListDocuments: {
+        documents: {
+          nodes: [
+            {
+              id: 'd-1',
+              slugId: 'plan-abc',
+              title: 'Plan',
+              url: 'u',
+              updatedAt: 't',
+              project: { name: 'OSS' },
+              creator: { displayName: 'dana' }
+            }
+          ],
+          pageInfo: { hasNextPage: false }
+        }
+      },
+      GetDocument: {
+        document: {
+          id: 'd-1',
+          slugId: 'plan-abc',
+          title: 'Plan',
+          url: 'u',
+          content: '# Plan',
+          updatedAt: 't',
+          project: null,
+          creator: null
+        }
+      }
+    })
+    const list = await run('listDocuments', { project: 'OSS', query: 'plan' }, c.impl)
+    expect(c.calls[1]!.variables).toEqual({
+      filter: { project: { id: { eq: 'p-1' } }, title: { containsIgnoreCase: 'plan' } },
+      first: 25,
+      after: null
+    })
+    expect(list).toEqual({
+      documents: [
+        {
+          id: 'd-1',
+          slug: 'plan-abc',
+          title: 'Plan',
+          url: 'u',
+          project: 'OSS',
+          author: { id: undefined, name: 'dana' },
+          updatedAt: 't'
+        }
+      ]
+    })
+    const doc = await run('getDocument', { document: 'plan-abc' }, c.impl)
+    expect(c.calls.at(-1)).toEqual({ op: 'GetDocument', variables: { id: 'plan-abc' } })
+    expect(doc).toEqual({
+      id: 'd-1',
+      slug: 'plan-abc',
+      title: 'Plan',
+      url: 'u',
+      project: null,
+      author: null,
+      updatedAt: 't',
+      content: '# Plan'
+    })
   })
 })

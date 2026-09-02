@@ -1200,7 +1200,9 @@ tile.
     issue-centric: `getIssue`,
     `listIssues`, `listIssueComments`, `listIssueStatuses`, `listIssueLabels`,
     `listTeams`, `listUsers`, `createIssue`, `updateIssue`,
-    `createIssueComment`. Every write resolves names to ids itself (team key,
+    `createIssueComment`; the second adds the read-only planning surface,
+    `listProjects`, `getProject` (write-up and milestones), `listCycles`,
+    `listDocuments`, `getDocument`. Every write resolves names to ids itself (team key,
     state name, assignee name/email, label names, project name, parent
     identifier) and a miss answers with the valid names, so "move it to In
     Progress" is one call. Results are bounded (8 000-char description on a
@@ -1436,10 +1438,10 @@ none` skips it along with everything else Linear-visible. There is **no
      session-platform-scoped, so a Linear-connected agent's Slack sessions
      carry none of these; cross-platform reach ("open a Linear issue from
      Slack") was considered and deferred until someone asks, because no other
-     platform offers it either. **Landed in two cuts**: the issue-centric ten
-     above minus `listProjects`/`getProject`/`listCycles`/`listDocuments`/
-     `getDocument` first (§9.4 `agent-tools.ts`), those five next. Not
-     planned: initiatives, project updates, milestones, Linear's own
+     platform offers it either. **Landed** in two cuts (§9.4
+     `agent-tools.ts`): the issue-centric ten, then `listProjects`,
+     `getProject`, `listCycles`, `listDocuments`, `getDocument`. Not planned:
+     initiatives, project updates, milestone writes, Linear's own
      documentation search, image loading (attachment download stays
      deferred, §9.4).
   3. **A daemon-authored Linear context block** in the §8 trusted header:
