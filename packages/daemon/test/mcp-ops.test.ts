@@ -2306,6 +2306,43 @@ describe('executeTool: platform session tools', () => {
       /no live Linear connection for integration int-ln/
     )
   })
+
+  /** A Linear connection that answers the two calls a comment makes, recording the body posted. */
+  const commenting = () => {
+    const seen: { body?: string } = {}
+    const request = vi.fn(async (query: string, variables: Record<string, unknown>) => {
+      if (/IssueRef/.test(query)) return { issue: { id: 'i-1', identifier: 'ENG-1', team: { id: 't-1' } } }
+      seen.body = (variables.input as { body: string }).body
+      return { commentCreate: { success: true, comment: { id: 'c-1' } } }
+    })
+    return { request, seen }
+  }
+
+  it('hands the tool this turn’s footer identity, resolved against the trusted context', async () => {
+    const { request, seen } = commenting()
+    const sessionToolAttributionFor = vi.fn(async () => ({
+      botName: 'agent-one',
+      botUrl: 'https://console.example.test/agents/a1',
+      runtime: 'Claude Code',
+      model: 'opus-5',
+      sessionUrl: 'https://console.example.test/sessions/s1'
+    }))
+    const d = makeDeps({ sessionToolConnectionFor: () => ({ request }), sessionToolAttributionFor })
+    await executeTool(linearCtx, 'createIssueComment', { issue: 'ENG-1', body: 'shipped' }, d)
+    // Resolved from the SESSION context, never from a tool argument.
+    expect(sessionToolAttributionFor).toHaveBeenCalledWith(linearCtx)
+    expect(seen.body).toBe(
+      'shipped\n\nsent by [agent-one](https://console.example.test/agents/a1) (Claude Code · opus-5) · ' +
+        '[open in session](https://console.example.test/sessions/s1)'
+    )
+  })
+
+  it('leaves the comment unfootered when no attribution resolver is wired', async () => {
+    const { request, seen } = commenting()
+    const d = makeDeps({ sessionToolConnectionFor: () => ({ request }) })
+    await executeTool(linearCtx, 'createIssueComment', { issue: 'ENG-1', body: 'shipped' }, d)
+    expect(seen.body).toBe('shipped')
+  })
 })
 
 describe('executeTool: searchPublicMessages', () => {

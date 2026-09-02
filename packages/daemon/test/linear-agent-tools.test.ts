@@ -4,8 +4,14 @@
  * Driven through a scripted client, so every request the tools make is asserted verbatim.
  */
 import { describe, it, expect } from 'vitest'
-import { LINEAR_SESSION_TOOLS, LINEAR_TOOLS, type LinearToolClient } from '../src/platforms/linear/agent-tools.js'
+import {
+  LINEAR_SESSION_TOOLS,
+  LINEAR_TOOLS,
+  stripAgentSignature,
+  type LinearToolClient
+} from '../src/platforms/linear/agent-tools.js'
 import type { SessionContext } from '../src/mcp/ops/context.js'
+import type { PlatformSessionToolEnv } from '../src/platforms/read-ports.js'
 
 const TEAM_ID = '11111111-1111-4111-8111-111111111111'
 const ISSUE_ID = '22222222-2222-4222-8222-222222222222'
@@ -18,6 +24,7 @@ const ctx: SessionContext = {
   isDm: false,
   channel: 'org-uuid',
   thread: 'session-uuid',
+  agentName: 'atlas',
   tools: []
 }
 
@@ -47,8 +54,24 @@ function client(script: Record<string, unknown | ((vars: Record<string, unknown>
   return { impl, calls }
 }
 
-const run = (name: string, args: Record<string, unknown>, c: LinearToolClient) =>
-  LINEAR_SESSION_TOOLS.execute(name, ctx, args, c)
+const run = (
+  name: string,
+  args: Record<string, unknown>,
+  c: LinearToolClient,
+  env: Omit<PlatformSessionToolEnv, 'connection'> = {}
+) => LINEAR_SESSION_TOOLS.execute(name, ctx, args, { connection: c, ...env })
+
+/** The turn's footer identity, as `sessionToolAttributionFor` resolves it in `daemon.ts`. */
+const attribution = {
+  botName: 'atlas',
+  botUrl: 'https://console.example.test/acme/agents/agent-1',
+  runtime: 'Claude Code',
+  model: 'opus-5',
+  sessionUrl: 'https://console.example.test/acme/sessions/s-1'
+}
+const FOOTER =
+  '\n\nsent by [atlas](https://console.example.test/acme/agents/agent-1) (Claude Code · opus-5) · ' +
+  '[open in session](https://console.example.test/acme/sessions/s-1)'
 
 const issueNode = (over: Record<string, unknown> = {}) => ({
   id: ISSUE_ID,
@@ -464,11 +487,16 @@ describe('updateIssue', () => {
 })
 
 describe('createIssueComment', () => {
-  it('posts on the resolved issue, threading under `parent` when given', async () => {
-    const c = client({
+  const commenting = () =>
+    client({
       IssueRef: { issue: { id: ISSUE_ID, identifier: 'ENG-42', team: { id: TEAM_ID } } },
       CommentCreate: { commentCreate: { success: true, comment: { id: 'c-9', url: 'u9', createdAt: 't9' } } }
     })
+  /** The body as it reached Linear. */
+  const posted = (c: ReturnType<typeof commenting>) => (c.calls.at(-1)!.variables.input as { body: string }).body
+
+  it('posts on the resolved issue, threading under `parent` when given', async () => {
+    const c = commenting()
     const res = await run('createIssueComment', { issue: 'ENG-42', body: 'Done — see PR', parent: 'c-1' }, c.impl)
     expect(c.calls.at(-1)).toEqual({
       op: 'CommentCreate',
@@ -476,6 +504,72 @@ describe('createIssueComment', () => {
       variables: { input: { id: expect.any(String), issueId: ISSUE_ID, body: 'Done — see PR', parentId: 'c-1' } }
     })
     expect(res).toEqual({ posted: true, issue: 'ENG-42', commentId: 'c-9', url: 'u9', createdAt: 't9' })
+  })
+
+  it('appends the turn’s standard footer — once, and only to what the model wrote', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: 'Fixed the retry path.' }, c.impl, {
+      attribution: async () => attribution
+    })
+    expect(posted(c)).toBe(`Fixed the retry path.${FOOTER}`)
+    expect(posted(c).match(/sent by/g)).toHaveLength(1)
+  })
+
+  it('strips the signature the model wrote before appending the footer', async () => {
+    for (const signature of ['— atlas', '-- atlas', '— atlas (Claude Code · opus-5)', '*— atlas*']) {
+      const c = commenting()
+      await run('createIssueComment', { issue: 'ENG-42', body: `Shipped it.\n\n${signature}` }, c.impl, {
+        attribution: async () => attribution
+      })
+      expect(posted(c), signature).toBe(`Shipped it.${FOOTER}`)
+    }
+  })
+
+  it('posts no footer when the agent’s footer chrome is off', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: 'Shipped it.\n\n— atlas' }, c.impl, {
+      attribution: async () => undefined
+    })
+    // The signature still goes: the model was told not to sign, footer or no footer.
+    expect(posted(c)).toBe('Shipped it.')
+  })
+
+  it('posts no footer when the daemon wired no attribution at all', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: 'Shipped it.' }, c.impl)
+    expect(posted(c)).toBe('Shipped it.')
+  })
+
+  it('closes an unterminated code fence before the footer', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: '```\nnot closed' }, c.impl, {
+      attribution: async () => attribution
+    })
+    expect(posted(c)).toBe(`\`\`\`\nnot closed\n\`\`\`${FOOTER}`)
+  })
+
+  it('leaves an issue DESCRIPTION unsigned and unfootered — it is the ticket’s own text', async () => {
+    const c = client({
+      IssueRef: { issue: { id: ISSUE_ID, identifier: 'ENG-42', team: { id: TEAM_ID } } },
+      IssueUpdate: { issueUpdate: { success: true, issue: issueNode() } }
+    })
+    await run('updateIssue', { issue: 'ENG-42', description: 'Scope: the retry path.' }, c.impl, {
+      attribution: async () => attribution
+    })
+    expect((c.calls.at(-1)!.variables.input as { description: string }).description).toBe('Scope: the retry path.')
+  })
+})
+
+describe('stripAgentSignature', () => {
+  it('takes only a dash line naming the acting agent', () => {
+    expect(stripAgentSignature('done\n\n— atlas', ['atlas'])).toBe('done')
+    expect(stripAgentSignature('done\n\n— someone else', ['atlas'])).toBe('done\n\n— someone else')
+    expect(stripAgentSignature('done\n\n— atlas', [undefined])).toBe('done\n\n— atlas')
+  })
+
+  it('never eats a list item or an em-dash sentence in the body', () => {
+    expect(stripAgentSignature('done\n\n- atlas reviewed it', ['atlas'])).toBe('done\n\n- atlas reviewed it')
+    expect(stripAgentSignature('— atlas asked for this\n\ndone', ['atlas'])).toBe('— atlas asked for this\n\ndone')
   })
 })
 

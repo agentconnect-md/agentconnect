@@ -209,7 +209,7 @@ describe('§8 daemon-authored standing block', () => {
       `- Issue: TEAM-123 (id ${ISSUE_UUID}) — "Ship the thing" — ${ISSUE_URL}`,
       `- Team: Engineering (key ENG, id ${TEAM})`,
       '',
-      expect.stringContaining('Working here: the issue is the record')
+      expect.stringContaining('Working here: your plan is already live in this session')
     ])
   })
 
@@ -217,6 +217,16 @@ describe('§8 daemon-authored standing block', () => {
     const convention = lines().at(-1) ?? ''
     for (const tool of ['`updateIssue`', '`createIssueComment`', '`listIssueStatuses`', '`getIssue`'])
       expect(convention).toContain(tool)
+  })
+
+  // Two live corrections: agents posted a step-list "plan" comment the session already
+  // renders, and signed their comments by hand because they had seen the response footer.
+  it('sends the plan to the session and the outcome to a comment, and forbids a hand-written signature', () => {
+    const convention = lines().at(-1) ?? ''
+    expect(convention).toContain('never post it as a comment')
+    expect(convention).toContain('OUTCOME')
+    expect(convention).toContain('you never sign it')
+    expect(convention).not.toContain('put the plan')
   })
 
   it('carries no mutable issue state — that is `getIssue`’s answer, not a snapshot', () => {
