@@ -22,11 +22,6 @@ export interface DefaultDispatchOption {
   icon?: AgentIcon | null
 }
 
-/** The default-dispatch control's own glyph — FIXED, so the control has one shape wherever it
- *  appears, the way the trigger's bell does. "Leads to" is already this console's word for a
- *  hand-off. Shared with the agent page's own per-conversation picker. */
-export const DISPATCH_ICON = 'corner-down-right'
-
 const MENU_WIDTH = 240
 const MENU_HEADER_HEIGHT = 34
 const MENU_ROW_HEIGHT = 34
@@ -68,10 +63,9 @@ export function DefaultDispatchPicker({
               disabled ? 'cursor-default' : 'cursor-pointer'
             } ${saving ? 'opacity-60' : ''}`}
           >
-            {/* A FIXED glyph, the way the trigger's bell is: the trigger used the active
-                agent's avatar, so the control changed shape per agent and read as whatever
-                that mark suggested. The avatars stay in the menu, where they identify rows. */}
-            <Icon name={DISPATCH_ICON} size={13} color="var(--text-tertiary)" className="flex-none" />
+            <span className="av h-5 w-5 rounded-[5px]">
+              <AgentIconView icon={active?.icon} runtime={active?.runtime ?? ''} size={20} />
+            </span>
             <span className="mono max-w-[180px] truncate text-[12.5px] text-(--text-primary)">
               {active?.name ?? '—'}
             </span>

@@ -1707,14 +1707,13 @@ tile.
     column header is the platform's own noun, pluralised (`roomPlural` beside
     `roomArticle`), so a Linear workspace heads its rows **Teams** where a Slack
     bot heads its **Channels** — the header was the last place the host still
-    said "Conversation" over rows the module had already named. Two conventions
-    of the console at large were fixed here for the same reason a mark is
-    per-platform but a CONTROL is not: the per-conversation default-dispatch
-    button now leads with a FIXED glyph (`corner-down-right`, the console's word
-    for a hand-off) and the current default's NAME, the way the trigger leads
-    with a bell. It led with the current agent's avatar, so the control changed
-    shape per agent and could be read as whatever that mark suggested; the
-    avatars stay in the menu, where they identify rows rather than the control. Both surfaces drop the
+    said "Conversation" over rows the module had already named. The two
+    CONTROLS on a row are the console's own and identical on every platform: the
+    trigger leads with ⚡ and the default-dispatch button with the current
+    default's avatar and a chevron. Two detours were reverted here — a bell in
+    place of ⚡, argued from the glyph an agent's avatar might happen to use,
+    and a fixed hand-off glyph in place of the avatar — because a control's
+    shape is not derived from what any agent looks like. Both surfaces drop the
     per-team dispatch selector while the workspace has a single member — with
     one agent it names that agent and offers nothing to pick. The session list
     needed nothing: it already buckets by the session's channel, which is the

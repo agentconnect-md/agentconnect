@@ -5,7 +5,6 @@ import { createPortal } from 'react-dom'
 import { agentLabel, isDirectConversation, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
-import { DISPATCH_ICON } from '@/components/console/DefaultDispatchPicker'
 import { AgentIconView } from '@/components/marks'
 import { channelListSemantics } from '@/components/console/platforms/registry'
 import { TriggerSelect, type TriggerOption } from '@/components/console/TriggerSelect'
@@ -414,12 +413,10 @@ export function conversationOwners(botId: string, integrations: IntegrationRow[]
  *  routing rules don't hand to someone else.
  *
  *  The design keeps this strictly apart from the trigger toggle (the two are separate
- *  controls, never merged) — a fixed control glyph, the current default's NAME and a chevron,
- *  whose popover READS that default and offers exactly one action, claiming the channel
- *  for the agent whose page this is. The glyph is FIXED, the way the trigger's bell is: an
- *  avatar there varied per agent, so the control had no stable shape to recognise, and one
- *  agent's mark could read as a different control entirely. Handing a conversation to some
- *  third agent stays in Settings → Bots, where the whole roster is in view. */
+ *  controls, never merged) — a compact avatar + chevron whose popover
+ *  READS the current default and offers exactly one action, claiming the channel
+ *  for the agent whose page this is. Handing a conversation to some third agent stays
+ *  in Settings → Bots, where the whole roster is in view. */
 function DefaultAgentPicker({
   current,
   viewer,
@@ -479,8 +476,13 @@ function DefaultAgentPicker({
           saving ? 'opacity-60' : ''
         }`}
       >
-        <Icon name={DISPATCH_ICON} size={13} color="var(--text-tertiary)" className="flex-none" />
-        <span className="mono max-w-[180px] truncate text-[12px] text-(--text-tertiary)">{current.label}</span>
+        <span className="av h-[22px] w-[22px] rounded-[6px]">
+          <AgentIconView icon={current.icon} runtime={current.runtime} size={22} />
+        </span>
+        {/* The desktop row reads the avatar in context; the mobile row breaks it onto its own line, so it is named there. */}
+        <span className="mono max-w-[180px] truncate text-[12px] text-(--text-tertiary) desktop:hidden">
+          {current.label}
+        </span>
         <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
       </button>
       {box &&

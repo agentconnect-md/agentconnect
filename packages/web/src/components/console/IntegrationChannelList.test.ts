@@ -361,9 +361,7 @@ describe('IntegrationChannelList private-agent banner', () => {
 })
 
 describe('IntegrationChannelList trigger control', () => {
-  it('does not repeat the lightning glyph an agent avatar may already carry', () => {
-    // `zap` is one of the agent icon glyphs, so a row whose dispatch avatar is a bolt read
-    // as two of one control. The trigger keeps a neutral bell and its own label.
+  it('leads with ⚡ on every platform — the console’s one trigger glyph', () => {
     const html = renderToStaticMarkup(
       createElement(IntegrationChannelList, {
         platform: 'slack',
@@ -371,8 +369,8 @@ describe('IntegrationChannelList trigger control', () => {
         channels: [{ channelId: 'C1', name: 'deploys', kind: 'channel', trigger: 'mention' }]
       })
     )
-    expect(html).toContain('lucide-bell')
-    expect(html).not.toContain('lucide-zap')
+    expect(html).toContain('lucide-zap')
+    expect(html).not.toContain('lucide-bell')
   })
 })
 
@@ -498,16 +496,15 @@ describe('IntegrationChannelList default dispatch control', () => {
       })
     )
 
-  it('reads as a FIXED glyph plus the current default’s NAME, on every agent', () => {
-    const alice = render('alice')
-    const bob = render('bob')
-    for (const html of [alice, bob]) expect(html).toContain('lucide-corner-down-right')
-    expect(alice).toContain('>Alice</span>')
-    expect(bob).toContain('>Bob</span>')
+  it('leads with the current default’s avatar and a chevron, the way every platform’s does', () => {
+    for (const html of [render('alice'), render('bob')]) {
+      expect(html).not.toContain('lucide-corner-down-right')
+      expect(html).toContain('lucide-chevron-down')
+    }
   })
 
-  it('prints the name on the desktop row too, rather than hiding it behind a mark', () => {
-    expect(render('alice')).not.toContain('desktop:hidden')
+  it('names the default only on the mobile row, where a bare mark says nothing', () => {
+    expect(render('alice')).toContain('desktop:hidden')
   })
 })
 

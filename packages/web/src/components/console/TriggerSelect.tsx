@@ -11,7 +11,7 @@ export interface TriggerOption<T extends string> {
 }
 
 /**
- * The bell + dropdown that says when an agent runs here — one control for every trigger surface
+ * The ⚡ + dropdown that says when an agent runs here — one control for every trigger surface
  * (conversations, watched repositories, watched projects), because they are one decision worded
  * per platform. It states the current choice and keeps the rest behind a menu, so a row that also
  * carries event pills doesn't read as one long bar of segments.
@@ -34,7 +34,7 @@ export function TriggerSelect<T extends string>({
   onChange: (value: T) => void
   /** Names the control for assistive tech — "Trigger for #deploys". */
   ariaLabel: string
-  /** What the glyph means on this surface, in this platform's nouns. */
+  /** What ⚡ means on this surface, in this platform's nouns. */
   hint: string
   /** Demo rows (no live integration) render the control inert. */
   disabled?: boolean
@@ -48,7 +48,7 @@ export function TriggerSelect<T extends string>({
   return (
     <span className={`inline-flex items-center gap-[7px] ${className}`}>
       <span title={hint} className="flex-none leading-none">
-        <Icon name="bell" size={14} color="var(--text-tertiary)" />
+        <Icon name="zap" size={14} color="var(--text-tertiary)" />
       </span>
       <AnchoredFlyout
         ariaLabel={ariaLabel}
