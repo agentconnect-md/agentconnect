@@ -272,7 +272,7 @@ describe('the connect hand-off', () => {
     mocks.probeConfig = answered
     await render()
 
-    expect(text()).toContain('There is nothing to fill in here')
+    expect(text()).toContain('You approve the workspace in a Linear popup')
     expect(text()).toContain('becomes the workspace’s default agent')
     expect(mocks.startLinearConnect).not.toHaveBeenCalled()
     expect(window.open).not.toHaveBeenCalled()
@@ -312,7 +312,7 @@ describe('the connect hand-off', () => {
 
     await act(async () => buttonWith('Connect another workspace')!.click())
     await settle()
-    expect(text()).toContain('There is nothing to fill in here')
+    expect(text()).toContain('You approve the workspace in a Linear popup')
     expect(mocks.startLinearConnect).not.toHaveBeenCalled()
 
     await act(async () => buttonWith('Connect Linear')!.click())
@@ -341,14 +341,50 @@ describe('the connect hand-off', () => {
     expect(buttonWith('Cancel')).toBeUndefined()
   })
 
-  it('cancels a round trip in flight, closing the wizard it was the whole pane of', async () => {
+  it('renders no second Cancel beside the host’s while the forced pane’s round trip is in flight', async () => {
     mocks.probeConfig = answered
-    const state = await render()
+    await render()
     await act(async () => buttonWith('Connect Linear')!.click())
     await settle()
-    await act(async () => buttonWith('Cancel')!.click())
 
-    expect(state.close).toHaveBeenCalled()
+    expect(text()).toContain('Waiting for Linear')
+    expect(buttonWith('Cancel')).toBeUndefined()
+    expect(buttonWith('Back')).toBeUndefined()
+  })
+
+  it('closes the authorize popup when the host closes the wizard mid-round-trip', async () => {
+    // The host footer's Cancel unmounts the pane; the popup must not outlive the poll.
+    const popup = { close: vi.fn(), closed: false }
+    vi.stubGlobal(
+      'open',
+      vi.fn(() => popup)
+    )
+    mocks.probeConfig = answered
+    await render()
+    await act(async () => buttonWith('Connect Linear')!.click())
+    await settle()
+    await act(async () => root.unmount())
+
+    expect(popup.close).toHaveBeenCalled()
+  })
+
+  it('goes back to the picker from a round trip in flight, closing the popup it opened', async () => {
+    const popup = { close: vi.fn(), closed: false }
+    vi.stubGlobal(
+      'open',
+      vi.fn(() => popup)
+    )
+    mocks.probeConfig = answered
+    mocks.bots = [workspace()]
+    const state = await render()
+    await act(async () => buttonWith('Connect another workspace')!.click())
+    await act(async () => buttonWith('Connect Linear')!.click())
+    await settle()
+    await act(async () => buttonWith('Back')!.click())
+
+    expect(popup.close).toHaveBeenCalled()
+    expect(text()).toContain('Example Workspace')
+    expect(state.close).not.toHaveBeenCalled()
   })
 
   it('names the settled success and the default agent it just made', async () => {
@@ -362,7 +398,8 @@ describe('the connect hand-off', () => {
 
     expect(state.invalidate).toHaveBeenCalled()
     expect(text()).toContain('Workspace connected')
-    expect(text()).toContain('is now its default agent')
+    expect(text()).toContain('is its default agent')
+    expect(text()).not.toContain('bare delegation')
     await act(async () => buttonWith('Done')!.click())
     expect(state.close).toHaveBeenCalled()
   })

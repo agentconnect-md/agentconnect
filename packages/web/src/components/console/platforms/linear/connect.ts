@@ -118,6 +118,18 @@ export function useLinearConnect(
     setErr(null)
   }, [reset])
 
+  // The host's own Cancel unmounts this hook mid-round-trip: close the tab then too, so no
+  // orphan authorize page outlives the poll that would have acted on it.
+  useEffect(() => {
+    return () => {
+      try {
+        popup.current?.close()
+      } catch {
+        // a cross-origin popup may refuse; nothing is polling it any more either way
+      }
+    }
+  }, [])
+
   const start = useCallback(() => {
     if (busy.current) return
     busy.current = true
