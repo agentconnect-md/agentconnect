@@ -1051,3 +1051,17 @@ describe('linear auto-start (§10.2)', () => {
     await expect(conn.startIssue(ISSUE)).rejects.toBeInstanceOf(LinearApiError)
   })
 })
+
+describe('the session → issue association (§12)', () => {
+  it('answers the issue a delivery said the session sits on, and nothing for a session never seen', () => {
+    const { conn } = harness()
+    expect(conn.issueOfSession('session-1')).toBeUndefined()
+    conn.noteSessionIssue('session-1', 'issue-a')
+    conn.noteSessionIssue('session-2', 'issue-b')
+    expect(conn.issueOfSession('session-1')).toBe('issue-a')
+    expect(conn.issueOfSession('session-2')).toBe('issue-b')
+    // A later delivery for the same session wins; the map never holds two issues for one session.
+    conn.noteSessionIssue('session-1', 'issue-c')
+    expect(conn.issueOfSession('session-1')).toBe('issue-c')
+  })
+})

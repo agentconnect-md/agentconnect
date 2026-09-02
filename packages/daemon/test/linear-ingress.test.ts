@@ -169,6 +169,7 @@ async function boot(opts: BootOpts = {}) {
   )
   const posted: Posted[] = []
   const attached: { issueId: string; url: string; title: string; subtitle?: string }[] = []
+  const sessionIssues = new Map<string, string>()
   const store = (daemon as any).store
   const conn = {
     integrationId: INTEGRATION,
@@ -184,6 +185,10 @@ async function boot(opts: BootOpts = {}) {
     async updateSession() {},
     async createIssueAttachment(input: { issueId: string; url: string; title: string; subtitle?: string }) {
       attached.push(input)
+    },
+    sessionIssues,
+    noteSessionIssue(sessionId: string, issueId: string) {
+      sessionIssues.set(sessionId, issueId)
     }
   }
   ;(daemon as any).lnConnByIntegration.set(INTEGRATION, conn)
@@ -609,10 +614,12 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     // Standing: the issue UUID and the team, read once on the system-prompt channel, never a row.
     expect(dispatched[0]!.standingContext).toContain('- Issue: TEAM-123 (id issue-uuid)')
     expect(dispatched[0]!.standingContext).toContain('- Team: Engineering (key ENG')
-    expect(dispatched[0]!.standingContext).toContain('Working here:')
+    expect(dispatched[0]!.standingContext).toContain('Work the ticket as written')
+    // §12: the connection learned which issue this session sits on, for the comment tool's footer rule.
+    expect([...(daemon as any).lnConnByIntegration.get(INTEGRATION).sessionIssues.values()]).toContain('issue-uuid')
     // Per turn: what the console transcript shows is the header, the URL and the member's words.
     expect(dispatched[0]!.text).not.toContain('issue-uuid')
-    expect(dispatched[0]!.text).not.toContain('Working here:')
+    expect(dispatched[0]!.text).not.toContain('Work the ticket as written')
     expect(dispatched[0]!.text.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by Dana')
     await daemon.stop()
   })
@@ -948,6 +955,7 @@ describe('§7.5 the turn holds its egress transport', () => {
       workspaceId: bound.workspaceId,
       postActivity: bound.postActivity,
       updateSession: bound.updateSession,
+      noteSessionIssue: bound.noteSessionIssue,
       stop: async () => {
         stoppedAfter = posted.length
       }

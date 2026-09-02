@@ -1767,16 +1767,25 @@ none` skips it along with everything else Linear-visible. There is **no
   session's own connection (a session on another platform is refused at call
   time), and shares the app's hourly budget through the paced queue.
 
-- **A comment carries no footer and no signature.** Linear posts every
-  agent's comment as the one deployment app (§4.3), and the issue's Resources
-  entry already links the session that wrote it (§10.2) — the agent, runtime,
-  model and transcript are one click away, so a footer would only repeat the
-  Resources row under every post. `createIssueComment` therefore posts the
-  body as written, stripping only a trailing signature line naming the acting
-  agent (agents that had seen the response footer copied it by hand), and the
-  §8 convention tells the model not to sign. The settling `response` keeps
-  its footer: the session feed has no Resources row of its own. Descriptions
-  are untouched: an issue's description is the ticket's own text.
+- **A comment on the session's own issue carries no footer; anywhere else it
+  carries the response footer.** Linear posts every agent's comment as the
+  one deployment app (§4.3), so the reader's only way to tell who wrote one is
+  an association the daemon made. On the issue the session was opened on that
+  association already exists: the Resources entry links the session (§10.2),
+  and the agent, runtime, model and transcript are one click away, so a
+  footer would only repeat that row under every post. `createIssueComment`
+  can address any issue in the workspace, though, and a comment on another
+  issue has no such entry — nor does a session whose issue this daemon never
+  saw delivered — so there the tool appends the same muted footer the settling
+  `response` carries (`linearAttributionFooter`, built from the turn's own
+  attribution record and honouring `showFooter`). The association is learned
+  off every delivery: `prepareLinearDelivery` notes the bag's `issueId`
+  against its `agentSessionId` on the connection (`noteSessionIssue`), and
+  the tool compares the resolved target with `issueOfSession(thread)`. In
+  both cases a trailing signature line naming the acting agent is stripped
+  first (agents that had seen the response footer copied it by hand), and the
+  §8 convention tells the model not to sign. Descriptions are untouched: an
+  issue's description is the ticket's own text.
 
 - Signing secret: relay-only, via the `rc/bot-assign` secrets bag — never in
   daemon specs, logs, or DTOs. Client secret: CP-only. Refresh token:

@@ -61,6 +61,18 @@ const run = (
   env: Omit<PlatformSessionToolEnv, 'connection'> = {}
 ) => LINEAR_SESSION_TOOLS.execute(name, ctx, args, { connection: c, ...env })
 
+/** The turn's footer identity, as `sessionToolAttributionFor` resolves it in `daemon.ts`. */
+const attribution = {
+  botName: 'atlas',
+  botUrl: 'https://console.example.test/acme/agents/agent-1',
+  runtime: 'Claude Code',
+  model: 'opus-5',
+  sessionUrl: 'https://console.example.test/acme/sessions/s-1'
+}
+const FOOTER =
+  '\n\nsent by [atlas](https://console.example.test/acme/agents/agent-1) (Claude Code · opus-5) · ' +
+  '[open in session](https://console.example.test/acme/sessions/s-1)'
+
 const issueNode = (over: Record<string, unknown> = {}) => ({
   id: ISSUE_ID,
   identifier: 'ENG-42',
@@ -494,27 +506,83 @@ describe('createIssueComment', () => {
     expect(res).toEqual({ posted: true, issue: 'ENG-42', commentId: 'c-9', url: 'u9', createdAt: 't9' })
   })
 
-  it('posts the body as written — no footer, the issue’s Resources already link the session', async () => {
-    const c = commenting()
-    await run('createIssueComment', { issue: 'ENG-42', body: 'Fixed the retry path.' }, c.impl)
-    expect(posted(c)).toBe('Fixed the retry path.')
-    expect(posted(c)).not.toContain('sent by')
+  /** The same client, on a connection that saw this session opened on `issueId`. */
+  const sessionOn = (c: ReturnType<typeof commenting>, issueId: string): LinearToolClient => ({
+    ...c.impl,
+    issueOfSession: (sessionId) => (sessionId === ctx.thread ? issueId : undefined)
   })
 
-  it('strips the signature the model wrote', async () => {
+  it('posts no footer on the session’s own issue — its Resources already link the session', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: 'Fixed the retry path.' }, sessionOn(c, ISSUE_ID), {
+      attribution: async () => attribution
+    })
+    expect(posted(c)).toBe('Fixed the retry path.')
+  })
+
+  it('still strips the signature the model wrote on the session’s own issue', async () => {
     for (const signature of ['— atlas', '-- atlas', '— atlas (Claude Code · opus-5)', '*— atlas*']) {
       const c = commenting()
-      await run('createIssueComment', { issue: 'ENG-42', body: `Shipped it.\n\n${signature}` }, c.impl)
+      await run(
+        'createIssueComment',
+        { issue: 'ENG-42', body: `Shipped it.\n\n${signature}` },
+        sessionOn(c, ISSUE_ID),
+        {
+          attribution: async () => attribution
+        }
+      )
       expect(posted(c), signature).toBe('Shipped it.')
     }
   })
 
-  it('leaves an issue DESCRIPTION untouched — it is the ticket’s own text', async () => {
+  it('appends the turn’s standard footer on any OTHER issue — once, and only to what the model wrote', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: 'Fixed the retry path.' }, sessionOn(c, 'issue-other'), {
+      attribution: async () => attribution
+    })
+    expect(posted(c)).toBe(`Fixed the retry path.${FOOTER}`)
+    expect(posted(c).match(/sent by/g)).toHaveLength(1)
+  })
+
+  it('appends the footer when the connection never saw which issue this session sits on', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: 'Shipped it.\n\n— atlas' }, c.impl, {
+      attribution: async () => attribution
+    })
+    expect(posted(c)).toBe(`Shipped it.${FOOTER}`)
+  })
+
+  it('posts no footer anywhere when the agent’s footer chrome is off', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: 'Shipped it.\n\n— atlas' }, sessionOn(c, 'issue-other'), {
+      attribution: async () => undefined
+    })
+    // The signature still goes: the model was told not to sign, footer or no footer.
+    expect(posted(c)).toBe('Shipped it.')
+  })
+
+  it('posts no footer when the daemon wired no attribution at all', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: 'Shipped it.' }, c.impl)
+    expect(posted(c)).toBe('Shipped it.')
+  })
+
+  it('closes an unterminated code fence before the footer', async () => {
+    const c = commenting()
+    await run('createIssueComment', { issue: 'ENG-42', body: '```\nnot closed' }, sessionOn(c, 'issue-other'), {
+      attribution: async () => attribution
+    })
+    expect(posted(c)).toBe(`\`\`\`\nnot closed\n\`\`\`${FOOTER}`)
+  })
+
+  it('leaves an issue DESCRIPTION unsigned and unfootered — it is the ticket’s own text', async () => {
     const c = client({
       IssueRef: { issue: { id: ISSUE_ID, identifier: 'ENG-42', team: { id: TEAM_ID } } },
       IssueUpdate: { issueUpdate: { success: true, issue: issueNode() } }
     })
-    await run('updateIssue', { issue: 'ENG-42', description: 'Scope: the retry path.' }, c.impl)
+    await run('updateIssue', { issue: 'ENG-42', description: 'Scope: the retry path.' }, c.impl, {
+      attribution: async () => attribution
+    })
     expect((c.calls.at(-1)!.variables.input as { description: string }).description).toBe('Scope: the retry path.')
   })
 })

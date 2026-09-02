@@ -54,7 +54,7 @@ import { TerminalOutputFolder } from './session/terminal-output-folder.js'
 import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
-import type { CodeHostEffectReq, SetSessionTitleReq } from './mcp/ops.js'
+import type { CodeHostEffectReq, SessionContext, SetSessionTitleReq } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
 import { gitlabApiBaseUrl } from './gitlab/api-base.js'
@@ -164,6 +164,7 @@ import {
   slackStreamRecipient,
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
+import type { ReplyAttributionInfo } from './messages/attribution.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import { mentionedUserIds, substituteUserMentions } from './slack/mentions.js'
 import {
@@ -2424,6 +2425,7 @@ export class Daemon {
       sessionToolConnectionFor: (integrationId) => this.anyConnForIntegration(integrationId),
       // The footer a session tool appends to text it publishes as the agent (Linear comments):
       // the SAME identity the turn's response carries, resolved from the trusted session context.
+      sessionToolAttributionFor: (ctx) => this.sessionToolAttribution(ctx),
       // History-backed discovery for platforms whose bot API can't enumerate chats/users
       // (Telegram): only the sole current physical bot's scoped history is reachable.
       observedChannels: async (agentId, platform) => {
@@ -4791,6 +4793,25 @@ export class Daemon {
     return active !== undefined && !active.cancelledReason
   }
 
+  /** The footer identity for a platform session tool that publishes agent-authored text
+   *  (Linear's `createIssueComment`): the same facts the turn's response footer carries, read
+   *  from the trusted session context. Undefined when the agent's footer chrome is off. */
+  private async sessionToolAttribution(ctx: SessionContext): Promise<ReplyAttributionInfo | undefined> {
+    const agent = this.agents.get(ctx.agentId)
+    if (!agent?.output.showFooter) return undefined
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const rec = await this.store?.getSession(key)
+    return {
+      botName: agent.name,
+      botUrl: this.agentLink(ctx.agentId),
+      runtime: this.runtimeFacts.runtimeNames()[agent.runtime] ?? agent.runtime,
+      model: (await this.store?.getObservedModel(key)) ?? 'default',
+      sessionUrl: rec?.sessionId
+        ? this.sessionLink(rec.sessionId, this.sessionLinkSource(ctx.platform, ctx.integrationId))
+        : ''
+    }
+  }
+
   private async runDreamExtraction(
     agentId: string,
     systemPrompt: string,
@@ -6774,6 +6795,8 @@ export class Daemon {
     }
     const conn = this.lnConnByIntegration.get(msg.integrationId)
     if (conn) {
+      // §12: the one association a comment can be checked against — the issue this session sits on.
+      if (ext.issueId) conn.noteSessionIssue(ext.agentSessionId, ext.issueId)
       // Sender and mentions resolve off the hot path, as on every platform whose messages carry
       // ids alone — the session list and its avatars read the cache this fills.
       this.channelNameResolver?.noteMessage(conn, normalized)
