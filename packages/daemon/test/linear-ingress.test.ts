@@ -6,11 +6,12 @@
  * Platform-neutral: no real network, no real timers on the paths asserted, and the only
  * clock the assertions depend on is the daemon's own injectable one.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { LINEAR_GRAPHQL_ENDPOINT } from '../src/platforms/linear/connection.js'
 import { stableMessageId } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
 import type { LinearActivityInput } from '../src/platforms/linear/turn-output.js'
@@ -104,10 +105,20 @@ const TEAM_NODES = [
   { id: OTHER_TEAM, key: 'DOCS', name: 'Docs' }
 ]
 
-async function boot(opts: BootOpts = {}) {
-  // The reconcile's team-list read is the ONE request that leaves the real connection here;
-  // answer it in place so no test touches the network, and reject anything else outright.
-  vi.stubGlobal('fetch', async (_url: unknown, init: unknown) => {
+/**
+ * The reconcile's team-list read is the ONE request that leaves the real connection here — the
+ * reconciler builds that connection itself, so there is no `fetchImpl` seam to inject through and
+ * the answer has to come from the global.
+ *
+ * Two rules keep that from reaching anything else: only Linear's own endpoint is answered (every
+ * other request goes to the real `fetch` this captured), and the stub is torn down after each
+ * test, so no later FILE inherits it either.
+ */
+let realFetch: typeof fetch
+beforeEach(() => {
+  realFetch = globalThis.fetch
+  vi.stubGlobal('fetch', async (url: unknown, init: unknown) => {
+    if (String(url) !== LINEAR_GRAPHQL_ENDPOINT) return await realFetch(url as string, init as RequestInit)
     const body = JSON.parse((init as { body: string }).body) as { query: string }
     const data = body.query.includes('teams(first:') ? { teams: { nodes: TEAM_NODES } } : {}
     return {
@@ -117,6 +128,12 @@ async function boot(opts: BootOpts = {}) {
       json: async () => ({ data })
     } as unknown as Response
   })
+})
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+async function boot(opts: BootOpts = {}) {
   const daemon = new Daemon({
     root: scaffold(opts.outputMode ?? 'low', opts.expiresAt ?? FAR_FUTURE),
     hostFactory: () => (opts.host ? opts.host() : fakeHost()) as any

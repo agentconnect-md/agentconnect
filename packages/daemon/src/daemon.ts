@@ -1025,7 +1025,7 @@ export class Daemon {
   // Sessions whose console link already sits in the issue's Resources (Linear keys the entry
   // on the URL, so a restart re-sending it refreshes rather than duplicates).
   private readonly linearResourcesAttached = new Set<string>()
-  // `<integrationId> <teamId>` for every team already reported on the delivery fast path (§9.2),
+  // `<integrationId>\u0000<teamId>` for every team already reported on the delivery fast path (§9.2),
   // so a team earns at most one report per integration however much traffic it carries.
   private readonly linearReportedTeams = new Set<string>()
   // agentId → the in-flight (or resolved) host-startup promise. Resolves to the
@@ -6745,7 +6745,7 @@ export class Daemon {
   private noteLinearTeam(integrationId: string, ext: LinearAdapterExt): void {
     const team = ext.team
     if (!team?.id) return
-    const key = `${integrationId} ${team.id}`
+    const key = `${integrationId}\u0000${team.id}`
     if (this.linearReportedTeams.has(key)) return
     this.linearReportedTeams.add(key)
     const name = linearChannelName(team)
