@@ -27,6 +27,45 @@ import {
   type CodexPermissionProfileOptions
 } from '../acp/codex-permission-profiles.js'
 
+/** Canonicalize the deepest existing prefix, so a path below a symlink still reads as the kernel sees it. */
+function existingRealpath(path: string): string {
+  let current = resolve(path)
+  const missing: string[] = []
+  for (;;) {
+    try {
+      return resolve(realpathSync(current), ...missing.reverse())
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) return resolve(path)
+      missing.push(basename(current))
+      current = parent
+    }
+  }
+}
+
+function inside(root: string, path: string): boolean {
+  const rel = relative(root, path)
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+}
+
+/** Every `.git` DIRECTORY this agent's checkouts own — where a worktree's index, refs, and objects land. */
+function gitMetadataDirsIn(agentRoot: string, primaryCheckout: string): string[] {
+  return [primaryCheckout, ...secondaryCheckoutsIn(agentRoot)]
+    .map((checkout) => join(checkout, '.git'))
+    .filter((gitDir) => existsSync(gitDir) && lstatSync(gitDir).isDirectory())
+}
+
+/** The same roots with NO outer boundary: one escaping the agent tree is left protected, not refused. */
+function unsandboxedGitMetadataRoots(scopeDir: string, trustedPrimaryCheckout?: string): string[] {
+  const agentRoot = existingRealpath(scopeDir)
+  const primaryCheckout = existingRealpath(trustedPrimaryCheckout ?? primaryCheckoutIn(agentRoot))
+  return compactReadRoots(
+    gitMetadataDirsIn(agentRoot, primaryCheckout)
+      .map((gitDir) => realpathSync(gitDir))
+      .filter((gitDir) => gitDir !== agentRoot && inside(agentRoot, gitDir))
+  )
+}
+
 function applyCodexPermissionProfile(
   env: Record<string, string>,
   opts: CodexPermissionProfileOptions,
@@ -187,10 +226,15 @@ export function prepareRuntimeLaunch(opts: {
   const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
   if (!opts.runInSandbox && !opts.isolateHome) {
     const env = { ...(opts.explicitEnv ?? {}) }
-    if (credentialProfile === 'codex' && opts.allowModelToolUnixSockets) {
+    // No outer boundary here: the Codex profile must both reopen the Git metadata and close hooks/config.
+    if (credentialProfile === 'codex') {
       applyCodexPermissionProfile(
         env,
-        { protectedRoots: [], allowModelToolUnixSockets: true },
+        {
+          protectedRoots: [],
+          writableGitMetadataRoots: unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout),
+          allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true
+        },
         (opts.hostEnv ?? process.env).CODEX_CONFIG
       )
     }
@@ -212,29 +256,11 @@ export function prepareRuntimeLaunch(opts: {
   }
 
   const stateSourceEnv = opts.stateSourceEnv ?? opts.hostEnv ?? process.env
-  const existingRealpath = (path: string): string => {
-    let current = resolve(path)
-    const missing: string[] = []
-    for (;;) {
-      try {
-        return resolve(realpathSync(current), ...missing.reverse())
-      } catch {
-        const parent = dirname(current)
-        if (parent === current) return resolve(path)
-        missing.push(basename(current))
-        current = parent
-      }
-    }
-  }
   const safeRoot = (path: string, label: string): string => {
     if (!isAbsolute(path)) throw new Error(`unsafe ${label} for sandboxing: ${path}`)
     const real = existingRealpath(path)
     if (real === sep) throw new Error(`unsafe ${label} for sandboxing: ${path}`)
     return real
-  }
-  const inside = (root: string, path: string): boolean => {
-    const rel = relative(root, path)
-    return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
   }
 
   // Validate every broad boundary and the current-agent layout before touching
@@ -315,11 +341,12 @@ export function prepareRuntimeLaunch(opts: {
   if (opts.runInSandbox) isolateHostSocketEnvironment(env, runtimeHome)
 
   if (!opts.runInSandbox) {
-    if (credentialProfile === 'codex' && opts.allowModelToolUnixSockets) {
+    if (credentialProfile === 'codex') {
       const privateCodex = join(runtimeHome, '.codex')
       applyCodexPermissionProfile(env, {
         protectedRoots: existsSync(privateCodex) ? [realpathSync(privateCodex)] : [],
-        allowModelToolUnixSockets: true
+        writableGitMetadataRoots: unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout),
+        allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true
       })
     }
     return { env, inheritProcessEnv: false, runtimeHome }
@@ -388,16 +415,13 @@ export function prepareRuntimeLaunch(opts: {
     throw new Error(`trusted primary checkout "${primaryCheckout}" is outside the agent root`)
   }
   const gitMetadataWriteRoots = compactReadRoots(
-    [primaryCheckout, ...secondaryCheckoutsIn(agentRoot)]
-      .map((checkout) => join(checkout, '.git'))
-      .filter((gitDir) => existsSync(gitDir) && lstatSync(gitDir).isDirectory())
-      .map((gitDir) => {
-        const trusted = safeRoot(gitDir, 'git metadata root')
-        if (trusted === agentRoot || !inside(agentRoot, trusted)) {
-          throw new Error(`git metadata root "${trusted}" is outside the agent root`)
-        }
-        return trusted
-      })
+    gitMetadataDirsIn(agentRoot, primaryCheckout).map((gitDir) => {
+      const trusted = safeRoot(gitDir, 'git metadata root')
+      if (trusted === agentRoot || !inside(agentRoot, trusted)) {
+        throw new Error(`git metadata root "${trusted}" is outside the agent root`)
+      }
+      return trusted
+    })
   )
   const claudeRuntime = Boolean(opts.runtime && isClaudeRuntimeDef(opts.runtime))
   if (claudeRuntime) {
@@ -475,9 +499,7 @@ export function prepareRuntimeLaunch(opts: {
     ...privateCodexStateRoots
   ])
   if (credentialProfile === 'codex') {
-    // Codex's :workspace profile protects `.git`. Re-open exactly the metadata directories the
-    // outer sandbox already made writable — the outer boundary stays the one that closes hooks and
-    // config. A secondary root materialized after this spawn is reopened on the next one.
+    // Codex's :workspace protects `.git`: re-open what the outer sandbox made writable, hooks/config excepted.
     const writableGitMetadataRoots = gitMetadataWriteRoots.filter((gitDir) =>
       boundary.writable.some((root) => inside(root, gitDir))
     )

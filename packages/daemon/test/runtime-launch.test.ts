@@ -32,6 +32,14 @@ function fixture(): { scopeDir: string; cwd: string; hostHome: string } {
   return { scopeDir, cwd, hostHome }
 }
 
+/** The inner Codex agent profile's filesystem table, which is also its exec sandbox's writable set. */
+function agentFilesystem(env: Record<string, string>): string {
+  const profile = JSON.parse(env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] }
+  return profile.configOverrides.find((value) =>
+    value.startsWith('permissions.agentconnect-protected-workspace.filesystem=')
+  )!
+}
+
 function coveredBy(paths: string[], target: string): boolean {
   return paths.some((root) => {
     const rel = relative(root, target)
@@ -431,6 +439,92 @@ describe('prepareRuntimeLaunch', () => {
         hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
       })
     ).toThrow(/trusted primary checkout .* is outside the agent root/)
+  })
+
+  // Unsandboxed, Codex's own profile is the whole boundary and it confines exec to the SESSION cwd.
+  it('opens the owner checkout .git to an unsandboxed Codex launch, hooks and config excepted', () => {
+    const { scopeDir, hostHome } = fixture()
+    const primaryGit = join(scopeDir, 'workspace', '.git')
+    const cwd = join(scopeDir, 'worktrees', 'session-1')
+    mkdirSync(join(primaryGit, 'worktrees', 'session-1'), { recursive: true })
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(cwd, '.git'), `gitdir: ${join(primaryGit, 'worktrees', 'session-1')}\n`)
+
+    // No credential channel: the carve-back is owed to every unsandboxed Codex launch, not only a wired one.
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: false,
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    expect(launch.sandbox).toBeUndefined()
+    const owner = realpathSync(primaryGit)
+    expect(agentFilesystem(launch.env)).toContain(`"${owner}" = "write"`)
+    expect(agentFilesystem(launch.env)).toContain(`"${join(owner, 'hooks')}" = "deny"`)
+    expect(agentFilesystem(launch.env)).toContain(`"${join(owner, 'config')}" = "deny"`)
+  })
+
+  it('follows the daemon-named checkout and every secondary root when the sandbox is off', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const legacyGit = join(scopeDir, 'legacy-checkout', '.git')
+    const secondaryGit = join(scopeDir, 'repos', 'acme', 'infra', 'checkout', '.git')
+    mkdirSync(legacyGit, { recursive: true })
+    mkdirSync(secondaryGit, { recursive: true })
+    mkdirSync(join(cwd, '.git'), { recursive: true })
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: false,
+      trustedPrimaryCheckout: join(scopeDir, 'legacy-checkout'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const table = agentFilesystem(launch.env)
+    expect(table).toContain(`"${realpathSync(legacyGit)}" = "write"`)
+    expect(table).toContain(`"${realpathSync(secondaryGit)}" = "write"`)
+    // The default-layout `.git` beside it was never the agent's checkout, so it stays protected.
+    expect(table).not.toContain(realpathSync(join(cwd, '.git')))
+  })
+
+  it('leaves a checkout outside the agent root protected rather than opening it unconfined', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const outsideGit = join(dirname(scopeDir), 'elsewhere', '.git')
+    mkdirSync(outsideGit, { recursive: true })
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: false,
+      allowModelToolUnixSockets: true,
+      trustedPrimaryCheckout: join(dirname(scopeDir), 'elsewhere'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const profile = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] }
+    expect(profile.configOverrides.join('\n')).not.toContain(realpathSync(outsideGit))
+  })
+
+  // The gate widened to "is Codex", so pin that a launch with nothing to carve back still gets no profile.
+  it('adds no Codex profile unsandboxed without Git metadata or the credential channel', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: false,
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    expect(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]).toBeUndefined()
   })
 
   it('rejects root-level protected paths instead of generating an ineffective policy', () => {

@@ -4011,7 +4011,8 @@ export class Daemon {
               this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials, gitlabCredentials)
           : undefined,
         trustedWorkspaceWriteRoots: runInSandbox ? this.workspaces.trustedWorkspaceWriteRoots(agent) : undefined,
-        trustedPrimaryCheckout: runInSandbox ? this.workspaces.localPrimaryCheckoutFor(agent) : undefined,
+        // Not sandbox-gated: an unconfined Codex launch needs it too, its own profile protects `.git`.
+        trustedPrimaryCheckout: this.workspaces.localPrimaryCheckoutFor(agent),
         sandboxMechanism: this.sandboxMechanism,
         mcpSocketPath: mcpSocketPath(this.root),
         // Inner tool sandboxes must CONNECT to the daemon socket for either
