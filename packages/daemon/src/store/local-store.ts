@@ -275,6 +275,10 @@ export interface SessionRecord {
   // back into its parent when it finishes or fails. STICKY (never cleared by a later wake that
   // omits it), so the directive survives resume and later human-triggered turns.
   needsParentReply?: number | null
+  // The platform module's standing block (`NormalizedMessage.standingContext`), persisted with the
+  // logical session (first-wins) so a cold resume or a continuation that reconstructs its message
+  // without the bag still re-asserts it. NULL on rows from before it existed and on platforms without one.
+  platformStanding?: string | null
 }
 
 export type PermissionRequestStatus = 'pending' | 'allowed' | 'denied' | 'expired'
@@ -857,7 +861,7 @@ function restrictPath(path: string, mode: number): void {
  * fresh databases and every established one fails at query time. `SCHEMA_MIGRATIONS`
  * asserts the two stay in lockstep for exactly that reason.
  */
-const SCHEMA_VERSION = 15
+const SCHEMA_VERSION = 16
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1003,7 +1007,9 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
       ALTER TABLE permission_requests ADD COLUMN notifyIntegrationId TEXT;
       ALTER TABLE permission_requests ADD COLUMN notifyChannel TEXT;
       ALTER TABLE permission_requests ADD COLUMN notifyTs TEXT;
-    `)
+    `),
+  // The platform standing block travels with the logical session, not only the message that opened it.
+  async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN platformStanding TEXT')
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1115,7 +1121,8 @@ export class LocalStore {
         sourceBindingKind TEXT, directDestination INTEGER,
         -- session-visibility.md §4.1: persisted so EVERY event/session re-emit
         -- carries them, not just the one dispatch that knew the message.
-        conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT
+        conversationKind TEXT, tenantScope TEXT, launchCorrelationId TEXT,
+        platformStanding TEXT
       );
       -- A !stop can arrive while a cold session is still materializing, before the
       -- sessions row exists. Keep the mute independently keyed so that stop survives a
@@ -2402,13 +2409,13 @@ export class LocalStore {
         `INSERT INTO sessions
            (key, sessionId, agentId, platform, channel, thread, transportScope, acpSessionId, state, lastDeliveredTs, updatedAt, muted, triggeredBy, threadUrl, memoryProvider, workspaceIsolation, originSessionId, needsParentReply,
             externalProvider, externalRealmKey, externalResourceKind, externalResourceKey, externalIntegrationId,
-            externalOriginJson, sourceBindingKind)
+            externalOriginJson, sourceBindingKind, platformStanding)
          VALUES
            (@key, COALESCE((SELECT sessionId FROM session_outward_ids WHERE key = @key), @sessionId), @agentId, @platform, @channel, @thread, @transportScope, @acpSessionId, @state, @lastDeliveredTs, @updatedAt,
             CASE WHEN EXISTS (SELECT 1 FROM session_mutes WHERE key = @key) THEN 1 ELSE NULL END,
             @triggeredBy, @threadUrl, @memoryProvider, @workspaceIsolation, @originSessionId, @needsParentReply,
             @externalProvider, @externalRealmKey, @externalResourceKind, @externalResourceKey, @externalIntegrationId,
-            @externalOriginJson, @sourceBindingKind)
+            @externalOriginJson, @sourceBindingKind, @platformStanding)
          ON CONFLICT(key) DO UPDATE SET
            sessionId=COALESCE(sessions.sessionId, excluded.sessionId),
            -- The key's own components. A row this daemon minted an outward id into before the
@@ -2448,7 +2455,9 @@ export class LocalStore {
            needsParentReply=CASE
              WHEN excluded.needsParentReply = 1 THEN 1
              ELSE sessions.needsParentReply
-           END`
+           END,
+           -- First-wins like the parent link: the block that opened the session is the session's.
+           platformStanding=COALESCE(sessions.platformStanding, excluded.platformStanding)`
       )
       .run({
         key: rec.key,
@@ -2474,7 +2483,8 @@ export class LocalStore {
         externalOriginJson: rec.externalOriginJson ?? null,
         sourceBindingKind: rec.sourceBindingKind ?? null,
         originSessionId: rec.originSessionId ?? null,
-        needsParentReply: rec.needsParentReply === 1 ? 1 : null
+        needsParentReply: rec.needsParentReply === 1 ? 1 : null,
+        platformStanding: rec.platformStanding ?? null
       })
   }
 

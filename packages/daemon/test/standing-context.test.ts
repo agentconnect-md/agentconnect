@@ -58,3 +58,23 @@ describe('buildStandingContext with workspace roots', () => {
     expect(buildStandingContext({ ...BASE, workspaceRoots: [] })).toEqual(buildStandingContext(BASE))
   })
 })
+
+describe('buildStandingContext with a platform standing block', () => {
+  const BLOCK = '# Linear\n- Issue: ENG-1 (id issue-uuid)\n\nWorking here: the issue is the record.'
+
+  it('seats the block after the roots and re-asserts it on resume', () => {
+    const context = buildStandingContext({ ...BASE, workspaceRoots: ROOTS, platformStanding: `${BLOCK}\n` })
+
+    expect(context.platformAppend).toBe(BLOCK)
+    expect(context.resumeSystemContext).toContain(BLOCK)
+    expect(context.sessionContext).toContain(BLOCK)
+    const resume = context.resumeSystemContext
+    expect(resume.indexOf('# Linear')).toBeGreaterThan(resume.indexOf('# Additional repositories'))
+    expect(resume.indexOf('# Linear')).toBeLessThan(resume.indexOf(context.collabAppend))
+  })
+
+  it('leaves the context byte-identical when the delivery carried none', () => {
+    expect(buildStandingContext({ ...BASE, platformStanding: '' })).toEqual(buildStandingContext(BASE))
+    expect(buildStandingContext({ ...BASE, platformStanding: '  \n' })).toEqual(buildStandingContext(BASE))
+  })
+})

@@ -24,6 +24,8 @@ export interface RuntimeSessionIdentity {
   needsParentReply?: boolean
   /** Ingress-supplied title, already trimmed and only for a brand-new logical session. */
   initialTitle?: string
+  /** The platform standing block the opening message carried; persisted first-wins on the row. */
+  platformStanding?: string
 }
 
 export interface OpenRuntimeSessionInput {
@@ -195,7 +197,8 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
       memoryProvider: identity.memoryProvider,
       workspaceIsolation: identity.workspaceIsolation,
       ...(identity.originSessionId ? { originSessionId: identity.originSessionId } : {}),
-      ...(identity.needsParentReply ? { needsParentReply: 1 } : {})
+      ...(identity.needsParentReply ? { needsParentReply: 1 } : {}),
+      ...(identity.platformStanding ? { platformStanding: identity.platformStanding } : {})
     }
     await store.upsertSession(rec)
     if (identity.initialTitle) await store.setSessionTitle(identity.key, identity.initialTitle)

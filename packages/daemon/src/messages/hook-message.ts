@@ -182,23 +182,56 @@ export function githubOpensReviewGeneration(
   )
 }
 
-function githubReviewDecisionHint(
-  c: HookContext,
-  github: GithubHookMetadata | undefined,
-  reviewPolicy: RdMsgHook['reviewPolicy']
-): string {
-  if (github?.subjectKind !== 'pull_request') return ''
-  if (reviewPolicy === 'off') return ''
-  const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
-  if (!githubOpensReviewGeneration(event, github, reviewPolicy)) return ''
-  const passingEvent = reviewPolicy === 'full' ? 'APPROVE' : 'COMMENT'
-  const failingEvent = reviewPolicy === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
-  return (
-    ' This delivery opens a review generation for the current PR revision. If you finish reviewing this revision, ' +
-    `record the actual verdict through \`submitCodeReview\`: use ${passingEvent} + pass when it passes, or ` +
-    `${failingEvent} + fail when it has blocking findings. An approval or rejection from an earlier revision does ` +
-    'not complete this revision; do not merely describe the verdict in your final reply.'
-  )
+/** The verdict events a hook's review policy allows: what `submitCodeReview` may record. */
+function reviewVerdictEvents(reviewPolicy: RdMsgHook['reviewPolicy']): { passing: string; failing: string } {
+  return {
+    passing: reviewPolicy === 'full' ? 'APPROVE' : 'COMMENT',
+    failing: reviewPolicy === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
+  }
+}
+
+/** The one clause every per-turn line keeps: the standing rules can fade from a long session's context. */
+const DAEMON_OWNS_REPLY = 'The daemon owns the reply; post nothing yourself.'
+
+/** The block's scope line: a hook-origin session can be continued from the console, where no poster runs
+ *  (webchat-cross-integration-continuation.md §9), so every rule binds a DELIVERY turn, never the session.
+ *  Keyed on what survives final assembly — the review orchestrator appends its workspace block AFTER the
+ *  answer line, so the line is a presence, never a suffix. */
+const DELIVERY_SCOPE = (host: string): string =>
+  `These rules govern a turn opened by a ${host} delivery — its text begins \`${host} \` and contains a line saying ` +
+  'how the daemon answers it (a trusted workspace or revision block may follow that line). A turn opened from the ' +
+  'console names no such thread: answer it in the session, the daemon posts nothing for it, and any code-host tool ' +
+  'you hold acts at your own discretion.'
+
+/**
+ * The GitHub standing block (`NormalizedMessage.standingContext`): everything about answering
+ * here that does not change between deliveries of one session — reply ownership, the no-direct-
+ * write rule, how a review generation and an inline thread are answered, and when local files
+ * may be trusted. The verdict events depend on the hook's review policy and so stay per turn.
+ */
+function githubStandingContext(): string {
+  return [
+    '# GitHub',
+    DELIVERY_SCOPE('GitHub'),
+    '- On a delivery turn, your final reply is kept in the session transcript and the daemon posts it back to the ' +
+      'thread that turn names; it exclusively owns that reply, so return one self-contained final answer and never post it yourself.',
+    '- On a delivery turn, do NOT create, update, or delete GitHub comments or formal reviews through `gh`, another CLI, ' +
+      'a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files).',
+    '- A delivery that opens a review generation says so, and names the verdict events. Then use only the structured ' +
+      '`submitCodeReview` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline review comments; its `body` must be a ' +
+      'complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, ' +
+      'or otherwise unresolved formal attempt suppresses the ordinary comment, which is posted only when no formal review ' +
+      'was attempted or the attempt definitively returns `not_submitted`. An approval or rejection from an earlier revision ' +
+      'does not complete a later one; do not merely describe the verdict in your final reply. Any other delivery cannot ' +
+      'submit a formal review.',
+    '- A delivery that names an inline review conversation is answered there. When it lists several review threads from ' +
+      'one submitted review, use the structured `replyGithubReviewThreads` tool exactly once with one answer per listed ' +
+      'root and keep the final reply transcript-only.',
+    '- Trust local files and repository traces only when the delivery says the daemon verified the checkout at the trusted ' +
+      'revision; otherwise the worktree does not prove it matches the PR revision — use GitHub read-only inspection or ' +
+      'revision-addressed Git object reads for PR facts, never working-tree paths or HEAD alone, and never infer a finding ' +
+      'from another checkout.'
+  ].join('\n')
 }
 
 /** A body that quotes the delimiters must not be able to CLOSE the fence (or
@@ -225,27 +258,8 @@ function trustedInlineReplyTarget(
   return { repo: github.repoFullName, number: github.pullNumber }
 }
 
-function githubWorkspaceCheckHint(github: GithubHookMetadata | undefined, exactReviewGeneration: boolean): string {
-  if (github?.subjectKind !== 'pull_request') return ''
-  if (!exactReviewGeneration) {
-    return (
-      ' This delivery preserves the conversational worktree and does not prove its files match the PR revision. For ' +
-      'PR facts, use GitHub read-only tools or revision-addressed Git object reads; do not rely on working-tree paths ' +
-      'or HEAD alone.'
-    )
-  }
-  return (
-    ' Before trusting local files or repository traces, verify that the local HEAD is the trusted PR head or a merge ' +
-    'whose parents are exactly the trusted base and head shown above. If that cannot be proven, use GitHub read-only ' +
-    'inspection for the exact revision instead; never infer a finding from another checkout.'
-  )
-}
-
-/** Trailing instruction for github fires on a NUMBERED thread (issue/PR): the
- *  daemon is the sole writer of the reply comment, so the agent must return its
- *  answer rather than mutate comments/reviews through CLI, MCP, connector, or API.
- *  Only emitted when the poster will actually run (a thread number exists); push
- *  fires have no thread, so they never see this. */
+/** The per-turn line for a github fire on a NUMBERED thread (issue/PR): what THIS delivery is and
+ *  how it is answered — the standing block carries the rules. Push fires have no thread and get none. */
 function githubReplyHint(
   c: HookContext,
   github: GithubHookMetadata | undefined,
@@ -254,34 +268,31 @@ function githubReplyHint(
   const inlineTarget = trustedInlineReplyTarget(c, github)
   const where = inlineTarget ? `${inlineTarget.repo}#${inlineTarget.number}` : `${c.repo ?? 'this thread'}#${c.number}`
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
-  const reviewGeneration = githubOpensReviewGeneration(event, github, reviewPolicy)
   if (inlineTarget) {
-    const batchedReview = github?.pullRequestReviewId !== undefined
-    return [
-      '',
-      `Answer the triggering inline review conversation on ${where}. ${
-        batchedReview
-          ? 'The daemon may group root comments from the same submitted review into one prompt. For a single comment, return one self-contained final answer; when the prompt lists multiple review threads, use the structured `replyGithubReviewThreads` tool exactly once with one answer per listed root and keep the final reply transcript-only.'
-          : 'Return one self-contained final answer; the daemon posts it back to the existing review thread automatically.'
-      } The daemon exclusively owns every inline reply. Do NOT create, update, or delete GitHub comments or formal reviews through \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files).${githubWorkspaceCheckHint(github, false)}`
-    ].join('\n')
+    const batched = github?.pullRequestReviewId !== undefined
+    return (
+      `\n\nAnswer the triggering inline review conversation on ${where}; the daemon posts your final back to the ` +
+      `existing review thread automatically.${
+        batched ? ' This prompt may group root comments from the same submitted review; answer every listed root.' : ''
+      } ${DAEMON_OWNS_REPLY}`
+    )
   }
   if (c.event === 'pull_request_review_comment') {
-    return [
-      '',
-      `Return one self-contained final answer for the triggering review conversation. This delivery does not carry trusted inline-thread metadata, so the daemon posts that final back to ${where} automatically as one ordinary GitHub comment. Formal GitHub reviews are unavailable for this review-comment event family, and the daemon exclusively owns the fallback comment. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return the final answer for the daemon-owned fallback comment.${githubWorkspaceCheckHint(github, false)}`
-    ].join('\n')
+    return (
+      `\n\nReply to the triggering review conversation on ${where}. This delivery does not carry trusted inline-thread ` +
+      'metadata, so the daemon posts your final automatically as one ordinary GitHub comment; formal GitHub reviews are ' +
+      `unavailable for this review-comment event family. ${DAEMON_OWNS_REPLY}`
+    )
   }
-  if (!reviewGeneration) {
-    return [
-      '',
-      `Return one self-contained final answer for this GitHub conversation. The daemon posts that final back to ${where} automatically and exclusively owns the reply. Formal GitHub review submission is unavailable for this delivery. Do NOT create, update, or delete GitHub comments or formal reviews through a tool, \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection, then return the final answer for the daemon-owned reply.${githubWorkspaceCheckHint(github, false)}`
-    ].join('\n')
+  if (!githubOpensReviewGeneration(event, github, reviewPolicy)) {
+    return `\n\nReply to this GitHub conversation on ${where}. Formal GitHub review submission is unavailable for this delivery. ${DAEMON_OWNS_REPLY}`
   }
-  return [
-    '',
-    `Your final reply is kept in the session transcript and is posted back to ${where} automatically as an ordinary GitHub comment only when no formal review was attempted or the current attempt definitively returns \`not_submitted\`. Keep it self-contained; the daemon exclusively owns that fallback reply comment. Use only the structured \`submitCodeReview\` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline review comments. Its \`body\` must be a complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal attempt suppresses the ordinary comment.${githubReviewDecisionHint(c, github, reviewPolicy)} Do NOT create, update, or delete GitHub comments or formal reviews through \`gh\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files), then return a self-contained final reply for the transcript and fallback path.${githubWorkspaceCheckHint(github, true)}`
-  ].join('\n')
+  const { passing, failing } = reviewVerdictEvents(reviewPolicy)
+  return (
+    '\n\nThis delivery opens a review generation for the current PR revision: record the verdict through ' +
+    `\`submitCodeReview\` — use ${passing} + pass when it passes, or ${failing} + fail when it has blocking findings. ` +
+    DAEMON_OWNS_REPLY
+  )
 }
 
 /** The github-kind turn text: a trusted metadata header + the FENCED excerpt.
@@ -348,40 +359,46 @@ export function gitlabOpensReviewGeneration(
   )
 }
 
-/** The §15 verdict instruction. REQUEST_CHANGES availability is stated rather than
- *  omitted: no relay-delivered metadata carries the service account's reviewer record,
- *  so the adapter is the first place that fact exists and it refuses before any draft. */
-function gitlabReviewDecisionHint(reviewPolicy: RdMsgHook['reviewPolicy']): string {
-  const passingEvent = reviewPolicy === 'full' ? 'APPROVE' : 'COMMENT'
-  const failingEvent = reviewPolicy === 'comment' ? 'COMMENT' : 'REQUEST_CHANGES'
-  return (
-    ' This delivery opens a review generation for the current merge-request revision. If you finish reviewing this ' +
-    `revision, record the actual verdict through \`submitCodeReview\`: use ${passingEvent} + pass when it passes, or ` +
-    `${failingEvent} + fail when it has blocking findings.${
-      failingEvent === 'REQUEST_CHANGES'
-        ? ' REQUEST_CHANGES works only while a user has requested the project service account as a reviewer in ' +
-          'GitLab; if it is refused for that reason, record the same finding with COMMENT + fail.'
-        : ''
-    } An approval or rejection from an earlier revision does not complete this revision; do not merely describe the ` +
-    'verdict in your final reply.'
-  )
+/**
+ * The GitLab standing block — the same split as GitHub's. REQUEST_CHANGES availability is stated
+ * rather than omitted: no relay-delivered metadata carries the service account's reviewer record,
+ * so the adapter is the first place that fact exists and it refuses before any draft.
+ */
+function gitlabStandingContext(): string {
+  return [
+    '# GitLab',
+    DELIVERY_SCOPE('GitLab'),
+    '- On a delivery turn, your final reply is kept in the session transcript and the daemon posts it back to the ' +
+      'thread that turn names as one note; it exclusively owns that reply, so return one self-contained final answer and never post it yourself.',
+    '- On a delivery turn, do NOT create, update, or delete GitLab notes, drafts, or approvals through `glab`, another ' +
+      'CLI, a connector, or a direct API call — those paths would race or double-post. Any other effect — a separate comment, a discussion ' +
+      'reply, a merge request, a pipeline action — goes through the structured code-host tools when you have them; every ' +
+      'other GitLab access is READ-only inspection.',
+    '- A delivery that opens a review generation says so, and names the verdict events. Then use only the structured ' +
+      '`submitCodeReview` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline diff comments; its `body` must be a ' +
+      'complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, ' +
+      'or otherwise unresolved formal attempt suppresses the ordinary note, which is posted only when no formal review ' +
+      'was attempted or the attempt definitively returns `not_submitted`. REQUEST_CHANGES works only while a user has ' +
+      'requested the project service account as a reviewer in GitLab; if it is refused for that reason, record the same ' +
+      'finding with COMMENT + fail. An approval or rejection from an earlier revision does not complete a later one; do ' +
+      'not merely describe the verdict in your final reply.'
+  ].join('\n')
 }
 
-/** The daemon-owned GitLab reply promise (§14.1) — issue/MR subjects only; a push has no thread to answer. */
+/** The per-turn line for a GitLab issue/MR subject (§14.1); a push has no thread to answer. */
 function gitlabReplyHint(c: HookContext, gitlab: GitlabHookMetadata, reviewPolicy: RdMsgHook['reviewPolicy']): string {
   if (gitlab.target.kind === 'push') return ''
   const where = gitlabSubjectRef(c, gitlab)
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? '')
   if (gitlabOpensReviewGeneration(event, gitlab, reviewPolicy)) {
-    return [
-      '',
-      `Your final reply is kept in the session transcript and is posted back to ${where} automatically as one ordinary GitLab note only when no formal review was attempted or the current attempt definitively returns \`not_submitted\`. Keep it self-contained; the daemon exclusively owns that fallback note. Use only the structured \`submitCodeReview\` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline diff comments. Its \`body\` must be a complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, or otherwise unresolved formal attempt suppresses the ordinary note.${gitlabReviewDecisionHint(reviewPolicy)} Do NOT create, update, or delete GitLab notes, drafts, or approvals through \`glab\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Every other GitLab access is READ-only inspection.`
-    ].join('\n')
+    const { passing, failing } = reviewVerdictEvents(reviewPolicy)
+    return (
+      '\n\nThis delivery opens a review generation for the current merge-request revision: record the verdict through ' +
+      `\`submitCodeReview\` — use ${passing} + pass when it passes, or ${failing} + fail when it has blocking findings. ` +
+      DAEMON_OWNS_REPLY
+    )
   }
-  return [
-    '',
-    `Return one self-contained final answer for ${where}. The daemon posts it back to that GitLab thread automatically as one note and exclusively owns the reply. Do NOT create, update, or delete GitLab notes through \`glab\`, another CLI, a connector, or a direct API call — those paths would race or double-post. Any other effect — a separate comment, a discussion reply, a merge request, a pipeline action — goes through the structured code-host tools when you have them; every other GitLab access is READ-only inspection.`
-  ].join('\n')
+  return `\n\nReply to ${where}; the daemon posts your final back to that GitLab thread automatically as one note. ${DAEMON_OWNS_REPLY}`
 }
 
 /** The gitlab-kind turn text: a trusted metadata header + the FENCED excerpt + the reply promise. */
@@ -412,6 +429,25 @@ function buildGitlabHookText(
       ...(c.truncated ? ['(body truncated — pull the full thread yourself through the authorized read path)'] : [])
     ].join('\n') + tail
   )
+}
+
+/**
+ * The session-stable half of a code-host delivery (`NormalizedMessage.standingContext`): the rules of
+ * answering here, read once and persisted with the logical session. Only a delivery that the daemon
+ * will answer (a numbered thread or a trusted inline target) opens one; a push-only session learns
+ * it from the first such delivery. Generic webhooks carry no reply promise and so get none.
+ */
+export function buildHookStandingContext(msg: RdMsgHook): string | undefined {
+  if (msg.context?.source === 'gitlab' && msg.gitlab) {
+    return msg.gitlab.target.kind === 'push' ? undefined : gitlabStandingContext()
+  }
+  if (msg.context?.source === 'github') {
+    const c = msg.context
+    return c.number !== undefined || trustedInlineReplyTarget(c, msg.github) !== undefined
+      ? githubStandingContext()
+      : undefined
+  }
+  return undefined
 }
 
 /** The turn text: the caller's payload-borne message (+ leftover fields as context). */
@@ -470,6 +506,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
   // the display/order key in epoch milliseconds and append the complete identity
   // so distinct same-millisecond deliveries cannot share a transcript primary key.
   const transcriptTs = `${Date.parse(msg.firedAt)}|${msg.msgId}`
+  const standingContext = buildHookStandingContext(msg)
   const target = msg.target
   // With an anchoring target the fire behaves like a cron's: the message lives
   // on the target platform/channel, the pre-anchor thread is a fresh synthetic
@@ -490,6 +527,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
       sessionTriggerId,
       text: buildHookText(msg),
       ...(initialSessionTitle ? { initialSessionTitle } : {}),
+      ...(standingContext ? { standingContext } : {}),
       mentionedBots: [],
       isDm: false,
       trigger: 'hook'
@@ -517,6 +555,7 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
     sessionTriggerId,
     text: buildHookText(msg),
     ...(initialSessionTitle ? { initialSessionTitle } : {}),
+    ...(standingContext ? { standingContext } : {}),
     mentionedBots: [],
     isDm: false,
     trigger: 'hook',

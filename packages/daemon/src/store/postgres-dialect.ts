@@ -120,6 +120,7 @@ export const canonicalColumns = [
   'permissionModeOverride',
   'permissionModes',
   'platformMessageId',
+  'platformStanding',
   'pluginId',
   'postId',
   'posterPublishState',

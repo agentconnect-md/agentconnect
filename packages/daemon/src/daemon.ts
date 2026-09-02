@@ -36,6 +36,7 @@ import {
   slackTsForWallClock,
   quotedSourceBlock
 } from './session/session-manager.js'
+import { clampRuntimeTitle, isPromptEchoTitle, promptEchoPrefix } from './session/derive-title.js'
 import {
   ThreadContextCoordinator,
   contextUpdateText,
@@ -430,7 +431,6 @@ import {
   readLinearExt,
   LinearStopActionSchema,
   type LinearAdapterExt,
-  type LinearIssueFacts,
   type LinearStopAction,
   LINEAR_STOP_RESPONSE_BODY,
   LINEAR_UNSUPPORTED_SURFACE_BODY
@@ -620,10 +620,6 @@ type AgentListSnapshot = { agents: LoadedAgent[]; activeFleet: LoadedAgent[] }
 
 /** How long a Linear delivery waits for the delegator's name before dispatching with the id. */
 const LINEAR_ACTOR_LOOKUP_MS = 1500
-
-/** Deadline on the §8 context block's one issue read — it ABORTS the request, and the ≤10 s ack
- *  (§10.1) is downstream of the delivery this read is part of. */
-const LINEAR_ISSUE_FACTS_MS = 2500
 
 /** The relay retries a delivery every 5 s, five times, then drops it: an ack slower than one
  *  try is logged with the stage it sat in, so a silent stall names its step. */
@@ -6787,12 +6783,8 @@ export class Daemon {
         if (name) normalized.sender = { ...normalized.sender, name }
       }
     }
-    // §13 layer 3: one deadline-bounded read, off the send queue so it can never sit ahead of the
-    // ack, fills the trusted context block with the coordinates the Linear tool family takes. A
-    // miss loses the block, never the turn — the header still names the issue from the bag.
-    trace.stage = 'linear:issue-facts'
-    const facts = conn && ext.issueId ? await this.linearIssueFacts(conn, ext.issueId) : undefined
-    applyLinearMessageStrategy(normalized, facts)
+    // §8: the per-turn prompt plus the session-stable standing block, both off the bag — no read.
+    applyLinearMessageStrategy(normalized)
     // §9.2's fast path for a team created after the install: the label is the TEAM's, so it comes
     // off the bag — never the issue, which would thrash the one display slot every sibling session
     // in the team shares. The issue rides `threadUrl` and the §8 trusted header, both session-scoped.
@@ -6846,18 +6838,6 @@ export class Daemon {
       timer.unref?.()
     })
     return await Promise.race([lookup, deadline])
-  }
-
-  /** The §8 context block's facts: one direct read off the paced send queue, cancelled at
-   *  {@link LINEAR_ISSUE_FACTS_MS} — a refusal, an abort or an unreadable issue leaves the block
-   *  off, at debug, and the turn dispatches on the header alone. */
-  private async linearIssueFacts(conn: LinearConnection, issueId: string): Promise<LinearIssueFacts | undefined> {
-    try {
-      return await conn.issueFacts(issueId, { signal: AbortSignal.timeout(LINEAR_ISSUE_FACTS_MS) })
-    } catch (err) {
-      this.log.debug(`linear: issue facts lookup failed (${issueId}): ${formatErr(err)}`)
-      return undefined
-    }
   }
 
   /** Has this daemon already served this exact Linear delivery? A read failure answers NO:
@@ -11230,6 +11210,11 @@ export class Daemon {
     while (true) {
       if (p.plan.stageAnswer) this.discardStagedAttempt(p)
 
+      // Fingerprint what this attempt sends, so a runtime fallback title that merely joins
+      // these blocks is recognized as an echo when it streams back (onAcpUpdate).
+      p.promptEchoPrefix = promptEchoPrefix(
+        promptBlocks.flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : []))
+      )
       // Start-fence linearization: no await occurs between queue coalescing above
       // (or the prior regeneration decision) and initiating this ACP request.
       const promptPromise = host.prompt(sessionId, promptBlocks)
@@ -13347,17 +13332,26 @@ export class Daemon {
     })
     if (p?.outputSuppressed) return
     // codex-acp >= 1.1.3 auto-titles an untitled session from its raw prompt text
-    // (all first-prompt text blocks joined, unbounded). For runtimes that carry the
-    // standing context inline as the first prompt block, that "title" is an echo of
-    // internal agent/memory context — drop the whole update before it is buffered,
-    // persisted, streamed to webchat, or recorded (issue #659). Real titles (a user
-    // rename, a semantic runtime summary) do not start with the agent-meta block.
+    // (all first-prompt text blocks joined, unbounded). Whatever that prompt led with, the
+    // "title" is an echo of what we just sent — internal agent/memory context on a session
+    // that inlined standing context, the caller's whole message on one that did not (a turn
+    // after `session/load`). Drop it before it is buffered, persisted, streamed to webchat,
+    // or recorded (issue #659). Real titles do not begin with the prompt we sent.
     if (
       update?.sessionUpdate === 'session_info_update' &&
       typeof update.title === 'string' &&
-      isStandingContextTitleEcho(update.title)
+      (isStandingContextTitleEcho(update.title) || isPromptEchoTitle(update.title, p?.promptEchoPrefix ?? ''))
     )
       return
+    // Clamp a surviving runtime title ONCE, here, to the one-line 80-character shape every
+    // other title source produces — like the secret mask above, so the persisted row, Slack,
+    // the live webchat stream, and the recorder cannot disagree. A whitespace-only push sets
+    // nothing anywhere. Must follow the echo test, which reads the unclamped title.
+    if (update?.sessionUpdate === 'session_info_update' && typeof update.title === 'string') {
+      const clamped = clampRuntimeTitle(update.title)
+      if (clamped === undefined) return
+      update = { ...update, title: clamped }
+    }
     const isEarlyMetadata =
       update?.sessionUpdate === 'usage_update' ||
       (update?.sessionUpdate === 'session_info_update' && update.title !== undefined)
@@ -13406,8 +13400,8 @@ export class Daemon {
       // both before touching another logical session if two adapters reuse an id.
       if (rec?.agentId === agentId && rec.acpSessionId === sessionId) {
         await this.persistSessionTitle(rec, update.title)
-        // Runtime title verbatim (trimmed) — never the console's first-message fallback.
-        const slackTitle = typeof update.title === 'string' ? update.title.trim() : ''
+        // The clamped runtime title — never the console's first-message fallback.
+        const slackTitle = typeof update.title === 'string' ? update.title : ''
         if (p && turnChromeFor(p.plan.platform).sessionTitle && slackTitle) {
           this.enqueueApply(p, { kind: 'set-title', text: slackTitle })
         } else if (!p && slackTitle) {

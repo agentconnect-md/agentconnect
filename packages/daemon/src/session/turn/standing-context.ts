@@ -72,6 +72,8 @@ export type StandingContextInput = {
   memoryIndex: string
   /** Whether the host carries standing context on the system-prompt meta channel. */
   usesMeta: boolean
+  /** The platform module's own standing block (`NormalizedMessage.standingContext`), if any. */
+  platformStanding?: string
 }
 
 /** The assembled standing-context strings for one turn. */
@@ -80,6 +82,8 @@ export type StandingContext = {
   agentMeta: string
   /** The additional repositories block; '' when the session has no secondary root. */
   workspaceRootsAppend: string
+  /** The platform module's standing block; '' when the delivery carried none. */
+  platformAppend: string
   collabAppend: string
   parentReplyAppend: string
   /** Durable standing rules re-asserted on session/load — no memory index. */
@@ -296,9 +300,18 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
   const memoryAppend = buildMemoryAppend(input.memoryIndex)
   const agentMeta = buildAgentMeta(input)
   const workspaceRootsAppend = buildWorkspaceRootsAppend(input.workspaceRoots)
+  // Session-stable like the roots, so it is re-asserted on resume in the same seat.
+  const platformAppend = input.platformStanding?.trim() ?? ''
   const collabAppend = COLLAB_APPEND
   const parentReplyAppend = buildParentReplyAppend(input.needsReplyToParent, input.parentSessionId)
-  const resumeSystemContext = [agentMeta, workspaceRootsAppend, collabAppend, parentReplyAppend, NO_RESPONSE_RULE]
+  const resumeSystemContext = [
+    agentMeta,
+    workspaceRootsAppend,
+    platformAppend,
+    collabAppend,
+    parentReplyAppend,
+    NO_RESPONSE_RULE
+  ]
     .filter(Boolean)
     .join('\n\n')
   const sessionContext = [resumeSystemContext, memoryAppend].filter(Boolean).join('\n\n')
@@ -306,6 +319,7 @@ export function buildStandingContext(input: StandingContextInput): StandingConte
     memoryAppend,
     agentMeta,
     workspaceRootsAppend,
+    platformAppend,
     collabAppend,
     parentReplyAppend,
     resumeSystemContext,

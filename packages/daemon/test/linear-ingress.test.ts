@@ -169,7 +169,6 @@ async function boot(opts: BootOpts = {}) {
   )
   const posted: Posted[] = []
   const attached: { issueId: string; url: string; title: string; subtitle?: string }[] = []
-  const factsRead: string[] = []
   const store = (daemon as any).store
   const conn = {
     integrationId: INTEGRATION,
@@ -185,10 +184,6 @@ async function boot(opts: BootOpts = {}) {
     async updateSession() {},
     async createIssueAttachment(input: { issueId: string; url: string; title: string; subtitle?: string }) {
       attached.push(input)
-    },
-    async issueFacts(issueId: string) {
-      factsRead.push(issueId)
-      return { identifier: 'TEAM-123', team: { key: 'TEAM', name: 'Engineering' }, state: { name: 'In Progress' } }
     }
   }
   ;(daemon as any).lnConnByIntegration.set(INTEGRATION, conn)
@@ -230,7 +225,7 @@ async function boot(opts: BootOpts = {}) {
     for (let i = 0; i < 4; i += 1) await pendingRows()
     expect(await pendingRows()).toBe(0)
   }
-  return { daemon, posted, attached, factsRead, reports, store, pendingRows, turnSettled }
+  return { daemon, posted, attached, reports, store, pendingRows, turnSettled }
 }
 
 const transportScope = (daemon: Daemon): string | undefined =>
@@ -603,37 +598,22 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     await daemon.stop()
   })
 
-  it('resolves the §8 context block from the issue the bag names, and skips the read without one', async () => {
-    const { daemon, factsRead } = await boot()
-    const dispatched: { text: string }[] = []
-    ;(daemon as any).dispatch = vi.fn(async (_a: string, msg: any) => {
-      dispatched.push(msg)
-      return null
-    })
-    await im(daemon, delivery({}, { issueId: 'issue-uuid' }))
-    expect(factsRead).toEqual(['issue-uuid'])
-    expect(dispatched[0]!.text).toContain('Linear context (trusted, daemon-resolved):')
-    expect(dispatched[0]!.text).toContain('- Team: Engineering (key TEAM')
-    // No issue id in the bag ⇒ no read and no block; the header still names the issue.
-    await im(daemon, delivery({ msgId: 'linear:activity-2' }))
-    expect(factsRead).toEqual(['issue-uuid'])
-    expect(dispatched[1]!.text).not.toContain('Linear context (trusted, daemon-resolved):')
-    await daemon.stop()
-  })
-
-  it('dispatches without the block when the issue read is refused', async () => {
+  it('hands the coordinates to the standing block and keeps the prompt to the header and the instruction', async () => {
     const { daemon } = await boot()
-    ;(daemon as any).lnConnByIntegration.get(INTEGRATION).issueFacts = async () => {
-      throw new Error('forbidden')
-    }
-    const dispatched: { text: string }[] = []
+    const dispatched: { text: string; standingContext?: string }[] = []
     ;(daemon as any).dispatch = vi.fn(async (_a: string, msg: any) => {
       dispatched.push(msg)
       return null
     })
     await im(daemon, delivery({}, { issueId: 'issue-uuid' }))
+    // Standing: the issue UUID and the team, read once on the system-prompt channel, never a row.
+    expect(dispatched[0]!.standingContext).toContain('- Issue: TEAM-123 (id issue-uuid)')
+    expect(dispatched[0]!.standingContext).toContain('- Team: Engineering (key ENG')
+    expect(dispatched[0]!.standingContext).toContain('Working here:')
+    // Per turn: what the console transcript shows is the header, the URL and the member's words.
+    expect(dispatched[0]!.text).not.toContain('issue-uuid')
+    expect(dispatched[0]!.text).not.toContain('Working here:')
     expect(dispatched[0]!.text.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by Dana')
-    expect(dispatched[0]!.text).not.toContain('Linear context (trusted, daemon-resolved):')
     await daemon.stop()
   })
 

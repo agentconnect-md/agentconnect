@@ -22,7 +22,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { linearChannelName, linearTeamGlyph } from './message-strategy.js'
-import type { LinearIssueFacts, LinearTeamRef } from './message-strategy.js'
+import type { LinearTeamRef } from './message-strategy.js'
 import type { LinearAttachmentInput, LinearActivityInput } from './turn-output.js'
 import type { IntegrationLinearConfig, LinearCredGrant } from '@agentconnect.md/protocol'
 import type { Agent } from '../../agents/agent-schema.js'
@@ -382,62 +382,6 @@ export class LinearConnection implements PlatformConnection {
   }
 
   /**
-   * §8/§13 layer 3: one bounded read of the issue facts the trusted context block renders.
-   *
-   * On the DIRECT read path, like `getUserProfile` — deliberately NOT the paced send queue. This
-   * read runs while a delivery is being prepared, so a queue slot would put it ahead of the ≤10 s
-   * pre-spawn acknowledgement (§10.1) in one FIFO and let a stalled provider hold the ack for the
-   * queue's whole task timeout. `startIssue` may queue because it runs only after the ack posts.
-   *
-   * `signal` is the real deadline, end to end: it bounds the token wait as well as the request,
-   * and cancels rather than abandons, surfacing as a retryable {@link LinearApiError} the caller
-   * degrades on. No retry — the block is optional chrome, and a second attempt would spend the
-   * delivery's budget twice.
-   */
-  async issueFacts(issueId: string, opts: { signal?: AbortSignal } = {}): Promise<LinearIssueFacts | undefined> {
-    type FactsPayload = {
-      issue?: {
-        id?: string
-        identifier?: string
-        title?: string
-        url?: string
-        team?: { id?: string; key?: string; name?: string } | null
-        state?: { name?: string; type?: string } | null
-        assignee?: { name?: string; displayName?: string } | null
-        labels?: { nodes?: { name?: string }[] } | null
-        priority?: number
-        priorityLabel?: string
-        estimate?: number
-        dueDate?: string
-        project?: { name?: string } | null
-        cycle?: { number?: number; name?: string } | null
-        parent?: { identifier?: string } | null
-      } | null
-    }
-    const data = await this.graphql<FactsPayload>(ISSUE_FACTS_QUERY, { id: issueId }, opts.signal)
-    const issue = data.issue
-    if (!issue) return undefined
-    const labels = (issue.labels?.nodes ?? []).map((n) => n.name).filter((n): n is string => Boolean(n))
-    return {
-      ...(issue.id ? { id: issue.id } : {}),
-      ...(issue.identifier ? { identifier: issue.identifier } : {}),
-      ...(issue.title ? { title: issue.title } : {}),
-      ...(issue.url ? { url: issue.url } : {}),
-      ...(issue.team ? { team: issue.team } : {}),
-      ...(issue.state ? { state: issue.state } : {}),
-      ...(issue.assignee ? { assignee: issue.assignee } : {}),
-      ...(labels.length ? { labels } : {}),
-      ...(typeof issue.priority === 'number' ? { priority: issue.priority } : {}),
-      ...(issue.priorityLabel ? { priorityLabel: issue.priorityLabel } : {}),
-      ...(typeof issue.estimate === 'number' ? { estimate: issue.estimate } : {}),
-      ...(issue.dueDate ? { dueDate: issue.dueDate } : {}),
-      ...(issue.project ? { project: issue.project } : {}),
-      ...(issue.cycle ? { cycle: issue.cycle } : {}),
-      ...(issue.parent ? { parent: issue.parent } : {})
-    }
-  }
-
-  /**
    * §10.2 auto-start: move a freshly delegated issue into its team's first `started` state.
    *
    * Reads the issue's current state and the team's workflow, then writes at most once. An issue
@@ -792,26 +736,6 @@ const AGENT_SESSION_UPDATE = `mutation AgentSessionUpdate($id: String!, $input: 
 
 const ATTACHMENT_CREATE = `mutation AttachmentCreate($input: AttachmentCreateInput!) {
   attachmentCreate(input: $input) { success }
-}`
-
-const ISSUE_FACTS_QUERY = `query IssueFacts($id: String!) {
-  issue(id: $id) {
-    id
-    identifier
-    title
-    url
-    team { id key name }
-    state { name type }
-    assignee { name displayName }
-    labels(first: 20) { nodes { name } }
-    priority
-    priorityLabel
-    estimate
-    dueDate
-    project { name }
-    cycle { number name }
-    parent { identifier }
-  }
 }`
 
 const ISSUE_STATE_QUERY = `query IssueState($id: String!) {

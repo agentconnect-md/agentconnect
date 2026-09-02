@@ -1182,6 +1182,22 @@ It never publishes commentary, progress, tool output, an incomplete answer, or
 a second fallback after an ambiguous write. Retry once only after a definite
 authentication rejection and a credential-epoch refresh.
 
+The prompt side of this contract is split by lifetime (2026-09-02). The rules
+that never change between deliveries of one session — the daemon owns the
+reply, no direct note/draft/approval writes through `glab` or the API, how a
+review generation is recorded with `submitCodeReview`, the reviewer-record
+caveat on REQUEST_CHANGES — form a `# GitLab` block on
+`NormalizedMessage.standingContext`, which the session manager persists with
+the logical session and a runtime reads once on the system-prompt channel (or
+as the first prompt block), never as a transcript row. Each delivery's text
+keeps only what is its own: the trusted header, the fenced body, and one line
+saying what this delivery is and which verdict events the hook's review policy
+allows, closed by a one-clause reminder that the daemon owns the reply. The
+block scopes every rule to a turn opened by a delivery: a hook-origin session
+can be continued from the console, where no poster runs, and such a turn is
+answered in the session with nothing posted. A push opens no block; a session
+that begins with one learns the rules from its first answerable delivery.
+
 The poster is the second implementer of the published Layer-2
 `TurnFinalSurface` shape, after GitHub, and reuses the durable single-publish
 barrier: the turn's publish state (`not_started`, `in_flight`, `settled`) is
