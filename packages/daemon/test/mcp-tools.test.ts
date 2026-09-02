@@ -74,47 +74,72 @@ describe('toolsForIntegrations', () => {
     expect(sendPlatformEnum([slackInt])).toEqual(['slack'])
   })
 
-  it('injects each port-gated tool for exactly the platforms that declare the port', () => {
-    const PORT_GATED = [
-      'getThreadHistory',
-      'addReaction',
-      'getReactions',
-      'createConversation',
-      'scheduleMessage',
-      'createCanvas',
-      'readCanvas',
-      'updateCanvas',
-      'listBookmarks',
-      'addBookmark',
-      'removeBookmark',
-      'readList',
-      'addListItem',
-      'updateListItem'
-    ]
-    const slackNames = toolsForIntegrations([slackInt]).map((t) => t.name)
+  const PORT_GATED = [
+    'getThreadHistory',
+    'addReaction',
+    'getReactions',
+    'createConversation',
+    'scheduleMessage',
+    'createCanvas',
+    'readCanvas',
+    'updateCanvas',
+    'listBookmarks',
+    'addBookmark',
+    'removeBookmark',
+    'readList',
+    'addListItem',
+    'updateListItem'
+  ]
+
+  it('injects each port-gated tool only into a session ON a platform that declares the port', () => {
+    const slackNames = toolsForIntegrations([slackInt], { currentPlatform: 'slack' }).map((t) => t.name)
     expect(slackNames).toEqual(expect.arrayContaining(PORT_GATED))
+    // A single-platform agent's only platform is its session platform when none is named.
+    expect(toolsForIntegrations([slackInt]).map((t) => t.name)).toEqual(expect.arrayContaining(PORT_GATED))
     // Telegram/Discord/Feishu declare none of them, so an agent without Slack sees none —
     // the gate is the DECLARATION, not the platform name.
     for (const other of [telegramInt, discordInt, feishuInt]) {
-      const names = toolsForIntegrations([other]).map((t) => t.name)
+      const names = toolsForIntegrations([other], { currentPlatform: other.platform }).map((t) => t.name)
       for (const gated of PORT_GATED) expect(names).not.toContain(gated)
     }
   })
 
-  it('narrows a port-gated tool to the declaring platform even on a bridged agent', () => {
-    const bridged = toolsForIntegrations([slackInt, telegramInt])
-    const enumOf = (name: string) =>
-      (
-        (bridged.find((t) => t.name === name)!.inputSchema as Record<string, unknown>).properties as Record<
-          string,
-          { enum?: string[] }
-        >
-      ).platform?.enum
-    // The neutral reads span both; a port only Slack declares must not offer Telegram.
-    expect(enumOf('listChannels')).toEqual(['slack', 'telegram'])
-    expect(enumOf('getThreadHistory')).toEqual(['slack'])
-    expect(enumOf('addReaction')).toEqual(['slack'])
-    expect(enumOf('createCanvas')).toEqual(['slack'])
+  it('keeps a bridged agent’s Slack-shaped tools out of its sessions on every other platform', () => {
+    const bridged = [slackInt, telegramInt, discordInt, feishuInt]
+    const namesOn = (currentPlatform?: string) =>
+      toolsForIntegrations(bridged, currentPlatform ? { currentPlatform } : {}).map((t) => t.name)
+    expect(namesOn('slack')).toEqual(expect.arrayContaining(PORT_GATED))
+    // The same agent, answering elsewhere: the tools are gone, not merely narrowed. Having
+    // Slack does not make a Telegram turn a place to create a canvas.
+    for (const elsewhere of ['telegram', 'discord', 'feishu', 'webchat']) {
+      for (const gated of PORT_GATED) expect(namesOn(elsewhere)).not.toContain(gated)
+    }
+    // No session platform at all (a multi-platform agent built without one) opens no gate.
+    for (const gated of PORT_GATED) expect(namesOn(undefined)).not.toContain(gated)
+    // The neutral reads still span every platform the agent has.
+    const listChannels = toolsForIntegrations(bridged, { currentPlatform: 'telegram' }).find(
+      (t) => t.name === 'listChannels'
+    )!
+    expect((listChannels.inputSchema.properties as Record<string, { enum?: string[] }>).platform?.enum).toEqual([
+      'slack',
+      'telegram',
+      'discord',
+      'feishu'
+    ])
+  })
+
+  it('gives a port-gated tool a bot selector but no platform selector — it acts where the session is', () => {
+    const props = (name: string) =>
+      Object.keys(
+        (
+          toolsForIntegrations([slackInt, telegramInt], { currentPlatform: 'slack' }).find((t) => t.name === name)!
+            .inputSchema as Record<string, unknown>
+        ).properties as Record<string, unknown>
+      )
+    for (const gated of PORT_GATED) {
+      expect(props(gated), gated).not.toContain('platform')
+      expect(props(gated), gated).toContain('integrationId')
+    }
   })
 
   it('injects the platform-neutral read tools + the unified send tool for a Telegram integration', () => {

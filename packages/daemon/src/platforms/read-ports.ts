@@ -221,13 +221,10 @@ export type PlatformToolPort =
   | 'bookmarks'
   | 'lists'
 
-/** The platforms declaring `port`, in registry order — every one when `platforms` is
- *  omitted (the permission auto-allow set needs the names an agent will never see). */
-export function platformsWithPort(port: PlatformToolPort, platforms?: Iterable<string>): string[] {
-  const wanted = platforms === undefined ? undefined : new Set(platforms)
-  return [...READ_PORTS.values()]
-    .filter((d) => d[port] && (wanted === undefined || wanted.has(d.platform)))
-    .map((d) => d.platform)
+/** Does `platform` declare `port`? The session-platform gate every port-gated tool sits
+ *  behind: a tool is injected for a session ON a declaring platform, never reached across. */
+export function declaresPort(platform: string, port: PlatformToolPort): boolean {
+  return READ_PORTS.get(platform)?.[port] === true
 }
 
 /** Every registered platform, in registry order. Building the tool list against this

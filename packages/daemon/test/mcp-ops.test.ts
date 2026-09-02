@@ -1146,21 +1146,32 @@ describe('executeTool: getThreadHistory', () => {
     ])
   })
 
-  it('needs an explicit channel across platforms, and refuses a connection without the port', async () => {
-    const tgGw = fakeGateway()
+  it('needs an explicit channel on another bot, and refuses a connection without the port', async () => {
+    const otherBot = fakeGateway()
     const { deps: base } = deps(fakeGateway({ getThreadReplies: vi.fn(async () => []) }))
     const d: OpsDeps = {
       ...base,
-      gatewayFor: (id) => (id === 'int-tg' ? tgGw : fakeGateway({ getThreadReplies: vi.fn(async () => []) }))
+      gatewayFor: (id) => (id === 'int-1b' ? otherBot : fakeGateway({ getThreadReplies: vi.fn(async () => []) }))
     }
-    const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
+    const twoBots = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-1b', platform: 'slack' }] }
 
-    await expect(executeTool(dual, 'getThreadHistory', { platform: 'telegram', thread: '1' }, d)).rejects.toThrow(
+    await expect(executeTool(twoBots, 'getThreadHistory', { integrationId: 'int-1b', thread: '1' }, d)).rejects.toThrow(
       /channel is required/
     )
     await expect(
-      executeTool(dual, 'getThreadHistory', { platform: 'telegram', channel: '-100', thread: '1' }, d)
+      executeTool(twoBots, 'getThreadHistory', { integrationId: 'int-1b', channel: 'C_OTHER', thread: '1' }, d)
     ).rejects.toThrow(/thread history is unavailable/)
+  })
+
+  it('has no platform selector: the read stays on the session platform whatever the agent bridges', async () => {
+    const { deps: d } = deps(fakeGateway({ getThreadReplies: vi.fn(async () => []) }))
+    const dual = { ...ctx, integrations: [...ctx.integrations!, { id: 'int-tg', platform: 'telegram' }] }
+    // A stray `platform` is not an argument this tool takes — nothing routes on it.
+    const res = (await executeTool(dual, 'getThreadHistory', { platform: 'telegram', thread: '1' }, d)) as {
+      platform: string
+      channel: string
+    }
+    expect(res).toMatchObject({ platform: 'slack', channel: 'C_CURRENT' })
   })
 })
 
@@ -1226,13 +1237,37 @@ describe('executeTool: bookmarks', () => {
     expect(res).toMatchObject({ removed: 'Bk1' })
   })
 
-  // `ctx.channel` belongs to the SESSION's platform. Defaulting to it for a cross-platform call
-  // hands Slack a Telegram id, which fails as `channel_not_found` well away from the cause.
-  it('requires an explicit channel when the target is not this conversation', async () => {
+  // `ctx.channel` belongs to the SESSION's bot. Defaulting to it for another bot hands that
+  // bot a channel it may not be in, which fails as `channel_not_found` well away from the cause.
+  it('requires an explicit channel when the target is another bot', async () => {
     const add = vi.fn(async () => ({ id: 'Bk1', title: 't' }))
     const { deps: d } = deps(fakeGateway({ addBookmark: add }))
-    // A Telegram session whose agent also has Slack: the resolved target is a different
-    // integration, so `ctx.channel` is a Telegram id that Slack would reject.
+    const twoBots: SessionContext = {
+      ...ctx,
+      integrations: [
+        { id: 'int-1', platform: 'slack' },
+        { id: 'int-1b', platform: 'slack' }
+      ]
+    }
+
+    await expect(
+      executeTool(twoBots, 'addBookmark', { integrationId: 'int-1b', title: 't', link: 'https://x.test' }, d)
+    ).rejects.toThrow(/channel is required/)
+    expect(add).not.toHaveBeenCalled()
+
+    // Naming one is all it takes.
+    await executeTool(twoBots, 'addBookmark', { integrationId: 'int-1b', channel: 'C_OTHER', title: 't', link: 'l' }, d)
+    expect(add).toHaveBeenCalledWith('C_OTHER', { title: 't', link: 'l' })
+  })
+
+  it('never reaches a Slack bot from a session on another platform — there is no selector for it', async () => {
+    const add = vi.fn(async () => ({ id: 'Bk1', title: 't' }))
+    const { deps: base } = deps(fakeGateway({ addBookmark: add }))
+    // The Slack bot CAN pin; the session's Telegram bot cannot — and only the latter is reachable.
+    const d: OpsDeps = {
+      ...base,
+      gatewayFor: (id) => (id === 'int-1' ? fakeGateway({ addBookmark: add }) : fakeGateway())
+    }
     const elsewhere: SessionContext = {
       ...ctx,
       platform: 'telegram',
@@ -1243,15 +1278,11 @@ describe('executeTool: bookmarks', () => {
         { id: 'int-1', platform: 'slack' }
       ]
     }
-
+    // The session's own (Telegram) gateway is the only one in reach, and it pins nothing.
     await expect(
-      executeTool(elsewhere, 'addBookmark', { platform: 'slack', title: 't', link: 'https://x.test' }, d)
-    ).rejects.toThrow(/channel is required/)
+      executeTool(elsewhere, 'addBookmark', { platform: 'slack', channel: 'C_SLACK', title: 't', link: 'l' }, d)
+    ).rejects.toThrow(/bookmarks is unavailable on this Telegram connection/)
     expect(add).not.toHaveBeenCalled()
-
-    // Naming one is all it takes.
-    await executeTool(elsewhere, 'addBookmark', { platform: 'slack', channel: 'C_SLACK', title: 't', link: 'l' }, d)
-    expect(add).toHaveBeenCalledWith('C_SLACK', { title: 't', link: 'l' })
   })
 
   it('refuses on a platform that does not pin links', async () => {

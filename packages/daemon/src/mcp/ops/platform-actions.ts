@@ -2,12 +2,12 @@
  * The platform tools that CHANGE something without posting a message: reactions,
  * conversation creation, scheduled sends, and canvases.
  *
- * They are routed exactly like the reads in `platform-reads.ts` — a `platform` argument
- * (defaulting to the current conversation's) resolved against the trusted session snapshot,
- * never tool input — and gated exactly like them, by a port the platform DECLARES rather
- * than by its name. What is different is the failure mode: a read that finds nothing is an
- * empty list, while these either did the thing or did not, so each one lets the platform's
- * own refusal (`missing_scope`, `name_taken`, `not_in_channel`) reach the agent verbatim.
+ * They act on THIS session's platform only — `integrationId` may pick another of the agent's
+ * bots there, resolved against the trusted session snapshot, never tool input — and are
+ * gated by a port the platform DECLARES rather than by its name: injected for a session on
+ * a declaring platform, absent everywhere else. What is different is the failure mode: a read
+ * that finds nothing is an empty list, while these either did the thing or did not, so each one
+ * lets the platform's own refusal (`missing_scope`, `name_taken`, `not_in_channel`) reach the agent verbatim.
  *
  * NONE of them is a delivery path for the agent's own voice. `sendMessage` and `shareFile`
  * remain the only two, and `scheduleMessage` is deliberately channel-root only for the same
@@ -24,42 +24,39 @@ import { optionalBoolean, optionalBoundedInt, optionalString, parseArgs, require
 const MIN_SCHEDULE_LEAD_MS = 2 * 60 * 1000
 const MAX_SCHEDULE_HORIZON_MS = 120 * 24 * 60 * 60 * 1000
 
-const platformTarget = {
-  platform: optionalString('platform'),
-  integrationId: optionalString('integrationId')
-}
+const botSelector = { integrationId: optionalString('integrationId') }
 
 export const ADD_REACTION_ARGS = z.object({
-  ...platformTarget,
+  ...botSelector,
   channel: optionalString('channel'),
   messageTs: requiredString('messageTs'),
   emoji: requiredString('emoji')
 })
 
 export const GET_REACTIONS_ARGS = z.object({
-  ...platformTarget,
+  ...botSelector,
   channel: optionalString('channel'),
   messageTs: requiredString('messageTs')
 })
 
 export const CREATE_CONVERSATION_ARGS = z.object({
-  ...platformTarget,
+  ...botSelector,
   name: optionalString('name'),
   isPrivate: optionalBoolean('isPrivate'),
   users: z.array(requiredString('users')).max(100, 'users accepts at most 100 ids').optional()
 })
 
 export const SCHEDULE_MESSAGE_ARGS = z.object({
-  ...platformTarget,
+  ...botSelector,
   channel: optionalString('channel'),
   message: requiredString('message'),
   postAt: requiredString('postAt')
 })
 
-export const LIST_BOOKMARKS_ARGS = z.object({ ...platformTarget, channel: optionalString('channel') })
+export const LIST_BOOKMARKS_ARGS = z.object({ ...botSelector, channel: optionalString('channel') })
 
 export const ADD_BOOKMARK_ARGS = z.object({
-  ...platformTarget,
+  ...botSelector,
   channel: optionalString('channel'),
   title: requiredString('title'),
   link: requiredString('link'),
@@ -67,13 +64,13 @@ export const ADD_BOOKMARK_ARGS = z.object({
 })
 
 export const REMOVE_BOOKMARK_ARGS = z.object({
-  ...platformTarget,
+  ...botSelector,
   channel: optionalString('channel'),
   bookmarkId: requiredString('bookmarkId')
 })
 
 export const READ_LIST_ARGS = z.object({
-  ...platformTarget,
+  ...botSelector,
   listId: requiredString('listId'),
   cursor: optionalString('cursor'),
   limit: optionalBoundedInt('limit', 1, 200)
@@ -91,29 +88,29 @@ const listFields = z
   .min(1, 'fields must name at least one column')
 
 export const ADD_LIST_ITEM_ARGS = z.object({
-  ...platformTarget,
+  ...botSelector,
   listId: requiredString('listId'),
   fields: listFields
 })
 
 export const UPDATE_LIST_ITEM_ARGS = z.object({
-  ...platformTarget,
+  ...botSelector,
   listId: requiredString('listId'),
   itemId: requiredString('itemId'),
   fields: listFields
 })
 
 export const CREATE_CANVAS_ARGS = z.object({
-  ...platformTarget,
+  ...botSelector,
   title: requiredString('title').max(255, 'title must be at most 255 characters'),
   markdown: requiredString('markdown'),
   channel: optionalString('channel')
 })
 
-export const READ_CANVAS_ARGS = z.object({ ...platformTarget, canvasId: requiredString('canvasId') })
+export const READ_CANVAS_ARGS = z.object({ ...botSelector, canvasId: requiredString('canvasId') })
 
 export const UPDATE_CANVAS_ARGS = z.object({
-  ...platformTarget,
+  ...botSelector,
   canvasId: requiredString('canvasId'),
   edits: z
     .array(
@@ -138,19 +135,18 @@ export const UPDATE_CANVAS_ARGS = z.object({
 export type PlatformActionDeps = GatewayDeps
 
 /** Resolve the target gateway plus the channel the call acts on, with the current
- *  conversation's channel defaulting in only for a same-platform call — a different
- *  platform has no meaningful "current channel", exactly as `listChannelMembers` has it. */
+ *  conversation's channel defaulting in only for this session's own bot — another bot has no
+ *  meaningful "current channel", exactly as `listChannelMembers` has it. */
 function resolveTarget(
   ctx: SessionContext,
   deps: PlatformActionDeps,
-  parsed: { platform?: string; integrationId?: string; channel?: string },
+  parsed: { integrationId?: string; channel?: string },
   what: string
 ) {
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   const channel = parsed.channel ?? (sameConvo ? ctx.channel : undefined)
-  if (!channel)
-    throw new Error(`channel is required to ${what} on ${platform} (a different platform than this session)`)
+  if (!channel) throw new Error(`channel is required to ${what} on ${platform} (another bot than this session's)`)
   return { platform, gw, channel }
 }
 
@@ -188,14 +184,14 @@ export async function getReactions(
 /**
  * The conversation a bookmark tool acts on.
  *
- * `ctx.channel` is a default ONLY for this session's own integration. A Telegram session whose
- * agent also has Slack can call these with `platform: 'slack'`, and handing Slack a Telegram
- * channel id just fails with `channel_not_found` — the shared selector contract already says a
- * different platform must name its channel, and `sameConvo` is how the resolver reports it.
+ * `ctx.channel` is a default ONLY for this session's own integration. A call that picks another
+ * bot by `integrationId` may not be in this channel at all, and handing it the id just fails
+ * with `channel_not_found` — the shared selector contract already says another bot must name
+ * its channel, and `sameConvo` is how the resolver reports it.
  */
 function bookmarkChannel(ctx: SessionContext, named: string | undefined, sameConvo: boolean): string {
   if (named) return named
-  if (!sameConvo) throw new Error('channel is required when the bookmark is on another platform or bot')
+  if (!sameConvo) throw new Error('channel is required when the bookmark is on another bot')
   return ctx.channel
 }
 
@@ -205,7 +201,7 @@ export async function listBookmarks(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(LIST_BOOKMARKS_ARGS, args)
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.listBookmarks) throw unsupported(platform, 'bookmarks')
   const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
@@ -218,7 +214,7 @@ export async function addBookmark(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(ADD_BOOKMARK_ARGS, args)
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.addBookmark) throw unsupported(platform, 'bookmarks')
   const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
@@ -236,7 +232,7 @@ export async function removeBookmark(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(REMOVE_BOOKMARK_ARGS, args)
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw, sameConvo } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.removeBookmark) throw unsupported(platform, 'bookmarks')
   const channel = bookmarkChannel(ctx, parsed.channel, sameConvo)
@@ -250,7 +246,7 @@ export async function readList(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(READ_LIST_ARGS, args)
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.readList) throw unsupported(platform, 'lists')
   const page = await gw.readList(parsed.listId, {
@@ -266,7 +262,7 @@ export async function addListItem(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(ADD_LIST_ITEM_ARGS, args)
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.addListItem) throw unsupported(platform, 'lists')
   return { platform, listId: parsed.listId, item: await gw.addListItem(parsed.listId, parsed.fields) }
@@ -278,7 +274,7 @@ export async function updateListItem(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(UPDATE_LIST_ITEM_ARGS, args)
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.updateListItem) throw unsupported(platform, 'lists')
   await gw.updateListItem(parsed.listId, parsed.itemId, parsed.fields)
@@ -291,7 +287,7 @@ export async function createConversation(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(CREATE_CONVERSATION_ARGS, args)
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.createConversation) throw unsupported(platform, 'creating conversations')
   const users = parsed.users ?? []
@@ -332,7 +328,7 @@ export async function createCanvas(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(CREATE_CANVAS_ARGS, args)
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.createCanvas) throw unsupported(platform, 'canvases')
   return { platform, canvas: await gw.createCanvas(parsed.title, parsed.markdown, parsed.channel) }
@@ -344,7 +340,7 @@ export async function readCanvas(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(READ_CANVAS_ARGS, args)
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.readCanvas) throw unsupported(platform, 'canvases')
   return { platform, canvas: await gw.readCanvas(parsed.canvasId) }
@@ -356,7 +352,7 @@ export async function updateCanvas(
   deps: PlatformActionDeps
 ): Promise<unknown> {
   const parsed = parseArgs(UPDATE_CANVAS_ARGS, args)
-  const platform = parsed.platform ?? ctx.platform
+  const platform = ctx.platform
   const { gw } = resolveGatewayForPlatform(ctx, deps, platform, parsed.integrationId)
   if (!gw.updateCanvas) throw unsupported(platform, 'canvases')
   // Reject here rather than at the provider: an anchored edit with no section, or a

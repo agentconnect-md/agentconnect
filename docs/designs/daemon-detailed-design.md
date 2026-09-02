@@ -1050,9 +1050,15 @@ A second group is gated by a **declared port** rather than by a platform name
 [integration-plugin-architecture.md](integration-plugin-architecture.md)): the bounded reads
 `getChannelHistory` and `getThreadHistory`, the reactions `addReaction` / `getReactions`,
 `createConversation`, `scheduleMessage`, and the canvas trio `createCanvas` / `readCanvas` /
-`updateCanvas`. Slack declares all of them today and is the only platform that does, so an
-agent with no Slack integration is injected none of them and each tool's `platform` enum
-narrows to the declaring platforms. Two rules keep this group honest. It is not a second
+`updateCanvas`. Slack declares all of them today and is the only platform that does. The gate
+is the **session's** platform, not the agent's integration list: a session on a declaring
+platform is injected the tools, and the same agent answering on Telegram, Discord, Feishu, or
+webchat is injected none — so these tools carry no `platform` selector at all, only the
+`integrationId` that picks another of the agent's bots on the same platform. The
+platform-neutral reads (`listChannels`, `listChannelMembers`, `getUserProfile`,
+`listKnownUsers`) and `sendMessage` keep their cross-platform `platform` argument; a
+platform-shaped capability reached from another platform's session was never asked for, and
+it cost every other session the descriptors. Two rules keep this group honest. It is not a second
 delivery path — `sendMessage` and `shareFile` remain the only two, and `scheduleMessage` is
 channel-root only for the same reason `sendMessage` is
 ([send-message-routing-rework.md](send-message-routing-rework.md) §2.2). And unlike the turn
