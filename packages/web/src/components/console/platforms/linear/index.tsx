@@ -42,15 +42,28 @@ export const linearModule: WebPlatformModule<LinearApi> = {
   },
   settingsFragments: linearSettingsFragments,
   apiBindings: linearApi,
-  // NO `channelList`. The generic list enumerates rooms a bot was added to, each with
-  // a trigger and a way out; a Linear workspace has none of those — linking is the
-  // consent act and unlinking is how an agent goes quiet — and its issues are not a
-  // roster the console keeps. The card body below renders the workspace instead, so
-  // the generic list is never reached and its semantics would describe nothing.
+  // The TEAM is the channel (§4.3): one row per team, each with its dispatch default and an Off.
+  // The roster is the workspace's own, so nothing is left or dropped from here — a team goes
+  // quiet by turning its row Off, or the whole workspace by unlinking the agent.
+  channelList: {
+    roomNoun: 'team',
+    roomGlyph: '',
+    leave: 'none',
+    roster: 'derived',
+    // No `any`: every Linear event is addressed by construction (§6.1), so nothing would match it.
+    triggers: ['off', 'mention'],
+    footerNote:
+      'Every team of this workspace is listed here. Sessions start when someone delegates an issue to the app or mentions it, in a team that is not off.',
+    // §6.2: the default seat IS a gated agent's grant, and a Linear AgentSession has one writer (§4.6).
+    ownerChangeWarning: {
+      title: 'Move this team’s default?',
+      body: ({ owner, room }) =>
+        `${owner} is a private agent, and being ${room}’s default is what lets it act there. Its live sessions in this team can still be stopped, but it will not answer in them again. A new mention or delegation opens a session with the new default.`,
+      confirmLabel: 'Move'
+    }
+  },
+  // The card draws the workspace chrome and mounts the generic list of team rows beneath it.
   agentCard: { Body: LinearWorkspaceRows },
-  // The workspace is the channel (§4.5): the Bots row expands to its default dispatch
-  // alone, never to a roster naming the workspace beneath itself.
-  soleConversation: true,
   // Agent activities are append-only rows with their own ids (§15), so a duplicate
   // across sources is the same activity; anything else never dedupes.
   messageIdentity: (row) => (LINEAR_ACTIVITY_ID.test(row.ts) ? `ts:${row.ts}` : null),

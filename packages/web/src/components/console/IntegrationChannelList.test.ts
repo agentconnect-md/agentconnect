@@ -312,11 +312,20 @@ describe('IntegrationChannelList footer', () => {
     expect(roomArticle('channel')).toBe('A')
   })
 
-  it('falls back to the generic noun for a platform that renders its own card', () => {
-    // Linear declares no channel-list semantics, because this list is never rendered
-    // for it (its module supplies the agent card's whole body). The lookup still has
-    // to be total, and what it answers is the host default — never a borrowed noun.
-    expect(footer('linear')).toContain('A channel appears here once the bot is added to it')
+  it('lets a DERIVED roster replace the arrival sentences with its own note', () => {
+    // Linear's team rows are the workspace's own list, upserted by the control plane, so
+    // "appears here once the bot is added to it" would describe something that never
+    // happens — and there are no direct messages to promise either.
+    const html = footer('linear')
+    expect(html).not.toContain('appears here once the bot is added to it')
+    expect(html).not.toContain('Direct messages appear when someone writes to the bot')
+    expect(html).toContain('Every team of this workspace is listed here')
+  })
+
+  it('falls back to the generic noun for a platform no module claims', () => {
+    // The lookup has to be total — an integration row carries whatever platform the CP
+    // sent — and what it answers is the host default, never a borrowed noun.
+    expect(footer('not-a-platform')).toContain('A channel appears here once the bot is added to it')
   })
 })
 

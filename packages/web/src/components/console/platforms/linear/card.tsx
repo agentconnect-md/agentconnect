@@ -1,19 +1,21 @@
 'use client'
 
-// The AGENT page's Linear card body ({@link WebAgentIntegrationCardFacet}). Linking is the
-// consent act and unlinking is the mute, so the row carries no trigger and no issue list.
+// The AGENT page's Linear card body ({@link WebAgentIntegrationCardFacet}): the connected
+// workspace as chrome — its name, its grant status, Reconnect, and unlink this agent — over
+// the generic conversation list of the workspace's TEAM rows (§4.3, §9.5). The team is the
+// channel, so the dispatch selector and the trigger live on those rows, not up here.
 // Disconnecting ends the workspace for every agent, so that action is the org view's.
 
 import { useState } from 'react'
 import { Icon } from '@/components/ui'
-import { DefaultDispatchPicker } from '@/components/console/DefaultDispatchPicker'
-import { agentLabel, type IntegrationRow } from '@/lib/data'
+import { IntegrationChannelList } from '@/components/console/IntegrationChannelList'
+import { type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { linearApi } from './api'
 import { useLinearConnect } from './connect'
 
 export function LinearWorkspaceRows({ integration, padX }: { integration: IntegrationRow; padX: number }) {
-  const { bots, getAgent, setChannelAgent, deleteIntegration, refresh } = useConsoleData()
+  const { bots, getAgent, deleteIntegration, refresh } = useConsoleData()
   const [err, setErr] = useState<string | null>(null)
   const [leaving, setLeaving] = useState(false)
   const botId = integration.botId ?? ''
@@ -23,25 +25,12 @@ export function LinearWorkspaceRows({ integration, padX }: { integration: Integr
     () => void refresh()
   )
 
-  // The seeded workspace row: the default rides the same PATCH a Slack row makes.
-  const channel = integration.channels[0]
-  const memberIds = bot?.agentIds ?? []
-  const options = memberIds.map((id) => {
-    const a = getAgent(id)
-    return {
-      id,
-      name: a ? agentLabel(a) : id,
-      model: a?.model || a?.runtime || '',
-      runtime: a?.runtime || a?.model || '',
-      icon: a?.icon
-    }
-  })
-  // The CP-stamped owner; unclaimed falls back to the earliest member, as the CP does.
-  const owner = channel?.agentId ?? memberIds[0] ?? null
   const name = bot?.workspaceName || bot?.name || integration.name
   const dead = !!bot?.revokedAt
   const reconnecting = flow.phase === 'authorizing'
   const connectErr = flow.appMissing ? 'Linear isn’t set up on this deployment.' : flow.err
+  // The page's agent — a private one starts every team row off, as on any platform.
+  const agent = integration.agentId ? getAgent(integration.agentId) : undefined
 
   const unlink = () => {
     if (leaving || !integration.id) return
@@ -81,17 +70,6 @@ export function LinearWorkspaceRows({ integration, padX }: { integration: Integr
         </span>
         {dead && <span className="badge flex-none bg-(--status-error-soft) text-(--status-error)">grant expired</span>}
         <div className="ml-auto flex items-center gap-[10px] max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">
-          {options.length > 0 && (
-            <>
-              <DefaultDispatchPicker
-                options={options}
-                activeId={owner}
-                disabled={!integration.id || !channel}
-                onPick={(id) => setChannelAgent(integration.id!, channel!.channelId, id)}
-              />
-              <span className="hidden h-[18px] w-px flex-none bg-(--border-subtle) desktop:block" />
-            </>
-          )}
           <button
             type="button"
             disabled={reconnecting || !botId}
@@ -120,16 +98,26 @@ export function LinearWorkspaceRows({ integration, padX }: { integration: Integr
           </button>
         </div>
       </div>
-      <div
-        className="flex items-start gap-2 border-t border-(--border-subtle) bg-(--surface-app) font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)"
-        style={{ padding: `10px ${padX}px` }}
-      >
-        <Icon name="info" size={14} className="mt-[3px] flex-none" />
-        <span>
-          Sessions start when someone delegates or mentions the app on an issue in this workspace.
-          {reconnecting && ' Approve the workspace in the Linear tab — this card updates once it lands.'}
-        </span>
-      </div>
+      {reconnecting && (
+        <div
+          className="flex items-start gap-2 border-t border-(--border-subtle) bg-(--surface-app) font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-tertiary)"
+          style={{ padding: `10px ${padX}px` }}
+        >
+          <Icon name="info" size={14} className="mt-[3px] flex-none" />
+          <span>Approve the workspace in the Linear tab — this card updates once it lands.</span>
+        </div>
+      )}
+      {/* Sharing is structural on a Linear bot (§4.3), so every team row carries the dispatch selector. */}
+      <IntegrationChannelList
+        integrationId={integration.id}
+        channels={integration.channels}
+        botId={integration.botId}
+        agentId={integration.agentId}
+        platform={integration.platform}
+        shareable={integration.shareable ?? true}
+        gated={agent?.visibility === 'restricted'}
+        padX={padX}
+      />
     </>
   )
 }

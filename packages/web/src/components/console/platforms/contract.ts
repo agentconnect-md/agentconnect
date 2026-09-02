@@ -556,6 +556,33 @@ export interface WebChannelListSemantics {
    *  encodes `membershipEnumeration: 'authoritative'` — the list updates by
    *  itself). Absent ⇒ no extra sentence. */
   footerNote?: string
+  /**
+   * Where the rows come from. `'observed'` (the default) — each row records a room the
+   * bot was seen in, so it can be dropped from the list and the footer says how rows
+   * appear. `'derived'` — the roster is the platform's own and the console neither adds
+   * to it nor removes from it, so no row carries a way out and the footer's arrival
+   * sentence is the module's {@link footerNote} instead of the host's.
+   */
+  roster?: 'observed' | 'derived'
+  /**
+   * The room row's trigger vocabulary, host order preserved. Absent ⇒ all three
+   * (`off` / `any` / `mention`). A platform that emits no unaddressed traffic drops
+   * `any`, because nothing would ever match it. DM rows keep their binary control.
+   */
+  triggers?: readonly ('off' | 'mention' | 'any')[]
+  /**
+   * Confirmation shown before a row's default dispatch moves OFF a RESTRICTED agent.
+   * Where an owner compiles to a per-conversation default rather than an ownership
+   * route, that seat is the only grant a gated agent holds in the room, so moving it
+   * withdraws the grant. Absent ⇒ the move applies straight away, which is every
+   * platform whose owner compiles to a route.
+   */
+  ownerChangeWarning?: {
+    title: string
+    body(ctx: { owner: string; room: string }): string
+    /** Bare verb — the console's modal convention. */
+    confirmLabel: string
+  }
 }
 
 /**
@@ -563,12 +590,10 @@ export interface WebChannelListSemantics {
  * of the host's generic conversation list.
  *
  * The generic list assumes the platform's rooms are enumerable things the bot was
- * ADDED to, each with a trigger and a way out. Linear has no such axis: linking a
- * workspace IS the consent act, muting is unlinking, and the "room" the card
- * configures is the workspace itself. Rather than teach
- * {@link WebChannelListSemantics} to describe a list that must not render, a module
- * with a different card body supplies one — and declares no `channelList`, so the
- * generic one is not reached at all.
+ * ADDED to, each with a trigger and a way out. A module whose card needs chrome ABOVE
+ * that list — Linear's connected workspace, with its grant status, Reconnect and
+ * unlink — supplies a Body that draws the chrome and mounts the generic list itself,
+ * so the rows keep the console's one dispatch selector and trigger control.
  *
  * The host keeps the card CHROME (mark, name, connected badge, delete). The Body gets
  * the integration row — which names its own agent, so there is no second prop for the
@@ -663,20 +688,14 @@ export interface WebPlatformModule<TApi = unknown> {
   /** Out-of-wizard install polling (Slack today). */
   installPolling?: WebInstallPollingFacet
   /** Channel-list display semantics. Absent ⇒ the host defaults: `channel`
-   *  noun, `#` glyph, `leave: 'none'`, generic copy — which a platform declaring
-   *  {@link agentCard} never spends, because the generic list is not rendered
-   *  for it at all. */
+   *  noun, `#` glyph, `leave: 'none'`, generic copy. A module with its own
+   *  {@link agentCard} still spends these, because that card mounts the same
+   *  generic list under its chrome. */
   channelList?: WebChannelListSemantics
-  /** The agent page's card body, replacing the generic conversation list.
-   *  Absent ⇒ that list, which is every platform whose rooms are enumerable. */
+  /** The agent page's card body, wrapping the generic conversation list in the
+   *  platform's own chrome. Absent ⇒ the bare list, which is every platform
+   *  with nothing to say above its rooms. */
   agentCard?: WebAgentIntegrationCardFacet
-  /**
-   * The console's mirror of the §5 manifest's `soleConversation`: the bot IS its one
-   * conversation (Linear — a workspace is the channel), so the Settings → Bots row
-   * expands to that conversation's default dispatch alone, never to a roster that
-   * would list the workspace beneath itself. Absent ⇒ the generic roster.
-   */
-  soleConversation?: true
   /**
    * Per-platform transcript text renderer — the §14 defect-3 seam, ADOPTED:
    * `MessageText` resolves it from the ROW's platform key

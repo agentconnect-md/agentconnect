@@ -32,11 +32,12 @@ import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/dat
 import {
   botCardCopy,
   botSharingEditable,
+  channelListSemantics,
   platformRegistry,
-  platformSharingFixed,
-  platformSoleConversation
+  platformSharingFixed
 } from '@/components/console/platforms/registry'
 import { BOT_PLATFORM_TABS, botMatchesPlatformTab } from '@/components/console/platforms/host-projections'
+import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
 import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
 import UninstallGithubInstallationModal from '@/components/console/modals/UninstallGithubInstallationModal'
 import GitlabCard from '@/components/console/GitlabCard'
@@ -223,6 +224,8 @@ function BotsCard({
 }) {
   const { orgPath } = useOrgs()
   const { bots, integrations, getAgent, setBotShareable, setChannelAgent, loading: dataLoading } = useConsoleData()
+  // On an owner-as-default platform the seat IS a private agent's grant, so moving it is confirmed first.
+  const ownerGuard = useOwnerChangeGuard()
   const [platformTabKey, setPlatformTabKey] = useState<string>(BOT_PLATFORM_TABS[0]?.key ?? '')
   // Bot row expanded to its channel roster (one at a time), the bot whose
   // shareable PATCH is in flight, and the last toggle denial to surface (the CP
@@ -393,6 +396,13 @@ function BotsCard({
               icon: ag?.icon
             }
           })
+          const roomNoun = channelListSemantics(b.platform).roomNoun
+          const roomLabel = roomNoun.charAt(0).toUpperCase() + roomNoun.slice(1)
+          // The outgoing owner, as the owner-change warning reads it — private is what costs.
+          const owner = (id: string | null) => {
+            const ag = id ? getAgent(id) : undefined
+            return ag ? { id: ag.id, label: agentLabel(ag), restricted: ag.visibility === 'restricted' } : undefined
+          }
           return (
             <Fragment key={b.id}>
               <div
@@ -509,24 +519,7 @@ function BotsCard({
               {CardNotice && <CardNotice bot={b} />}
               {open && (
                 <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 pb-[14px] pl-10 pt-3">
-                  {/* The bot IS its one conversation: the row expands to that conversation's
-                      default dispatch alone — listing the workspace beneath itself would
-                      name the same thing twice. */}
-                  {platformSoleConversation(b.platform) && showDefaultDispatch ? (
-                    <div className="flex items-center justify-between gap-[11px] rounded-lg border border-(--border-subtle) bg-(--surface-card) px-3 py-2">
-                      <span className="font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
-                        Default dispatch
-                      </span>
-                      <DefaultDispatchPicker
-                        options={agentOptions}
-                        activeId={channels[0]!.agentId ?? b.agentIds[0] ?? null}
-                        disabled={!canWrite || !channels[0]!.integrationId}
-                        onPick={(agentId) =>
-                          setChannelAgent(channels[0]!.integrationId!, channels[0]!.channelId, agentId)
-                        }
-                      />
-                    </div>
-                  ) : channels.length > 0 ? (
+                  {channels.length > 0 ? (
                     <>
                       <div
                         className={`grid ${chanGrid} gap-[11px] px-3 pb-[7px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)`}
@@ -552,8 +545,9 @@ function BotsCard({
                                   color="var(--text-tertiary)"
                                   className="flex-none"
                                 />
+                                {/* The room's noun is the platform's own; the two direct kinds are platform-free. */}
                                 <span className="sr-only">
-                                  {c.kind === 'mpim' ? 'Group DM' : c.kind === 'im' ? 'Direct message' : 'Channel'}
+                                  {c.kind === 'mpim' ? 'Group DM' : c.kind === 'im' ? 'Direct message' : roomLabel}
                                   :{' '}
                                 </span>
                                 <span className="truncate">
@@ -565,7 +559,17 @@ function BotsCard({
                                   options={agentOptions}
                                   activeId={c.agentId ?? b.agentIds[0] ?? null}
                                   disabled={!canWrite || !c.integrationId}
-                                  onPick={(agentId) => setChannelAgent(c.integrationId!, c.channelId, agentId)}
+                                  onPick={(agentId) =>
+                                    ownerGuard.guard(
+                                      {
+                                        platform: b.platform,
+                                        from: owner(c.agentId ?? b.agentIds[0] ?? null),
+                                        toId: agentId,
+                                        room: c.name
+                                      },
+                                      () => setChannelAgent(c.integrationId!, c.channelId, agentId)
+                                    )
+                                  }
                                 />
                               )}
                             </div>
@@ -575,7 +579,7 @@ function BotsCard({
                     </>
                   ) : (
                     <div className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
-                      No conversations observed yet — invite the bot to a channel or message it directly.
+                      No conversations yet — the roster fills in once the bot reaches its first {roomNoun}.
                     </div>
                   )}
                 </div>
@@ -602,6 +606,7 @@ function BotsCard({
             </div>
           </div>
         ))}
+      {ownerGuard.dialog}
     </div>
   )
 }
