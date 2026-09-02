@@ -17,9 +17,21 @@ import { isGatedAgent } from '../../orchestrator/placement.js'
 import type { AgentRecord, ChannelTrigger, IntegrationChannelRepo } from '../../persistence/ports.js'
 import type { LinearTeam } from './api.js'
 
-/** The console label for a team row: its issue prefix and its name, the two things a Linear
- *  operator identifies a team by. */
-export const linearTeamChannelName = (team: LinearTeam): string => `${team.key} · ${team.name}`
+/** What a Linear label joins the workspace and the team with — the daemon's own separator,
+ *  because both sides write this one `integration_channel.name`. */
+const LINEAR_LABEL_SEPARATOR = ' / '
+
+/** One name as a label line: flattened and trimmed, the way the daemon flattens the same
+ *  string, so the two writers of this row agree on an unusually spelled name. */
+const flat = (raw: string | null | undefined): string => raw?.replace(/\s+/g, ' ').trim() ?? ''
+
+/** The console label for a team row: the two NAMES an operator says out loud, never the issue
+ *  prefix, which is an identifier. Same shape as the daemon's `linearChannelName` for the same
+ *  team, so neither writer rewrites the other's row on the next pass. */
+export const linearTeamChannelName = (team: LinearTeam, workspaceName?: string | null): string => {
+  const space = flat(workspaceName)
+  return space ? `${space}${LINEAR_LABEL_SEPARATOR}${flat(team.name)}` : flat(team.name)
+}
 
 /**
  * What a freshly seeded team row's trigger is — the same §14 arm every other conversation seat
@@ -47,12 +59,12 @@ export async function seedLinearTeamRows(
   channels: Pick<IntegrationChannelRepo, 'upsertConversation' | 'upsertAgent'>,
   integrationId: IntegrationId,
   teams: readonly LinearTeam[],
-  opts: { trigger: ChannelTrigger; owner?: AgentId }
+  opts: { trigger: ChannelTrigger; owner?: AgentId; workspaceName?: string | null }
 ): Promise<void> {
   for (const team of teams) {
     await channels.upsertConversation(
       integrationId,
-      { id: team.id, name: linearTeamChannelName(team), kind: 'channel' },
+      { id: team.id, name: linearTeamChannelName(team, opts.workspaceName), kind: 'channel' },
       { defaultTrigger: opts.trigger }
     )
     if (!opts.owner) continue

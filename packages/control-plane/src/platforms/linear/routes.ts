@@ -483,7 +483,9 @@ export function linearOauthCallbackRoutes(deps: HttpDeps, linear: LinearRouteSea
             seedConversations: (integration) =>
               seedLinearTeamRows(deps.repos.integrationChannel, integration.id, teams.ok ? teams.result : [], {
                 trigger: linearTeamSeedTrigger([agent]),
-                owner: agent.id
+                owner: agent.id,
+                // The row label leads with the workspace, off the same `viewer` read the bot is named from.
+                workspaceName: viewer.result.organizationName
               })
           })
           await deps.repos.linearInstallState.settle(row.id, { status: 'completed', botId: bot.id })

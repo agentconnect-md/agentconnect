@@ -12,6 +12,7 @@ import useSWR from 'swr'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { agentLabel, platName } from '@/lib/data'
+import { chatRoomSigil } from '@/lib/platform-labels'
 import { creatorLabel, fetchCronRuns, fmtDate, runCronNow } from '@/lib/api'
 import { cronHuman, cronNext, cronUpdateInput, fmtNextRun, zonedDay } from '@/lib/cron'
 import { useScheduleTimeZone } from '@/lib/schedule-timezone'
@@ -106,6 +107,8 @@ export default function ScheduleDetailView() {
   const human = cronHuman(c.schedule)
   const humanInZone = human ? `${human} · ${c.timezone}` : human
   const zone = clock.zoneFor(c.timezone)
+  // The sigil is the target platform's own — a Linear team's label carries no "#".
+  const sigil = chatRoomSigil(c.targetPlatform)
   const channelName = c.targetChannel
     ? (integrations
         .filter((i) => (c.targetIntegrationId ? i.id === c.targetIntegrationId : i.agentId === c.agentId))
@@ -236,19 +239,23 @@ export default function ScheduleDetailView() {
                     href={`https://slack.com/app_redirect?channel=${c.targetChannel}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    title={`Open #${channelName} in ${platName(c.targetPlatform)}`}
+                    title={`Open ${sigil}${channelName} in ${platName(c.targetPlatform)}`}
                   >
                     <span className="imark h-[14px] w-[14px]">
                       <PlatformMark platform={c.targetPlatform} fillPct={100} />
                     </span>
-                    #{channelName}
+                    {sigil}
+                    {channelName}
                   </a>
                 ) : (
                   <span className="inline-flex items-center gap-[6px]">
                     <span className="imark h-[14px] w-[14px]">
                       <PlatformMark platform={c.targetPlatform} fillPct={100} />
                     </span>
-                    <span className="font-mono text-[12px] font-medium leading-normal">#{channelName}</span>
+                    <span className="font-mono text-[12px] font-medium leading-normal">
+                      {sigil}
+                      {channelName}
+                    </span>
                   </span>
                 )}
               </div>
@@ -482,19 +489,23 @@ export default function ScheduleDetailView() {
               href={`https://slack.com/app_redirect?channel=${c.targetChannel}`}
               target="_blank"
               rel="noopener noreferrer"
-              title={`Open #${channelName} in ${platName(c.targetPlatform)}`}
+              title={`Open ${sigil}${channelName} in ${platName(c.targetPlatform)}`}
             >
               <span className="imark h-[13px] w-[13px]">
                 <PlatformMark platform={c.targetPlatform} />
               </span>
-              #{channelName}
+              {sigil}
+              {channelName}
             </a>
           ) : (
             <span className="inline-flex items-center gap-[6px]">
               <span className="imark h-[13px] w-[13px]">
                 <PlatformMark platform={c.targetPlatform} />
               </span>
-              <span className="mono text-[12px] text-(--text-secondary)">#{channelName}</span>
+              <span className="mono text-[12px] text-(--text-secondary)">
+                {sigil}
+                {channelName}
+              </span>
             </span>
           ))}
         <span className="font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
@@ -569,7 +580,10 @@ export default function ScheduleDetailView() {
                       <span className="imark h-4 w-4 flex-none rounded-xs">
                         <PlatformMark platform={c.targetPlatform} />
                       </span>
-                      <span className="mono truncate text-[11.5px] text-(--text-secondary)">#{channelName}</span>
+                      <span className="mono truncate text-[11.5px] text-(--text-secondary)">
+                        {sigil}
+                        {channelName}
+                      </span>
                     </span>
                   ) : (
                     <span className="font-sans text-[12px] font-normal leading-normal text-(--text-disabled)">

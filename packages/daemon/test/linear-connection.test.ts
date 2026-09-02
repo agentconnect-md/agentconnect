@@ -766,13 +766,18 @@ describe('linear graphql client (§9.4)', () => {
 })
 
 describe('linear read port (§9.4 — what Linear affords)', () => {
-  it('names the channel after its TEAM, key first, and never after an issue', async () => {
+  it('names the channel after the workspace and its TEAM, never after a key or an issue', async () => {
     // The one display slot is shared by every session in the team (§4.5): an issue-derived
-    // answer here would relabel all of them with whichever issue was read last.
+    // answer here would relabel all of them with whichever issue was read last. The team KEY
+    // is an identifier, so it never reaches the label either.
     const { conn, calls } = harness({
       respond: () => jsonResponse({ data: { team: { id: TEAM, key: 'ENG', name: 'Engineering' } } })
     })
-    expect(await conn.getChannelInfo(TEAM)).toEqual({ id: TEAM, name: 'ENG · Engineering', isIm: false })
+    expect(await conn.getChannelInfo(TEAM)).toEqual({
+      id: TEAM,
+      name: 'Example Workspace / Engineering',
+      isIm: false
+    })
     expect(calls[0]!.query).toContain('team(id: $id) { id key name }')
     expect(calls[0]!.variables).toEqual({ id: TEAM })
   })
@@ -809,8 +814,8 @@ describe('linear read port (§9.4 — what Linear affords)', () => {
         })
     })
     expect(await conn.listChannels()).toEqual([
-      { id: TEAM, name: 'ENG · Engineering', isPrivate: false },
-      { id: OTHER_TEAM, name: 'DOCS · Docs', isPrivate: false },
+      { id: TEAM, name: 'Example Workspace / Engineering', isPrivate: false },
+      { id: OTHER_TEAM, name: 'Example Workspace / Docs', isPrivate: false },
       { id: 'team-3', isPrivate: false }
     ])
     expect(calls[0]!.query).toContain('teams(first: 100) { nodes { id key name } }')

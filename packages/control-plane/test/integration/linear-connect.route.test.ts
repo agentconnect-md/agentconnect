@@ -1339,11 +1339,14 @@ describe('the team conversation rows (§4.3, §7.1)', () => {
     const h = await harness()
     const { botId, integrationId } = await connect(h)
 
+    // The row label is the two NAMES an operator says out loud — the workspace and the team.
+    // The team KEY is an identifier and never appears; the daemon writes the same string.
     const rows = await rowsFor(botId)
+    for (const row of rows) expect(row.name).not.toMatch(/\b(DES|ENG)\b/)
     expect(rows).toHaveLength(2)
     expect(rows.map((r) => [r.channelId, r.name, r.kind, r.trigger, r.agentId])).toEqual([
-      ['team_design', 'DES · Design', 'channel', 'mention', h.agentId],
-      ['team_eng', 'ENG · Engineering', 'channel', 'mention', h.agentId]
+      ['team_design', 'Acme Engineering / Design', 'channel', 'mention', h.agentId],
+      ['team_eng', 'Acme Engineering / Engineering', 'channel', 'mention', h.agentId]
     ])
     expect(rows.every((r) => r.integrationId === integrationId)).toBe(true)
     // ONE `teams` query for the whole connect — the call count is bounded by workspaces, not teams.
@@ -1506,9 +1509,9 @@ describe('the team conversation rows (§4.3, §7.1)', () => {
 
     const rows = await rowsFor(botId)
     expect(rows.map((r) => [r.channelId, r.name, r.trigger, r.agentId])).toEqual([
-      ['team_design', 'DES · Design', 'mention', h.agentId],
-      ['team_docs', 'DOC · Docs', 'mention', h.agentId],
-      ['team_eng', 'ENG · Platform Engineering', 'mention', h.agentId]
+      ['team_design', 'Acme Engineering / Design', 'mention', h.agentId],
+      ['team_docs', 'Acme Engineering / Docs', 'mention', h.agentId],
+      ['team_eng', 'Acme Engineering / Platform Engineering', 'mention', h.agentId]
     ])
   })
 
@@ -1566,7 +1569,7 @@ describe('the team conversation rows (§4.3, §7.1)', () => {
 
     const ops = (await rowsFor(botId)).filter((r) => r.channelId === 'team_ops')
     expect(ops).toHaveLength(1)
-    expect(ops[0]).toMatchObject({ agentId: h.agentId, trigger: 'mention', name: 'OPS · Operations' })
+    expect(ops[0]).toMatchObject({ agentId: h.agentId, trigger: 'mention', name: 'Acme Engineering / Operations' })
   })
 
   it('still seeds a row for a bot whose members are ALL gated — the pass that has no other route', async () => {
@@ -1587,6 +1590,6 @@ describe('the team conversation rows (§4.3, §7.1)', () => {
 
     const ops = (await rowsFor(botId)).filter((r) => r.channelId === 'team_ops')
     expect(ops).toHaveLength(1)
-    expect(ops[0]).toMatchObject({ trigger: 'off', agentId: gated, name: 'OPS · Operations' })
+    expect(ops[0]).toMatchObject({ trigger: 'off', agentId: gated, name: 'Acme Engineering / Operations' })
   })
 })

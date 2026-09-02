@@ -7,6 +7,7 @@
 
 import { useState } from 'react'
 import { agentLabel, MOCK_PREFIX } from '@/lib/data'
+import { chatRoomSigil } from '@/lib/platform-labels'
 import type { CronDto } from '@/lib/api'
 import {
   buildCron,
@@ -138,7 +139,8 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
         .filter((ch) => !i.shareable || ch.agentId === agentId)
         .map((ch) => ({
           value: `${i.id}|${ch.channelId}`,
-          label: `#${ch.name}`,
+          // The room sigil is the integration's platform's own — a Linear team has none.
+          label: `${chatRoomSigil(i.platform)}${ch.name}`,
           integrationId: i.id!,
           channelId: ch.channelId,
           channelName: ch.name,
@@ -461,7 +463,9 @@ export default function AddCronModal({ cron, onClose }: { cron?: CronDto | null;
                     <PlatformMark platform={target.platform} />
                   </span>
                   <span className="mono text-[12.5px]">
-                    {selectedOpt ? `#${selectedOpt.channelName}` : `${target.channel} (current)`}
+                    {selectedOpt
+                      ? `${chatRoomSigil(selectedOpt.platform)}${selectedOpt.channelName}`
+                      : `${target.channel} (current)`}
                   </span>
                 </>
               ) : (

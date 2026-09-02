@@ -78,8 +78,8 @@ function bot(over: Partial<BotDto> = {}): BotDto {
 
 /** The workspace's team rows — one `IntegrationChannel` per Linear team, as the CP upserts them. */
 const TEAMS: IntegrationChannelRow[] = [
-  { channelId: 'team-eng', name: 'ENG · Engineering', kind: 'channel', trigger: 'mention', agentId: 'agent-b' },
-  { channelId: 'team-des', name: 'DES · Design', kind: 'channel', trigger: 'off', agentId: 'agent-c' }
+  { channelId: 'team-eng', name: 'Acme / Engineering', kind: 'channel', trigger: 'mention', agentId: 'agent-b' },
+  { channelId: 'team-des', name: 'Acme / Design', kind: 'channel', trigger: 'off', agentId: 'agent-c' }
 ]
 
 function integration(over: Partial<IntegrationRow> = {}): IntegrationRow {
@@ -190,9 +190,10 @@ describe('the workspace chrome', () => {
     // The header above this card already names the workspace; repeating it here is the
     // duplicate row this card no longer draws.
     expect(text()).not.toContain('Example Workspace')
-    // Each team, named the way Linear names it — the name, then its key.
-    expect(text()).toContain('EngineeringENG')
-    expect(text()).toContain('DesignDES')
+    // Each team, named the way its members say it: the team, with no workspace prefix repeated.
+    expect(text()).toContain('Engineering')
+    expect(text()).toContain('Design')
+    expect(text()).not.toContain('Acme')
   })
 
   it('says the roster is the workspace’s own, not something the bot was added to', async () => {
@@ -211,20 +212,21 @@ describe('the workspace chrome', () => {
 })
 
 describe('the team rows', () => {
-  it('leads with the team’s name and dims its key behind it, as Linear’s own picker does', async () => {
+  it('names each row by its team alone — the card header already carries the workspace', async () => {
     await render()
 
     const [eng] = [...host.querySelectorAll('span')].filter((el) => el.textContent === 'Engineering')
     expect(eng).toBeDefined()
-    // The key is present but muted — the row reads "Engineering ENG", never "ENG · Engineering".
-    const dim = eng!.parentElement!.querySelector('.text-\\(--text-tertiary\\)')
-    expect(dim?.textContent).toBe('ENG')
-    expect(eng!.parentElement!.textContent).not.toContain('·')
+    // The row reads "Engineering" — never the team KEY, which is an identifier, never the
+    // workspace prefix this card already prints above, and never a "#" Linear has no use for.
+    expect(eng!.parentElement!.textContent).toContain('Engineering')
+    expect(host.textContent).not.toContain('ENG')
+    expect(host.textContent).not.toContain('#')
   })
 
   it('carries a trigger per team, Mention or Off and nothing else', async () => {
     await render()
-    await act(async () => buttonWithLabel('Trigger for ENG · Engineering')!.click())
+    await act(async () => buttonWithLabel('Trigger for Acme / Engineering')!.click())
 
     const menu = [...document.querySelectorAll('[role="menuitemradio"]')].map((o) => o.textContent)
     expect(menu).toEqual(['off', '@-mention'])
@@ -234,7 +236,7 @@ describe('the team rows', () => {
 
   it('writes a team’s trigger through the generic per-conversation PATCH', async () => {
     await render()
-    await act(async () => buttonWithLabel('Trigger for DES · Design')!.click())
+    await act(async () => buttonWithLabel('Trigger for Acme / Design')!.click())
     await act(async () =>
       [...document.querySelectorAll('[role="menuitemradio"]')]
         .at(-1)!

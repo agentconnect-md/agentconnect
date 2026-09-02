@@ -386,13 +386,19 @@ describe('rowLabelParts', () => {
     expect(rowLabelParts({ kind: 'channel', name: 'deploys' }, 'slack')).toEqual({ name: 'deploys' })
   })
 
-  it('reads a Linear team the way Linear does — the name, then its key', () => {
-    expect(rowLabelParts({ kind: 'channel', name: 'ENG · Engineering' }, 'linear')).toEqual({
-      name: 'Engineering',
-      hint: 'ENG'
+  it('drops the workspace a Linear team row already sits under, and never shows a team key', () => {
+    expect(rowLabelParts({ kind: 'channel', name: 'Acme / Engineering' }, 'linear')).toEqual({
+      name: 'Engineering'
     })
-    // A team the daemon could only label by id has no key to dim.
+    // The team KEY is an identifier: it is not in the stored label and never reaches a row.
+    expect(rowLabelParts({ kind: 'channel', name: 'Acme / Engineering' }, 'linear').name).not.toContain('ENG')
+    // Only the FIRST separator is the workspace's, so a team named with a slash survives whole.
+    expect(rowLabelParts({ kind: 'channel', name: 'Acme / Design / Brand' }, 'linear')).toEqual({
+      name: 'Design / Brand'
+    })
+    // A team the daemon could only label by id, or one whose workspace went unnamed, stands alone.
     expect(rowLabelParts({ kind: 'channel', name: 'team-9f2' }, 'linear')).toEqual({ name: 'team-9f2' })
+    expect(rowLabelParts({ kind: 'channel', name: 'Engineering' }, 'linear')).toEqual({ name: 'Engineering' })
   })
 
   it('never splits a direct row — that label is a person', () => {

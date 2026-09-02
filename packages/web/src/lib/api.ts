@@ -28,6 +28,7 @@ import {
   refreshTokenAfterUnauthorized,
   signOutDeletedAccount
 } from '@/lib/auth'
+import { chatRoomSigil } from '@/lib/platform-labels'
 import { track } from '@/lib/analytics'
 import { createSseParser } from '@/lib/sse'
 import { isUpgradeAvailable } from '@/lib/version'
@@ -1972,6 +1973,8 @@ function sessionChannelLabel(
   // triggering user so the raw id never shows as the channel.
   const isSlackDm = platform === 'slack' && /^D/.test(rawChannel)
   const dmFallback = isSlackDm ? (triggeredByName ? `@${triggeredByName}` : 'DM') : null
+  // The sigil is the platform's, not the channel convention's: a Linear room is a team
+  // named "<Workspace> / <Team>", and a Telegram or Lark group has no marker either.
   return isWebchat
     ? 'Playground'
     : isDream
@@ -1981,7 +1984,7 @@ function sessionChannelLabel(
         : channelName
           ? channelName.startsWith('@')
             ? channelName
-            : `#${channelName}`
+            : `${chatRoomSigil(platform)}${channelName}`
           : (dmFallback ?? (rawChannel || PLACEHOLDER))
 }
 

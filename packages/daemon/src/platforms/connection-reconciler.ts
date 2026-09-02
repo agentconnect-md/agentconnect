@@ -815,7 +815,7 @@ export class ConnectionReconciler {
 
   /**
    * The workspace's teams as this integration's observed conversations (§4.5) — one row per
-   * team, named `<KEY> · <Team name>`. A NAME REFRESH, not the seeder: the CP writes these rows
+   * team, named `<Workspace name> / <Team name>`. A NAME REFRESH, not the seeder: the CP writes these rows
    * synchronously in the install paths, so an empty answer (no token yet, a refusal, a blown
    * deadline) costs a refresh, never a route.
    *

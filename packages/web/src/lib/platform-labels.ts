@@ -19,7 +19,9 @@
  * route. Same reason `platforms/marks.ts` is its own small lookup.
  *
  * The id set is still the registry's — `platform-set.test.ts` fails if this table
- * and `platformRegistry.ids()` ever disagree.
+ * and `platformRegistry.ids()` ever disagree, and so is the room sigil, whose
+ * authority is the module contract's `roomGlyph`; this is the copy a session label
+ * can read without pulling the wizard in behind it.
  */
 
 /** One platform's two display names. They differ on exactly one platform today,
@@ -30,21 +32,26 @@ export interface PlatformLabel {
   readonly name: string
   /** The install picker's tile label. */
   readonly picker: string
+  /** The sigil a room's name is written with — `'#'` where the channel convention
+   *  applies, `''` where the platform has no such marker. The module contract's
+   *  `roomGlyph` is the authority; `platform-set.test.tsx` fails if they disagree. */
+  readonly sigil: string
 }
 
 /** A `Map`, not a record, so lookup is total for every string rather than every
  *  string that is not an `Object.prototype` key. */
 const LABELS = new Map<string, PlatformLabel>([
-  ['slack', { name: 'Slack', picker: 'Slack' }],
-  ['telegram', { name: 'Telegram', picker: 'Telegram' }],
-  ['discord', { name: 'Discord', picker: 'Discord' }],
+  ['slack', { name: 'Slack', picker: 'Slack', sigil: '#' }],
+  ['telegram', { name: 'Telegram', picker: 'Telegram', sigil: '' }],
+  ['discord', { name: 'Discord', picker: 'Discord', sigil: '#' }],
   // One platform id, two clouds. Prose picks the international brand; the picker
   // names both so a Feishu user recognizes their own tile.
-  ['feishu', { name: 'Lark', picker: 'Lark/Feishu' }],
-  ['linear', { name: 'Linear', picker: 'Linear' }],
+  ['feishu', { name: 'Lark', picker: 'Lark/Feishu', sigil: '' }],
+  // A Linear room is a TEAM, named "<Workspace> / <Team>" — nothing an operator writes a "#" in.
+  ['linear', { name: 'Linear', picker: 'Linear', sigil: '' }],
   // Nothing routes a bare 'lark' id today (the cloud rides on its own `region`
   // field), but the substring chains this replaces accepted it.
-  ['lark', { name: 'Lark', picker: 'Lark/Feishu' }]
+  ['lark', { name: 'Lark', picker: 'Lark/Feishu', sigil: '' }]
 ])
 
 /** This platform's labels, or undefined when no chat platform claims the id. */
@@ -55,6 +62,13 @@ export function platformLabel(platformId: string): PlatformLabel | undefined {
 /** The prose name, or `fallback` when the id is not a chat platform. */
 export function chatPlatformName(platformId: string | undefined, fallback: string): string {
   return (platformId && LABELS.get(platformId)?.name) || fallback
+}
+
+/** The sigil this platform's room names are written with. An id no chat platform claims
+ *  keeps the channel convention, which is what every non-module platform rendered before. */
+export function chatRoomSigil(platformId: string | undefined): string {
+  const label = platformId ? LABELS.get(platformId) : undefined
+  return label ? label.sigil : '#'
 }
 
 /** The ids this table answers for — the module ids plus the `lark` alias.

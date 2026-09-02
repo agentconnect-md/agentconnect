@@ -12,8 +12,8 @@ import { linearSettingsFragments } from './settings'
  *  can never match it, and neither can any other platform's id shape. */
 const LINEAR_ACTIVITY_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** What the daemon joins a team's key and name with (`linearChannelName`, §4.5). */
-const TEAM_LABEL_SEPARATOR = ' · '
+/** What the daemon joins the workspace name and the team name with (`linearChannelName`, §4.5). */
+const TEAM_LABEL_SEPARATOR = ' / '
 
 export const linearModule: WebPlatformModule<LinearApi> = {
   platformId: 'linear',
@@ -59,14 +59,15 @@ export const linearModule: WebPlatformModule<LinearApi> = {
       'Every team of this workspace is listed here; a delegation or a mention starts a session in one that is not off.',
     // §4.3: a gated member acts in a team only as its default, so enabling the row is half the gate.
     gatedNote: 'Private agent: it answers in a team only where it is the default and the team is not off.',
-    // The daemon stores a team as "<KEY> · <Team name>" (§4.5); Linear's own team picker leads
-    // with the name and dims the key behind it, so the row reads the way the operator's Linear does.
+    // The daemon stores a team as "<Workspace name> / <Team name>" (§4.5), because a session list
+    // spanning every workspace needs both. These rows always sit under one workspace's own card,
+    // which already names it, so the row keeps the TEAM alone — and never the team KEY, which is
+    // an identifier rather than a label and is not in the stored name at all.
     splitRowLabel: (label) => {
       const at = label.indexOf(TEAM_LABEL_SEPARATOR)
       if (at < 0) return { name: label }
-      const key = label.slice(0, at).trim()
-      const name = label.slice(at + TEAM_LABEL_SEPARATOR.length).trim()
-      return name ? { name, ...(key ? { hint: key } : {}) } : { name: label }
+      const team = label.slice(at + TEAM_LABEL_SEPARATOR.length).trim()
+      return team ? { name: team } : { name: label }
     },
     // §6.2: the default seat IS a gated agent's grant, and a Linear AgentSession has one writer (§4.6).
     ownerChangeWarning: {
