@@ -290,7 +290,12 @@ import {
   type ModelProviderTarget
 } from './runtimes/model-provider-config.js'
 import { KeyServerClient, type KeyGrant } from './key-server/client.js'
-import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost } from './key-server/session-hosts.js'
+import {
+  internalSessionKey,
+  isInternalSessionKey,
+  ModelSessionHostPool,
+  type ModelSessionHostPoolHost
+} from './key-server/session-hosts.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { RuntimeFactsRegistry, PROBE_TTL_MS, type RuntimeFactsHost } from './runtimes/facts-registry.js'
 import { assembleRuntimeLaunch } from './launch/assemble.js'
@@ -3637,7 +3642,10 @@ export class Daemon {
   /** The session row an ACP id names for THIS owner — a session-bound host answers only for its own session. */
   private async sessionForAcp(owner: HostKey, acpSessionId: string): Promise<SessionRecord | undefined> {
     const sessionKey = hostKeySessionKey(owner)
-    if (sessionKey === undefined) return await this.store.getSessionByAcpIdForAgent(hostKeyAgentId(owner), acpSessionId)
+    // The shared host, and a daemon-internal pass (dream/memory/commit) whose key names no session row, answer by agent.
+    if (sessionKey === undefined || isInternalSessionKey(sessionKey)) {
+      return await this.store.getSessionByAcpIdForAgent(hostKeyAgentId(owner), acpSessionId)
+    }
     const rec = await this.store.getSession(sessionKey)
     return rec?.acpSessionId === acpSessionId ? rec : undefined
   }
@@ -4592,14 +4600,14 @@ export class Daemon {
 
   private async queueMemoryPostTurn(
     agentId: string,
-    owner: HostKey,
     sessionId: string,
     turnId: string,
     input: string,
     output: string,
     binding: Agent['memory'],
     captureTarget?: PreparedExternalMemoryCapture,
-    evaluationTurnId = turnId
+    evaluationTurnId = turnId,
+    owner: HostKey = agentHostKey(agentId)
   ): Promise<void> {
     if (this.evaluationProfile.memory === 'off') return
     if (!output.trim()) return
@@ -11902,14 +11910,14 @@ export class Daemon {
     // its conversation-stable message id.
     await this.queueMemoryPostTurn(
       agentId,
-      p.hostKey,
       sessionId,
       p.webchat?.turnId ?? handled.turnId ?? stableTurnId(agentId, msg),
       finalCaptureInput,
       p.reply.text,
       agent.memory,
       memoryCaptureTarget,
-      plan.evaluationTurnId
+      plan.evaluationTurnId,
+      p.hostKey
     )
     evaluation.finishEvaluation('turn.completed', {
       ...(stopReason ? { stopReason } : {}),

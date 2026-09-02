@@ -16,6 +16,11 @@ import { DEFAULT_MODEL_KEY_TTL_SECONDS, KeyServerClient, type KeyGrant } from '.
 
 /** The daemon-internal session keys that address a credential lifecycle with no chat session
  *  behind it. Constructors rather than literals so the `internal:` namespace has one owner. */
+/** Whether a session key names a daemon-internal pass rather than a stored session. */
+export function isInternalSessionKey(key: string): boolean {
+  return key.startsWith('internal:')
+}
+
 export const internalSessionKey = {
   dream: (dreamId: string) => `internal:dream:${dreamId}`,
   memory: (agentId: string) => `internal:memory:${agentId}`,
