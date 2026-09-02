@@ -1,4 +1,9 @@
-import type { LocalStore, TranscriptEntry, TranscriptRow } from '../store/local-store.js'
+import {
+  transcriptPromptText,
+  type LocalStore,
+  type TranscriptEntry,
+  type TranscriptRow
+} from '../store/local-store.js'
 
 export const MAX_CONTEXT_REFRESH_EVENTS = 50
 
@@ -145,7 +150,7 @@ export function contextUpdateText(
     elided > 0 ? `(new thread messages — ${elided} earlier message(s) elided)` : '(new thread messages)'
   const rows = suffix.flatMap((event) => {
     const quote = quoteFor?.(event)
-    return [...(quote ? [quote] : []), `[${event.sender}] ${event.text}`]
+    return [...(quote ? [quote] : []), `[${event.sender}] ${transcriptPromptText(event)}`]
   })
   return `${heading}\n\n${deltaHeading}\n${rows.join('\n')}`
 }
@@ -163,7 +168,7 @@ export function initialContextDeltaText(
       : '(additional thread messages before this turn started)'
   const rows = suffix.flatMap((event) => {
     const quote = quoteFor?.(event)
-    return [...(quote ? [quote] : []), `[${event.sender}] ${event.text}`]
+    return [...(quote ? [quote] : []), `[${event.sender}] ${transcriptPromptText(event)}`]
   })
   return `${heading}\n${rows.join('\n')}`
 }

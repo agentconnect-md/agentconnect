@@ -1134,7 +1134,10 @@ by <actor>` + issue URL, with `sanitizeTitle` flattening.
   `prompted` (workspace members are the same trust class as Slack users, and
   their messages are instructions), or the delegation line plus the
   triggering comment's own text for `created`, plus `guidance`
-  (workspace-admin-authored).
+  (workspace-admin-authored). The assembled prompt and the facts it was built
+  from also ride `NormalizedMessage.turnBody`, persisted as the transcript
+  row's body (transcript-full-tool-body.md §9) so replay reads the prompt and
+  the console can format the facts.
 - **Quoted context**: `promptContext` and `previousComments` wrap in the
   existing `UNTRUSTED_CONTENT_BEGIN/END` fence with `neutralizeDelimiters`.
   Issue bodies can contain text authored outside the workspace (customer

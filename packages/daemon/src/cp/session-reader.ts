@@ -351,6 +351,27 @@ export function createSessionReader(
           ...(attachments.length ? { attachments } : {})
         }
         if (!r.body) return base
+        // A text row's body is the `UserTurnBody` behind a user turn. It rides inline when it fits;
+        // an oversized one keeps its facts and drops the prompt, which the console never renders.
+        if (r.kind === 'text') {
+          const bytes = Buffer.byteLength(r.body)
+          if (bytes <= PREVIEW_CAP) {
+            base.body = r.body
+            return base
+          }
+          try {
+            const { prompt: _prompt, ...facts } = JSON.parse(r.body) as { prompt?: unknown }
+            const shrunk = JSON.stringify(facts)
+            if (Buffer.byteLength(shrunk) <= PREVIEW_CAP) {
+              base.body = shrunk
+              base.bodyTruncated = true
+              base.bodyBytes = bytes
+            }
+          } catch {
+            // unparseable body → the row's text stands alone
+          }
+          return base
+        }
         // A plan body is the turn's whole task list and has no full-body fetch behind it, so
         // it rides inline or not at all — an implausibly large one is dropped rather than
         // previewed, leaving the row's `Plan · n/m` summary to stand alone.

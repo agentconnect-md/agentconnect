@@ -348,6 +348,35 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
   })
 })
 
+describe('transcript text-row body', () => {
+  it('lands with the first write, or upgrades in place when an observer row won the insert', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'ac-body-')), 'local.sqlite')
+    const s = await LocalStore.open(path)
+    const body = JSON.stringify({ prompt: 'P', linear: { issue: { identifier: 'ENG-1' } } })
+    // Observer first (no body), then the ingest that carries it: the body is added, nothing else moves.
+    await s.appendTranscript({ channel: 'C', thread: 'T', ts: '1', sender: 'u', kind: 'text', text: 'hi' })
+    await s.appendTranscript({ channel: 'C', thread: 'T', ts: '1', sender: 'u', kind: 'text', text: 'hi', body })
+    // A second body never replaces the first.
+    await s.appendTranscript({
+      channel: 'C',
+      thread: 'T',
+      ts: '1',
+      sender: 'u',
+      kind: 'text',
+      text: 'hi',
+      body: '{"prompt":"other"}'
+    })
+    // Ingest first: the body rides the insert itself.
+    await s.appendTranscript({ channel: 'C', thread: 'T', ts: '2', sender: 'u', kind: 'text', text: 'yo', body })
+    const rows = await s.transcriptSince('C', 'T', null, 'u')
+    expect(rows.map((r) => [r.ts, r.text, r.body])).toEqual([
+      ['1', 'hi', body],
+      ['2', 'yo', body]
+    ])
+    await s.close()
+  })
+})
+
 describe('LocalStore', () => {
   it('keeps every agent reply in a thread, and lets a finalization refresh its own text', async () => {
     // The production failure this pins: a response finalization used to reach the

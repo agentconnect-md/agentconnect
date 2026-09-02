@@ -275,6 +275,13 @@ describe('the turn shape §8 names', () => {
     expect(msg.headless).toBe(false)
     expect(msg.text.startsWith('Linear TEAM-123')).toBe(true)
     expect(msg.standingContext).toBe(buildLinearStandingContext(msg, ext()))
+    // The turn body: the prompt the model reads, and the facts the console formats.
+    expect(msg.turnBody?.prompt).toBe(msg.text)
+    expect(msg.turnBody?.linear).toEqual({
+      issue: { identifier: 'TEAM-123', title: 'Ship the thing', url: ISSUE_URL },
+      team: { id: TEAM, key: 'ENG', name: 'Engineering' },
+      delegatedBy: 'Dana'
+    })
     expect(msg.threadUrl).toBe(ISSUE_URL)
   })
 
@@ -283,6 +290,36 @@ describe('the turn shape §8 names', () => {
     expect(applyLinearMessageStrategy(msg)).toBeUndefined()
     expect(msg.text).toBe('take a look at the failing job')
     expect(msg.standingContext).toBeUndefined()
+    expect(msg.turnBody).toBeUndefined()
+  })
+
+  it('reads the issue body, the earlier comments and the guidance into the facts, verbatim', () => {
+    const msg = message({
+      adapterExt: {
+        linear: ext({
+          event: 'created',
+          issueId: ISSUE_UUID,
+          promptContext: '<issue identifier="TEAM-123"><title>Ship the thing</title></issue>',
+          previousComments: [
+            { userId: 'user-9', body: 'earlier note', createdAt: '2026-09-01T00:00:00Z' },
+            { body: '  ' }
+          ],
+          guidance: 'Be terse.',
+          truncated: true
+        })
+      }
+    })
+    applyLinearMessageStrategy(msg)
+    expect(msg.turnBody?.linear).toEqual({
+      event: 'created',
+      issue: { identifier: 'TEAM-123', id: ISSUE_UUID, title: 'Ship the thing', url: ISSUE_URL },
+      team: { id: TEAM, key: 'ENG', name: 'Engineering' },
+      delegatedBy: 'Dana',
+      description: '<issue identifier="TEAM-123"><title>Ship the thing</title></issue>',
+      comments: [{ userId: 'user-9', body: 'earlier note', createdAt: '2026-09-01T00:00:00Z' }],
+      guidance: 'Be terse.',
+      truncated: true
+    })
   })
 })
 

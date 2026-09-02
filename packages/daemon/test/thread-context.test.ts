@@ -6,7 +6,8 @@ import { LocalStore } from '../src/store/local-store.js'
 import {
   MAX_CONTEXT_REFRESH_EVENTS,
   ThreadContextCoordinator,
-  contextUpdateText
+  contextUpdateText,
+  initialContextDeltaText
 } from '../src/session/thread-context.js'
 
 async function store(): Promise<LocalStore> {
@@ -152,6 +153,28 @@ describe('ThreadContextCoordinator', () => {
     expect(prompt).not.toContain('[U1] message-0\n')
     expect(prompt).toContain('[U1] message-2')
     expect(prompt).toContain(`[U1] message-${MAX_CONTEXT_REFRESH_EVENTS + 1}`)
+    await db.close()
+  })
+  it('renders a refresh from the prompt behind a row, never from the text the console shows', async () => {
+    const db = await store()
+    const coordinator = new ThreadContextCoordinator(db)
+    const body = JSON.stringify({
+      prompt: 'Linear ENG-1 — the full prompt',
+      linear: { issue: { identifier: 'ENG-1' } }
+    })
+    await coordinator.observeInbound({ ...text('100.1', 'U1', 'Delegated ENG-1'), body })
+    await coordinator.observeInbound(text('100.2', 'U2', 'plain follow-up'))
+    const refresh = await coordinator.refresh({
+      agentId: 'bot-a',
+      transcriptChannel: 'scope:C1',
+      thread: 'T1',
+      afterRevision: 0
+    })
+    for (const rendered of [contextUpdateText(refresh.events), initialContextDeltaText(refresh.events)]) {
+      expect(rendered).toContain('[U1] Linear ENG-1 — the full prompt')
+      expect(rendered).not.toContain('Delegated ENG-1')
+      expect(rendered).toContain('[U2] plain follow-up')
+    }
     await db.close()
   })
 })

@@ -490,6 +490,48 @@ describe('SessionReader', () => {
     await s.close()
   })
 
+  it('carries a text row’s turn body inline, and drops only the prompt when it is oversized', async () => {
+    const s = await store()
+    seedHistorySession(s)
+    const small = JSON.stringify({
+      prompt: 'full prompt',
+      codehost: { provider: 'github', event: 'issues:opened', subject: {} }
+    })
+    await s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '1',
+      sender: 'U1',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'Opened #1',
+      body: small
+    })
+    const big = JSON.stringify({
+      prompt: 'x'.repeat(40 * 1024),
+      codehost: { provider: 'github', event: 'issues:opened', subject: {} }
+    })
+    await s.appendTranscript({
+      channel: 'C1',
+      thread: 'T1',
+      ts: '2',
+      sender: 'U1',
+      recipient: AGENT,
+      kind: 'text',
+      text: 'Opened #2',
+      body: big
+    })
+    const { messages } = await createSessionReader(s).history({ agentId: AGENT, sessionId: 'acp-1', limit: 50 })
+    const byTs = new Map(messages.map((m) => [m.ts, m]))
+    expect(byTs.get('1')).toMatchObject({ text: 'Opened #1', body: small })
+    expect(byTs.get('1')!.bodyTruncated).toBeUndefined()
+    const shrunk = byTs.get('2')!
+    expect(shrunk.text).toBe('Opened #2')
+    expect(JSON.parse(shrunk.body!)).toEqual({ codehost: { provider: 'github', event: 'issues:opened', subject: {} } })
+    expect(shrunk.bodyTruncated).toBe(true)
+    expect(shrunk.bodyBytes).toBe(Buffer.byteLength(big))
+  })
+
   it('binds session and tool-body reads to the authorized agent in a shared thread', async () => {
     const s = await store()
     seedHistorySession(s)

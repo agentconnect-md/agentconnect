@@ -764,11 +764,14 @@ export class SessionManager {
         // forwarded text (`From <caller>: …` from prepareAgentDelivery).
         // A typed `/skill` is translated into the instruction shape the runtime acts on; the
         // transcript keeps the user's own words — prompt ≠ transcript is this seam's contract.
+        // A delivery that assembled a prompt (a Linear delegation, a code-host event) carries it on
+        // `turnBody.prompt`; the row's `text` is what the console shows. Same contract, other direction.
+        const promptText = msg.turnBody?.prompt ?? msg.text
         const invocation =
           msg.source === 'user' && this.deps.advertisedCommandsFor
             ? matchSkillInvocation(msg.text, this.deps.advertisedCommandsFor(agentId))
             : null
-        const triggerText = invocation ? renderSkillInvocation(invocation) : msg.text
+        const triggerText = invocation ? renderSkillInvocation(invocation) : promptText
         // The trigger's OWN attachments are named here, not only on its transcript row. A
         // shared image reaches the model as pixels (an `image` block below), which is enough
         // to look at and not enough to ACT on: `sendMessage`'s `attachment` takes the name
@@ -779,7 +782,7 @@ export class SessionManager {
         const withMarker = (text: string): string => (triggerMarker ? `${text}\n${triggerMarker}` : text)
         blocks.push({
           type: 'text',
-          text: withMarker(msg.source === 'user' ? `[${msg.sender.id}] ${triggerText}` : msg.text)
+          text: withMarker(msg.source === 'user' ? `[${msg.sender.id}] ${triggerText}` : promptText)
         })
         contextEvents = [...context.map((entry) => ({ ts: entry.ts, text: entry.text })), { ts, text: msg.text }]
       }

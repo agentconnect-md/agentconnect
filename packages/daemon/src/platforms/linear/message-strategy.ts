@@ -26,6 +26,7 @@ import {
   UNTRUSTED_CONTENT_END
 } from '../../messages/hook-message.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
+import type { LinearTurnFacts } from '@agentconnect.md/protocol'
 
 /** One earlier comment the relay budgeted into the bag. Only the fields it forwards exist. */
 const LinearPreviousComment = z.object({
@@ -304,6 +305,35 @@ export function linearAckBody(agentName: string, ext: LinearAdapterExt, opts: { 
   return opts.queued ? `**${name}** · queued behind the current task` : `**${name}** · reading ${subject} …`
 }
 
+/** The Linear facts behind this delivery (`LinearTurnFacts`), for the console's formatter. */
+export function buildLinearTurnFacts(
+  msg: Pick<NormalizedMessage, 'sender' | 'threadUrl'>,
+  ext: LinearAdapterExt
+): LinearTurnFacts {
+  const comments = (ext.previousComments ?? [])
+    .filter((c) => c.body?.trim())
+    .map((c) => ({
+      ...(c.userId ? { userId: c.userId } : {}),
+      ...(c.body ? { body: c.body } : {}),
+      ...(c.createdAt ? { createdAt: c.createdAt } : {})
+    }))
+  return {
+    ...(ext.event ? { event: ext.event } : {}),
+    issue: {
+      ...(ext.issueIdentifier ? { identifier: ext.issueIdentifier } : {}),
+      ...(ext.issueId ? { id: ext.issueId } : {}),
+      ...(ext.issueTitle ? { title: ext.issueTitle } : {}),
+      ...(msg.threadUrl ? { url: msg.threadUrl } : {})
+    },
+    ...(ext.team ? { team: ext.team } : {}),
+    delegatedBy: actorLabel(msg),
+    ...(ext.promptContext?.trim() ? { description: ext.promptContext } : {}),
+    ...(comments.length ? { comments } : {}),
+    ...(ext.guidance?.trim() ? { guidance: ext.guidance } : {}),
+    ...(ext.truncated ? { truncated: true } : {})
+  }
+}
+
 /**
  * Rewrite one delivered Linear message into the turn's prompt and standing block, in place.
  *
@@ -315,7 +345,10 @@ export function linearAckBody(agentName: string, ext: LinearAdapterExt, opts: { 
 export function applyLinearMessageStrategy(msg: NormalizedMessage): LinearAdapterExt | undefined {
   const ext = readLinearExt(msg)
   if (!ext) return undefined
+  // The facts read the member's words BEFORE the prompt replaces them on `text`.
+  const linear = buildLinearTurnFacts(msg, ext)
   msg.text = buildLinearPromptText(msg, ext)
+  msg.turnBody = { prompt: msg.text, linear }
   msg.standingContext = buildLinearStandingContext(msg, ext)
   msg.source = 'user'
   msg.trigger = 'mention'

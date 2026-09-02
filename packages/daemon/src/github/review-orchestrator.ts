@@ -25,7 +25,7 @@ import type { AcpHost } from '../acp/acp-host.js'
 import type { CpClient } from '../cp/client.js'
 import type { Logger } from '../log.js'
 import { buildHookMessage, githubOpensReviewGeneration, hookAnchorText } from '../messages/hook-message.js'
-import type { NormalizedMessage } from '../messages/normalized.js'
+import { appendTurnPrompt, type NormalizedMessage } from '../messages/normalized.js'
 import type { ReplyGithubReviewThreadsReq, ReplyGithubReviewThreadsResult, SubmitGithubReviewReq } from '../mcp/ops.js'
 import type { CodeHostReviewAdapter } from '../codehost/review-adapter.js'
 import { hookCoordinates, openReviewBatch, reviewSubjectLane } from '../codehost/hook-admission.js'
@@ -550,9 +550,11 @@ export class GithubReviewOrchestrator {
     const revisionLine = `Base SHA: ${github.baseSha}\nHead SHA: ${github.headSha}`
     const warmHost = this.host.warmHostFor(agent.id)
     const useRevisionOnlyWorkspace = async () => {
-      entry.msg.text +=
+      appendTurnPrompt(
+        entry.msg,
         `\n\nTrusted review revision:\n${revisionLine}\n` +
-        'No trusted local pull-request checkout is available for this review. Do not trust local files or repository traces; inspect the exact base and head through GitHub read-only tools. Local execution may be skipped.'
+          'No trusted local pull-request checkout is available for this review. Do not trust local files or repository traces; inspect the exact base and head through GitHub read-only tools. Local execution may be skipped.'
+      )
       try {
         const preparedWorkspaceCwd = await this.host.prepareAgentWorkspace(agent, warmHost, {
           sessionKey: key,
@@ -593,13 +595,15 @@ export class GithubReviewOrchestrator {
         }
       }
       const preparedWorkspaceCwd = await this.host.prepareAgentWorkspace(agent, warmHost, request)
-      entry.msg.text +=
+      appendTurnPrompt(
+        entry.msg,
         `\n\nTrusted review workspace:\n${revisionLine}\n` +
-        'The daemon fetched and verified this isolated checkout at the exact head or a merge whose parents are exactly the base and head above. Before trusting local traces, verify `git rev-parse HEAD`; do not switch to or inspect another checkout.' +
-        // Decision 10: the other roots stand at their default branches, so only the cwd is the revision.
-        ((await this.host.sessionHasReferenceDirectories(agent, request))
-          ? ' Additional repositories are available as separate directories at their default branches for reference only; the reviewed revision is the working directory.'
-          : '')
+          'The daemon fetched and verified this isolated checkout at the exact head or a merge whose parents are exactly the base and head above. Before trusting local traces, verify `git rev-parse HEAD`; do not switch to or inspect another checkout.' +
+          // Decision 10: the other roots stand at their default branches, so only the cwd is the revision.
+          ((await this.host.sessionHasReferenceDirectories(agent, request))
+            ? ' Additional repositories are available as separate directories at their default branches for reference only; the reviewed revision is the working directory.'
+            : '')
+      )
       return { workspaceIsolation: 'session', forceWorkspaceIsolation: true, preparedWorkspaceCwd }
     } catch (err) {
       this.log.warn(

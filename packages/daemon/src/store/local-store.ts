@@ -402,6 +402,9 @@ export interface TranscriptEntry {
   authoritative?: boolean
   kind: TranscriptKind
   text: string
+  /** JSON `UserTurnBody` on a text row — the model prompt when it differs from `text`, plus the
+   *  platform facts the console formats. Tool and plan rows write their own bodies elsewhere. */
+  body?: string | null
   /** Bounded inline webchat images. Persisted daemon-side; never provider-backed files. */
   attachments?: SessionImageAttachment[]
   /** Bounded provider-supplied reply source used only when rebuilding model context.
@@ -430,8 +433,22 @@ export interface TranscriptRow extends TranscriptEntry {
   /** Normalized epoch microseconds used by chronological Slack history pagination. */
   eventTimeUs: number
   tool_call_id?: string | null // the one snake_case column; readers never alias it. NULL off tool rows
-  body?: string | null // JSON.stringify(ToolBody); NULL for text/reasoning rows
   attachmentsJson?: string | null // JSON.stringify(SessionImageAttachment[]); inline webchat only
+}
+
+/** The text the model reads for a transcript row: the persisted prompt behind a text row when it
+ *  carries one, else the row's own text. Fail-closed like the quote sidecar — a malformed body
+ *  from an older schema or a corrupt store must never turn arbitrary JSON into prompt context. */
+export function transcriptPromptText(entry: Pick<TranscriptEntry, 'kind' | 'text' | 'body'>): string {
+  if (entry.kind !== 'text' || !entry.body) return entry.text
+  try {
+    const parsed: unknown = JSON.parse(entry.body)
+    const prompt = (parsed as { prompt?: unknown } | null)?.prompt
+    if (typeof prompt === 'string') return prompt
+  } catch {
+    // fall through — the row's text stands
+  }
+  return entry.text
 }
 
 /** Decode daemon-private quote metadata fail-closed. Local DB corruption or a row from
@@ -3889,13 +3906,14 @@ export class LocalStore {
       {
         kind: 'run',
         sql: `INSERT OR IGNORE INTO transcript
-           (orgId, channel, thread, ts, sender, kind, text, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId)
+           (orgId, channel, thread, ts, sender, kind, text, body, recipient, eventTimeUs, attachmentsJson, quoteJson, trustedAgentBot, revision, postId)
          VALUES
-           (@orgId, @channel, @thread, @ts, @sender, @kind, @text, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision, @postId)`,
+           (@orgId, @channel, @thread, @ts, @sender, @kind, @text, @body, @recipient, @eventTimeUs, @attachmentsJson, @quoteJson, @trustedAgentBot, @revision, @postId)`,
         params: [
           {
             ...entry,
             orgId,
+            body: e.body ?? null,
             recipient: e.recipient ?? null,
             postId: e.postId ?? null,
             eventTimeUs: e.eventTimeUs ?? transcriptEventTimeUs(e.ts),
@@ -3964,6 +3982,17 @@ export class LocalStore {
             )
             .run(e.postId, orgId, e.channel, e.thread, e.ts)
         : undefined
+    // The observer often wins the INSERT race against the ingest that carries the turn body, so
+    // the body upgrades in place like the post id: added once, never changed or cleared.
+    const bodyUpgraded =
+      inserted === 0 && e.body && e.kind === 'text'
+        ? await this.lockedDb
+            .prepare(
+              `UPDATE transcript SET body = ?
+               WHERE orgId = ? AND channel = ? AND thread = ? AND ts = ? AND kind = 'text' AND body IS NULL`
+            )
+            .run(e.body, orgId, e.channel, e.thread, e.ts)
+        : undefined
     // A later duplicate can be the first copy that carries the AUTHORITATIVE
     // provider send time (an early observer wrote the row with the derived
     // axis). Explicit values only — two derived computations must never flap.
@@ -4009,6 +4038,7 @@ export class LocalStore {
       Number(attachmentsUpgraded?.changes ?? 0) === 1 ||
       Number(quoteUpgraded?.changes ?? 0) === 1 ||
       Number(postIdUpgraded?.changes ?? 0) === 1 ||
+      Number(bodyUpgraded?.changes ?? 0) === 1 ||
       Number(eventTimeUpgraded?.changes ?? 0) === 1 ||
       delivered === 1
     ) {

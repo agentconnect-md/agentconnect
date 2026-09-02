@@ -251,7 +251,41 @@ until relays upgrade anyway.
 
 ---
 
-## 9. Compatibility
+## 9. The user-turn body
+
+A text row can carry a body too: `UserTurnBody`, the seat for what lies behind a
+user turn when the row's `text` is not the whole story. It has two parts.
+
+- `prompt` — the text the model actually received, when it differs from the
+  row's `text`. A delivery-assembled turn (a Linear delegation, a GitHub or
+  GitLab event) reads far more than the member wrote: a trusted header, a
+  fenced body, a per-turn answer line. Replay renders a text row through
+  `transcriptPromptText`, which prefers this field and falls back to `text`
+  fail-closed, exactly like the quote sidecar, so a session recreated after a
+  failed load gets the context the model had and never arbitrary JSON.
+- `linear` / `codehost` — the platform facts the console formats behind the
+  bubble (issue, team, delegator, description; event, subject, author,
+  revision, body, how the delivery is answered). Facts, never instructions.
+
+The strategy that assembles a prompt puts both on `NormalizedMessage.turnBody`.
+The authoritative ingest and the coalesce path persist it — never the live
+observer, which can run before the review batch and the review workspace have
+finished rewriting the prompt. The observer often wins the insert race, so the
+body upgrades in place like the post id: added once by the ingest, never
+changed or cleared. The session manager prompts from `turnBody.prompt ?? text`,
+and every transcript-to-model render — cold replay and both live
+context-refresh renderers — goes through `transcriptPromptText`; the review
+orchestrator's workspace block and a submitted-review batch rewrite both seats
+together. The reader carries a text row's body inline when it fits the preview
+cap; an oversized one keeps the facts and drops the prompt under
+`bodyTruncated`, since the console renders the facts and never the prompt.
+
+Today every strategy sets `prompt === text`, so the model and the console see
+what they always did. The split lands in two later steps: the strategies put
+the member's own words on `text`, then the console folds the facts behind a
+"more" control with one formatter per platform.
+
+## 10. Compatibility
 
 - New transcript columns are nullable, so existing title-only rows continue to
   render.
@@ -262,7 +296,7 @@ until relays upgrade anyway.
 
 ---
 
-## 10. Validation requirements
+## 11. Validation requirements
 
 Tests cover:
 

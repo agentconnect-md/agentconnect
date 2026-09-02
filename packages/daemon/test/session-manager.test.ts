@@ -99,6 +99,31 @@ describe('SessionManager', () => {
     await (await store).close()
   })
 
+  it('prompts with the turn body’s prompt, records its text as the row, and replays the prompt on recreate', async () => {
+    const store = await newStore()
+    const host = fakeHost()
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const turnBody = {
+      prompt: 'Linear ENG-1 "x" — delegated by U1\nfull prompt',
+      linear: { issue: { identifier: 'ENG-1' } }
+    }
+    const first = await sm.handle('bot-a', msg({ ts: '100.1', text: 'Delegated ENG-1', turnBody }))
+    const texts = (b: any[]): string => b.map((block: any) => block.text ?? '').join('\n')
+    // The model reads the prompt; the console's text never reaches it.
+    expect(texts(first.blocks)).toContain('[U1] Linear ENG-1 "x" — delegated by U1\nfull prompt')
+    expect(texts(first.blocks)).not.toContain('Delegated ENG-1')
+    // The row keeps the text and carries the body.
+    const rows = await (await store).transcriptSince('C1', '100.1', null, 'bot-a')
+    expect(rows.map((r) => [r.text, r.body && JSON.parse(r.body)])).toEqual([['Delegated ENG-1', turnBody]])
+    // A runtime that cannot load the session replays the thread — from the prompt, not the text.
+    const host2 = { newSession: vi.fn(async () => 'acp-2'), hasSession: () => false, loadSupported: () => false } as any
+    const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
+    const second = await sm2.handle('bot-a', msg({ ts: '100.2', text: 'follow-up' }))
+    expect(texts(second.blocks)).toContain('[U1] Linear ENG-1 "x" — delegated by U1\nfull prompt')
+    expect(texts(second.blocks)).not.toContain('Delegated ENG-1')
+    await (await store).close()
+  })
+
   it('passes the ordinary warm host identity to workspace preparation', async () => {
     const store = await newStore()
     const host = fakeHost()

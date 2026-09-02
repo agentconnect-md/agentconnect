@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { TranscriptEntry } from '../src/store/local-store.js'
 import { messageOrderingFor } from '../src/platforms/message-ordering.js'
 import { MAX_REPLAY_ENTRIES, planReplay, renderReplayContext } from '../src/session/turn/replay-plan.js'
+import { transcriptPromptText } from '../src/store/local-store.js'
 
 const slack = messageOrderingFor('slack')
 const CH = 'C1'
@@ -178,5 +179,34 @@ describe('renderReplayContext', () => {
   it('puts an entry quote line ahead of the entry', () => {
     const rendered = renderReplayContext([entry(at(1), 'u1', 'hi')], (e) => `> quoting ${e.ts}`)
     expect(rendered).toBe(`> quoting ${at(1)}\n[u1] hi`)
+  })
+})
+
+describe('transcriptPromptText', () => {
+  it('reads the persisted prompt behind a text row, and the row text everywhere else', () => {
+    const body = JSON.stringify({ prompt: 'PROMPT', linear: { issue: { identifier: 'ENG-1' } } })
+    expect(transcriptPromptText({ ...entry(at(1), 'u1', 'DISPLAY'), body })).toBe('PROMPT')
+    expect(transcriptPromptText(entry(at(1), 'u1', 'DISPLAY'))).toBe('DISPLAY')
+    expect(transcriptPromptText({ ...entry(at(1), 'u1', 'DISPLAY'), body: JSON.stringify({ linear: {} }) })).toBe(
+      'DISPLAY'
+    )
+    // A tool row's body is a ToolBody, never a prompt.
+    expect(transcriptPromptText({ ...entry(at(1), 'u1', 'ran ls'), kind: 'tool', body })).toBe('ran ls')
+  })
+
+  it('fails closed on a body that is not JSON or whose prompt is not a string', () => {
+    expect(transcriptPromptText({ ...entry(at(1), 'u1', 'DISPLAY'), body: '{not json' })).toBe('DISPLAY')
+    expect(transcriptPromptText({ ...entry(at(1), 'u1', 'DISPLAY'), body: JSON.stringify({ prompt: 7 }) })).toBe(
+      'DISPLAY'
+    )
+    expect(transcriptPromptText({ ...entry(at(1), 'u1', 'DISPLAY'), body: 'null' })).toBe('DISPLAY')
+  })
+
+  it('renders replayed context from the prompt the model read, not the text the console shows', () => {
+    const rows = [
+      { ...entry(at(1), 'u1', 'Delegated ENG-1'), body: JSON.stringify({ prompt: 'Linear ENG-1 — full prompt' }) },
+      entry(at(2), 'u2', 'plain')
+    ]
+    expect(renderReplayContext(rows)).toBe('[u1] Linear ENG-1 — full prompt\n[u2] plain')
   })
 })
