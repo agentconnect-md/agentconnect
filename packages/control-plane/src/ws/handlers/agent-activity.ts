@@ -11,6 +11,8 @@ export const handleAgentActivity: Handler = async (frame, conn, deps) => {
   if (!orgId) return
   const { agentId, sessionId, state } = frame.payload
   const daemonId = DaemonId(conn.daemonId)
+  // Order behind the previous connection's disconnect clear: its late `idle` must not outlive this replay.
+  await deps.connReg.approvalClearsSettled(conn.daemonId)
   await runForReportingAgent(orgId, AgentId(agentId), daemonId, deps, async () => {
     // A row that never committed has no visibility to check, so it is not published either.
     if (await deps.session.setActivityState(SessionId(sessionId), AgentId(agentId), state)) {

@@ -105,6 +105,23 @@ export class ConnectionRegistry {
     return this.byDaemon.has(daemonId)
   }
 
+  /** Per-daemon chain of disconnect clears of approval waits; a reconnect's replay writes only after it (slack-approval-dm.md §7). */
+  private readonly approvalClears = new Map<string, Promise<void>>()
+
+  /** Queue a clear behind any still in flight for the daemon, so two closes never interleave their writes. */
+  runApprovalClear(daemonId: string, clear: () => Promise<void>): void {
+    const chained = (this.approvalClears.get(daemonId) ?? Promise.resolve()).then(clear).catch(() => undefined)
+    const tracked: Promise<void> = chained.finally(() => {
+      if (this.approvalClears.get(daemonId) === tracked) this.approvalClears.delete(daemonId)
+    })
+    this.approvalClears.set(daemonId, tracked)
+  }
+
+  /** Resolves once every queued clear for the daemon has committed; immediately when none is in flight. */
+  approvalClearsSettled(daemonId: string): Promise<void> {
+    return this.approvalClears.get(daemonId) ?? Promise.resolve()
+  }
+
   /** Publish the point at which a newly-authenticated connection may accept
    * control frames, waking idempotent commands interrupted on an older epoch. */
   markReady(daemonId: string, conn: ConnChannel): DaemonConnState | undefined {

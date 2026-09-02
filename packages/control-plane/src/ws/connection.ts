@@ -337,7 +337,9 @@ export class DaemonConnection implements ConnChannel {
     // connection (the fleet would read `offline` while heartbeats keep flowing).
     if (this.daemonId && this.deps.connReg.get(this.daemonId)?.conn === this) {
       this.deps.connReg.remove(this.daemonId)
-      void this.clearAwaitingApprovals(this.daemonId)
+      // Queued, not fired: a reconnect's `agent/activity` replay waits for this chain, so an old
+      // socket's late `idle` can never land on top of the new connection's `awaiting_permission`.
+      this.deps.connReg.runApprovalClear(this.daemonId, () => this.clearAwaitingApprovals(this.daemonId))
     }
   }
 

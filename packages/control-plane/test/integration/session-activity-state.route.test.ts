@@ -13,6 +13,7 @@ import type { AnyFrame } from '@agentconnect.md/protocol'
 import { DEFAULT_ORG_ID } from '../../prisma/seed.js'
 import { InMemorySessionEventSink, type SessionEventEnvelope } from '../../src/events/sink.js'
 import { AgentMutationGate } from '../../src/orchestrator/agentMutationGate.js'
+import { ConnectionRegistry } from '../../src/ws/registry.js'
 
 const ORG = `/api/v1/orgs/${DEFAULT_ORG_ID}`
 
@@ -32,8 +33,9 @@ function frame(type: string, payload: Record<string, unknown>): AnyFrame {
   return { v: 1, id: randomUUID(), ts: new Date().toISOString(), type, payload } as AnyFrame
 }
 
-function deps(events: InMemorySessionEventSink): DaemonWsDeps {
+function deps(events: InMemorySessionEventSink, connReg = new ConnectionRegistry()): DaemonWsDeps {
   return {
+    connReg,
     agent: new PgAgentRepo(prisma),
     agentMutations: new AgentMutationGate(),
     hook: new PgHookRepo(prisma),
@@ -61,11 +63,16 @@ async function reportSession(events: InMemorySessionEventSink, phase: 'start' | 
   )
 }
 
-async function reportActivity(events: InMemorySessionEventSink, state: string, daemonId = DAEMON) {
+async function reportActivity(
+  events: InMemorySessionEventSink,
+  state: string,
+  daemonId = DAEMON,
+  connReg = new ConnectionRegistry()
+) {
   await handleAgentActivity(
     frame('agent/activity', { agentId: AGENT, sessionId: SESSION, state, ts: '2026-07-05T00:00:01.000Z' }),
     { daemonId, orgId: DEFAULT_ORG_ID } as DaemonConnection,
-    deps(events)
+    deps(events, connReg)
   )
 }
 
@@ -144,6 +151,36 @@ describe('agent/activity → SessionMeta.activityState → GET /sessions?activit
     await reportSession(events, 'end')
     expect(await storedState()).toBe('idle')
     expect(seen.filter((e) => e.state).map((e) => e.state?.state)).toEqual(['awaiting_permission', 'idle'])
+  })
+
+  it('a reconnect replay lands after a still-running disconnect clear, never under it', async () => {
+    await seedDaemon(prisma, DAEMON)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedLaunch(prisma, LAUNCH, AGENT, DAEMON)
+    const events = new InMemorySessionEventSink()
+    const connReg = new ConnectionRegistry()
+    const repo = new PgSessionRepo(prisma)
+    await reportSession(events, 'start')
+    await reportActivity(events, 'awaiting_permission')
+
+    // The old socket's clear is queued but stalls mid-flight while the daemon reconnects and replays.
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    let cleared: Array<{ id: string }> = []
+    connReg.runApprovalClear(DAEMON, async () => {
+      await gate
+      cleared = await repo.clearAwaitingPermissionForDaemon(DaemonId(DAEMON))
+    })
+    const replay = reportActivity(events, 'awaiting_permission', DAEMON, connReg)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // Still waiting on the clear: nothing has been written by the replay yet.
+    expect(cleared).toEqual([])
+    release()
+    await replay
+    expect(cleared.map((row) => row.id)).toEqual([SESSION])
+    // The clear committed `idle` first; the replay's `awaiting_permission` is the final word.
+    expect(await storedState()).toBe('awaiting_permission')
+    await connReg.approvalClearsSettled(DAEMON)
   })
 
   it('a disconnected daemon has its waits cleared, and only its own', async () => {
