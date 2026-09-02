@@ -33,7 +33,8 @@ import {
   botCardCopy,
   botSharingEditable,
   platformRegistry,
-  platformSharingFixed
+  platformSharingFixed,
+  platformSoleConversation
 } from '@/components/console/platforms/registry'
 import { BOT_PLATFORM_TABS, botMatchesPlatformTab } from '@/components/console/platforms/host-projections'
 import DeleteBotModal from '@/components/console/modals/DeleteBotModal'
@@ -508,7 +509,24 @@ function BotsCard({
               {CardNotice && <CardNotice bot={b} />}
               {open && (
                 <div className="border-b border-(--border-subtle) bg-(--surface-sunken) px-4 pb-[14px] pl-10 pt-3">
-                  {channels.length > 0 ? (
+                  {/* The bot IS its one conversation: the row expands to that conversation's
+                      default dispatch alone — listing the workspace beneath itself would
+                      name the same thing twice. */}
+                  {platformSoleConversation(b.platform) && showDefaultDispatch ? (
+                    <div className="flex items-center justify-between gap-[11px] rounded-lg border border-(--border-subtle) bg-(--surface-card) px-3 py-2">
+                      <span className="font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
+                        Default dispatch
+                      </span>
+                      <DefaultDispatchPicker
+                        options={agentOptions}
+                        activeId={channels[0]!.agentId ?? b.agentIds[0] ?? null}
+                        disabled={!canWrite || !channels[0]!.integrationId}
+                        onPick={(agentId) =>
+                          setChannelAgent(channels[0]!.integrationId!, channels[0]!.channelId, agentId)
+                        }
+                      />
+                    </div>
+                  ) : channels.length > 0 ? (
                     <>
                       <div
                         className={`grid ${chanGrid} gap-[11px] px-3 pb-[7px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)`}

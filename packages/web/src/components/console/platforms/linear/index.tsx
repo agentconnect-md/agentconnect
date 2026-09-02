@@ -48,6 +48,9 @@ export const linearModule: WebPlatformModule<LinearApi> = {
   // roster the console keeps. The card body below renders the workspace instead, so
   // the generic list is never reached and its semantics would describe nothing.
   agentCard: { Body: LinearWorkspaceRows },
+  // The workspace is the channel (§4.5): the Bots row expands to its default dispatch
+  // alone, never to a roster naming the workspace beneath itself.
+  soleConversation: true,
   // Agent activities are append-only rows with their own ids (§15), so a duplicate
   // across sources is the same activity; anything else never dedupes.
   messageIdentity: (row) => (LINEAR_ACTIVITY_ID.test(row.ts) ? `ts:${row.ts}` : null),

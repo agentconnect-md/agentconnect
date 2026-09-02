@@ -53,15 +53,15 @@ describe('the linear registry row', () => {
 })
 
 describe('the linear mark', () => {
-  it('renders inline SVG that honours the fill box uncapped', () => {
-    // The artwork carries its own padding (the bar cluster spans ~68% of the
-    // viewBox), so a full-bleed caller gets 100% rather than the square-glyph cap.
+  it('renders the official glyph inline, capped like the other full-bleed marks', () => {
+    // The logomark fills its viewBox edge to edge, so a full-bleed caller gets the
+    // 80% square-glyph cap rather than outsizing the marks beside it.
     expect(renderToStaticMarkup(<LinearMark />)).toContain('width:60%')
-    expect(renderToStaticMarkup(<LinearMark fillPct={100} />)).toContain('width:100%')
+    expect(renderToStaticMarkup(<LinearMark fillPct={100} />)).toContain('width:80%')
     const markup = renderToStaticMarkup(<LinearMark />)
     expect(markup.startsWith('<svg')).toBe(true)
-    // Four bars, drawn here rather than imported as an asset.
-    expect(markup.match(/<path /g)).toHaveLength(4)
+    // One traced path, drawn here rather than imported as an asset.
+    expect(markup.match(/<path /g)).toHaveLength(1)
   })
 })
 

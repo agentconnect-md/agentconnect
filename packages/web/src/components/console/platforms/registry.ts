@@ -132,6 +132,12 @@ export function platformSharingFixed(platformId?: string): boolean {
   return (platformId ? platformRegistry.get(platformId)?.wizard.affordances.share : undefined) === 'fixed'
 }
 
+/** Whether the bot IS its one conversation (`WebPlatformModule.soleConversation`), so
+ *  Settings → Bots offers the default dispatch on the row instead of a roster. */
+export function platformSoleConversation(platformId?: string): boolean {
+  return (platformId ? platformRegistry.get(platformId)?.soleConversation : undefined) === true
+}
+
 /**
  * Whether the Settings → Bots Sharable toggle may be OPERATED for this bot —
  * the platform half of its `disabled` predicate (the viewer's write access and

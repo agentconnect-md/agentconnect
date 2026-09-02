@@ -671,6 +671,13 @@ export interface WebPlatformModule<TApi = unknown> {
    *  Absent ⇒ that list, which is every platform whose rooms are enumerable. */
   agentCard?: WebAgentIntegrationCardFacet
   /**
+   * The console's mirror of the §5 manifest's `soleConversation`: the bot IS its one
+   * conversation (Linear — a workspace is the channel), so the Settings → Bots row
+   * expands to that conversation's default dispatch alone, never to a roster that
+   * would list the workspace beneath itself. Absent ⇒ the generic roster.
+   */
+  soleConversation?: true
+  /**
    * Per-platform transcript text renderer — the §14 defect-3 seam, ADOPTED:
    * `MessageText` resolves it from the ROW's platform key
    * (`MergedRow.sourcePlatform`, falling back to the session's platform) on
