@@ -6664,9 +6664,11 @@ export class Daemon {
   private async linearActorName(conn: LinearConnection, senderId: string): Promise<string | undefined> {
     const cached = (await this.store.getDisplayNames([senderId])).get(senderId)
     if (cached) return cached
+    // The full name first, as the resolver caches it for the session list — one spelling
+    // in the header and the list, not the handle in one and the name in the other.
     const lookup = conn
       .getUserProfile(senderId)
-      .then((p) => p.name || p.realName || undefined)
+      .then((p) => p.realName || p.name || undefined)
       .catch(() => undefined)
     const deadline = new Promise<undefined>((resolve) => {
       const timer = setTimeout(() => resolve(undefined), LINEAR_ACTOR_LOOKUP_MS)

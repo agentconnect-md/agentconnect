@@ -383,7 +383,8 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     const asked: string[] = []
     ;(daemon as any).lnConnByIntegration.get(INTEGRATION).getUserProfile = async (id: string) => {
       asked.push(id)
-      return { id, name: 'ada', isBot: false }
+      // The full name wins over the handle, matching what the session list shows.
+      return { id, name: 'ada', realName: 'Ada Lovelace', isBot: false }
     }
     const dispatched: { text: string }[] = []
     ;(daemon as any).dispatch = vi.fn(async (_a: string, msg: any) => {
@@ -391,7 +392,7 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
       return null
     })
     await im(daemon, delivery({ sender: { id: 'linear:user-1', isBot: false } }))
-    expect(dispatched[0]!.text.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by ada')
+    expect(dispatched[0]!.text.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by Ada Lovelace')
     expect(asked).toContain('linear:user-1')
     await daemon.stop()
   })
