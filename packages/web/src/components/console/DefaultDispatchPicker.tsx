@@ -72,7 +72,9 @@ export function DefaultDispatchPicker({
                 agent's avatar, so the control changed shape per agent and read as whatever
                 that mark suggested. The avatars stay in the menu, where they identify rows. */}
             <Icon name={DISPATCH_ICON} size={13} color="var(--text-tertiary)" className="flex-none" />
-            <span className="mono text-[12.5px] text-(--text-primary)">{active?.name ?? '—'}</span>
+            <span className="mono max-w-[180px] truncate text-[12.5px] text-(--text-primary)">
+              {active?.name ?? '—'}
+            </span>
             <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
           </button>
         )}
