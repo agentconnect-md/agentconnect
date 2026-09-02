@@ -154,8 +154,8 @@ Linear is a **chat-kind platform module** (`PlatformId` `'linear'`,
 transport and Feishu callbacks) and whose _egress_ is daemon-direct GraphQL
 (like every other platform's outbound path). Its Linear-side identity is the
 **deployment's one OAuth app** (§4.3); a connected workspace is a shared bot
-whose members are the enabled agents, and that workspace is also the bot's
-**one conversation** (§4.5), so its dispatch default is an ordinary
+whose members are the enabled agents, and the workspace's **teams are its
+conversations** (§4.5), so each team's dispatch default is an ordinary
 conversation owner. The Control Plane stays off the message hot path.
 
 Adding it is close to the checklist-shaped task the plugin architecture
@@ -232,8 +232,8 @@ Linear has chat ingress in all but name. Its product hands us the platform
 shape natively: the deployment's OAuth app is the identity users delegate to
 and mention (§4.3), a connected workspace is a `Bot` row with `Integration`
 rows as its enabled-agent members — the same tables every chat platform uses.
-Its sessions are conversations (channel = the connected workspace, thread =
-agent session) with follow-ups and a streaming reply surface. Linear therefore
+Its sessions are threads in conversations (channel = the issue's team, thread
+= agent session) with follow-ups and a streaming reply surface. Linear therefore
 implements all four platform contracts and renders in the console as ordinary
 conversations (`platform: 'linear'`).
 
@@ -281,8 +281,8 @@ The mapping onto existing tables — the Slack shared-bot shape, not a new one:
   constant it sets.
 - **`Integration`** = one **enabled agent** on that workspace
   (`Integration.botId` is deliberately non-unique — the shared-bot
-  precedent). The workspace's **dispatch default** is not a Linear-shaped
-  field at all: the workspace IS the bot's one conversation (§4.5), so the
+  precedent). A team's **dispatch default** is not a Linear-shaped field at
+  all: the workspace's teams are the bot's conversations (§4.5), so each
   default is the ordinary per-conversation owner (`IntegrationChannel.agentId`,
   [shared-bot-relay.md §10.1](shared-bot-relay.md)) — the row is its storage
   and its console control, edited through the generic
@@ -592,8 +592,9 @@ idle window).
     compile already emits for every placed non-gated member
     (`@<agent-name>` in the text, §4.3/§6.2); anything
     else — bare delegation, automation delegation, no name matched — reaches
-    the ladder's last rung, `defaultAgentId`, which carries the workspace
-    row's owner (§6.2) or, before that row exists, the compile's
+    the ladder's per-conversation default rung, which carries the issue's
+    team row's owner (`conversationDefaults`, §6.2), or, before that row
+    exists, the last rung's `defaultAgentId` — the compile's
     earliest-non-gated derivation. Every event is explicitly addressed by
     construction, which is what keeps that rung — and the keyword one above
     it — reachable at all.
@@ -823,11 +824,11 @@ between):
 **Per agent — enable it on the workspace.** Adding an agent is one more
 member Integration on the workspace bot (the generic existing-bot path — no
 reuse fence exists or is needed under this model), plus its sibling
-conversation row, written by the same path (§9.2) and repeating the
-conversation's state without taking the owner from the member that holds it.
-Moving the dispatch
-default is a separate and entirely generic act: the workspace row's owner
-selector (§6.2), offered on any member's Linear card. Every enabled agent's
+conversation rows — one per team, written by the same path (§9.2) and
+repeating each conversation's state without taking the owner from the member
+that holds it. Moving a team's dispatch default is a separate and entirely
+generic act: that team row's owner selector (§6.2), offered on any member's
+Linear card. Every enabled agent's
 name already compiles into a member keyword route (the shipped compile,
 §6.2), which is what makes `@<agent-name>` addressing work.
 
@@ -1215,10 +1216,11 @@ tile.
     unnecessary — the agent surface is four mutations and two queries); token
     cache + `linearcred` renewal; `PlatformSendQueue`; self-echo guard on
     `appUserId`. The read port answers what Linear affords — `getChannelInfo`
-    names the connected workspace (the channel, §4.5), `getUserProfile` the
-    Linear user behind a `linear:`-prefixed sender id — and returns
-    empty/`null` elsewhere (no `listBotChannels`, no `leaveChannel`,
-    `downloadFile` deferred).
+    names the team behind a channel id (`<KEY> · <Team name>`, §4.5; the
+    workspace for the issue-less channel), `listChannels` answers the team
+    list, `getUserProfile` the Linear user behind a `linear:`-prefixed sender
+    id — and returns empty/`null` elsewhere (no `listBotChannels`, no
+    `leaveChannel`, `downloadFile` deferred).
   - `turn-output.ts` — the streaming Layer-2 surface + `LinearConverger` +
     `LinearAction` (§5).
   - message strategy — `adapterExt.linear` → prompt assembly and fencing
@@ -1283,9 +1285,9 @@ tile.
   these maps into the §7.5 key-driven `ConnectionPool` registry is the parent
   design's remaining daemon stage and deliberately **not** a prerequisite
   here.
-- Session metadata: `channelName` = the workspace name on every session; the
-  issue identifier and URL reach the **session title** and `threadUrl` and
-  stop there (§4.5).
+- Session metadata: `channelName` = the team label (`<KEY> · <Team name>`)
+  on every session, read from the bag's team; the issue identifier and URL
+  reach the **session title** and `threadUrl` and stop there (§4.5).
 - Tests: normalize (created/prompted/stop → the issue's team id as `channel`
   and `<KEY> · <Team name>` as `channelName` — two sessions from different
   issues of one team agree on it, two teams differ — mention-comment `text`
@@ -1442,19 +1444,19 @@ none` skips it along with everything else Linear-visible. There is **no
 
 ## 13. Phasing
 
-- **P1 — the core loop.** `linearcred` frames; deployment-app configuration
-  (Setup Server document + `envSchema` slice); the `soleConversation`
-  manifest axis and its core reads (§9.1 — since narrowed to
-  `ownerAsDefault`, P2.5); CP provider (connect funnel +
-  callback, the install-path conversation row, member management, token
-  service + broker, projectors, the
-  `onBotDelete` contract extension) + registry line; relay ingress plugin +
-  registry line; daemon module (connection, the workspace-conversation
-  report, ack with agent attribution, converger
-  `thought`/`action`/`response`/`error`, follow-ups, stop, config schema) +
-  the §9.4 composition lines; web module (workspace link + connect hand-off,
-  mark, the Linear card, session display) + registry line. Exit criteria:
-  delegate an issue → the workspace's dispatch default acknowledges ≤10 s
+- **P1 — the core loop** (shipped on the workspace-as-channel model of the
+  time; P2.5 below re-keys every conversation-shaped piece of it to teams,
+  and the current contracts are the ones §4–§9 state). `linearcred` frames;
+  deployment-app configuration (Setup Server document + `envSchema` slice);
+  the conversation manifest axis and its compile read (§9.1); CP provider
+  (connect funnel + callback, the install-path conversation rows, member
+  management, token service + broker, projectors, the `onBotDelete` contract
+  extension) + registry line; relay ingress plugin + registry line; daemon
+  module (connection, the conversation report, ack with agent attribution,
+  converger `thought`/`action`/`response`/`error`, follow-ups, stop, config
+  schema) + the §9.4 composition lines; web module (workspace link + connect
+  hand-off, mark, the Linear card, session display) + registry line. Exit
+  criteria: delegate an issue → the conversation's dispatch default acknowledges ≤10 s
   (named in the ack) → streamed activities → response; `@<agent-name>` routes
   to the named member; moving the row's selector moves the next bare
   delegation; reply and stop work; sessions render in the console.
