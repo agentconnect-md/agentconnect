@@ -49,7 +49,7 @@ import type {
 import type { LinearTeam } from './api.js'
 import { defaultMemberOf, placedMembers } from '../../orchestrator/placement.js'
 import { linearConnectionIdentity } from './provider.js'
-import { linearTeamChannelName, linearTeamSeedTrigger, seedLinearTeamRows } from './teams.js'
+import { linearTeamChannelName, linearTeamRowLink, linearTeamSeedTrigger, seedLinearTeamRows } from './teams.js'
 import type { LinearTokenService } from './token-service.js'
 
 export interface LinearCredentialReconcilerLog {
@@ -292,9 +292,9 @@ export class LinearCredentialReconciler {
     await this.deps.resync(bot.id)
   }
 
-  /** Display-only refresh, on every sibling row that carries the team — its label and the glyph
-   *  the console draws it with: `upsertConversation` preserves the stored trigger, and a row that
-   *  already matches on all three is not written.
+  /** Display-only refresh, on every sibling row that carries the team — its label, the glyph the
+   *  console draws it with, and the handle and page it links to: `upsertConversation` preserves
+   *  the stored trigger, and a row that already matches on all of them is not written.
    *
    *  AUTHORITATIVE, unlike a daemon observation: `teams` answered, so a team with no icon or color
    *  genuinely has none, and the row is CLEARED rather than left carrying a glyph Linear dropped.
@@ -308,19 +308,30 @@ export class LinearCredentialReconciler {
       name: string | null
       icon: string | null
       color: string | null
+      key: string | null
+      url: string | null
     }[],
     team: LinearTeam,
     workspaceName: string | null
   ): Promise<void> {
     const name = linearTeamChannelName(team, workspaceName)
+    const link = linearTeamRowLink(team)
     for (const row of rows) {
       if (row.channelId !== team.id) continue
-      if (row.name === name && row.icon === (team.icon ?? null) && row.color === (team.color ?? null)) continue
+      if (
+        row.name === name &&
+        row.icon === (team.icon ?? null) &&
+        row.color === (team.color ?? null) &&
+        row.key === link.key &&
+        row.url === link.url
+      )
+        continue
       await seams.channels.upsertConversation(row.integrationId, {
         id: team.id,
         name,
         icon: team.icon ?? null,
         color: team.color ?? null,
+        ...link,
         kind: 'channel'
       })
     }

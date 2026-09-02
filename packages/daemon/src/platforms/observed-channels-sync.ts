@@ -223,9 +223,11 @@ export class ObservedChannelsSync {
           id: chat.id,
           ...(chat.name ? { name: chat.name } : {}),
           // Learned once and never unlearned: an observation that could not resolve the glyph
-          // keeps the one the row already carries rather than blanking a rendered row.
+          // or the link keeps the one the row already carries rather than blanking a drawn row.
           ...(chat.icon ? { icon: chat.icon } : {}),
           ...(chat.color ? { color: chat.color } : {}),
+          ...(chat.key ? { key: chat.key } : {}),
+          ...(chat.url ? { url: chat.url } : {}),
           isPrivate: chat.isPrivate,
           kind: 'channel'
         }
@@ -233,6 +235,8 @@ export class ObservedChannelsSync {
           current?.name === observed.name &&
           current?.icon === observed.icon &&
           current?.color === observed.color &&
+          current?.key === observed.key &&
+          current?.url === observed.url &&
           current?.isPrivate === observed.isPrivate &&
           current?.kind === observed.kind
         ) {

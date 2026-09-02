@@ -794,6 +794,49 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(bare.ok).toBe(true)
   })
 
+  it('integration/channels round-trips the conversation’s own handle and link', () => {
+    const r = decodeEnvelope(
+      envelope('integration/channels', {
+        integrationId: INTEGRATION_ID,
+        channels: [
+          {
+            id: 'team-1',
+            name: 'Acme / Engineering',
+            key: 'ENG',
+            url: 'https://linear.app/example-workspace/team/ENG'
+          },
+          { id: 'C123', name: 'deploys' }
+        ]
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('integration/channels')(r.frame)) throw new Error('expected integration/channels')
+    expect(r.frame.payload.channels[0]).toEqual({
+      id: 'team-1',
+      name: 'Acme / Engineering',
+      key: 'ENG',
+      url: 'https://linear.app/example-workspace/team/ENG'
+    })
+    // A platform without the notion sets neither, and the row decodes exactly as it always did.
+    expect(r.frame.payload.channels[1]).toEqual({ id: 'C123', name: 'deploys' })
+  })
+
+  it('integration/channels refuses an over-long key and a link that is not https', () => {
+    const long = decodeEnvelope(
+      envelope('integration/channels', {
+        integrationId: INTEGRATION_ID,
+        channels: [{ id: 'team-1', key: 'K'.repeat(33) }]
+      })
+    )
+    expect(long.ok).toBe(false)
+    for (const url of ['javascript:alert(1)', 'http://linear.app/example-workspace/team/ENG', 'not a url']) {
+      const bad = decodeEnvelope(
+        envelope('integration/channels', { integrationId: INTEGRATION_ID, channels: [{ id: 'team-1', url }] })
+      )
+      expect(bad.ok, url).toBe(false)
+    }
+  })
+
   it('register/ok defaults integrations[] to [] and round-trips a delivered integration', () => {
     const empty = decodeEnvelope(
       envelope('register/ok', {

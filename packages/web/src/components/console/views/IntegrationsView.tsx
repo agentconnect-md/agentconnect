@@ -29,7 +29,7 @@ import {
   type MeDto
 } from '@/lib/api'
 import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/data'
-import { roomGlyph, rowLabelParts, rowMark } from '@/components/console/IntegrationChannelList'
+import { roomGlyph, roomPlural, rowLabelParts, rowMark, rowName } from '@/components/console/IntegrationChannelList'
 import {
   botCardCopy,
   botSharingEditable,
@@ -96,6 +96,9 @@ interface BotChannelView {
   /** The conversation's own glyph and tint, where the platform gives it one (a Linear team). */
   icon?: string
   color?: string
+  /** Its handle and the page it opens on the platform, where it has them (a Linear team). */
+  key?: string
+  url?: string
   /** Effective per-conversation owner; null only before legacy state converges. */
   agentId: string | null
   /** Any integration whose snapshot row backs this channel; ownership PATCHes
@@ -119,6 +122,8 @@ function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelVie
           kind: c.kind ?? 'channel',
           ...(c.icon ? { icon: c.icon } : {}),
           ...(c.color ? { color: c.color } : {}),
+          ...(c.key ? { key: c.key } : {}),
+          ...(c.url ? { url: c.url } : {}),
           agentId: explicit,
           integrationId: i.id ?? null
         })
@@ -531,7 +536,9 @@ function BotsCard({
                       <div
                         className={`grid ${chanGrid} gap-[11px] px-3 pb-[7px] font-mono text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)`}
                       >
-                        <span>Conversation</span>
+                        {/* The platform's own noun for the room, not "conversation": these rows
+                            are a Linear workspace's teams and a Slack bot's channels. */}
+                        <span>{roomPlural(roomLabel)}</span>
                         {showDefaultDispatch && <span className="justify-self-end">Default dispatch</span>}
                       </div>
                       <div className="overflow-visible rounded-lg border border-(--border-subtle) bg-(--surface-card)">
@@ -545,6 +552,7 @@ function BotsCard({
                           // A platform that gives the conversation its own icon and tint draws that
                           // instead — a Linear team is told apart by its color, not by a room sigil.
                           const Mark = rowMark(c.kind, b.platform)
+                          const Name = rowName(c.kind, b.platform)
                           return (
                             <Fragment key={c.channelId}>
                               {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
@@ -574,7 +582,11 @@ function BotsCard({
                                     :{' '}
                                   </span>
                                   <span className="flex min-w-0 items-baseline gap-[6px] truncate">
-                                    <span className="min-w-0 truncate">{label.name}</span>
+                                    {Name ? (
+                                      <Name name={label.name} channelKey={c.key} url={c.url} />
+                                    ) : (
+                                      <span className="min-w-0 truncate">{label.name}</span>
+                                    )}
                                     {label.hint && (
                                       <span className="flex-none text-(--text-tertiary)">{label.hint}</span>
                                     )}

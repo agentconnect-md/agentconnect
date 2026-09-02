@@ -7,6 +7,7 @@ import { LinearWorkspaceCard, LinearWorkspaceHeaderActions, LinearWorkspaceRows 
 import { linearLinkInput } from './link'
 import { LinearMark } from './mark'
 import { LinearTeamGlyph } from './team-glyph'
+import { LinearTeamName } from './team-name'
 import { linearSettingsFragments } from './settings'
 
 /** Linear's provider-native activity id: a v4 UUID. A daemon-local numeric stamp
@@ -66,6 +67,9 @@ export const linearModule: WebPlatformModule<LinearApi> = {
     // an identifier rather than a label and is not in the stored name at all.
     // A team leads with its own icon and color, the way Linear's own team picker draws it.
     RowMark: LinearTeamGlyph,
+    // …and prints its key after the name, off the row's own field, with the name linking to
+    // the team in Linear — neither is ever read back out of the label.
+    RowName: LinearTeamName,
     splitRowLabel: (label) => {
       const at = label.indexOf(TEAM_LABEL_SEPARATOR)
       if (at < 0) return { name: label }

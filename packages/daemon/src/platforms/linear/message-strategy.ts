@@ -19,7 +19,7 @@
  * `daemon.ts` decide when to run it; this module only decides what the turn reads.
  */
 import { z } from 'zod'
-import { conversationGlyph } from '@agentconnect.md/protocol'
+import { conversationGlyph, conversationLink } from '@agentconnect.md/protocol'
 import {
   neutralizeDelimiters,
   UNTRUSTED_CONTENT_BEGIN_LINEAR,
@@ -81,10 +81,29 @@ export const linearTeamGlyph = (
   team: Pick<LinearTeamRef, 'icon' | 'color'> | undefined | null
 ): { icon?: string; color?: string } => conversationGlyph(team?.icon, team?.color)
 
-/** The connected workspace: all that is left to label the issue-less channel (§4.5). */
+/** Where a Linear workspace lives on the web — the base every team link is built on. */
+const LINEAR_APP_BASE = 'https://linear.app'
+
+/** The connected workspace: all that is left to label the issue-less channel (§4.5).
+ *  `workspaceUrlKey` is Linear's own URL segment for it, which the team link is built on. */
 export interface LinearWorkspaceRef {
   workspaceName?: string
+  workspaceUrlKey?: string
   workspaceId(): string
+}
+
+/** The team's handle and the page it opens in Linear as the conversation row accepts them
+ *  (§4.5) — the key off the team, the link only once the workspace's URL segment is known,
+ *  and both narrowed through the wire contract's own helper for `linearTeamGlyph`'s reason. */
+export const linearTeamLink = (
+  team: Pick<LinearTeamRef, 'key'> | undefined | null,
+  workspace?: LinearWorkspaceRef
+): { key?: string; url?: string } => {
+  const key = team?.key?.trim()
+  const urlKey = workspace?.workspaceUrlKey?.trim()
+  const url =
+    key && urlKey ? `${LINEAR_APP_BASE}/${encodeURIComponent(urlKey)}/team/${encodeURIComponent(key)}` : undefined
+  return conversationLink(key, url)
 }
 
 /** The stop payload the relay puts on `platform_action` (§6.3). */

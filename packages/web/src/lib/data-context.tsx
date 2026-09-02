@@ -343,6 +343,8 @@ function integrationRowFromDto(
       ...(c.space ? { space: c.space } : {}),
       ...(c.icon ? { icon: c.icon } : {}),
       ...(c.color ? { color: c.color } : {}),
+      ...(c.key ? { key: c.key } : {}),
+      ...(c.url ? { url: c.url } : {}),
       kind: c.kind,
       trigger: c.trigger,
       agentId: c.agentId

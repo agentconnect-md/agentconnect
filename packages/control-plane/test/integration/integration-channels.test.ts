@@ -325,6 +325,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         space: null,
         icon: null,
         color: null,
+        key: null,
+        url: null,
         isPrivate: false,
         kind: 'channel',
         trigger: 'mention',
@@ -337,6 +339,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         space: null,
         icon: null,
         color: null,
+        key: null,
+        url: null,
         isPrivate: true,
         kind: 'channel',
         trigger: 'mention',
@@ -398,6 +402,31 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(byId.get('team-2')).toMatchObject({ icon: null, color: null })
   })
 
+  it('keeps a reported handle and link, exposes both on the DTO, and never blanks them', async () => {
+    // The team's key and its page in Linear ride the row as their own fields (§4.5) — the
+    // console prints the key after the name and links the name — and are learned once.
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+
+    const linked = {
+      id: 'team-1',
+      name: 'Acme / Engineering',
+      key: 'ENG',
+      url: 'https://linear.app/example-workspace/team/ENG'
+    }
+    await report(DAEMON, id, [linked, { id: 'team-2', name: 'Acme / Design' }], undefined, undefined, false)
+    await report(DAEMON, id, [{ id: 'team-1', name: 'Acme / Engineering' }], undefined, undefined, false)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const [dto] = res.json() as { channels: { channelId: string; key: string | null; url: string | null }[] }[]
+    const byId = new Map(dto!.channels.map((c) => [c.channelId, c]))
+    expect(byId.get('team-1')).toMatchObject({ key: 'ENG', url: 'https://linear.app/example-workspace/team/ENG' })
+    // A row the platform gives neither reads as two nulls rather than an absent pair.
+    expect(byId.get('team-2')).toMatchObject({ key: null, url: null })
+  })
+
   it('lets an enumerating writer CLEAR a glyph, while an omission still leaves the row drawn', async () => {
     // The tri-state at the repository: absent is "unknown" (a daemon lookup that resolved
     // nothing), `null` is "the platform says it has none" — only the second may blank the row.
@@ -430,9 +459,45 @@ describe('integration/channels EVT → integration_channel convergence', () => {
       name: 'Acme / Eng',
       icon: null,
       color: null,
+      key: null,
+      url: null,
       kind: 'channel'
     })
     expect(await glyphOf()).toEqual({ icon: undefined, color: undefined })
+  })
+
+  it('puts the handle and link on the same tri-state — an omission keeps them, a null clears', async () => {
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+    const linkOf = async () => {
+      const row = (await channels.listForIntegration(IntegrationId(id))).find((c) => c.channelId === 'team-1')
+      return { key: row?.key ?? undefined, url: row?.url ?? undefined }
+    }
+
+    const url = 'https://linear.app/example-workspace/team/ENG'
+    await channels.upsertConversation(IntegrationId(id), {
+      id: 'team-1',
+      name: 'Acme / Engineering',
+      key: 'ENG',
+      url,
+      kind: 'channel'
+    })
+    expect(await linkOf()).toEqual({ key: 'ENG', url })
+
+    await channels.upsertConversation(IntegrationId(id), { id: 'team-1', name: 'Acme / Eng', kind: 'channel' })
+    expect(await linkOf()).toEqual({ key: 'ENG', url })
+
+    await channels.upsertConversation(IntegrationId(id), {
+      id: 'team-1',
+      name: 'Acme / Eng',
+      key: null,
+      url: null,
+      kind: 'channel'
+    })
+    expect(await linkOf()).toEqual({ key: undefined, url: undefined })
   })
 
   it("a restricted agent's fresh conversations default to OFF, and DM rows survive a membership re-report (§14)", async () => {
@@ -1686,6 +1751,8 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       space: null,
       icon: null,
       color: null,
+      key: null,
+      url: null,
       isPrivate: false,
       kind: 'channel',
       trigger: 'any',

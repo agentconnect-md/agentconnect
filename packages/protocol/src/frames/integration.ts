@@ -219,6 +219,29 @@ export function conversationGlyph(icon: unknown, color: unknown): { icon?: strin
   }
 }
 
+/** Cap on a conversation's platform key — a short handle such as a Linear team's `ENG`. */
+const CHANNEL_KEY_MAX = 32
+
+/** Cap on a conversation's own link — a permalink the console opens, never a payload. */
+const CHANNEL_URL_MAX = 512
+
+/** Only an `https` origin is a link here: the console opens it in a new tab. */
+const CHANNEL_URL = /^https:\/\/\S+$/
+
+/**
+ * A conversation's platform handle and permalink narrowed to what {@link IntegrationChannel}
+ * accepts — {@link conversationGlyph}'s sibling, and narrowed at the source for the same reason:
+ * one oddly spelled conversation costs its own field and never the report it rides in.
+ */
+export function conversationLink(key: unknown, url: unknown): { key?: string; url?: string } {
+  const k = typeof key === 'string' ? key.trim() : ''
+  const u = typeof url === 'string' ? url.trim() : ''
+  return {
+    ...(k && k.length <= CHANNEL_KEY_MAX ? { key: k } : {}),
+    ...(u && u.length <= CHANNEL_URL_MAX && CHANNEL_URL.test(u) ? { url: u } : {})
+  }
+}
+
 /**
  * One conversation the bot participates in (metadata only — no messages).
  * `kind` distinguishes member channels from direct conversations (resource-
@@ -240,7 +263,9 @@ export function conversationGlyph(icon: unknown, color: unknown): { icon?: strin
  *
  * `icon`/`color` are the conversation's own display glyph and tint where the platform
  * has one — a Linear team. Absent everywhere else, and never load-bearing: a row without
- * them renders exactly as it did before they existed.
+ * them renders exactly as it did before they existed. `key`/`url` are the same class of
+ * display metadata: the conversation's short platform handle and the page it opens on the
+ * platform, carried as their own fields so no reader ever parses them back out of `name`.
  */
 export const IntegrationChannel = z.object({
   id: z.string(), // platform conversation id (Slack "C…" / DM "D…")
@@ -254,6 +279,10 @@ export const IntegrationChannel = z.object({
   // Display only: bounded so a hostile provider cannot grow a row, and never parsed for routing.
   icon: z.string().max(CHANNEL_ICON_MAX).optional(),
   color: z.string().regex(CHANNEL_COLOR).optional(),
+  // The conversation's short platform handle (a Linear team's `ENG`) and the page it opens
+  // on the platform. Display only, bounded the same way, and never a coordinate: `id` is.
+  key: z.string().max(CHANNEL_KEY_MAX).optional(),
+  url: z.string().max(CHANNEL_URL_MAX).regex(CHANNEL_URL).optional(),
   // The 1:1 DM counterpart's platform member id (§14.8) — control metadata of the same
   // class as `name`, and the only thing that identifies WHO a private agent's DM row is
   // with. Absent on channels and group DMs, whose membership is a room, not a person.

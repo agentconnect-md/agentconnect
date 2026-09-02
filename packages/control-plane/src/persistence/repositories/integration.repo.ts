@@ -716,6 +716,8 @@ function toChannelRecord(c: IntegrationChannel): IntegrationChannelRecord {
     space: c.space,
     icon: c.icon,
     color: c.color,
+    key: c.key,
+    url: c.url,
     isPrivate: c.isPrivate,
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
@@ -780,11 +782,11 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         opts?.defaultTriggerByChannel?.get(c.id) ?? opts?.defaultTrigger ?? (c.kind === 'im' ? 'any' : 'mention')
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
-          ("integrationId", "channelId", "name", "spaceId", "space", "icon", "color", "isPrivate",
-           "kind", "trigger", "dmUserId", "firstSeenAt", "updatedAt")
+          ("integrationId", "channelId", "name", "spaceId", "space", "icon", "color", "key", "url",
+           "isPrivate", "kind", "trigger", "dmUserId", "firstSeenAt", "updatedAt")
         VALUES (
           ${integrationId}::uuid, ${c.id}, ${c.name ?? null}, ${c.spaceId ?? null}, ${c.space ?? null},
-          ${c.icon ?? null}, ${c.color ?? null},
+          ${c.icon ?? null}, ${c.color ?? null}, ${c.key ?? null}, ${c.url ?? null},
           ${c.isPrivate ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
           ${createTrigger}::"ChannelTrigger", ${c.dmUserId ?? null}, NOW(), NOW()
         )
@@ -800,6 +802,10 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
                         ELSE "integration_channel"."icon" END,
           "color" = CASE WHEN ${c.color !== undefined}::boolean THEN EXCLUDED."color"
                          ELSE "integration_channel"."color" END,
+          "key" = CASE WHEN ${c.key !== undefined}::boolean THEN EXCLUDED."key"
+                       ELSE "integration_channel"."key" END,
+          "url" = CASE WHEN ${c.url !== undefined}::boolean THEN EXCLUDED."url"
+                       ELSE "integration_channel"."url" END,
           "isPrivate" = CASE WHEN ${setPrivate}::boolean THEN EXCLUDED."isPrivate"
                              ELSE "integration_channel"."isPrivate" END,
           -- Learned once and never unlearned: an omitting report (a channel snapshot, an
@@ -862,6 +868,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         space: conversation.space ?? null,
         icon: conversation.icon ?? null,
         color: conversation.color ?? null,
+        key: conversation.key ?? null,
+        url: conversation.url ?? null,
         isPrivate: conversation.isPrivate ?? false,
         kind: conversation.kind ?? 'channel',
         dmUserId: conversation.dmUserId ?? null,
@@ -878,6 +886,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         // enumerates the platform's own state clears it.
         ...(conversation.icon !== undefined ? { icon: conversation.icon } : {}),
         ...(conversation.color !== undefined ? { color: conversation.color } : {}),
+        ...(conversation.key !== undefined ? { key: conversation.key } : {}),
+        ...(conversation.url !== undefined ? { url: conversation.url } : {}),
         ...(conversation.dmUserId ? { dmUserId: conversation.dmUserId } : {})
       }
     })

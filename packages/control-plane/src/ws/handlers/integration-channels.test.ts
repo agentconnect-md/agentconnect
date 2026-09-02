@@ -76,6 +76,27 @@ describe('handleIntegrationChannels — isPrivate cross-check', () => {
     expect(dropPublicAudiences).not.toHaveBeenCalled()
   })
 
+  it('hands the row’s own handle and link to the write, so a team row reaches the console linked', async () => {
+    const { deps, replaceSnapshot } = fakeDeps('linear')
+    await handleIntegrationChannels(
+      frame([
+        {
+          id: 'team-1',
+          name: 'Acme / Engineering',
+          key: 'ENG',
+          url: 'https://linear.app/example-workspace/team/ENG'
+        },
+        { id: 'team-2', name: 'Acme / Design' }
+      ]),
+      conn,
+      deps
+    )
+    expect(replaceSnapshot.mock.calls[0]![1]).toEqual([
+      { id: 'team-1', name: 'Acme / Engineering', key: 'ENG', url: 'https://linear.app/example-workspace/team/ENG' },
+      { id: 'team-2', name: 'Acme / Design' }
+    ])
+  })
+
   it('hands the row’s own glyph to the write, so a Linear team reaches the console drawn', async () => {
     const { deps, replaceSnapshot } = fakeDeps('linear')
     await handleIntegrationChannels(

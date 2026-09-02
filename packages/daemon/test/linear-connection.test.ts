@@ -776,9 +776,13 @@ describe('linear read port (§9.4 — what Linear affords)', () => {
     expect(await conn.getChannelInfo(TEAM)).toEqual({
       id: TEAM,
       name: 'Example Workspace / Engineering',
+      // The key never enters the LABEL; it rides the row as its own field, for the console to
+      // print after the name (§4.5).
+      key: 'ENG',
       isIm: false
     })
     expect(calls[0]!.query).toContain('team(id: $id) { id key name icon color }')
+    expect(calls[0]!.query).toContain('viewer { organization { urlKey } }')
     expect(calls[0]!.variables).toEqual({ id: TEAM })
   })
 
@@ -814,8 +818,8 @@ describe('linear read port (§9.4 — what Linear affords)', () => {
         })
     })
     expect(await conn.listChannels()).toEqual([
-      { id: TEAM, name: 'Example Workspace / Engineering', isPrivate: false },
-      { id: OTHER_TEAM, name: 'Example Workspace / Docs', isPrivate: false },
+      { id: TEAM, name: 'Example Workspace / Engineering', key: 'ENG', isPrivate: false },
+      { id: OTHER_TEAM, name: 'Example Workspace / Docs', key: 'DOCS', isPrivate: false },
       { id: 'team-3', isPrivate: false }
     ])
     expect(calls[0]!.query).toContain('teams(first: 100) { nodes { id key name icon color } }')
@@ -842,11 +846,18 @@ describe('linear read port (§9.4 — what Linear affords)', () => {
         })
     })
     expect(await conn.listChannels()).toEqual([
-      { id: TEAM, name: 'Example Workspace / Engineering', icon: 'Feather', color: '#5E6AD2', isPrivate: false },
+      {
+        id: TEAM,
+        name: 'Example Workspace / Engineering',
+        icon: 'Feather',
+        color: '#5E6AD2',
+        key: 'ENG',
+        isPrivate: false
+      },
       // A color the wire row would refuse costs its own field, never the whole report.
-      { id: OTHER_TEAM, name: 'Example Workspace / Docs', icon: '📚', isPrivate: false },
+      { id: OTHER_TEAM, name: 'Example Workspace / Docs', icon: '📚', key: 'DOCS', isPrivate: false },
       // …and so does an over-long icon; a bare triplet is still a color.
-      { id: 'team-3', name: 'Example Workspace / Ops', color: '5E6AD2', isPrivate: false }
+      { id: 'team-3', name: 'Example Workspace / Ops', color: '5E6AD2', key: 'OPS', isPrivate: false }
     ])
   })
 
@@ -860,7 +871,54 @@ describe('linear read port (§9.4 — what Linear affords)', () => {
       name: 'Example Workspace / Engineering',
       icon: '🚀',
       color: '#5E6AD2',
+      key: 'ENG',
       isIm: false
+    })
+  })
+
+  it('links each team to its page in Linear, off the workspace URL segment the read carries', async () => {
+    const { conn } = harness({
+      respond: () =>
+        jsonResponse({
+          data: {
+            viewer: { organization: { urlKey: 'example-workspace' } },
+            teams: {
+              nodes: [
+                { id: TEAM, key: 'ENG', name: 'Engineering' },
+                // A team the workspace answered without a key has nothing to link, and no key
+                // to print — the row keeps its name alone.
+                { id: OTHER_TEAM, name: 'Docs' }
+              ]
+            }
+          }
+        })
+    })
+    expect(await conn.listChannels()).toEqual([
+      {
+        id: TEAM,
+        name: 'Example Workspace / Engineering',
+        key: 'ENG',
+        url: 'https://linear.app/example-workspace/team/ENG',
+        isPrivate: false
+      },
+      { id: OTHER_TEAM, name: 'Example Workspace / Docs', isPrivate: false }
+    ])
+  })
+
+  it('remembers the workspace URL segment, so a later read that omits it still links', async () => {
+    // The segment is the workspace's, not the team's: it is learned once and never unlearned,
+    // which is also what lets the ingress fast path link a team off the event bag alone.
+    let withUrlKey = true
+    const { conn } = harness({
+      respond: () => {
+        const viewer = withUrlKey ? { viewer: { organization: { urlKey: 'example-workspace' } } } : {}
+        return jsonResponse({ data: { ...viewer, team: { id: TEAM, key: 'ENG', name: 'Engineering' } } })
+      }
+    })
+    await conn.getChannelInfo(TEAM)
+    withUrlKey = false
+    expect(await conn.getChannelInfo(TEAM)).toMatchObject({
+      url: 'https://linear.app/example-workspace/team/ENG'
     })
   })
 

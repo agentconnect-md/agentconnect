@@ -874,6 +874,8 @@ export interface IntegrationChannelDto {
   space: string | null // that server's display name; null elsewhere and until resolved
   icon: string | null // the conversation's own glyph — a Linear icon name or an emoji; null elsewhere
   color: string | null // that glyph's hex tint; null elsewhere
+  key: string | null // the conversation's short platform handle — a Linear team's "ENG"; null elsewhere
+  url: string | null // the page it opens on the platform; null elsewhere
   isPrivate: boolean
   kind: 'channel' | 'im' | 'mpim'
   trigger: ChannelTrigger

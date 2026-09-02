@@ -85,6 +85,8 @@ const channel = (
   space: null,
   icon: null,
   color: null,
+  key: null,
+  url: null,
   isPrivate: false,
   kind,
   trigger,

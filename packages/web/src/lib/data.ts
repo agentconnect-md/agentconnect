@@ -1946,6 +1946,11 @@ export interface IntegrationChannelRow {
    *  draws a colored mark from the pair; absent on every platform without the notion. */
   icon?: string
   color?: string
+  /** The conversation's short platform handle and the page it opens there — a Linear team's
+   *  key, which the row prints after the name, and the team URL the name links to. Absent on
+   *  every platform without the notion. */
+  key?: string
+  url?: string
   /** 'im' = a DM conversation row, 'mpim' = a Slack group DM; absent = channel. */
   kind?: 'channel' | 'im' | 'mpim'
   trigger: 'off' | 'mention' | 'any'

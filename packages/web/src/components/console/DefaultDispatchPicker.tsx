@@ -22,6 +22,11 @@ export interface DefaultDispatchOption {
   icon?: AgentIcon | null
 }
 
+/** The default-dispatch control's own glyph — FIXED, so the control has one shape wherever it
+ *  appears, the way the trigger's bell does. "Leads to" is already this console's word for a
+ *  hand-off. Shared with the agent page's own per-conversation picker. */
+export const DISPATCH_ICON = 'corner-down-right'
+
 const MENU_WIDTH = 240
 const MENU_HEADER_HEIGHT = 34
 const MENU_ROW_HEIGHT = 34
@@ -58,14 +63,15 @@ export function DefaultDispatchPicker({
             aria-haspopup="menu"
             aria-expanded={open}
             aria-controls={open ? menuId : undefined}
-            title="Default dispatch — the agent this conversation's unmatched messages go to"
+            title={`Default dispatch — ${active?.name ?? 'none'}`}
             className={`flex items-center gap-2 rounded-[7px] border-0 bg-transparent px-[5px] py-1 hover:bg-(--surface-hover) ${
               disabled ? 'cursor-default' : 'cursor-pointer'
             } ${saving ? 'opacity-60' : ''}`}
           >
-            <span className="av h-5 w-5 rounded-[5px]">
-              <AgentIconView icon={active?.icon} runtime={active?.runtime ?? active?.model ?? ''} size={20} />
-            </span>
+            {/* A FIXED glyph, the way the trigger's bell is: the trigger used the active
+                agent's avatar, so the control changed shape per agent and read as whatever
+                that mark suggested. The avatars stay in the menu, where they identify rows. */}
+            <Icon name={DISPATCH_ICON} size={13} color="var(--text-tertiary)" className="flex-none" />
             <span className="mono text-[12.5px] text-(--text-primary)">{active?.name ?? '—'}</span>
             <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
           </button>

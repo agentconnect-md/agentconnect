@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 import { agentLabel, isDirectConversation, type IntegrationChannelRow, type IntegrationRow } from '@/lib/data'
 import { useConsoleData } from '@/lib/data-context'
 import { Icon } from '@/components/ui'
+import { DISPATCH_ICON } from '@/components/console/DefaultDispatchPicker'
 import { AgentIconView } from '@/components/marks'
 import { channelListSemantics } from '@/components/console/platforms/registry'
 import { TriggerSelect, type TriggerOption } from '@/components/console/TriggerSelect'
@@ -210,6 +211,10 @@ const roomNoun = (platform?: string): string => channelListSemantics(platform).r
  *  today's modules all take "A", so only a test keeps the other arm honest. */
 export const roomArticle = (noun: string): string => (/^[aeiou]/i.test(noun) ? 'An' : 'A')
 
+/** The plural of a noun a module supplies — what a column header over a list of rows reads.
+ *  Today's modules all take a bare "s", so only a test keeps the sibilant arm honest. */
+export const roomPlural = (noun: string): string => (/(?:s|x|z|ch|sh)$/i.test(noun) ? `${noun}es` : `${noun}s`)
+
 /** The noun for ONE row: a DM is never a channel or a group, whatever the platform. */
 const rowNoun = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
   kind === 'im' ? 'conversation' : kind === 'mpim' ? 'group chat' : roomNoun(platform)
@@ -227,6 +232,12 @@ export const roomGlyph = (kind: IntegrationChannelRow['kind'], platform?: string
  *  Exported for the org Bots roster, which lists the same rows in its own chrome. */
 export const rowMark = (kind: IntegrationChannelRow['kind'], platform?: string) =>
   isDirectConversation(kind) ? undefined : channelListSemantics(platform).RowMark
+
+/** How the row prints its NAME, where the platform gives the conversation more than a label
+ *  (a Linear team's key and its page). Direct rows never take it, for `rowMark`'s reason, and
+ *  a module that declares none leaves the host printing the name. Exported for the same host. */
+export const rowName = (kind: IntegrationChannelRow['kind'], platform?: string) =>
+  isDirectConversation(kind) ? undefined : channelListSemantics(platform).RowName
 
 /** The place, named as the operator knows it. "on the platform" is our word for it,
  *  not theirs — a person deciding whether to remove a bot wants to read "in Telegram". */
@@ -403,10 +414,12 @@ export function conversationOwners(botId: string, integrations: IntegrationRow[]
  *  routing rules don't hand to someone else.
  *
  *  The design keeps this strictly apart from the trigger toggle (the two are separate
- *  controls, never merged) — a compact avatar + chevron whose popover
- *  READS the current default and offers exactly one action, claiming the channel
- *  for the agent whose page this is. Handing a conversation to some third agent stays
- *  in Settings → Bots, where the whole roster is in view. */
+ *  controls, never merged) — a fixed control glyph, the current default's NAME and a chevron,
+ *  whose popover READS that default and offers exactly one action, claiming the channel
+ *  for the agent whose page this is. The glyph is FIXED, the way the trigger's bell is: an
+ *  avatar there varied per agent, so the control had no stable shape to recognise, and one
+ *  agent's mark could read as a different control entirely. Handing a conversation to some
+ *  third agent stays in Settings → Bots, where the whole roster is in view. */
 function DefaultAgentPicker({
   current,
   viewer,
@@ -466,14 +479,8 @@ function DefaultAgentPicker({
           saving ? 'opacity-60' : ''
         }`}
       >
-        <span className="av h-[22px] w-[22px] rounded-[6px]">
-          <AgentIconView icon={current.icon} runtime={current.runtime} size={22} />
-        </span>
-        {/* Desktop rows read the avatar in the context of the row it sits on; the
-            mobile row breaks onto its own line, where a bare mark says nothing. */}
-        <span className="mono max-w-[180px] truncate text-[12px] text-(--text-tertiary) desktop:hidden">
-          {current.label}
-        </span>
+        <Icon name={DISPATCH_ICON} size={13} color="var(--text-tertiary)" className="flex-none" />
+        <span className="mono max-w-[180px] truncate text-[12px] text-(--text-tertiary)">{current.label}</span>
         <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
       </button>
       {box &&
@@ -659,6 +666,7 @@ export function IntegrationChannelList({
     const def = dispatchable ? defaultAgent(c) : undefined
     const label = rowLabelParts(c, platform)
     const Mark = rowMark(c.kind, platform)
+    const Name = rowName(c.kind, platform)
     return (
       <div
         key={c.channelId}
@@ -673,7 +681,11 @@ export function IntegrationChannelList({
           </span>
         )}
         <span className="mono flex min-w-0 flex-1 items-baseline gap-[6px] truncate text-[13px] text-(--text-primary)">
-          <span className="min-w-0 truncate">{label.name}</span>
+          {Name ? (
+            <Name name={label.name} channelKey={c.key} url={c.url} />
+          ) : (
+            <span className="min-w-0 truncate">{label.name}</span>
+          )}
           {label.hint && <span className="flex-none text-(--text-tertiary)">{label.hint}</span>}
         </span>
         <div className="ml-auto flex items-center gap-[10px] max-desktop:ml-0 max-desktop:w-full max-desktop:flex-col max-desktop:items-start">

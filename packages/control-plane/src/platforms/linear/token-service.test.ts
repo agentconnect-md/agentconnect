@@ -371,4 +371,35 @@ describe('teams — the workspace’s conversations, with the glyph the console 
     })
     expect(linear.calls.at(-1)!.body).toContain('nodes { id key name icon color }')
   })
+
+  it('links each team to its page off the workspace URL segment the same read carries', async () => {
+    const { linear, service } = build()
+    linear.reply(() => ({
+      status: 200,
+      body: {
+        data: {
+          viewer: { organization: { urlKey: 'example-workspace' } },
+          teams: { nodes: [{ id: 't1', key: 'ENG', name: 'Engineering' }] }
+        }
+      }
+    }))
+    expect(await service.teams('tok')).toEqual({
+      ok: true,
+      result: [{ id: 't1', key: 'ENG', name: 'Engineering', url: 'https://linear.app/example-workspace/team/ENG' }]
+    })
+    expect(linear.calls.at(-1)!.body).toContain('viewer { organization { urlKey } }')
+  })
+
+  it('leaves the team unlinked when the workspace read names no URL segment', async () => {
+    // Half a link is not a link: the row keeps its key and prints it, and the name stays plain.
+    const { linear, service } = build()
+    linear.reply(() => ({
+      status: 200,
+      body: { data: { viewer: null, teams: { nodes: [{ id: 't1', key: 'ENG', name: 'Engineering' }] } } }
+    }))
+    expect(await service.teams('tok')).toEqual({
+      ok: true,
+      result: [{ id: 't1', key: 'ENG', name: 'Engineering' }]
+    })
+  })
 })
