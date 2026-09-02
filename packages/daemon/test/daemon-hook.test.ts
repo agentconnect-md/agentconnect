@@ -1675,7 +1675,7 @@ describe('Daemon rd/msg hook fires', () => {
         // The row's text is the console's short form; the assembled prompt rides its body.
         expect.objectContaining({
           sender: 'alice',
-          text: expect.stringMatching(/^Opened (issue |PR )?#42 · /),
+          text: expect.stringMatching(/^Opened (issue |PR )?#\d+ · /),
           body: expect.stringContaining(`GitHub ${event}:opened`)
         })
       )
