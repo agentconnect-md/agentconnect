@@ -1082,7 +1082,12 @@ by <actor>` + issue URL, with `sanitizeTitle` flattening.
   block beside the agent meta (`buildStandingContext`'s `platformAppend`),
   which a runtime reads once on the system-prompt channel or as the first
   prompt block, re-asserted on a native resume, and never as a transcript
-  row. That is what keeps the console's user bubble to the header, the URL
+  row. The block is persisted on the session row (`platformStanding`,
+  first-wins) because the message that opens the session is the only one
+  that carries it: a console continuation or an agent wake rebuilds its
+  message from stored coordinates without the bag, and a cold resume or a
+  failed-load recreate must still re-assert the coordinates that the
+  transcript, by design, no longer holds. That is what keeps the console's user bubble to the header, the URL
   and the member's own words. The convention: the issue is the record, so
   the plan and the outcome go into its description or a comment
   (`updateIssue` / `createIssueComment`); the branch and the PR carry the

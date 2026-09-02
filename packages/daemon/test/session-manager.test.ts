@@ -808,6 +808,57 @@ describe('SessionManager', () => {
     await (await store).close()
   })
 
+  it('re-asserts the platform standing block on a cold resume whose message no longer carries it', async () => {
+    const store = await newStore()
+    const standing = '# Linear\n- Issue: ENG-1 (id issue-uuid)\n\nWorking here: the issue is the record.'
+    const host1 = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
+    const sm1 = new SessionManager({ store, hostFor: async () => host1, agentById: () => agent, memory })
+    await sm1.handle('bot-a', msg({ ts: '100.1', text: 'first', platform: 'linear', standingContext: standing }))
+    expect(host1.newSession.mock.calls[0][3]).toContain(standing)
+    expect((await (await store).getSession(sessionKey('linear', 'C1', '100.1', 'bot-a')))?.platformStanding).toBe(
+      standing
+    )
+    // A continuation or a wake rebuilds its message from stored coordinates, without the bag.
+    const host2 = {
+      newSession: vi.fn(async () => 'acp-2'),
+      loadSession: vi.fn(async () => {}),
+      hasSession: () => false,
+      loadSupported: () => true,
+      usesMetaSystemPrompt: () => true
+    } as any
+    const sm2 = new SessionManager({ store, hostFor: async () => host2, agentById: () => agent, memory })
+    await sm2.handle('bot-a', msg({ ts: '100.2', text: 'second', platform: 'linear' }))
+    expect(host2.loadSession).toHaveBeenCalledOnce()
+    expect(host2.loadSession.mock.calls[0][4] as string).toContain(standing)
+    // When the runtime cannot load it, the fresh session's system prompt carries the block too.
+    const host3 = {
+      newSession: vi.fn(async () => 'acp-3'),
+      hasSession: () => false,
+      loadSupported: () => false,
+      usesMetaSystemPrompt: () => true
+    } as any
+    const sm3 = new SessionManager({ store, hostFor: async () => host3, agentById: () => agent, memory })
+    await sm3.handle('bot-a', msg({ ts: '100.3', text: 'third', platform: 'linear' }))
+    expect(host3.newSession.mock.calls[0][3]).toContain(standing)
+    await (await store).close()
+  })
+
+  it('backfills the block onto a row that predates it, from the first delivery that carries one', async () => {
+    const store = await newStore()
+    const standing = '# Linear\n- Issue: ENG-1 (id issue-uuid)'
+    const host = { newSession: vi.fn(async () => 'acp-1'), hasSession: () => true } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'first', platform: 'linear' }))
+    const key = sessionKey('linear', 'C1', '100.1', 'bot-a')
+    expect((await (await store).getSession(key))?.platformStanding).toBeNull()
+    await sm.handle('bot-a', msg({ ts: '100.2', text: 'second', platform: 'linear', standingContext: standing }))
+    expect((await (await store).getSession(key))?.platformStanding).toBe(standing)
+    // First-wins: a later delivery with a different block does not move it.
+    await sm.handle('bot-a', msg({ ts: '100.3', text: 'third', platform: 'linear', standingContext: '# Other' }))
+    expect((await (await store).getSession(key))?.platformStanding).toBe(standing)
+    await (await store).close()
+  })
+
   it('renders the Parent session locator when handle is woken by another session (originSessionId)', async () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-1'), usesMetaSystemPrompt: () => true } as any
