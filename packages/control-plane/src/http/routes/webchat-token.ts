@@ -14,7 +14,7 @@
 import type { FastifyInstance } from 'fastify'
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { originKindOf, WEBCHAT_MULTI_AGENT_FEATURE } from '@agentconnect.md/protocol'
+import { continuableOrigin, WEBCHAT_MULTI_AGENT_FEATURE } from '@agentconnect.md/protocol'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
 import { AgentId, SessionId, type OrgId } from '../../domain/ids.js'
@@ -184,9 +184,9 @@ export function webchatTokenRoutes(deps: HttpDeps) {
       }
     )
 
-    // Session-targeted mint (webchat-cross-integration-continuation.md §6.2):
-    // adopt an existing chat-origin session so the console composer can send a
-    // human turn into it. The token claims stay standard — the target is
+    // Session-targeted mint (webchat-cross-integration-continuation.md §6.2/§9):
+    // adopt an existing chat- or hook-origin session so the console composer can
+    // send a human turn into it. The token claims stay standard — the target is
     // resolved server-side at verify time, never claimed by the browser.
     r.post(
       '/sessions/:sessionId/webchat/token',
@@ -196,7 +196,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           tags: [Tag.Sessions],
           summary: 'Mint a session-continuation webchat token',
           description:
-            'Mints a short-lived token the browser presents to the relay pool to continue an existing chat-origin session from the console composer. Requires continuation authorization, un-purged content, a daemon that can still serve the session content (its recorder, or a live member of the shared store it was written to), and continuation-capable daemon and relay pool.',
+            'Mints a short-lived token the browser presents to the relay pool to continue an existing session from the console composer — a chat thread (the human turn is mirrored back to it) or a hook-origin session such as a GitHub or GitLab event, whose only surface is the console. Requires continuation authorization, un-purged content, a daemon that can still serve the session content (its recorder, or a live member of the shared store it was written to), and continuation-capable daemon and relay pool.',
           operationId: 'mintWebchatSessionToken',
           params: z.object({ orgId: z.string(), sessionId: z.string() }),
           response: { 200: WebchatTokenDto, 403: ErrorDto, 404: ErrorDto, 409: ErrorDto, 503: ErrorDto }
@@ -230,7 +230,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           return refuse(403, 'not authorized to continue this session')
         }
         if (s.contentPurgedAt) return refuse(409, 'session content was purged')
-        if (originKindOf(s.platform ?? '') !== 'chat') return refuse(409, 'only chat sessions can be continued')
+        if (!continuableOrigin(s.platform ?? '')) return refuse(409, 'this session cannot be continued')
         const agent = await deps.repos.agent.get(orgOf(req), s.agentId)
         if (!agent || !canView(agent, ctx)) return refuse(404, 'session not found')
         const host = await resolveContinuationHost(deps, s, agent)

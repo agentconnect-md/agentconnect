@@ -1,6 +1,6 @@
 # Webchat Continuation of Other Integrations' Sessions
 
-**Status:** Implemented (v1)
+**Status:** Implemented (v1 chat origins, v2 hook origins — §9)
 **Owner:** console/web + control plane + relay + daemon
 **Related:** issue #180 (webchat could continue other integration's session),
 [webchat-multi-agents.md](webchat-multi-agents.md),
@@ -94,6 +94,9 @@ deployments fail closed behind daemon and relay capability gates.
   sessions (`originKindOf(platform) === 'chat'`,
   `packages/protocol/src/frames/route.ts:43-60`). Headless-origin sessions have
   no human conversation surface to mirror to and different ownership semantics.
+  **Superseded for `hook` by §9**, which admits hook-origin sessions on exactly
+  that reading: with no surface to mirror to, the console becomes the only one.
+  `dream` and `a2a` remain out.
 - **No continuation after an agent move.** Same rule as webchat resume today
   ([product-conventions.md](../product-conventions.md)): content ownership is
   daemon-local and does not migrate.
@@ -545,7 +548,9 @@ session and keeps the read-only view otherwise.
   capability refusals, chat-origin-only rule, mint/verify round-trip emitting
   `targetSessionId`; a role/access change between mint and verify, `contentPurgedAt`, a
   deleted target, and a missing conversation row each invalidate an outstanding
-  token instead of returning a standard verdict.
+  token instead of returning a standard verdict. A hook-origin target is refused
+  until the daemon advertises `webchat_hook_continuation_v1` on top of the v1
+  bit, at mint AND at verify; `dream` stays refused with either bit.
 - **CP integration (`test:int`):** conversation adoption row lifecycle,
   concurrent mints converging on the `(userId, targetSessionId)` unique row,
   creation atomically installing `currentSessionId`, retention stamping leaving
@@ -554,7 +559,7 @@ session and keeps the read-only view otherwise.
 - **Daemon:** continuation turn into an existing Slack-keyed session resumes
   the same logical + ACP session (no new row); `bindSessionSource` returns
   `'unchanged'` for the synthesized turn; agent-scoped ACP-id lookup uses the
-  local row's real key and rejects an unknown or non-chat-origin id; admission
+  local row's real key and rejects an unknown or non-continuable id; admission
   reservation is released on offline/failed human-mirror delivery and ACP
   dispatch has not started; a successful mirror commits one target-keyed turn;
   agent output mode `none` still streams to webchat without a platform reply;
@@ -562,16 +567,96 @@ session and keeps the read-only view otherwise.
   refused; a platform message arriving mid-continuation queues behind the
   reservation/turn; the posting agent's provider echo does not duplicate its
   targeted dispatch, while other existing thread participants follow ordinary
-  activation rules.
+  activation rules. **Hook origin (§9):** a turn into a `hook:github:<repo>:<n>`
+  session runs on that session's own key, posts nothing to any platform, and
+  lands the human turn plus exactly ONE reply row in that session's transcript
+  while streaming to the browser; a hook target that no longer resolves is
+  refused without touching a transport; a turn into a session carrying the exact
+  classification a real GitHub fire leaves behind passes the source gate rather
+  than being dropped as a foreign audience.
 - **Relay:** `targetSessionId` passthrough verbatim from verdict to `rd/msg`; no
   context fan-out for a session-targeted conversation; mixed live relay
   capabilities keep mint disabled until the pool is homogeneous.
 - **Web:** server-computed `canContinue` gating (unauthorized caller, purged
-  content, feature flag off, agent moved, integration offline, hook/dream
+  content, feature flag off, agent moved, integration offline, non-continuable
   platforms), product-language disabled reasons, composer send path minting the
   session-target token, no runtime pills for targeted conversations.
 
-## 9. Open questions
+## 9. Hook-origin continuation (v2)
+
+A hook session — a GitHub or GitLab event, or a generic webhook — was excluded
+from v1 (§2.2) for a reason that, read again, is the argument FOR
+admitting it: it has no chat thread on the far side. That is not a missing
+surface, it is the absence of a competing one. **The console IS a hook session's
+human surface**, so continuing one needs no mirror, no platform connection, and
+no decision about whose thread the turn belongs to.
+
+Concretely, `continuableOrigin(platform)` (protocol, next to `originKindOf`)
+replaces the three CP `!== 'chat'` gates — session detail, the session-target
+mint, and token verification — and the daemon's own. It admits `chat` and
+`hook`; `dream` and any id this build cannot classify stay refused, fail-closed
+like every other unrecorded coordinate.
+
+The daemon's `dispatchWebchatContinuationTurn` then forks once, on
+`originKindOf(local.platform) === 'hook'`:
+
+- **No integration lookup.** A chat continuation resolves the session's
+  transport because it must mirror through it; a hook session has none, so the
+  `integration_offline` refusal does not apply to it.
+- **No mirror, and therefore no admission barrier.** The chat path admits the
+  turn, posts the attributed human input, and only then lets the model run
+  (§5.2). With nothing to post, the turn dispatches straight away.
+- **`stream.continuation` stays unset**, which is the whole output decision. A
+  continuation stream drives BOTH the browser sink and the platform renderer; an
+  ordinary webchat stream takes the null-connection seam — the reply is recorded
+  once into the target session's own transcript, streamed to the browser, and no
+  renderer runs. A hook session wants exactly the second, on the first's
+  coordinates.
+
+Everything else is shared with §5.2/§6.4 unchanged: the synthesized message
+carries the target session's own platform/channel/thread, the rebuilt session
+key must equal the stored one (a mismatch is refused, not a new sibling row),
+and the serial-queue preflight runs on the target key.
+
+**The source gate needs one word from the turn.** `bindSessionSource` refuses a
+turn whose external audience disagrees with the row's — the protection against a
+foreign audience claiming an existing runtime. A chat continuation re-derives
+its Slack audience from the synthesized message and matches; a hook session's
+audience is minted from the webhook delivery's trusted metadata
+(`githubExternalSource(hookContext)`), which a console turn does not have, so an
+unmarked continuation would re-read a bound GitHub session as a mismatch and be
+dropped with a Slack-worded repair instruction nobody would see. The
+continuation therefore stamps `adoptedSession` on the message — like
+`parentReport`, set only at a daemon construction site, never from ingress — and
+the gate reads it as "not a new audience": the row keeps the binding it already
+carries. It lives on the MESSAGE, not the queue entry, so the durable inbox row
+replays with the same standing after a restart.
+
+`GithubFinalPoster` never runs, because a poster exists only where the turn
+carries a `githubReply` target, and that target is minted by a webhook delivery
+— not by a console turn. So a console continuation cannot comment on the pull
+request even by accident. An agent holding a code-host tool can still act on the
+subject, exactly as in any other turn; that is the agent's decision, not the
+transport's.
+
+**Rollout.** Console-only continuation is a strictly newer daemon behavior than
+the chat mirror, so it earns its own capability bit,
+`webchat_hook_continuation_v1`, required IN ADDITION to
+`webchat_session_continuation_v1` when the target is hook-origin. The CP checks
+it in `resolveContinuationHost` (mint + `canContinue` read the one answer) and
+again at verify, so a token minted against a capable daemon stops working the
+moment the turn would reach one that predates the behavior. The relay is
+untouched: it already forwards `targetSessionId` verbatim under the v1 bit, and
+gains nothing to preserve here.
+
+**Cron sessions are NOT in scope of this section.** A headless schedule fire
+keeps `platform: 'slack'` with a synthetic `cron:<id>` channel
+(`packages/daemon/src/scheduler/scheduler.ts`), so it classifies as chat origin
+and takes the chat path — including its mirror, which cannot land. That
+misclassification predates this design and belongs to the schedule/session
+identity work, not here.
+
+## 10. Open questions
 
 1. **Mirror rendering** — Slack now renders the human turn under the author's
    own identity (§5.2); the attributed fallback (`[<user> via console]`) remains

@@ -5,6 +5,7 @@ import {
   buildRelayCpFrame,
   PULL_REQUEST_FEEDBACK_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
+  WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   RELAY_CP_SUBPROTOCOL,
   type RelayCpFrame,
@@ -986,7 +987,7 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
     await expect(targeted({}, { role: null }).verifier('t')).resolves.toMatchObject({ ok: false })
   })
 
-  it('fails after a retention purge, target deletion, or non-chat origin', async () => {
+  it('fails after a retention purge, target deletion, or a dream origin', async () => {
     await expect(targeted({ contentPurgedAt: new Date() }).verifier('t')).resolves.toMatchObject({ ok: false })
     const gone = buildWebchatVerifier({
       conversationRow: { targetSessionId: TARGET_SESSION_ID },
@@ -994,7 +995,18 @@ describe('webchat verification — session-targeted continuation (webchat-cross-
       daemonFeatures: CONTINUATION_FEATURES
     })
     await expect(gone.verifier('t')).resolves.toMatchObject({ ok: false })
+    await expect(targeted({ platform: 'dream' }).verifier('t')).resolves.toMatchObject({ ok: false })
+  })
+
+  // §9: verify re-checks the console-only hook bit, so a token minted against a capable daemon
+  // stops working the moment the turn would reach one that predates the behavior.
+  it('admits a hook target only while the daemon carries the hook continuation bit', async () => {
     await expect(targeted({ platform: 'hook' }).verifier('t')).resolves.toMatchObject({ ok: false })
+    const capable = targeted(
+      { platform: 'hook' },
+      { daemonFeatures: [...CONTINUATION_FEATURES, WEBCHAT_HOOK_CONTINUATION_FEATURE] }
+    )
+    await expect(capable.verifier('t')).resolves.toMatchObject({ ok: true, targetSessionId: TARGET_SESSION_ID })
   })
 
   it('keeps private sessions owner-only using the exact mint-time identity proof', async () => {

@@ -168,6 +168,16 @@ export const WEBCHAT_MULTI_AGENT_FEATURE = 'webchat_multi_agent_v1'
  */
 export const WEBCHAT_SESSION_CONTINUATION_FEATURE = 'webchat_session_continuation_v1'
 
+/**
+ * Hook-origin continuation (webchat-cross-integration-continuation.md §9): the
+ * daemon accepts a `targetSessionId` naming a hook-origin session (GitHub,
+ * GitLab, a generic webhook, a schedule) and runs the browser turn on it with
+ * the console as the ONLY surface — no platform connection, no mirror. The CP
+ * refuses to mint a session-targeted token for such a session unless the owning
+ * daemon advertises this on top of {@link WEBCHAT_SESSION_CONTINUATION_FEATURE}.
+ */
+export const WEBCHAT_HOOK_CONTINUATION_FEATURE = 'webchat_hook_continuation_v1'
+
 /** Daemon and Control Plane support Organization Knowledge, Dream suggestions,
  * and immutable managed-skill bundle retrieval. */
 export const ORGANIZATION_KNOWLEDGE_FEATURE = 'organization-knowledge-v1'

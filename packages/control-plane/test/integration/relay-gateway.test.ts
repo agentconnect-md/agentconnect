@@ -16,6 +16,7 @@ import { WebSocket } from 'ws'
 import {
   WEBCHAT_MULTI_AGENT_FEATURE,
   WEBCHAT_REMOTE_MCP_FEATURE,
+  WEBCHAT_HOOK_CONTINUATION_FEATURE,
   WEBCHAT_SESSION_CONTINUATION_FEATURE,
   isFrame,
   type AnyFrame,
@@ -1039,6 +1040,7 @@ describe('relay control gateway — rc/* handshake over agentconnect.rc.v1', () 
 // ── session-targeted continuation (webchat-cross-integration-continuation.md §6.2) ──
 describe('webchat session-continuation mint + verify', () => {
   const SESSION_ID = 'acp-continuation-session-1'
+  const HOOK_SESSION_ID = 'acp-continuation-hook-1'
   const CONTINUATION = [WEBCHAT_SESSION_CONTINUATION_FEATURE]
 
   function mintSessionToken(app: App, sessionId: string) {
@@ -1166,7 +1168,7 @@ describe('webchat session-continuation mint + verify', () => {
     daemonWs.close()
   })
 
-  it('refuses non-chat-origin sessions and daemons without the capability', async () => {
+  it('refuses a daemon without the capability, and a dream session on any daemon', async () => {
     const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
     const { ws: relayWs } = await openRelay(base, 'pod-cont-2', 'wss://pod-cont-2.example.test', CONTINUATION)
 
@@ -1175,9 +1177,69 @@ describe('webchat session-continuation mint + verify', () => {
     await seedContinuable()
     expect((await mintSessionToken(app, SESSION_ID)).statusCode).toBe(409)
 
-    // Non-chat platform (hook) is never continuable.
-    await seedSessionMeta(prisma, 'acp-hook-session', AGENT, { daemonId: DAEMON, platform: 'hook' })
-    expect((await mintSessionToken(app, 'acp-hook-session')).statusCode).toBe(409)
+    // A dream session is not a conversation on any surface — the platform gate refuses it outright.
+    await seedSessionMeta(prisma, 'acp-dream-session', AGENT, { daemonId: DAEMON, platform: 'dream' })
+    expect((await mintSessionToken(app, 'acp-dream-session')).statusCode).toBe(409)
+    const dream = await app.http.inject({
+      method: 'GET',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/acp-dream-session`
+    })
+    expect(dream.json()).toMatchObject({ canContinue: false, continuationUnavailableReason: 'unsupported_platform' })
+
+    relayWs.close()
+    daemonWs.close()
+  })
+
+  // §9: a GitHub / GitLab / webhook session continues console-only, which is a strictly newer
+  // daemon behavior than the chat mirror — so the chat bit alone must not unlock it.
+  it('holds a hook session closed until the daemon advertises the hook continuation bit', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const { ws: relayWs } = await openRelay(base, 'pod-cont-4', 'wss://pod-cont-4.example.test', CONTINUATION)
+    const daemonWs = await connectDaemonReady(base, CONTINUATION)
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedSessionMeta(prisma, HOOK_SESSION_ID, AGENT, {
+      daemonId: DAEMON,
+      platform: 'hook',
+      channel: 'github:1310543401'
+    })
+
+    expect((await mintSessionToken(app, HOOK_SESSION_ID)).statusCode).toBe(409)
+    const blocked = await app.http.inject({
+      method: 'GET',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/${HOOK_SESSION_ID}`
+    })
+    expect(blocked.json()).toMatchObject({ canContinue: false, continuationUnavailableReason: 'unavailable' })
+
+    relayWs.close()
+    daemonWs.close()
+  })
+
+  it('mints and verifies a hook session once the daemon carries the hook bit', async () => {
+    const { app, base } = await start({ PUBLIC_RELAY_URL: RELAY_URL })
+    const { ws: relayWs } = await openRelay(base, 'pod-cont-5', 'wss://pod-cont-5.example.test', CONTINUATION)
+    const daemonWs = await connectDaemonReady(base, [...CONTINUATION, WEBCHAT_HOOK_CONTINUATION_FEATURE])
+    await seedAgent(prisma, AGENT, { daemonId: DAEMON })
+    await seedSessionMeta(prisma, HOOK_SESSION_ID, AGENT, {
+      daemonId: DAEMON,
+      platform: 'hook',
+      channel: 'github:1310543401'
+    })
+
+    const minted = await mintSessionToken(app, HOOK_SESSION_ID)
+    expect(minted.statusCode).toBe(200)
+    const detail = await app.http.inject({
+      method: 'GET',
+      url: `/api/v1/orgs/${DEFAULT_ORG_ID}/sessions/${HOOK_SESSION_ID}`
+    })
+    expect(detail.json()).toMatchObject({ canContinue: true, continuationUnavailableReason: null })
+
+    sendFrame(relayWs, 'rc/verify', {
+      kind: 'webchat-token',
+      credential: (minted.json() as { token: string }).token,
+      conversationBinding: 'v1'
+    })
+    const verdict = (await nextFrame(relayWs, 'rc/verify/ok')).payload as RcVerifyResult
+    expect(verdict).toMatchObject({ ok: true, targetSessionId: HOOK_SESSION_ID })
 
     relayWs.close()
     daemonWs.close()

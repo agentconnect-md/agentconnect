@@ -27,7 +27,7 @@ import {
   isCodeHostHookKind,
   isSessionIdentityPlatform,
   SANDBOX_KEEP_ALIVE_FEATURE,
-  originKindOf,
+  continuableOrigin,
   type CodeHostProvider,
   type HookKind
 } from '@agentconnect.md/protocol'
@@ -961,7 +961,7 @@ export function sessionRoutes(deps: HttpDeps) {
             return 'unauthorized' as const
           }
           if (s.contentPurgedAt) return 'content_purged' as const
-          if (originKindOf(s.platform ?? '') !== 'chat') return 'unsupported_platform' as const
+          if (!continuableOrigin(s.platform ?? '')) return 'unsupported_platform' as const
           const host = await resolveContinuationHost(deps, s, owningAgent)
           return host.ok ? null : host.reason
         })()

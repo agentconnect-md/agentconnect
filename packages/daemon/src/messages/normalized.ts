@@ -77,6 +77,14 @@ export interface NormalizedMessage extends Omit<
    * does not see private night/task reports as room posts.
    */
   parentReport?: boolean
+  /**
+   * This delivery CONTINUES a session the control plane authorized, synthesized on that
+   * session's own stored coordinates (webchat-cross-integration-continuation.md §9). Set only
+   * by the daemon's continuation construction site, never from ingress. The source gate reads
+   * it as "not a new audience": a hook session's audience cannot be re-derived without the
+   * webhook delivery's trusted metadata, so the row keeps the binding it already carries.
+   */
+  adoptedSession?: boolean
 }
 
 /**

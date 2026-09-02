@@ -113,6 +113,14 @@ reply keeps the session's existing output mode, and agents already participating
 origin thread receive the mirror under its ordinary routing rules. The session remains
 the single source of truth; console and platform are both projections of it.
 
+A **hook-origin session** — one a GitHub or GitLab event or a generic webhook started —
+is continued the same way, with one difference the user can see: there is no chat thread
+on the other side, so nothing is mirrored. The console is that session's
+only human surface. Neither the typed message nor the agent's reply appears on the pull
+request, the issue, or anywhere else the trigger came from; both are ordinary session
+history, readable in the console and carried into the agent's context like any other turn.
+An agent that has a code-host tool can still act on the subject, as it could in any turn.
+
 ## Where a streamed reply may be split
 
 A long reply may be delivered as more than one chat message, but a split must always fall
