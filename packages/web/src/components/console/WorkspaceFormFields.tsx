@@ -457,6 +457,7 @@ export function GitUrlTileFields({
   agentDir,
   agentDirError,
   worktree,
+  worktreeLabel,
   onUrlChange,
   onBranchChange,
   onAgentDirChange,
@@ -468,6 +469,8 @@ export function GitUrlTileFields({
   agentDir: string
   agentDirError?: string | null
   worktree: boolean
+  /** What the session-isolation toggle is called here — see `WorktreeField`. */
+  worktreeLabel: string
   onUrlChange: (value: string) => void
   onBranchChange: (value: string) => void
   onAgentDirChange: (value: string) => void
@@ -505,7 +508,7 @@ export function GitUrlTileFields({
           onChange={onBranchChange}
         />
         <WorkingSubdirectoryField value={agentDir} error={agentDirError ?? null} onChange={onAgentDirChange} />
-        <WorktreeField checked={worktree} onChange={onWorktreeChange} />
+        <WorktreeField label={worktreeLabel} checked={worktree} onChange={onWorktreeChange} />
       </div>
       <div className="flex items-start gap-2 rounded-[9px] border border-(--border-subtle) bg-(--surface-sunken) px-3 py-[11px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary) desktop:col-span-2">
         <Icon name="info" size={14} className="mt-[1px] flex-none" />
@@ -879,12 +882,21 @@ export function WorkingSubdirectoryField({
   )
 }
 
-export function WorktreeField({ checked, onChange }: { checked: boolean; onChange: (checked: boolean) => void }) {
+/** `label` names the isolation by its EFFECTIVE boundary (git-workspace-model.md §11) — "Worktree" only where nothing encloses the runtime, "Session isolation" under a sandbox or a pool pod. */
+export function WorktreeField({
+  label,
+  checked,
+  onChange
+}: {
+  label: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+}) {
   return (
     <div className="fld min-w-0">
-      <span className="fldlbl">Worktree</span>
+      <span className="fldlbl">{label}</span>
       <div className="inp min-w-0 justify-end">
-        <Toggle checked={checked} onChange={onChange} ariaLabel="Worktree" />
+        <Toggle checked={checked} onChange={onChange} ariaLabel={label} />
       </div>
     </div>
   )

@@ -723,12 +723,12 @@ describe('FilesPanel degraded states', () => {
     expect(container?.querySelector('input')).not.toBeNull()
   })
 
-  it('explains a daemon too old for session worktrees, and does not blame the network', async () => {
+  it('explains a daemon too old for session-scoped browsing, and does not blame the network', async () => {
     // The CP's 409 is `workspace-session-read-v1` missing, which the offline copy would misdescribe.
     wire.failures = { '': 409 }
     await render()
 
-    expect(text()).toContain('cannot browse a session worktree')
+    expect(text()).toContain('cannot browse a session checkout')
     expect(text()).not.toContain('may be offline')
   })
 

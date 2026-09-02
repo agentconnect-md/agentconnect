@@ -15,6 +15,21 @@ vi.mock('next/link', () => ({
 
 import { WorkspaceScopePicker, worktreeIdentity } from './WorkspaceScopePicker'
 import type { Session } from '@/lib/data'
+import { sessionIsolationLabel } from '@/lib/session-isolation'
+
+// Built by the helper, never spelled out here, so the picker's copy cannot drift from the labels the helper decides.
+const UNCONFINED = sessionIsolationLabel({
+  pool: false,
+  runInSandbox: false,
+  sandboxSupported: false,
+  sandboxRequired: false
+})
+const CONFINED = sessionIsolationLabel({
+  pool: false,
+  runInSandbox: true,
+  sandboxSupported: true,
+  sandboxRequired: false
+})
 
 let root: Root | undefined
 let container: HTMLDivElement | undefined
@@ -67,6 +82,7 @@ describe('WorkspaceScopePicker', () => {
       root?.render(
         <WorkspaceScopePicker
           primaryBranch="release/2026-08"
+          isolationLabel={UNCONFINED}
           sessions={[
             session({}),
             session({ id: 'session-568', title: 'PR #568: bind the conversation audience', time: '3:10 PM' }),
@@ -98,7 +114,8 @@ describe('WorkspaceScopePicker', () => {
     const menu = container.querySelector<HTMLElement>('[role="menu"]')!
     expect(menu.textContent).toContain('release/2026-08')
     expect(menu.textContent).not.toContain('Primary checkout')
-    expect(menu.textContent).toContain('Worktrees·2')
+    // The heading is the label verbatim; `.eyebrow` is what uppercases it on screen, so the DOM text is lower case.
+    expect(menu.textContent).toContain('worktrees·2')
     expect(menu.textContent).toContain('PR #568')
     expect(menu.textContent).not.toContain('3:10 PM')
     expect(menu.textContent).toContain('Showing 2 recent worktrees')
@@ -120,6 +137,36 @@ describe('WorkspaceScopePicker', () => {
     expect(onChange).toHaveBeenCalledOnce()
   })
 
+  it('drops the worktree vocabulary where a boundary encloses the runtime', async () => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () =>
+      root?.render(
+        <WorkspaceScopePicker
+          primaryBranch="main"
+          isolationLabel={CONFINED}
+          sessions={[session({}), session({ id: 'session-568', title: 'PR #568: bind the audience' })]}
+          selectedSessionId={null}
+          loading={false}
+          hasMore={false}
+          loadingMore={false}
+          onChange={vi.fn()}
+          onLoadMore={vi.fn()}
+          orgPath={(path) => `/agentconnect${path}`}
+        />
+      )
+    )
+
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label^="Workspace checkout:"]')!
+    await act(async () => trigger.click())
+
+    const menu = container.querySelector<HTMLElement>('[role="menu"]')!
+    expect(menu.textContent).toContain('session checkouts·2')
+    expect(menu.textContent).toContain('Showing 2 recent session checkouts')
+    expect(menu.textContent).not.toContain('worktree')
+  })
+
   it('shows the branch without a menu when no worktrees are available', async () => {
     container = document.createElement('div')
     document.body.append(container)
@@ -128,6 +175,7 @@ describe('WorkspaceScopePicker', () => {
       root?.render(
         <WorkspaceScopePicker
           primaryBranch="main"
+          isolationLabel={UNCONFINED}
           sessions={[]}
           selectedSessionId={null}
           loading={false}
@@ -153,6 +201,7 @@ describe('WorkspaceScopePicker', () => {
       root?.render(
         <WorkspaceScopePicker
           primaryBranch="main"
+          isolationLabel={UNCONFINED}
           sessions={[]}
           selectedSessionId={null}
           loading={false}

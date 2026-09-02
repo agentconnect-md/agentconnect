@@ -37,9 +37,9 @@ export function gitWriteRequestFailureText(status: number | null, code: string |
   if (status === 409 && code === 'WORKSPACE_STALE') {
     return 'The agent is working in this workspace right now. Try again when it is idle.'
   }
-  if (status === 409) return 'This agent runs a daemon version that cannot write to a session worktree.'
+  if (status === 409) return 'This agent runs a daemon version that cannot write to a session checkout.'
   if (status === 403) return 'Your role in this organization cannot change this agent’s checkout.'
-  if (status === 404) return 'This worktree is not available to write to.'
+  if (status === 404) return 'This checkout is not available to write to.'
   if (status === 400) return 'The daemon refused that request. Try a smaller selection.'
   return 'Couldn’t reach the checkout — the owning daemon may be offline. Git runs on that machine, so nothing can be staged or committed while it is disconnected.'
 }

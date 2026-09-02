@@ -463,7 +463,7 @@ describe('GitPanel', () => {
 
   it('draws a clean tree as data', async () => {
     await render()
-    expect(text()).toContain('Nothing has changed in this worktree')
+    expect(text()).toContain('Nothing has changed in this checkout')
   })
 
   it('says the status list was capped rather than implying the tree is that small', async () => {

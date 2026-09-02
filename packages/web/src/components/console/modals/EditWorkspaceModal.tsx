@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { GithubMark, GitlabMark, LoadingState } from '@/components/marks'
 import { Button, Icon } from '@/components/ui'
 import { agentLabel, isPoolPlacementKind, workspaceSourceOf, type Agent } from '@/lib/data'
+import { sessionIsolationLabel } from '@/lib/session-isolation'
 import { useConsoleData } from '@/lib/data-context'
 import { useOrgs } from '@/lib/org-context'
 import { matchGitlabProjects, type GitlabProjectChoice } from '@/lib/gitlab-projects'
@@ -93,6 +94,13 @@ export default function EditWorkspaceModal({
   const { orgSetIds } = useConsoleData()
   // Pool placements do not materialize secondary roots yet, so they keep the authorization-only wording.
   const poolPlaced = isPoolPlacementKind(agent.placementKind, agent.setId, orgSetIds)
+  // Session isolation is named by its EFFECTIVE boundary (git-workspace-model.md §11), and a pool pod is one whether or not a sandbox is.
+  const isolationLabel = sessionIsolationLabel({
+    pool: poolPlaced,
+    runInSandbox: agent.runInSandbox,
+    sandboxSupported: agent.sandboxSupported,
+    sandboxRequired: agent.sandboxRequired
+  })
   // The tile an existing workspace edits under is DERIVED from host + credential
   // (git-workspace-model.md §7) — no source is stored.
   const currentSource = workspaceSourceOf(agent.workspace)
@@ -721,7 +729,7 @@ export default function EditWorkspaceModal({
                         setErr(null)
                       }}
                     />
-                    <WorktreeField checked={worktree} onChange={setWorktree} />
+                    <WorktreeField label={isolationLabel.mode} checked={worktree} onChange={setWorktree} />
                   </div>
                 </>
               )}
@@ -873,7 +881,7 @@ export default function EditWorkspaceModal({
                       setErr(null)
                     }}
                   />
-                  <WorktreeField checked={worktree} onChange={setWorktree} />
+                  <WorktreeField label={isolationLabel.mode} checked={worktree} onChange={setWorktree} />
                 </div>
 
                 {uncovered && (
@@ -896,6 +904,7 @@ export default function EditWorkspaceModal({
 
           {mode === 'giturl' && (
             <GitUrlTileFields
+              worktreeLabel={isolationLabel.mode}
               url={urlInput}
               urlHint={urlTileHint}
               branch={branch}
