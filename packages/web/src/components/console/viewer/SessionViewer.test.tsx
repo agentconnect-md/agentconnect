@@ -300,21 +300,21 @@ describe('SessionViewer degraded reads', () => {
     wire.failure = 'network'
     await render()
     expect(text()).toContain('the owning daemon may be offline')
-    expect(text()).not.toContain('cannot read a session worktree')
+    expect(text()).not.toContain('cannot read a session checkout')
     expect(text()).not.toContain('not available to read')
   })
 
-  it('tells a daemon too old for worktree reads apart from an offline one', async () => {
+  it('tells a daemon too old for session-scoped reads apart from an offline one', async () => {
     wire.failure = 409
     await render()
-    expect(text()).toContain('cannot read a session worktree')
+    expect(text()).toContain('cannot read a session checkout')
     expect(text()).not.toContain('may be offline')
   })
 
-  it('says whose worktree is missing when the scope itself is refused', async () => {
+  it('says whose checkout is missing when the scope itself is refused', async () => {
     wire.failure = 404
     await render()
-    expect(text()).toContain("This session's worktree is not available to read")
+    expect(text()).toContain("This session's checkout is not available to read")
 
     await act(() => root?.unmount())
     container?.remove()

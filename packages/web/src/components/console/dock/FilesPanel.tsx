@@ -38,11 +38,11 @@ function rootNoticeText(status: number | null, scoped: boolean, code?: string | 
   // in fact the files are fine and reachable again on the agent's next turn.
   if (code === SANDBOX_ASLEEP_CODE) return SANDBOX_ASLEEP_NOTICE
   if (status === 409) {
-    return 'This agent runs a daemon version that cannot browse a session worktree. Update the agent, or read the files from its workspace page.'
+    return 'This agent runs a daemon version that cannot browse a session checkout. Update the agent, or read the files from its workspace page.'
   }
   if (status === 404) {
     return scoped
-      ? "This session's worktree is not available to browse — it may have been cleaned up, or this session may not have one of its own."
+      ? "This session's checkout is not available to browse — it may have been cleaned up, or this session may not have one of its own."
       : 'This workspace is not available to browse.'
   }
   return "Couldn't browse the workspace — the owning daemon may be offline. Files live only on that machine and are read live from it, so they are unavailable while it is disconnected."

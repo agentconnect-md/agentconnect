@@ -30,6 +30,7 @@ import {
   type AgentCallPolicy,
   supportsModes
 } from '@/lib/data'
+import { sessionIsolationLabel } from '@/lib/session-isolation'
 import { addAgentDaemonChoice } from './add-agent-daemon-choice'
 import {
   fetchGithubBranches,
@@ -320,6 +321,13 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
   const sandboxRequired = daemon?.caps.features.includes('sandbox-required') ?? false
   const sandboxSupported = sandboxRequired || (daemon?.caps.features.includes('sandbox') ?? false)
   const effectiveRunInSandbox = sandboxRequired || (sandboxSupported && runInSandbox)
+  // The pool advertises no `sandbox` capability, so its pod — not the triple above — is what encloses a session there.
+  const isolationLabel = sessionIsolationLabel({
+    pool: placement?.kind === 'pool',
+    runInSandbox,
+    sandboxSupported,
+    sandboxRequired
+  })
   // Runtime ids come from the selected daemon's reported profiles — the registry ids
   // that round-trip back to the launch key — so a created agent actually resolves.
   // No daemon (or none reported) ⇒ the static fallback list.
@@ -1174,7 +1182,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                     />
 
                     <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
-                    <WorktreeField checked={worktree} onChange={setWorktree} />
+                    <WorktreeField label={isolationLabel.mode} checked={worktree} onChange={setWorktree} />
                   </div>
                 </div>
               )}
@@ -1210,7 +1218,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                       onChange={setBranch}
                     />
                     <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
-                    <WorktreeField checked={worktree} onChange={setWorktree} />
+                    <WorktreeField label={isolationLabel.mode} checked={worktree} onChange={setWorktree} />
                   </div>
                 </>
               )}
@@ -1319,7 +1327,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                         onChange={setBranch}
                       />
                       <WorkingSubdirectoryField value={agentDir} onChange={setAgentDir} />
-                      <WorktreeField checked={worktree} onChange={setWorktree} />
+                      <WorktreeField label={isolationLabel.mode} checked={worktree} onChange={setWorktree} />
                     </div>
                   </div>
                 ))}
@@ -1331,6 +1339,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   branch={branch}
                   agentDir={agentDir}
                   worktree={worktree}
+                  worktreeLabel={isolationLabel.mode}
                   onUrlChange={setUrlInput}
                   onBranchChange={setBranch}
                   onAgentDirChange={setAgentDir}

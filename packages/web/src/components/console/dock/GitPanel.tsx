@@ -72,8 +72,8 @@ function logNoticeText(status: number | null, code: string | null): string {
   if (status === 409 && code === 'DAEMON_FEATURE_MISSING') {
     return 'This agent runs a daemon version that cannot list commits. Update the agent to review its history here.'
   }
-  if (status === 409) return 'This agent runs a daemon version that cannot read a session worktree.'
-  if (status === 404) return 'This worktree is not available to read.'
+  if (status === 409) return 'This agent runs a daemon version that cannot read a session checkout.'
+  if (status === 404) return 'This checkout is not available to read.'
   return 'Commits are unavailable — the owning daemon may be offline.'
 }
 
@@ -395,7 +395,7 @@ export function GitPanel({
       return (
         <PanelNotice
           warn
-          text="Couldn't read this worktree's git status — the owning daemon may be offline. Status is read live from that machine, so it is unavailable while it is disconnected."
+          text="Couldn't read this checkout's git status — the owning daemon may be offline. Status is read live from that machine, so it is unavailable while it is disconnected."
         />
       )
     }
@@ -405,7 +405,7 @@ export function GitPanel({
       )
     }
     if (sections.staged.length === 0 && sections.changes.length === 0) {
-      return <PanelNotice text="Nothing has changed in this worktree — every tracked file matches the last commit." />
+      return <PanelNotice text="Nothing has changed in this checkout — every tracked file matches the last commit." />
     }
     return (
       <>

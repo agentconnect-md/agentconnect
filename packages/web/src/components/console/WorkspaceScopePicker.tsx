@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { Icon } from '@/components/ui'
 import type { Session } from '@/lib/data'
+import type { SessionIsolationLabel } from '@/lib/session-isolation'
 
 type WorktreeIdentity = {
   context?: string
@@ -34,6 +35,7 @@ function worktreeTooltip(identity: WorktreeIdentity, time: string | undefined): 
 
 export function WorkspaceScopePicker({
   primaryBranch,
+  isolationLabel,
   sessions,
   selectedSessionId,
   selectedSession,
@@ -45,6 +47,8 @@ export function WorkspaceScopePicker({
   orgPath
 }: {
   primaryBranch: string
+  /** What this agent's session isolation is CALLED, from its effective boundary (git-workspace-model.md §11) — a worktree only where nothing encloses the runtime. */
+  isolationLabel: SessionIsolationLabel
   sessions: Session[]
   selectedSessionId: string | null
   selectedSession?: Session
@@ -243,7 +247,7 @@ export function WorkspaceScopePicker({
 
               <div className="border-t border-(--border-subtle)">
                 <div className="eyebrow flex h-9 items-center gap-2 px-4 text-[10.5px]">
-                  <span>Worktrees</span>
+                  <span>{isolationLabel.checkouts}</span>
                   <span aria-hidden>·</span>
                   <span>{menuWorktrees.length}</span>
                 </div>
@@ -305,11 +309,11 @@ export function WorkspaceScopePicker({
                   })}
                   {loading && menuWorktrees.length === 0 ? (
                     <div className="px-4 py-5 text-center font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      Loading worktrees…
+                      Loading {isolationLabel.checkouts}…
                     </div>
                   ) : !hasMore && menuWorktrees.length === 0 ? (
                     <div className="px-4 py-5 text-center font-sans text-[12px] font-normal leading-normal text-(--text-tertiary)">
-                      No session worktrees yet.
+                      No {isolationLabel.checkouts} yet.
                     </div>
                   ) : null}
                 </div>
@@ -318,7 +322,8 @@ export function WorkspaceScopePicker({
               {(menuWorktrees.length > 0 || hasMore) && (
                 <div className="flex min-h-10 items-center gap-3 border-t border-(--border-subtle) bg-(--surface-app) px-4 py-2">
                   <span className="font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                    Showing {menuWorktrees.length} recent worktree{menuWorktrees.length === 1 ? '' : 's'}
+                    Showing {menuWorktrees.length} recent{' '}
+                    {menuWorktrees.length === 1 ? isolationLabel.checkout : isolationLabel.checkouts}
                   </span>
                   {hasMore ? (
                     <button

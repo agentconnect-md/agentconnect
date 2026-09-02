@@ -51,6 +51,7 @@ import {
   type Agent,
   type SessionImage
 } from '@/lib/data'
+import { agentSessionIsolationLabel } from '@/lib/session-isolation'
 import { cronNext, cronHuman, fmtNextRun } from '@/lib/cron'
 import { useDaemonDetail } from '@/lib/use-daemon-detail'
 
@@ -222,6 +223,10 @@ export default function HomeView() {
   const gitWorkspace = agent?.workspace && isGitWorkspace(agent.workspace) ? agent.workspace : undefined
   const defaultWorktree = gitWorkspace?.worktree === true
   const worktree = worktreeOverride ?? defaultWorktree
+  // What that toggle is CALLED follows the agent's effective boundary, not its stored sandbox flag (git-workspace-model.md §11).
+  const isolationLabel = agentSessionIsolationLabel(
+    agent ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false }
+  )
 
   // Overrides are per-agent; drop them when the agent changes so the new agent's
   // own defaults show through.
@@ -716,7 +721,7 @@ export default function HomeView() {
                       onChange={(event) => setWorktreeOverride(event.target.checked)}
                       className="h-4 w-4 flex-none accent-(--brand)"
                     />
-                    <span className="truncate">Worktree</span>
+                    <span className="truncate">{isolationLabel.mode}</span>
                   </label>
                 )}
               </>

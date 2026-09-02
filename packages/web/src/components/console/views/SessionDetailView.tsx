@@ -42,6 +42,7 @@ import {
   type SessionImage,
   type SessionStep
 } from '@/lib/data'
+import { agentSessionIsolationLabel } from '@/lib/session-isolation'
 import {
   ApiError,
   fetchConversationByKey,
@@ -2732,8 +2733,12 @@ export default function SessionDetailView() {
       : null
   const workspaceIcon = focusedAgent && isGitWorkspace(focusedAgent.workspace) ? 'git-branch' : 'folder'
   const focusedAgentLabel = focusedAgent ? agentLabel(focusedAgent) : (headerFocusOption?.label ?? 'agent')
+  // Named by the focused agent's effective boundary, so a confined session is not offered a "worktree" it does not get (git-workspace-model.md §11).
+  const focusedIsolation = agentSessionIsolationLabel(
+    focusedAgent ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false }
+  )
   const workspaceTitle = hasSessionWorktree
-    ? `Open ${focusedAgentLabel}’s session worktree`
+    ? `Open ${focusedAgentLabel}’s ${focusedIsolation.checkout}`
     : `Open ${focusedAgentLabel}’s workspace`
   // Scoped to this session's OWN worktree only where it has one. `hasSessionWorktree` is the same gate the Workspace link above uses, and it is load-bearing for the reads: the daemon answers a shared workspace's sessionId with BAD_PAYLOAD, which the CP maps to a 503 that reads as "the daemon may be offline".
   const filesSessionId = hasSessionWorktree && headerFocusSessionId ? headerFocusSessionId : undefined
@@ -2842,6 +2847,10 @@ export default function SessionDetailView() {
     worktreeSelections[session.id] ??
     getPgWorktree(session.id) ??
     (!!owner?.workspace && isGitWorkspace(owner.workspace) && owner.workspace.worktree === true)
+  // The chip names the isolation by the owner's EFFECTIVE boundary (git-workspace-model.md §11), never by its stored sandbox flag.
+  const isolationLabel = agentSessionIsolationLabel(
+    owner ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false }
+  )
   const canChooseWorktree =
     isPg &&
     !multiLive &&
@@ -4761,7 +4770,7 @@ export default function SessionDetailView() {
                                   }}
                                   className="h-4 w-4 flex-none accent-(--brand)"
                                 />
-                                <span className="truncate">Worktree</span>
+                                <span className="truncate">{isolationLabel.mode}</span>
                               </label>
                             )}
                           </div>

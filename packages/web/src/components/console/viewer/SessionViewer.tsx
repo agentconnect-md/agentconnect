@@ -83,11 +83,11 @@ function readNoticeText(status: number | null, code: string | null, scoped: bool
   if (status === 409) {
     return code === 'DAEMON_FEATURE_MISSING'
       ? 'This agent runs a daemon version that cannot read diffs. Update the agent to review its changes here; the file itself still opens.'
-      : 'This agent runs a daemon version that cannot read a session worktree. Update the agent, or open the file from its workspace page.'
+      : 'This agent runs a daemon version that cannot read a session checkout. Update the agent, or open the file from its workspace page.'
   }
   if (status === 404) {
     return scoped
-      ? "This session's worktree is not available to read — it may have been cleaned up, or this session may not have one of its own."
+      ? "This session's checkout is not available to read — it may have been cleaned up, or this session may not have one of its own."
       : 'This workspace is not available to read.'
   }
   if (status === 400 && code === 'WORKSPACE_GIT_INTERNALS') {

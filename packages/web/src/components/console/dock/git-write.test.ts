@@ -54,8 +54,8 @@ describe('gitWriteRequestFailureText', () => {
   it('tells a busy agent from a daemon too old to write', () => {
     expect(gitWriteRequestFailureText(409, 'WORKSPACE_STALE')).toContain('Try again when it is idle')
     expect(gitWriteRequestFailureText(409, 'DAEMON_FEATURE_MISSING')).toContain('Update the agent')
-    // A 409 with neither code is the session-worktree version answer.
-    expect(gitWriteRequestFailureText(409, null)).toContain('session worktree')
+    // A 409 with neither code is the session-scoped version answer.
+    expect(gitWriteRequestFailureText(409, null)).toContain('session checkout')
   })
 
   it('reads a role denial and a missing worktree as themselves', () => {
