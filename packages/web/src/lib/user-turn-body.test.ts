@@ -52,7 +52,22 @@ describe('linearDescriptionMarkdown', () => {
     })
   })
 
-  it('shows a context without a description element whole rather than guessing', () => {
+  it('reads an envelope with no description element as an issue that has none', () => {
+    // Everything this envelope carries — the identifier, the title, the team — is already a row
+    // of its own, so printing it raw under "Description" was the whole of the bug.
+    const context = '<issue identifier="AC-1">\n<title>who are you</title>\n<team name="AAA"/>\n</issue>'
+    expect(linearDescriptionMarkdown(context)).toEqual({ markdown: '', parsed: true })
+    expect(linearDescriptionMarkdown('<issue><description/></issue>')).toEqual({ markdown: '', parsed: true })
+  })
+
+  it('takes a description element that carries attributes', () => {
+    expect(linearDescriptionMarkdown('<issue><description format="markdown">ship it</description></issue>')).toEqual({
+      markdown: 'ship it',
+      parsed: true
+    })
+  })
+
+  it('shows a context that is not the envelope at all whole rather than guessing', () => {
     expect(linearDescriptionMarkdown('plain words')).toEqual({ markdown: 'plain words', parsed: false })
   })
 })

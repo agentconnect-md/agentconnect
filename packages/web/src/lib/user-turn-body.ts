@@ -34,12 +34,19 @@ const XML_ENTITIES: Record<string, string> = { '&lt;': '<', '&gt;': '>', '&quot;
 
 /**
  * Linear hands the agent the issue as XML-shaped text (`promptContext`): `<issue …><title>…</title>
- * <description>…</description> …</issue>`. The console shows the description as the markdown it is;
- * a context without that element is shown whole, since guessing at its shape would hide it.
+ * <description>…</description> …</issue>`. The console shows the description as the markdown it is.
+ * An `<issue>` envelope without that element is an issue with no description — the title and team
+ * it does carry are facts of their own — so it yields an empty, parsed description rather than the
+ * envelope; only a context that is not the envelope at all is shown whole, since guessing at its
+ * shape would hide it.
  */
 export function linearDescriptionMarkdown(description: string): { markdown: string; parsed: boolean } {
-  const match = /<description>([\s\S]*?)<\/description>/i.exec(description)
-  if (!match) return { markdown: description, parsed: false }
-  const markdown = match[1]!.replace(/&(lt|gt|quot|#39|amp);/g, (entity) => XML_ENTITIES[entity] ?? entity).trim()
-  return { markdown, parsed: true }
+  const match = /<description(?:\s[^>]*)?>([\s\S]*?)<\/description>/i.exec(description)
+  if (match) {
+    const markdown = match[1]!.replace(/&(lt|gt|quot|#39|amp);/g, (entity) => XML_ENTITIES[entity] ?? entity).trim()
+    return { markdown, parsed: true }
+  }
+  // The envelope with no description element: the issue simply has none.
+  if (/^\s*<issue[\s>]/i.test(description)) return { markdown: '', parsed: true }
+  return { markdown: description, parsed: false }
 }

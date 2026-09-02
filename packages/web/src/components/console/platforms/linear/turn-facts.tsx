@@ -16,7 +16,10 @@ export function LinearTurnFacts({ body }: { body: UserTurnBody }) {
   const { issue, team } = facts
   const issueLabel = [issue.identifier, issue.title].filter(Boolean).join(' · ')
   const teamLabel = team?.name ? `${team.name}${team.key ? ` (${team.key})` : ''}` : (team?.key ?? '')
-  const description = facts.description ? linearDescriptionMarkdown(facts.description) : undefined
+  const parsedDescription = facts.description ? linearDescriptionMarkdown(facts.description) : undefined
+  // An issue that has no description shows none: the envelope's other facts already have rows.
+  const description =
+    parsedDescription && (parsedDescription.markdown || !parsedDescription.parsed) ? parsedDescription : undefined
   return (
     <>
       <FactRows>
@@ -36,7 +39,7 @@ export function LinearTurnFacts({ body }: { body: UserTurnBody }) {
         <div className="mt-2">
           <p className="mb-[2px] font-sans text-[12px] leading-[1.6] text-(--text-tertiary)">Description</p>
           {description.parsed ? (
-            <MarkdownText text={description.markdown || '_(empty)_'} />
+            <MarkdownText text={description.markdown} />
           ) : (
             <pre className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-[1.5] text-(--text-primary)">
               {description.markdown}
