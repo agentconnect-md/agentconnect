@@ -1378,7 +1378,21 @@ export class Daemon {
       agents: () => this.agents,
       servesAgent: (agentId) => this.servesAgent(agentId),
       sessionLink: (acpSessionId) => this.sessionLink(acpSessionId),
-      sessionThreadUrl: (session) => this.sessionThreadUrl(session)
+      sessionThreadUrl: (session) => this.sessionThreadUrl(session),
+      onSessionMetadataCommitted: (agentId, sessionId) => void this.reassertApprovalWait(agentId, sessionId)
+    }
+  }
+
+  /** The session's row now exists at the CP: re-assert a live wait it may have dropped for lack of one (§7). */
+  private async reassertApprovalWait(agentId: string, outwardSessionId: string): Promise<void> {
+    try {
+      for (const wait of this.permissions.liveApprovalWaits()) {
+        if (wait.agentId !== agentId) continue
+        const outward = (await this.outwardSessionIdForAcp(agentId, wait.sessionId)) ?? wait.sessionId
+        if (outward === outwardSessionId) this.emitApprovalActivity(agentId, wait.sessionId, 'awaiting_permission')
+      }
+    } catch (err) {
+      this.log.warn(`approval wait for session "${outwardSessionId}" not re-asserted: ${formatErr(err)}`)
     }
   }
 

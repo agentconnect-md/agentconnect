@@ -205,6 +205,11 @@ export class PermissionCoordinator {
     }
   }
 
+  /** The sessions currently waiting on a human, by runtime session id. */
+  liveApprovalWaits(): ReadonlyArray<{ agentId: string; sessionId: string }> {
+    return [...this.awaitingApproval.values()]
+  }
+
   /** Re-assert every live wait after a (re)connect: the CP reset them when this daemon dropped (§7). */
   replayApprovalActivity(): void {
     for (const { agentId, sessionId } of this.awaitingApproval.values()) {

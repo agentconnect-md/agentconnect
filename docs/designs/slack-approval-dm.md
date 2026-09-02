@@ -354,7 +354,10 @@ guards keep the column honest: the CP resets a daemon's `awaiting_permission`
 rows to `idle` when that daemon's connection closes and when a session's `end`
 milestone lands, and the daemon re-asserts its live waits from the
 coordinator's in-memory set on every (re)connect, after its durable session
-metadata outbox has drained, so every replayed wait has a row to land on.
+metadata outbox has drained, and again for one session whenever that
+session's metadata snapshot is acknowledged — the CP has no row to flag until
+then, so a wait reported earlier was dropped, and the drain's own retry path
+is what makes the acknowledgement the reliable trigger.
 Every approval-state write on the CP — the handler's persist, the close
 clear, and a silent clear on `register` — runs on one per-daemon tail in the
 connection registry, so the last mutation a connection makes is always its
