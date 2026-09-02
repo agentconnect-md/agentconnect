@@ -1251,14 +1251,16 @@ tile.
     default, which is why a miss must not fall through to ordinary
     arbitration. On a miss (the relay pod holds no affinity for the key —
     a restart, or the session's first event landed on another pod) the
-    directory asks the CP for the **durable binding**: a `cr/session-lookup`
-    request over the relay's existing CP request/reply channel, carrying
-    `(botId, platform, channel, thread)`, answered from `session_meta` —
-    which records every session's `platform`/`tenantScope`/`channel`/`thread`
-    and `agentId` at `session/new`, under the
-    `session_meta_conversation_key_idx` index this lookup rides — with the
-    holding agent's `integrationId` on that bot and its routable daemon
-    (placement), or nothing. A hit is validated like a memory hit
+    directory asks the CP for the **durable binding** through the existing
+    pull-on-miss backstop, `rc/thread-lookup` → `rc/thread-lookup/ok`, which
+    already falls through `SessionRepo.findThreadOwner` to `session_meta` —
+    every session's `platform`/`tenantScope`/`channel`/`thread` and
+    `agentId`, recorded at `session/new` under the
+    `session_meta_conversation_key_idx` index — and resolves current
+    placement. The request gains a `mode: 'stop'` that makes the CP's answer
+    **grant-blind** (the ordinary mode keeps its gating), and the reply
+    carries the holding agent's `integrationId` on that bot alongside the
+    target, so the stop can be pre-addressed. A hit is validated like a memory hit
     (membership, placement) and cached back into the affinity map; nothing
     means **nobody**, and the stop is dropped with a warning. A fan-out to
     every member daemon was considered and rejected: `platform_action` is
@@ -1942,12 +1944,13 @@ threads.
    `directory.resolveBoundTarget(botId, sessionKey)` (Stop-only, bot-scoped,
    membership- and placement-validated, grant-blind, no arbitration
    fallback) on the `RelayIngressHost` contract, used by
-   `forwardLinearStop`, backed on a memory miss by the new
-   `cr/session-lookup` request/reply frame; the Linear plugin keys `channel`
-   on the team and drops a refused delivery. `packages/control-plane` (same
-   PR, the other side of both frame changes) — `syncRoutes` emits
-   `conversationDefaults`, and the session-lookup handler answers from
-   `session_meta` plus placement.
+   `forwardLinearStop`, backed on a memory miss by `rc/thread-lookup` with
+   the new `mode: 'stop'` and an integration-bearing `rc/thread-lookup/ok`;
+   the Linear plugin keys `channel` on the team and drops a refused
+   delivery. `packages/control-plane` (same PR, the other side of both frame
+   changes) — `syncRoutes` emits `conversationDefaults`, and the
+   thread-lookup handler answers a `stop`-mode request grant-blind from
+   `session_meta` plus placement, with the integration id.
 2. `packages/control-plane` — team rows from the provider create tail and
    the member-add path (Linear API `teams`), plus the team upsert on the
    `LinearCredentialReconciler` tick; `soleConversation.ts`,
