@@ -3,9 +3,13 @@
 // Per-conversation default dispatch for a SHARED bot — who takes its unmatched messages.
 // Picking one PATCHes the conversation's explicit owner (`setChannelAgent`). Shared by the
 // org Bots roster and the agent page's Linear rows, so the two cannot drift apart.
+// The menu is an <AnchoredFlyout>: the agent page wraps each integration card in
+// `overflow-hidden`, which cut an in-row menu after its first option, and the flyout also
+// flips above the trigger near the bottom of the viewport instead of running off it.
 
 import { useState } from 'react'
 import { Icon } from '@/components/ui'
+import { AnchoredFlyout } from '@/components/ui/AnchoredFlyout'
 import { AgentIconView } from '@/components/marks'
 import type { AgentIcon } from '@/lib/agent-icon'
 
@@ -18,6 +22,10 @@ export interface DefaultDispatchOption {
   icon?: AgentIcon | null
 }
 
+const MENU_WIDTH = 240
+const MENU_HEADER_HEIGHT = 34
+const MENU_ROW_HEIGHT = 34
+
 export function DefaultDispatchPicker({
   options,
   activeId,
@@ -29,43 +37,54 @@ export function DefaultDispatchPicker({
   disabled: boolean
   onPick: (agentId: string) => Promise<void>
 }) {
-  const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const active = options.find((o) => o.id === activeId) ?? options[0]
   const pick = (id: string) => {
-    setOpen(false)
     if (disabled || saving || id === active?.id) return
     setSaving(true)
     onPick(id).finally(() => setSaving(false))
   }
   return (
-    <span className="relative justify-self-end" onClick={(e) => e.stopPropagation()}>
-      <button
-        onClick={() => !disabled && setOpen((v) => !v)}
-        title="Default dispatch — the agent this conversation's unmatched messages go to"
-        className={`flex items-center gap-2 rounded-[7px] border-0 bg-transparent px-[5px] py-1 hover:bg-(--surface-hover) ${
-          disabled ? 'cursor-default' : 'cursor-pointer'
-        } ${saving ? 'opacity-60' : ''}`}
+    <span className="justify-self-end" onClick={(e) => e.stopPropagation()}>
+      <AnchoredFlyout
+        ariaLabel="Default dispatch"
+        align="end"
+        width={MENU_WIDTH}
+        estimatedHeight={MENU_HEADER_HEIGHT + options.length * MENU_ROW_HEIGHT}
+        trigger={({ open, menuId, toggle }) => (
+          <button
+            type="button"
+            onClick={() => !disabled && toggle()}
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-controls={open ? menuId : undefined}
+            title="Default dispatch — the agent this conversation's unmatched messages go to"
+            className={`flex items-center gap-2 rounded-[7px] border-0 bg-transparent px-[5px] py-1 hover:bg-(--surface-hover) ${
+              disabled ? 'cursor-default' : 'cursor-pointer'
+            } ${saving ? 'opacity-60' : ''}`}
+          >
+            <span className="av h-5 w-5 rounded-[5px]">
+              <AgentIconView icon={active?.icon} runtime={active?.runtime ?? active?.model ?? ''} size={20} />
+            </span>
+            <span className="mono text-[12.5px] text-(--text-primary)">{active?.name ?? '—'}</span>
+            <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
+          </button>
+        )}
       >
-        <span className="av h-5 w-5 rounded-[5px]">
-          <AgentIconView icon={active?.icon} runtime={active?.runtime ?? active?.model ?? ''} size={20} />
-        </span>
-        <span className="mono text-[12.5px] text-(--text-primary)">{active?.name ?? '—'}</span>
-        <Icon name="chevron-down" size={13} color="var(--text-tertiary)" />
-      </button>
-      {open && (
-        <>
-          <span className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          {/* right-anchored: the picker sits in the roster's right-most column, so a
-              left-anchored menu (wider than its button) would clip past the card edge */}
-          <div className="absolute right-0 top-[calc(100%+5px)] z-40 min-w-[230px] rounded-[10px] border border-(--border-default) bg-(--surface-card) p-1 shadow-(--shadow-lg)">
+        {({ close }) => (
+          <>
             <div className="px-[9px] pb-[5px] pt-[6px] font-sans text-[10.5px] font-semibold uppercase leading-normal tracking-[0.08em] text-(--text-tertiary)">
               Default dispatch
             </div>
             {options.map((o) => (
               <button
                 key={o.id}
-                onClick={() => pick(o.id)}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  close(true)
+                  pick(o.id)
+                }}
                 className="flex w-full cursor-pointer items-center gap-[9px] rounded-[6px] border-0 bg-transparent px-[9px] py-[6px] text-left hover:bg-(--surface-hover)"
               >
                 <span className="av h-[22px] w-[22px] flex-none rounded-[6px]">
@@ -80,9 +99,9 @@ export function DefaultDispatchPicker({
                 />
               </button>
             ))}
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </AnchoredFlyout>
     </span>
   )
 }
