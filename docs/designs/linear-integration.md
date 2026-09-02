@@ -1427,6 +1427,14 @@ tile.
     install. Seeding the dispatch default from a daemon report would have
     made it depend on a live daemon and on report timing, and the window
     that opens is exactly the one a bare delegation arrives in.
+    **Session history never yields a Linear row.** The daemon's observed-
+    conversation rebuild (the `membershipEnumeration: 'observed'` arm) folds
+    Linear's history to nothing (`platforms/linear/observed-channels.ts`),
+    and the team report **retracts the workspace id** with a durable
+    tombstone — otherwise a session keyed on the issue-less channel, or one
+    from before the team model, would resurrect the workspace row the CP's
+    migration deleted, seeded Off, on the daemon's next start (observed live
+    on the test environment, 2026-09-02).
     **Landed** as two seats, and **neither is on a critical path**: the
     reconcile FIRES the `listChannels` refresh (one `observePlatformChats`
     frame per integration) without joining it, because the reconcile is

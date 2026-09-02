@@ -279,6 +279,23 @@ const responses = (posted: Posted[]) => posted.filter((p) => p.activity.type ===
 const im = async (daemon: Daemon, msg: unknown) => await (daemon as any).handleRelayIm(msg)
 
 describe('§4.5 the teams as the observed conversations', () => {
+  it('retires the workspace-keyed row after the team report, durably, so history cannot resurrect it', async () => {
+    const { daemon, reports } = await boot()
+    // The retraction rides the detached refresh; the tombstone is what a later history rebuild reads.
+    await vi.waitFor(async () =>
+      expect(await (daemon as any).store.retractedConversations(INTEGRATION)).toContain(WORKSPACE)
+    )
+    expect((daemon as any).channelSnapshots.get(INTEGRATION)?.channels.map((c: { id: string }) => c.id)).not.toContain(
+      WORKSPACE
+    )
+    // A later reconcile, with the report capture in place, retracts it again on the wire.
+    await (daemon as any).connections.reconcileLinearConnections()
+    await vi.waitFor(() =>
+      expect(reports).toContainEqual(expect.objectContaining({ integrationId: INTEGRATION, removed: [WORKSPACE] }))
+    )
+    await daemon.stop()
+  })
+
   it('reports the team list at reconcile, as a name refresh over the rows the CP already wrote', async () => {
     const { daemon } = await boot()
     // The refresh is detached from the reconcile (it may not block convergence), so wait for it
