@@ -416,7 +416,7 @@ export class LinearConverger {
   private planEntries?: LinearPlanEntry[]
   private planDirty = false
   private lastPlanKey?: string
-  private lastElicitation?: string
+  private readonly openGates = new Set<string>()
   private settled = false
 
   constructor(
@@ -549,22 +549,24 @@ export class LinearConverger {
     return [...deduped, { kind: 'activity', type: 'error', body: reason }]
   }
 
-  /** A permission gate would block the turn: name what is being approved and point at the console
-   *  (§10.4). Repeated identical gates collapse, because an append-only feed would stack them. */
-  onPermissionBlocked(sessionUrl?: string, request?: LinearApprovalRequest): LinearAction[] {
-    if (this.settled || !this.policy.response) return []
+  /** A permission gate blocks the turn: name what is being approved and point at the console (§10.4).
+   *  One row per gate id — two gates that read the same are two things a human must decide, so each
+   *  owns a row and a closure; only a RE-announcement of a gate already open collapses. */
+  onPermissionBlocked(gateId: string, sessionUrl?: string, request?: LinearApprovalRequest): LinearAction[] {
+    if (this.settled || !this.policy.response || this.openGates.has(gateId)) return []
     const link = httpUrl(sessionUrl)
     const pointer = link ? markdownLink(PERMISSION_ELICITATION_POINTER, link) : PERMISSION_ELICITATION_FALLBACK
     const body = `${PERMISSION_ELICITATION_BODY}${elicitationRequestClause(request)} · ${pointer}`
-    if (this.lastElicitation === body) return []
-    this.lastElicitation = body
+    this.openGates.add(gateId)
     return [...this.flushNarration(true), ...this.takePending(), { kind: 'activity', type: 'elicitation', body }]
   }
 
-  /** The gate closed on a human decision: say so once, so the feed does not stop at the question.
-   *  It is progress chrome, not the turn's answer — `minimal` posts the response only (§5.2). */
-  onPermissionResolved(allowed: boolean): LinearAction[] {
-    if (this.settled || !this.policy.progress || this.lastElicitation === undefined) return []
+  /** One gate closed: a human decision is announced so the feed never stops at the question, while a
+   *  gate that went away without one (turn cancelled, request abandoned) closes quietly. Progress
+   *  chrome, so `minimal` posts the response only (§5.2). */
+  onPermissionResolved(gateId: string, allowed?: boolean): LinearAction[] {
+    if (!this.openGates.delete(gateId)) return []
+    if (allowed === undefined || this.settled || !this.policy.progress) return []
     return [{ kind: 'activity', type: 'thought', body: allowed ? PERMISSION_APPROVED_BODY : PERMISSION_DENIED_BODY }]
   }
 

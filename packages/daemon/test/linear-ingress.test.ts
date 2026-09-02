@@ -1074,6 +1074,53 @@ describe('§5.1 the permission gate reaches the feed', () => {
     expect(follow).toBeLessThan(booted.posted.findIndex((p) => p.activity.type === 'response'))
     await booted.daemon.stop()
   })
+
+  it('closes each overlapping gate with its own decision', async () => {
+    const live: { daemon?: Daemon } = {}
+    const gate = (id: string, title: string, command: string) => ({
+      sessionId: 'acp-1',
+      toolCall: { toolCallId: id, title, rawInput: { command } },
+      options: [
+        { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+        { optionId: 'reject', name: 'Deny', kind: 'reject_once' }
+      ]
+    })
+    const gatedHost = () => ({
+      __started: true,
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      prompt: vi.fn(async () => {
+        const permissions = (live.daemon as any).permissions
+        const store = (live.daemon as any).store
+        const first = permissions.onAcpPermission(AGENT, 'acp-1', gate('call-1', 'Bash', 'rm -rf build'))
+        const second = permissions.onAcpPermission(AGENT, 'acp-1', gate('call-2', 'Write', 'src/index.ts'))
+        const ids = await vi.waitFor(async () => {
+          const rows = await store.listPermissionRequests(AGENT)
+          expect(rows).toHaveLength(2)
+          return Object.fromEntries(rows.map((r: any) => [(r.command as string).split(':')[0]!.trim(), r.id]))
+        })
+        // Denied first, allowed second: the aggregate wait only goes idle on the second decision.
+        await permissions.decideEditorPermission({ agentId: AGENT, requestId: ids.Bash, decision: 'deny' })
+        await permissions.decideEditorPermission({ agentId: AGENT, requestId: ids.Write, decision: 'allow' })
+        await first
+        await second
+        return 'end_turn'
+      }),
+      cancel: vi.fn(),
+      stop: vi.fn()
+    })
+    const booted = await boot({ host: gatedHost })
+    live.daemon = booted.daemon
+
+    await im(booted.daemon, delivery())
+    await booted.turnSettled()
+
+    const bodies = booted.posted.map((p) => p.activity.body as string)
+    expect(bodies.filter((b) => b.includes('This step needs approval'))).toHaveLength(2)
+    expect(bodies.filter((b) => b === 'Denied — the step was skipped.')).toHaveLength(1)
+    expect(bodies.filter((b) => b === 'Approved — continuing.')).toHaveLength(1)
+    await booted.daemon.stop()
+  })
 })
 
 describe('§10.1 a follow-up and the acknowledgement watchdog', () => {

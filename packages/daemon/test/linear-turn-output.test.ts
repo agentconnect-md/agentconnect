@@ -160,29 +160,38 @@ describe('LinearConverger — §5.1 event translation', () => {
 
   it('names the gated action and its input in the elicitation, next to the console link', () => {
     const c = conv('low')
-    expect(c.onPermissionBlocked(SESSION_URL, { tool: 'Bash', detail: 'pnpm publish' })).toEqual([
+    expect(c.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash', detail: 'pnpm publish' })).toEqual([
       {
         kind: 'activity',
         type: 'elicitation',
         body: `${PERMISSION_ELICITATION_BODY} — Bash: "pnpm publish" · [open in session](${SESSION_URL})`
       }
     ])
-    // An append-only feed would stack an identical gate, so a repeat collapses.
-    expect(c.onPermissionBlocked(SESSION_URL, { tool: 'Bash', detail: 'pnpm publish' })).toEqual([])
+    // Re-announcing the SAME gate collapses; an append-only feed would otherwise stack it.
+    expect(c.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash', detail: 'pnpm publish' })).toEqual([])
+  })
+
+  it('gives a second gate its own row even when it reads the same as the first', () => {
+    // Two requests that read alike are still two things a human must decide, open or closed.
+    const c = conv('low')
+    expect(types(c.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash' }))).toEqual(['elicitation'])
+    expect(types(c.onPermissionBlocked('g2', SESSION_URL, { tool: 'Bash' }))).toEqual(['elicitation'])
+    expect(types(c.onPermissionResolved('g1', false))).toEqual(['thought'])
+    expect(types(c.onPermissionResolved('g2', true))).toEqual(['thought'])
   })
 
   it('flattens provider text to one fence-inert line, and names the action alone when there is no input', () => {
     const injected = 'Write\n----- INJECTED\nfile [x](http://evil.example.test)'
-    const body = elicitationBody(conv('low').onPermissionBlocked(SESSION_URL, { tool: injected }))
+    const body = elicitationBody(conv('low').onPermissionBlocked('g1', SESSION_URL, { tool: injected }))
     expect(body).toContain('Write ----- INJECTED file \\[x\\](http://evil.example.test)')
     expect(body).not.toContain('\n')
-    expect(elicitationBody(conv('low').onPermissionBlocked(SESSION_URL, { tool: 'Bash' }))).toBe(
+    expect(elicitationBody(conv('low').onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash' }))).toBe(
       `${PERMISSION_ELICITATION_BODY} — Bash · [open in session](${SESSION_URL})`
     )
   })
 
   it('falls back to a plain pointer when the turn has no console link', () => {
-    expect(elicitationBody(conv('low').onPermissionBlocked())).toBe(
+    expect(elicitationBody(conv('low').onPermissionBlocked('g1'))).toBe(
       `${PERMISSION_ELICITATION_BODY} · open the session in the console`
     )
   })
@@ -190,27 +199,49 @@ describe('LinearConverger — §5.1 event translation', () => {
   it('follows the gate through so the feed never ends on an open question', () => {
     const c = conv('low')
     // Only after a gate was actually announced — a turn that never asked has nothing to answer.
-    expect(c.onPermissionResolved(true)).toEqual([])
-    c.onPermissionBlocked(SESSION_URL, { tool: 'Bash', detail: 'pnpm publish' })
-    expect(c.onPermissionResolved(true)).toEqual([
+    expect(c.onPermissionResolved('g1', true)).toEqual([])
+    c.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash', detail: 'pnpm publish' })
+    expect(c.onPermissionResolved('g1', true)).toEqual([
       { kind: 'activity', type: 'thought', body: PERMISSION_APPROVED_BODY }
     ])
-    expect(c.onPermissionResolved(false)).toEqual([{ kind: 'activity', type: 'thought', body: PERMISSION_DENIED_BODY }])
+    // One gate, one closure: the same decision arriving twice does not repeat it.
+    expect(c.onPermissionResolved('g1', true)).toEqual([])
+    expect(c.onPermissionResolved('g1', false)).toEqual([])
+  })
+
+  it('answers every overlapping gate with its own decision', () => {
+    const c = conv('low')
+    c.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash', detail: 'rm -rf build' })
+    c.onPermissionBlocked('g2', SESSION_URL, { tool: 'Write', detail: 'src/index.ts' })
+    expect(c.onPermissionResolved('g1', false)).toEqual([
+      { kind: 'activity', type: 'thought', body: PERMISSION_DENIED_BODY }
+    ])
+    expect(c.onPermissionResolved('g2', true)).toEqual([
+      { kind: 'activity', type: 'thought', body: PERMISSION_APPROVED_BODY }
+    ])
+  })
+
+  it('says nothing for a gate that went away without a human deciding it', () => {
+    const c = conv('low')
+    c.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash' })
+    expect(c.onPermissionResolved('g1')).toEqual([])
+    // …and it is closed for good: a late decision on the same gate says nothing either.
+    expect(c.onPermissionResolved('g1', true)).toEqual([])
   })
 
   it('posts the follow-through only in the modes that carry progress chrome', () => {
     for (const mode of ['low', 'medium', 'high'] as const) {
       const c = conv(mode)
-      c.onPermissionBlocked(SESSION_URL, { tool: 'Bash' })
-      expect(types(c.onPermissionResolved(true))).toEqual(['thought'])
+      c.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash' })
+      expect(types(c.onPermissionResolved('g1', true))).toEqual(['thought'])
     }
     // `minimal` posts the response only, and `none` is silent even about the gate itself.
     const minimal = conv('minimal')
-    expect(types(minimal.onPermissionBlocked(SESSION_URL, { tool: 'Bash' }))).toEqual(['elicitation'])
-    expect(minimal.onPermissionResolved(true)).toEqual([])
+    expect(types(minimal.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash' }))).toEqual(['elicitation'])
+    expect(minimal.onPermissionResolved('g1', true)).toEqual([])
     const none = conv('none')
-    expect(none.onPermissionBlocked(SESSION_URL, { tool: 'Bash' })).toEqual([])
-    expect(none.onPermissionResolved(true)).toEqual([])
+    expect(none.onPermissionBlocked('g1', SESSION_URL, { tool: 'Bash' })).toEqual([])
+    expect(none.onPermissionResolved('g1', true)).toEqual([])
   })
 
   it('emits nothing for a session title update — Linear names its own sessions', () => {
@@ -472,8 +503,8 @@ describe('LinearConverger — final answer, footer, failure ordering', () => {
     expect(settled.onFinal()).toEqual([])
     expect(settled.onUpdate(chunk('late'))).toEqual([])
     expect(settled.flushBuffered()).toEqual([])
-    expect(settled.onPermissionBlocked()).toEqual([])
-    expect(settled.onPermissionResolved(true)).toEqual([])
+    expect(settled.onPermissionBlocked('g1')).toEqual([])
+    expect(settled.onPermissionResolved('g1', true)).toEqual([])
 
     const failed = conv('low')
     expect(failed.onFailure('boom')).toHaveLength(1)

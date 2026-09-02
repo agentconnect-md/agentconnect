@@ -1391,10 +1391,11 @@ export default function AgentDetailView() {
                     return (
                       <div key={i} className={i > 0 ? 'border-t border-(--border-subtle)' : undefined}>
                         <CardScope integration={g}>
-                          <div className="flex items-center gap-3 border-b border-(--border-subtle) px-4 py-3">
+                          {/* The identity keeps a floor, so a module's extra controls wrap under it rather than squeeze it. */}
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-(--border-subtle) px-4 py-3">
                             <Link
                               href={botSettingsHref(g.botId)}
-                              className="group flex min-w-0 flex-1 items-center gap-3"
+                              className="group flex min-w-36 flex-1 items-center gap-3"
                             >
                               <span className="imark h-9 w-9 flex-none rounded-md border border-(--border-subtle) bg-(--surface-sunken)">
                                 <PlatformMark platform={g.platform} />
@@ -1414,32 +1415,34 @@ export default function AgentDetailView() {
                                 )}
                               </span>
                             </Link>
-                            <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--brand-soft) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--brand-soft-text)">
-                              <span className="h-[6px] w-[6px] rounded-full bg-(--status-online)" />
-                              connected
-                            </span>
-                            {g.platform === 'discord' && g.discordAppId && (
-                              <a
-                                href={discordBotInviteUrl(g.discordAppId)}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                title="Invite this bot to a Discord server — preset scopes &amp; permissions"
-                                aria-label="Add this bot to a Discord server"
+                            <span className="ml-auto flex flex-none items-center gap-3">
+                              <span className="inline-flex flex-none items-center gap-[5px] rounded-full bg-(--brand-soft) px-[10px] py-[3px] font-sans text-[12px] font-semibold leading-normal text-(--brand-soft-text)">
+                                <span className="h-[6px] w-[6px] rounded-full bg-(--status-online)" />
+                                connected
+                              </span>
+                              {g.platform === 'discord' && g.discordAppId && (
+                                <a
+                                  href={discordBotInviteUrl(g.discordAppId)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title="Invite this bot to a Discord server — preset scopes &amp; permissions"
+                                  aria-label="Add this bot to a Discord server"
+                                  className="iconbtn h-7 w-7 flex-none"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <Icon name="external-link" size={12} />
+                                </a>
+                              )}
+                              {HeaderActions && <HeaderActions integration={g} />}
+                              <button
                                 className="iconbtn h-7 w-7 flex-none"
-                                onClick={(e) => e.stopPropagation()}
+                                title="Delete integration"
+                                aria-label={`Delete the ${g.name} integration`}
+                                onClick={() => openModal('deleteIntegration', g)}
                               >
-                                <Icon name="external-link" size={12} />
-                              </a>
-                            )}
-                            {HeaderActions && <HeaderActions integration={g} />}
-                            <button
-                              className="iconbtn h-7 w-7 flex-none"
-                              title="Delete integration"
-                              aria-label={`Delete the ${g.name} integration`}
-                              onClick={() => openModal('deleteIntegration', g)}
-                            >
-                              <Icon name="unplug" size={14} />
-                            </button>
+                                <Icon name="unplug" size={14} />
+                              </button>
+                            </span>
                           </div>
                           {AgentCardBody ? (
                             <AgentCardBody integration={g} padX={16} />
