@@ -497,6 +497,7 @@ coalesce aggressively, post meaningfully.
 | `agent_message_chunk` (intermediate, flushed at a tool boundary or idle) | `thought` (non-ephemeral)                      | Progress narration between tool calls stays visible in the feed                                                                                                                                                                                                                             |
 | `tool_call` → terminal `tool_call_update`                                | `action`                                       | Emitted once at terminal status: `action` = tool title, `parameter` = input summary, `result` = head-clamped output (~2 800 chars). Consecutive same-title calls collapse; per-turn cap with a final "… and N more" thought                                                                 |
 | ACP `plan` update                                                        | `plan`                                         | Both sides are full-array replace — direct mapping                                                                                                                                                                                                                                          |
+| a pull/merge-request URL anywhere in the agent's message text            | `external-urls` (`addedExternalUrls`)          | Collected over the whole turn, each URL once, labelled `PR #123` / `MR !45`; published once, immediately before the settling `response` (§10.3)                                                                                                                                             |
 | turn end                                                                 | `response`                                     | The accumulated final answer (final-answer selection reuses the GitHub Layer-2 heuristics: `_meta.codex.phase === 'final_answer'`, else message grouping, else last text run). Attribution footer appended per `output.showFooter`, Markdown-safe via the shared fence-aware chrome helpers |
 | turn failure (quota / auth / crash)                                      | `error`                                        | Reuses `turnFailureReason`/`turnFailureCode`; converger buffer flushed first so runtime-narrated errors are not duplicated                                                                                                                                                                  |
 | permission gate would block the turn                                     | `elicitation`                                  | v1 posts "This step needs approval — open the session in the console" + deep link; interactive approval from Linear is out of scope (§13)                                                                                                                                                   |
@@ -708,10 +709,13 @@ No new `rd/msg` union member. Events ride `RdMsgIm` with a
   comment's own text for a mention-created session (extracted so it is
   **never only inside fenced context**), or the follow-up
   `agentActivity.body` verbatim.
-- `adapterExt.linear` = `{ agentSessionId, issueIdentifier?, issueTitle?,
-promptContext?, guidance?, previousComments?, truncated? }` — the §6.4
-  adapter-extension bag: opaque to core, round-tripped to the daemon's linear
-  module, which owns fencing and prompt assembly (§8).
+- `adapterExt.linear` = `{ agentSessionId, event?, issueId?, issueIdentifier?,
+issueTitle?, promptContext?, guidance?, previousComments?, truncated? }` — the
+  §6.4 adapter-extension bag: opaque to core, round-tripped to the daemon's
+  linear module, which owns fencing and prompt assembly (§8). `event` names
+  the webhook that opened the turn (`created` | `prompted`) so the daemon can
+  tell the session-opening delegation from a follow-up (§10.2); `issueId` is
+  the issue UUID the issue-scoped writes key on (Resources, state).
 
 Stop rides `RdMsgPlatformAction` (`platformId: 'linear'`, payload
 `{ kind: 'stop', agentSessionId }`): the daemon-side linear module decodes it,
@@ -1174,7 +1178,12 @@ tile.
   - message strategy — `adapterExt.linear` → prompt assembly and fencing
     (§8); no-issue unsupported-surface response (§4.5); stop decoder for the
     `platform_action` payload → `interruptTurn` + settling response.
-  - The ≤10 s ack at `rd/msg` admission, after inbox dedup (§10.1).
+  - The ≤10 s ack at `rd/msg` admission, after inbox dedup (§10.1), and from
+    the same hook the §10.2 auto-start (`LinearConnection.startIssue`, one
+    state read + at most one `issueUpdate`, both on the paced queue) when the
+    bag says the turn is the session-opening `created` and names an issue.
+  - `codeHostLinks` in `turn-output.ts`: the §10.3 collector over the turn's
+    message text, emitted as one `external-urls` action before the response.
   - **The conversation report is a name refresh, not the seeder.** The
     connection reports the workspace as its single conversation — one
     `integration/channels` row, `id` = the `organizationId`, `name` = the
@@ -1269,15 +1278,31 @@ tile.
    `(sessionKey, msgId)` first, ack second; concurrent or replayed deliveries
    of the same `msgId` collapse before any feed row is written. This is the
    only activity ever posted outside the converger.
-2. **Issue status transition (P2)** follows Linear's best practice: on a
-   delegated `created`, if the issue is not in a `started/completed/canceled`
-   state, move it to the team's lowest-position `started` state — behind an
-   integration-level toggle (default on), skipped for triage-status issues so
-   Linear-side automation delegations keep human triage.
-3. **PR links (P2).** The daemon already computes PR/commit links for GitHub
-   attribution; a turn-scoped URL collector feeds `addedExternalUrls`
-   (label `PR #123`), alongside the console session link added at session
-   start.
+2. **Issue status transition** follows Linear's best practice: on the
+   session-opening `created` (the bag's `event`), if the issue is not in a
+   `started/completed/canceled` state, move it to the team's lowest-position
+   `started` state (`LinearConnection.startIssue`: one paced read of the
+   issue's state and the team's workflow, then at most one `issueUpdate`).
+   Skipped for triage-status issues so Linear-side automation delegations
+   keep human triage, and for a team with no `started` state. It runs from
+   the same post-admission hook as the ack, so the receipt CAS that collapses
+   redeliveries also keeps the issue from moving twice; a follow-up
+   `prompted` never touches the state the humans left it in. `output.mode:
+none` skips it along with everything else Linear-visible. There is **no
+   toggle**: the earlier "integration-level toggle (default on)" was dropped
+   for the smaller surface — an integration that must not move issues has no
+   such case today, and one can be added when it does.
+3. **PR links.** The converger collects pull/merge-request URLs from the
+   agent's own message text over the turn (`codeHostLinks`: `PR #123` for a
+   GitHub pull, `MR !45` for a GitLab merge request, each URL once) and
+   publishes them as `addedExternalUrls` immediately before the settling
+   `response`, in every mode from `low` up. Reading the agent's text rather
+   than a tool hook is deliberate: `gh pr create` prints the URL and every
+   runtime's model repeats it in the answer, so this catches the PR on every
+   runtime without knowing any tool. The console session link is separate —
+   it lands in the issue's **Resources** (`attachmentCreate`, keyed by URL)
+   on the first turn, so it is visible from the issue itself, not only inside
+   the session panel.
 4. **`elicitation` is a pointer, not a protocol, in v1.** True interactive
    approval (Linear reply → permission grant) needs an approval-card
    equivalent over activities; deferred (§13). Until then the agent's
@@ -1349,9 +1374,45 @@ tile.
   (`attachmentCreate`, §5 table), and the delegator is named in the §8 header
   and the session list (a `created` event carries only `creatorId`, so the
   daemon resolves the name itself, full name first).
-- **P2 — workflow polish.** Plan sync; `externalUrls` (PR + console links);
-  issue auto-start transition; daemon-local Linear read tool (bounded
-  `getIssue`/comments via the connection token); elicitation deep-link card.
+- **P2 — working inside the issue.** Re-scoped 2026-09 against what a
+  delegated issue looks like when a competing agent handles it (the issue
+  moves to In Progress on delegation, the PR is linked, the plan is posted,
+  an empty ticket gets clarifying questions) and against Linear's own MCP
+  server (~25 tools: issue list/get/create/update, statuses, labels,
+  comments, projects, teams, users, cycles, documents). Three layers, in
+  merge order:
+  1. **Automatic behavior, no agent involvement** (done): plan sync (§5.1),
+     the auto-start transition (§10.2), PR links plus the console Resources
+     entry (§10.3).
+  2. **A Linear tool family for the agent**, self-built on the connection's
+     brokered app token — never Linear's hosted MCP server, which is a
+     user-token identity that would bypass §4.4 custody and single-app
+     attribution. Names follow the official MCP's vocabulary in camelCase so
+     models need no learning (`listIssues`, `getIssue`, `createIssue`,
+     `updateIssue`, `listIssueStatuses`, `listIssueLabels`,
+     `createIssueComment`, `listIssueComments`, `listProjects`, `getProject`,
+     `listTeams`, `listUsers`, `listCycles`, `listDocuments`, `getDocument`).
+     `updateIssue` accepts state, assignee and labels **by name** and
+     resolves them against the team, so the agent can "move it to In
+     Progress" without a second lookup. **Injected only into a session ON
+     the Linear platform** — the daemon's port-gated tools are
+     session-platform-scoped, so a Linear-connected agent's Slack sessions
+     carry none of these; cross-platform reach ("open a Linear issue from
+     Slack") was considered and deferred until someone asks, because no other
+     platform offers it either. Not in the first cut: initiatives, project
+     updates, milestones, Linear's own documentation search, image loading
+     (attachment download stays deferred, §9.4).
+  3. **A daemon-authored Linear context block** in the §8 trusted header:
+     the issue's UUID, identifier, team, current state, assignee and labels
+     (the coordinates the tools take), plus a few lines of working convention
+     — the issue is the record, so plans and outcomes go into its description
+     or a comment; branch and PR names carry the identifier so Linear's own
+     GitHub integration links them; an empty ticket earns a clarifying
+     `response` before work. **Not a skill**: the tools only exist in Linear
+     turns, so a per-turn prompt block is the deterministic seat, and the
+     customer-side customization seat is Linear's own admin `guidance`,
+     which §8 already passes through.
+     Still in P2: the elicitation deep-link card.
 - **P3 — breadth.** Label → skill playbook mapping; per-team dispatch
   defaults — the one upgrade that would split a workspace into several
   conversations, so it reopens §15's granularity argument rather than merely
@@ -1462,6 +1523,11 @@ tile.
    into via OAuth (multi-workspace still needs `authorization_code`), and
    whether a 30-day non-rotating token is an acceptable custody trade-off.
    Evaluate before P2; the broker seam (§7.3) is unchanged either way.
+5. **`addedExternalUrls` across turns** — the §10.3 collector dedups within
+   a turn, but a follow-up turn that names the same PR sends it again. Whether
+   Linear collapses an `addedExternalUrls` entry on URL (as `attachmentCreate`
+   does) or stacks a second one is unverified; if it stacks, the fix is a
+   per-session set on the daemon, not a change to the IR.
 
 ### Live-probe corrections to earlier assumptions (2026-09)
 

@@ -152,18 +152,77 @@ export interface LinearModePolicy {
   /** Tool output carried on the action's `result` field. */
   readonly actionResults: boolean
   readonly plan: boolean
+  /** §10.3: the pull/merge requests the agent's text named, as the session's external links. */
+  readonly links: boolean
   /** The settling `response` — and, with it, `error` and `elicitation`: `none` is truly silent. */
   readonly response: boolean
 }
 
-// The default is `low`, and it already includes actions and plan: an agent-session feed is
-// FOR progress visibility, which is the opposite of a chat channel's default.
+// The default is `low`, and it already includes actions, plan and links: an agent-session feed
+// is FOR progress visibility, which is the opposite of a chat channel's default.
 const MODE_POLICY: Record<LinearOutputMode, LinearModePolicy> = {
-  none: { reasoning: false, progress: false, actions: false, actionResults: false, plan: false, response: false },
-  minimal: { reasoning: false, progress: false, actions: false, actionResults: false, plan: false, response: true },
-  low: { reasoning: false, progress: true, actions: true, actionResults: false, plan: true, response: true },
-  medium: { reasoning: true, progress: true, actions: true, actionResults: false, plan: true, response: true },
-  high: { reasoning: true, progress: true, actions: true, actionResults: true, plan: true, response: true }
+  none: {
+    reasoning: false,
+    progress: false,
+    actions: false,
+    actionResults: false,
+    plan: false,
+    links: false,
+    response: false
+  },
+  minimal: {
+    reasoning: false,
+    progress: false,
+    actions: false,
+    actionResults: false,
+    plan: false,
+    links: false,
+    response: true
+  },
+  low: {
+    reasoning: false,
+    progress: true,
+    actions: true,
+    actionResults: false,
+    plan: true,
+    links: true,
+    response: true
+  },
+  medium: {
+    reasoning: true,
+    progress: true,
+    actions: true,
+    actionResults: false,
+    plan: true,
+    links: true,
+    response: true
+  },
+  high: { reasoning: true, progress: true, actions: true, actionResults: true, plan: true, links: true, response: true }
+}
+
+/** How much agent text the link collector keeps: a turn's PR link lives near its end. */
+const MAX_LINK_SCAN_CHARS = 64_000
+
+const GITHUB_PULL_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/(\d+)\b/g
+const GITLAB_MERGE_REQUEST_URL = /https?:\/\/[\w.-]+(?::\d+)?\/[\w./-]+?\/-\/merge_requests\/(\d+)\b/g
+
+/**
+ * §10.3: the pull/merge-request links in the agent's own text, labelled the way the code host
+ * would (`PR #123`, `MR !45`), each URL once. The collector reads what the agent SAID, not what
+ * it did: a `gh pr create` prints the URL and a model repeats it in the answer, so the text is
+ * where a turn's PR shows up on every runtime without a tool-specific hook.
+ */
+export function codeHostLinks(text: string): LinearExternalUrl[] {
+  const seen = new Set<string>()
+  const out: LinearExternalUrl[] = []
+  const add = (url: string, label: string) => {
+    if (seen.has(url)) return
+    seen.add(url)
+    out.push({ label, url })
+  }
+  for (const match of text.matchAll(GITHUB_PULL_URL)) add(match[0], `PR #${match[1]}`)
+  for (const match of text.matchAll(GITLAB_MERGE_REQUEST_URL)) add(match[0], `MR !${match[1]}`)
+  return out
 }
 
 /** Reasoning tail clamp, matching every other renderer's `MAX_REASONING`. */
@@ -298,6 +357,8 @@ export class LinearConverger {
   // The collector reports a suppressed turn as "no final answer", which is indistinguishable
   // from a silent one — so the sentinel is detected here, on a mode-independent message tail.
   private sentinelTail = ''
+  // Every message chunk, mode-independent, for the §10.3 link collector at turn end.
+  private messageText = ''
   private narration = ''
   private reasoning = ''
   private reasoningDirty = false
@@ -349,6 +410,7 @@ export class LinearConverger {
         if (u.content?.type !== 'text') return []
         const text = u.content.text ?? ''
         this.sentinelTail = (this.sentinelTail + text).slice(-SENTINEL_TAIL_CHARS)
+        this.messageText = (this.messageText + text).slice(-MAX_LINK_SCAN_CHARS)
         if (this.policy.progress) this.narration += text
         return []
       }
@@ -411,6 +473,9 @@ export class LinearConverger {
     this.narration = ''
     this.reasoningDirty = false
     const out: LinearAction[] = [...this.takePending(), ...this.drainPlan()]
+    // Links land before the response, so the session panel shows the PR by the time it settles.
+    const links = this.policy.links ? codeHostLinks(this.messageText) : []
+    if (links.length > 0) out.push({ kind: 'external-urls', add: links })
     if (this.droppedActions > 0) {
       out.push({ kind: 'activity', type: 'thought', body: `… and ${this.droppedActions} more tool calls` })
     }

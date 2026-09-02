@@ -6586,7 +6586,7 @@ export class Daemon {
       'linear',
       {
         prepare: async (msg, normalized) => await this.prepareLinearDelivery(msg, normalized),
-        onAdmitted: async (msg, normalized, busy) => this.postLinearAck(msg, normalized, busy),
+        onAdmitted: async (msg, normalized, busy) => this.onLinearAdmitted(msg, normalized, busy),
         requireDurable: true,
         receiptId: (normalized) => linearDeliveryReceiptId(stableMessageId(normalized))
       }
@@ -6723,14 +6723,16 @@ export class Daemon {
 
   /**
    * The ≤10 s pre-spawn acknowledgement (§10.1) — the ONE activity posted outside the
-   * converger, and the reason a suppressed turn can still be ack-only. Fire-and-forget: it is
-   * chrome, and the turn it precedes must never wait on a Linear write.
+   * converger, and the reason a suppressed turn can still be ack-only — plus the §10.2
+   * auto-start of a freshly delegated issue. Fire-and-forget: both are chrome, and the turn
+   * they precede must never wait on a Linear write.
    *
    * Reached only on an admission that WON the receipt CAS, so the strict order §10.1 asks for
    * holds by construction: the admission row and the permanent receipt were committed together
-   * before this can run, and a losing copy of the delivery never reaches it at all.
+   * before this can run, and a losing copy of the delivery never reaches it at all — which is
+   * also what keeps a redelivered `created` from moving the issue twice.
    */
-  private postLinearAck(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): void {
+  private onLinearAdmitted(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): void {
     const conn = this.lnConnByIntegration.get(msg.integrationId)
     const ext = readLinearExt(normalized)
     if (!conn || !ext) return
@@ -6744,9 +6746,25 @@ export class Daemon {
         msg.agentId,
         normalized.transportScope
       )
-      // `none` is truly silent (§5.2): no ack, no activities, transcript only.
+      // `none` is truly silent (§5.2): no ack, no activities, no issue write — transcript only.
       const mode = (await this.store.getOutputModeOverride(key)) ?? agent?.output?.mode ?? 'low'
       if (mode === 'none') return
+      // The session opened on this delivery: the issue moves to "started" alongside the ack,
+      // and a follow-up on an existing session leaves the state where the humans put it.
+      if (ext.event === 'created' && ext.issueId) {
+        const issue = ext.issueIdentifier ?? ext.issueId
+        conn
+          .startIssue(ext.issueId)
+          .then((result) => {
+            if (result.outcome === 'moved')
+              this.log.info(`linear: moved ${issue} from "${result.from}" to "${result.state}" on delegation`)
+            else
+              this.log.debug(
+                `linear: left ${issue} alone on delegation (${result.outcome}: ${'reason' in result ? result.reason : result.state})`
+              )
+          })
+          .catch((err: unknown) => this.log.warn(`linear: auto-start of ${issue} failed: ${formatErr(err)}`))
+      }
       await conn.postActivity(ext.agentSessionId, {
         type: 'thought',
         body: linearAckBody(agentName, ext, { queued: busy }),

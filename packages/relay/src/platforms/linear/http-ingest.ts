@@ -145,6 +145,9 @@ export function linearIsStop(event: LinearAgentSessionEvent): boolean {
 /** §6.4 adapter-extension bag: opaque to relay core, round-tripped to the daemon's linear module. */
 export interface LinearAdapterExt {
   agentSessionId: string
+  /** Which webhook opened this turn: `created` is the delegation or mention that opened the
+   *  session (§10.2 auto-start reads it), `prompted` a follow-up on one that already exists. */
+  event?: 'created' | 'prompted'
   /** The issue's UUID — what `attachmentCreate` keys on; the identifier is display-only. */
   issueId?: string
   issueIdentifier?: string
@@ -227,6 +230,7 @@ export function normalizeLinearEvent(
   )
   const adapterExt: LinearAdapterExt = {
     agentSessionId: session.id,
+    ...(event.action === 'created' || event.action === 'prompted' ? { event: event.action } : {}),
     ...(issue?.id ? { issueId: issue.id } : {}),
     ...(issue?.identifier ? { issueIdentifier: issue.identifier } : {}),
     ...(issue?.title ? { issueTitle: issue.title } : {}),

@@ -83,6 +83,12 @@ export interface LinearExternalUrl {
   url: string
 }
 
+/** What §10.2 auto-start did to the issue: one write, or a stated reason for none. */
+export type LinearIssueStartOutcome =
+  | { outcome: 'moved'; from: string; state: string }
+  | { outcome: 'unchanged'; state: string }
+  | { outcome: 'skipped'; reason: string }
+
 /** The `agentSessionUpdate` input this connection is allowed to send (§2). */
 export interface LinearSessionUpdate {
   plan?: LinearPlanEntry[]
@@ -353,6 +359,39 @@ export class LinearConnection implements PlatformConnection {
     await this.updateSession(agentSessionId, { addedExternalUrls: urls })
   }
 
+  /**
+   * §10.2 auto-start: move a freshly delegated issue into its team's first `started` state.
+   *
+   * Reads the issue's current state and the team's workflow, then writes at most once. An issue
+   * already `started`/`completed`/`canceled` is left alone; one in `triage` is skipped so a
+   * Linear-side automation that delegates out of triage keeps human triage; a team with no
+   * `started` state has nothing to move to. Both requests ride the paced queue: the read is the
+   * first half of one write, not a read-port answer that may degrade to a default.
+   */
+  async startIssue(issueId: string): Promise<LinearIssueStartOutcome> {
+    type StatePayload = {
+      issue?: {
+        state?: { id?: string; name?: string; type?: string } | null
+        team?: { states?: { nodes?: { id?: string; name?: string; type?: string; position?: number }[] } | null } | null
+      } | null
+    }
+    const data = await this.enqueueGraphql<StatePayload>(ISSUE_STATE_QUERY, { id: issueId })
+    const current = data.issue?.state
+    if (!current?.type) return { outcome: 'skipped', reason: 'issue or its state is unreadable' }
+    if (current.type === 'started' || current.type === 'completed' || current.type === 'canceled')
+      return { outcome: 'unchanged', state: current.name ?? current.type }
+    if (current.type === 'triage') return { outcome: 'skipped', reason: 'issue is in triage' }
+    const target = (data.issue?.team?.states?.nodes ?? [])
+      .filter((s) => s.type === 'started' && s.id)
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))[0]
+    if (!target?.id) return { outcome: 'skipped', reason: 'team has no started state' }
+    await this.enqueueGraphql<{ issueUpdate?: { success?: boolean } }>(ISSUE_UPDATE, {
+      id: issueId,
+      input: { stateId: target.id }
+    })
+    return { outcome: 'moved', from: current.name ?? current.type, state: target.name ?? target.id }
+  }
+
   // ── 3. read / query port ──
 
   /** The channel is the connected workspace (§4.5), whose name the spec already carries — no
@@ -596,6 +635,17 @@ const AGENT_SESSION_UPDATE = `mutation AgentSessionUpdate($id: String!, $input: 
 
 const ATTACHMENT_CREATE = `mutation AttachmentCreate($input: AttachmentCreateInput!) {
   attachmentCreate(input: $input) { success }
+}`
+
+const ISSUE_STATE_QUERY = `query IssueState($id: String!) {
+  issue(id: $id) {
+    state { id name type }
+    team { states(first: 50) { nodes { id name type position } } }
+  }
+}`
+
+const ISSUE_UPDATE = `mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) { success }
 }`
 
 const USER_QUERY = `query User($id: String!) {

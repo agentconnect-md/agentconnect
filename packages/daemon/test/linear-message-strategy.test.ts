@@ -53,6 +53,14 @@ describe('linear adapter-extension reads', () => {
     expect(readLinearExt(message())).toEqual(ext())
   })
 
+  it('reads which webhook opened the turn, and tolerates a relay that does not say', () => {
+    expect(readLinearExt(message({ adapterExt: { linear: ext({ event: 'created' }) } }))?.event).toBe('created')
+    expect(readLinearExt(message({ adapterExt: { linear: ext({ event: 'prompted' }) } }))?.event).toBe('prompted')
+    expect(readLinearExt(message())?.event).toBeUndefined()
+    // An unknown kind is a malformed bag, not a third kind of turn.
+    expect(readLinearExt(message({ adapterExt: { linear: { ...ext(), event: 'closed' } } }))).toBeUndefined()
+  })
+
   it('fails closed on an absent or malformed bag', () => {
     expect(readLinearExt(message({ adapterExt: undefined }))).toBeUndefined()
     expect(readLinearExt(message({ adapterExt: { linear: { issueIdentifier: 'TEAM-1' } } }))).toBeUndefined()
