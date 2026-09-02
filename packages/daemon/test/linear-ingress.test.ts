@@ -101,8 +101,8 @@ interface BootOpts {
 
 /** The workspace's teams, as the reconcile-time `listChannels` read sees them (§9.4). */
 const TEAM_NODES = [
-  { id: TEAM, key: 'ENG', name: 'Engineering' },
-  { id: OTHER_TEAM, key: 'DOCS', name: 'Docs' }
+  { id: TEAM, key: 'ENG', name: 'Engineering', icon: 'Feather', color: '#5E6AD2' },
+  { id: OTHER_TEAM, key: 'DOCS', name: 'Docs', icon: '📚', color: '#26B5CE' }
 ]
 
 /**
@@ -299,8 +299,22 @@ describe('§4.5 the teams as the observed conversations', () => {
       expect((daemon as any).channelSnapshots.get(INTEGRATION)).toEqual({
         authoritative: false,
         channels: [
-          { id: TEAM, name: 'Example Workspace / Engineering', isPrivate: false, kind: 'channel' },
-          { id: OTHER_TEAM, name: 'Example Workspace / Docs', isPrivate: false, kind: 'channel' }
+          {
+            id: TEAM,
+            name: 'Example Workspace / Engineering',
+            icon: 'Feather',
+            color: '#5E6AD2',
+            isPrivate: false,
+            kind: 'channel'
+          },
+          {
+            id: OTHER_TEAM,
+            name: 'Example Workspace / Docs',
+            icon: '📚',
+            color: '#26B5CE',
+            isPrivate: false,
+            kind: 'channel'
+          }
         ]
       })
     )
@@ -330,7 +344,13 @@ describe('§4.5 the teams as the observed conversations', () => {
     // than waiting for the CP reconciler tick that guarantees it.
     const { daemon, reports, store } = await boot()
     ;(daemon as any).dispatch = vi.fn(async () => null)
-    const fresh = { id: 'e1c0b9aa-0000-4000-8000-00000000000f', key: 'NEW', name: 'New Team' }
+    const fresh = {
+      id: 'e1c0b9aa-0000-4000-8000-00000000000f',
+      key: 'NEW',
+      name: 'New Team',
+      icon: '🚀',
+      color: '#F2994A'
+    }
     // A distinct msgId per delivery, or the durable receipt would answer the later ones before
     // the report path is reached at all and the assertion would prove nothing.
     const onFreshTeam = (n: number) => {
@@ -342,6 +362,9 @@ describe('§4.5 the teams as the observed conversations', () => {
       expect(reports.at(-1)?.channels).toContainEqual({
         id: fresh.id,
         name: 'Example Workspace / New Team',
+        // The bag carries the team's glyph, so the fast-path row is born with it too.
+        icon: '🚀',
+        color: '#F2994A',
         isPrivate: false,
         kind: 'channel'
       })

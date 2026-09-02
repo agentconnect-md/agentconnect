@@ -78,8 +78,24 @@ function bot(over: Partial<BotDto> = {}): BotDto {
 
 /** The workspace's team rows — one `IntegrationChannel` per Linear team, as the CP upserts them. */
 const TEAMS: IntegrationChannelRow[] = [
-  { channelId: 'team-eng', name: 'Acme / Engineering', kind: 'channel', trigger: 'mention', agentId: 'agent-b' },
-  { channelId: 'team-des', name: 'Acme / Design', kind: 'channel', trigger: 'off', agentId: 'agent-c' }
+  {
+    channelId: 'team-eng',
+    name: 'Acme / Engineering',
+    icon: 'Feather',
+    color: '#5E6AD2',
+    kind: 'channel',
+    trigger: 'mention',
+    agentId: 'agent-b'
+  },
+  {
+    channelId: 'team-des',
+    name: 'Acme / Design',
+    icon: '🎨',
+    color: '#26B5CE',
+    kind: 'channel',
+    trigger: 'off',
+    agentId: 'agent-c'
+  }
 ]
 
 function integration(over: Partial<IntegrationRow> = {}): IntegrationRow {
@@ -222,6 +238,19 @@ describe('the team rows', () => {
     expect(eng!.parentElement!.textContent).toContain('Engineering')
     expect(host.textContent).not.toContain('ENG')
     expect(host.textContent).not.toContain('#')
+  })
+
+  it('leads each team row with its own colored mark, the way Linear’s team picker does', async () => {
+    await render()
+
+    const marks = [...host.querySelectorAll('[aria-hidden]')].filter((el) =>
+      (el.getAttribute('style') ?? '').includes('background')
+    )
+    // Engineering's icon is a NAME we ship no glyph for, so the mark falls back to its initial;
+    // Design's is an emoji, which is drawn as itself. Both wear the team's own color.
+    expect(marks.map((el) => el.textContent)).toEqual(['E', '🎨'])
+    expect(marks[0]!.getAttribute('style')).toContain('#5E6AD2')
+    expect(marks[1]!.getAttribute('style')).toContain('#26B5CE')
   })
 
   it('carries a trigger per team, Mention or Off and nothing else', async () => {

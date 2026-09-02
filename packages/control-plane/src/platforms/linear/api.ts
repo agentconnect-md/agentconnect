@@ -10,6 +10,7 @@
  * only a rejection may spend the reload-retry, and only a rejection may flip a workspace to
  * "reconnect required".
  */
+import { conversationGlyph } from '@agentconnect.md/protocol'
 import type { FetchLike } from '../../github/api.js'
 import { systemClock, type Clock } from '../../domain/clock.js'
 
@@ -42,11 +43,15 @@ export interface LinearGrant {
   expiresAt: Date
 }
 
-/** One team of a connected workspace — the conversation a Linear bot routes on (§4.5). */
+/** One team of a connected workspace — the conversation a Linear bot routes on (§4.5).
+ *  `icon` is a Linear icon name ("Feather") or an emoji and `color` the team's hex tint;
+ *  both are display metadata the console draws, and either may be absent. */
 export interface LinearTeam {
   id: string
   key: string
   name: string
+  icon?: string
+  color?: string
 }
 
 /** The app's own identity inside the workspace that just authorized it. */
@@ -178,7 +183,7 @@ export class LinearApiClient {
   }
 
   /**
-   * `teams(first: 100) { nodes { id key name } }` — the workspace's teams, which ARE its
+   * `teams(first: 100) { nodes { id key name icon color } }` — the workspace's teams, which ARE its
    * conversations (§4.5). One page: a workspace past 100 teams keeps the rows it has and the
    * reconciler tick re-asks each pass, so the cap degrades to "the first hundred", never to a
    * failure. Called once per workspace per connect and per tick, never on the message path.
@@ -191,7 +196,7 @@ export class LinearApiClient {
         withTimeout({
           method: 'POST',
           headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ query: 'query { teams(first: 100) { nodes { id key name } } }' })
+          body: JSON.stringify({ query: 'query { teams(first: 100) { nodes { id key name icon color } } }' })
         })
       )
     } catch (err) {
@@ -203,11 +208,12 @@ export class LinearApiClient {
     const nodes = body?.data?.teams?.nodes
     if (!Array.isArray(nodes)) return { ok: false, error: 'rejected', detail: 'teams query returned no nodes' }
     // A node missing any of the three cannot be keyed or named, so it is dropped rather than
-    // written as a row the console shows blank.
+    // written as a row the console shows blank. The glyph pair is display-only: absent or oddly
+    // spelled, it is simply left off the row, which then renders on its initial alone.
     const teams = nodes.flatMap((node) => {
-      const n = node as { id?: unknown; key?: unknown; name?: unknown }
+      const n = node as { id?: unknown; key?: unknown; name?: unknown; icon?: unknown; color?: unknown }
       return typeof n?.id === 'string' && typeof n?.key === 'string' && typeof n?.name === 'string'
-        ? [{ id: n.id, key: n.key, name: n.name }]
+        ? [{ id: n.id, key: n.key, name: n.name, ...conversationGlyph(n.icon, n.color) }]
         : []
     })
     return { ok: true, result: teams }

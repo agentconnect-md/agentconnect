@@ -35,7 +35,11 @@ function fakeDeps(platform = 'slack', known = true) {
     integrationChannel: { replaceSnapshot: vi.fn(async () => {}) },
     collabRoutes: { broadcast: vi.fn(async () => {}) }
   } as unknown as DaemonWsDeps
-  return { deps, dropPublicAudiences }
+  return {
+    deps,
+    dropPublicAudiences,
+    replaceSnapshot: deps.integrationChannel.replaceSnapshot as ReturnType<typeof vi.fn>
+  }
 }
 
 function frame(channels: IntegrationChannel[]) {
@@ -70,5 +74,22 @@ describe('handleIntegrationChannels — isPrivate cross-check', () => {
     const { deps, dropPublicAudiences } = fakeDeps('slack', false)
     await handleIntegrationChannels(frame([{ id: 'C_PRIVATE', isPrivate: true }]), conn, deps)
     expect(dropPublicAudiences).not.toHaveBeenCalled()
+  })
+
+  it('hands the row’s own glyph to the write, so a Linear team reaches the console drawn', async () => {
+    const { deps, replaceSnapshot } = fakeDeps('linear')
+    await handleIntegrationChannels(
+      frame([
+        { id: 'team-1', name: 'Acme / Engineering', icon: 'Feather', color: '#5E6AD2' },
+        { id: 'team-2', name: 'Acme / Design' }
+      ]),
+      conn,
+      deps
+    )
+    expect(replaceSnapshot).toHaveBeenCalledTimes(1)
+    expect(replaceSnapshot.mock.calls[0]![1]).toEqual([
+      { id: 'team-1', name: 'Acme / Engineering', icon: 'Feather', color: '#5E6AD2' },
+      { id: 'team-2', name: 'Acme / Design' }
+    ])
   })
 })

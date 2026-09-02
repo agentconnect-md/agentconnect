@@ -222,6 +222,12 @@ const rowNoun = (kind: IntegrationChannelRow['kind'], platform?: string): string
 export const roomGlyph = (kind: IntegrationChannelRow['kind'], platform?: string): string =>
   kind === 'im' ? '@' : kind === 'mpim' ? '@@' : channelListSemantics(platform).roomGlyph
 
+/** The row's own colored mark, where the platform draws one (a Linear team). Direct rows never
+ *  take it — their label is a person, and the kind-driven `@` markers already lead them.
+ *  Exported for the org Bots roster, which lists the same rows in its own chrome. */
+export const rowMark = (kind: IntegrationChannelRow['kind'], platform?: string) =>
+  isDirectConversation(kind) ? undefined : channelListSemantics(platform).RowMark
+
 /** The place, named as the operator knows it. "on the platform" is our word for it,
  *  not theirs — a person deciding whether to remove a bot wants to read "in Telegram". */
 const platformName = (platform?: string): string => chatPlatformName(platform, 'the chat app')
@@ -652,15 +658,20 @@ export function IntegrationChannelList({
     // One member is no choice: the picker would name this agent and offer nothing, so the row drops it.
     const def = dispatchable ? defaultAgent(c) : undefined
     const label = rowLabelParts(c, platform)
+    const Mark = rowMark(c.kind, platform)
     return (
       <div
         key={c.channelId}
         className="flex flex-wrap items-center gap-x-[10px] gap-y-2 border-t border-(--border-subtle) bg-(--surface-app)"
         style={{ padding: `10px ${padX}px` }}
       >
-        <span className="font-mono text-[14px] font-medium leading-normal text-(--text-tertiary)">
-          {roomGlyph(c.kind, platform)}
-        </span>
+        {Mark ? (
+          <Mark name={label.name} icon={c.icon} color={c.color} size={18} />
+        ) : (
+          <span className="font-mono text-[14px] font-medium leading-normal text-(--text-tertiary)">
+            {roomGlyph(c.kind, platform)}
+          </span>
+        )}
         <span className="mono flex min-w-0 flex-1 items-baseline gap-[6px] truncate text-[13px] text-(--text-primary)">
           <span className="min-w-0 truncate">{label.name}</span>
           {label.hint && <span className="flex-none text-(--text-tertiary)">{label.hint}</span>}

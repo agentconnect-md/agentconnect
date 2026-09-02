@@ -198,6 +198,27 @@ export const IntegrationRemove = z.object({
 })
 export type IntegrationRemove = z.infer<typeof IntegrationRemove>
 
+/** Cap on a conversation's icon — a name or one emoji, never a payload. */
+const CHANNEL_ICON_MAX = 64
+
+/** A conversation's color as the row stores it: `#rrggbb`, tolerating a missing hash. */
+const CHANNEL_COLOR = /^#?[0-9a-fA-F]{6}$/
+
+/**
+ * A conversation's glyph pair narrowed to what {@link IntegrationChannel} accepts. Every writer
+ * of the row — the daemon's platform reads, the CP's own provider queries — narrows THROUGH this
+ * rather than restating the bounds, so a value the schema would refuse is dropped at the source:
+ * one oddly spelled conversation costs its own glyph and never the report it rides in.
+ */
+export function conversationGlyph(icon: unknown, color: unknown): { icon?: string; color?: string } {
+  const i = typeof icon === 'string' ? icon.trim() : ''
+  const c = typeof color === 'string' ? color.trim() : ''
+  return {
+    ...(i && i.length <= CHANNEL_ICON_MAX ? { icon: i } : {}),
+    ...(c && CHANNEL_COLOR.test(c) ? { color: c } : {})
+  }
+}
+
 /**
  * One conversation the bot participates in (metadata only — no messages).
  * `kind` distinguishes member channels from direct conversations (resource-
@@ -216,6 +237,10 @@ export type IntegrationRemove = z.infer<typeof IntegrationRemove>
  * the ambiguity it was meant to resolve. `space` is the display label only. Both are
  * absent on platforms with one implicit container per bot (Slack workspace, Telegram,
  * Feishu tenant) and on DM rows.
+ *
+ * `icon`/`color` are the conversation's own display glyph and tint where the platform
+ * has one — a Linear team. Absent everywhere else, and never load-bearing: a row without
+ * them renders exactly as it did before they existed.
  */
 export const IntegrationChannel = z.object({
   id: z.string(), // platform conversation id (Slack "C…" / DM "D…")
@@ -224,6 +249,11 @@ export const IntegrationChannel = z.object({
   space: z.string().optional(), // that guild's display name; absent until resolved
   isPrivate: z.boolean().optional(),
   kind: z.enum(['channel', 'im', 'mpim']).optional(), // absent = 'channel'
+  // The conversation's own glyph and tint, where the platform gives one — a Linear team's
+  // `icon` (a provider icon name such as "Feather", or an emoji) and `color` (a hex string).
+  // Display only: bounded so a hostile provider cannot grow a row, and never parsed for routing.
+  icon: z.string().max(CHANNEL_ICON_MAX).optional(),
+  color: z.string().regex(CHANNEL_COLOR).optional(),
   // The 1:1 DM counterpart's platform member id (§14.8) — control metadata of the same
   // class as `name`, and the only thing that identifies WHO a private agent's DM row is
   // with. Absent on channels and group DMs, whose membership is a room, not a person.

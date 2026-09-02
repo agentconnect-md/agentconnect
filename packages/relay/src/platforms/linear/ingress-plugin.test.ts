@@ -73,7 +73,7 @@ const issue = {
   identifier: 'AGE-5',
   title: 'Probe: agent session activity rendering',
   url: 'https://linear.app/example-workspace/issue/AGE-5/probe',
-  team: { id: TEAM_ID, key: 'AGE', name: 'Example' }
+  team: { id: TEAM_ID, key: 'AGE', name: 'Example', icon: 'Feather', color: '#5E6AD2' }
 }
 
 function createdEvent(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -332,7 +332,9 @@ describe('linear ingress plugin — normalized message', () => {
       issueIdentifier: 'AGE-5',
       issueTitle: issue.title,
       guidance: 'Always open a draft PR.',
-      team: { id: TEAM_ID, key: 'AGE', name: 'Example' }
+      // The team's console glyph rides along when the delivery carries it, so the daemon's
+      // fast-path conversation row is drawn from the first event rather than the next tick.
+      team: { id: TEAM_ID, key: 'AGE', name: 'Example', icon: 'Feather', color: '#5E6AD2' }
     })
     expect(bag.promptContext).toContain('AGE-5')
     expect(bag.truncated).toBeUndefined()

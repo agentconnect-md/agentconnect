@@ -292,18 +292,37 @@ export class LinearCredentialReconciler {
     await this.deps.resync(bot.id)
   }
 
-  /** Name-only refresh, on every sibling row that carries the team: `upsertConversation` preserves
-   *  the stored trigger, and a row whose name already matches is not written. */
+  /** Display-only refresh, on every sibling row that carries the team — its label and the glyph
+   *  the console draws it with: `upsertConversation` preserves the stored trigger, and a row that
+   *  already matches on all three is not written.
+   *
+   *  AUTHORITATIVE, unlike a daemon observation: `teams` answered, so a team with no icon or color
+   *  genuinely has none, and the row is CLEARED rather than left carrying a glyph Linear dropped.
+   *  The write therefore states both fields — omitting them would make the mismatch above true
+   *  forever and re-run this same no-op write on every tick. */
   private async refreshTeamName(
     seams: NonNullable<LinearCredentialReconcilerDeps['teams']>,
-    rows: readonly { integrationId: IntegrationId; channelId: string; name: string | null }[],
+    rows: readonly {
+      integrationId: IntegrationId
+      channelId: string
+      name: string | null
+      icon: string | null
+      color: string | null
+    }[],
     team: LinearTeam,
     workspaceName: string | null
   ): Promise<void> {
     const name = linearTeamChannelName(team, workspaceName)
     for (const row of rows) {
-      if (row.channelId !== team.id || row.name === name) continue
-      await seams.channels.upsertConversation(row.integrationId, { id: team.id, name, kind: 'channel' })
+      if (row.channelId !== team.id) continue
+      if (row.name === name && row.icon === (team.icon ?? null) && row.color === (team.color ?? null)) continue
+      await seams.channels.upsertConversation(row.integrationId, {
+        id: team.id,
+        name,
+        icon: team.icon ?? null,
+        color: team.color ?? null,
+        kind: 'channel'
+      })
     }
   }
 }

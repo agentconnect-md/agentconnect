@@ -45,9 +45,9 @@ export const linearTeamSeedTrigger = (candidates: readonly Pick<AgentRecord, 'vi
 /**
  * Write one row per team on one install — the connect tail's step (§7.1) and the reconciler tick's
  * seed for a team discovered later. Two writes per team when there is an owner, because they carry
- * different halves: `upsertConversation` is the only one that takes the team NAME, `upsertAgent`
- * the only one that marks the owner. Ordered so the row is born with its trigger, which the
- * ownership write then preserves.
+ * different halves: `upsertConversation` is the only one that takes the team NAME and its glyph,
+ * `upsertAgent` the only one that marks the owner. Ordered so the row is born with its trigger,
+ * which the ownership write then preserves.
  *
  * `owner` is OPTIONAL, and its absence is a real state rather than a failure: a row whose owner
  * would be a member the route compile cannot route to must be born ownerless instead, because the
@@ -64,7 +64,15 @@ export async function seedLinearTeamRows(
   for (const team of teams) {
     await channels.upsertConversation(
       integrationId,
-      { id: team.id, name: linearTeamChannelName(team, opts.workspaceName), kind: 'channel' },
+      {
+        id: team.id,
+        name: linearTeamChannelName(team, opts.workspaceName),
+        // Explicit nulls, not omissions: `teams` enumerates the workspace's own state, so a team
+        // that carries no glyph says so — and an existing row that had one is cleared.
+        icon: team.icon ?? null,
+        color: team.color ?? null,
+        kind: 'channel'
+      },
       { defaultTrigger: opts.trigger }
     )
     if (!opts.owner) continue

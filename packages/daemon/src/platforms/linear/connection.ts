@@ -21,7 +21,7 @@
  * affordance, and attachment download is deferred.
  */
 import { randomUUID } from 'node:crypto'
-import { linearChannelName } from './message-strategy.js'
+import { linearChannelName, linearTeamGlyph } from './message-strategy.js'
 import type { LinearTeamRef } from './message-strategy.js'
 import type { LinearAttachmentInput, LinearActivityInput } from './turn-output.js'
 import type { IntegrationLinearConfig, LinearCredGrant } from '@agentconnect.md/protocol'
@@ -436,7 +436,7 @@ export class LinearConnection implements PlatformConnection {
       const signal = opts.signal ?? AbortSignal.timeout(LINEAR_READ_DEADLINE_MS)
       const data = await this.graphql<{ team?: LinearTeamRef | null }>(TEAM_QUERY, { id: channel }, signal)
       const name = data.team ? linearChannelName({ ...data.team, id: channel }, this) : ''
-      return { id: channel, ...(name && name !== channel ? { name } : {}), isIm: false }
+      return { id: channel, ...(name && name !== channel ? { name } : {}), ...linearTeamGlyph(data.team), isIm: false }
     } catch (err) {
       this.deps.log?.debug(`linear: team lookup failed (${channel}): ${(err as Error).message}`)
       return { id: channel, isIm: false }
@@ -487,7 +487,12 @@ export class LinearConnection implements PlatformConnection {
         .filter((node) => Boolean(node?.id))
         .map((node) => {
           const name = linearChannelName(node, this)
-          return { id: node.id, ...(name && name !== node.id ? { name } : {}), isPrivate: false }
+          return {
+            id: node.id,
+            ...(name && name !== node.id ? { name } : {}),
+            ...linearTeamGlyph(node),
+            isPrivate: false
+          }
         })
     } catch (err) {
       this.deps.log?.debug(`linear: team list failed for integration ${this.integrationId}: ${(err as Error).message}`)
@@ -749,9 +754,9 @@ const USER_QUERY = `query User($id: String!) {
 }`
 
 const TEAM_QUERY = `query Team($id: String!) {
-  team(id: $id) { id key name }
+  team(id: $id) { id key name icon color }
 }`
 
 const TEAMS_QUERY = `query Teams {
-  teams(first: ${MAX_LISTED_TEAMS}) { nodes { id key name } }
+  teams(first: ${MAX_LISTED_TEAMS}) { nodes { id key name icon color } }
 }`

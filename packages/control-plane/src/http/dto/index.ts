@@ -858,6 +858,11 @@ export const IntegrationChannelDto = z.object({
    *  and until resolved. */
   spaceId: z.string().nullable(),
   space: z.string().nullable(),
+  /** The conversation's own display glyph and tint, where the platform gives it one — a Linear
+   *  team's icon (a provider icon name such as "Feather", or an emoji) and hex color. The
+   *  console draws a colored mark from the pair; null on every platform without the notion. */
+  icon: z.string().nullable(),
+  color: z.string().nullable(),
   isPrivate: z.boolean(),
   kind: z.enum(['channel', 'im', 'mpim']),
   trigger: z.enum(['off', 'mention', 'any']),

@@ -323,6 +323,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         name: 'deploys',
         spaceId: null,
         space: null,
+        icon: null,
+        color: null,
         isPrivate: false,
         kind: 'channel',
         trigger: 'mention',
@@ -333,6 +335,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
         name: 'releases',
         spaceId: null,
         space: null,
+        icon: null,
+        color: null,
         isPrivate: true,
         kind: 'channel',
         trigger: 'mention',
@@ -363,6 +367,72 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     const [dto] = res.json() as { channels: { channelId: string; space: string | null }[] }[]
     expect(dto!.channels).toEqual([expect.objectContaining({ channelId: 'C1', spaceId: 'G1', space: 'Acme HQ' })])
+  })
+
+  it('keeps a reported glyph, exposes it on the DTO, and never blanks it on a report without one', async () => {
+    // A Linear team carries its own icon and colour, which the console draws it by. Like the
+    // space, it is learned once: a reporter that could not resolve it must leave the row drawn.
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+
+    await report(
+      DAEMON,
+      id,
+      [
+        { id: 'team-1', name: 'Acme / Engineering', icon: 'Feather', color: '#5E6AD2' },
+        { id: 'team-2', name: 'Acme / Design' }
+      ],
+      undefined,
+      undefined,
+      false
+    )
+    await report(DAEMON, id, [{ id: 'team-1', name: 'Acme / Engineering' }], undefined, undefined, false)
+
+    const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
+    const [dto] = res.json() as { channels: { channelId: string; icon: string | null; color: string | null }[] }[]
+    const byId = new Map(dto!.channels.map((c) => [c.channelId, c]))
+    expect(byId.get('team-1')).toMatchObject({ icon: 'Feather', color: '#5E6AD2' })
+    // A row the platform gives no glyph reads as two nulls rather than an absent pair.
+    expect(byId.get('team-2')).toMatchObject({ icon: null, color: null })
+  })
+
+  it('lets an enumerating writer CLEAR a glyph, while an omission still leaves the row drawn', async () => {
+    // The tri-state at the repository: absent is "unknown" (a daemon lookup that resolved
+    // nothing), `null` is "the platform says it has none" — only the second may blank the row.
+    await seedDaemon(prisma, DAEMON)
+    const spy = new SpyControl()
+    running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
+    const id = await install(running)
+    const channels = new PgIntegrationChannelRepo(prisma)
+    const glyphOf = async () => {
+      const row = (await channels.listForIntegration(IntegrationId(id))).find((c) => c.channelId === 'team-1')
+      return { icon: row?.icon ?? undefined, color: row?.color ?? undefined }
+    }
+
+    await channels.upsertConversation(IntegrationId(id), {
+      id: 'team-1',
+      name: 'Acme / Engineering',
+      icon: 'Feather',
+      color: '#5E6AD2',
+      kind: 'channel'
+    })
+    expect(await glyphOf()).toEqual({ icon: 'Feather', color: '#5E6AD2' })
+
+    // An omitting write is a name-only refresh and must not blank what is already drawn.
+    await channels.upsertConversation(IntegrationId(id), { id: 'team-1', name: 'Acme / Eng', kind: 'channel' })
+    expect(await glyphOf()).toEqual({ icon: 'Feather', color: '#5E6AD2' })
+
+    // An explicit null is the enumerating writer saying the team dropped its icon.
+    await channels.upsertConversation(IntegrationId(id), {
+      id: 'team-1',
+      name: 'Acme / Eng',
+      icon: null,
+      color: null,
+      kind: 'channel'
+    })
+    expect(await glyphOf()).toEqual({ icon: undefined, color: undefined })
   })
 
   it("a restricted agent's fresh conversations default to OFF, and DM rows survive a membership re-report (§14)", async () => {
@@ -1614,6 +1684,8 @@ describe('PATCH /integrations/:id/channels/:channelId', () => {
       name: 'releases',
       spaceId: null,
       space: null,
+      icon: null,
+      color: null,
       isPrivate: false,
       kind: 'channel',
       trigger: 'any',

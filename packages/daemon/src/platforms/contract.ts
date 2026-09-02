@@ -69,6 +69,9 @@ export interface PlatformChannelInfo {
   isMpim?: boolean
   isPrivate?: boolean
   user?: string
+  /** Display glyph and tint where the platform gives the conversation one (a Linear team). */
+  icon?: string
+  color?: string
 }
 
 /** A conversation in an enumeration (`listChannels` / `listBotChannels`). */
@@ -76,6 +79,9 @@ export interface PlatformChannelRef {
   id: string
   name?: string
   isPrivate?: boolean
+  /** Display glyph and tint where the platform gives the conversation one (a Linear team). */
+  icon?: string
+  color?: string
 }
 
 /** A conversation member — enough to resolve a mention and drop bots. */

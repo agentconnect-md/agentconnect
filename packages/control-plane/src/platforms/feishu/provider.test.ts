@@ -142,6 +142,8 @@ const channel = (
   name: channelId.toLowerCase(),
   spaceId: null,
   space: null,
+  icon: null,
+  color: null,
   isPrivate: false,
   kind,
   trigger,

@@ -593,6 +593,15 @@ export interface WebChannelListSemantics {
    * module, never the host, knows the prefix is redundant here. Absent ⇒ the label is the name.
    */
   splitRowLabel?(label: string): { name: string; hint?: string }
+  /**
+   * The colored mark a room row leads with, where the platform gives a conversation its own
+   * icon and tint — a Linear team, which the console draws the way Linear's own team picker
+   * does. It takes the row's DISPLAYED name (post-{@link splitRowLabel}), so a mark that falls
+   * back to an initial takes the team's rather than the workspace's. Direct rows never take it:
+   * their label is a person and the kind-driven `@` markers already lead them. Absent ⇒ the row
+   * leads with {@link roomGlyph} alone, which is every other platform.
+   */
+  RowMark?: ComponentType<{ name: string; icon?: string; color?: string; size?: number }>
 }
 
 /**

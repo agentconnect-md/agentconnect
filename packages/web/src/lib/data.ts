@@ -1941,6 +1941,11 @@ export interface IntegrationChannelRow {
    *  implicit container per bot, on DM rows, and until the daemon resolves them. */
   spaceId?: string
   space?: string
+  /** The conversation's own display glyph and tint, where the platform gives it one — a Linear
+   *  team's icon (a provider icon name such as "Feather", or an emoji) and hex color. The row
+   *  draws a colored mark from the pair; absent on every platform without the notion. */
+  icon?: string
+  color?: string
   /** 'im' = a DM conversation row, 'mpim' = a Slack group DM; absent = channel. */
   kind?: 'channel' | 'im' | 'mpim'
   trigger: 'off' | 'mention' | 'any'

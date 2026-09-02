@@ -10,6 +10,7 @@ import {
   roomGlyph,
   rowLabel,
   rowLabelParts,
+  rowMark,
   rowMenuAction
 } from './IntegrationChannelList'
 import type { IntegrationChannelRow, IntegrationRow } from '@/lib/data'
@@ -403,6 +404,21 @@ describe('rowLabelParts', () => {
 
   it('never splits a direct row — that label is a person', () => {
     expect(rowLabelParts({ kind: 'im', name: '@A · B' }, 'linear')).toEqual({ name: 'A · B' })
+  })
+})
+
+describe('rowMark', () => {
+  it('is the platform’s own, and only where the platform declares one', () => {
+    expect(rowMark('channel', 'linear')).toBeDefined()
+    // Every other platform leads its rows with the kind-driven glyph alone.
+    for (const platform of ['slack', 'discord', 'telegram', 'feishu', undefined]) {
+      expect(rowMark('channel', platform)).toBeUndefined()
+    }
+  })
+
+  it('never marks a direct row — its label is a person, and `@`/`@@` already lead it', () => {
+    expect(rowMark('im', 'linear')).toBeUndefined()
+    expect(rowMark('mpim', 'linear')).toBeUndefined()
   })
 })
 

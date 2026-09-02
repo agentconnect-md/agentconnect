@@ -745,6 +745,55 @@ describe('integration frames (CP→daemon platform config distribution)', () => 
     expect(r.frame.payload.channels[1]).toEqual({ id: 'C123' }) // absent kind = channel
   })
 
+  it('integration/channels round-trips a row with its own glyph, and one without', () => {
+    const r = decodeEnvelope(
+      envelope('integration/channels', {
+        integrationId: INTEGRATION_ID,
+        channels: [
+          { id: 'team-1', name: 'Acme / Engineering', icon: 'Feather', color: '#5E6AD2' },
+          { id: 'team-2', name: 'Acme / Design', icon: '🎨' },
+          { id: 'C123', name: 'deploys' }
+        ]
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !isFrame('integration/channels')(r.frame)) throw new Error('expected integration/channels')
+    expect(r.frame.payload.channels[0]).toEqual({
+      id: 'team-1',
+      name: 'Acme / Engineering',
+      icon: 'Feather',
+      color: '#5E6AD2'
+    })
+    expect(r.frame.payload.channels[1]).toEqual({ id: 'team-2', name: 'Acme / Design', icon: '🎨' })
+    // A platform without the notion sets neither, and the row decodes exactly as it always did.
+    expect(r.frame.payload.channels[2]).toEqual({ id: 'C123', name: 'deploys' })
+  })
+
+  it('integration/channels refuses a color that is not a hex triplet and an over-long icon', () => {
+    const bad = decodeEnvelope(
+      envelope('integration/channels', {
+        integrationId: INTEGRATION_ID,
+        channels: [{ id: 'team-1', color: 'rebeccapurple' }]
+      })
+    )
+    expect(bad.ok).toBe(false)
+    const long = decodeEnvelope(
+      envelope('integration/channels', {
+        integrationId: INTEGRATION_ID,
+        channels: [{ id: 'team-1', icon: 'x'.repeat(65) }]
+      })
+    )
+    expect(long.ok).toBe(false)
+    // A bare triplet is still a color — Linear writes the hash, but losing it is not a refusal.
+    const bare = decodeEnvelope(
+      envelope('integration/channels', {
+        integrationId: INTEGRATION_ID,
+        channels: [{ id: 'team-1', color: '5E6AD2' }]
+      })
+    )
+    expect(bare.ok).toBe(true)
+  })
+
   it('register/ok defaults integrations[] to [] and round-trips a delivered integration', () => {
     const empty = decodeEnvelope(
       envelope('register/ok', {

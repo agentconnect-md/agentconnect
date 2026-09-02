@@ -835,6 +835,8 @@ export class ConnectionReconciler {
       const chats: ObservedChat[] = teams.map((team) => ({
         id: team.id,
         ...(team.name ? { name: team.name } : {}),
+        ...(team.icon ? { icon: team.icon } : {}),
+        ...(team.color ? { color: team.color } : {}),
         isPrivate: false
       }))
       await this.host.observePlatformChats(

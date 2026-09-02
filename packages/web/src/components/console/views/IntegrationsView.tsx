@@ -29,7 +29,7 @@ import {
   type MeDto
 } from '@/lib/api'
 import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/data'
-import { roomGlyph, rowLabelParts } from '@/components/console/IntegrationChannelList'
+import { roomGlyph, rowLabelParts, rowMark } from '@/components/console/IntegrationChannelList'
 import {
   botCardCopy,
   botSharingEditable,
@@ -93,6 +93,9 @@ interface BotChannelView {
   channelId: string
   name: string
   kind: 'channel' | 'im' | 'mpim'
+  /** The conversation's own glyph and tint, where the platform gives it one (a Linear team). */
+  icon?: string
+  color?: string
   /** Effective per-conversation owner; null only before legacy state converges. */
   agentId: string | null
   /** Any integration whose snapshot row backs this channel; ownership PATCHes
@@ -114,6 +117,8 @@ function botChannels(bot: BotDto, integrations: IntegrationRow[]): BotChannelVie
           channelId: c.channelId,
           name: c.name,
           kind: c.kind ?? 'channel',
+          ...(c.icon ? { icon: c.icon } : {}),
+          ...(c.color ? { color: c.color } : {}),
           agentId: explicit,
           integrationId: i.id ?? null
         })
@@ -537,6 +542,9 @@ function BotsCard({
                           const glyph = roomGlyph(c.kind, b.platform)
                           const glyphIcon =
                             glyph === '@@' ? 'users' : glyph === '@' ? 'at-sign' : glyph === '#' ? 'hash' : null
+                          // A platform that gives the conversation its own icon and tint draws that
+                          // instead — a Linear team is told apart by its color, not by a room sigil.
+                          const Mark = rowMark(c.kind, b.platform)
                           return (
                             <Fragment key={c.channelId}>
                               {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
@@ -548,13 +556,17 @@ function BotsCard({
                                 className={`grid ${chanGrid} items-center gap-[11px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0`}
                               >
                                 <span className="mono flex min-w-0 items-center gap-[7px] text-[12px]">
-                                  {glyphIcon && (
-                                    <Icon
-                                      name={glyphIcon}
-                                      size={12}
-                                      color="var(--text-tertiary)"
-                                      className="flex-none"
-                                    />
+                                  {Mark ? (
+                                    <Mark name={label.name} icon={c.icon} color={c.color} size={15} />
+                                  ) : (
+                                    glyphIcon && (
+                                      <Icon
+                                        name={glyphIcon}
+                                        size={12}
+                                        color="var(--text-tertiary)"
+                                        className="flex-none"
+                                      />
+                                    )
                                   )}
                                   {/* The room's noun is the platform's own; the two direct kinds are platform-free. */}
                                   <span className="sr-only">

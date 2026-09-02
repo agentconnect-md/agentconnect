@@ -19,6 +19,7 @@
  * `daemon.ts` decide when to run it; this module only decides what the turn reads.
  */
 import { z } from 'zod'
+import { conversationGlyph } from '@agentconnect.md/protocol'
 import {
   neutralizeDelimiters,
   UNTRUSTED_CONTENT_BEGIN_LINEAR,
@@ -41,7 +42,17 @@ export const LinearAdapterExtSchema = z.object({
   event: z.enum(['created', 'prompted']).optional(),
   // The issue's team — the channel coordinate itself (§4.5), and the `channelName` this side
   // renders. Read tolerantly: an older relay omits it, and the label degrades to the id.
-  team: z.object({ id: z.string(), key: z.string().optional(), name: z.string().optional() }).optional(),
+  team: z
+    .object({
+      id: z.string(),
+      key: z.string().optional(),
+      name: z.string().optional(),
+      // The team's own glyph and tint, where the delivery carries them — display only, and
+      // narrowed by `linearTeamGlyph` before the row is reported.
+      icon: z.string().optional(),
+      color: z.string().optional()
+    })
+    .optional(),
   issueId: z.string().optional(),
   issueIdentifier: z.string().optional(),
   issueTitle: z.string().optional(),
@@ -52,12 +63,22 @@ export const LinearAdapterExtSchema = z.object({
 })
 export type LinearAdapterExt = z.infer<typeof LinearAdapterExtSchema>
 
-/** One Linear team — the channel (§4.5) — as the bag and the connection's read port name it. */
+/** One Linear team — the channel (§4.5) — as the bag and the connection's read port name it.
+ *  `icon` is a Linear icon name ("Feather") or an emoji, `color` the team's hex tint. */
 export interface LinearTeamRef {
   id: string
   key?: string
   name?: string
+  icon?: string
+  color?: string
 }
+
+/** The team's display glyph and tint as the conversation row accepts them (§4.5) — narrowed
+ *  through the wire contract's own helper, so a value the row would refuse is dropped here
+ *  rather than costing the report every team of the workspace rides in. */
+export const linearTeamGlyph = (
+  team: Pick<LinearTeamRef, 'icon' | 'color'> | undefined | null
+): { icon?: string; color?: string } => conversationGlyph(team?.icon, team?.color)
 
 /** The connected workspace: all that is left to label the issue-less channel (§4.5). */
 export interface LinearWorkspaceRef {
