@@ -94,8 +94,8 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
     })()
   }
 
-  // Back from a pane the operator chose; from the forced one there is nowhere to go but
-  // out, and the host footer's own Cancel is what the gate leaves that job to.
+  // Back from a pane the operator chose. The forced pane renders no button of its own in any
+  // state: the host footer's Cancel is the one way out, and unmounting closes the popup.
   const leaveConnect = () => {
     cancel()
     if (forcedConnect) close()
@@ -143,8 +143,7 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
             <div className="flex items-start gap-[10px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
               <Icon name="check" size={15} color="var(--status-online)" className="mt-[1px] flex-none" />
               <span>
-                Workspace connected —&#32;<span className="mono">{agent.name}</span>&#32;is now its default agent, the
-                one a bare delegation starts a session with.
+                Workspace connected —&#32;<span className="mono">{agent.name}</span>&#32;is its default agent.
               </span>
             </div>
             <button type="button" onClick={close} className={`${PRIMARY} mt-[12px] cursor-pointer`}>
@@ -161,9 +160,11 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
               <button type="button" onClick={start} className={`${PRIMARY} cursor-pointer`}>
                 Try again
               </button>
-              <button type="button" onClick={leaveConnect} className={SECONDARY}>
-                {forcedConnect ? 'Cancel' : 'Back'}
-              </button>
+              {!forcedConnect && (
+                <button type="button" onClick={leaveConnect} className={SECONDARY}>
+                  Back
+                </button>
+              )}
             </div>
           </>
         ) : flow.phase === 'authorizing' ? (
@@ -176,17 +177,18 @@ export function LinearWizardBody({ agent, host }: { agent: Agent; host: WizardHo
               <span className="font-sans text-[12px] font-normal leading-[1.4] text-(--text-tertiary)">
                 Approve the workspace in the Linear tab.
               </span>
-              <button type="button" onClick={leaveConnect} className={SECONDARY}>
-                Cancel
-              </button>
+              {!forcedConnect && (
+                <button type="button" onClick={leaveConnect} className={SECONDARY}>
+                  Back
+                </button>
+              )}
             </div>
           </>
         ) : (
           <>
             <div className="mb-[12px] font-sans text-[12.5px] font-normal leading-[1.5] text-(--text-secondary)">
-              <span className="mono">{agent.name}</span>&#32;becomes the workspace&rsquo;s default agent — the one a
-              bare delegation starts a session with. There is nothing to fill in here: you approve the workspace in a
-              Linear popup.
+              <span className="mono">{agent.name}</span>&#32;becomes the workspace&rsquo;s default agent. You approve
+              the workspace in a Linear popup.
             </div>
             {/* The popup opens from THIS click. Fired from an effect it is blocked. */}
             <button type="button" onClick={start} className={`${PRIMARY} cursor-pointer`}>
