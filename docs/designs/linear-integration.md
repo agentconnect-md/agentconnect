@@ -1336,8 +1336,12 @@ tile.
     (§8), including the daemon-authored context block rendered from the
     optional `LinearIssueFacts` the delivery path resolves through
     `LinearConnection.issueFacts` — one query on the **direct read path, not
-    the paced send queue**, bounded by an `AbortSignal` deadline that cancels
-    the request rather than abandoning it, not retried, and failure-tolerant.
+    the paced send queue**, bounded end to end by an `AbortSignal` deadline
+    that covers the token wait as well as the request and cancels rather than
+    abandons, not retried, and failure-tolerant. The token half matters: a
+    renewal rides `linearcred`, whose correlator timeout is far longer than a
+    read's deadline, so only the signalled caller gives up while the
+    single-flight renewal keeps running for the next one.
     Off the queue is the point: the read happens while the delivery is being
     prepared, so a queue slot would put it **ahead of the ≤10 s ack** (§10.1)
     in one FIFO and let a stalled provider hold the ack for the queue's whole
@@ -1671,8 +1675,9 @@ none` skips it along with everything else Linear-visible. There is **no
   without facts) and `issueFacts` (the documented query, the projection, a
   refusal surfacing as `LinearApiError` and not retried, the read bypassing
   the paced queue while activity posts space by the interval, the caller's
-  deadline reaching the request, and a refused read still dispatching the
-  turn without the block).
+  deadline reaching the request, a stalled token wait settling at that
+  deadline with nothing sent while the shared renewal still serves the next
+  caller, and a refused read still dispatching the turn without the block).
 - **CP unit:** provider schema guards; token service rotate-and-retry with a
   failing-then-succeeding fake token endpoint; single-flight refresh;
   projector output shapes.

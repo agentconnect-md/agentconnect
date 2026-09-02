@@ -381,9 +381,10 @@ export class LinearConnection implements PlatformConnection {
    * pre-spawn acknowledgement (§10.1) in one FIFO and let a stalled provider hold the ack for the
    * queue's whole task timeout. `startIssue` may queue because it runs only after the ack posts.
    *
-   * `signal` is the real deadline: it cancels the request rather than abandoning it, and surfaces
-   * as a retryable {@link LinearApiError} the caller degrades on. No retry — the block is optional
-   * chrome, and a second attempt would spend the delivery's budget twice.
+   * `signal` is the real deadline, end to end: it bounds the token wait as well as the request,
+   * and cancels rather than abandons, surfacing as a retryable {@link LinearApiError} the caller
+   * degrades on. No retry — the block is optional chrome, and a second attempt would spend the
+   * delivery's budget twice.
    */
   async issueFacts(issueId: string, opts: { signal?: AbortSignal } = {}): Promise<LinearIssueFacts | undefined> {
     type FactsPayload = {
@@ -631,10 +632,38 @@ export class LinearConnection implements PlatformConnection {
     })
   }
 
+  /**
+   * The access token, but never past a signalled caller's deadline.
+   *
+   * `token()` can wait on `requestLinearCred()`, whose correlator timeout is far longer than a
+   * read's deadline, so awaiting it plainly would leave a signalled read unbounded. Only THIS
+   * caller gives up: the single-flight renewal keeps running, so the next caller — an ack, say —
+   * still gets the renewed token rather than paying for a fresh round trip.
+   */
+  private async tokenWithin(signal?: AbortSignal): Promise<string> {
+    const pending = this.token()
+    if (!signal) return await pending
+    // This caller is walking away from `pending`; nobody else may see it as unhandled.
+    void pending.catch(() => undefined)
+    let onAbort: (() => void) | undefined
+    try {
+      return await Promise.race([
+        pending,
+        new Promise<never>((_resolve, reject) => {
+          if (signal.aborted) return reject(abortedRead())
+          onAbort = () => reject(abortedRead())
+          signal.addEventListener('abort', onAbort, { once: true })
+        })
+      ])
+    } finally {
+      if (onAbort) signal.removeEventListener('abort', onAbort)
+    }
+  }
+
   private async graphql<T>(query: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
-    const token = await this.token()
-    // The deadline covers the token wait too, so an abort during renewal never becomes a live fetch.
-    if (signal?.aborted) throw new LinearApiError('linear read aborted before it was sent', true)
+    const token = await this.tokenWithin(signal)
+    // A token that arrived after the deadline must not become a live fetch.
+    if (signal?.aborted) throw abortedRead()
     let res: Response
     try {
       res = await this.fetchImpl(this.endpoint, {
@@ -672,6 +701,11 @@ export class LinearConnection implements PlatformConnection {
     if (body.data === undefined) throw new LinearApiError('linear returned no data', true)
     return body.data
   }
+}
+
+/** The one refusal a blown read deadline raises — retryable, and nothing was ever sent. */
+function abortedRead(): LinearApiError {
+  return new LinearApiError('linear read aborted before it was sent', true)
 }
 
 /** Does this refusal clearly say our idempotency key is already committed? Conservative by

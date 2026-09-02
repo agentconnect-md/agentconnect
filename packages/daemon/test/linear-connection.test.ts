@@ -958,6 +958,32 @@ describe('linear issue facts (§8 context block)', () => {
     await expect(conn.issueFacts(ISSUE_ID, { signal: AbortSignal.abort() })).rejects.toBeInstanceOf(LinearApiError)
     expect(calls).toHaveLength(0)
   })
+
+  it('gives up on a stalled TOKEN wait at the deadline, leaving the shared renewal running', async () => {
+    // The renewal rides `linearcred`, whose correlator timeout is far longer than a read deadline,
+    // so the deadline has to bound the token wait too or the read is unbounded in practice.
+    let release!: (grant: { accessToken: string; expiresAt: string }) => void
+    const renewal = new Promise<{ accessToken: string; expiresAt: string }>((resolve) => {
+      release = resolve
+    })
+    const { conn, calls } = harness({
+      config: linearConfig({ accessTokenExpiresAt: NEAR_EXPIRY }),
+      requestToken: async () => await renewal,
+      respond: () => jsonResponse({ data: { agentActivityCreate: { success: true, agentActivity: { id: 'act' } } } })
+    })
+    const controller = new AbortController()
+    const read = conn.issueFacts(ISSUE_ID, { signal: controller.signal })
+    controller.abort()
+    await expect(read).rejects.toBeInstanceOf(LinearApiError)
+    // Settled while the token is STILL in flight, and nothing was sent.
+    expect(calls).toHaveLength(0)
+    // Only this caller walked away: the single-flight renewal is still the next caller's token.
+    const post = conn.createActivity(SESSION, { type: 'thought', body: 'after' })
+    release({ accessToken: 'renewed-after-abort', expiresAt: FRESH_EXPIRY })
+    await post
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.authorization).toBe('Bearer renewed-after-abort')
+  })
 })
 
 describe('linear auto-start (§10.2)', () => {
