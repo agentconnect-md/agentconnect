@@ -286,6 +286,93 @@ check('provides the executables the shim must resolve', () => {
   return required.join(' ')
 })
 
+// `ldd chrome` on Chrome for Testing 152: the closure a workspace-downloaded Chrome needs to start at all.
+// Asserted by soname rather than by package, because apt satisfying a name says nothing about what resolves.
+const CHROME_SONAMES = [
+  'libX11.so.6',
+  'libXcomposite.so.1',
+  'libXdamage.so.1',
+  'libXext.so.6',
+  'libXfixes.so.3',
+  'libXrandr.so.2',
+  'libasound.so.2',
+  'libatk-1.0.so.0',
+  'libatk-bridge-2.0.so.0',
+  'libatspi.so.0',
+  'libcairo.so.2',
+  'libcups.so.2',
+  'libdbus-1.so.3',
+  'libexpat.so.1',
+  'libgbm.so.1',
+  'libgio-2.0.so.0',
+  'libglib-2.0.so.0',
+  'libgobject-2.0.so.0',
+  'libnspr4.so',
+  'libnss3.so',
+  'libnssutil3.so',
+  'libpango-1.0.so.0',
+  'libsmime3.so',
+  'libxcb.so.1',
+  'libxkbcommon.so.0'
+]
+
+// The agent runs as uid 10001 with no sudo, so a missing soname is not a slow first turn — it is a browser
+// the agent downloads, cannot start and cannot fix, which is the state the image was in before these landed.
+check('resolves every shared library Chrome needs', () => {
+  const cache = inImage('/sbin/ldconfig -p')
+  const missing = CHROME_SONAMES.filter((so) => !cache.includes(`${so} `))
+  if (missing.length > 0) throw new Error(`unresolved: ${missing.join(', ')}`)
+  return `${CHROME_SONAMES.length} sonames`
+})
+
+// Preinstalled because the skill's own `npm i -g agent-browser` EACCESes as the runtime user, and pruned to
+// this platform's native binary — a prune that took the wrong one leaves a CLI that cannot exec at all.
+check('the pinned agent-browser CLI runs and carries only this platform binary', () => {
+  const version = inImage('agent-browser --version')
+  if (!/^agent-browser \d+\.\d+\.\d+/.test(version)) throw new Error(`unexpected version output: ${version}`)
+  const natives = inImage(
+    "ls /usr/local/lib/node_modules/agent-browser/bin | grep '^agent-browser-' | tr '\\n' ' '"
+  ).trim()
+  if (natives.split(/\s+/).filter(Boolean).length !== 1) throw new Error(`bin/ carries native binaries: ${natives}`)
+  return `${version} (${natives})`
+})
+
+// The env hook is the whole mechanism: with it unset, agent-browser downloads its own 391 MB Chrome into the
+// workspace volume and the baked one is dead weight. So assert the variable AND that what it names actually runs.
+check('the baked Chrome runs as the runtime user and is what agent-browser is pointed at', () => {
+  const env = JSON.parse(inspect('{{json .Config.Env}}'))
+  const declared = env.find((entry) => entry.startsWith('AGENT_BROWSER_EXECUTABLE_PATH='))
+  if (!declared) throw new Error('AGENT_BROWSER_EXECUTABLE_PATH is unset, so agent-browser downloads its own Chrome')
+  const path = declared.slice('AGENT_BROWSER_EXECUTABLE_PATH='.length)
+  const owner = inImage(`stat -c '%U:%G %a' ${path}`)
+  if (!owner.startsWith('root:root')) throw new Error(`${path} is owned by ${owner}, not root`)
+  if (inImage(`test -w ${path} && echo y || echo n`) === 'y') throw new Error(`the runtime user can rewrite ${path}`)
+  const version = inImage(`${path} --version`)
+  if (!/^Google Chrome for Testing \d+\./.test(version)) throw new Error(`unexpected version output: ${version}`)
+  return `${version} at ${path} (${owner})`
+})
+
+// The wrapper is what keeps `agent-browser install` from fetching a browser the image already carries, so it is
+// load-bearing for the baked Chrome. Root-owned like the gh wrapper beside it: one the runtime can rewrite is one
+// it can replace with a wrapper that downloads anyway.
+check('the agent-browser wrapper answers a bare install and defers otherwise', () => {
+  const wrapper = `${GH_WRAPPER_PATH.replace(/\/gh$/, '')}/agent-browser`
+  const owner = inImage(`stat -c '%U:%G %a' ${wrapper}`)
+  if (!owner.startsWith('root:root')) throw new Error(`the wrapper is not root-owned (${owner})`)
+  if (inImage(`(echo x >> ${wrapper} && echo WRITABLE) || echo refused`) !== 'refused') {
+    throw new Error('the runtime user can modify the agent-browser wrapper')
+  }
+  const answered = inImage(`${wrapper} install; echo "rc=$?"; du -sk $HOME/.agent-browser 2>/dev/null | cut -f1`)
+  if (!answered.includes('rc=0')) throw new Error(`install exited non-zero: ${answered}`)
+  if (!/already installed/.test(answered)) throw new Error(`install did not report the baked Chrome: ${answered}`)
+  const downloaded = Number(answered.split('\n').pop())
+  if (Number.isFinite(downloaded) && downloaded > 1024) throw new Error(`install wrote ${downloaded} KB into $HOME`)
+  const version = inImage(`${wrapper} --version`)
+  if (!/^agent-browser \d+\.\d+\.\d+/.test(version))
+    throw new Error(`the wrapper did not reach the real CLI: ${version}`)
+  return `${version}, install answered locally`
+})
+
 // A build step that ran as root inside the workspace leaves state the runtime cannot write, and
 // the symptom is a runtime that will not start for the user that owns its own home. The table
 // generator did exactly this once.

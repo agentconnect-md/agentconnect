@@ -85,6 +85,27 @@ RUN set -eu; \
   install -D -m 0555 "/tmp/gh_${GH_CLI_VERSION}_linux_${arch}/bin/gh" /out/gh; \
   /out/gh --version
 
+# ─────────────────────────── Chrome for Testing ─────────────────────────────
+# Baked so a browser turn costs no download: `agent-browser install` fetches 391 MB into $HOME, per workspace VOLUME.
+# Own stage, version- and sha256-pinned, for the reasons gh's is. No --version here — that needs the runtime layer's libraries.
+FROM node:24-bookworm-slim AS chrome
+ARG CHROME_VERSION=152.0.7977.75
+ARG CHROME_SHA256_AMD64=a16d36890636bd72251133b27f05825f7f9269c2425b3408fa3a76e10dccd8f1
+ARG TARGETARCH
+RUN apt-get update \
+  && apt-get install --no-install-recommends -y ca-certificates curl unzip \
+  && rm -rf /var/lib/apt/lists/*
+RUN set -eu; \
+  arch="${TARGETARCH:-amd64}"; \
+  if [ "$arch" != amd64 ]; then echo "Chrome for Testing publishes no linux build for TARGETARCH=$arch" >&2; exit 1; fi; \
+  curl -fsSL -o /tmp/chrome.zip \
+    "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip"; \
+  printf '%s  /tmp/chrome.zip\n' "$CHROME_SHA256_AMD64" | sha256sum -c -; \
+  unzip -q /tmp/chrome.zip -d /tmp/cft; \
+  mv /tmp/cft/chrome-linux64 /out; \
+  test -x /out/chrome; \
+  chmod -R a-w /out
+
 # ─────────────────────────────── runtime ────────────────────────────────────
 FROM node:24-bookworm-slim AS runtime-sandbox
 
@@ -92,6 +113,7 @@ FROM node:24-bookworm-slim AS runtime-sandbox
 ARG CLAUDE_ACP_VERSION=0.70.0
 ARG CODEX_ACP_VERSION=1.7.0-agentconnect.2
 ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.16
+ARG AGENT_BROWSER_VERSION=0.36.0
 
 # git and ca-certificates are load-bearing — the workspace surface runs git IN here over the
 # shim's exec channel. openssh-client is for ssh remotes; tini is PID 1.
@@ -105,12 +127,31 @@ RUN apt-get update \
 # `python` as well as `python3` — plenty of tooling still spawns the unsuffixed name.
 RUN ln -sf /usr/bin/python3 /usr/local/bin/python
 
+# Chrome's shared libraries: `agent-browser install` installs these with `sudo apt-get`, which uid 10001 cannot.
+# The 25-soname `ldd chrome` closure only — headless CDP was verified without libgtk-3-0 (+116 MB) and xvfb (+167 MB).
+RUN apt-get update \
+  && apt-get install --no-install-recommends -y \
+    fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 \
+    libdbus-1-3 libexpat1 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 libudev1 libvulkan1 \
+    libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
+  && rm -rf /var/lib/apt/lists/*
+
 # Global installs give `--k8s` fixed PATH binaries without registry egress at spawn time.
 RUN npm install --global --no-fund --no-audit \
   "@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_VERSION}" \
   "@agentconnect.md/codex-acp@${CODEX_ACP_VERSION}" \
   "@openma/deepseek-harness-acp@${DEEPSEEK_HARNESS_ACP_VERSION}" \
   && npm cache clean --force
+
+# agent-browser preinstalled: its skill tells the agent to `npm i -g agent-browser`, which EACCESes as uid 10001.
+# Its bin/ carries seven platforms' native binaries (89 MB); only the one the npm bin link resolves to can run here (15 MB).
+# The CLI, not the browser: Chrome is its own stage below, because a 391 MB layer has nothing to do with a version bump here.
+RUN npm install --global --no-fund --no-audit "agent-browser@${AGENT_BROWSER_VERSION}" \
+  && keep="$(readlink -f /usr/local/bin/agent-browser)" \
+  && case "$keep" in */agent-browser-*) ;; *) echo "agent-browser bin link resolved to $keep" >&2; exit 1 ;; esac \
+  && find /usr/local/lib/node_modules/agent-browser/bin -type f -name 'agent-browser-*' ! -path "$keep" -delete \
+  && npm cache clean --force \
+  && agent-browser --version
 
 # The DeepSeek Harness preset a pod's $DSH_HOME is seeded with before that runtime launches
 # (packages/daemon/src/shim/dsh-preset.ts): the shipped `standard` composition with `web_search`
@@ -166,7 +207,7 @@ RUN mkdir -p /opt/agentconnect/bin \
 COPY --from=gh-cli --chown=0:0 /out/gh /usr/local/bin/gh
 
 # The ONLY directory this image prepends to the agent runtime's PATH (src/shim/acp-runner.ts), holding the gh
-# wrapper and nothing else: /opt/agentconnect/shim and /opt/agentconnect/bin stay off PATH so the credential
+# wrapper and the agent-browser one below: /opt/agentconnect/shim and /opt/agentconnect/bin stay off PATH so the credential
 # helper and the runtime-table generator never become commands an agent can run by name. Generated from the same
 # renderGhWrapper the daemon's own wrapper comes from, and root-owned/unwritable for the reason the shim is —
 # one the runtime could rewrite is one it could replace with a wrapper that asks the daemon in its name.
@@ -174,6 +215,34 @@ COPY --from=gh-cli --chown=0:0 /out/gh /usr/local/bin/gh
 COPY --from=shim-builder --chown=0:0 /build/packages/daemon/dist/shim/gh /opt/agentconnect/pathbin/gh
 RUN chown -R root:root /opt/agentconnect/pathbin \
   && chmod 0555 /opt/agentconnect/pathbin /opt/agentconnect/pathbin/gh
+
+# The baked Chrome, root-owned and unwritable for the reason the shim is — the runtime is the untrusted party.
+# Deliberately off PATH: agent-browser reaches it through AGENT_BROWSER_EXECUTABLE_PATH below, not by name.
+# Modes come from the chrome stage: a `chmod -R` HERE rewrites all 391 MB into a second layer, +194 MB pulled for nothing.
+COPY --from=chrome --chown=0:0 /out /opt/agentconnect/browser
+
+# An `agent-browser install` wrapper, because the CLI resolves the Chrome it wants from Google's
+# last-known-good feed and downloads it regardless of AGENT_BROWSER_EXECUTABLE_PATH — 185 MB fetched and 391 MB
+# left on the workspace volume, for a browser the image already has. Seeding its cache instead cannot work: the
+# skip is keyed on the version the feed names that day, so a pinned image goes stale within a Chrome release.
+# Only a BARE install is answered; anything else execs the real CLI, so a future engine argument still reaches it.
+RUN printf '%s\n' \
+  '#!/bin/sh' \
+  '# agentconnect: this sandbox bakes Chrome, so a bare `install` has nothing to fetch. See runtime-sandbox.Dockerfile.' \
+  'if [ "$1" = install ]; then' \
+  '  shift' \
+  '  case "$*" in' \
+  '  ""|-d|--with-deps)' \
+  '    echo "agent-browser install: Chrome is already installed in this sandbox at $AGENT_BROWSER_EXECUTABLE_PATH"' \
+  '    exit 0' \
+  '    ;;' \
+  '  esac' \
+  '  exec /usr/local/bin/agent-browser install "$@"' \
+  'fi' \
+  'exec /usr/local/bin/agent-browser "$@"' \
+  > /opt/agentconnect/pathbin/agent-browser \
+  && chown root:root /opt/agentconnect/pathbin/agent-browser \
+  && chmod 0555 /opt/agentconnect/pathbin/agent-browser
 
 # uid/gid are fixed rather than allocated, so a PersistentVolume written by one image version is
 # still readable by the next.
@@ -217,7 +286,10 @@ RUN mkdir -p /opt/agentconnect/runtime \
 # AC_CODEX_BASE_URL/AC_CODEX_API_KEY → OPENAI_BASE_URL/OPENAI_API_KEY, and
 # AC_DEEPSEEK_BASE_URL/AC_DEEPSEEK_API_KEY → DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY onto the matching
 # runtime only, and a value the daemon already sent for that runtime wins (src/shim/acp-runner.ts).
+# AGENT_BROWSER_EXECUTABLE_PATH is agent-browser's only browser-location hook — `install` has no --path and
+# nothing points its $HOME cache at the image — so this env is what stops it downloading a Chrome of its own.
 ENV HOME=/agent \
+  AGENT_BROWSER_EXECUTABLE_PATH=/opt/agentconnect/browser/chrome \
   AC_SHIM_WORKSPACE_ROOT=/agent \
   AC_SHIM_PORT=8085 \
   npm_config_update_notifier=false \
