@@ -429,7 +429,6 @@ import {
   readLinearExt,
   LinearStopActionSchema,
   type LinearAdapterExt,
-  type LinearIssueFacts,
   type LinearStopAction,
   LINEAR_STOP_RESPONSE_BODY,
   LINEAR_UNSUPPORTED_SURFACE_BODY
@@ -619,10 +618,6 @@ type AgentListSnapshot = { agents: LoadedAgent[]; activeFleet: LoadedAgent[] }
 
 /** How long a Linear delivery waits for the delegator's name before dispatching with the id. */
 const LINEAR_ACTOR_LOOKUP_MS = 1500
-
-/** Deadline on the §8 context block's one issue read — it ABORTS the request, and the ≤10 s ack
- *  (§10.1) is downstream of the delivery this read is part of. */
-const LINEAR_ISSUE_FACTS_MS = 2500
 
 /** The relay retries a delivery every 5 s, five times, then drops it: an ack slower than one
  *  try is logged with the stage it sat in, so a silent stall names its step. */
@@ -6786,12 +6781,8 @@ export class Daemon {
         if (name) normalized.sender = { ...normalized.sender, name }
       }
     }
-    // §13 layer 3: one deadline-bounded read, off the send queue so it can never sit ahead of the
-    // ack, fills the trusted context block with the coordinates the Linear tool family takes. A
-    // miss loses the block, never the turn — the header still names the issue from the bag.
-    trace.stage = 'linear:issue-facts'
-    const facts = conn && ext.issueId ? await this.linearIssueFacts(conn, ext.issueId) : undefined
-    applyLinearMessageStrategy(normalized, facts)
+    // §8: the per-turn prompt plus the session-stable standing block, both off the bag — no read.
+    applyLinearMessageStrategy(normalized)
     // §9.2's fast path for a team created after the install: the label is the TEAM's, so it comes
     // off the bag — never the issue, which would thrash the one display slot every sibling session
     // in the team shares. The issue rides `threadUrl` and the §8 trusted header, both session-scoped.
@@ -6841,18 +6832,6 @@ export class Daemon {
       timer.unref?.()
     })
     return await Promise.race([lookup, deadline])
-  }
-
-  /** The §8 context block's facts: one direct read off the paced send queue, cancelled at
-   *  {@link LINEAR_ISSUE_FACTS_MS} — a refusal, an abort or an unreadable issue leaves the block
-   *  off, at debug, and the turn dispatches on the header alone. */
-  private async linearIssueFacts(conn: LinearConnection, issueId: string): Promise<LinearIssueFacts | undefined> {
-    try {
-      return await conn.issueFacts(issueId, { signal: AbortSignal.timeout(LINEAR_ISSUE_FACTS_MS) })
-    } catch (err) {
-      this.log.debug(`linear: issue facts lookup failed (${issueId}): ${formatErr(err)}`)
-      return undefined
-    }
   }
 
   /** Has this daemon already served this exact Linear delivery? A read failure answers NO:

@@ -1073,26 +1073,35 @@ dispatch prompt (its per-platform strategy seat, fed by the round-tripped
   session has a live reply surface — the activity feed).
 - **Trusted header** (daemon-authored): `Linear TEAM-123 "title" — delegated
 by <actor>` + issue URL, with `sanitizeTitle` flattening.
-- **Linear context block** (daemon-authored, under the header — §13 P2
-  layer 3). One `issueFacts` read on the connection's direct read path —
-  never the paced send queue, so it can never sit ahead of the §10.1 ack —
-  deadline-bounded and unretried, fills four lines with the coordinates the
-  `agent-tools.ts` family takes — issue identifier and UUID, title, URL; team key, name and
-  id; state and its type, priority, estimate, due date; assignee, labels,
-  project, cycle, parent — followed by the working convention: the issue is
-  the record, so the plan and the outcome go into its description or a
-  comment (`updateIssue` / `createIssueComment`); the branch and the PR carry
-  the identifier so Linear links them; an empty or ambiguous ticket earns a
+- **Linear standing block** (daemon-authored — §13 P2 layer 3, moved off
+  the per-turn prompt 2026-09-02). The session is one issue for its whole
+  life, so the coordinates the `agent-tools.ts` family takes — issue
+  identifier, UUID, title and URL; team key, name and id — and the working
+  convention are STANDING context, not turn text: the strategy puts them on
+  `NormalizedMessage.standingContext`, and the session manager seats that
+  block beside the agent meta (`buildStandingContext`'s `platformAppend`),
+  which a runtime reads once on the system-prompt channel or as the first
+  prompt block, re-asserted on a native resume, and never as a transcript
+  row. The block is persisted on the session row (`platformStanding`,
+  first-wins) because the message that opens the session is the only one
+  that carries it: a console continuation or an agent wake rebuilds its
+  message from stored coordinates without the bag, and a cold resume or a
+  failed-load recreate must still re-assert the coordinates that the
+  transcript, by design, no longer holds. That is what keeps the console's user bubble to the header, the URL
+  and the member's own words. The convention: the issue is the record, so
+  the plan and the outcome go into its description or a comment
+  (`updateIssue` / `createIssueComment`); the branch and the PR carry the
+  identifier so Linear links them; an empty or ambiguous ticket earns a
   clarifying response before work; `updateIssue` takes `state` by workflow
-  state NAME (`listIssueStatuses`). Absent facts are omitted rather than
-  rendered as placeholders, and the read is failure-tolerant: a refusal or a
-  slow provider (whose request the deadline cancels outright) logs at debug
-  and drops the block, never the turn — the header already names the issue
-  from the bag. Being daemon-authored is a
-  claim the block has to earn, so every provider string on it (title, team
-  and project names, labels, state, assignee) is flattened to one capped,
-  fence-inert line first: an attacker-influenced value may not open a line of
-  its own, and may not open or close the untrusted fence below.
+  state NAME (`listIssueStatuses`); current state, assignee and labels are
+  `getIssue`'s answer. Mutable issue state is deliberately NOT rendered
+  anywhere: a snapshot goes stale within the session, and standing context
+  is composed once, so the block is built from the bag alone — no
+  `issueFacts` read, no deadline, nothing to degrade. Being daemon-authored
+  is a claim the block has to earn, so every provider string on it (title,
+  team key and name) is flattened to one capped, fence-inert line first: an
+  attacker-influenced value may not open a line or a heading of its own, and
+  may not open or close the untrusted fence.
 - **Instruction text**: `msg.text` (§6.3) — the follow-up body verbatim for
   `prompted` (workspace members are the same trust class as Slack users, and
   their messages are instructions), or the delegation line plus the
@@ -1105,8 +1114,9 @@ by <actor>` + issue URL, with `sanitizeTitle` flattening.
   as GitHub event bodies, softened by the trusted header carrying the
   actionable identity. Truncation appends "(context truncated)"; P2's read
   tool restores full access.
-- Standing context is unchanged (agent meta gains `- Source: linear` and the
-  channel/thread locator lines for free). No Linear-specific formatting
+- The rest of the standing context is unchanged (agent meta gains `- Source:
+linear` and the channel/thread locator lines for free); the Linear block
+  above is the one platform-contributed member. No Linear-specific formatting
   instructions are injected — activities take CommonMark, so rendering is
   last-mile in the converger like every other platform.
 
@@ -1398,26 +1408,18 @@ tile.
     with the team-as-channel change: `team(id) { id key name }` and
     `teams(first: 100) { nodes { id key name } }`, both on the direct read
     path, each degrading to the bare id / an empty list on a refusal, and both
-    **deadline-bound end to end** through the same `signal` `issueFacts` uses —
-    the caller's, else the port's own — so a provider that accepts and then
+    **deadline-bound end to end** through the read path's `signal` — the
+    caller's, else the port's own — so a provider that accepts and then
     stalls costs a display name and never a caller.
   - `turn-output.ts` — the streaming Layer-2 surface + `LinearConverger` +
     `LinearAction` (§5).
   - message strategy — `adapterExt.linear` → prompt assembly and fencing
-    (§8), including the daemon-authored context block rendered from the
-    optional `LinearIssueFacts` the delivery path resolves through
-    `LinearConnection.issueFacts` — one query on the **direct read path, not
-    the paced send queue**, bounded end to end by an `AbortSignal` deadline
-    that covers the token wait as well as the request and cancels rather than
-    abandons, not retried, and failure-tolerant. The token half matters: a
-    renewal rides `linearcred`, whose correlator timeout is far longer than a
-    read's deadline, so only the signalled caller gives up while the
-    single-flight renewal keeps running for the next one.
-    Off the queue is the point: the read happens while the delivery is being
-    prepared, so a queue slot would put it **ahead of the ≤10 s ack** (§10.1)
-    in one FIFO and let a stalled provider hold the ack for the queue's whole
-    task timeout — unlike `startIssue`, which may queue because it runs only
-    after the ack posts. No-issue unsupported-surface response (§4.5); stop
+    (§8), plus the daemon-authored standing block on
+    `NormalizedMessage.standingContext`, rendered from the bag alone. The
+    earlier `LinearConnection.issueFacts` read — one deadline-bound query on
+    the direct read path — is gone with the mutable facts it served; the
+    read path's end-to-end `signal` handling it introduced stays, because the
+    team reads use it. No-issue unsupported-surface response (§4.5); stop
     decoder for the `platform_action` payload → `interruptTurn` + settling
     response, whose local target is found **channel-blind**
     (`latestSessionForPlatformThread`) since the AgentSession UUID is unique on
@@ -1780,16 +1782,18 @@ none` skips it along with everything else Linear-visible. There is **no
      reconnect rather than shown a raw GraphQL refusal. Not planned: project
      updates, milestone writes, Linear's own documentation search, image
      loading (attachment download stays deferred, §9.4).
-  3. **A daemon-authored Linear context block** in the §8 trusted header
-     (**landed**): the issue's UUID, identifier, team, current state,
-     assignee and labels (the coordinates the tools take), plus a few lines
-     of working convention — the issue is the record, so plans and outcomes
-     go into its description or a comment; branch and PR names carry the
-     identifier so Linear's own GitHub integration links them; an empty
-     ticket earns a clarifying `response` before work. **Not a skill**: the
-     tools only exist in Linear turns, so a per-turn prompt block is the
-     deterministic seat, and the customer-side customization seat is
-     Linear's own admin `guidance`, which §8 already passes through.
+  3. **A daemon-authored Linear standing block** (§8, **landed**; moved
+     from the per-turn prompt to standing context 2026-09-02): the issue's
+     UUID, identifier, title, URL and team (the coordinates the tools take),
+     plus a few lines of working convention — the issue is the record, so
+     plans and outcomes go into its description or a comment; branch and PR
+     names carry the identifier so Linear's own GitHub integration links
+     them; an empty ticket earns a clarifying `response` before work; state,
+     assignee and labels are read live with `getIssue`, never snapshotted.
+     **Not a skill**: the tools only exist in Linear sessions, so the
+     session's standing context is the deterministic seat, and the
+     customer-side customization seat is Linear's own admin `guidance`,
+     which §8 already passes through.
   4. **The permission-gate `elicitation`** (**landed**, §10.4): the gate now
      reaches the feed instead of leaving the session active until it goes
      stale — the deep-link card naming what needs approving, plus the
@@ -1841,15 +1845,13 @@ none` skips it along with everything else Linear-visible. There is **no
   zero-activity since it never acks), dedup-key derivation,
   **dedup-before-ack ordering including concurrent same-`msgId` deliveries
   collapsing to one ack** (fake clock), config-schema fail-closed reads; the
-  §8 context block (every coordinate rendered, absent facts omitted rather
-  than placeheld, an attacker-authored title, label or team name unable to
-  open a line or a fence, position between header and instruction, absent
-  without facts) and `issueFacts` (the documented query, the projection, a
-  refusal surfacing as `LinearApiError` and not retried, the read bypassing
-  the paced queue while activity posts space by the interval, the caller's
-  deadline reaching the request, a stalled token wait settling at that
-  deadline with nothing sent while the shared renewal still serves the next
-  caller, and a refused read still dispatching the turn without the block).
+  §8 standing block (the coordinates rendered, an absent one omitted rather
+  than placeheld, no mutable state, an attacker-authored title or team name
+  unable to open a line or a heading, the per-turn text holding only the
+  header, the instruction and the fence, and the block reaching
+  `standingContext` on dispatch while the prompt text does not carry it);
+  the session manager seating a platform block beside the agent meta once,
+  never beside the user text and never again on a follow-up.
 - **CP unit:** provider schema guards; token service rotate-and-retry with a
   failing-then-succeeding fake token endpoint; single-flight refresh;
   projector output shapes.

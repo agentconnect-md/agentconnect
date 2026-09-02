@@ -58,6 +58,10 @@ export interface NormalizedMessage extends Omit<
   /** Ingress-derived title applied only when this message creates a logical
    *  session. A later runtime title remains authoritative and replaces it. */
   initialSessionTitle?: string
+  /** Platform-resolved standing context for the session this message opens or resumes: session-stable
+   *  coordinates and working conventions the model reads once on the system-prompt channel (or the
+   *  first prompt block), never a transcript row. Ignored on a follow-up into an open session. */
+  standingContext?: string
   /** Stable automation/source identity recorded as the session trigger when it
    *  differs from the message author. GitHub hook messages, for example, are
    *  authored by the event actor while still being triggered by `hook:<id>`. */

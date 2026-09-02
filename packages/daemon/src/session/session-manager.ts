@@ -451,6 +451,14 @@ export class SessionManager {
       }
       await this.deps.store.upsertSession(rec)
     }
+    // The platform standing block is the SESSION's: the message that opens it carries one, but a
+    // continuation or a wake reconstructs its message without the bag, and a cold resume must still
+    // re-assert it. Prefer the row; a pre-upgrade row learns it from the first delivery that has one.
+    const platformStanding = rec?.platformStanding ?? msg.standingContext
+    if (rec && !rec.platformStanding && msg.standingContext) {
+      rec = { ...rec, platformStanding: msg.standingContext, updatedAt: Date.now() }
+      await this.deps.store.upsertSession(rec)
+    }
     // Durable parent link (§5.3): prefer the origin persisted on the session (present on EVERY
     // turn of a spawned session) over this turn's wake origin (only the one agent-call turn that
     // first spawns the session carries it). This value both drives the `Parent session` line and,
@@ -567,7 +575,10 @@ export class SessionManager {
           usesSessionTitleTool,
           needsReplyToParent,
           memoryIndex,
-          usesMeta
+          usesMeta,
+          // The platform's session-stable block (Linear's issue coordinates and working convention):
+          // standing, so it never lands as a leading user block or a transcript row.
+          ...(platformStanding ? { platformStanding } : {})
         }))())
 
     // Born titled: the ingress title when the platform minted one (GitHub/GitLab hooks), else
@@ -593,7 +604,8 @@ export class SessionManager {
         workspaceIsolation,
         ...(effectiveOriginSessionId ? { originSessionId: effectiveOriginSessionId } : {}),
         ...(needsReplyToParent ? { needsParentReply: true } : {}),
-        ...(isNewLogicalSession && fallbackTitle ? { initialTitle: fallbackTitle } : {})
+        ...(isNewLogicalSession && fallbackTitle ? { initialTitle: fallbackTitle } : {}),
+        ...(platformStanding ? { platformStanding } : {})
       },
       store: this.deps.store,
       ...(this.deps.prepareOutwardBinding
