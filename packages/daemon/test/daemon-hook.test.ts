@@ -3847,6 +3847,9 @@ describe('buildHookMessage', () => {
       expect(standing.startsWith('# GitHub\n')).toBe(true)
       // Scoped to DELIVERY turns: a hook-origin session continued from the console has no poster.
       expect(standing).toContain('These rules govern a turn opened by a GitHub delivery')
+      // Keyed on presence, not suffix: the review orchestrator appends its workspace block after the answer line.
+      expect(standing).toContain('contains a line saying how the daemon answers it')
+      expect(standing).not.toContain('ends with a line')
       expect(standing).toContain('A turn opened from the console names no such thread')
       expect(standing).toContain('the daemon posts nothing for it')
       expect(standing).toContain('On a delivery turn, your final reply')

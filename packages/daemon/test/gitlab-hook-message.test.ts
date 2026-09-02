@@ -103,6 +103,9 @@ describe('gitlab hook normalization (§12.3)', () => {
     const standing = buildHookMessage(fire(), 't').standingContext!
     expect(standing.startsWith('# GitLab\n')).toBe(true)
     expect(standing).toContain('These rules govern a turn opened by a GitLab delivery')
+    // Keyed on presence, not suffix: the review orchestrator appends its workspace block after the answer line.
+    expect(standing).toContain('contains a line saying how the daemon answers it')
+    expect(standing).not.toContain('ends with a line')
     expect(standing).toContain('A turn opened from the console names no such thread')
     expect(standing).toContain('On a delivery turn, do NOT create, update, or delete GitLab notes')
     expect(standing).toContain('do NOT create, update, or delete GitLab notes, drafts, or approvals')

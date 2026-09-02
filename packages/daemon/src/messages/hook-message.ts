@@ -194,11 +194,14 @@ function reviewVerdictEvents(reviewPolicy: RdMsgHook['reviewPolicy']): { passing
 const DAEMON_OWNS_REPLY = 'The daemon owns the reply; post nothing yourself.'
 
 /** The block's scope line: a hook-origin session can be continued from the console, where no poster runs
- *  (webchat-cross-integration-continuation.md §9), so every rule binds a DELIVERY turn, never the session. */
+ *  (webchat-cross-integration-continuation.md §9), so every rule binds a DELIVERY turn, never the session.
+ *  Keyed on what survives final assembly — the review orchestrator appends its workspace block AFTER the
+ *  answer line, so the line is a presence, never a suffix. */
 const DELIVERY_SCOPE = (host: string): string =>
-  `These rules govern a turn opened by a ${host} delivery — its text begins \`${host} \` and ends with a line saying ` +
-  'how the daemon answers it. A turn opened from the console names no such thread: answer it in the session, the ' +
-  'daemon posts nothing for it, and any code-host tool you hold acts at your own discretion.'
+  `These rules govern a turn opened by a ${host} delivery — its text begins \`${host} \` and contains a line saying ` +
+  'how the daemon answers it (a trusted workspace or revision block may follow that line). A turn opened from the ' +
+  'console names no such thread: answer it in the session, the daemon posts nothing for it, and any code-host tool ' +
+  'you hold acts at your own discretion.'
 
 /**
  * The GitHub standing block (`NormalizedMessage.standingContext`): everything about answering
