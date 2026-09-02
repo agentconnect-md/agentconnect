@@ -430,6 +430,20 @@ name>`, e.g. `Acme / Engineering`: the two NAMES a member says out loud,
     imprecise there, it **relabels the siblings**: each event would rewrite
     the one field and the sessions from other issues would start reading as
     if they belonged to the latest one.
+  - **A team carries its own glyph.** Linear gives every team an `icon` — a
+    name out of its own icon set (`Feather`) or an emoji — and a hex `color`,
+    and its team picker leads a team with both. They ride the conversation row
+    (`IntegrationChannel.icon` / `.color`, `integration_channel.icon` /
+    `.color`) beside the label, bounded on the wire (`icon` ≤ 64 chars, `color`
+    a `#rrggbb` triplet) and **display-only**: nothing routes, gates or dedups
+    on them, and a row that has neither renders exactly as it did before they
+    existed. Both writers of the row carry them — the CP's connect tail and
+    reconciler team pass off its own `teams` query, the daemon off
+    `listChannels` and the event bag — and, like the Discord space, they are
+    learned once and never unlearned: a report that could not resolve the pair
+    leaves the drawn row standing. The console does **not** vendor Linear's
+    icon set: an emoji is rendered as itself, and a named icon falls back to
+    the team's initial on the team's own color (§9.5).
   - **The issue is display metadata, not a coordinate.** `TEAM-123` is a
     human identifier that changes when an issue moves teams, and its
     immutable UUID would be stable but buys nothing, because nothing is ever
@@ -1182,6 +1196,11 @@ tile.
 
     Fail-closed `false` keeps every other platform on the ordinary §10/§14
     arms — including its own ownership routes.
+- `frames/integration.ts` — `IntegrationChannel` gains optional `icon` and
+  `color`, the conversation's own display glyph and tint (§4.5). Bounded
+  (`icon` ≤ 64 chars, `color` matching `#?[0-9a-fA-F]{6}`) so one oddly spelled
+  team cannot cost a whole `integration/channels` report, and absent on every
+  platform without the notion.
 - The opaque integration-config payload shape (§7.2) is documented beside its
   peers in `frames/integration.ts`.
 - `frames/cron.ts` — **not** extended in v1 (no cron target).
@@ -1207,12 +1226,13 @@ tile.
     workspace display metadata in `platformConfig`).
   - **The install paths write the team conversation rows**, synchronously
     and before any traffic: the connect tail (§7.1) asks Linear for the
-    workspace's teams with the fresh token (`teams { id key name }`, through
-    the provider's `api.ts`) and creates `(integrationId, teamId)` for each,
-    named `<Workspace name> / <Team name>` — the same string the daemon
+    workspace's teams with the fresh token (`teams { id key name icon color }`,
+    through the provider's `api.ts`) and creates `(integrationId, teamId)` for
+    each, named `<Workspace name> / <Team name>` — the same string the daemon
     writes, since both sides write this one `integration_channel.name`, and
-    the workspace half comes from the bot's own stored workspace name — with
-    the linking agent as owner; each
+    the workspace half comes from the bot's own stored workspace name — and
+    stamped with the team's own glyph (§4.5), so a seeded row is drawn before
+    any daemon has reported; with the linking agent as owner; each
     add-member writes its sibling rows, the shared-bot shape where every
     active integration repeats a conversation's state and exactly one row
     per team carries the owner. The trigger is one per team for the whole bot: born `mention` when the
@@ -1226,7 +1246,8 @@ tile.
   - **Team discovery after the install has two paths, and the slow one is
     the guarantee.** The `LinearCredentialReconciler` tick (already running
     per deployment app) also asks each connected workspace for its teams and
-    upserts a row for any it has not seen — name refresh for the rest — so a
+    upserts a row for any it has not seen — a name-and-glyph refresh for the
+    rest, which writes nothing when both already match — so a
     team created after the install has a row within one tick whatever the
     bot's membership looks like. The fast path is the daemon's observed
     report (§9.4): on a delivery for a team it has no row for, the daemon
@@ -1302,9 +1323,12 @@ tile.
     (`Bot.preferredAgentId`); that stays **withdrawn** (§15) — it existed
     only because issue-as-channel left the workspace with no standing
     conversation row, and a team row is one.
-- Prisma: new `linear_token` and `linear_install_state` tables only — Bot
-  identity rides the existing D6 columns, and `platform` columns are already
-  text.
+- Prisma: new `linear_token` and `linear_install_state` tables — Bot identity
+  rides the existing D6 columns, and `platform` columns are already text —
+  plus nullable `integration_channel.icon` / `.color` for the team's glyph
+  (§4.5), which every other platform leaves null. The channel DTO exposes both
+  (a Fastify/Zod response schema silently drops what it does not declare, so
+  the pair is declared as well as projected).
 - Tests: provider unit (schema guards, projector shapes incl. keyword
   routes); connect-funnel + OAuth callback + broker integration tests
   against a fake Linear token endpoint; workspace-claim and
@@ -1315,7 +1339,9 @@ tile.
 - `src/platforms/linear/` implementing `RelayPlatformIngressPlugin` (§6.1) +
   one `registry.ts` line; a `platforms/route-mounts.test.ts` row pins
   `POST /linear/events`. `channel` = the issue's team id, or the workspace
-  id for an issue-less event (§4.5).
+  id for an issue-less event (§4.5). The §6.4 bag carries the team's `icon`
+  and `color` alongside its name when the delivery has them, so the daemon's
+  fast-path conversation row is drawn from the first event (§9.4).
 - `bot-arbitration.ts` — the **per-conversation default rung**, consulted
   after keyword and thread continuity and before `defaultAgentId`, fed by
   the assignment's `conversationDefaults`; and the thread-affinity gate
@@ -1395,12 +1421,16 @@ tile.
     list, `getUserProfile` the Linear user behind a `linear:`-prefixed sender
     id — and returns empty/`null` elsewhere (no `listBotChannels`, no
     `leaveChannel`, `downloadFile` deferred). The two team reads **landed**
-    with the team-as-channel change: `team(id) { id key name }` and
-    `teams(first: 100) { nodes { id key name } }`, both on the direct read
+    with the team-as-channel change: `team(id) { id key name icon color }` and
+    `teams(first: 100) { nodes { id key name icon color } }`, both on the direct read
     path, each degrading to the bare id / an empty list on a refusal, and both
     **deadline-bound end to end** through the same `signal` `issueFacts` uses —
     the caller's, else the port's own — so a provider that accepts and then
-    stalls costs a display name and never a caller.
+    stalls costs a display name and never a caller. The glyph pair (§4.5) rides
+    both reads, narrowed to the wire's bounds at this edge (`linearTeamGlyph`)
+    so one over-long icon or oddly spelled color costs its own field and never
+    the report, and reaches the conversation row through `observeLinearTeams`
+    and, off the event bag, `noteLinearTeam`'s §9.2 fast path.
   - `turn-output.ts` — the streaming Layer-2 surface + `LinearConverger` +
     `LinearAction` (§5).
   - message strategy — `adapterExt.linear` → prompt assembly and fencing
@@ -1586,7 +1616,15 @@ tile.
     `<Workspace name> / <Team name>` apart: these rows always sit under one
     workspace's own card, which already names it, so the row keeps the team
     alone. The label itself is unchanged, and the host keeps the whole of it
-    as the row's accessible name. Linear's `roomGlyph` is empty, and the
+    as the row's accessible name. A sixth, `RowMark`, is the colored glyph the
+    row leads with — the way Linear's own team picker draws a team (§4.5). We
+    do **not** vendor Linear's icon set: shipping someone else's icon font to
+    fill a 16 px square would go stale the moment they add one, so the mark
+    renders the team's **emoji** when the icon is one and otherwise the team's
+    **initial**, either way on the team's own color (a translucent ground of
+    the same value, so it sits correctly in both themes). Direct rows never
+    take it — their label is a person, and the `@`/`@@` markers already lead
+    them — and every other platform declares none, so its rows are untouched. Linear's `roomGlyph` is empty, and the
     session list reads the same per-platform sigil, so no Linear conversation
     is ever written with a channel's `#`. The org Bots row expands to the same team rows: the
     workspace-shaped "Default dispatch" line it used to show is gone with the

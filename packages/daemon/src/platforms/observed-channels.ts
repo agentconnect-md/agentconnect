@@ -45,11 +45,15 @@ export function observedMembershipPlatforms(): readonly string[] {
   return OBSERVED_MEMBERSHIP_PLATFORMS
 }
 
-/** One conversation a connection reports having observed, ahead of any session row. */
+/** One conversation a connection reports having observed, ahead of any session row.
+ *  `icon`/`color` are the row's own display glyph and tint on the platforms that give a
+ *  conversation one (a Linear team); every other platform simply never sets them. */
 export interface ObservedChat {
   id: string
   name?: string
   isPrivate: boolean
+  icon?: string
+  color?: string
 }
 
 /** One observed conversation row, as the snapshot pipeline carries it. */

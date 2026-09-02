@@ -714,6 +714,8 @@ function toChannelRecord(c: IntegrationChannel): IntegrationChannelRecord {
     name: c.name,
     spaceId: c.spaceId,
     space: c.space,
+    icon: c.icon,
+    color: c.color,
     isPrivate: c.isPrivate,
     kind: c.kind as ConversationKind,
     trigger: c.trigger as ChannelTrigger,
@@ -778,10 +780,11 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         opts?.defaultTriggerByChannel?.get(c.id) ?? opts?.defaultTrigger ?? (c.kind === 'im' ? 'any' : 'mention')
       await this.db.$executeRaw`
         INSERT INTO "integration_channel"
-          ("integrationId", "channelId", "name", "spaceId", "space", "isPrivate", "kind", "trigger",
-           "dmUserId", "firstSeenAt", "updatedAt")
+          ("integrationId", "channelId", "name", "spaceId", "space", "icon", "color", "isPrivate",
+           "kind", "trigger", "dmUserId", "firstSeenAt", "updatedAt")
         VALUES (
           ${integrationId}::uuid, ${c.id}, ${c.name ?? null}, ${c.spaceId ?? null}, ${c.space ?? null},
+          ${c.icon ?? null}, ${c.color ?? null},
           ${c.isPrivate ?? false}, ${c.kind ?? 'channel'}::"ConversationKind",
           ${createTrigger}::"ChannelTrigger", ${c.dmUserId ?? null}, NOW(), NOW()
         )
@@ -791,6 +794,12 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
                            ELSE "integration_channel"."spaceId" END,
           "space" = CASE WHEN ${c.space !== undefined}::boolean THEN EXCLUDED."space"
                          ELSE "integration_channel"."space" END,
+          -- Learned once and never unlearned, like the space: a reporter that could not resolve
+          -- the glyph must not blank a rendered row.
+          "icon" = CASE WHEN ${c.icon !== undefined}::boolean THEN EXCLUDED."icon"
+                        ELSE "integration_channel"."icon" END,
+          "color" = CASE WHEN ${c.color !== undefined}::boolean THEN EXCLUDED."color"
+                         ELSE "integration_channel"."color" END,
           "isPrivate" = CASE WHEN ${setPrivate}::boolean THEN EXCLUDED."isPrivate"
                              ELSE "integration_channel"."isPrivate" END,
           -- Learned once and never unlearned: an omitting report (a channel snapshot, an
@@ -851,6 +860,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         name: conversation.name ?? null,
         spaceId: conversation.spaceId ?? null,
         space: conversation.space ?? null,
+        icon: conversation.icon ?? null,
+        color: conversation.color ?? null,
         isPrivate: conversation.isPrivate ?? false,
         kind: conversation.kind ?? 'channel',
         dmUserId: conversation.dmUserId ?? null,
@@ -863,6 +874,8 @@ export class PgIntegrationChannelRepo implements IntegrationChannelRepo {
         ...(conversation.name ? { name: conversation.name } : {}),
         ...(conversation.spaceId ? { spaceId: conversation.spaceId } : {}),
         ...(conversation.space ? { space: conversation.space } : {}),
+        ...(conversation.icon ? { icon: conversation.icon } : {}),
+        ...(conversation.color ? { color: conversation.color } : {}),
         ...(conversation.dmUserId ? { dmUserId: conversation.dmUserId } : {})
       }
     })

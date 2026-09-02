@@ -4759,6 +4759,10 @@ export interface IntegrationChannelRecord {
    *  on DM rows, and until the daemon has resolved them. */
   spaceId: string | null
   space: string | null
+  /** The conversation's own display glyph and tint, where the platform gives it one — a
+   *  Linear team's icon (a provider icon name or an emoji) and hex color. Null elsewhere. */
+  icon: string | null
+  color: string | null
   isPrivate: boolean
   kind: ConversationKind
   /** Repeated across shared-bot sibling rows; per-integration for non-shared bots. */
@@ -4781,6 +4785,9 @@ export interface ReportedChannel {
    *  platforms and until resolved. */
   spaceId?: string
   space?: string
+  /** The conversation's own display glyph and tint (a Linear team). Absent elsewhere. */
+  icon?: string
+  color?: string
   isPrivate?: boolean
   /** Absent = 'channel' (wire compatibility). */
   kind?: ConversationKind

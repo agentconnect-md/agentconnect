@@ -341,6 +341,8 @@ function integrationRowFromDto(
       name: c.name || c.channelId,
       ...(c.spaceId ? { spaceId: c.spaceId } : {}),
       ...(c.space ? { space: c.space } : {}),
+      ...(c.icon ? { icon: c.icon } : {}),
+      ...(c.color ? { color: c.color } : {}),
       kind: c.kind,
       trigger: c.trigger,
       agentId: c.agentId

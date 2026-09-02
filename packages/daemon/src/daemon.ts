@@ -426,6 +426,7 @@ import {
   linearChannelName,
   linearDeliveryReceiptId,
   linearFailureBody,
+  linearTeamGlyph,
   readLinearExt,
   LinearStopActionSchema,
   type LinearAdapterExt,
@@ -6818,7 +6819,11 @@ export class Daemon {
     // still named, by its team alone, which is what the CP writes for the same team.
     const name = linearChannelName(team, this.lnConnByIntegration.get(integrationId))
     void this.observedChannelsSync
-      .observePlatformChat('linear', { id: team.id, ...(name ? { name } : {}), isPrivate: false }, [integrationId])
+      .observePlatformChat(
+        'linear',
+        { id: team.id, ...(name ? { name } : {}), ...linearTeamGlyph(team), isPrivate: false },
+        [integrationId]
+      )
       .catch((err: unknown) => {
         this.linearReportedTeams.delete(key)
         this.log.warn(`linear: reporting team ${team.id} as an observed conversation failed: ${formatErr(err)}`)

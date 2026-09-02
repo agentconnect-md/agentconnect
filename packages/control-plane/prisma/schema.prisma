@@ -2456,6 +2456,10 @@ model IntegrationChannel {
   // rows, and until the daemon resolves them.
   spaceId       String?
   space         String?
+  // The conversation's own display glyph and tint, where the platform gives it one — a Linear
+  // team's icon (a provider icon name or an emoji) and hex color. Null on every other platform.
+  icon          String?
+  color         String?
   isPrivate     Boolean          @default(false)
   kind          ConversationKind @default(channel)
   // The 1:1 DM counterpart's platform member id (resource-visibility.md §14.8). Control

@@ -347,7 +347,7 @@ describe('LinearCredentialReconciler (§10.6)', () => {
 describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
   const ALICE = '44444444-4444-4444-8444-444444444444'
   const BOB = '55555555-5555-4555-8555-555555555555'
-  const TEAM = { id: 'team_ops', key: 'OPS', name: 'Operations' }
+  const TEAM = { id: 'team_ops', key: 'OPS', name: 'Operations', icon: 'Feather', color: '#5E6AD2' }
 
   interface SeedHarness {
     reconciler: LinearCredentialReconciler
@@ -364,14 +364,22 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
     installs: { id: string; agentId: string }[],
     agents: AgentRecord[],
     routable: Set<string>,
-    botOverrides: Partial<BotRecord> = {}
+    botOverrides: Partial<BotRecord> = {},
+    /** Rows the bot already carries — empty means every team is a late discovery. */
+    known: {
+      integrationId: string
+      channelId: string
+      name: string | null
+      icon: string | null
+      color: string | null
+    }[] = []
   ) {
     const upsertConversation = vi.fn(async () => ({}) as never)
     const upsertAgent = vi.fn(async () => ({}) as never)
     const teams: LinearCredentialReconcilerDeps['teams'] = {
       integrations: { listForBot: async () => installs as never },
       agents: { getUnscoped: async (agentId: string) => agents.find((a) => a.id === agentId) ?? null } as never,
-      channels: { listForBot: async () => [], upsertConversation, upsertAgent } as never,
+      channels: { listForBot: async () => known as never, upsertConversation, upsertAgent } as never,
       tokens: {
         accessToken: async () => ({ ok: true as const, accessToken: 'tok', expiresAt: new Date(), rotated: false }),
         teams: async () => ({ ok: true as const, result: [TEAM] })
@@ -426,7 +434,7 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
 
     expect(h.upsertConversation).toHaveBeenCalledWith(
       'i-alice',
-      { id: TEAM.id, name: 'Acme / Operations', kind: 'channel' },
+      { id: TEAM.id, name: 'Acme / Operations', icon: 'Feather', color: '#5E6AD2', kind: 'channel' },
       { defaultTrigger: 'mention' }
     )
     expect(h.upsertAgent).not.toHaveBeenCalled()
@@ -453,6 +461,45 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
 
     const [, conversation] = h.upsertConversation.mock.calls[0] as unknown as [string, { name: string }]
     expect(conversation.name).toBe('Operations')
+  })
+
+  it('seeds the row with the team’s own icon and color, so it is drawn before any daemon reports', async () => {
+    const h = seedHarness([{ id: 'i-alice', agentId: ALICE }], [agent(ALICE)], new Set([ALICE]))
+
+    await h.reconciler.tick()
+
+    const [, conversation] = h.upsertConversation.mock.calls[0] as unknown as [
+      string,
+      { icon?: string; color?: string }
+    ]
+    expect(conversation).toMatchObject({ icon: 'Feather', color: '#5E6AD2' })
+  })
+
+  it('refreshes a KNOWN row whose glyph changed, and writes nothing when name and glyph already match', async () => {
+    const row = (icon: string | null, color: string | null) => ({
+      integrationId: 'i-alice',
+      channelId: TEAM.id,
+      name: 'Acme / Operations',
+      icon,
+      color
+    })
+    const stale = seedHarness([{ id: 'i-alice', agentId: ALICE }], [agent(ALICE)], new Set([ALICE]), {}, [
+      row(null, null)
+    ])
+    await stale.reconciler.tick()
+    expect(stale.upsertConversation).toHaveBeenCalledWith('i-alice', {
+      id: TEAM.id,
+      name: 'Acme / Operations',
+      icon: 'Feather',
+      color: '#5E6AD2',
+      kind: 'channel'
+    })
+
+    const current = seedHarness([{ id: 'i-alice', agentId: ALICE }], [agent(ALICE)], new Set([ALICE]), {}, [
+      row('Feather', '#5E6AD2')
+    ])
+    await current.reconciler.tick()
+    expect(current.upsertConversation).not.toHaveBeenCalled()
   })
 
   it('seeds an ALL-GATED bot Off — the §14 arm, asked of the members that could own the row', async () => {

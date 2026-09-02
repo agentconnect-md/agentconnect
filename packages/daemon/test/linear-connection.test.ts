@@ -778,7 +778,7 @@ describe('linear read port (§9.4 — what Linear affords)', () => {
       name: 'Example Workspace / Engineering',
       isIm: false
     })
-    expect(calls[0]!.query).toContain('team(id: $id) { id key name }')
+    expect(calls[0]!.query).toContain('team(id: $id) { id key name icon color }')
     expect(calls[0]!.variables).toEqual({ id: TEAM })
   })
 
@@ -818,11 +818,50 @@ describe('linear read port (§9.4 — what Linear affords)', () => {
       { id: OTHER_TEAM, name: 'Example Workspace / Docs', isPrivate: false },
       { id: 'team-3', isPrivate: false }
     ])
-    expect(calls[0]!.query).toContain('teams(first: 100) { nodes { id key name } }')
+    expect(calls[0]!.query).toContain('teams(first: 100) { nodes { id key name icon color } }')
     // The report this feeds is a non-authoritative name refresh (§9.2), so a refusal costs a
     // refresh and never throws at the reconcile that asked.
     const refused = harness({ respond: () => jsonResponse({ errors: [{ message: 'no access' }] }, 400) })
     expect(await refused.conn.listChannels()).toEqual([])
+  })
+
+  it('carries a team’s own icon and color, dropping either when Linear spells it another way', async () => {
+    const { conn } = harness({
+      respond: () =>
+        jsonResponse({
+          data: {
+            teams: {
+              nodes: [
+                { id: TEAM, key: 'ENG', name: 'Engineering', icon: 'Feather', color: '#5E6AD2' },
+                // An emoji is an icon too — the console renders it in place of a set member.
+                { id: OTHER_TEAM, key: 'DOCS', name: 'Docs', icon: '📚', color: 'rebeccapurple' },
+                { id: 'team-3', key: 'OPS', name: 'Ops', icon: 'x'.repeat(65), color: '5E6AD2' }
+              ]
+            }
+          }
+        })
+    })
+    expect(await conn.listChannels()).toEqual([
+      { id: TEAM, name: 'Example Workspace / Engineering', icon: 'Feather', color: '#5E6AD2', isPrivate: false },
+      // A color the wire row would refuse costs its own field, never the whole report.
+      { id: OTHER_TEAM, name: 'Example Workspace / Docs', icon: '📚', isPrivate: false },
+      // …and so does an over-long icon; a bare triplet is still a color.
+      { id: 'team-3', name: 'Example Workspace / Ops', color: '5E6AD2', isPrivate: false }
+    ])
+  })
+
+  it('names the channel with the team’s glyph on the single-team read too', async () => {
+    const { conn } = harness({
+      respond: () =>
+        jsonResponse({ data: { team: { id: TEAM, key: 'ENG', name: 'Engineering', icon: '🚀', color: '#5E6AD2' } } })
+    })
+    expect(await conn.getChannelInfo(TEAM)).toEqual({
+      id: TEAM,
+      name: 'Example Workspace / Engineering',
+      icon: '🚀',
+      color: '#5E6AD2',
+      isIm: false
+    })
   })
 
   it('bounds both team reads end to end — the caller’s deadline, else one of their own', async () => {

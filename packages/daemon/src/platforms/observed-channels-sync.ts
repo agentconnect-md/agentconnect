@@ -222,11 +222,17 @@ export class ObservedChannelsSync {
           ...current,
           id: chat.id,
           ...(chat.name ? { name: chat.name } : {}),
+          // Learned once and never unlearned: an observation that could not resolve the glyph
+          // keeps the one the row already carries rather than blanking a rendered row.
+          ...(chat.icon ? { icon: chat.icon } : {}),
+          ...(chat.color ? { color: chat.color } : {}),
           isPrivate: chat.isPrivate,
           kind: 'channel'
         }
         if (
           current?.name === observed.name &&
+          current?.icon === observed.icon &&
+          current?.color === observed.color &&
           current?.isPrivate === observed.isPrivate &&
           current?.kind === observed.kind
         ) {

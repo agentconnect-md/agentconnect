@@ -340,3 +340,35 @@ describe('exchange and revoke', () => {
     expect(await service.revoke(IDENTITY)).toBe(false)
   })
 })
+
+describe('teams — the workspace’s conversations, with the glyph the console draws them by', () => {
+  it('reads each team’s icon and color, and drops one Linear spelled another way', async () => {
+    const { linear, service } = build()
+    linear.reply(() => ({
+      status: 200,
+      body: {
+        data: {
+          teams: {
+            nodes: [
+              { id: 't1', key: 'ENG', name: 'Engineering', icon: 'Feather', color: '#5E6AD2' },
+              // An emoji is an icon too; a color that is not a hex triplet costs its own field.
+              { id: 't2', key: 'DOCS', name: 'Docs', icon: '📚', color: 'rebeccapurple' },
+              { id: 't3', key: 'OPS', name: 'Ops' },
+              // Unnamed or unkeyed teams are still dropped — a row nothing can label is not written.
+              { id: 't4', key: 'BAD' }
+            ]
+          }
+        }
+      }
+    }))
+    expect(await service.teams('tok')).toEqual({
+      ok: true,
+      result: [
+        { id: 't1', key: 'ENG', name: 'Engineering', icon: 'Feather', color: '#5E6AD2' },
+        { id: 't2', key: 'DOCS', name: 'Docs', icon: '📚' },
+        { id: 't3', key: 'OPS', name: 'Ops' }
+      ]
+    })
+    expect(linear.calls.at(-1)!.body).toContain('nodes { id key name icon color }')
+  })
+})

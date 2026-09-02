@@ -19,7 +19,10 @@ export const LINEAR_CONTEXT_BUDGET_BYTES = 32 * 1024
 const LinearTeam = z.object({
   id: z.string().optional(),
   key: z.string().optional(),
-  name: z.string().optional()
+  name: z.string().optional(),
+  // The team's own console glyph and tint, forwarded when the delivery carries them.
+  icon: z.string().optional(),
+  color: z.string().optional()
 })
 
 const LinearIssue = z.object({
@@ -148,7 +151,7 @@ export interface LinearAdapterExt {
   /** The issue's team — the channel coordinate itself (§4.5), carried so the daemon can
    *  label and head the session without a second Linear read. Absent on an issue-less
    *  session, which keys on the workspace instead. */
-  team?: { id: string; key?: string; name?: string }
+  team?: { id: string; key?: string; name?: string; icon?: string; color?: string }
   /** Which webhook opened this turn: `created` is the delegation or mention that opened the
    *  session (§10.2 auto-start reads it), `prompted` a follow-up on one that already exists. */
   event?: 'created' | 'prompted'
@@ -242,7 +245,15 @@ export function normalizeLinearEvent(
   const adapterExt: LinearAdapterExt = {
     agentSessionId: session.id,
     ...(team?.id
-      ? { team: { id: team.id, ...(team.key ? { key: team.key } : {}), ...(team.name ? { name: team.name } : {}) } }
+      ? {
+          team: {
+            id: team.id,
+            ...(team.key ? { key: team.key } : {}),
+            ...(team.name ? { name: team.name } : {}),
+            ...(team.icon ? { icon: team.icon } : {}),
+            ...(team.color ? { color: team.color } : {})
+          }
+        }
       : {}),
     ...(event.action === 'created' || event.action === 'prompted' ? { event: event.action } : {}),
     ...(issue?.id ? { issueId: issue.id } : {}),

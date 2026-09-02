@@ -872,6 +872,8 @@ export interface IntegrationChannelDto {
   name: string | null // "deploys" without the hash (or DM counterpart); null if lookup failed
   spaceId: string | null // enclosing Discord server id — the identity (names are not unique)
   space: string | null // that server's display name; null elsewhere and until resolved
+  icon: string | null // the conversation's own glyph — a Linear icon name or an emoji; null elsewhere
+  color: string | null // that glyph's hex tint; null elsewhere
   isPrivate: boolean
   kind: 'channel' | 'im' | 'mpim'
   trigger: ChannelTrigger
