@@ -34,11 +34,11 @@ export default function LarkFeishuSwitcher({
   const activeClassName =
     variant === 'login'
       ? 'font-sans text-[14px] font-semibold leading-normal text-(--text-primary)'
-      : 'font-sans text-[13px] font-semibold leading-normal text-(--text-primary)'
+      : 'font-sans text-[12px] font-semibold leading-normal text-(--text-primary)'
   const alternateClassName =
     variant === 'login'
       ? 'pointer-events-auto cursor-pointer rounded-[2px] border-0 bg-transparent p-0 font-sans text-[12px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-not-allowed disabled:opacity-50'
-      : 'cursor-pointer rounded-[2px] border-0 bg-transparent p-0 font-sans text-[11px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-not-allowed disabled:opacity-50'
+      : 'cursor-pointer rounded-[2px] border-0 bg-transparent p-0 font-sans text-[10px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-not-allowed disabled:opacity-50'
 
   return (
     <span className="inline-flex items-baseline whitespace-nowrap">
@@ -49,7 +49,7 @@ export default function LarkFeishuSwitcher({
       {/* The slash hugs both words: spaced out, the label reached the install tile's edge. */}
       <span
         aria-hidden="true"
-        className="mx-[1px] font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)"
+        className={`mx-[1px] font-sans font-normal leading-normal text-(--text-tertiary) ${variant === 'login' ? 'text-[11px]' : 'text-[10px]'}`}
       >
         /
       </span>
