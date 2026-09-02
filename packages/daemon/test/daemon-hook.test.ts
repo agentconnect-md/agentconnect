@@ -1163,7 +1163,8 @@ describe('Daemon rd/msg hook fires', () => {
     const headSha = 'a'.repeat(40)
     const baseSha = 'b'.repeat(40)
     const entry = {
-      msg: { text: 'Review this pull request.' },
+      // Both prompt seats: the workspace block must land on the persisted prompt too.
+      msg: { text: 'Review this pull request.', turnBody: { prompt: 'Review this pull request.' } },
       hookContext: {
         hookId: HOOK_ID,
         agentId: AGENT_ID,
@@ -1213,6 +1214,7 @@ describe('Daemon rd/msg hook fires', () => {
     )
     expect(entry.msg.text).toContain('Trusted review workspace')
     expect(entry.msg.text).toContain('verify `git rev-parse HEAD`')
+    expect(entry.msg.turnBody.prompt).toBe(entry.msg.text)
     // A session with no other root has no reference directories to speak of.
     expect(entry.msg.text).not.toContain('Additional repositories are available')
     await daemon.stop()

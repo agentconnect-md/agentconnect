@@ -7847,7 +7847,9 @@ export class Daemon {
       ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
       kind: 'text',
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
-      ...(msg.turnBody ? { body: JSON.stringify(msg.turnBody) } : {}),
+      // Deliberately BODYLESS: this observation can run before the review batch and the review
+      // workspace finish rewriting the prompt, and the body is first-wins on the row. The
+      // authoritative ingest, which runs after both, is the one writer that persists it.
       ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
     })
     const after = await this.store.threadTranscriptRevision(transcriptChannel, thread, owner)
