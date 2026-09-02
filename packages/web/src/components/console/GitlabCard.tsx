@@ -23,7 +23,6 @@ import {
   GITLAB_CONVERGENCE_POLL_MS,
   GITLAB_DEFAULT_INSTANCE_URL,
   GITLAB_PROJECT_STATE,
-  gitlabInstanceHost,
   gitlabProfileUrl,
   gitlabStateReasonText,
   gitlabWebhookBadge
@@ -440,9 +439,12 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
     }
   }
 
-  // One deployment, one instance (§24.1), so any connection answers for all of
-  // them; before the first one there is nothing to link to anyway.
-  const instanceUrl = connections[0]?.instanceUrl ?? GITLAB_DEFAULT_INSTANCE_URL
+  // One deployment, one instance (§24.1): the instance is the CARD's fact, not a per-identity one, so any
+  // connection answers for all of them; before the first one there is nothing to link to anyway.
+  const instance = connections[0] ?? null
+  const instanceUrl = instance?.instanceUrl ?? GITLAB_DEFAULT_INSTANCE_URL
+  const instanceHint =
+    instance?.instanceVersion == null ? instanceUrl : `${instanceUrl} · GitLab ${instance.instanceVersion}`
   const accounts = bots?.accounts ?? []
   const rows = botRows(accounts)
   const orphans = orphanBindings(accounts, projects)
@@ -463,6 +465,12 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
             <GitlabMark />
           </span>
           GitLab
+          {/* Which instance, and what it runs — one line of hover on the card, not a badge on every identity. */}
+          {enabled === true && instance !== null && (
+            <span className="flex items-center text-(--text-tertiary)" data-gitlab-instance="" title={instanceHint}>
+              <Icon name="info" size={13} />
+            </span>
+          )}
         </span>
         {/* A takeover runs on the caller's OWN account, so connecting one stays reachable
             even when the organization already lists other people's connections. */}
@@ -473,6 +481,20 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
           </Button>
         )}
       </div>
+
+      {/* Below the floor every identity on the instance is equally stuck, so the card says it once. */}
+      {enabled === true && instance?.instanceVersionSupported === false && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
+          <span>GitLab {instance.instanceVersion}</span>
+          <span className="badge bg-(--status-paused-soft) text-(--amber-500)">
+            below {instance.instanceVersionFloor}
+          </span>
+          <span>
+            Setting up new projects and bots needs {instance.instanceVersionFloor} or later. Projects already set up
+            keep working until their credentials expire.
+          </span>
+        </div>
+      )}
 
       {enabled === null && <LoadingState size={22} padding={20} />}
       {enabled === false && (
@@ -502,10 +524,6 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                   </span>
                 </span>
                 <span className="mono min-w-0 truncate text-[12.5px]">{c.gitlabUsername}</span>
-                {/* The instance, not a literal: one deployment talks to exactly one. */}
-                <span className="badge bg-(--surface-active) text-(--text-tertiary)" title={c.instanceUrl}>
-                  {gitlabInstanceHost(c.instanceUrl)}
-                </span>
                 {c.state === 'reauth_required' && (
                   <span className="badge bg-(--status-paused-soft) text-(--amber-500)">reconnect needed</span>
                 )}
@@ -555,24 +573,6 @@ export default function GitlabCard({ canWrite }: { canWrite: boolean }) {
                 {c.assignedProjects === 1
                   ? 'This account still administers 1 project below. Transfer that project to your own GitLab account, or reconnect this one to keep managing it, before this row can go.'
                   : `This account still administers ${c.assignedProjects} projects below. Transfer those projects to your own GitLab account, or reconnect this one to keep managing them, before this row can go.`}
-              </div>
-            )}
-            {/* What the instance reports, and whether it clears the floor project
-                setup needs. Silent until the first credentialed contact answers. */}
-            {c.instanceVersion !== null && (
-              <div className="flex flex-wrap items-center gap-2 border-b border-(--border-subtle) px-4 py-[9px] font-sans text-[12px] font-normal leading-[1.5] text-(--text-tertiary)">
-                <span>GitLab {c.instanceVersion}</span>
-                {c.instanceVersionSupported === false && (
-                  <>
-                    <span className="badge bg-(--status-paused-soft) text-(--amber-500)">
-                      below {c.instanceVersionFloor}
-                    </span>
-                    <span>
-                      Setting up new projects and bots needs {c.instanceVersionFloor} or later. Projects already set up
-                      keep working until their credentials expire.
-                    </span>
-                  </>
-                )}
               </div>
             )}
             {c.state === 'reauth_required' && (

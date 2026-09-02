@@ -221,6 +221,11 @@ async function clickIcon(title: string, scope: ParentNode = host): Promise<void>
   })
 }
 
+/** The card's own instance hint — one deployment talks to exactly one instance (\u00a724.1). */
+function instanceHint(): HTMLElement | null {
+  return host.querySelector('[data-gitlab-instance]')
+}
+
 /** One connection row and everything the card renders under it. */
 function connectionRow(id: string): HTMLElement {
   const found = host.querySelector(`[data-gitlab-connection="${id}"]`)
@@ -419,7 +424,7 @@ describe('GitlabCard', () => {
     expect(refused.textContent).toContain('group 900')
   })
 
-  it('names the configured instance, not a gitlab.com literal, and links the bots there (\u00a724.1)', async () => {
+  it('names the configured instance on the card, not a gitlab.com literal, and links the bots there (\u00a724.1)', async () => {
     const SELF_MANAGED = {
       ...CONNECTION,
       instanceUrl: 'https://gitlab.example.test:8443/gitlab',
@@ -430,36 +435,60 @@ describe('GitlabCard', () => {
     roster = [BOT]
     await render()
 
-    const row = connectionRow('conn-1')
-    // Host and port, without the scheme or the install prefix — it is a badge.
-    expect(row.textContent).toContain('gitlab.example.test:8443')
-    expect(row.textContent).not.toContain('gitlab.com')
+    // The whole URL, prefix and port included, because the card has room for it exactly once.
+    expect(instanceHint()!.getAttribute('title')).toBe(
+      'https://gitlab.example.test:8443/gitlab \u00b7 GitLab 18.11.4-ee'
+    )
+    expect(host.textContent).not.toContain('gitlab.com')
     // The chip link keeps the prefix: every path on that instance lives under it.
     const link = botRow('agent-1').querySelector('a[href*="gitlab-pilot"]')
     expect(link!.getAttribute('href')).toBe('https://gitlab.example.test:8443/gitlab/gitlab-pilot-5b350c0aeba7-2bivoj')
   })
 
-  it('reports the instance version, and says what a below-floor one still serves (\u00a724.2)', async () => {
+  it('states the one instance once, however many identities are connected to it (\u00a724.1)', async () => {
+    const SECOND = { ...CONNECTION, id: 'conn-2', gitlabUserId: '4712', gitlabUsername: 'zfy0701', mine: false }
+    mocks.fetchConnections.mockResolvedValue({
+      enabled: true,
+      connections: [
+        { ...CONNECTION, instanceVersion: '18.4.1', instanceVersionSupported: false },
+        { ...SECOND, instanceVersion: '18.4.1', instanceVersionSupported: false }
+      ]
+    })
+    await render()
+
+    // An identity row carries the identity: no instance host, no instance version.
+    for (const id of ['conn-1', 'conn-2']) {
+      expect(connectionRow(id).textContent).not.toContain('gitlab.com')
+      expect(connectionRow(id).textContent).not.toContain('GitLab 18.4.1')
+    }
+    expect(host.querySelectorAll('[data-gitlab-instance]')).toHaveLength(1)
+    // And the floor warning is the instance's, so two stuck identities do not print it twice.
+    expect(host.textContent!.match(/below 18\.11/g)).toHaveLength(1)
+  })
+
+  it('keeps a supported version off the card body and in the instance hint (\u00a724.2)', async () => {
     mocks.fetchConnections.mockResolvedValue({
       enabled: true,
       connections: [{ ...CONNECTION, instanceVersion: '18.11.4-ee', instanceVersionSupported: true }]
     })
     await render()
-    const healthy = connectionRow('conn-1')
-    expect(healthy.textContent).toContain('GitLab 18.11.4-ee')
-    expect(healthy.textContent).not.toContain('below 18.11')
+    // Nothing to act on, so it takes no line of the card at all.
+    expect(host.textContent).not.toContain('GitLab 18.11.4-ee')
+    expect(host.textContent).not.toContain('below 18.11')
+    // Still one hover away for an operator, on the header that already names the instance.
+    expect(instanceHint()!.getAttribute('title')).toBe('https://gitlab.com \u00b7 GitLab 18.11.4-ee')
+  })
 
-    document.body.innerHTML = ''
+  it('says what a below-floor instance still serves (\u00a724.2)', async () => {
     mocks.fetchConnections.mockResolvedValue({
       enabled: true,
       connections: [{ ...CONNECTION, instanceVersion: '18.4.1', instanceVersionSupported: false }]
     })
     await render()
-    const old = connectionRow('conn-1')
-    expect(old.textContent).toContain('GitLab 18.4.1')
-    expect(old.textContent).toContain('below 18.11')
+    expect(host.textContent).toContain('GitLab 18.4.1')
+    expect(host.textContent).toContain('below 18.11')
     // Bounded degradation, said plainly: what is already set up keeps working.
-    expect(old.textContent).toContain('keep working until their credentials expire')
+    expect(host.textContent).toContain('keep working until their credentials expire')
   })
 
   it('says nothing about a version the deployment has not observed yet', async () => {
@@ -468,7 +497,15 @@ describe('GitlabCard', () => {
       connections: [{ ...CONNECTION, instanceVersion: null, instanceVersionSupported: null }]
     })
     await render()
-    expect(connectionRow('conn-1').textContent).not.toContain('GitLab 1')
+    expect(host.textContent).not.toContain('GitLab 1')
+    expect(instanceHint()!.getAttribute('title')).toBe('https://gitlab.com')
+  })
+
+  it('has no instance to name before the first connection', async () => {
+    mocks.fetchConnections.mockResolvedValue({ enabled: true, connections: [] })
+    await render()
+    // The console learns the instance from a connection; without one it would be guessing gitlab.com.
+    expect(instanceHint()).toBeNull()
   })
 
   it('tells an operator how to grant withdrawn bot-creation authority (\u00a724.3)', async () => {
