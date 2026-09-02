@@ -22,6 +22,7 @@ import {
 import { MemoryProviderUnavailableError, type MemoryProviderKind } from '../memory/provider.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { CLAUDE_PROFILE_ENV, isClaudeRuntimeDef } from '../runtime-defs/claude-runtime.js'
+import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
 import { resolveTrustedExecutable, trustedRuntimeReadRoots } from '../runtimes/read-roots.js'
 
@@ -33,23 +34,26 @@ export interface ComposedRuntimeLaunch {
 export function runtimeSandboxReadRoots(
   runtime: RuntimeDef,
   stateSourceEnv: NodeJS.ProcessEnv = process.env
-): { readRoots: string[]; runtimeExecutable: string; claudeExecutable?: string } {
+): { readRoots: string[]; runtimeExecutable: string; hintExecutables: Record<string, string> } {
   const trustedRuntimeEnv: NodeJS.ProcessEnv = {
     ...stateSourceEnv,
     ...Object.fromEntries(runtime.env.map((entry) => [entry.name, entry.value]))
   }
-  const claudeCommand = isClaudeRuntimeDef(runtime)
-    ? trustedRuntimeEnv.CLAUDE_CODE_EXECUTABLE || resolveCommandPath('claude', trustedRuntimeEnv)
-    : undefined
-  const claudeExecutable = claudeCommand ? resolveTrustedExecutable(claudeCommand, trustedRuntimeEnv) : undefined
+  // A hint resolves against the host PATH, so carve it back or the child spawns a path the sandbox hides.
+  const hintCommands = runtimeExecutableHints(runtime).flatMap(({ envVar, command }) => {
+    const effective = trustedRuntimeEnv[envVar] || resolveCommandPath(command, trustedRuntimeEnv)
+    return effective ? [{ envVar, command: effective }] : []
+  })
   return {
     readRoots: trustedRuntimeReadRoots({
       runtime,
       hostEnv: stateSourceEnv,
-      ...(claudeCommand ? { executableCommands: [claudeCommand] } : {})
+      executableCommands: hintCommands.map(({ command }) => command)
     }),
     runtimeExecutable: resolveTrustedExecutable(runtime.command, trustedRuntimeEnv),
-    ...(claudeExecutable ? { claudeExecutable } : {})
+    hintExecutables: Object.fromEntries(
+      hintCommands.map(({ envVar, command }) => [envVar, resolveTrustedExecutable(command, trustedRuntimeEnv)])
+    )
   }
 }
 
@@ -201,8 +205,9 @@ export function composeRuntimeLaunch(opts: {
     allowModelToolUnixSockets: opts.allowModelToolUnixSockets,
     ...(opts.hostPackageCache ? { hostPackageCache: true as const } : {})
   })
-  if (sandboxAccess?.claudeExecutable && !launch.env.CLAUDE_CODE_EXECUTABLE) {
-    launch.env.CLAUDE_CODE_EXECUTABLE = sandboxAccess.claudeExecutable
+  // Pin each carved-back executable so the child never resolves a hint to a path outside the sandbox.
+  for (const [envVar, executable] of Object.entries(sandboxAccess?.hintExecutables ?? {})) {
+    if (!launch.env[envVar]) launch.env[envVar] = executable
   }
   const composed: RuntimeDef = {
     ...opts.runtime,

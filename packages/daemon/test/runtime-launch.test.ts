@@ -682,8 +682,38 @@ describe('composeRuntimeLaunch', () => {
         PATH: `${bin}${delimiter}${dirname(process.execPath)}`
       })
 
-      expect(sandboxAccess.claudeExecutable).toBe(realpathSync(executable))
+      expect(sandboxAccess.hintExecutables.CLAUDE_CODE_EXECUTABLE).toBe(realpathSync(executable))
       expect(coveredBy(sandboxAccess.readRoots, join(bin, 'claude'))).toBe(true)
+    } finally {
+      rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
+  // Issue #1689: CODEX_PATH pointed the sandboxed adapter at a global npm install the HOME deny hid.
+  it('keeps a Codex executable hint under the host HOME readable', () => {
+    const testRoot = mkdtempSync(join(tmpdir(), 'ac-codex-launch-roots-'))
+    const hostHome = join(testRoot, 'home')
+    const bin = join(hostHome, '.npm-global', 'bin')
+    const pkg = join(hostHome, '.npm-global', 'lib', 'node_modules', '@openai', 'codex')
+    const executable = join(pkg, 'bin', 'codex.js')
+    mkdirSync(bin, { recursive: true })
+    mkdirSync(dirname(executable), { recursive: true })
+    writeFileSync(join(pkg, 'package.json'), '{"name":"@openai/codex"}')
+    writeFileSync(executable, '#!/usr/bin/env node\n')
+    chmodSync(executable, 0o755)
+    symlinkSync(executable, join(bin, 'codex'))
+
+    try {
+      const sandboxAccess = runtimeSandboxReadRoots(
+        runtime(process.execPath, ['-y', '@agentconnect.md/codex-acp@agentconnect']),
+        {
+          HOME: hostHome,
+          PATH: [bin, dirname(process.execPath)].join(delimiter)
+        }
+      )
+
+      expect(sandboxAccess.hintExecutables.CODEX_PATH).toBe(realpathSync(executable))
+      expect(coveredBy(sandboxAccess.readRoots, join(bin, 'codex'))).toBe(true)
     } finally {
       rmSync(testRoot, { recursive: true, force: true })
     }
