@@ -59,11 +59,7 @@ export function buildSyntheticMessage(
   // written apart from a trim, and a schedule prompt is routinely long and multi-line, so copying
   // it would persist the whole prompt as the title and push it to platform title surfaces.
   const title = deriveTitle(cron.trigger)
-  // No target ⇒ headless fire: the channel is a synthetic key (transcript/session
-  // bookkeeping only) and `headless` suppresses all platform output in dispatch.
-  // An anchored fire lives on the TARGET's platform (replies post there);
-  // headless fires keep the legacy 'slack' key so existing synthetic sessions
-  // stay continuous across this change.
+  // No target ⇒ headless fire: a minted key on the legacy 'slack' platform, so existing sessions stay continuous.
   const msg: NormalizedMessage = {
     msgId: `cron:${cron.id}:${traceId}`,
     traceId,
@@ -77,7 +73,7 @@ export function buildSyntheticMessage(
     mentionedBots: [],
     isDm: false,
     trigger: 'cron',
-    ...(cron.target ? {} : { headless: true })
+    ...(cron.target ? {} : { headless: true, syntheticChannel: true })
   }
   return { agentId, msg }
 }

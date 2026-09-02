@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MAX_AGENT_CALL_HOPS } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { buildSyntheticMessage } from '../src/scheduler/scheduler.js'
+import type { CronDef } from '../src/agents/agent-schema.js'
 import { sessionKey, type InboxRow } from '../src/store/local-store.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import type { NormalizedMessage } from '../src/messages/normalized.js'
@@ -334,6 +336,68 @@ describe('agent-authored platform mentions (send-message-routing-rework.md §6)'
     const postlessWake = { callFrom: 'bot-a', hopCount: 1, deliveryId: 'd-2' }
     await (daemon as any).classifyNewSessionOrThrow('bot-b', postlessKey, 'acp-1', msg, postlessWake, undefined, false)
     expect(await (daemon as any).store.getSession(postlessKey)).toMatchObject({ sourceBindingKind: 'local' })
+    await daemon.stop()
+  })
+
+  it('keeps a HEADLESS cron fire local while an anchored one still binds its channel', async () => {
+    // A headless fire keeps the legacy `slack` session key for continuity, but `cron:<id>` is a
+    // synthetic coordinate rather than a channel. Binding it as a conversation audience minted a
+    // scope no Slack member can ever satisfy, so once the org followed Slack access the run's
+    // session was invisible to everyone — while the anchored fire beside it, which does post to a
+    // real channel, must go on binding.
+    const { daemon } = await boot([{ id: 'bot-b' }])
+    ;(daemon as any).connByIntegration.set('int-bot-b', { workspaceId: () => 'T-TEST' })
+    const cron = (over: Partial<CronDef>): CronDef => ({
+      id: 'cron-1',
+      schedule: '0 9 * * *',
+      trigger: 'post health report',
+      enabled: true,
+      ...over
+    })
+
+    // The fire carries no transport scope, yet an agent with ONE Slack integration resolves one from
+    // the absent scope anyway — attributable, which is why the guard has to be the minted coordinate
+    // itself rather than the completeness of the tuple below it.
+    const { msg: headless } = buildSyntheticMessage('bot-b', cron({}), 'trace-1')
+    expect(headless.channel).toBe('cron:cron-1')
+    expect(headless.syntheticChannel).toBe(true)
+    expect((daemon as any).integrationIdForTransportScope('bot-b', 'slack', undefined)).toBe('int-bot-b')
+    expect(await (daemon as any).conversationExternalSource('bot-b', headless, false)).toBeUndefined()
+
+    const key = sessionKey('slack', headless.channel, headless.thread!, 'bot-b')
+    await (daemon as any).store.upsertSession({
+      key,
+      agentId: 'bot-b',
+      platform: 'slack',
+      channel: headless.channel,
+      thread: headless.thread!,
+      acpSessionId: 'acp-1',
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    await (daemon as any).classifyNewSessionOrThrow('bot-b', key, 'acp-1', headless, undefined, undefined, false)
+    // `local` is what keeps the CP off its mixed-version Slack fallback, so the row stays an
+    // ordinary org session instead of an external candidate that can never settle.
+    expect(await (daemon as any).store.getSession(key)).toMatchObject({
+      sourceBindingKind: 'local',
+      externalProvider: null
+    })
+
+    const anchored = buildSyntheticMessage('bot-b', cron({ target: { platform: 'slack', channel: 'C1' } }), 't2').msg
+    expect(anchored.syntheticChannel).toBeUndefined()
+    const bound = {
+      externalProvider: 'slack',
+      externalRealmKey: 'T-TEST',
+      externalResourceKind: 'conversation',
+      externalResourceKey: 'C1',
+      externalIntegrationId: 'int-bot-b'
+    }
+    expect(await (daemon as any).conversationExternalSource('bot-b', anchored, false)).toMatchObject(bound)
+    // And headlessness alone must never be read as the minted coordinate: a channel-root seed and a
+    // channel intro are headless turns that DO live in a real channel and have to keep binding it.
+    const headlessInChannel = { ...anchored, headless: true }
+    expect(await (daemon as any).conversationExternalSource('bot-b', headlessInChannel, false)).toMatchObject(bound)
     await daemon.stop()
   })
 
