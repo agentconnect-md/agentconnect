@@ -488,8 +488,9 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.sandbox).toBeUndefined()
     const owner = realpathSync(primaryGit)
     expect(agentFilesystem(launch.env)).toContain(`"${owner}" = "write"`)
-    expect(agentFilesystem(launch.env)).toContain(`"${join(owner, 'hooks')}" = "deny"`)
-    expect(agentFilesystem(launch.env)).toContain(`"${join(owner, 'config')}" = "deny"`)
+    expect(agentFilesystem(launch.env)).toContain(`"${join(owner, 'worktrees', '**')}" = "write"`)
+    expect(agentFilesystem(launch.env)).toContain(`"${join(owner, 'hooks')}" = "read"`)
+    expect(agentFilesystem(launch.env)).toContain(`"${join(owner, 'config')}" = "read"`)
   })
 
   it('follows the daemon-named checkout and every secondary root when the sandbox is off', () => {

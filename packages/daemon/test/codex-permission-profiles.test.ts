@@ -61,7 +61,8 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
     expect(config.configOverrides).toContain('features.unified_exec=false')
     expect(config.configOverrides).toContain(
       'permissions.agentconnect-protected-workspace.filesystem={ "/agent/workspace/.git" = "write", ' +
-        '"/agent/workspace/.git/hooks" = "deny", "/agent/workspace/.git/config" = "deny", ' +
+        '"/agent/workspace/.git/worktrees/**" = "write", ' +
+        '"/agent/workspace/.git/hooks" = "read", "/agent/workspace/.git/config" = "read", ' +
         '"/agent/home/.codex" = "deny" }'
     )
     expect(
@@ -71,8 +72,10 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
     ).not.toContain('/agent/workspace/.git')
   })
 
-  // Verified against the vendored Codex: without the nested deny a shell command can plant a Git hook.
-  it('denies hooks and config inside every Git metadata root it opens for writing', () => {
+  // Verified against the vendored Codex on Linux: `deny` hides hooks/config from READS too, and Git
+  // cannot run without its config; `read` keeps a shell from planting a hook while Git keeps working.
+  // The worktrees subtree is named because :workspace pins a session's own admin dir read-only.
+  it('keeps hooks and config read-only, and opens the worktrees subtree, in every Git metadata root', () => {
     const config = codexPermissionProfileConfig({
       protectedRoots: [],
       writableGitMetadataRoots: ['/agent/workspace/.git', '/agent/repos/acme/infra/checkout/.git']
@@ -83,8 +86,10 @@ describe.skipIf(process.platform === 'win32')('Codex permission profile launch c
     )!
     for (const root of ['/agent/workspace/.git', '/agent/repos/acme/infra/checkout/.git']) {
       expect(agent).toContain(`"${root}" = "write"`)
-      expect(agent).toContain(`"${root}/hooks" = "deny"`)
-      expect(agent).toContain(`"${root}/config" = "deny"`)
+      expect(agent).toContain(`"${root}/worktrees/**" = "write"`)
+      expect(agent).toContain(`"${root}/hooks" = "read"`)
+      expect(agent).toContain(`"${root}/config" = "read"`)
+      expect(agent).not.toContain(`"${root}/hooks" = "deny"`)
     }
   })
 
