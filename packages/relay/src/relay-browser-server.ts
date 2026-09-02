@@ -106,6 +106,7 @@ export function createRelayBrowserServer(app: FastifyInstance, deps: RelayBrowse
           // The stable principal travels beside the display handle: the daemon keys the
           // durable transcript row on it, so a later profile rename cannot orphan old rows.
           ...(result.userId ? { userId: result.userId } : {}),
+          ...(result.userPicture ? { userPicture: result.userPicture } : {}),
           // Session-targeted continuation: verdict-only, never browser input.
           ...(result.targetSessionId ? { targetSessionId: result.targetSessionId } : {}),
           ...(result.remoteMcp ? { remoteMcp: result.remoteMcp } : {}),

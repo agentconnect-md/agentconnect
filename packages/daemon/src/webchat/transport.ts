@@ -22,7 +22,7 @@ import { monotonicTs } from '../store/monotonic-ts.js'
 import { attachmentMention, transcriptImageAttachments } from '../session/attachment-block.js'
 import { routeRules, webchatContinuationDecision } from '../router/routing-table.js'
 import type { RoutingRule } from '../router/routing-rule.js'
-import { SlackConnection, type SlackPostOptions } from '../slack/connection.js'
+import { SlackConnection } from '../slack/connection.js'
 import type { TelegramConnection } from '../telegram/connection.js'
 import type { DiscordConnection } from '../discord/connection.js'
 import type { FeishuConnection } from '../feishu/connection.js'
@@ -50,14 +50,16 @@ import {
 export interface WebchatAuthor {
   id: string
   name: string
+  /** Public avatar URL from the verified verdict — the identity a Slack mirror posts under. */
+  pictureUrl?: string
 }
 
 /** The author a webchat `turn` op names. A relay older than the stable-principal claim sends
  *  only the display handle; falling back to it keeps that relay working, at the cost of the
  *  handle-shaped sender this pairing exists to remove. */
-export function webchatAuthorOf(op: { user?: string; userId?: string }): WebchatAuthor {
+export function webchatAuthorOf(op: { user?: string; userId?: string; userPicture?: string }): WebchatAuthor {
   const name = op.user ?? 'webchat'
-  return { id: op.userId ?? name, name }
+  return { id: op.userId ?? name, name, ...(op.userPicture ? { pictureUrl: op.userPicture } : {}) }
 }
 
 /** Any platform connection a continuation mirror can post through. */
@@ -418,7 +420,10 @@ export class WebchatTransport {
       return { accepted: false, turnId, reason: admission.reason === 'draining' ? 'draining' : 'busy' }
     }
     // Admission owns a serial-queue slot before mirroring and waits for its result before execution.
-    const mirrorText = `[${author.name} via console] ${text}`
+    // Slack posts the bare body under the author's own name and avatar and falls back to the
+    // attributed body atomically when it cannot customize the identity; every other platform
+    // posts the attributed body, so the human's words are never rendered as the agent's.
+    const attributedText = `[${author.name} via console] ${text}`
     // The mirror takes the SAME two-step shape an ordinary agent reply does:
     // an attributed body post, then a finalizing chat.update stamping the
     // trusted routing claim (author = the target agent, root depth, unaddressed
@@ -429,19 +434,27 @@ export class WebchatTransport {
     // connection-fenced rules, and the author is excluded (it gets the targeted
     // dispatch). Platforms without a metadata claim degrade to transcript-only
     // peers, like agent replies there.
-    let slackMirror: { conn: SlackConnection; ts: string } | undefined
+    let slackMirror: { conn: SlackConnection; ts: string; text: string } | undefined
     try {
-      // postMessage resolves undefined when the provider swallows a send failure
+      // A post resolves undefined when the provider swallows a send failure
       // (Discord/Feishu) or lands nothing (Slack) — only a returned message id
       // proves the mirror is visible, so undefined takes the failure path too.
-      const mirrorId =
-        local.platform === 'slack'
-          ? await (conn as SlackConnection).postMessage(local.channel, mirrorText, local.thread || undefined, {
-              agentAuthorId: agentId
-            } satisfies SlackPostOptions)
-          : await conn.postMessage(local.channel, mirrorText, local.thread || undefined)
+      let mirrorId: string | undefined
+      if (local.platform === 'slack') {
+        const slackConn = conn as SlackConnection
+        const landed = await slackConn.postAsAuthor(
+          local.channel,
+          local.thread || undefined,
+          { text, attributedText },
+          { name: author.name, ...(author.pictureUrl ? { iconUrl: author.pictureUrl } : {}) },
+          { agentAuthorId: agentId }
+        )
+        mirrorId = landed?.ts
+        if (landed) slackMirror = { conn: slackConn, ts: landed.ts, text: landed.text }
+      } else {
+        mirrorId = await conn.postMessage(local.channel, attributedText, local.thread || undefined)
+      }
       if (!mirrorId) throw new Error('provider returned no message id')
-      if (local.platform === 'slack') slackMirror = { conn: conn as SlackConnection, ts: mirrorId }
       settleMirror(true)
     } catch (err) {
       this.host.warn(`webchat continuation: mirror post failed for ${local.key}: ${formatErr(err)}`)
@@ -456,8 +469,8 @@ export class WebchatTransport {
       const finalized = await slackMirror.conn.finalizeResponse(
         local.channel,
         slackMirror.ts,
-        [{ type: 'markdown', text: mirrorText }],
-        mirrorText,
+        [{ type: 'markdown', text: slackMirror.text }],
+        slackMirror.text,
         agentId,
         { responseId: msg.msgId, deliveryState: 'final', hopCount: 0, mentionedAgentIds: [] }
       )

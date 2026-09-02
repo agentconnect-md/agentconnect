@@ -106,8 +106,9 @@ its corresponding session or the shared composer is disabled.
 The same placement gate applies to **continuing an integration-origin session from the
 console** (webchat-cross-integration-continuation.md): the composer appears only while
 the owning Agent is still on the session's daemon and the deployment supports
-continuation. Continuing a platform session from the console **posts the attributed
-human input to the origin thread before dispatch** (`[<user> via console] …`); the agent
+continuation. Continuing a platform session from the console **posts the human input to the origin
+thread before dispatch**, under the console user's own name and avatar where the platform
+renders a per-message identity (Slack), and as `[<user> via console] …` elsewhere; the agent
 reply keeps the session's existing output mode, and agents already participating in the
 origin thread receive the mirror under its ordinary routing rules. The session remains
 the single source of truth; console and platform are both projections of it.

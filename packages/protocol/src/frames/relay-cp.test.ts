@@ -120,12 +120,15 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
       ok: true,
       userId: 'usr_1',
       user: 'user@example.com',
+      userPicture: 'https://cdn.example.test/avatars/usr_1.png',
       agentId: AGENT_ID,
       daemonId: DAEMON_ID,
       orgId: 'org_x',
       conversationId: '33333333-3333-4333-8333-333333333333'
     })
     expect(webchat.success).toBe(true)
+    // The avatar is a URL a platform will fetch, never free text.
+    expect(RcVerifyResult.safeParse({ ok: true, userPicture: 'not a url' }).success).toBe(false)
     expect(
       RcVerifyResult.safeParse({
         ok: true,

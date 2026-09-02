@@ -1562,6 +1562,72 @@ describe('SlackConnection chat.postMessage boundary', () => {
     expect(calls[4]).not.toHaveProperty('username')
   })
 
+  it('postAsAuthor lands the bare body under the human identity when the workspace can customize', async () => {
+    const calls: any[] = []
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        withPostMessage(async (payload) => {
+          calls.push(payload)
+          return { ts: `t${calls.length}` }
+        }) as any
+    )
+    const landed = await conn.postAsAuthor(
+      'C1',
+      '100.1',
+      { text: 'looks off?', attributedText: '[Ada via console] looks off?' },
+      { name: 'Ada', iconUrl: 'https://cdn.example.test/u/1.png' },
+      { agentAuthorId: 'agent-1' }
+    )
+    expect(landed).toEqual({ ts: 't1', text: 'looks off?' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      username: 'Ada',
+      icon_url: 'https://cdn.example.test/u/1.png',
+      text: 'looks off?',
+      blocks: [{ type: 'markdown', text: 'looks off?' }]
+    })
+    expect(calls[0].metadata.event_payload).toMatchObject({ author_agent_id: 'agent-1' })
+  })
+
+  it('postAsAuthor switches to the attributed body on the SAME send that proves customize missing, and while latched', async () => {
+    const calls: any[] = []
+    const missingCustomize = Object.assign(new Error('An API error occurred: missing_scope'), {
+      data: { error: 'missing_scope', needed: 'chat:write.customize', provided: 'chat:write' }
+    })
+    const conn = new SlackConnection(
+      { ...deps(), sendIntervalMs: 0 } as any,
+      () =>
+        withPostMessage(async (payload) => {
+          calls.push(payload)
+          if (payload.username) throw missingCustomize
+          return { ts: `t${calls.length}` }
+        }) as any
+    )
+    const body = { text: 'looks off?', attributedText: '[Ada via console] looks off?' }
+
+    // First probe: the identity attempt carries the bare body; the retry that lands carries the attribution.
+    await expect(conn.postAsAuthor('C1', '100.1', body, { name: 'Ada' })).resolves.toEqual({
+      ts: 't2',
+      text: body.attributedText
+    })
+    expect(calls[0]).toMatchObject({ username: 'Ada', text: body.text })
+    expect(calls[1]).not.toHaveProperty('username')
+    expect(calls[1]).toMatchObject({
+      text: body.attributedText,
+      blocks: [{ type: 'markdown', text: body.attributedText }]
+    })
+
+    // Latched: one attributed send, no identity probe.
+    await expect(conn.postAsAuthor('C1', '100.1', body, { name: 'Ada' })).resolves.toEqual({
+      ts: 't3',
+      text: body.attributedText
+    })
+    expect(calls).toHaveLength(3)
+    expect(calls[2]).not.toHaveProperty('username')
+    expect(calls[2]).toMatchObject({ text: body.attributedText })
+  })
+
   it('does not retry an unrelated missing scope and risk a duplicate send', async () => {
     const calls: any[] = []
     const missingChatWrite = Object.assign(new Error('An API error occurred: missing_scope'), {

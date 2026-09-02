@@ -164,7 +164,7 @@ export interface ConsolidatedGroup {
  *  authorship travels separately in message metadata. */
 export interface SlackPostOptions {
   username?: string
-  /** Public https image URL for the message avatar (the agent's icon). */
+  /** Public https image URL for the message avatar (the agent's icon, or a console author's). */
   icon_url?: string
   /** Stable AgentConnect author identity for first-class agent thread events.
    *  Slack's bot_id identifies the shared app, not the individual agent, so this
@@ -1266,22 +1266,31 @@ export class SlackConnection implements PlatformConnection {
     return this.app.client.chat.postMessage(payload)
   }
 
-  /** Shared chat.postMessage boundary with optional per-message identity. */
+  /** Shared chat.postMessage boundary with optional per-message identity. Whenever the
+   *  identity is dropped (scope already proven missing, or proven by THIS send), the
+   *  `fallbackPayload` posts in its place — one decision, at the boundary, per send. */
   private async postChatMessage(
     channel: string,
     threadTs: string | undefined,
     payload: Record<string, unknown>,
-    options?: SlackPostOptions
-  ): Promise<{ ts?: string } | undefined> {
+    options?: SlackPostOptions,
+    fallbackPayload?: Record<string, unknown>
+  ): Promise<{ ts?: string; identityDropped?: boolean } | undefined> {
     const customize: Record<string, unknown> = {}
     const username = options?.username?.trim()
     const iconUrl = options?.icon_url?.trim()
     if (username) customize.username = username
     if (iconUrl) customize.icon_url = iconUrl
+    const wantsIdentity = Object.keys(customize).length > 0
+    const plain = fallbackPayload ?? payload
     try {
       let result: { ts?: string } | undefined
-      if (Object.keys(customize).length === 0 || Date.now() < this.customUsernameRetryAt) {
+      let identityDropped = false
+      if (!wantsIdentity) {
         result = await this.postIfThreadExists(channel, threadTs, payload)
+      } else if (Date.now() < this.customUsernameRetryAt) {
+        identityDropped = true
+        result = await this.postIfThreadExists(channel, threadTs, plain)
       } else {
         try {
           result = await this.postIfThreadExists(channel, threadTs, { ...payload, ...customize })
@@ -1291,11 +1300,12 @@ export class SlackConnection implements PlatformConnection {
           if (!isMissingCustomizeScope(err)) throw err
           this.customUsernameRetryAt = Date.now() + CUSTOM_USERNAME_REPROBE_MS
           this.deps.log?.debug('slack: chat:write.customize missing — retrying with the app default identity')
-          result = await this.postIfThreadExists(channel, threadTs, payload)
+          identityDropped = true
+          result = await this.postIfThreadExists(channel, threadTs, plain)
         }
       }
       await this.postPermissionUpdateCard(channel, threadTs)
-      return result
+      return result ? { ...result, ...(identityDropped ? { identityDropped } : {}) } : result
     } catch (err) {
       this.rememberMissingScopes(err)
       await this.postPermissionUpdateCard(channel, threadTs)
@@ -1333,6 +1343,36 @@ export class SlackConnection implements PlatformConnection {
         options
       )
       return res?.ts
+    })
+  }
+
+  /** Post a human's words under their own name and avatar (`chat:write.customize`), or the
+   *  `attributedText` under the app identity when Slack drops the customization — the send
+   *  boundary picks one atomically, so a bare body never lands under the wrong author.
+   *  Resolves the ts AND the body that landed (a later chat.update must re-supply it). */
+  async postAsAuthor(
+    channel: string,
+    threadTs: string | undefined,
+    body: { text: string; attributedText: string },
+    author: { name: string; iconUrl?: string },
+    options?: Pick<SlackPostOptions, 'agentAuthorId'>
+  ): Promise<{ ts: string; text: string } | undefined> {
+    return this.queue.enqueue(async () => {
+      const payload = (text: string) => ({
+        channel,
+        thread_ts: threadTs,
+        ...markdownBlock(text),
+        ...slackMessageMetadata(options)
+      })
+      const res = await this.postChatMessage(
+        channel,
+        threadTs,
+        payload(body.text),
+        { ...options, username: author.name, ...(author.iconUrl ? { icon_url: author.iconUrl } : {}) },
+        payload(body.attributedText)
+      )
+      if (!res?.ts) return undefined
+      return { ts: res.ts, text: res.identityDropped ? body.attributedText : body.text }
     })
   }
 

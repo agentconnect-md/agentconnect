@@ -248,16 +248,24 @@ describe('createRelayBrowserServer (browser webchat edge)', () => {
       daemonId: DAEMON,
       user: 'Ada Lovelace',
       userId: 'user-1',
+      userPicture: 'https://cdn.example.test/avatars/user-1.png',
       conversationId: RESUME
     }
     const { base, sent } = await start({ verify: async () => verified })
     const ws = await dial(base, '?token=good')
     await nextFrame(ws, 'ready')
 
-    ws.send(JSON.stringify({ text: 'hi', userId: 'spoofed', user: 'spoofed' }))
+    ws.send(
+      JSON.stringify({ text: 'hi', userId: 'spoofed', user: 'spoofed', userPicture: 'https://evil.example.test/x' })
+    )
     await nextFrame(ws, 'ack')
 
-    expect(sent[0]?.payload).toMatchObject({ op: 'turn', user: 'Ada Lovelace', userId: 'user-1' })
+    expect(sent[0]?.payload).toMatchObject({
+      op: 'turn',
+      user: 'Ada Lovelace',
+      userId: 'user-1',
+      userPicture: 'https://cdn.example.test/avatars/user-1.png'
+    })
     ws.close()
   })
 

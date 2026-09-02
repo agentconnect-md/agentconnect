@@ -24,6 +24,7 @@ import { makeSessionAccessResolver } from '../session-access.js'
 import { resolveContinuationHost } from '../session-continuation.js'
 import { ctxOf, orgOf } from '../rbac.js'
 import { ErrorDto } from '../dto/index.js'
+import { resolveProfilePictureUrl } from '../../icons/icon-store.js'
 import { Tag } from '../plugins/openapi.js'
 
 const Params = z.object({ orgId: z.string(), agentId: z.string().uuid() })
@@ -60,12 +61,21 @@ export function webchatTokenRoutes(deps: HttpDeps) {
     const r = app.withTypeProvider<ZodTypeProvider>()
     const sessionAccess = makeSessionAccessResolver(deps)
 
-    /** The display handle the token attests — the transcript author line AND the name
-     *  the daemon puts in a session worktree's branch, so the profile's full name wins
-     *  over the sign-in address (`dev/jane-doe/…`, not `dev/jane-example-com/…`). */
-    const authorHandle = async (userId: string, email: string | undefined): Promise<string> => {
+    /** The identity the token attests. The handle is the transcript author line AND the name
+     *  the daemon puts in a session worktree's branch, so the profile's full name wins over
+     *  the sign-in address (`dev/jane-doe/…`, not `dev/jane-example-com/…`); the avatar is
+     *  what a platform mirror of a console turn posts under. */
+    const authorIdentity = async (
+      userId: string,
+      email: string | undefined
+    ): Promise<{ user: string; userPicture?: string }> => {
       const profile = await deps.repos.user.getProfile(userId)
-      return profile?.displayName?.trim() || email || userId
+      const picture = profile
+        ? resolveProfilePictureUrl(userId, profile.picture, profile.profilePictureUpdatedAt, deps.iconStore)
+        : null
+      // Only a fetchable https URL is worth carrying — the wire schema rejects anything else.
+      const userPicture = picture && picture.length <= 2_048 && /^https:\/\//.test(picture) ? picture : undefined
+      return { user: profile?.displayName?.trim() || email || userId, ...(userPicture ? { userPicture } : {}) }
     }
 
     /** The first roster agent whose serving daemon does not advertise multi-agent webchat, or
@@ -165,7 +175,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         }
         const token = await deps.webchatTokens.mint({
           userId,
-          user: await authorHandle(userId, req.principal!.email),
+          ...(await authorIdentity(userId, req.principal!.email)),
           agentId: agent.id,
           orgId: agent.orgId,
           conversationId
@@ -241,7 +251,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         )
         const token = await deps.webchatTokens.mint({
           userId,
-          user: await authorHandle(userId, req.principal!.email),
+          ...(await authorIdentity(userId, req.principal!.email)),
           agentId: agent.id,
           orgId: agent.orgId,
           conversationId,
@@ -300,7 +310,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
           }
           const token = await deps.webchatTokens.mint({
             userId,
-            user: await authorHandle(userId, req.principal!.email),
+            ...(await authorIdentity(userId, req.principal!.email)),
             agentId: primary.id,
             orgId,
             conversationId
@@ -337,7 +347,7 @@ export function webchatTokenRoutes(deps: HttpDeps) {
         )
         const token = await deps.webchatTokens.mint({
           userId,
-          user: await authorHandle(userId, req.principal!.email),
+          ...(await authorIdentity(userId, req.principal!.email)),
           agentId: primary!.id,
           orgId,
           conversationId
