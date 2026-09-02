@@ -201,7 +201,7 @@ function trustedHeader(msg: Pick<NormalizedMessage, 'sender' | 'threadUrl'>, ext
 
 /** The working convention the standing block closes with — the tool names are the model's entry points. */
 const LINEAR_WORKING_CONVENTION =
-  'Work the ticket as written: pick sensible defaults, and ask only if you truly cannot proceed. ' +
+  'Work the ticket as written: pick sensible defaults, and ask only if you cannot proceed. ' +
   'Comment (`createIssueComment`) only with the outcome — never a plan, the session already shows it — ' +
   'and never sign it. Name the branch and the PR after the identifier so Linear links them. ' +
   '`updateIssue` takes the team’s workflow state NAMES for `state` (`listIssueStatuses`); read the ' +

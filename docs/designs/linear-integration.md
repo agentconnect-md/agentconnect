@@ -1112,7 +1112,7 @@ by <actor>` + issue URL, with `sanitizeTitle` flattening.
   transcript, by design, no longer holds. That is what keeps the console's user bubble to the header, the URL
   and the member's own words. The convention is five short sentences: work
   the ticket as written, picking sensible defaults and asking only when the
-  agent truly cannot proceed; comment only with the outcome — the plan is
+  agent cannot proceed; comment only with the outcome — the plan is
   already live in the session, since the converger pushes the runtime's ACP
   plan entries onto the AgentSession itself (§5) — and never sign it (the
   issue's Resources already link the session, §12); name the branch and the

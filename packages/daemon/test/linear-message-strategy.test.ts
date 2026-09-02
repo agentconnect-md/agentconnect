@@ -225,7 +225,7 @@ describe('§8 daemon-authored standing block', () => {
     const convention = lines().at(-1) ?? ''
     expect(convention).toContain('never a plan, the session already shows it')
     // The brief is worked as written: no standing invitation to ask before starting.
-    expect(convention).toContain('ask only if you truly cannot proceed')
+    expect(convention).toContain('ask only if you cannot proceed')
     expect(convention).not.toContain('ask in your response before working')
     expect(convention).toContain('only with the outcome')
     expect(convention).toContain('never sign it')
