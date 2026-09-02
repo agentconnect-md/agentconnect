@@ -62,6 +62,11 @@ export function pendingTurnKey(agentId: string, acpSessionId: string): string {
   return JSON.stringify([agentId, acpSessionId])
 }
 
+/** The ACP session id a pendingTurnKey / sdkLeaseKey names. */
+export function pendingTurnAcpSessionId(key: string): string {
+  return (JSON.parse(key) as [string, string])[1]
+}
+
 /** Background-task leases are per (agent, ACP session) for the same reason turns are: two
  *  agents can each expose an `acp-1`. Sharing one entry would let one agent's live task
  *  suppress the other's completion wake, or overwrite its task record under a colliding id. */

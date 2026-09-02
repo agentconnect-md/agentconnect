@@ -108,7 +108,7 @@ function probeSandbox(env: NodeJS.ProcessEnv): SandboxProbe {
     const privateHome = join(agentDir, 'home')
     mkdirSync(writable, { recursive: true })
     mkdirSync(privateHome)
-    const settingsPath = writeSandboxSettings(agentDir, {
+    const settingsPath = writeSandboxSettings(agentDir, 'probe', {
       writable: [writable, privateHome],
       denyRead: [],
       allowRead: [],
@@ -253,12 +253,20 @@ function canonical(paths: string[]): string[] {
   return [...out]
 }
 
-/**
- * Atomically publish the trusted SRT policy outside every agent-writable path.
- */
-export function writeSandboxSettings(agentDir: string, policy: SrtSandboxPolicy): string {
+/** Daemon-owned home of one host's SRT policy: `<agentDir>/.agentconnect/sandbox/<hostDir>`. */
+export function sandboxSettingsDir(agentDir: string, hostDir: string): string {
+  return join(agentDir, '.agentconnect', 'sandbox', hostDir)
+}
+
+/** Drop a stopped host's policy directory; a missing one is not an error. */
+export function removeSandboxSettings(agentDir: string, hostDir: string): void {
+  rmSync(sandboxSettingsDir(agentDir, hostDir), { recursive: true, force: true })
+}
+
+// Atomically publish the trusted SRT policy outside every agent-writable path, one directory per host.
+export function writeSandboxSettings(agentDir: string, hostDir: string, policy: SrtSandboxPolicy): string {
   const root = canonicalTarget(agentDir)
-  const settingsDir = join(root, '.agentconnect', 'sandbox')
+  const settingsDir = sandboxSettingsDir(root, hostDir)
   let current = root
   for (const part of relative(root, settingsDir).split(sep).filter(Boolean)) {
     current = join(current, part)

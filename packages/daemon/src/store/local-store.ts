@@ -3014,6 +3014,14 @@ export class LocalStore {
     return row?.ts ?? null
   }
 
+  /** One session's own last activity (epoch ms), or null once closed or gone — reaps a session-bound host. */
+  async sessionLastActivityTs(key: string): Promise<number | null> {
+    const row = (await this.db
+      .prepare("SELECT updatedAt AS ts FROM sessions WHERE key = ? AND state != 'closed'")
+      .get(key)) as { ts: number | null } | undefined
+    return row?.ts ?? null
+  }
+
   /** Close expired idle sessions unless daemon-side work exempts them. */
   async closeIdleSessions(
     now: number,

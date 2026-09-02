@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
+import { agentHostKey } from '../src/acp/host-key.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { mcpSocketPath, statePath } from '../src/paths.js'
@@ -124,6 +125,32 @@ function daemon(opts: {
 }
 
 describe('daemon --k8s mode', () => {
+  it('keeps one ACP host per agent: a pool launch dials one sandbox pod, whatever mechanism this host has', async () => {
+    const instance = daemon({ root: root(), k8s: true })
+    try {
+      await instance.start()
+      // The mode never turns the in-process mechanism on; force it so the `!k8s` half of the
+      // per-session-host predicate is what keeps the shared host, not the mechanism rule.
+      ;(instance as any).sandboxMechanism = 'bwrap'
+      const agent = {
+        id: 'bot-a',
+        name: 'bot-a',
+        status: 'active',
+        runtime: 'claude',
+        runInSandbox: true,
+        workspace: { mode: 'from-scratch', path: '/agents/bot-a/workspace' },
+        integrations: [],
+        output: { mode: 'medium' }
+      }
+      ;(instance as any).agents.set('bot-a', agent)
+      expect((instance as any).agentRunsInSandbox(agent)).toBe(true)
+      expect((instance as any).perSessionHost(agent)).toBe(false)
+      expect((instance as any).hostKeyFor('bot-a', 'slack:C1:T1:bot-a')).toBe(agentHostKey('bot-a'))
+    } finally {
+      await instance.stop()
+    }
+  })
+
   it('does not inspect or open the PostgreSQL data plane outside k8s mode', async () => {
     const openDataPlane = vi.fn()
     const local = daemon({ root: root(), k8s: false, openDataPlane })

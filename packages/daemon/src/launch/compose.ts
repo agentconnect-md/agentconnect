@@ -13,6 +13,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { prepareRuntimeLaunch, type PreparedRuntimeLaunch } from './prepare.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
+import type { HostKey } from '../acp/host-key.js'
 import {
   describeRuntime,
   runtimeMemoryCapabilities,
@@ -146,6 +147,7 @@ export function composeRuntimeLaunch(opts: {
   provider: MemoryProviderKind
   scopeDir: string
   cwd: string
+  hostKey?: HostKey
   explicitEnv?: Record<string, string>
   stateSourceEnv?: NodeJS.ProcessEnv
   hostEnv?: NodeJS.ProcessEnv
@@ -190,6 +192,7 @@ export function composeRuntimeLaunch(opts: {
     runtime: opts.runtime,
     scopeDir: opts.scopeDir,
     cwd: opts.cwd,
+    hostKey: opts.hostKey,
     runInSandbox: opts.runInSandbox,
     isolateHome: opts.isolateHome || (protectedMemory && policyId === 'hermes-agent'),
     explicitEnv: opts.explicitEnv,

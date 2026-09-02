@@ -130,7 +130,7 @@ export function offlineSandboxLaunch(opts: {
     ...systemReadRoots,
     ...opts.readRoots.map((path) => realpathSync(resolve(path)))
   ]
-  const settingsPath = writeSandboxSettings(scopeRoot, {
+  const settingsPath = writeSandboxSettings(scopeRoot, 'skills', {
     writable,
     denyRead: ['/'],
     allowRead,

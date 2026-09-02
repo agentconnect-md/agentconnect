@@ -12,6 +12,7 @@ import { configureWorkspaceGitOrigins } from '../workspace/git-origin-policy.js'
 import { AcpHost } from '../acp/acp-host.js'
 import { effectiveRunInSandbox } from '../launch/prepare.js'
 import { detectSandbox } from '../acp/sandbox.js'
+import { agentHostKey } from '../acp/host-key.js'
 import { resolveRoot } from '../paths.js'
 import { runtimeHomePath } from '../runtimes/runtime-home.js'
 import { installedRuntimeCatalog } from '../runtimes/probe.js'
@@ -130,6 +131,7 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     runtimeId: agent.runtime,
     runtime,
     provider: memoryKindOf(agent),
+    hostKey: agentHostKey(agent.id),
     scopeDir: agent.dir,
     cwd: agent.workspace.path,
     runInSandbox,

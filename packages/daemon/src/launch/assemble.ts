@@ -1,6 +1,7 @@
 import { materializeConfigFiles, type MaterializeResult } from '../shim/config-file-env.js'
 import { composeRuntimeLaunch, type ComposedRuntimeLaunch } from './compose.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
+import type { HostKey } from '../acp/host-key.js'
 import type { MemoryProviderKind } from '../memory/provider.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 
@@ -25,6 +26,8 @@ export interface AssembleRuntimeLaunchOptions {
   provider: MemoryProviderKind
   scopeDir: string
   cwd: string
+  /** The host this launch builds; keys its sandbox policy directory under the agent dir. */
+  hostKey: HostKey
   runInSandbox: boolean
   daemonRoot?: string
   agentsRoot?: string
@@ -84,6 +87,7 @@ export function assembleRuntimeLaunch(opts: AssembleRuntimeLaunchOptions): Assem
     provider: opts.provider,
     scopeDir: opts.scopeDir,
     cwd: opts.cwd,
+    hostKey: opts.hostKey,
     runInSandbox: opts.runInSandbox,
     daemonRoot: opts.daemonRoot,
     agentsRoot: opts.agentsRoot,

@@ -37,7 +37,10 @@ export interface ModelSessionHostPoolHost {
   /** Build + start the confined runtime for one entry, retries included (buildAcpHost seam). */
   startRuntime(agent: LoadedAgent, entry: ModelSessionHost): Promise<AcpHost>
   /** The agent's ordinary warm host, if any — the fallback for a session with no bound host. */
-  ordinaryHost(agentId: string): AcpHost | undefined
+  /** The daemon-owned host for the agent — the one owning `acpSessionId` when given, else its shared host. */
+  ordinaryHost(agentId: string, acpSessionId?: string): AcpHost | undefined
+  /** A pool host's process is gone; per-host daemon state (its sandbox policy directory) goes with it. */
+  hostStopped?(agentId: string, sessionKey: string): void
   /** Drop the agent's config-file secrets once it owns no host of any kind any more. */
   cleanupAgentConfigFiles(agentId: string): void
 }
@@ -344,6 +347,7 @@ export class ModelSessionHostPool {
       })
       .finally(async () => {
         if (entry.stopping === stopping) entry.stopping = undefined
+        this.host.hostStopped?.(entry.agentId, entry.sessionKey)
         const sessionId = await this.host.acpSessionId(entry.sessionKey)
         if (sessionId) this.host.releaseSdkLease(entry.agentId, sessionId)
       })
@@ -393,6 +397,8 @@ export class ModelSessionHostPool {
 
   async hostForStoredSession(agentId: string, acpSessionId: string): Promise<AcpHost | undefined> {
     const sessionKey = await this.host.sessionKeyForAcpId(agentId, acpSessionId)
-    return (sessionKey ? this.entries.get(sessionKey)?.host : undefined) ?? this.host.ordinaryHost(agentId)
+    return (
+      (sessionKey ? this.entries.get(sessionKey)?.host : undefined) ?? this.host.ordinaryHost(agentId, acpSessionId)
+    )
   }
 }

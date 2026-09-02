@@ -542,6 +542,7 @@ export function applyAgentActivate(host: ConfigApplyHost, activate: AgentActivat
     ) {
       return { ok: false, reason: 'agent/activate: staging fence is missing or superseded' }
     }
+    // Capacity counts agents, not hosts: a confined agent's per-session hosts are bounded by session admission.
     const capacityUsed = host.agents().size + host.activatingAgents().size
     if (host.cfg().limits.maxAgents > 0 && capacityUsed >= host.cfg().limits.maxAgents) {
       return {

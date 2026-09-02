@@ -37,6 +37,8 @@ export interface OpenRuntimeSessionInput {
   store: OpenerStore
   /** Daemon-verified cwd prepared before handle() (GitHub exact-ref turns). */
   preparedWorkspaceCwd?: string
+  /** The cwd a host bound to this one session launched in — where its runtime session must open. */
+  hostBoundCwd?: string
   /** Pre-host preparation from a cold hostFor; only a shared workspace may consume it. */
   preparedCwd?: string
   /** Ordinary warm host carrying generation identity into the preparation seam. */
@@ -163,6 +165,7 @@ export async function openRuntimeSession(input: OpenRuntimeSessionInput): Promis
   // Use the pre-host preparation when the host was cold, else prepare now (warm host —
   // ordering vs spawn is moot). Only a shared workspace may consume the pre-host cwd.
   const resolveCwd = async (): Promise<string> =>
+    input.hostBoundCwd ??
     input.preparedWorkspaceCwd ??
     (identity.workspaceIsolation === 'shared' ? input.preparedCwd : undefined) ??
     (await abortable(() => input.prepareWorkspace(agent, input.expectedWarmHost), signal))
