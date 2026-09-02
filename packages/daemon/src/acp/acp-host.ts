@@ -383,7 +383,8 @@ export function claudeSessionMeta(
   memoryAppend?: string,
   protectedCredentialRoots?: readonly string[],
   protectedSettings?: ClaudeProtectedSettings,
-  allowModelToolUnixSockets = false
+  allowModelToolUnixSockets = false,
+  extraDisallowedTools: readonly string[] = []
 ):
   | {
       claudeCode: {
@@ -413,7 +414,7 @@ export function claudeSessionMeta(
         thinking: { type: 'adaptive', display: 'summarized' },
         // #998: the built-in agent-teams SendMessage is a live misdelivery channel;
         // adapters spread this into SDK query() options (older ones ignore it).
-        disallowedTools: CLAUDE_DISALLOWED_BUILTIN_TOOLS,
+        disallowedTools: [...CLAUDE_DISALLOWED_BUILTIN_TOOLS, ...extraDisallowedTools],
         ...(protectedCredentialRoots
           ? { sandbox: claudeInnerSandboxSettings(protectedCredentialRoots, allowModelToolUnixSockets) }
           : {}),
@@ -826,7 +827,8 @@ export class AcpHost {
     effortOverride?: string,
     systemAppend?: string,
     additionalDirectories: string[] = [],
-    announce?: (sessionId: string) => void
+    announce?: (sessionId: string) => void,
+    extraDisallowedTools: readonly string[] = []
   ): Promise<string> {
     const _meta = claudeSessionMeta(
       effortOverride ?? this.opts.configPrefs?.reasoningEffort,
@@ -835,7 +837,8 @@ export class AcpHost {
       systemAppend,
       this.opts.sandbox ? (this.opts.sandbox.protectedCredentialRoots ?? []) : undefined,
       this.opts.sandbox?.claudeProtectedSettings,
-      this.opts.sandbox?.allowModelToolUnixSockets
+      this.opts.sandbox?.allowModelToolUnixSockets,
+      extraDisallowedTools
     )
     const activeAdditionalDirectories = this.canUseAdditionalDirectories ? additionalDirectories : []
     const res = await this.conn!.agent.request(methods.agent.session.new, {
