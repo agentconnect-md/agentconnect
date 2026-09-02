@@ -719,7 +719,12 @@ that grant compiles to the owner's channel-scoped route, and the relay's
 thread-affinity gate honours a gated agent while that route exists. An
 `ownerAsDefault` platform emits no such route, so the gate reads the same
 fact from where it now lives: a gated agent's binding is honoured while that
-agent is the channel's `conversationDefaults` entry. **Moving a team's
+agent is the channel's `conversationDefaults` entry. The seat also names the
+binding's install: the CP's `rc/assign` echo carries no `integrationId`, and
+where Slack backfills it from the owner's route, this platform has none — the
+continuity rung reads it from the `conversationDefaults` entry instead, or the
+follow-up would reach the daemon with an empty install id and be refused as an
+invalid delivery. **Moving a team's
 default away from a gated agent therefore withdraws its grant**, and its
 bound sessions become **stoppable but not continuable**: a `prompted`
 follow-up whose affinity is rejected on grant grounds is **refused, not
