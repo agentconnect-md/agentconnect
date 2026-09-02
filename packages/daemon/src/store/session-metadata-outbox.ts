@@ -127,7 +127,9 @@ export class SessionMetadataOutbox {
     // Visibility-classification inputs (session-visibility.md §4.1), read from
     // the session row so every re-emit carries them. Absent fields make the CP
     // fail closed (no owner) rather than guess — never send a placeholder.
-    const classification = await store.getSessionClassification(input.agentId, input.sessionId)
+    // By the logical session, never the ACP pair: sibling session hosts can share one runtime-local id.
+    const classificationKey = input.sessionKey ?? slot?.key
+    const classification = classificationKey ? await store.getSessionClassificationByKey(classificationKey) : undefined
     if (classification?.conversationKind !== undefined) {
       event.conversationKind = classification.conversationKind as EventSession['conversationKind']
     }
@@ -465,6 +467,7 @@ export class SessionMetadataOutbox {
       if (row.channel !== id && row.triggeredBy !== id) continue
       await this.emitSessionMetadataSnapshot({
         sessionId: row.acpSessionId,
+        sessionKey: row.key,
         agentId: row.agentId,
         phase: 'plan',
         platform: row.platform as SessionKey['platform'],

@@ -476,6 +476,26 @@ export interface TranscriptMutation {
   revision: number
 }
 
+/** What the CP classifies a session's visibility from (session-visibility.md §4.1). */
+export interface SessionClassification {
+  conversationKind?: string
+  tenantScope?: string
+  launchCorrelationId?: string
+  externalProvider?: string
+  externalRealmKey?: string
+  externalResourceKind?: string
+  externalResourceKey?: string
+  externalIntegrationId?: string
+  externalOrigin?: ExternalSessionOrigin
+  sourceBindingKind?: 'local' | 'external'
+  directDestination?: boolean
+}
+
+const CLASSIFICATION_SELECT = `SELECT conversationKind, tenantScope, launchCorrelationId,
+                externalProvider, externalRealmKey, externalResourceKind,
+                externalResourceKey, externalIntegrationId, externalOriginJson,
+                sourceBindingKind, directDestination`
+
 export function sessionKey(
   platform: string,
   channel: string,
@@ -2719,34 +2739,20 @@ export class LocalStore {
   }
 
   /** Read them back by ACP session id, the key the telemetry emitter holds. */
-  async getSessionClassification(
-    agentId: string,
-    acpSessionId: string
-  ): Promise<
-    | {
-        conversationKind?: string
-        tenantScope?: string
-        launchCorrelationId?: string
-        externalProvider?: string
-        externalRealmKey?: string
-        externalResourceKind?: string
-        externalResourceKey?: string
-        externalIntegrationId?: string
-        externalOrigin?: ExternalSessionOrigin
-        sourceBindingKind?: 'local' | 'external'
-        directDestination?: boolean
-      }
-    | undefined
-  > {
-    const row = (await this.db
-      .prepare(
-        `SELECT conversationKind, tenantScope, launchCorrelationId,
-                externalProvider, externalRealmKey, externalResourceKind,
-                externalResourceKey, externalIntegrationId, externalOriginJson,
-                sourceBindingKind, directDestination
-         FROM sessions WHERE agentId = ? AND acpSessionId = ?`
-      )
-      .get(agentId, acpSessionId)) as
+  /** The classification a logical session carries — the read for anything that knows which row it means. */
+  async getSessionClassificationByKey(key: string): Promise<SessionClassification | undefined> {
+    return this.classificationOf(`${CLASSIFICATION_SELECT} FROM sessions WHERE key = ?`, [key])
+  }
+
+  async getSessionClassification(agentId: string, acpSessionId: string): Promise<SessionClassification | undefined> {
+    return this.classificationOf(`${CLASSIFICATION_SELECT} FROM sessions WHERE agentId = ? AND acpSessionId = ?`, [
+      agentId,
+      acpSessionId
+    ])
+  }
+
+  private async classificationOf(sql: string, params: string[]): Promise<SessionClassification | undefined> {
+    const row = (await this.db.prepare(sql).get(...params)) as
       | {
           conversationKind: string | null
           tenantScope: string | null
