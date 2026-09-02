@@ -47,6 +47,10 @@ function daemonWith(root: string, ensure: (launch: NpxPackageLaunch) => Promise<
   })
 }
 
+function refusal(daemon: Daemon): string {
+  return (daemon as unknown as { runtimeUnavailableMessage(id: string): string }).runtimeUnavailableMessage('codex-acp')
+}
+
 function tree(root: string): { tree: string; bin: string } {
   const dir = runtimePackageTree(root, NAME, '1.4.2')
   return { tree: dir, bin: join(dir, 'node_modules', '@agentconnect.md', 'codex-acp', 'dist', 'index.js') }
@@ -102,10 +106,23 @@ describe('daemon-owned adapter store', () => {
     await daemon.start()
 
     expect((daemon as unknown as { runtimes: Record<string, unknown> }).runtimes['codex-acp']).toBeUndefined()
-    const message = (daemon as unknown as { runtimeUnavailableMessage(id: string): string }).runtimeUnavailableMessage(
-      'codex-acp'
-    )
-    expect(message).toContain(dir)
+    expect(refusal(daemon)).toContain('codex-acp@1.4.2')
+    await daemon.stop()
+  })
+
+  it('keeps that refusal to one line with no absolute path, however the failure was thrown', async () => {
+    const root = scaffold('codex-acp')
+    const { tree: dir } = tree(root)
+    // An ordinary Error carries a multi-line stack of absolute daemon paths; only its message may travel.
+    const daemon = daemonWith(root, async () => {
+      throw new Error(`${NAME}@1.4.2 is not installed at ${dir}`)
+    })
+    await daemon.start()
+
+    const message = refusal(daemon)
+    expect(message).not.toContain('\n')
+    expect(message).not.toContain(root)
+    expect(message).toContain('codex-acp@1.4.2')
     await daemon.stop()
   })
 })

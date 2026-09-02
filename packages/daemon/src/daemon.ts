@@ -2222,7 +2222,9 @@ export class Daemon {
         this.log.info(`runtimes: "${id}" launches ${launch.name}@${installed.version} from ${installed.tree}`)
       } catch (err) {
         delete entries[id]
-        this.runtimeStoreFailures.set(id, formatErr(err))
+        // This detail reaches a console reader through the refusal, so it is the bounded, path-free
+        // line the convention requires; the full diagnostic stays in the daemon log beside it.
+        this.runtimeStoreFailures.set(id, startFailureDetail(err))
         this.log.warn(`runtimes: "${id}" has no daemon-owned install — ${formatErr(err)}`)
       }
     }
