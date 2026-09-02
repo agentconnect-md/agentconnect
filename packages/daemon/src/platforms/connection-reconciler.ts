@@ -842,6 +842,9 @@ export class ConnectionReconciler {
         chats,
         integrations.map((i) => i.integrationId)
       )
+      // The workspace id is the issue-less channel and the pre-team coordinate: it never earns a
+      // row (§4.5), so retire one that session history or an older build put there — durably.
+      for (const { integrationId } of integrations) await this.host.retractChannels(integrationId, [conn.workspaceId()])
     } catch (err) {
       this.log.warn(`linear: reporting the team list as observed conversations failed: ${formatErr(err)}`)
     }

@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { observedChannelsFor, registerObservedChannels } from '../src/platforms/observed-channels.js'
 import { discordObservedChannels } from '../src/platforms/discord/observed-channels.js'
+import { linearObservedChannels } from '../src/platforms/linear/observed-channels.js'
 import type { ObservedChannelsHost } from '../src/platforms/observed-channels.js'
 
 registerObservedChannels(discordObservedChannels)
+registerObservedChannels(linearObservedChannels)
 
 /** A host over fixed scope/name tables. */
 const host = (
@@ -15,11 +17,19 @@ const host = (
 })
 
 describe('observed-channels strategies', () => {
-  it('is registered for Discord only; other platforms pass rows through', () => {
+  it('is registered for Discord and Linear only; other platforms pass rows through', () => {
     for (const p of ['telegram', 'feishu', 'slack', 'some-future-platform']) {
       expect(observedChannelsFor(p)).toBeUndefined()
     }
     expect(observedChannelsFor('discord')).toBe(discordObservedChannels)
+    expect(observedChannelsFor('linear')).toBe(linearObservedChannels)
+  })
+
+  it('Linear folds session history to nothing — a team row comes from the CP or the team report, never a session', async () => {
+    const h = host({}, { 'a2f2f0d4-0e33-4c4b-9a4b-4f7a0f1f0001': 'AgentConnect' })
+    // The workspace-keyed channel of an issue-less (or pre-team-model) session must not earn a row.
+    expect(await linearObservedChannels.collapse(h, [{ id: 'a2f2f0d4-0e33-4c4b-9a4b-4f7a0f1f0001' }])).toEqual([])
+    expect(await linearObservedChannels.spaceFor(h, 'a2f2f0d4-0e33-4c4b-9a4b-4f7a0f1f0001')).toBeUndefined()
   })
 
   it('collapses thread rows onto their enclosing channel, labeled with the guild', async () => {

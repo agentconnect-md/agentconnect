@@ -138,6 +138,7 @@ import { offersReadPort } from './platforms/read-ports.js'
 import { registerObservedChannels } from './platforms/observed-channels.js'
 import { ObservedChannelsSync, type ObservedChannelsSyncHost } from './platforms/observed-channels-sync.js'
 import { discordObservedChannels } from './platforms/discord/observed-channels.js'
+import { linearObservedChannels } from './platforms/linear/observed-channels.js'
 import { connectionIdentityFor, tenantScopeFor, type TenantScopeHost } from './platforms/transport-identity.js'
 import { conversationAudienceFor } from './platforms/session-audience.js'
 import { turnChromeFor } from './platforms/turn-chrome.js'
@@ -606,6 +607,7 @@ type DreamExtractionContext = {
 // every Daemon instance (including test constructions) sees the same registry.
 registerThreadPromotion(discordThreadPromotion)
 registerObservedChannels(discordObservedChannels)
+registerObservedChannels(linearObservedChannels)
 
 /** Chain key for one agent's view of one ACP session — see `Daemon.enqueueAcpUpdate`. */
 function acpUpdateChainKey(agentId: string, sessionId: string): string {
