@@ -69,12 +69,15 @@ export function codexPermissionProfileConfig(
           )}`
         ]
       : []
-  // A writable hooks/config would run model-authored code under host-side Git; most-specific match wins.
+  // Most-specific match wins. `read` on hooks/config: `deny` also hides them, and Git cannot run at
+  // all without reading its config. `worktrees/**`: Codex's :workspace pins a session worktree's own
+  // admin dir read-only at a depth the parent grant cannot reach, so the subtree is named explicitly.
   const agentFilesystemEntries: Array<[string, string]> = [
     ...writableGitMetadataRoots.map((root): [string, string] => [root, 'write']),
     ...writableGitMetadataRoots.flatMap((root): Array<[string, string]> => [
-      [join(root, 'hooks'), 'deny'],
-      [join(root, 'config'), 'deny']
+      [join(root, 'worktrees', '**'), 'write'],
+      [join(root, 'hooks'), 'read'],
+      [join(root, 'config'), 'read']
     ]),
     ...protectedRoots.map((root): [string, string] => [root, 'deny'])
   ]
