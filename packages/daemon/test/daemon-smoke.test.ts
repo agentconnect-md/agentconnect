@@ -893,6 +893,133 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await daemon.stop()
   })
 
+  it('never persists a runtime title that is only this turn\u2019s prompt echoed back', async () => {
+    // A codex-shaped runtime auto-titles an untitled session by joining its prompt blocks.
+    // On a created session that join starts with the inlined standing context and is dropped
+    // as an agent-meta echo; on the NEXT turn nothing prepends standing context, so the join
+    // is the caller's whole message and used to be persisted verbatim as the title.
+    const root = scaffold()
+    let onUpdate!: (sid: string, update: unknown) => Promise<void> | void
+    const echoedTitles: string[] = []
+    const fakeHost = {
+      __started: true,
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-prompt-echo'),
+      hasSession: (id: string) => id === 'acp-prompt-echo',
+      prompt: vi.fn(async (sid: string, blocks: { type: string; text?: string }[]) => {
+        const title = blocks
+          .filter((b) => b.type === 'text' && typeof b.text === 'string')
+          .map((b) => b.text as string)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+        echoedTitles.push(title)
+        await onUpdate(sid, { sessionUpdate: 'session_info_update', title })
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(),
+      stop: vi.fn()
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return fakeHost as any
+      }
+    })
+    await daemon.start()
+    vi.spyOn(daemon as any, 'replyConnFor').mockReturnValue({
+      setStatus: vi.fn(async () => {}),
+      setTitle: vi.fn(async () => {}),
+      postMessage: vi.fn(async () => undefined),
+      postContext: vi.fn(async () => {})
+    })
+
+    const deliver = async (ts: string, text: string): Promise<void> => {
+      await (daemon as any).dispatch('bot-a', {
+        msgId: `slack:D1:${ts}`,
+        traceId: `prompt-echo-${ts}`,
+        source: 'user',
+        platform: 'slack',
+        channel: 'D1',
+        thread: '300.1',
+        sender: { id: 'U1', isBot: false },
+        text,
+        mentionedBots: [],
+        isDm: true
+      })
+    }
+    const born = 'Review acme/infra#1729 and report the verdict'
+    await deliver('300.1', born)
+    // The second turn inlines no standing context, so its echo is the bare delivery text.
+    const followUp = 'GitHub pull_request:synchronize pushed a new revision of acme/infra#1729, re-review it'
+    await deliver('300.2', followUp)
+
+    expect(fakeHost.prompt).toHaveBeenCalledTimes(2)
+    expect(echoedTitles[0]).toContain('# Agent')
+    expect(echoedTitles[1]).not.toContain('# Agent')
+    expect(echoedTitles[1]).toContain('pull_request:synchronize')
+    // Both echoes were dropped: the session keeps the title it was born with.
+    expect((await (daemon as any).store.getSessionByAcpId('acp-prompt-echo'))?.title).toBe(born)
+    await daemon.stop()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('clamps a runtime title to one line of at most 80 characters', async () => {
+    const root = scaffold()
+    let onUpdate!: (sid: string, update: unknown) => Promise<void> | void
+    const sprawling = `Reviewed the PR\n\n${'and considered every changed file '.repeat(8)}`
+    const fakeHost = {
+      __started: true,
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-title-clamp'),
+      hasSession: (id: string) => id === 'acp-title-clamp',
+      prompt: vi.fn(async (sid: string) => {
+        await onUpdate(sid, { sessionUpdate: 'session_info_update', title: sprawling })
+        return { stopReason: 'end_turn' }
+      }),
+      cancel: vi.fn(),
+      stop: vi.fn()
+    }
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: (_agent, update) => {
+        onUpdate = update
+        return fakeHost as any
+      }
+    })
+    await daemon.start()
+    vi.spyOn(daemon as any, 'replyConnFor').mockReturnValue({
+      setStatus: vi.fn(async () => {}),
+      setTitle: vi.fn(async () => {}),
+      postMessage: vi.fn(async () => undefined),
+      postContext: vi.fn(async () => {})
+    })
+
+    await (daemon as any).dispatch('bot-a', {
+      msgId: 'slack:D1:301.1',
+      traceId: 'title-clamp',
+      source: 'user',
+      platform: 'slack',
+      channel: 'D1',
+      thread: '301.1',
+      sender: { id: 'U1', isBot: false },
+      text: 'summarize',
+      mentionedBots: [],
+      isDm: true
+    })
+
+    const stored = (await (daemon as any).store.getSessionByAcpId('acp-title-clamp'))?.title as string
+    expect([...stored].length).toBeLessThanOrEqual(80)
+    expect([...stored].length).toBeGreaterThan(60)
+    expect(stored).not.toContain('\n')
+    expect(stored.startsWith('Reviewed the PR and considered')).toBe(true)
+    await daemon.stop()
+    rmSync(root, { recursive: true, force: true })
+  })
+
   it('applies a late runtime title to the UI and the exact Slack DM integration', async () => {
     const root = scaffold()
     let onUpdate!: (sid: string, update: unknown) => void
