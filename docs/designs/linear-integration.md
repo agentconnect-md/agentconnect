@@ -718,7 +718,9 @@ answer inside a session another agent's runtime still holds would put two
 daemons on one feed — while a **stop** bypasses the grant check altogether
 and reaches the bound agent, because a stop can only end work and so leaks
 nothing; the relay's stop path therefore never resolves to an agent that
-does not hold the session. Refusal is silent at the relay (it has no Linear
+does not hold the session (the Stop-only `resolveBoundTarget` lookup and the
+terminal `grant-withdrawn` refusal are the two directory seams, §9.3).
+Refusal is silent at the relay (it has no Linear
 egress), so the console's owner selector warns, when it moves a default off
 a private agent, that the agent's live sessions in that team can be stopped
 but will not answer again; a re-mention or a fresh delegation opens a new
@@ -1096,11 +1098,13 @@ tile.
     and a trigger-write refusal — all of which retired with the team model
     (§15): rows now seed and gate through the ordinary `isGatedAgent` arms,
     and the trigger write surfaces accept Linear rows like any other.
-  - **`RcBotAssign` gains one field**, keyed by channel id and empty on every
-    platform without the axis: `conversationDefaults`
-    (`{ channel, agentId, daemonId, integrationId }[]` — the per-conversation
-    default rung's table, and the fact the thread-affinity gate reads for a
-    gated agent on such a platform, §6.2).
+  - **`RcBotAssign` gains two fields**: `conversationDefaults`
+    (`{ channel, agentId, daemonId, integrationId }[]`, keyed by channel id,
+    empty on every platform without the axis — the per-conversation default
+    rung's table, and the fact the thread-affinity gate reads for a gated
+    agent on such a platform, §6.2) and `ownerAsDefault: boolean` (the axis
+    itself, projected so the relay can pick the terminal affinity refusal
+    over Slack's fall-through without a platform name, §9.3).
   - **Retired with the axis** (`soleConversation`'s three other reads, kept
     here so an implementer does not rebuild them):
     1. ~~**Route projection** — the conversation row's owner maps to the group's
@@ -1231,6 +1235,24 @@ tile.
   `conversationDefaults` entry, alongside the scoped-route test it already
   applies (§6.2). Both are platform-neutral: an assignment with the list
   empty behaves exactly as today.
+- **Two directory seams the gated policy of §6.2 needs**, both keyed off the
+  assignment's `ownerAsDefault` flag so Slack keeps its shape:
+  - `directory.resolveBoundTarget(sessionKey)` — the **Stop-only lookup**:
+    the stored affinity target, validated against current membership and
+    placement (the agent is still a member of the bot and its daemon is
+    connected) but **not** against the grant. `forwardLinearStop` calls this
+    instead of `resolveTarget`, so a stop reaches the runtime that holds the
+    session or nobody — never the new default. A stop for a session the
+    directory no longer knows falls back to `resolveTarget` as today (the
+    daemon's stop decoder is idempotent on an unknown session).
+  - A **terminal affinity refusal**: when the affinity gate rejects a gated
+    agent's binding on an `ownerAsDefault` assignment, `resolveTarget`
+    returns a distinguishable `{ kind: 'refused', reason: 'grant-withdrawn' }`
+    instead of treating the miss as "continue down the ladder". The Linear
+    plugin's `handle` drops the delivery on that result (200 to Linear,
+    nothing forwarded, one debug log). On a non-`ownerAsDefault` assignment
+    the rejected affinity stays an ordinary miss and Slack's fall-through to
+    the new owner is unchanged.
 - Tests: signature/timestamp vectors, demux-hint extraction, verified-but-
   unmatched workspace → no candidate, truncation budgets, dedup-identity
   derivation, stop → `platform_action`, revoked-event doorbell; team-keyed
@@ -1878,12 +1900,15 @@ threads.
 
 **Change inventory**, in merge order:
 
-1. `packages/protocol` — `conversationDefaults` on `RcBotAssign`; the
-   `soleConversation` axis renamed `ownerAsDefault` (one read).
-   `packages/relay` — the per-conversation default rung in
+1. `packages/protocol` — `conversationDefaults` and `ownerAsDefault` on
+   `RcBotAssign`; the `soleConversation` axis renamed `ownerAsDefault` (one
+   read). `packages/relay` — the per-conversation default rung in
    `bot-arbitration.ts`, between keyword and `defaultAgentId`; the affinity
-   gate widened to a channel's default; the Linear plugin keys `channel` on
-   the team.
+   gate widened to a channel's default; the terminal `grant-withdrawn`
+   refusal on `ownerAsDefault` assignments; `directory.resolveBoundTarget`
+   (Stop-only, membership- and placement-validated, grant-blind) on the
+   `RelayIngressHost` contract, used by `forwardLinearStop`; the Linear
+   plugin keys `channel` on the team and drops a refused delivery.
 2. `packages/control-plane` — team rows from the provider create tail and
    the member-add path (Linear API `teams`), plus the team upsert on the
    `LinearCredentialReconciler` tick; `soleConversation.ts`,
