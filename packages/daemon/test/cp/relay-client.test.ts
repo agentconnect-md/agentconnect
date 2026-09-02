@@ -231,3 +231,42 @@ describe('RelayClient (daemon → one relay)', () => {
     expect(seqs()).toEqual([1, 2, 1, 2])
   })
 })
+
+describe('RelayClient — an inbound frame that fails to decode', () => {
+  it('logs the drop with its type, id and size, and answers a correlated error so the relay fails fast', async () => {
+    const warn = vi.fn()
+    const log = { ...silentLog, warn } as unknown as Logger
+    const clock = new FakeClock()
+    const transports: FakeTransport[] = []
+    const onRelayMsg = vi.fn((msg: RdMsg) => ({ msgId: msg.msgId, accepted: true }))
+    const client = new RelayClient(RELAY_ID, URL, {
+      apiKey: () => 'daemon-key',
+      daemonId: () => DAEMON_ID,
+      clock,
+      connect: vi.fn(async () => {
+        const t = new FakeTransport()
+        transports.push(t)
+        return t
+      }),
+      log,
+      jitter: () => 0,
+      onRelayMsg
+    } as unknown as RelayClientDeps)
+    const t = await toReady(client, transports)
+    // A relay-minted `rd/msg` whose payload the schema rejects (no `source`, no `payload`).
+    const bad = buildRelayDaemonFrame('rd/msg', { msgId: 'm-1' } as never)
+    t.inject(bad)
+    await flush()
+    expect(onRelayMsg).not.toHaveBeenCalled()
+    expect(t.lastReq('rd/ack')).toBeUndefined()
+    // The relay learns the reason at once: a correlated `error` settles its request instead of
+    // five silent retries.
+    const nak = t.lastReq('error')!
+    expect(nak.corr).toBe(bad.id)
+    expect(nak.payload).toMatchObject({ code: 'BAD_PAYLOAD', retryable: false })
+    expect(String((nak.payload as { message: string }).message)).toContain('source')
+    const line = warn.mock.calls.map((c) => String(c[0])).find((l) => l.includes('undecodable'))
+    expect(line).toContain(`dropping undecodable rd/msg frame ${bad.id}`)
+    expect(line).toMatch(/\(\d+ bytes\)/)
+  })
+})
