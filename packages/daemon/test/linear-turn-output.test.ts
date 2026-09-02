@@ -3,6 +3,7 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import {
   applyLinearAction,
   type LinearAttachmentInput,
+  codeHostLinks,
   createLinearConverger,
   initialLinearTurnState,
   LinearConverger,
@@ -211,10 +212,13 @@ describe('LinearConverger — §5.2 output modes', () => {
       actions: false,
       actionResults: false,
       plan: false,
+      links: false,
       response: false
     })
     expect(linearModePolicy('low').actions).toBe(true)
     expect(linearModePolicy('low').plan).toBe(true)
+    expect(linearModePolicy('low').links).toBe(true)
+    expect(linearModePolicy('minimal').links).toBe(false)
     expect(linearModePolicy('low').reasoning).toBe(false)
     expect(linearModePolicy('medium').reasoning).toBe(true)
     expect(linearModePolicy('high').actionResults).toBe(true)
@@ -608,5 +612,44 @@ describe('applyLinearAction', () => {
     await applyLinearAction(turnFor(port, undefined), state, { kind: 'activity', type: 'response', body: 'x' })
     expect(port.activities).toEqual([])
     expect(state.activityBudget).toBe(initialLinearTurnState().activityBudget)
+  })
+})
+
+describe('LinearConverger — §10.3 code-host links', () => {
+  it('labels GitHub pull requests and GitLab merge requests the way their hosts do, each URL once', () => {
+    const text =
+      'Opened https://github.com/example-org/example-repo/pull/123 and https://github.com/example-org/example-repo/pull/123. ' +
+      'Also https://gitlab.example.test/group/sub/project/-/merge_requests/45, plus an issue ' +
+      'https://github.com/example-org/example-repo/issues/9 that is not a PR.'
+    expect(codeHostLinks(text)).toEqual([
+      { label: 'PR #123', url: 'https://github.com/example-org/example-repo/pull/123' },
+      { label: 'MR !45', url: 'https://gitlab.example.test/group/sub/project/-/merge_requests/45' }
+    ])
+  })
+
+  it('publishes the links named anywhere in the turn’s text, ahead of the settling response', () => {
+    const c = conv('low')
+    // Chunk boundaries split the URL; the collector reads the joined text, not the pieces.
+    c.onUpdate(chunk('Working on it — see https://github.com/example-org/'))
+    c.onUpdate(chunk('example-repo/pull/7 for the diff.'))
+    c.onUpdate(toolCall({ toolCallId: 't1', title: 'Bash', rawInput: { command: 'gh pr view 7' } }))
+    c.onUpdate(toolDone({ toolCallId: 't1' }))
+    c.onUpdate(chunk('Done: https://github.com/example-org/example-repo/pull/7'))
+    const actions = c.onFinal()
+    expect(types(actions)).toEqual(['action', 'external-urls', 'response'])
+    const links = actions.find((a) => a.kind === 'external-urls')
+    expect(links).toEqual({
+      kind: 'external-urls',
+      add: [{ label: 'PR #7', url: 'https://github.com/example-org/example-repo/pull/7' }]
+    })
+  })
+
+  it('emits no link update when the turn named none, and none at all in minimal mode', () => {
+    const quiet = conv('low')
+    quiet.onUpdate(chunk('nothing to link here'))
+    expect(types(quiet.onFinal())).toEqual(['response'])
+    const minimal = conv('minimal')
+    minimal.onUpdate(chunk('see https://github.com/example-org/example-repo/pull/7'))
+    expect(types(minimal.onFinal())).toEqual(['response'])
   })
 })

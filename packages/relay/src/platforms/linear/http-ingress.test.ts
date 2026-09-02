@@ -112,6 +112,26 @@ describe('Linear HTTP ingress route', () => {
     expect(h.messages[0]).toMatchObject({ platform: 'linear', thread: SESSION_ID })
   })
 
+  it('tells the daemon which webhook opened the turn — the session-opening created, or a follow-up', async () => {
+    const h = makeApp()
+    app = h.app
+    await post(app, eventBody())
+    const prompted = {
+      ...eventBody(),
+      action: 'prompted',
+      agentActivity: {
+        id: '00000000-0000-4000-8000-0000000000p1',
+        content: { type: 'prompt', body: 'and the tests?' },
+        user: { id: '00000000-0000-4000-8000-0000000000u1', name: 'Dana' }
+      }
+    }
+    await post(app, prompted)
+    await vi.waitFor(() => expect(h.messages).toHaveLength(2))
+    const bags = h.messages.map((m) => (m.adapterExt as { linear: { event?: string; issueId?: string } }).linear)
+    expect(bags.map((b) => b.event)).toEqual(['created', 'prompted'])
+    expect(bags[0]!.issueId).toBe('00000000-0000-4000-8000-0000000000i1')
+  })
+
   it('serves each workspace from its OWN bot even though both verify the same signature', async () => {
     const h = makeApp()
     app = h.app

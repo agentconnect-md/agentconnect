@@ -849,3 +849,74 @@ describe('linear read port (§9.4 — what Linear affords)', () => {
     expect(RENEW_MARGIN_MS).toBe(2 * 60 * 60 * 1000)
   })
 })
+
+describe('linear auto-start (§10.2)', () => {
+  const ISSUE = 'issue-uuid-1'
+  const states = [
+    { id: 'st-done', name: 'Done', type: 'completed', position: 4 },
+    { id: 'st-review', name: 'In Review', type: 'started', position: 3 },
+    { id: 'st-progress', name: 'In Progress', type: 'started', position: 2 },
+    { id: 'st-todo', name: 'Todo', type: 'unstarted', position: 1 },
+    { id: 'st-backlog', name: 'Backlog', type: 'backlog', position: 0 }
+  ]
+  const issueIn =
+    (state: { id: string; name: string; type: string }, nodes = states) =>
+    (call: RecordedCall) =>
+      call.query.includes('issueUpdate')
+        ? jsonResponse({ data: { issueUpdate: { success: true } } })
+        : jsonResponse({ data: { issue: { state, team: { states: { nodes } } } } })
+
+  it('moves a backlog issue to the team’s LOWEST-position started state', async () => {
+    const { conn, calls } = harness({ respond: issueIn(states[4]!) })
+    const result = await conn.startIssue(ISSUE)
+    expect(result).toEqual({ outcome: 'moved', from: 'Backlog', state: 'In Progress' })
+    expect(calls.map((c) => c.variables)).toEqual([{ id: ISSUE }, { id: ISSUE, input: { stateId: 'st-progress' } }])
+    expect(calls[0]!.query).toContain('issue(id: $id)')
+    expect(calls[1]!.query).toContain('issueUpdate(id: $id, input: $input)')
+  })
+
+  it('moves an unstarted issue too — the delegation is the start of work', async () => {
+    const { conn, calls } = harness({ respond: issueIn(states[3]!) })
+    expect(await conn.startIssue(ISSUE)).toEqual({ outcome: 'moved', from: 'Todo', state: 'In Progress' })
+    expect(calls).toHaveLength(2)
+  })
+
+  it('leaves a started, completed or canceled issue exactly where it is', async () => {
+    for (const state of [
+      { id: 'st-review', name: 'In Review', type: 'started' },
+      { id: 'st-done', name: 'Done', type: 'completed' },
+      { id: 'st-nope', name: 'Canceled', type: 'canceled' }
+    ]) {
+      const { conn, calls } = harness({ respond: issueIn(state) })
+      expect(await conn.startIssue(ISSUE)).toEqual({ outcome: 'unchanged', state: state.name })
+      expect(calls).toHaveLength(1)
+    }
+  })
+
+  it('skips a triage issue, so an automation delegating out of triage keeps human triage', async () => {
+    const { conn, calls } = harness({ respond: issueIn({ id: 'st-triage', name: 'Triage', type: 'triage' }) })
+    expect(await conn.startIssue(ISSUE)).toEqual({ outcome: 'skipped', reason: 'issue is in triage' })
+    expect(calls).toHaveLength(1)
+  })
+
+  it('skips a team with no started state, and an issue it cannot read', async () => {
+    const noStarted = harness({ respond: issueIn(states[4]!, [states[0]!, states[3]!]) })
+    expect(await noStarted.conn.startIssue(ISSUE)).toEqual({ outcome: 'skipped', reason: 'team has no started state' })
+    expect(noStarted.calls).toHaveLength(1)
+    const unreadable = harness({ respond: () => jsonResponse({ data: { issue: null } }) })
+    expect(await unreadable.conn.startIssue(ISSUE)).toEqual({
+      outcome: 'skipped',
+      reason: 'issue or its state is unreadable'
+    })
+  })
+
+  it('surfaces a refused state write as the API error it is', async () => {
+    const { conn } = harness({
+      respond: (call) =>
+        call.query.includes('issueUpdate')
+          ? jsonResponse({ errors: [{ message: 'no', extensions: { code: 'FORBIDDEN' } }] })
+          : issueIn(states[4]!)(call)
+    })
+    await expect(conn.startIssue(ISSUE)).rejects.toBeInstanceOf(LinearApiError)
+  })
+})
