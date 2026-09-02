@@ -46,6 +46,9 @@ export interface SrtSandboxPolicy {
   writable: string[]
   denyRead: string[]
   allowRead: string[]
+  /** Carve-outs inside a write root. SRT's own mandatory protection is derived from the cwd, so a
+   *  write root the cwd does not contain (a session worktree's owner `.git`) needs its own. */
+  denyWrite?: string[]
   gitSafeDirectories?: string[]
   /** No network or Unix-domain socket access and no dynamic approval callback.
    * Used for audited daemon helpers such as local skills installation. */
@@ -304,7 +307,7 @@ export function writeSandboxSettings(agentDir: string, policy: SrtSandboxPolicy)
       denyRead,
       allowRead: canonical(policy.allowRead),
       allowWrite: canonical(policy.writable),
-      denyWrite: canonical(['/tmp/claude', '/private/tmp/claude']),
+      denyWrite: canonical([...(policy.denyWrite ?? []), '/tmp/claude', '/private/tmp/claude']),
       // Daemon-managed Git writes the credential-helper entries outside the
       // sandbox. A confined runtime must not redirect later host-side Git via
       // core.hooksPath, core.fsmonitor, filter.*, or similar settings.
