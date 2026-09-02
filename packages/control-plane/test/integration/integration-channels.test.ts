@@ -27,7 +27,7 @@ import {
 } from '../../src/persistence/index.js'
 import { PgOrgRepo } from '../../src/persistence/repositories/org.repo.js'
 import { gatedDmSeeds, type GatedDmSeedResolver } from '../../src/orchestrator/linkedDm.js'
-import { seedSoleConversationMember } from '../../src/orchestrator/soleConversation.js'
+import { linearTeamSeedTrigger, seedLinearTeamRows } from '../../src/platforms/linear/teams.js'
 import { reconcileAgentLinkedDms, reconcileLinkedDms } from '../../src/orchestrator/linkedDmReconcile.js'
 import type { SlackIdentity } from '../../src/github/logto-identity.js'
 import { PgUserRepo } from '../../src/persistence/repositories/user.repo.js'
@@ -65,6 +65,11 @@ const OTHER_DAEMON = 'd2d2d2d2-dddd-4ddd-8ddd-dddddddddddd'
 const SLACK = { botToken: 'xoxb-abc-123', appToken: 'xapp-1-def-456' }
 /** The connected Linear organization — the channel itself, since the workspace IS the channel. */
 const LINEAR_WORKSPACE = '5f3a0c9e-1c2b-4a7d-9e10-6b5c4d3e2f10'
+/** A connected workspace's teams — the conversations a Linear bot routes on (§4.5). */
+const LINEAR_TEAMS = [
+  { id: 'team_eng', key: 'ENG', name: 'Engineering' },
+  { id: 'team_design', key: 'DES', name: 'Design' }
+]
 
 class SpyControl {
   readonly upserts: Array<{ daemonId: string; u: IntegrationUpsert }> = []
@@ -111,7 +116,7 @@ async function install(app: HttpApp): Promise<string> {
 }
 
 /** Connect a LINEAR workspace through the REAL create tail the OAuth callback uses
- *  (`installNewBot`) — that is the seat that seeds the workspace conversation row. */
+ *  (`installNewBot` with the provider's team seeder) — the seat that writes the team rows. */
 async function installLinear(
   app: HttpApp,
   opts: { restricted?: boolean } = {}
@@ -137,13 +142,18 @@ async function installLinear(
       workspaceId: LINEAR_WORKSPACE,
       workspaceName: 'Acme',
       botUserId: 'lin-app-user'
-    }
+    },
+    seedConversations: (integration: { id: string }) =>
+      seedLinearTeamRows(app.deps.repos.integrationChannel, integration.id as never, LINEAR_TEAMS, {
+        trigger: linearTeamSeedTrigger([agent as never]),
+        owner: agentId as never
+      })
   } as never)
   return { integrationId: integration.id, botId: integration.botId, agentId }
 }
 
-/** Add a SECOND agent to a connected Linear workspace, exactly as the add-member route does:
- *  the membership row plus this install's own (ownerless) copy of the workspace conversation. */
+/** Add a SECOND agent to a connected Linear workspace, exactly as the add-member route does: the
+ *  membership row, then the `syncBot` whose compile replicates each team's ownerless sibling row. */
 async function addLinearMember(app: HttpApp, botId: string): Promise<{ integrationId: string; agentId: string }> {
   const agentId = randomUUID()
   await seedAgent(prisma, agentId, { daemonId: DAEMON, createdByUserId: DEFAULT_OWNER_ID })
@@ -156,8 +166,7 @@ async function addLinearMember(app: HttpApp, botId: string): Promise<{ integrati
     name: 'Acme'
   } as never)
   if (!('integration' in admission)) throw new Error(`unexpected membership outcome: ${admission.outcome}`)
-  const bot = await app.deps.repos.bot.getUnscoped(botId as never)
-  await seedSoleConversationMember(app.deps.repos.integrationChannel, admission.integration, bot!)
+  await app.deps.httpBot.syncBot(botId)
   return { integrationId: admission.integration.id, agentId }
 }
 
@@ -391,11 +400,11 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     expect(dto!.channels.find((c) => c.channelId === 'D1')).toMatchObject({ kind: 'im' })
   })
 
-  it('seeds the Linear workspace row AT INSTALL, born enabled even under a restricted agent', async () => {
-    // Linking the agent to the workspace IS the per-conversation consent, and the workspace is
-    // the only conversation — so nothing is left for an editor to switch on. The row is written
-    // by the install path itself, so the install's own syncBot already publishes the routes: the
-    // daemon's later observed report is a name refresh, never the thing that opens the agent up.
+  it('seeds the Linear TEAM rows AT INSTALL, through the ordinary §14 gating arm', async () => {
+    // A team is a channel, so its rows take the same seed every other conversation does: born
+    // `mention` under an unrestricted linking agent and `off` under a gated one, for an operator
+    // to enable. They are written by the install path itself, so the install's own syncBot
+    // already publishes the routes that follow from them.
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
@@ -403,33 +412,40 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     const open = (await installLinear(running)).integrationId
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
-    const rows = (res.json() as { id: string; channels: { channelId: string; trigger: string }[] }[]).filter((d) =>
-      [restricted, open].includes(d.id)
-    )
-    expect(rows).toHaveLength(2)
-    for (const dto of rows)
-      expect(dto.channels).toEqual([
-        expect.objectContaining({ channelId: LINEAR_WORKSPACE, name: 'Acme', trigger: 'mention' })
+    const byId = new Map(
+      (res.json() as { id: string; channels: { channelId: string; name: string; trigger: string }[] }[]).map((d) => [
+        d.id,
+        d.channels
       ])
+    )
+    const sorted = (id: string) => [...byId.get(id)!].sort((a, b) => a.channelId.localeCompare(b.channelId))
+    expect(sorted(open)).toEqual([
+      expect.objectContaining({ channelId: 'team_design', name: 'DES · Design', trigger: 'mention' }),
+      expect.objectContaining({ channelId: 'team_eng', name: 'ENG · Engineering', trigger: 'mention' })
+    ])
+    expect(sorted(restricted).map((c) => [c.channelId, c.trigger])).toEqual([
+      ['team_design', 'off'],
+      ['team_eng', 'off']
+    ])
   })
 
-  it("a daemon's observed report refreshes the workspace name without touching the seeded trigger", async () => {
+  it("a daemon's observed report refreshes a team name without touching the seeded trigger", async () => {
     // The wire report carries no trigger and `replaceSnapshot` preserves the stored one, so the
-    // backstop cannot fight the seed — including for the restricted agent it would otherwise Off.
+    // backstop cannot fight the seed — a gated agent's Off row stays Off through a rename.
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
     const id = (await installLinear(running, { restricted: true })).integrationId
 
-    await report(DAEMON, id, [{ id: LINEAR_WORKSPACE, name: 'Acme Renamed' }], undefined, undefined, false)
+    await report(DAEMON, id, [{ id: 'team_eng', name: 'ENG · Platform' }], undefined, undefined, false)
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     const dto = (res.json() as { id: string; channels: { channelId: string; name: string; trigger: string }[] }[]).find(
       (d) => d.id === id
     )
-    expect(dto!.channels).toEqual([
-      expect.objectContaining({ channelId: LINEAR_WORKSPACE, name: 'Acme Renamed', trigger: 'mention' })
-    ])
+    expect(dto!.channels).toContainEqual(
+      expect.objectContaining({ channelId: 'team_eng', name: 'ENG · Platform', trigger: 'off' })
+    )
   })
 
   it('still starts a restricted agent OFF on a platform whose install grants nothing', async () => {
@@ -1205,35 +1221,33 @@ describe('integration/channels EVT → integration_channel convergence', () => {
   })
 })
 
-describe('PATCH /integrations/:id/channels/:channelId — a sole-conversation platform', () => {
-  const patch = async (integrationId: string, body: Record<string, unknown>) =>
+describe('PATCH /integrations/:id/channels/:channelId — a Linear team row', () => {
+  const patch = async (integrationId: string, body: Record<string, unknown>, channelId = 'team_eng') =>
     await running!.app.inject({
       method: 'PATCH',
-      url: `${ORG}/integrations/${integrationId}/channels/${LINEAR_WORKSPACE}`,
+      url: `${ORG}/integrations/${integrationId}/channels/${channelId}`,
       payload: body
     })
 
-  it('refuses a TRIGGER write on a Linear workspace and names the unlink path', async () => {
-    // Accepting `off` here would silence a still-linked agent through the mute fences while the
-    // console keeps showing it installed — the contradiction of "no trigger control / no Off".
+  it('takes a TRIGGER write like any other conversation, and mutes only that team', async () => {
+    // "review-bot handles ENG but stays out of DESIGN" is one row's setting (§15), so Off is open
+    // here — and it is per team for the whole bot, never a per-member value.
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
     const { integrationId } = await installLinear(running)
 
-    for (const trigger of ['off', 'any', 'mention']) {
-      const res = await patch(integrationId, { trigger })
-      expect(res.statusCode, trigger).toBe(400)
-      expect((res.json() as { message: string }).message).toContain('remove the integration')
-    }
-    // The stored row is untouched, so no fence anywhere saw an Off.
+    expect((await patch(integrationId, { trigger: 'off' })).statusCode).toBe(200)
+
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
-    const dto = (res.json() as { id: string; channels: { trigger: string }[] }[]).find((d) => d.id === integrationId)
-    expect(dto!.channels).toEqual([expect.objectContaining({ trigger: 'mention' })])
+    const dto = (res.json() as { id: string; channels: { channelId: string; trigger: string }[] }[]).find(
+      (d) => d.id === integrationId
+    )
+    expect(dto!.channels).toContainEqual(expect.objectContaining({ channelId: 'team_eng', trigger: 'off' }))
+    expect(dto!.channels).toContainEqual(expect.objectContaining({ channelId: 'team_design', trigger: 'mention' }))
   })
 
-  it('still accepts an OWNER change on that same conversation', async () => {
-    // Which member answers is a real choice; whether the workspace answers at all is not.
+  it('moves one team’s owner and leaves every other team’s where it was', async () => {
     await seedDaemon(prisma, DAEMON)
     const spy = new SpyControl()
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
@@ -1242,12 +1256,15 @@ describe('PATCH /integrations/:id/channels/:channelId — a sole-conversation pl
 
     const res = await patch(first.integrationId, { agentId: second.agentId })
     expect(res.statusCode).toBe(200)
+
     const list = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
-    const rows = (list.json() as { id: string; channels: { agentId: string; trigger: string }[] }[]).filter((d) =>
+    const rows = (list.json() as { id: string; channels: { channelId: string; agentId: string }[] }[]).filter((d) =>
       [first.integrationId, second.integrationId].includes(d.id)
     )
-    for (const dto of rows)
-      expect(dto.channels).toEqual([expect.objectContaining({ agentId: second.agentId, trigger: 'mention' })])
+    for (const dto of rows) {
+      expect(dto.channels).toContainEqual(expect.objectContaining({ channelId: 'team_eng', agentId: second.agentId }))
+      expect(dto.channels).toContainEqual(expect.objectContaining({ channelId: 'team_design', agentId: first.agentId }))
+    }
   })
 
   it('leaves both writes working on an ordinary platform', async () => {

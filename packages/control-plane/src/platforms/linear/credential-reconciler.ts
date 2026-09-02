@@ -24,15 +24,33 @@
  * to that app), and a REVOKED bot (whose un-revoke is the reconnect flow's alone). Each needs an
  * operator reconnect, which re-proves the grant; a rotation is not evidence of one.
  *
+ * The same tick also carries the §15 TEAM pass: one `teams` query per connected workspace, seeding a
+ * conversation row for any team that has none and refreshing the names of the rest. It is the slow
+ * half of team discovery and the only half a bot whose members are all gated ever gets.
+ *
  * A background loop rather than a boot-only pass, following the Slack bot-identity reconciler: the
  * credentials arrive through the environment and so can only move across a restart, which makes the
  * pass `start()` runs immediately the load-bearing one, while the interval is a cheap self-heal for
  * a bot whose re-stamp lost its transaction or whose relay was down when it landed.
  */
 import type { Clock, TimerHandle } from '../../domain/clock.js'
-import type { BotId } from '../../domain/ids.js'
+import type { BotId, IntegrationId } from '../../domain/ids.js'
 import type { LinearPlatformAppConfig } from '../../config/linear-platform.js'
-import type { BotCredentialWriter, BotRepo, BotSecretStore } from '../../persistence/ports.js'
+import type {
+  AgentRecord,
+  AgentRepo,
+  BotCredentialWriter,
+  BotRecord,
+  BotRepo,
+  BotSecretStore,
+  IntegrationChannelRepo,
+  IntegrationRepo
+} from '../../persistence/ports.js'
+import type { LinearTeam } from './api.js'
+import { defaultMemberOf, placedMembers } from '../../orchestrator/placement.js'
+import { linearConnectionIdentity } from './provider.js'
+import { linearTeamChannelName, linearTeamSeedTrigger, seedLinearTeamRows } from './teams.js'
+import type { LinearTokenService } from './token-service.js'
 
 export interface LinearCredentialReconcilerLog {
   info(obj: unknown, msg?: string): void
@@ -49,6 +67,19 @@ export interface LinearCredentialReconcilerDeps {
   /** The deployment app, read PER TICK and never captured — absent ⇒ the platform is disabled and
    *  there is nothing to stamp, so a pass finds no target rather than clearing live rows. */
   readonly app?: LinearPlatformAppConfig
+  /** The §15 team pass's seams — the SLOW half of team discovery (§9.2), and the only half a bot
+   *  whose members are all gated ever gets: it has no `defaultAgentId`, so the relay drops the new
+   *  team's first event and no daemon ever observes it. All four together or none; absent ⇒ the
+   *  tick only re-stamps credentials, which is what a focused credential test composes. */
+  teams?: {
+    integrations: Pick<IntegrationRepo, 'listForBot'>
+    agents: Pick<AgentRepo, 'getUnscoped'>
+    channels: Pick<IntegrationChannelRepo, 'listForBot' | 'upsertConversation' | 'upsertAgent'>
+    tokens: Pick<LinearTokenService, 'accessToken' | 'teams'>
+    /** The SAME selection the route compile makes, so a seeded owner is never a member the compile
+     *  would drop as unroutable and mute the team for. */
+    routableDaemon(agent: AgentRecord): Promise<string | null>
+  }
   clock: Clock
   intervalMs: number
   log?: LinearCredentialReconcilerLog
@@ -106,7 +137,10 @@ export class LinearCredentialReconciler {
     this.running = true
     try {
       const app = this.deps.app
-      if (app) await this.restamp(app)
+      if (app) {
+        await this.restamp(app)
+        await this.reconcileTeams(app)
+      }
     } catch (err) {
       this.deps.log?.error({ err }, 'linear-credential: reconciliation failed')
     } finally {
@@ -182,6 +216,90 @@ export class LinearCredentialReconciler {
         { workspaces: awaitingReconnect },
         'linear-credential: workspaces installed under a previous app await reconnect'
       )
+    }
+  }
+
+  /**
+   * The §15 team pass: ask every connected workspace for its teams and give each one a row.
+   * ONE `teams` query per workspace per tick — the call count is bounded by the fleet, never by
+   * the team count — and per-bot try/catch so one unreachable workspace cannot strand the rest.
+   *
+   * It only ever ADDS: a team with no row gets one, owned by the bot's current default agent and
+   * seeded through the ordinary gating arm; a team that has one gets its name refreshed. An
+   * existing row's trigger and owner are an operator's, and this loop never overwrites either.
+   */
+  private async reconcileTeams(app: LinearPlatformAppConfig): Promise<void> {
+    const seams = this.deps.teams
+    if (!seams) return
+    for (const bot of await this.deps.bots.listForPlatform('linear')) {
+      if (bot.externalAppId !== app.clientId || bot.revokedAt) continue
+      try {
+        await this.reconcileBotTeams(bot, seams)
+      } catch (err) {
+        this.deps.log?.warn({ err, botId: bot.id }, 'linear-credential: team reconciliation failed')
+      }
+    }
+  }
+
+  private async reconcileBotTeams(
+    bot: BotRecord,
+    seams: NonNullable<LinearCredentialReconcilerDeps['teams']>
+  ): Promise<void> {
+    const connection = linearConnectionIdentity(bot)
+    if (!connection) return
+    const installs = await seams.integrations.listForBot(bot.id)
+    if (installs.length === 0) return
+    const resolved = await seams.tokens.accessToken(connection)
+    if (!resolved.ok) return
+    const answer = await seams.tokens.teams(resolved.accessToken)
+    if (!answer.ok) return
+    const rows = await seams.channels.listForBot(bot.id)
+    const known = new Set(rows.map((row) => row.channelId))
+    for (const team of answer.result.filter((team) => known.has(team.id))) {
+      await this.refreshTeamName(seams, rows, team)
+    }
+    const missing = answer.result.filter((team) => !known.has(team.id))
+    if (missing.length === 0) return
+
+    const agentById = new Map<string, AgentRecord>()
+    for (const install of installs) {
+      const agent = await seams.agents.getUnscoped(install.agentId)
+      if (agent) agentById.set(install.agentId, agent)
+    }
+    // The seeded owner is the compile's OWN default member — the earliest non-gated install a
+    // daemon is currently serving — not the earliest active one. Naming an unroutable member here
+    // would be a routing bug rather than a stale label: the compile drops it from the placed set
+    // and then mutes the team for having an unavailable owner, which would also take down the
+    // routable member's `defaultAgentId` fallback. Discovery must never turn a working team off.
+    const placed = await placedMembers(installs, (agentId) => agentById.get(agentId), seams.routableDaemon)
+    const owner = defaultMemberOf(placed)
+    // Ownerless when nothing routable and non-gated is serving — the state the compile tolerates
+    // (no default, no route) while the group's own backstop keeps answering. An ALL-GATED bot is
+    // the reason this pass exists at all, and its row is born Off for an operator to enable.
+    const trigger = linearTeamSeedTrigger([...agentById.values()])
+    await seedLinearTeamRows(seams.channels, owner?.integration.id ?? installs[0]!.id, missing, {
+      trigger,
+      ...(owner ? { owner: owner.integration.agentId } : {})
+    })
+    // A new row changes the routes, so publish it the same way every other row change is.
+    this.deps.log?.info(
+      { botId: bot.id, teams: missing.length, owned: owner !== undefined },
+      'linear-credential: seeded team conversation rows'
+    )
+    await this.deps.resync(bot.id)
+  }
+
+  /** Name-only refresh, on every sibling row that carries the team: `upsertConversation` preserves
+   *  the stored trigger, and a row whose name already matches is not written. */
+  private async refreshTeamName(
+    seams: NonNullable<LinearCredentialReconcilerDeps['teams']>,
+    rows: readonly { integrationId: IntegrationId; channelId: string; name: string | null }[],
+    team: LinearTeam
+  ): Promise<void> {
+    const name = linearTeamChannelName(team)
+    for (const row of rows) {
+      if (row.channelId !== team.id || row.name === name) continue
+      await seams.channels.upsertConversation(row.integrationId, { id: team.id, name, kind: 'channel' })
     }
   }
 }

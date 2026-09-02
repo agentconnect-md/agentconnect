@@ -63,18 +63,17 @@ describe('platform manifest', () => {
     expect(DEFAULT_MANIFEST.multiAgentShareable).toBe(false)
   })
 
-  it('declares a sole conversation on Linear, and nowhere else', () => {
-    // Two CP reads hang off this before any route or owner exists: the route projection (owner →
-    // `defaultAgentId`, no scoped route) and the install-time seed. Linear is the whole behavior —
-    // its install NAMES the one conversation it reaches, so linking the agent IS the consent.
-    expect(manifestFor('linear').soleConversation).toBe(true)
-    for (const p of ['slack', 'telegram', 'discord', 'feishu']) expect(manifestFor(p).soleConversation, p).toBe(false)
-    expect(manifestFor('some-future-platform').soleConversation).toBe(false)
-    expect(DEFAULT_MANIFEST.soleConversation).toBe(false)
+  it('declares owner-as-default on Linear, and nowhere else', () => {
+    // One CP read hangs off this before any route or owner exists: the compile projects a row's
+    // owner into `conversationDefaults` and emits no channel-scoped route for it.
+    expect(manifestFor('linear').ownerAsDefault).toBe(true)
+    for (const p of ['slack', 'telegram', 'discord', 'feishu']) expect(manifestFor(p).ownerAsDefault, p).toBe(false)
+    expect(manifestFor('some-future-platform').ownerAsDefault).toBe(false)
+    expect(DEFAULT_MANIFEST.ownerAsDefault).toBe(false)
   })
 
   it('keeps Linear on the fail-closed arm of every axis it did not earn', () => {
-    // Linear's row exists for `multiAgentShareable` and `soleConversation` alone: no
+    // Linear's row exists for `multiAgentShareable` and `ownerAsDefault` alone: no
     // membership snapshot API, no bot-sender admission, nothing but a conversation to leave.
     // Pin it so the row cannot pick up a Slack-shaped path in passing.
     const m = manifestFor('linear')

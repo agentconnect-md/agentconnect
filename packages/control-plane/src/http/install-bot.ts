@@ -24,7 +24,6 @@ import type { AgentRecord, BotRecord, IntegrationRecord, SlackTransport } from '
 import { BotId, IntegrationId, type OrgId } from '../domain/ids.js'
 import { integrationToSpec, isGatedAgent } from '../orchestrator/placement.js'
 import { NoConnection } from '../orchestrator/outbound.js'
-import { seedSoleConversationOwner } from '../orchestrator/soleConversation.js'
 import type { CpNewBotInstall } from '../platforms/provider.js'
 import { BotWorkspaceClaimed } from '../persistence/errors.js'
 
@@ -44,6 +43,10 @@ export interface InstallNewBotArgs extends CpNewBotInstall {
   /** Provisioned by AgentConnect (the platform app), not a console user. */
   prebuilt?: boolean
   createdByUserId?: string
+  /** Conversation rows this platform's connect tail writes before the bot's own `syncBot`
+   *  publishes routes, so no window exists where an agent is linked but unroutable. Http
+   *  transport only — a socket bot's conversations are the daemon's own report. */
+  seedConversations?: (integration: IntegrationRecord, bot: BotRecord) => Promise<void>
 }
 
 /** Minimal log surface (Fastify logger in prod). */
@@ -115,8 +118,8 @@ export async function installNewBot(
   // push the send-only spec to the daemon (HttpBotOrchestrator does both). No
   // long-lived platform connection opens on the daemon.
   if (transport === 'http') {
-    // Before the sync, so the routes this publishes already carry the workspace default (§5).
-    await seedSoleConversationOwner(deps.repos.integrationChannel, integration, bot)
+    // Before the sync, so the routes this publishes already carry the platform's own rows.
+    await args.seedConversations?.(integration, bot)
     await deps.httpBot.syncBot(botId)
     return { integration, bot }
   }

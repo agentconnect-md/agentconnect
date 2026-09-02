@@ -36,7 +36,7 @@ import type {
   McpServerSpec,
   MemoryConnectionSpec
 } from '@agentconnect.md/protocol'
-import { manifestFor, SessionRetentionSetting } from '@agentconnect.md/protocol'
+import { SessionRetentionSetting } from '@agentconnect.md/protocol'
 import type {
   AgentRepo,
   AgentRecord,
@@ -174,24 +174,52 @@ const DEFAULT_BIND_RULES: IntegrationBindRule[] = [{ match: { kind: 'mention' } 
  *  visibility at spec-assembly time — no stored toggle, no identities on the wire. */
 export const isGatedAgent = (a: { visibility: AgentRecord['visibility'] }): boolean => a.visibility === 'restricted'
 
-/** Does a NEWLY reported conversation start Off because its owner is gated? Only on a platform
- *  whose install does not already grant it (§5 `soleConversation`) — where it does,
- *  linking the agent WAS the per-conversation consent and there is nothing left for an editor
- *  to enable. Every seat that seeds a fresh conversation's trigger reads this, not `isGatedAgent`. */
-export const gatesNewConversations = (platform: string, agent: { visibility: AgentRecord['visibility'] }): boolean =>
-  isGatedAgent(agent) && !manifestFor(platform).soleConversation
+/** One member of a shared bot a daemon is currently SERVING — what the route compile routes to. */
+export interface PlacedMember<T> {
+  integration: T
+  agent: AgentRecord
+  daemonId: string
+  gated: boolean
+}
 
-/** May a caller CHOOSE a conversation's trigger here? Not where the install names the one
- *  conversation it can reach (§5 `soleConversation`): that conversation's trigger IS the link, so
- *  an Off would silence a still-linked agent behind the mute fences while the console still shows
- *  it installed. Removing the integration is the supported way to stop it. Owner (`agentId`)
- *  changes stay available — that is WHICH member answers, not whether the workspace answers. */
-export const allowsTriggerControl = (platform: string): boolean => !manifestFor(platform).soleConversation
+/**
+ * The members of a shared bot that can receive traffic AT ALL: an agent no daemon is currently
+ * serving is dropped, because the relay addresses ingress to one member and a pool agent resolves
+ * to whichever member holds its duty — placement names no machine and would strand the install.
+ *
+ * Order is the caller's (`listForBot` is createdAt-ordered), which is what makes
+ * {@link defaultMemberOf} deterministic.
+ */
+export async function placedMembers<T extends { agentId: string }>(
+  installs: readonly T[],
+  agentOf: (agentId: string) => AgentRecord | null | undefined,
+  routableDaemon: (agent: AgentRecord) => Promise<string | null>
+): Promise<PlacedMember<T>[]> {
+  const placed: PlacedMember<T>[] = []
+  for (const integration of installs) {
+    const agent = agentOf(integration.agentId)
+    if (!agent) continue
+    const daemonId = await routableDaemon(agent)
+    if (!daemonId) continue
+    // The ONE predicate decides the keyword rung, the default, and `gatedAgentIds` together.
+    placed.push({ integration, agent, daemonId, gated: isGatedAgent(agent) })
+  }
+  return placed
+}
 
-/** The refusal a trigger write earns there — one message, so the HTTP route and every surface
- *  layered on it name the same escape hatch. */
-export const TRIGGER_CONTROL_REFUSAL =
-  'this platform has one conversation per install, so its trigger cannot be changed; remove the integration to stop the agent'
+/**
+ * The member a bare, unaddressed delivery falls to — the group's `defaultAgentId` (§10.3): the
+ * EARLIEST non-gated member a daemon is serving. A gated agent must never be the fallback (§14:
+ * the bare-@bot/DM rungs are what make an HTTP bot fail-open), and a group with none has no default.
+ *
+ * Every seat that PERSISTS a default owner reads this same function, not "earliest active install".
+ * The two differ exactly when the earliest install is unroutable, and persisting that member as a
+ * conversation's owner is a routing bug: the compile drops it from the placed set, then mutes the
+ * conversation for having an unavailable owner — turning a working conversation off, and taking the
+ * routable member's own fallback down with it.
+ */
+export const defaultMemberOf = <T>(placed: readonly PlacedMember<T>[]): PlacedMember<T> | undefined =>
+  placed.find((p) => !p.gated)
 
 /**
  * Conversation-scoped bind rules for a GATED integration (resource-visibility.md

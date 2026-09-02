@@ -1178,7 +1178,7 @@ tile.
     active integration repeats a conversation's state and exactly one row
     per team carries the owner. The trigger is one per team for the whole bot: born `mention` when the
     linking agent is unrestricted and `off` when it is gated
-    (`gatesNewConversations` at row creation, exactly as a Slack channel row
+    (`isGatedAgent` at row creation, exactly as a Slack channel row
     is seeded), and copied onto every sibling row a later add-member writes —
     the replicated-trigger contract `HttpBot.updateConversation` keeps, so a
     member never carries a trigger of its own. No new
@@ -1200,7 +1200,33 @@ tile.
     `conversationDefaults` and emits no ownership routes (§6.2, §9.1);
     `soleConversation.ts`, `allowsTriggerControl` and
     `TRIGGER_CONTROL_REFUSAL` are deleted and `gatesNewConversations`
-    collapses into `isGatedAgent`.
+    collapses into `isGatedAgent`. **Landed**, with three notes an
+    implementer would otherwise have to rediscover: the connect tail reaches
+    its seeder through one new core seam, `installNewBot`'s optional
+    `seedConversations` hook, which runs before the tail's own `syncBot` so
+    the rows are published by it; an add-member writes NO sibling rows of its
+    own, because the compile's shipped replication
+    (`HttpBot.syncConversationTrigger`) already backfills every install's
+    ownerless copy with the team's current trigger, and a second seeder would
+    only be a second description of it; and an unreachable `teams` answer at
+    connect is logged and left to the tick rather than failing a callback
+    that has already spent its authorization code.
+  - **A seeded owner is the compile's own default member, never "the earliest
+    install".** The two differ exactly when the earliest install is one no
+    daemon is currently serving, and persisting THAT member as a team's owner
+    is a routing bug rather than a stale label: the compile drops it from the
+    placed set and then mutes the conversation for having an unavailable
+    owner, taking the routable member's `defaultAgentId` fallback down with
+    it — discovery would turn a working team off. So the selection is one
+    shared function (`placedMembers` + `defaultMemberOf` in
+    `orchestrator/placement.ts`), read by the compile's `defaultAgentId`
+    derivation and by the tick's seed alike; with no routable non-gated
+    member the tick seeds the row OWNERLESS, which the compile tolerates (no
+    default, no route), rather than naming one it would mute. The connect
+    tail needs no such probe: its linking agent is the workspace's only
+    member and therefore also the earliest install, so it is exactly the row
+    the generic converger (`pickConversationOwner`) would persist a moment
+    later — there is no seed-specific mismatch to remove there.
   - `installRoutes('org')` — connect-workspace funnel start (records the
     **linking agent**, §7.1), connect status, reconnect (§7.4), and member
     management; `installRoutes('public-callback')` — the OAuth callback
@@ -1658,8 +1684,12 @@ none` skips it along with everything else Linear-visible. There is **no
   Retires the `soleConversation` axis for the narrower `ownerAsDefault`.
   Merge order: protocol + relay (the rung) → control plane (team rows,
   compile) → daemon (coordinates, report) → web (team rows under the Bots
-  row). Unreleased, so no migration: the workspace-keyed rows and sessions
-  are deleted.
+  row). Unreleased, so nothing is rewritten: one migration deletes the
+  workspace-keyed conversation rows and sessions.
+  **Landed:** the protocol + relay rung, and the control-plane half — the
+  renamed axis, the team rows from the connect tail and the reconciler tick,
+  and the retirement of `soleConversation.ts` / `allowsTriggerControl` /
+  `gatesNewConversations`. Daemon and web remain.
 - **P3 — breadth.** Label → skill playbook mapping; per-team dispatch
   defaults, which did reopen §15's granularity argument and became P2.5
   above; proactive

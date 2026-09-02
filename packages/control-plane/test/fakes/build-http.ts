@@ -603,21 +603,6 @@ export function buildHttpApp(
     internalInvocationAuth
   }
 
-  // The §10.6 deployment-credential re-stamp, wired exactly as `buildContainer` wires it. Its app
-  // is a getter over the stub bag so a suite can rotate the deployment credentials mid-test, which
-  // is what the rotation actually looks like from this process: a different value on the next read.
-  const linearCredentialReconciler = new LinearCredentialReconciler({
-    bots: botRepo,
-    secrets: botSecretStore,
-    credentials: botCredentialWriter,
-    resync: (botId) => deps.httpBot.syncBot(botId),
-    get app() {
-      return platformStubs.linearPlatformApp
-    },
-    clock,
-    intervalMs: 15 * 60 * 1000
-  })
-
   // The per-platform route seams, mirroring `buildContainer`'s — but every member
   // reads THROUGH the mutable `platformStubs` bag rather than capturing its value,
   // so a suite that swaps a stub after `buildApp` is still observed. `configApi`
@@ -680,6 +665,29 @@ export function buildHttpApp(
     api: linearApi,
     tokens: linearTokenService
   }
+
+  // The §10.6 deployment-credential re-stamp plus the §15 team pass, wired exactly as
+  // `buildContainer` wires it — after the token service, which the team pass reads. Its app is a
+  // getter over the stub bag so a suite can rotate the deployment credentials mid-test, which is
+  // what the rotation actually looks like from this process: a different value on the next read.
+  const linearCredentialReconciler = new LinearCredentialReconciler({
+    bots: botRepo,
+    secrets: botSecretStore,
+    credentials: botCredentialWriter,
+    resync: (botId) => deps.httpBot.syncBot(botId),
+    get app() {
+      return platformStubs.linearPlatformApp
+    },
+    teams: {
+      integrations: integrationRepo,
+      agents: agentRepo,
+      channels: integrationChannelRepo,
+      tokens: linearTokenService,
+      routableDaemon: (agent) => placementResolver.routableDaemon(agent)
+    },
+    clock,
+    intervalMs: 15 * 60 * 1000
+  })
   const linearOrphanTokenSweeper = new LinearOrphanTokenSweeper({
     get app() {
       return platformStubs.linearPlatformApp

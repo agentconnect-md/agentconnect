@@ -86,26 +86,17 @@ export interface PlatformManifest {
    *  Fail-closed: an unknown platform serves one agent per bot, so a flag no
    *  install path honors can never be set. */
   readonly multiAgentShareable: boolean
-  /** Whether one install here NAMES the single conversation it can reach — a
-   *  connected Linear workspace, where there is no second conversation and
-   *  linking an agent IS consenting to that one. Two PRE-DISPATCH reads, both
-   *  made before a route, an owner, or a turn exists:
+  /** Whether a conversation row's OWNER here is a per-conversation DEFAULT rather than an
+   *  ownership claim — a connected Linear workspace, where every event already addresses the
+   *  app (linear-integration.md §4.3, §6.2). ONE PRE-DISPATCH read, in the HTTP-bot compile:
+   *  the row's owner is projected into the assignment's `conversationDefaults` — the rung the
+   *  relay consults after keyword and thread continuity — and NO channel-scoped route is
+   *  emitted for it. A scoped `mention` rule would be the FIRST rung, so on a platform whose
+   *  every event marks the app as mentioned it would shadow `@<agent-name>` selection and
+   *  hijack a bound session's follow-ups.
    *
-   *   1. ROUTE PROJECTION — the conversation row's owner maps to the group's
-   *      `defaultAgentId` (§10.3, the ladder's last and addressed-gated rung) and
-   *      the HTTP-bot compile emits NO channel-scoped route for it. A scoped
-   *      `mention` rule would be the FIRST rung, and every event on such a
-   *      platform marks the app as mentioned, so it would shadow `@<agent-name>`
-   *      selection and hijack a bound session's follow-ups.
-   *   2. INSTALL-TIME SEED — the connect tail and each add-member synchronously
-   *      write the conversation row, born `mention` because link-is-consent
-   *      overrides §14's restricted-agent `off` seed (resource-visibility.md).
-   *      Gating is vacuous here for the same reason, so a restricted linking
-   *      agent keeps the default and its keyword rung; §14's fail-open worry
-   *      presumes conversations the install never granted.
-   *
-   *  Fail-closed `false` keeps both on the ordinary §10/§14 arms. */
-  readonly soleConversation: boolean
+   *  Fail-closed `false` keeps a platform on the ordinary ownership-route arm. */
+  readonly ownerAsDefault: boolean
 }
 
 /** The conservative arm of every axis — see the fail-closed note above. */
@@ -118,8 +109,8 @@ export const DEFAULT_MANIFEST: Omit<PlatformManifest, 'platform'> = {
   leaveGranularity: 'conversation',
   // The arm the retired Slack-only predicate took for every other id: one agent per bot.
   multiAgentShareable: false,
-  // The arm §14 already took everywhere: an install grants no conversation on its own.
-  soleConversation: false
+  // The arm every shipped platform takes: an owner is an ownership route, not a default.
+  ownerAsDefault: false
 }
 
 /**
@@ -141,7 +132,7 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       botSenderRouting: true,
       leaveGranularity: 'conversation',
       multiAgentShareable: true,
-      soleConversation: false
+      ownerAsDefault: false
     }
   ],
   [
@@ -151,7 +142,7 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       botSenderRouting: false,
       leaveGranularity: 'conversation',
       multiAgentShareable: false,
-      soleConversation: false
+      ownerAsDefault: false
     }
   ],
   // A Discord bot is added to a GUILD, not to a channel — there is no
@@ -163,7 +154,7 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       botSenderRouting: false,
       leaveGranularity: 'space',
       multiAgentShareable: false,
-      soleConversation: false
+      ownerAsDefault: false
     }
   ],
   [
@@ -173,7 +164,7 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       botSenderRouting: false,
       leaveGranularity: 'conversation',
       multiAgentShareable: false,
-      soleConversation: false
+      ownerAsDefault: false
     }
   ],
   // A connected Linear workspace IS a shared bot: the deployment's one OAuth app
@@ -185,8 +176,8 @@ const MANIFESTS = new Map<string, Omit<PlatformManifest, 'platform'>>([
       botSenderRouting: false,
       leaveGranularity: 'conversation',
       multiAgentShareable: true,
-      // The workspace IS the conversation, and enabling an agent on it is the install itself.
-      soleConversation: true
+      // Every Linear event addresses the app, so a team row's owner is its dispatch default (§6.2).
+      ownerAsDefault: true
     }
   ]
 ])
