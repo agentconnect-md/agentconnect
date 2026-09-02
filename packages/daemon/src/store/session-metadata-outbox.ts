@@ -47,6 +47,8 @@ export interface SessionMetadataHost {
 
 export interface SessionMetadataSnapshotInput {
   sessionId: string
+  /** The logical session; with one host per session an ACP id alone can name a sibling's row. */
+  sessionKey?: string
   agentId: string
   phase: EventSession['phase']
   platform: SessionKey['platform']
@@ -101,7 +103,9 @@ export class SessionMetadataOutbox {
     if (!cpClient && !this.host.controlPlaneConfigured()) return
     const now = new Date(this.host.clock().now()).toISOString()
     // Callers hold the ACP hop's id; the wire carries the session's outward one (§1.1).
-    const slot = await store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
+    const slot = input.sessionKey
+      ? await store.getSession(input.sessionKey)
+      : await store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
     // An unresolvable slot keeps the id it was given — the same thing a pre-v12 daemon would have sent.
     const outwardSessionId =
       slot?.sessionId ??
@@ -174,7 +178,7 @@ export class SessionMetadataOutbox {
     const allowRuntimeChangesInChat = agent?.allowRuntimeChangesInChat === true
     if (input.runtime !== undefined) event.runtime = input.runtime
     else if (agent?.runtime) event.runtime = agent.runtime
-    const sessionRecord = await store.getSessionByAcpIdForAgent(input.agentId, input.sessionId)
+    const sessionRecord = slot
     if (sessionRecord?.workspaceIsolation) event.workspaceIsolation = sessionRecord.workspaceIsolation
     const storeKey = sessionRecord?.key
     const configuredModel =

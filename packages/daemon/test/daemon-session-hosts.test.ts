@@ -424,4 +424,98 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     expect((daemon as any).sessionDeliveryBindings.has(KEY('T1'))).toBe(false)
     await daemon.stop()
   })
+
+  it('an internal pass resolves an ACP id only to its own row: a dream to its execution row, a memory pass to none', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    const store = (daemon as any).store
+    const sid = (await store.getSession(KEY('T1'))).acpSessionId as string
+    // A dream executing beside the chat session mints the same runtime-local id.
+    const dreamKey = sessionKey('dream', 'memory', 'd1', 'bot-a')
+    await store.upsertSession({
+      key: dreamKey,
+      agentId: 'bot-a',
+      platform: 'dream',
+      channel: 'memory',
+      thread: 'd1',
+      acpSessionId: sid,
+      state: 'idle',
+      lastDeliveredTs: null,
+      updatedAt: Date.now()
+    })
+    const dreamOwner = (daemon as any).dreamOwnerKey('bot-a', 'd1')
+    expect((await (daemon as any).sessionForAcp(dreamOwner, sid))?.key).toBe(dreamKey)
+    expect((await (daemon as any).sessionForAcp(sessionHostKey('bot-a', KEY('T1')), sid))?.key).toBe(KEY('T1'))
+    // A memory pass has no row of its own and must never borrow a sibling's.
+    expect(await (daemon as any).sessionForAcp(sessionHostKey('bot-a', 'internal:memory:bot-a'), sid)).toBeUndefined()
+    await daemon.stop()
+  })
+
+  it('the capture gate is filed under the logical session, so a public sibling sharing an ACP id cannot open a private one', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+    const store = (daemon as any).store
+    // Two session hosts can mint one runtime-local id; force the rows onto it.
+    const sid = (await store.getSession(KEY('T1'))).acpSessionId as string
+    await store.db.prepare('UPDATE sessions SET acpSessionId = ? WHERE key = ?').run(sid, KEY('T2'))
+    expect(await store.isCaptureExcluded('bot-a', KEY('T1'))).toBe(true)
+    expect(await store.isCaptureExcluded('bot-a', KEY('T2'))).toBe(true)
+    // The CP opens the SECOND session, naming it outwardly: the first stays private.
+    const outward = await store.ensureOutwardSessionId(KEY('T2'), 'bot-a')
+    const apply = (daemon as any).cpConfigApply()
+    expect(
+      await apply.applySessionVisibility({ sessionId: outward, agentId: 'bot-a', visibility: 'org', visibilityRev: 1 })
+    ).toBe('applied')
+    expect(await store.isCaptureExcluded('bot-a', KEY('T2'))).toBe(false)
+    expect(await store.isCaptureExcluded('bot-a', KEY('T1'))).toBe(true)
+    await daemon.stop()
+  })
+
+  it('a turn admitted while the stop probe awaits the store keeps its host', async () => {
+    const root = scaffold()
+    const hosts: ReturnType<typeof fakeHost>[] = []
+    let releaseSecondPrompt!: () => void
+    const secondPrompt = new Promise<void>((resolve) => (releaseSecondPrompt = resolve))
+    const factory = vi.fn(() => {
+      const host = fakeHost(hosts.length + 1)
+      let prompts = 0
+      host.prompt.mockImplementation(async () => {
+        if (++prompts === 2) await secondPrompt
+        return 'end_turn'
+      })
+      hosts.push(host)
+      return host as never
+    })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: factory,
+      sandboxMechanism: 'bwrap'
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    const key = sessionHostKey('bot-a', KEY('T1'))
+    const store = (daemon as any).store
+    const row = { key: KEY('T1'), agentId: 'bot-a', acpSessionId: (await store.getSession(KEY('T1'))).acpSessionId }
+    const fence = { ...(daemon as any).sessionHostFence('bot-a', KEY('T1')), row }
+    let turn: Promise<unknown> | undefined
+    // A direct message claims the key on the same warm host while the probe's store query is out.
+    const probe = vi.spyOn(store, 'sessionHasPendingInboxRows').mockImplementation(async () => {
+      if (!turn) {
+        turn = (daemon as any).dispatch('bot-a', dm('200', 'again', 'T1'), 'int-a')
+        await vi.waitFor(() => expect((daemon as any).inflight.has(KEY('T1'))).toBe(true), WAIT)
+      }
+      return false
+    })
+    await (daemon as any).stopSessionHost('bot-a', KEY('T1'), fence)
+    probe.mockRestore()
+    releaseSecondPrompt()
+    await turn
+    expect(hosts[0]!.stop).not.toHaveBeenCalled()
+    expect((daemon as any).hosts.get(key)).toBe(hosts[0])
+    expect(hosts[0]!.prompt).toHaveBeenCalledTimes(2)
+    await daemon.stop()
+  })
 })

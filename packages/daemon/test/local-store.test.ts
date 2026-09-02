@@ -43,6 +43,15 @@ const dropPlatformStanding = (db: DatabaseSync): void => {
   db.exec('ALTER TABLE sessions DROP COLUMN platformStanding')
 }
 
+/** Undo the v17 gate re-key, so a fixture's session_gates looks like the one an older daemon wrote. */
+const revertSessionGateKey = (db: DatabaseSync): void => {
+  db.exec('DROP TABLE session_gates')
+  db.exec(`CREATE TABLE session_gates (
+    agentId TEXT NOT NULL, acpSessionId TEXT NOT NULL, localExcluded INTEGER NOT NULL DEFAULT 1,
+    cpPrivate INTEGER, cpRev INTEGER NOT NULL DEFAULT 0, updatedAt INTEGER, PRIMARY KEY (agentId, acpSessionId)
+  )`)
+}
+
 /** Undo the v11 transcript fence, so a fixture looks like a store an older daemon wrote. */
 const dropTranscriptOrg = (db: DatabaseSync): void => {
   db.exec(`
@@ -102,6 +111,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE permission_requests DROP COLUMN ownerId')
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
+    revertSessionGateKey(old)
     old.exec('DROP INDEX session_metadata_outbox_attempt')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN failedAttempts')
     old.exec('ALTER TABLE session_metadata_outbox DROP COLUMN nextAttemptAt')
@@ -148,7 +158,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect(cronColumns).toContain('definition')
     // Purge receipts are leased per pool member (#1032).
     expect(purgeColumns).toEqual(expect.arrayContaining(['ownerId', 'claimedAt']))
-    expect(userVersion(path)).toBe(16)
+    expect(userVersion(path)).toBe(17)
   })
 
   it.skipIf(pg)('never persists the CP routing map on a shared store, and still does on an owned one', async () => {
@@ -203,18 +213,18 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.close()
 
     const upgraded = await LocalStore.open(path)
-    // Attributable: the CP verdict follows the one agent that held the id.
-    expect(await upgraded.isCaptureExcluded('bot-a', 'acp-1')).toBe(false)
+    // Attributable: the CP verdict follows the one agent that held the id, filed under its session key.
+    expect(await upgraded.isCaptureExcluded('bot-a', 'a')).toBe(false)
     // Held by two agents: the stored verdict was never attributable to either, so
     // both start from the fail-closed state and wait for their own CP push.
-    expect(await upgraded.isCaptureExcluded('bot-b', 'acp-2')).toBe(true)
-    expect(await upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
-    expect(await upgraded.applyCpCaptureGate('bot-b', 'acp-2', false, 1)).toBe('applied')
-    expect(await upgraded.isCaptureExcluded('bot-b', 'acp-2')).toBe(false)
-    expect(await upgraded.isCaptureExcluded('bot-c', 'acp-2')).toBe(true)
+    expect(await upgraded.isCaptureExcluded('bot-b', 'b')).toBe(true)
+    expect(await upgraded.isCaptureExcluded('bot-c', 'c')).toBe(true)
+    expect(await upgraded.applyCpCaptureGate('bot-b', 'b', false, 1)).toBe('applied')
+    expect(await upgraded.isCaptureExcluded('bot-b', 'b')).toBe(false)
+    expect(await upgraded.isCaptureExcluded('bot-c', 'c')).toBe(true)
     await upgraded.close()
 
-    expect(userVersion(path)).toBe(16)
+    expect(userVersion(path)).toBe(17)
   })
 
   it('re-keys the runtime catalog cache on its owning member when upgrading a v7 store', async () => {
@@ -247,6 +257,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
+    revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 7')
     old.close()
 
@@ -268,7 +279,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
         .map((column) => column.name)
     expect(primaryKey(metaColumns)).toEqual(['ownerId', 'runtimeId'])
     expect(primaryKey(capColumns)).toEqual(['ownerId', 'runtimeId', 'modelId'])
-    expect(userVersion(path)).toBe(16)
+    expect(userVersion(path)).toBe(17)
   })
 
   it('backfills a v11 store with the outward id its sessions were already reported under', async () => {
@@ -284,6 +295,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
+    revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 11')
     old.close()
 
@@ -294,7 +306,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     expect((await upgraded.getSession('k2'))?.sessionId).toBeNull()
     expect(await upgraded.ensureOutwardSessionId('k2', 'bot-a')).toMatch(/^[0-9a-f-]{36}$/)
     await upgraded.close()
-    expect(userVersion(path)).toBe(16)
+    expect(userVersion(path)).toBe(17)
   })
 
   // The regression that made `directDestination` reachable on fresh databases only: the step was
@@ -309,6 +321,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
       VALUES ('k1', 'bot-a', 'slack', 'C1', 'T1', 'acp-1', 'idle', 100)`)
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
+    revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 12')
     old.close()
 
@@ -318,7 +331,7 @@ describe.skipIf(pg)('LocalStore schema versioning', () => {
     await upgraded.setSessionClassification('k1', { sourceBindingKind: 'external', directDestination: true })
     expect(await upgraded.getSessionClassification('bot-a', 'acp-1')).toMatchObject({ directDestination: true })
     await upgraded.close()
-    expect(userVersion(path)).toBe(16)
+    expect(userVersion(path)).toBe(17)
   })
 
   it('refuses a store written by a newer daemon WITHOUT touching it first', async () => {
@@ -1549,7 +1562,7 @@ describe('LocalStore session retention GC (#485)', () => {
     const s = await store()
     await seed(s, 'gone', 'closed', 100)
     await s.setSessionMuted('gone', true)
-    await s.setLocalCaptureGate('bot-a', 'acp-gone', true)
+    await s.setLocalCaptureGate('bot-a', 'gone', true)
     await s.appendInbox({ id: 'm1', sessionKey: 'gone', agentId: 'bot-a', msg: '{}', enqueuedAt: '0000000001' })
     // An unacknowledged terminal hook report is an outbox toward the CP and must
     // survive the session delete (same rule as removeInboxByAgentId).
@@ -1622,16 +1635,16 @@ describe('LocalStore session retention GC (#485)', () => {
       })
     await put('a', 'bot-a')
     await put('b', 'bot-b')
-    await s.setLocalCaptureGate('bot-a', 'acp-shared', false) // capture open (not excluded)
-    await s.setLocalCaptureGate('bot-b', 'acp-shared', false)
+    await s.setLocalCaptureGate('bot-a', 'a', false) // capture open (not excluded)
+    await s.setLocalCaptureGate('bot-b', 'b', false)
 
     // bot-a's session expires: its own gate goes, bot-b's is untouched.
     expect(await s.deleteSession('a')).toBe(true)
-    expect(await s.isCaptureExcluded('bot-a', 'acp-shared')).toBe(true) // no row ⇒ excluded-by-default
-    expect(await s.isCaptureExcluded('bot-b', 'acp-shared')).toBe(false)
+    expect(await s.isCaptureExcluded('bot-a', 'a')).toBe(true) // no row ⇒ excluded-by-default
+    expect(await s.isCaptureExcluded('bot-b', 'b')).toBe(false)
 
     expect(await s.deleteSession('b')).toBe(true)
-    expect(await s.isCaptureExcluded('bot-b', 'acp-shared')).toBe(true)
+    expect(await s.isCaptureExcluded('bot-b', 'b')).toBe(true)
     await s.close()
   })
 
@@ -2621,6 +2634,7 @@ describe.skipIf(pg)('transcript org migration from a v10 store', () => {
     old.exec('ALTER TABLE sessions DROP COLUMN directDestination')
     dropApprovalDmColumns(old)
     dropPlatformStanding(old)
+    revertSessionGateKey(old)
     old.exec('PRAGMA user_version = 10')
     old.close()
     return path

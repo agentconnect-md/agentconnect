@@ -878,7 +878,7 @@ function restrictPath(path: string, mode: number): void {
  * fresh databases and every established one fails at query time. `SCHEMA_MIGRATIONS`
  * asserts the two stay in lockstep for exactly that reason.
  */
-const SCHEMA_VERSION = 16
+const SCHEMA_VERSION = 17
 
 /**
  * Ordered in-place upgrades for a store created by an EARLIER daemon.
@@ -1026,7 +1026,34 @@ const SCHEMA_MIGRATIONS: ((db: StoreTx, store: { shared: boolean }) => Promise<v
       ALTER TABLE permission_requests ADD COLUMN notifyTs TEXT;
     `),
   // The platform standing block travels with the logical session, not only the message that opened it.
-  async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN platformStanding TEXT')
+  async (db) => await db.exec('ALTER TABLE sessions ADD COLUMN platformStanding TEXT'),
+  // session_gates is keyed by the logical session: with one host per session, siblings of one agent can hold one ACP id.
+  async (db) =>
+    await db.exec(`
+      CREATE TABLE session_gates_by_key (
+        agentId TEXT NOT NULL,
+        sessionKey TEXT NOT NULL,
+        localExcluded INTEGER NOT NULL DEFAULT 1,
+        cpPrivate INTEGER,
+        cpRev INTEGER NOT NULL DEFAULT 0,
+        updatedAt INTEGER,
+        PRIMARY KEY (agentId, sessionKey)
+      );
+      INSERT INTO session_gates_by_key (agentId, sessionKey, localExcluded, cpPrivate, cpRev, updatedAt)
+      SELECT s.agentId, s.key, g.localExcluded, g.cpPrivate, g.cpRev, g.updatedAt
+      FROM session_gates g
+      JOIN sessions s ON s.agentId = g.agentId AND s.acpSessionId = g.acpSessionId;
+      UPDATE session_gates_by_key SET localExcluded = 1, cpPrivate = NULL, cpRev = 0
+      WHERE sessionKey IN (
+        SELECT s.key FROM sessions s
+        JOIN (
+          SELECT agentId, acpSessionId FROM sessions
+          WHERE acpSessionId IS NOT NULL GROUP BY agentId, acpSessionId HAVING COUNT(*) > 1
+        ) d ON d.agentId = s.agentId AND d.acpSessionId = s.acpSessionId
+      );
+      DROP TABLE session_gates;
+      ALTER TABLE session_gates_by_key RENAME TO session_gates;
+    `)
 ]
 
 // The list and the version are two halves of one fact: step `i` moves a database from
@@ -1160,12 +1187,12 @@ export class LocalStore {
       -- (localExcluded, not "excluded": SQLite's upsert pseudo-table owns that name.)
       CREATE TABLE IF NOT EXISTS session_gates (
         agentId TEXT NOT NULL,
-        acpSessionId TEXT NOT NULL,
+        sessionKey TEXT NOT NULL,
         localExcluded INTEGER NOT NULL DEFAULT 1,
         cpPrivate INTEGER,
         cpRev INTEGER NOT NULL DEFAULT 0,
         updatedAt INTEGER,
-        PRIMARY KEY (agentId, acpSessionId)
+        PRIMARY KEY (agentId, sessionKey)
       );
       -- Latest-wins session metadata awaiting a correlated CP persistence ACK.
       -- This is deliberately separate from sessions: an upgrade starts with an
@@ -2542,15 +2569,15 @@ export class LocalStore {
 
   /** Seed the local verdict for a session the daemon just created. Never lowers
    *  `cpRev`: a CP push that arrived first stays authoritative. */
-  async setLocalCaptureGate(agentId: string, acpSessionId: string, localExcluded: boolean): Promise<void> {
+  async setLocalCaptureGate(agentId: string, sessionKey: string, localExcluded: boolean): Promise<void> {
     await this.db
       .prepare(
-        `INSERT INTO session_gates (agentId, acpSessionId, localExcluded, cpRev, updatedAt)
+        `INSERT INTO session_gates (agentId, sessionKey, localExcluded, cpRev, updatedAt)
          VALUES (?, ?, ?, 0, ?)
-         ON CONFLICT(agentId, acpSessionId) DO UPDATE SET
+         ON CONFLICT(agentId, sessionKey) DO UPDATE SET
            localExcluded = excluded.localExcluded, updatedAt = excluded.updatedAt`
       )
-      .run(agentId, acpSessionId, localExcluded ? 1 : 0, Date.now())
+      .run(agentId, sessionKey, localExcluded ? 1 : 0, Date.now())
   }
 
   /**
@@ -2564,7 +2591,7 @@ export class LocalStore {
    */
   async applyCpCaptureGate(
     agentId: string,
-    acpSessionId: string,
+    sessionKey: string,
     isPrivate: boolean,
     rev: number
   ): Promise<'applied' | 'superseded'> {
@@ -2573,14 +2600,14 @@ export class LocalStore {
     const changes = (
       await this.db
         .prepare(
-          `INSERT INTO session_gates (agentId, acpSessionId, localExcluded, cpPrivate, cpRev, updatedAt)
+          `INSERT INTO session_gates (agentId, sessionKey, localExcluded, cpPrivate, cpRev, updatedAt)
          VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(agentId, acpSessionId) DO UPDATE SET
+         ON CONFLICT(agentId, sessionKey) DO UPDATE SET
            cpPrivate = excluded.cpPrivate, cpRev = excluded.cpRev, updatedAt = excluded.updatedAt
          WHERE session_gates.cpRev < excluded.cpRev
             OR (excluded.cpRev = 0 AND session_gates.cpRev = 0)`
         )
-        .run(agentId, acpSessionId, isPrivate ? 1 : 0, isPrivate ? 1 : 0, rev, Date.now())
+        .run(agentId, sessionKey, isPrivate ? 1 : 0, isPrivate ? 1 : 0, rev, Date.now())
     ).changes
     return Number(changes) > 0 ? 'applied' : 'superseded'
   }
@@ -2602,8 +2629,8 @@ export class LocalStore {
    * we have one; otherwise the local verdict; otherwise excluded. An A2A child
    * therefore starts closed and only a CP-confirmed `org` state opens it.
    */
-  async isCaptureExcluded(agentId: string, acpSessionId: string | undefined): Promise<boolean> {
-    if (!acpSessionId) return true
+  async isCaptureExcluded(agentId: string, sessionKey: string | undefined): Promise<boolean> {
+    if (!sessionKey) return true
     // External-source binding (a Slack/Feishu channel = external identity domain)
     // no longer forces memory exclusion: such channels behave like any other
     // channel (Discord/Telegram already did), gated only by the local verdict and
@@ -2611,8 +2638,8 @@ export class LocalStore {
     // §5.1). DM / webchat / A2A / launch-correlated sessions stay private through
     // those same layers.
     const row = (await this.db
-      .prepare('SELECT localExcluded, cpPrivate FROM session_gates WHERE agentId = ? AND acpSessionId = ?')
-      .get(agentId, acpSessionId)) as { localExcluded: number; cpPrivate: number | null } | undefined
+      .prepare('SELECT localExcluded, cpPrivate FROM session_gates WHERE agentId = ? AND sessionKey = ?')
+      .get(agentId, sessionKey)) as { localExcluded: number; cpPrivate: number | null } | undefined
     if (!row) return true
     if (row.cpPrivate !== null) return row.cpPrivate === 1
     return row.localExcluded === 1
@@ -3149,9 +3176,7 @@ export class LocalStore {
         await tx
           .prepare('DELETE FROM session_metadata_outbox WHERE agentId = ? AND sessionId = ?')
           .run(rec.agentId, outward)
-        await tx
-          .prepare('DELETE FROM session_gates WHERE agentId = ? AND acpSessionId = ?')
-          .run(rec.agentId, rec.acpSessionId)
+        await tx.prepare('DELETE FROM session_gates WHERE agentId = ? AND sessionKey = ?').run(rec.agentId, rec.key)
         await tx
           .prepare('DELETE FROM permission_requests WHERE agentId = ? AND sessionId = ?')
           .run(rec.agentId, rec.acpSessionId)

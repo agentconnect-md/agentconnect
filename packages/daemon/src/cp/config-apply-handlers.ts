@@ -888,12 +888,14 @@ export async function applySessionVisibility(
   // there is none leave the gate closed (still ACKed).
   const agentId = p.agentId ?? (await host.store().soleAgentForAcpSession(p.sessionId))
   if (!agentId) return 'superseded'
-  // The push names the session outwardly; the gate is keyed by the runtime's id.
-  const slot = await host.store().getSessionByOutwardId(p.sessionId, agentId)
-  const acpSessionId = slot?.acpSessionId ?? p.sessionId
+  // The push names the session outwardly (a pre-v12 CP by the runtime's id); the gate is keyed by the logical session.
+  const slot =
+    (await host.store().getSessionByOutwardId(p.sessionId, agentId)) ??
+    (await host.store().getSessionByAcpIdForAgent(agentId, p.sessionId))
+  if (!slot) return 'superseded'
   return host
     .store()
-    .applyCpCaptureGate(agentId, acpSessionId, p.sharedMemoryExcluded ?? p.visibility === 'private', p.visibilityRev)
+    .applyCpCaptureGate(agentId, slot.key, p.sharedMemoryExcluded ?? p.visibility === 'private', p.visibilityRev)
 }
 
 /** Wire the handlers into the seam — member order mirrors the `ConfigApply` contract. */

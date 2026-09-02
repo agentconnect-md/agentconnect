@@ -290,12 +290,7 @@ import {
   type ModelProviderTarget
 } from './runtimes/model-provider-config.js'
 import { KeyServerClient, type KeyGrant } from './key-server/client.js'
-import {
-  internalSessionKey,
-  isInternalSessionKey,
-  ModelSessionHostPool,
-  type ModelSessionHostPoolHost
-} from './key-server/session-hosts.js'
+import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost } from './key-server/session-hosts.js'
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { RuntimeFactsRegistry, PROBE_TTL_MS, type RuntimeFactsHost } from './runtimes/facts-registry.js'
 import { assembleRuntimeLaunch } from './launch/assemble.js'
@@ -643,6 +638,11 @@ function liveSdkLease(l: {
   sdkState: string
 }): boolean {
   return l.tasks.size > 0 || l.armedWakes > 0 || l.deliveringWakes > 0 || l.sdkState === 'running'
+}
+
+/** The store row a memory dream executes under. */
+function dreamExecutionKey(agentId: string, dreamId: string): string {
+  return sessionKey('dream', 'memory', dreamId, agentId)
 }
 
 function acpUpdateChainKey(owner: HostKey, sessionId: string): string {
@@ -2339,8 +2339,7 @@ export class Daemon {
           if (!agent) throw new Error(`unknown agent ${agentId}`)
           await this.memory.recordTurnForBinding(
             {
-              // A replayed capture names its session by runtime id alone, so the shared owner's lookup serves it.
-              ...(await this.memoryScopeForSession(agentHostKey(agentId), turn.sessionId ?? '')),
+              ...(await this.memoryScopeForCapturedTurn(agentId, turn.sessionId ?? '')),
               ...(turn.sessionId ? { sessionId: turn.sessionId } : {})
             },
             {
@@ -2688,7 +2687,10 @@ export class Daemon {
         // refuses to distill a capture-excluded turn at all. The binding is never
         // model-supplied, so this cannot be forged from inside a session.
         if (ctx.memoryBinding) return true
-        return !(await this.store.isCaptureExcluded(ctx.agentId, await this.acpSessionIdForToolCall(ctx)))
+        return !(await this.store.isCaptureExcluded(
+          ctx.agentId,
+          sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+        ))
       },
       memoryScope: (ctx) => this.memoryScope(ctx.agentId, ctx.channel, ctx.transportScope),
       resolveAttachment: async (ctx, name) => {
@@ -2727,7 +2729,11 @@ export class Daemon {
           sessionOf: (id, sessionId) => this.store.getSessionByOutwardId(sessionId, id),
           runtimeRootOf: (id) => this.k8sPlane?.workspaceRootFor(id)
         })
-        const acpSessionId = await this.acpSessionIdForToolCall(ctx).catch(() => undefined)
+        // The session by its logical key; the scope answers by the outward id the row carries.
+        const row = await this.store
+          .getSession(sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope))
+          .catch(() => undefined)
+        const acpSessionId = row?.sessionId ?? row?.acpSessionId ?? undefined
         // Session-worktree first (an isolated session's files live there), then the agent
         // root: `location(id, sessionId)` answers ONLY for git-repo agents on isolated
         // sessions, and the default config (shared isolation, from-scratch) is the other arm.
@@ -3639,29 +3645,58 @@ export class Daemon {
     )
   }
 
-  /** The session row an ACP id names for THIS owner — a session-bound host answers only for its own session. */
+  /** The dream host's owner: its execution row's key, so its ACP id resolves to that row and nothing else. */
+  private dreamOwnerKey(agentId: string, dreamId: string): HostKey {
+    return sessionHostKey(agentId, dreamExecutionKey(agentId, dreamId))
+  }
+
+  // The session row an ACP id names for THIS owner. A session-bound owner answers only for its own row —
+  // an internal pass with no row (memory/commit) answers nothing, never a sibling that minted the same id.
   private async sessionForAcp(owner: HostKey, acpSessionId: string): Promise<SessionRecord | undefined> {
     const sessionKey = hostKeySessionKey(owner)
-    // The shared host, and a daemon-internal pass (dream/memory/commit) whose key names no session row, answer by agent.
-    if (sessionKey === undefined || isInternalSessionKey(sessionKey)) {
-      return await this.store.getSessionByAcpIdForAgent(hostKeyAgentId(owner), acpSessionId)
-    }
+    if (sessionKey === undefined) return await this.store.getSessionByAcpIdForAgent(hostKeyAgentId(owner), acpSessionId)
     const rec = await this.store.getSession(sessionKey)
     return rec?.acpSessionId === acpSessionId ? rec : undefined
   }
 
-  // Stop the host bound to one session because its row or directory is going. `fence` is the host the
-  // cleanup decision saw: a replacement admitted for the same logical key since then is not the decision's to evict.
+  /** Admission the session holds right now, read with no await so a stop can decide against it in one tick. */
+  private sessionAdmitted(sessionKey: string, hostKey: HostKey): boolean {
+    return (
+      this.inflight.has(sessionKey) ||
+      this.activeDispatchDoneByKey.has(sessionKey) ||
+      this.hostStarts.has(hostKey) ||
+      [...this.pending.values()].some((p) => p.plan.sessionKey === sessionKey)
+    )
+  }
+
+  /** The host and start generation a session-host stop decision is taken against. */
+  private sessionHostFence(
+    agentId: string,
+    sessionKey: string
+  ): { expected: AcpHost | undefined; generation: number | undefined } {
+    const key = sessionHostKey(agentId, sessionKey)
+    return { expected: this.hosts.get(key), generation: this.hostStartGeneration.get(key) }
+  }
+
+  // Stop the host bound to one session because its row or directory is going. `fence` is what the cleanup
+  // decision saw; a replacement, a newer start generation, or a turn admitted meanwhile is not its to evict.
   private async stopSessionHost(
     agentId: string,
     sessionKey: string,
-    fence?: { expected: AcpHost | undefined; row: { key: string; agentId: string; acpSessionId: string | null } }
+    fence?: {
+      expected: AcpHost | undefined
+      generation: number | undefined
+      row: { key: string; agentId: string; acpSessionId: string | null }
+    }
   ): Promise<void> {
     const key = sessionHostKey(agentId, sessionKey)
     if (fence) {
       if (this.hosts.get(key) !== fence.expected) return
       if (await this.sessionRetentionActive(fence.row)) return
+      // Read again with no await between here and the stop: the probe above awaited a store query.
       if (this.hosts.get(key) !== fence.expected) return
+      if (this.hostStartGeneration.get(key) !== fence.generation) return
+      if (this.sessionAdmitted(sessionKey, key)) return
     }
     if (!this.hosts.has(key) && !this.hostStarts.has(key) && !this.hostStopping.has(key)) return
     await this.stopHostByKey(key)
@@ -4591,11 +4626,13 @@ export class Daemon {
     }
   }
 
-  /** Memory scope for a running session, resolving its channel from the store by
-   *  ACP session id (the capture path only carries the session id). */
-  private async memoryScopeForSession(owner: HostKey, acpSessionId: string): Promise<MemoryScope> {
-    const rec = await this.sessionForAcp(owner, acpSessionId)
-    return this.memoryScope(hostKeyAgentId(owner), rec?.channel, rec?.transportScope)
+  // Memory scope of a captured turn on replay: the capture names its session outwardly (§1.1); a row
+  // captured before that was named by the runtime's id, which is tried second.
+  private async memoryScopeForCapturedTurn(agentId: string, capturedSessionId: string): Promise<MemoryScope> {
+    const rec =
+      (await this.store.getSessionByOutwardId(capturedSessionId, agentId)) ??
+      (await this.store.getSessionByAcpIdForAgent(agentId, capturedSessionId))
+    return this.memoryScope(agentId, rec?.channel, rec?.transportScope)
   }
 
   private async queueMemoryPostTurn(
@@ -4607,7 +4644,8 @@ export class Daemon {
     binding: Agent['memory'],
     captureTarget?: PreparedExternalMemoryCapture,
     evaluationTurnId = turnId,
-    owner: HostKey = agentHostKey(agentId)
+    // The logical session and its outward id: the gate is keyed by the former, the capture names the latter.
+    session?: { key: string; outwardSessionId: string }
   ): Promise<void> {
     if (this.evaluationProfile.memory === 'off') return
     if (!output.trim()) return
@@ -4616,7 +4654,7 @@ export class Daemon {
     // launch-correlated one) must never be distilled into it. The gate is checked
     // HERE — before both the managed distillation and the external capture outbox
     // — and fails closed on unknown state.
-    if (await this.store.isCaptureExcluded(agentId, sessionId)) return
+    if (await this.store.isCaptureExcluded(agentId, session?.key)) return
     const provider = binding?.provider ?? 'managed'
     const observableCapture = provider === 'managed' || provider === 'external'
     const record = async () => {
@@ -4630,9 +4668,11 @@ export class Daemon {
         })
       }
       try {
+        const rec = session ? await this.store.getSession(session.key) : undefined
+        const capturedSessionId = session?.outwardSessionId ?? sessionId
         await this.memory.recordTurnForBinding(
-          { ...(await this.memoryScopeForSession(owner, sessionId)), sessionId },
-          { turnId, sessionId, input, output },
+          { ...this.memoryScope(agentId, rec?.channel, rec?.transportScope), sessionId: capturedSessionId },
+          { turnId, sessionId: capturedSessionId, input, output },
           binding,
           captureTarget
         )
@@ -5056,7 +5096,7 @@ export class Daemon {
       }
     }
     let host: AcpHost
-    const dreamHostKey = sessionHostKey(agent.id, internalSessionKey.dream(context.dreamId))
+    const dreamHostKey = this.dreamOwnerKey(agent.id, context.dreamId)
     try {
       host = await this.buildDreamHost(agent, context.inputDir, dreamHostKey, issued)
     } catch (error) {
@@ -5285,7 +5325,7 @@ export class Daemon {
     // apply, and persisting/pricing that override would be false observability.
     const model =
       modelOptions === null ? agent.runtimeOverrides?.model : selectedModel === 'default' ? undefined : selectedModel
-    const executionKey = sessionKey('dream', 'memory', context.dreamId, agentId)
+    const executionKey = dreamExecutionKey(agentId, context.dreamId)
     const now = this.clock.now()
     await this.store.upsertSession({
       key: executionKey,
@@ -5323,6 +5363,7 @@ export class Daemon {
     })
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId,
+      sessionKey: executionKey,
       agentId,
       phase: 'start',
       platform: 'dream',
@@ -5458,6 +5499,7 @@ export class Daemon {
       await this.store.setSessionState(executionKey, 'idle', this.clock.now())
       await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
         sessionId,
+        sessionKey: executionKey,
         agentId,
         phase: promptCompleted ? 'end' : 'problem',
         platform: 'dream',
@@ -5551,6 +5593,7 @@ export class Daemon {
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       // The outbox takes the ACP hop's id and translates; the dream row holds the outward one.
       sessionId: rec.acpSessionId ?? dream.executionSessionId,
+      sessionKey: rec.key,
       agentId: dream.agentId,
       phase: event.type === 'memory.dream.failed' ? 'problem' : 'end',
       platform: 'dream',
@@ -8796,7 +8839,7 @@ export class Daemon {
       dispatch: (agentId, msg, integrationId, webchat, callMeta, opts) =>
         this.dispatch(agentId, msg, integrationId, webchat, callMeta, opts),
       webchatTransport: () => this.webchatTransport,
-      externalOriginForSession: (agentId, acpSessionId) => this.externalOriginForSession(agentId, acpSessionId)
+      externalOriginForSession: (agentId, sessionKey) => this.externalOriginForSession(agentId, sessionKey)
     }
   }
 
@@ -10934,6 +10977,7 @@ export class Daemon {
     // recordMilestone upserts, so a repeated 'start' phase is safe on the CP.
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId,
+      sessionKey: key,
       agentId,
       phase: 'start',
       platform: msg.platform,
@@ -11917,7 +11961,7 @@ export class Daemon {
       agent.memory,
       memoryCaptureTarget,
       plan.evaluationTurnId,
-      p.hostKey
+      { key, outwardSessionId: p.outwardSessionId }
     )
     evaluation.finishEvaluation('turn.completed', {
       ...(stopReason ? { stopReason } : {}),
@@ -12243,6 +12287,7 @@ export class Daemon {
       )
       await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
         sessionId,
+        sessionKey: key,
         agentId,
         phase: settlement.finalPhase,
         platform: msg.platform,
@@ -13442,6 +13487,7 @@ export class Daemon {
     if (!rec.acpSessionId) return
     await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
       sessionId: rec.acpSessionId,
+      sessionKey: rec.key,
       agentId: rec.agentId,
       phase: 'plan',
       platform: rec.platform as SessionKey['platform'],
@@ -14131,7 +14177,7 @@ export class Daemon {
       // Never let classification break a turn — but fail CLOSED: an unclassified
       // session keeps memory capture excluded until the CP confirms otherwise.
       this.log.warn(`session visibility: classification failed for ${acpSessionId} (${formatErr(err)})`)
-      await this.store.setLocalCaptureGate(agentId, acpSessionId, true)
+      await this.store.setLocalCaptureGate(agentId, key, true)
     }
   }
 
@@ -14140,13 +14186,12 @@ export class Daemon {
    * by the root session's agent, not part of the audience identity. */
   private async externalOriginForSession(
     agentId: string,
-    acpSessionId: string | undefined
+    sessionKey: string | undefined
   ): Promise<ExternalSessionAudience | undefined> {
-    if (!acpSessionId) return undefined
-    // ACP session ids are runtime-local and can collide across agents. Bind the
-    // lookup to the trusted caller agent so another runtime cannot lend this
-    // A2A wake its external audience by accident.
-    return this.externalAudienceForSessionRecord(await this.store.getSessionByAcpIdForAgent(agentId, acpSessionId))
+    if (!sessionKey) return undefined
+    // By the logical key, bound to the trusted caller agent so no other agent's row lends this wake its audience.
+    const rec = await this.store.getSession(sessionKey)
+    return this.externalAudienceForSessionRecord(rec?.agentId === agentId ? rec : undefined)
   }
 
   private externalAudienceForSessionRecord(rec: SessionRecord | undefined): ExternalSessionAudience | undefined {
@@ -14364,23 +14409,12 @@ export class Daemon {
     // stay private.
     const locallyPrivate =
       !isEvaluation && (isA2aChild || msg.isDm || msg.platform === 'webchat' || launchCorrelationId !== undefined)
-    await this.store.setLocalCaptureGate(agentId, acpSessionId, locallyPrivate)
+    await this.store.setLocalCaptureGate(agentId, key, locallyPrivate)
   }
 
   /** The ACP session id behind an MCP tool call, from the caller's trusted
    *  session coords. Undefined when no local row matches — the capture gate
    *  treats that as unknown, i.e. excluded. */
-  private async acpSessionIdForToolCall(ctx: {
-    agentId: string
-    platform: string
-    channel: string
-    thread: string
-    transportScope?: string
-  }): Promise<string | undefined> {
-    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
-    return (await this.store.getSession(key))?.acpSessionId ?? undefined
-  }
-
   /** Mint-once, persisted: stable across restarts and credential rotations. */
   private async mintedTenantScope(integrationId: string): Promise<string> {
     return (
@@ -15660,10 +15694,7 @@ export class Daemon {
         return { outcome: 'not_applicable' }
       }
       // A host bound to this session runs inside the directory about to go: stop it before the removal.
-      await this.stopSessionHost(rec.agentId, rec.key, {
-        expected: this.hosts.get(sessionHostKey(rec.agentId, rec.key)),
-        row: rec
-      })
+      await this.stopSessionHost(rec.agentId, rec.key, { ...this.sessionHostFence(rec.agentId, rec.key), row: rec })
       // The volume has to be up and bound for the removal, as it was for the preparation — and for
       // the question of WHICH roots exist, which is asked of the filesystem that holds them: on a
       // suspended sandbox this daemon's own disk would answer "none" for a scratch agent whose pod
@@ -15752,7 +15783,7 @@ export class Daemon {
         active += 1
         continue
       }
-      const sessionHost = this.hosts.get(sessionHostKey(rec.agentId, rec.key))
+      const sessionHost = this.sessionHostFence(rec.agentId, rec.key)
       // The purge receipt is written in deleteSession's transaction: the CP holds
       // the only surviving record of this session, and it must be told that the
       // content behind it is gone (drained below, durably, on ACK).
@@ -15761,7 +15792,7 @@ export class Daemon {
         if (rec.acpSessionId)
           this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
         await this.modelSessions.release(rec.key)
-        await this.stopSessionHost(rec.agentId, rec.key, { expected: sessionHost, row: rec })
+        await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
       }
     }
     this.log.info(
@@ -16011,8 +16042,9 @@ export class Daemon {
     // §7.3 idle→closed: a thread untouched past the TTL stops catching up — UNLESS it
     // still has in-flight background work (the SDK lease), which keeps it open. The
     // lease is member-local, so on a pool only the agent's holder decides its rows.
-    // The hosts the close decision is taken against; a session re-admitted meanwhile has a newer one.
+    // The hosts and start generations the close decision is taken against; a re-admitted session has newer ones.
     const hostsAtDecision = new Map(this.hosts)
+    const generationsAtDecision = new Map(this.hostStartGeneration)
     const closed = await this.store.closeIdleSessions(now, ttl, (agentId, acpSessionId, key) =>
       this.sessionRetentionActive({ key, agentId, acpSessionId })
     )
@@ -16036,14 +16068,20 @@ export class Daemon {
       }
       this.lastFooterReply.delete(row.key) // the session is gone — release its footer record
       // A host bound to the closed session has nothing left to serve — unless a new turn reopened the key since.
-      const expected = hostsAtDecision.get(sessionHostKey(row.agentId, row.key))
-      void this.stopSessionHost(row.agentId, row.key, { expected, row }).catch((error) =>
+      const closedHost = sessionHostKey(row.agentId, row.key)
+      const fence = {
+        expected: hostsAtDecision.get(closedHost),
+        generation: generationsAtDecision.get(closedHost),
+        row
+      }
+      void this.stopSessionHost(row.agentId, row.key, fence).catch((error) =>
         this.log.warn(`idle: stopping the host of closed session ${row.key} failed (${formatErr(error)})`)
       )
       if (!row.acpSessionId) continue
       this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(row.agentId, row.key), row.acpSessionId)) // the session is gone
       await this.sessionMetadataOutbox.emitSessionMetadataSnapshot({
         sessionId: row.acpSessionId,
+        sessionKey: row.key,
         agentId: row.agentId,
         phase: 'end',
         platform: row.platform as SessionKey['platform'],
