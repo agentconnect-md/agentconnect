@@ -94,14 +94,26 @@ function approvalInputSummary(value: unknown): string {
   return ''
 }
 
-export function permissionRequestSummary(params: RequestPermissionRequest): string {
-  const label = approvalSummary(params.toolCall?.title ?? params.toolCall?.kind, 'Tool permission request')
-  const input = approvalInputSummary(params.toolCall?.rawInput)
-  return approvalSummary(input ? `${label}: ${input}` : label, 'Tool permission request')
+/** One approval request, split the way a surface renders it: the action, then its one-line input. */
+export interface ApprovalRequestParts {
+  tool: string
+  detail: string
 }
 
-export function elicitationApprovalSummary(params: CreateElicitationRequest): string {
-  return approvalSummary((params as { message?: unknown }).message, 'MCP tool permission request')
+export function permissionRequestParts(params: RequestPermissionRequest): ApprovalRequestParts {
+  return {
+    tool: approvalSummary(params.toolCall?.title ?? params.toolCall?.kind, 'Tool permission request'),
+    detail: approvalSummary(approvalInputSummary(params.toolCall?.rawInput), '')
+  }
+}
+
+export function elicitationApprovalParts(params: CreateElicitationRequest): ApprovalRequestParts {
+  return { tool: approvalSummary((params as { message?: unknown }).message, 'MCP tool permission request'), detail: '' }
+}
+
+/** The same request as the one line the durable permission row stores. */
+export function approvalRequestSummary(parts: ApprovalRequestParts): string {
+  return approvalSummary(parts.detail ? `${parts.tool}: ${parts.detail}` : parts.tool, 'Tool permission request')
 }
 
 /**

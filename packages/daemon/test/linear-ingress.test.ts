@@ -1017,3 +1017,61 @@ describe('§7.5 the leased transport and the emitting port are one object', () =
     await daemon.stop()
   })
 })
+
+describe('§5.1 the permission gate reaches the feed', () => {
+  it('posts one elicitation naming the gated action, then the follow-through on the decision', async () => {
+    // Linear's feed IS the surface — there is no chat transport for the neutral notice to ride,
+    // so a gated turn that posts nothing leaves the session active until it goes stale.
+    // A holder, not a binding: the host factory runs inside `boot`, before it can return one.
+    const live: { daemon?: Daemon } = {}
+    const permissionParams = {
+      sessionId: 'acp-1',
+      toolCall: { toolCallId: 'call-1', title: 'Bash', rawInput: { command: 'pnpm publish' } },
+      options: [
+        { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+        { optionId: 'reject', name: 'Deny', kind: 'reject_once' }
+      ]
+    }
+    const gatedHost = () => ({
+      __started: true,
+      start: vi.fn(async () => {}),
+      newSession: vi.fn(async () => 'acp-1'),
+      prompt: vi.fn(async () => {
+        const permissions = (live.daemon as any).permissions
+        const store = (live.daemon as any).store
+        const decided = permissions.onAcpPermission(AGENT, 'acp-1', permissionParams)
+        // The durable row is what an Agent editor decides against, so it is also how this test
+        // learns the request id the daemon minted.
+        const requestId = await vi.waitFor(async () => {
+          const [row] = await store.listPermissionRequests(AGENT)
+          expect(row?.status).toBe('pending')
+          return row.id as string
+        })
+        expect(await permissions.decideEditorPermission({ agentId: AGENT, requestId, decision: 'allow' })).toEqual({
+          ok: true
+        })
+        expect(await decided).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+        return 'end_turn'
+      }),
+      cancel: vi.fn(),
+      stop: vi.fn()
+    })
+    const booted = await boot({ host: gatedHost })
+    live.daemon = booted.daemon
+
+    await im(booted.daemon, delivery())
+    await booted.turnSettled()
+
+    const elicitations = booted.posted.filter((p) => p.activity.type === 'elicitation')
+    expect(elicitations).toHaveLength(1)
+    expect(elicitations[0]!.sessionId).toBe(SESSION)
+    expect(elicitations[0]!.activity.body).toContain('This step needs approval — Bash: "pnpm publish"')
+    expect(elicitations[0]!.activity.body).toContain('open in session')
+    // The follow-through closes the question, non-ephemeral, between the gate and the response.
+    const follow = booted.posted.findIndex((p) => p.activity.body === 'Approved — continuing.')
+    expect(follow).toBeGreaterThan(booted.posted.indexOf(elicitations[0]!))
+    expect(booted.posted[follow]!.activity.ephemeral).toBeUndefined()
+    expect(follow).toBeLessThan(booted.posted.findIndex((p) => p.activity.type === 'response'))
+    await booted.daemon.stop()
+  })
+})
