@@ -1,3 +1,4 @@
+import { agentHostKey } from '../src/acp/host-key.js'
 import { describe, expect, it } from 'vitest'
 import { Daemon } from '../src/daemon.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
@@ -260,7 +261,7 @@ describe('the daemon records only its own host’s advertisement', () => {
       runtimeCommands: RuntimeCommandsCache
     }
     inner.hosts.set('agent-1', { hasSession: () => true, isLoadingSession: () => false })
-    const passKey = pendingTurnKey('agent-1', 'commit-session')
+    const passKey = pendingTurnKey(agentHostKey('agent-1'), 'commit-session')
     inner.internalPassSessions.add(internalPassSlot.commit('agent-1', 'commit-session'), passKey)
 
     await inner.onAcpUpdate('agent-1', 'commit-session', advertisement)

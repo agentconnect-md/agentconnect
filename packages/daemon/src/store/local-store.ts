@@ -3056,13 +3056,15 @@ export class LocalStore {
       ? await Promise.all(candidates.map((r) => isExempt(r.agentId, r.acpSessionId, r.key)))
       : undefined
     const rows = exempt ? candidates.filter((_, i) => !exempt[i]) : candidates
+    // Only the rows this call closed are reported: a candidate a new turn reopened meanwhile is not.
+    const closed: typeof rows = []
     if (rows.length) {
       await this.transaction(async (raw) => {
         const close = accessOf(raw).prepare("UPDATE sessions SET state = 'closed' WHERE key = ? AND state = 'idle'")
-        for (const r of rows) await close.run(r.key)
+        for (const r of rows) if (Number((await close.run(r.key)).changes) === 1) closed.push(r)
       })
     }
-    return rows
+    return closed
   }
 
   /** Retention-GC candidates (#485): sessions whose last activity (`updatedAt`)

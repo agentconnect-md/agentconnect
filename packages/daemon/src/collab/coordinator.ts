@@ -2,6 +2,7 @@
 // orchestration, hoisted out of `Daemon` verbatim. Every delivery here is DIRECT (never a
 // visible channel post) and every ordering below — record-first, CAS, admission barrier — is
 // load-bearing against a fast worker replying before its record exists.
+import type { HostKey } from '../acp/host-key.js'
 import { randomUUID } from 'node:crypto'
 import type { Clock, TimerHandle } from '@agentconnect.md/connection'
 import {
@@ -57,6 +58,8 @@ export interface CollabCoreHost {
   evalHooks(): DaemonEvaluationHooks
   /** Live turns keyed by `pendingTurnKey(agentId, acpSessionId)`. */
   pending(): ReadonlyMap<string, Pending>
+  /** The owner key a session's pending/lease entries are filed under. */
+  sessionOwnerKey(agentId: string, sessionKey: string): HostKey
   /** Per-session call metadata of the turn running right now — the caller's live hop depth. */
   activeTurnCallMeta(): ReadonlyMap<string, CallMeta>
   /** Shutdown/pause: an A2A obligation must not be inferred while the daemon is draining. */
@@ -342,7 +345,9 @@ export class CollabCoordinator {
     ): Promise<MessageAgentResult> => {
       const caller = await this.host.store().getSession(callerKey)
       const pending = caller?.acpSessionId
-        ? this.host.pending().get(pendingTurnKey(req.callerAgentId, caller.acpSessionId))
+        ? this.host
+            .pending()
+            .get(pendingTurnKey(this.host.sessionOwnerKey(req.callerAgentId, callerKey), caller.acpSessionId))
         : undefined
       this.host.evalHooks().emit({
         type,
@@ -705,7 +710,10 @@ export class CollabCoordinator {
     // and that wake is deferred while this very dispatch finalizes — so a tasks-only
     // check would see zero and infer the narration while the bg wake is still owed.
     const sessionId = (await this.host.store().getSession(childKey))?.acpSessionId ?? undefined
-    const lease = sessionId !== undefined ? this.host.sdkLease().get(sdkLeaseKey(agentId, sessionId)) : undefined
+    const lease =
+      sessionId !== undefined
+        ? this.host.sdkLease().get(sdkLeaseKey(this.host.sessionOwnerKey(agentId, childKey), sessionId))
+        : undefined
     if (lease !== undefined && (lease.tasks.size > 0 || lease.armedWakes > 0)) return
     const finalOutput = p.reply.text.trim()
     const text =

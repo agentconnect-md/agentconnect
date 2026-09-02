@@ -8,7 +8,9 @@ import { agentHostKey, hostKeyDirName, sessionHostKey } from '../src/acp/host-ke
 import { sandboxSettingsDir } from '../src/acp/sandbox.js'
 import { prepareRuntimeLaunch } from '../src/launch/prepare.js'
 import { sessionKey } from '../src/store/local-store.js'
+import { pendingTurnKey, sdkLeaseKey } from '../src/daemon/turn-types.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
+import { WAIT } from './wait-support.js'
 
 /** git-workspace-model §11: a confined self-hosted session gets its own ACP host; nothing else does. */
 
@@ -293,5 +295,133 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     expect(sid).toBe(await persisted)
     expect(cwd).toBe((second.daemon as any).hostLaunch.get(key).cwd)
     await second.daemon.stop()
+  })
+
+  it('files turns, updates and cancellation under the owning host when two session hosts mint the same ACP id', async () => {
+    const root = scaffold()
+    const updates: ((sid: string, update: unknown) => void)[] = []
+    const releases: (() => void)[] = []
+    const hosts: { cancel: ReturnType<typeof vi.fn> }[] = []
+    const factory = vi.fn((_agent: unknown, onUpdate: (sid: string, update: unknown) => void) => {
+      updates.push(onUpdate)
+      let release!: () => void
+      const blocked = new Promise<void>((resolve) => (release = resolve))
+      releases.push(release)
+      const host = {
+        start: vi.fn(async () => {}),
+        // Runtime-local ids: every child of this agent answers `acp-1`.
+        newSession: vi.fn(async () => 'acp-1'),
+        hasSession: vi.fn((sid: string) => sid === 'acp-1'),
+        prompt: vi.fn(async () => {
+          await blocked
+          return { stopReason: 'end_turn' }
+        }),
+        cancel: vi.fn(async () => {}),
+        stop: vi.fn(async () => {})
+      }
+      hosts.push(host)
+      return host as never
+    })
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      hostFactory: factory as never,
+      sandboxMechanism: 'bwrap'
+    })
+    await daemon.start()
+    makeRoutable(daemon)
+    const one = (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    const two = (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+    await vi.waitFor(() => expect((daemon as any).pending.size).toBe(2), WAIT)
+    const first = sessionHostKey('bot-a', KEY('T1'))
+    const second = sessionHostKey('bot-a', KEY('T2'))
+    expect((daemon as any).pending.get(pendingTurnKey(first, 'acp-1')).plan.sessionKey).toBe(KEY('T1'))
+    expect((daemon as any).pending.get(pendingTurnKey(second, 'acp-1')).plan.sessionKey).toBe(KEY('T2'))
+    // An update from a child lands on that child's session, never on the sibling that shares the id.
+    await updates[1]!('acp-1', { sessionUpdate: 'session_info_update', title: 'second' })
+    await updates[0]!('acp-1', { sessionUpdate: 'session_info_update', title: 'first' })
+    expect((await (daemon as any).store.getSession(KEY('T1')))?.title).toBe('first')
+    expect((await (daemon as any).store.getSession(KEY('T2')))?.title).toBe('second')
+    // Cancelling the second session reaches its own child.
+    await (daemon as any).interruptTurn('bot-a', KEY('T2'), 'stop', undefined, {})
+    expect(hosts[1]!.cancel).toHaveBeenCalledWith('acp-1')
+    expect(hosts[0]!.cancel).not.toHaveBeenCalled()
+    for (const release of releases) release()
+    await Promise.all([one, two])
+    await daemon.stop()
+  })
+
+  it('a stale idle-close decision does not evict the host a reopened session was admitted on', async () => {
+    const { daemon, hosts } = await startDaemon(scaffold())
+    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    const key = sessionHostKey('bot-a', KEY('T1'))
+    expect((daemon as any).hosts.get(key)).toBe(hosts[0])
+    const store = (daemon as any).store
+    // The sweep decides against the first host; before its stop runs, the key is reopened on a replacement.
+    const closeIdle = vi.spyOn(store, 'closeIdleSessions').mockImplementation(async () => {
+      await (daemon as any).stopHostByKey(key)
+      await (daemon as any).dispatch('bot-a', dm('200', 'again', 'T1'), 'int-a')
+      return [{ key: KEY('T1'), agentId: 'bot-a', platform: 'slack', channel: 'C1', thread: 'T1', acpSessionId: null }]
+    })
+    await (daemon as any).sweepIdle()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    closeIdle.mockRestore()
+    expect(hosts).toHaveLength(2)
+    expect(hosts[0]!.stop).toHaveBeenCalledTimes(1)
+    expect(hosts[1]!.stop).not.toHaveBeenCalled()
+    expect((daemon as any).hosts.get(key)).toBe(hosts[1])
+    await daemon.stop()
+  })
+
+  it('closeIdleSessions reports only the rows it closed, not a candidate a turn reopened meanwhile', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    const store = (daemon as any).store
+    expect((await store.getSession(KEY('T1')))?.state).toBe('idle')
+    const closed = await store.closeIdleSessions(
+      Date.now() + 60_000,
+      1,
+      async (_agentId: string, _acp: unknown, key: string) => {
+        await store.setSessionState(key, 'prompting', Date.now())
+        return false
+      }
+    )
+    expect(closed).toEqual([])
+    expect((await store.getSession(KEY('T1')))?.state).toBe('prompting')
+    await daemon.stop()
+  })
+
+  it('reaping the shared utility host leaves a sibling session host its lease and binding', async () => {
+    const { daemon, hosts } = await startDaemon(scaffold())
+    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    await (daemon as any).ensureHostAsync(agentHostKey('bot-a'))
+    const sessionHost = sessionHostKey('bot-a', KEY('T1'))
+    const sid = (await hosts[0]!.newSession.mock.results[0]!.value) as string
+    const lease = {
+      agentId: 'bot-a',
+      tasks: new Map(),
+      settled: [],
+      sdkState: 'idle',
+      bgWakes: 0,
+      armedWakes: 0,
+      deliveringWakes: 0,
+      drainText: '',
+      drainDeliveries: 0
+    }
+    ;(daemon as any).sdkLease.set(sdkLeaseKey(sessionHost, sid), lease)
+    ;(daemon as any).sessionDeliveryBindings.set(KEY('T1'), { agentId: 'bot-a', platform: 'slack', isDm: true })
+
+    await (daemon as any).stopHostByKey(agentHostKey('bot-a'))
+    expect(hosts[1]!.stop).toHaveBeenCalledTimes(1)
+    expect(hosts[0]!.stop).not.toHaveBeenCalled()
+    expect((daemon as any).sdkLease.has(sdkLeaseKey(sessionHost, sid))).toBe(true)
+    expect((daemon as any).sessionDeliveryBindings.has(KEY('T1'))).toBe(true)
+
+    // The agent-wide teardown is where every session's state goes.
+    await (daemon as any).stopHost('bot-a')
+    expect(hosts[0]!.stop).toHaveBeenCalledTimes(1)
+    expect((daemon as any).sdkLease.size).toBe(0)
+    expect((daemon as any).sessionDeliveryBindings.has(KEY('T1'))).toBe(false)
+    await daemon.stop()
   })
 })

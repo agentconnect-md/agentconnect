@@ -1,3 +1,4 @@
+import { agentHostKey } from '../src/acp/host-key.js'
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it, vi } from 'vitest'
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
@@ -8,6 +9,7 @@ import { SqliteAsyncDatabase } from '../src/store/sqlite-async-database.js'
 import { pendingTurnKey, type Pending } from '../src/daemon/turn-types.js'
 
 const AGENT = 'bot-a'
+const OWNER = agentHostKey(AGENT)
 const ACP_SESSION = 'acp-1'
 const TARGET = { integrationId: 'int-1', teamId: 'T1', userId: 'U1', consoleUserId: 'cu-1', displayName: 'Ada' }
 
@@ -62,11 +64,12 @@ async function world(over?: {
     },
     approval: { waitMs: 0, depth: 0 },
     acpSessionId: ACP_SESSION,
+    hostKey: OWNER,
     outwardSessionId: 'outward-1',
     builtinSystemToolCallIds: new Set<string>(),
     entry: { msg: { text: 'please run ls /' } }
   } as unknown as Pending
-  pending.set(pendingTurnKey(AGENT, ACP_SESSION), p)
+  pending.set(pendingTurnKey(OWNER, ACP_SESSION), p)
   const host: PermissionHost = {
     log: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) as never,
     clock: () => ({ now: () => Date.now() }) as never,
@@ -100,7 +103,7 @@ const requestIdOf = (route: ReturnType<typeof vi.fn>): string =>
 describe('approval DM (slack-approval-dm.md §5–§6)', () => {
   it('routes, DMs the target, and resolves on the verified target click', async () => {
     const w = await world({ platform: 'slack', requesterId: 'U1' })
-    const decided = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
+    const decided = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())
     await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1))
     expect(w.conn.openDirectMessage).toHaveBeenCalledWith('U1')
     // Top-level message: no thread ts.
@@ -111,12 +114,12 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     expect(posted).toContain('> please run ls /')
     // A recipient who is NOT the author never receives the text (Slack ACL stays intact).
     const other = await world({ platform: 'slack', requesterId: 'U-someone-else' })
-    void other.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
+    void other.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())
     await vi.waitFor(() => expect(other.conn.postBlocks).toHaveBeenCalledTimes(1))
     const otherPosted = JSON.stringify((other.conn.postBlocks.mock.calls[0] as unknown[])[1])
     expect(otherPosted).toContain('https://console.example/sessions/outward-1')
     expect(otherPosted).not.toContain('please run ls /')
-    await other.coordinator.releaseEditorPermissions(AGENT, ACP_SESSION)
+    await other.coordinator.releaseEditorPermissions(OWNER, ACP_SESSION)
     await other.store.close()
     const requestId = requestIdOf(w.route)
 
@@ -136,7 +139,7 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
 
   it('refuses a wrong actor and an unanswerable verify without settling the request', async () => {
     const w = await world()
-    const decided = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
+    const decided = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())
     await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1))
     const requestId = requestIdOf(w.route)
 
@@ -180,7 +183,7 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
   it("leaves today's behavior intact when the CP answers no target", async () => {
     const route = vi.fn(async (payload: { requestId: string }) => ({ requestId: payload.requestId }))
     const w = await world({ route })
-    const decided = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
+    const decided = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())
     await vi.waitFor(() => expect(route).toHaveBeenCalledTimes(1))
     expect(w.conn.openDirectMessage).not.toHaveBeenCalled()
     const requestId = requestIdOf(route)
@@ -191,9 +194,9 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
 
   it('release retires the DM card and cancels the request', async () => {
     const w = await world()
-    const decided = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
+    const decided = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())
     await vi.waitFor(() => expect(w.conn.postBlocks).toHaveBeenCalledTimes(1))
-    await w.coordinator.releaseEditorPermissions(AGENT, ACP_SESSION)
+    await w.coordinator.releaseEditorPermissions(OWNER, ACP_SESSION)
     await expect(decided).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
     expect(w.conn.updateBlocks).toHaveBeenCalledTimes(1)
     expect((await w.store.listPermissionRequests(AGENT))[0]!.status).toBe('expired')
@@ -205,12 +208,12 @@ describe('approval activity (slack-approval-dm.md §7)', () => {
   it('flips awaiting_permission on the first park, idle on the last release, and never in between', async () => {
     const activity = vi.fn()
     const w = await world({ activity })
-    const first = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
+    const first = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())
     await vi.waitFor(() => expect(w.route).toHaveBeenCalledTimes(1))
     expect(activity).toHaveBeenCalledTimes(1)
-    expect(activity).toHaveBeenLastCalledWith(AGENT, ACP_SESSION, 'awaiting_permission')
+    expect(activity).toHaveBeenLastCalledWith(OWNER, ACP_SESSION, 'awaiting_permission')
 
-    const second = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
+    const second = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())
     await vi.waitFor(() => expect(w.route).toHaveBeenCalledTimes(2))
     // A second request on an already-waiting session is not news to the console.
     expect(activity).toHaveBeenCalledTimes(1)
@@ -224,29 +227,29 @@ describe('approval activity (slack-approval-dm.md §7)', () => {
     await w.coordinator.decideEditorPermission({ agentId: AGENT, requestId: secondId!, decision: 'deny' })
     await expect(second).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'o-deny' } })
     expect(activity).toHaveBeenCalledTimes(2)
-    expect(activity).toHaveBeenLastCalledWith(AGENT, ACP_SESSION, 'idle')
+    expect(activity).toHaveBeenLastCalledWith(OWNER, ACP_SESSION, 'idle')
     await w.store.close()
   })
 
   it('clears the wait when the turn is cancelled, and replays only live waits on reconnect', async () => {
     const activity = vi.fn()
     const w = await world({ activity })
-    const parked = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
-    await vi.waitFor(() => expect(activity).toHaveBeenCalledWith(AGENT, ACP_SESSION, 'awaiting_permission'))
+    const parked = w.coordinator.onAcpPermission(OWNER, ACP_SESSION, permissionParams())
+    await vi.waitFor(() => expect(activity).toHaveBeenCalledWith(OWNER, ACP_SESSION, 'awaiting_permission'))
 
-    expect(w.coordinator.isAwaitingApproval(AGENT, ACP_SESSION)).toBe(true)
-    expect(w.coordinator.isAwaitingApproval(AGENT, 'acp-other')).toBe(false)
+    expect(w.coordinator.isAwaitingApproval(OWNER, ACP_SESSION)).toBe(true)
+    expect(w.coordinator.isAwaitingApproval(OWNER, 'acp-other')).toBe(false)
 
     // The CP forgot this daemon's waits on disconnect: the replay re-asserts the live one.
     activity.mockClear()
     w.coordinator.replayApprovalActivity()
     expect(activity).toHaveBeenCalledTimes(1)
-    expect(activity).toHaveBeenLastCalledWith(AGENT, ACP_SESSION, 'awaiting_permission')
+    expect(activity).toHaveBeenLastCalledWith(OWNER, ACP_SESSION, 'awaiting_permission')
 
-    await w.coordinator.releaseEditorPermissions(AGENT, ACP_SESSION)
+    await w.coordinator.releaseEditorPermissions(OWNER, ACP_SESSION)
     await expect(parked).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
-    expect(activity).toHaveBeenLastCalledWith(AGENT, ACP_SESSION, 'idle')
-    expect(w.coordinator.isAwaitingApproval(AGENT, ACP_SESSION)).toBe(false)
+    expect(activity).toHaveBeenLastCalledWith(OWNER, ACP_SESSION, 'idle')
+    expect(w.coordinator.isAwaitingApproval(OWNER, ACP_SESSION)).toBe(false)
 
     // Nothing is waiting any more, so a reconnect replays nothing.
     activity.mockClear()
