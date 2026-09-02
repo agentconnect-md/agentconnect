@@ -83,7 +83,8 @@ let host: HTMLDivElement
 let root: Root
 
 const text = () => host.textContent ?? ''
-const buttons = () => [...host.querySelectorAll('button')]
+// The dispatch menu is portaled to <body>, so its options live outside the mount host.
+const buttons = () => [...document.querySelectorAll('button')]
 const buttonWithLabel = (label: string) =>
   buttons().find((b) => b.getAttribute('aria-label')?.includes(label)) as HTMLButtonElement | undefined
 const buttonWithTitle = (title: string) =>
