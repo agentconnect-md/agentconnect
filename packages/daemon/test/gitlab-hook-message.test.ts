@@ -96,10 +96,24 @@ describe('gitlab hook normalization (§12.3)', () => {
     expect(text).toContain(UNTRUSTED_CONTENT_BEGIN_GITLAB)
     expect(text).toContain(UNTRUSTED_CONTENT_END)
     expect(text.indexOf(UNTRUSTED_CONTENT_BEGIN_GITLAB)).toBeLessThan(text.indexOf('the primary is unreachable'))
-    // §14.1: the daemon-owned reply promise rides AFTER the untrusted fence.
-    expect(text).toContain('The daemon posts it back to that GitLab thread automatically as one note')
-    expect(text).toContain('Do NOT create, update, or delete GitLab notes')
-    expect(text.indexOf(UNTRUSTED_CONTENT_END)).toBeLessThan(text.indexOf('The daemon posts it back'))
+    // §14.1: the per-turn reply line rides AFTER the untrusted fence; the rules are STANDING.
+    expect(text).toContain('the daemon posts your final back to that GitLab thread automatically as one note')
+    expect(text).toContain('The daemon owns the reply; post nothing yourself.')
+    expect(text.indexOf(UNTRUSTED_CONTENT_END)).toBeLessThan(text.indexOf('the daemon posts your final back'))
+    const standing = buildHookMessage(fire(), 't').standingContext!
+    expect(standing.startsWith('# GitLab\n')).toBe(true)
+    expect(standing).toContain('These rules govern a turn opened by a GitLab delivery')
+    // Keyed on presence, not suffix: the review orchestrator appends its workspace block after the answer line.
+    expect(standing).toContain('contains a line saying how the daemon answers it')
+    expect(standing).not.toContain('ends with a line')
+    expect(standing).toContain('A turn opened from the console names no such thread')
+    expect(standing).toContain('On a delivery turn, do NOT create, update, or delete GitLab notes')
+    expect(standing).toContain('do NOT create, update, or delete GitLab notes, drafts, or approvals')
+    expect(standing).toContain('`glab`, another CLI, a connector, or a direct API call')
+    expect(standing).toContain('structured `submitCodeReview` tool')
+    expect(standing).toContain('REQUEST_CHANGES works only while a user has requested the project service account')
+    expect(text).not.toContain('# GitLab')
+    expect(text).not.toContain('submitCodeReview')
   })
 
   it('promises the daemon-owned note for issue and MR subjects but never for a push', () => {
@@ -112,7 +126,7 @@ describe('gitlab hook normalization (§12.3)', () => {
       },
       context: { source: 'gitlab', event: 'merge_request', action: 'opened', number: 77, truncated: false }
     })
-    expect(buildHookText(mr)).toContain('Return one self-contained final answer for example-group/example-project!77')
+    expect(buildHookText(mr)).toContain('Reply to example-group/example-project!77')
     const push = fire({
       sessionKey: `gitlab:${PROJECT}:push:refs/heads/main`,
       gitlab: {
@@ -124,8 +138,9 @@ describe('gitlab hook normalization (§12.3)', () => {
     })
     const pushText = buildHookText(push)
     expect(pushText).toContain('Ref: refs/heads/main')
-    expect(pushText).not.toContain('The daemon posts it back')
-    expect(pushText).not.toContain('Return one self-contained final answer')
+    expect(pushText).not.toContain('the daemon posts your final back')
+    expect(pushText).not.toContain('The daemon owns the reply')
+    expect(buildHookMessage(push, 't').standingContext).toBeUndefined()
   })
 
   it('renders MR references with ! and surfaces revision facts on the trusted header', () => {
@@ -170,11 +185,13 @@ describe('gitlab hook normalization (§12.3)', () => {
         ...overrides
       })
     const review = buildHookText(mr())
-    expect(review).toContain('structured `submitCodeReview` tool')
     expect(review).toContain('opens a review generation for the current merge-request revision')
+    expect(review).toContain('record the verdict through `submitCodeReview`')
     expect(review).toContain('APPROVE + pass')
-    expect(review).toContain('REQUEST_CHANGES works only while a user has requested the project service account')
-    expect(review).toContain('Do NOT create, update, or delete GitLab notes, drafts, or approvals')
+    expect(review).toContain('REQUEST_CHANGES + fail')
+    // One short line: the review rules and the reviewer-record caveat are standing, not per turn.
+    expect(review).not.toContain('REQUEST_CHANGES works only while')
+    expect(review.split('\n\n').at(-1)!.length).toBeLessThan(400)
     // A comment-only policy promises only what it can deliver.
     expect(buildHookText(mr({ reviewPolicy: 'comment' }))).toContain('COMMENT + fail')
     // Off, an ordinary conversation event, and a headless MR keep the plain reply promise.
@@ -191,7 +208,7 @@ describe('gitlab hook normalization (§12.3)', () => {
     ]) {
       const text = buildHookText(plain)
       expect(text).not.toContain('submitCodeReview')
-      expect(text).toContain('Return one self-contained final answer')
+      expect(text).toContain('Reply to example-group/example-project!77')
     }
   })
 
