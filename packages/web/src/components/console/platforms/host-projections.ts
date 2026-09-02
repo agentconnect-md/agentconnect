@@ -60,9 +60,10 @@ export const BOT_PLATFORMS: readonly PlatformTile[] = platformTiles(platformRegi
  *  code host the deployment has not configured says so in its own pane. */
 export const PLATFORMS: readonly PlatformTile[] = [
   ...BOT_PLATFORMS,
-  { key: 'webhook', label: 'Webhook' },
   { key: 'github', label: 'GitHub' },
-  { key: 'gitlab', label: 'GitLab' }
+  { key: 'gitlab', label: 'GitLab' },
+  // The generic trigger closes the row: chat platforms and code hosts are the named products.
+  { key: 'webhook', label: 'Webhook' }
 ]
 
 /** The core trigger kinds — every picker choice that is NOT a registry platform.
