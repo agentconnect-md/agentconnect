@@ -1329,7 +1329,13 @@ tile.
     workspace for the issue-less channel), `listChannels` answers the team
     list, `getUserProfile` the Linear user behind a `linear:`-prefixed sender
     id — and returns empty/`null` elsewhere (no `listBotChannels`, no
-    `leaveChannel`, `downloadFile` deferred).
+    `leaveChannel`, `downloadFile` deferred). The two team reads **landed**
+    with the team-as-channel change: `team(id) { id key name }` and
+    `teams(first: 100) { nodes { id key name } }`, both on the direct read
+    path, each degrading to the bare id / an empty list on a refusal, and both
+    **deadline-bound end to end** through the same `signal` `issueFacts` uses —
+    the caller's, else the port's own — so a provider that accepts and then
+    stalls costs a display name and never a caller.
   - `turn-output.ts` — the streaming Layer-2 surface + `LinearConverger` +
     `LinearAction` (§5).
   - message strategy — `adapterExt.linear` → prompt assembly and fencing
@@ -1348,7 +1354,11 @@ tile.
     task timeout — unlike `startIssue`, which may queue because it runs only
     after the ack posts. No-issue unsupported-surface response (§4.5); stop
     decoder for the `platform_action` payload → `interruptTurn` + settling
-    response.
+    response, whose local target is found **channel-blind**
+    (`latestSessionForPlatformThread`) since the AgentSession UUID is unique on
+    its own and no stop payload names the team — the agent, platform and
+    transport scope stay the daemon's own facts, and the relay's unverified
+    `sessionKey` is still not read.
   - The ≤10 s ack at `rd/msg` admission, after inbox dedup (§10.1), and from
     the same hook the §10.2 auto-start (`LinearConnection.startIssue`, one
     state read + at most one `issueUpdate`, both on the paced queue) when the
@@ -1391,6 +1401,14 @@ tile.
     install. Seeding the dispatch default from a daemon report would have
     made it depend on a live daemon and on report timing, and the window
     that opens is exactly the one a bare delegation arrives in.
+    **Landed** as two seats, and **neither is on a critical path**: the
+    reconcile FIRES the `listChannels` refresh (one `observePlatformChats`
+    frame per integration) without joining it, because the reconcile is
+    single-flight and a stalled read would otherwise coalesce every later
+    convergence behind a report nothing waits on; and a delivery whose bag
+    names a team not yet reported on that integration reports that team, once
+    per `(integration, team)` on an in-memory set, fire-and-forget so the
+    report never sits inside the ≤10 s ack budget.
 - `platforms/integration-config.ts` — the `linear` `CONFIG_SCHEMAS` line
   (+ the schema in `agents/agent-schema.ts`). This line flips
   `capabilities.platforms` — the **advertisement**, not the wiring.
@@ -1408,9 +1426,11 @@ tile.
   these maps into the §7.5 key-driven `ConnectionPool` registry is the parent
   design's remaining daemon stage and deliberately **not** a prerequisite
   here.
-- Session metadata: `channelName` = the team label (`<KEY> · <Team name>`)
-  on every session, read from the bag's team; the issue identifier and URL
-  reach the **session title** and `threadUrl` and stop there (§4.5).
+- Session metadata — **landed**: `channelName` = the team label
+  (`<KEY> · <Team name>`) on every session, read from the bag's team and never
+  re-derived, since the relay already keyed `channel` on the team id; the issue
+  identifier and URL reach the **session title** and `threadUrl` and stop there
+  (§4.5).
 - Tests: normalize (created/prompted/stop → the issue's team id as `channel`
   and `<KEY> · <Team name>` as `channelName` — two sessions from different
   issues of one team agree on it, two teams differ — mention-comment `text`

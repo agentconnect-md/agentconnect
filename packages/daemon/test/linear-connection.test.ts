@@ -23,6 +23,9 @@ import {
 const WORKSPACE = 'a2f2f0d4-0e33-4c4b-9a4b-4f7a0f1f0001'
 const SESSION = 'c3f1e0aa-4d2f-4f0a-9b1e-2b6d5c4a0002'
 const ISSUE = 'd7c2b1aa-6e5f-4a3b-8c9d-1e2f3a4b0003'
+/** The channel coordinate (§4.5) — a team of the connected workspace. */
+const TEAM = 'e8d3c2bb-7f60-4b4c-9dae-2f3a4b5c0004'
+const OTHER_TEAM = 'f9e4d3cc-8071-4c5d-aebf-3a4b5c6d0005'
 const START = Date.parse('2026-09-01T00:00:00.000Z')
 /** Comfortably outside the 2 h renewal margin. */
 const FRESH_EXPIRY = new Date(START + 20 * 60 * 60 * 1000).toISOString()
@@ -763,20 +766,103 @@ describe('linear graphql client (§9.4)', () => {
 })
 
 describe('linear read port (§9.4 — what Linear affords)', () => {
-  it('names the channel after the connected workspace, with no lookup and never an issue', async () => {
-    // The one display slot is shared by every session in the workspace (§4.5): an issue-derived
+  it('names the channel after its TEAM, key first, and never after an issue', async () => {
+    // The one display slot is shared by every session in the team (§4.5): an issue-derived
     // answer here would relabel all of them with whichever issue was read last.
-    const { conn, calls } = harness()
-    expect(await conn.getChannelInfo(WORKSPACE)).toEqual({ id: WORKSPACE, name: 'Example Workspace', isIm: false })
-    expect(calls).toHaveLength(0)
+    const { conn, calls } = harness({
+      respond: () => jsonResponse({ data: { team: { id: TEAM, key: 'ENG', name: 'Engineering' } } })
+    })
+    expect(await conn.getChannelInfo(TEAM)).toEqual({ id: TEAM, name: 'ENG · Engineering', isIm: false })
+    expect(calls[0]!.query).toContain('team(id: $id) { id key name }')
+    expect(calls[0]!.variables).toEqual({ id: TEAM })
   })
 
-  it('omits the channel name when the spec carried none, still without a lookup', async () => {
-    const config = { ...linearConfig() } as Record<string, unknown>
-    delete config.workspaceName
-    const { conn, calls } = harness({ config })
-    expect(await conn.getChannelInfo(WORKSPACE)).toEqual({ id: WORKSPACE, isIm: false })
-    expect(calls).toHaveLength(0)
+  it('degrades to the bare team id when Linear refuses the lookup', async () => {
+    const { conn } = harness({ respond: () => jsonResponse({ errors: [{ message: 'entity not found' }] }, 400) })
+    expect(await conn.getChannelInfo(TEAM)).toEqual({ id: TEAM, isIm: false })
+  })
+
+  it('answers the issue-less workspace channel from the spec, with no lookup at all', async () => {
+    const { conn, calls } = harness()
+    expect(await conn.getChannelInfo(WORKSPACE)).toEqual({ id: WORKSPACE, name: 'Example Workspace', isIm: false })
+    const bare = { ...linearConfig() } as Record<string, unknown>
+    delete bare.workspaceName
+    const unnamed = harness({ config: bare })
+    expect(await unnamed.conn.getChannelInfo(WORKSPACE)).toEqual({ id: WORKSPACE, isIm: false })
+    expect([...calls, ...unnamed.calls]).toHaveLength(0)
+  })
+
+  it('answers the workspace’s team list as its channels, and empty on a refusal', async () => {
+    const { conn, calls } = harness({
+      respond: () =>
+        jsonResponse({
+          data: {
+            teams: {
+              nodes: [
+                { id: TEAM, key: 'ENG', name: 'Engineering' },
+                { id: OTHER_TEAM, key: 'DOCS', name: 'Docs' },
+                // A team the workspace answered without a key still routes under its own id.
+                { id: 'team-3' }
+              ]
+            }
+          }
+        })
+    })
+    expect(await conn.listChannels()).toEqual([
+      { id: TEAM, name: 'ENG · Engineering', isPrivate: false },
+      { id: OTHER_TEAM, name: 'DOCS · Docs', isPrivate: false },
+      { id: 'team-3', isPrivate: false }
+    ])
+    expect(calls[0]!.query).toContain('teams(first: 100) { nodes { id key name } }')
+    // The report this feeds is a non-authoritative name refresh (§9.2), so a refusal costs a
+    // refresh and never throws at the reconcile that asked.
+    const refused = harness({ respond: () => jsonResponse({ errors: [{ message: 'no access' }] }, 400) })
+    expect(await refused.conn.listChannels()).toEqual([])
+  })
+
+  it('bounds both team reads end to end — the caller’s deadline, else one of their own', async () => {
+    // A provider that accepts and then stalls may cost a display name, never a caller: the read
+    // is signalled all the way down, and the signal covers the token wait as well (§9.4).
+    const listing = harness({ respond: () => jsonResponse({ data: { teams: { nodes: [] } } }) })
+    await listing.conn.listChannels()
+    expect(listing.calls[0]!.signal?.aborted).toBe(false)
+    const naming = harness({ respond: () => jsonResponse({ data: { team: null } }) })
+    await naming.conn.getChannelInfo(TEAM)
+    expect(naming.calls[0]!.signal?.aborted).toBe(false)
+    // A caller's own deadline wins, and one already blown answers WITHOUT sending anything —
+    // the read gives up on the token wait rather than turning into a live request.
+    const passed = new AbortController().signal
+    const custom = harness({ respond: () => jsonResponse({ data: { teams: { nodes: [] } } }) })
+    await custom.conn.listChannels({ signal: passed })
+    expect(custom.calls[0]!.signal).toBe(passed)
+    const blown = harness()
+    expect(await blown.conn.listChannels({ signal: AbortSignal.abort() })).toEqual([])
+    expect(await blown.conn.getChannelInfo(TEAM, { signal: AbortSignal.abort() })).toEqual({
+      id: TEAM,
+      isIm: false
+    })
+    expect(blown.calls).toHaveLength(0)
+  })
+
+  it('gives up on a stalled endpoint at the deadline instead of hanging its caller', async () => {
+    // The failure this exists for: a request the provider ACCEPTS and never answers. The signal
+    // reaches `fetch`, so the read ends at its own deadline and degrades like any refusal.
+    const conn = new LinearConnection({
+      group: group(),
+      requestToken: async () => ({ accessToken: 'renewed', expiresAt: FRESH_EXPIRY }),
+      fetchImpl: ((_url: unknown, init: unknown) =>
+        new Promise((_resolve, reject) => {
+          const signal = (init as { signal?: AbortSignal }).signal
+          signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })) as unknown as typeof fetch,
+      sendIntervalMs: 0,
+      now: () => START,
+      sleep: async () => {},
+      setTimer: () => undefined,
+      clearTimer: () => {}
+    })
+    expect(await conn.listChannels({ signal: AbortSignal.timeout(20) })).toEqual([])
+    expect(await conn.getChannelInfo(TEAM, { signal: AbortSignal.timeout(20) })).toEqual({ id: TEAM, isIm: false })
   })
 
   it('strips the relay’s linear: prefix for the user query and answers under the caller’s key', async () => {
@@ -832,7 +918,6 @@ describe('linear read port (§9.4 — what Linear affords)', () => {
   it('answers empty for the ports Linear has no surface for, without a request', async () => {
     const { conn, calls } = harness()
     expect(await conn.listMembers(ISSUE)).toEqual([])
-    expect(await conn.listChannels()).toEqual([])
     expect(await conn.downloadFile('anything')).toBeNull()
     expect(calls).toHaveLength(0)
   })

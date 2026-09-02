@@ -14,13 +14,15 @@
  * cached token keeps serving until it actually expires, and only then does a send fail.
  * Token material never reaches a log line.
  *
- * The read port answers what Linear affords: `getChannelInfo` names the connected
- * workspace — the channel (§4.5) — and `getUserProfile` the Linear user, whose id the
- * relay prefixes `linear:`; everything else answers empty. There is no bot channel
- * enumeration, no leave affordance, and attachment download is deferred.
+ * The read port answers what Linear affords: `getChannelInfo` names the team behind a
+ * channel id — the team is the channel (§4.5) — `listChannels` answers the workspace's
+ * team list, and `getUserProfile` the Linear user, whose id the relay prefixes `linear:`;
+ * everything else answers empty. There is no bot channel enumeration, no leave
+ * affordance, and attachment download is deferred.
  */
 import { randomUUID } from 'node:crypto'
-import type { LinearIssueFacts } from './message-strategy.js'
+import { linearChannelName } from './message-strategy.js'
+import type { LinearIssueFacts, LinearTeamRef } from './message-strategy.js'
 import type { LinearAttachmentInput, LinearActivityInput } from './turn-output.js'
 import type { IntegrationLinearConfig, LinearCredGrant } from '@agentconnect.md/protocol'
 import type { Agent } from '../../agents/agent-schema.js'
@@ -46,6 +48,12 @@ export const LINEAR_SEND_INTERVAL_MS = 1_000
 
 /** How far past a renewal failure we retry rather than hammering the broker. */
 const RENEW_RETRY_MS = 60_000
+
+/** Cap on the team list one report carries — the console's channel rows, not a full crawl. */
+const MAX_LISTED_TEAMS = 100
+
+/** A read port's own deadline when its caller sets none — a stall costs a name, never a caller. */
+export const LINEAR_READ_DEADLINE_MS = 5_000
 
 /**
  * A retry of `agentActivityCreate` is only safe because the input carries our own id: creation
@@ -464,11 +472,31 @@ export class LinearConnection implements PlatformConnection {
 
   // ── 3. read / query port ──
 
-  /** The channel is the connected workspace (§4.5), whose name the spec already carries — no
-   *  lookup, and never an issue: the one display slot is shared by every session in it. */
-  async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {
-    const name = this.workspaceName?.trim()
-    return { id: channel, ...(name ? { name } : {}), isIm: false }
+  /**
+   * The channel is the issue's TEAM (§4.5), so this names the team behind a channel id —
+   * `<KEY> · <Team name>`, never an issue: the one display slot is shared by every session in
+   * the team.
+   *
+   * On the DIRECT read path like `getUserProfile`, and DEADLINE-BOUND end to end: the caller's
+   * signal when it has one, else {@link LINEAR_READ_DEADLINE_MS} of its own, because a provider
+   * that accepts and then stalls must cost a display name and never a caller. Degrades to the
+   * bare id on any refusal — a row the console cannot label still routes. The workspace id — the
+   * issue-less channel, which has no team — is answered from the spec without a lookup at all.
+   */
+  async getChannelInfo(channel: string, opts: { signal?: AbortSignal } = {}): Promise<PlatformChannelInfo> {
+    if (channel === this.organizationId) {
+      const name = linearChannelName(undefined, this)
+      return { id: channel, ...(name !== channel ? { name } : {}), isIm: false }
+    }
+    try {
+      const signal = opts.signal ?? AbortSignal.timeout(LINEAR_READ_DEADLINE_MS)
+      const data = await this.graphql<{ team?: LinearTeamRef | null }>(TEAM_QUERY, { id: channel }, signal)
+      const name = data.team ? linearChannelName({ ...data.team, id: channel }) : ''
+      return { id: channel, ...(name && name !== channel ? { name } : {}), isIm: false }
+    } catch (err) {
+      this.deps.log?.debug(`linear: team lookup failed (${channel}): ${(err as Error).message}`)
+      return { id: channel, isIm: false }
+    }
   }
 
   /** Answers under the caller's own key: the relay hands out `linear:<userId>`, Linear wants the
@@ -500,9 +528,27 @@ export class LinearConnection implements PlatformConnection {
     return []
   }
 
-  /** No conversation enumeration: an agent session is created by Linear, never joined. */
-  async listChannels(): Promise<PlatformChannelRef[]> {
-    return []
+  /**
+   * The workspace's teams — the channels of this install (§4.5). Bounded three ways: at
+   * {@link MAX_LISTED_TEAMS} rows, by the caller's `signal` (else
+   * {@link LINEAR_READ_DEADLINE_MS}) end to end including the token wait, and by answering
+   * empty rather than throwing — the report it feeds is a non-authoritative name refresh over
+   * rows the CP already wrote (§9.2), so it may never outlive its deadline or fail a caller.
+   */
+  async listChannels(opts: { signal?: AbortSignal } = {}): Promise<PlatformChannelRef[]> {
+    try {
+      const signal = opts.signal ?? AbortSignal.timeout(LINEAR_READ_DEADLINE_MS)
+      const data = await this.graphql<{ teams?: { nodes?: LinearTeamRef[] } | null }>(TEAMS_QUERY, {}, signal)
+      return (data.teams?.nodes ?? [])
+        .filter((node) => Boolean(node?.id))
+        .map((node) => {
+          const name = linearChannelName(node)
+          return { id: node.id, ...(name && name !== node.id ? { name } : {}), isPrivate: false }
+        })
+    } catch (err) {
+      this.deps.log?.debug(`linear: team list failed for integration ${this.integrationId}: ${(err as Error).message}`)
+      return []
+    }
   }
 
   /** Attachment download is deferred (§9.4) — `null` is "unavailable", never a throw. */
@@ -776,4 +822,12 @@ const ISSUE_UPDATE = `mutation IssueUpdate($id: String!, $input: IssueUpdateInpu
 
 const USER_QUERY = `query User($id: String!) {
   user(id: $id) { id name displayName avatarUrl }
+}`
+
+const TEAM_QUERY = `query Team($id: String!) {
+  team(id: $id) { id key name }
+}`
+
+const TEAMS_QUERY = `query Teams {
+  teams(first: ${MAX_LISTED_TEAMS}) { nodes { id key name } }
 }`

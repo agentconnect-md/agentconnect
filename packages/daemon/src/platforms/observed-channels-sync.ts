@@ -194,7 +194,19 @@ export class ObservedChannelsSync {
    *  chats. The event's own platform filters the fan-out — a caller is already
    *  platform-specific and names it as data, not a branch. */
   async observePlatformChat(platform: string, chat: ObservedChat, integrationIds: readonly string[]): Promise<void> {
-    if (chat.name) {
+    await this.observePlatformChats(platform, [chat], integrationIds)
+  }
+
+  /** The same for a whole set — Linear reports a workspace's teams at once (§4.5), and one
+   *  report per integration beats one per conversation on a snapshot they all share. */
+  async observePlatformChats(
+    platform: string,
+    chats: readonly ObservedChat[],
+    integrationIds: readonly string[]
+  ): Promise<void> {
+    if (chats.length === 0) return
+    for (const chat of chats) {
+      if (!chat.name) continue
       await this.host.store().setDisplayName(chat.id, chat.name, Date.now())
       await this.host.emitSessionMetadataSnapshotsForDisplayName(chat.id)
     }
@@ -202,25 +214,30 @@ export class ObservedChannelsSync {
     for (const integrationId of integrationIds) {
       const integration = this.host.integrationConfigById(integrationId)
       if (!integration || integration.platform !== platform) continue
-      const prior = snapshots.get(integrationId)?.channels ?? []
-      const current = prior.find((channel) => channel.id === chat.id)
-      const observed: IntegrationChannel = {
-        ...current,
-        id: chat.id,
-        ...(chat.name ? { name: chat.name } : {}),
-        isPrivate: chat.isPrivate,
-        kind: 'channel'
+      let channels = snapshots.get(integrationId)?.channels ?? []
+      let changed = false
+      for (const chat of chats) {
+        const current = channels.find((channel) => channel.id === chat.id)
+        const observed: IntegrationChannel = {
+          ...current,
+          id: chat.id,
+          ...(chat.name ? { name: chat.name } : {}),
+          isPrivate: chat.isPrivate,
+          kind: 'channel'
+        }
+        if (
+          current?.name === observed.name &&
+          current?.isPrivate === observed.isPrivate &&
+          current?.kind === observed.kind
+        ) {
+          continue
+        }
+        channels = current
+          ? channels.map((channel) => (channel.id === chat.id ? observed : channel))
+          : [...channels, observed]
+        changed = true
       }
-      if (
-        current?.name === observed.name &&
-        current?.isPrivate === observed.isPrivate &&
-        current?.kind === observed.kind
-      ) {
-        continue
-      }
-      const channels = current
-        ? prior.map((channel) => (channel.id === chat.id ? observed : channel))
-        : [...prior, observed]
+      if (!changed) continue
       snapshots.set(integrationId, { channels, authoritative: false })
       this.host.cpClient()?.emitIntegrationChannels({ integrationId, channels, authoritative: false })
     }

@@ -6,11 +6,12 @@
  * Platform-neutral: no real network, no real timers on the paths asserted, and the only
  * clock the assertions depend on is the daemon's own injectable one.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
+import { LINEAR_GRAPHQL_ENDPOINT } from '../src/platforms/linear/connection.js'
 import { stableMessageId } from '../src/messages/normalized.js'
 import { sessionKey } from '../src/store/local-store.js'
 import type { LinearActivityInput } from '../src/platforms/linear/turn-output.js'
@@ -26,6 +27,9 @@ const AGENT = 'review-bot'
 const INTEGRATION = 'int-linear'
 const BOT = '8f0a1c62-9a0f-4c6e-8b2b-7d3f5a1c0001'
 const WORKSPACE = 'a2f2f0d4-0e33-4c4b-9a4b-4f7a0f1f0001'
+/** The channel coordinate (§4.5): the issue's team, which the relay keyed the delivery on. */
+const TEAM = 'e8d3c2bb-7f60-4b4c-9dae-2f3a4b5c0004'
+const OTHER_TEAM = 'f9e4d3cc-8071-4c5d-aebf-3a4b5c6d0005'
 const SESSION = 'c3f1e0aa-4d2f-4f0a-9b1e-2b6d5c4a0002'
 const ISSUE_URL = 'https://linear.app/example/issue/TEAM-123/ship-the-thing'
 const FAR_FUTURE = new Date(Date.now() + 20 * 60 * 60 * 1000).toISOString()
@@ -95,6 +99,54 @@ interface BootOpts {
   expiresAt?: string
 }
 
+/** The workspace's teams, as the reconcile-time `listChannels` read sees them (§9.4). */
+const TEAM_NODES = [
+  { id: TEAM, key: 'ENG', name: 'Engineering' },
+  { id: OTHER_TEAM, key: 'DOCS', name: 'Docs' }
+]
+
+/**
+ * The reconcile's team-list read is the ONE request that leaves the real connection here — the
+ * reconciler builds that connection itself, so there is no `fetchImpl` seam to inject through and
+ * the answer has to come from the global.
+ *
+ * Two rules keep that from reaching anything else: only Linear's own endpoint is answered (every
+ * other request goes to the real `fetch` this captured), and the stub is torn down after each
+ * test, so no later FILE inherits it either.
+ */
+let realFetch: typeof fetch
+/** Flipped by the stall test: the team-list request is accepted and then never answered. */
+let stallTeamList = false
+beforeEach(() => {
+  stallTeamList = false
+  realFetch = globalThis.fetch
+  vi.stubGlobal('fetch', async (url: unknown, init: unknown) => {
+    if (String(url) !== LINEAR_GRAPHQL_ENDPOINT) return await realFetch(url as string, init as RequestInit)
+    const body = JSON.parse((init as { body: string }).body) as { query: string }
+    const teamList = body.query.includes('teams(first:')
+    // Honour the caller's signal so the stall ends at ITS deadline, exactly as a real stalled
+    // endpoint would — never as a promise nothing can settle.
+    if (teamList && stallTeamList) {
+      const signal = (init as { signal?: AbortSignal }).signal
+      return await new Promise<Response>((_resolve, reject) => {
+        if (!signal) return
+        if (signal.aborted) return reject(new Error('aborted'))
+        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })
+    }
+    const data = teamList ? { teams: { nodes: TEAM_NODES } } : {}
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => ({ data })
+    } as unknown as Response
+  })
+})
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
 async function boot(opts: BootOpts = {}) {
   const daemon = new Daemon({
     root: scaffold(opts.outputMode ?? 'low', opts.expiresAt ?? FAR_FUTURE),
@@ -104,6 +156,17 @@ async function boot(opts: BootOpts = {}) {
   // Converge the pool deterministically instead of racing the fire-and-forget boot call,
   // then take the binding over with a recording fake — no GraphQL leaves this test.
   await (daemon as any).connections.reconcileLinearConnections()
+  // Every `integration/channels` frame emitted from here on — the report itself, not the cached
+  // snapshot behind it. Installed after the reconcile so the delivery paths are what it records;
+  // any other CP call answers undefined rather than exploding on a method this fake lacks.
+  const reports: { integrationId: string; channels: { id: string; name?: string }[] }[] = []
+  ;(daemon as any).cpClient = new Proxy(
+    {
+      emitIntegrationChannels: (snapshot: { integrationId: string; channels: { id: string; name?: string }[] }) =>
+        reports.push(snapshot)
+    } as Record<string, unknown>,
+    { get: (target, prop) => (prop in target ? target[prop as string] : () => undefined) }
+  )
   const posted: Posted[] = []
   const attached: { issueId: string; url: string; title: string; subtitle?: string }[] = []
   const factsRead: string[] = []
@@ -167,7 +230,7 @@ async function boot(opts: BootOpts = {}) {
     for (let i = 0; i < 4; i += 1) await pendingRows()
     expect(await pendingRows()).toBe(0)
   }
-  return { daemon, posted, attached, factsRead, store, pendingRows, turnSettled }
+  return { daemon, posted, attached, factsRead, reports, store, pendingRows, turnSettled }
 }
 
 const transportScope = (daemon: Daemon): string | undefined =>
@@ -175,19 +238,20 @@ const transportScope = (daemon: Daemon): string | undefined =>
 
 function delivery(payloadOver: Record<string, unknown> = {}, extOver: Record<string, unknown> = {}) {
   const msgId = `linear:${SESSION}:created`
+  const channel = (payloadOver.channel as string | undefined) ?? TEAM
   return {
     source: 'im' as const,
     agentId: AGENT,
     botId: BOT,
     integrationId: INTEGRATION,
-    sessionKey: `${WORKSPACE}/${SESSION}`,
+    sessionKey: `${channel}/${SESSION}`,
     msgId,
     payload: {
       msgId,
       traceId: msgId,
       source: 'user' as const,
       platform: 'linear' as const,
-      channel: WORKSPACE,
+      channel,
       thread: SESSION,
       threadUrl: ISSUE_URL,
       sender: { id: 'linear:user-1', isBot: false, name: 'Dana' },
@@ -198,6 +262,7 @@ function delivery(payloadOver: Record<string, unknown> = {}, extOver: Record<str
       adapterExt: {
         linear: {
           agentSessionId: SESSION,
+          team: { id: TEAM, key: 'ENG', name: 'Engineering' },
           issueIdentifier: 'TEAM-123',
           issueTitle: 'Ship the thing',
           ...extOver
@@ -213,27 +278,106 @@ const responses = (posted: Posted[]) => posted.filter((p) => p.activity.type ===
 
 const im = async (daemon: Daemon, msg: unknown) => await (daemon as any).handleRelayIm(msg)
 
-describe('§4.5 the workspace as the one observed conversation', () => {
-  it('reports it at reconcile, before any delivery has landed', async () => {
-    // The CP dispatch row — and the channel-scoped route the compile makes of it — has to exist
-    // BEFORE the first delegation, so the report cannot wait for a session to reach history.
+describe('§4.5 the teams as the observed conversations', () => {
+  it('reports the team list at reconcile, as a name refresh over the rows the CP already wrote', async () => {
     const { daemon } = await boot()
-    const snapshot = (daemon as any).channelSnapshots.get(INTEGRATION)
-    expect(snapshot).toMatchObject({ authoritative: false })
-    expect(snapshot.channels).toEqual([{ id: WORKSPACE, name: 'Example Workspace', isPrivate: false, kind: 'channel' }])
+    // The refresh is detached from the reconcile (it may not block convergence), so wait for it
+    // rather than assuming it landed inside the awaited call.
+    await vi.waitFor(() =>
+      expect((daemon as any).channelSnapshots.get(INTEGRATION)).toEqual({
+        authoritative: false,
+        channels: [
+          { id: TEAM, name: 'ENG · Engineering', isPrivate: false, kind: 'channel' },
+          { id: OTHER_TEAM, name: 'DOCS · Docs', isPrivate: false, kind: 'channel' }
+        ]
+      })
+    )
     await daemon.stop()
   })
 
-  it('labels the workspace id so the console never shows a bare organization UUID', async () => {
+  it('labels each team id so the console never shows a bare team UUID', async () => {
     const { daemon, store } = await boot()
-    expect((await store.getDisplayNames([WORKSPACE])).get(WORKSPACE)).toBe('Example Workspace')
+    await vi.waitFor(async () => {
+      const names = await store.getDisplayNames([TEAM, OTHER_TEAM])
+      expect(names.get(TEAM)).toBe('ENG · Engineering')
+      expect(names.get(OTHER_TEAM)).toBe('DOCS · Docs')
+    })
     await daemon.stop()
   })
 
-  it('re-reports on a reconcile that only rebinds, without duplicating the row', async () => {
+  it('re-reports on a reconcile that only rebinds, without duplicating the rows', async () => {
     const { daemon } = await boot()
     await (daemon as any).connections.reconcileLinearConnections()
-    expect((daemon as any).channelSnapshots.get(INTEGRATION).channels).toHaveLength(1)
+    await vi.waitFor(() => expect((daemon as any).channelSnapshots.get(INTEGRATION)?.channels).toHaveLength(2))
+    await daemon.stop()
+  })
+
+  it('reports a team the list never named the first time a delivery names it — and only once', async () => {
+    // §9.2's fast path: a team created after the install has a row from its first event rather
+    // than waiting for the CP reconciler tick that guarantees it.
+    const { daemon, reports, store } = await boot()
+    ;(daemon as any).dispatch = vi.fn(async () => null)
+    const fresh = { id: 'e1c0b9aa-0000-4000-8000-00000000000f', key: 'NEW', name: 'New Team' }
+    // A distinct msgId per delivery, or the durable receipt would answer the later ones before
+    // the report path is reached at all and the assertion would prove nothing.
+    const onFreshTeam = (n: number) => {
+      const msgId = `linear:activity-${n}`
+      return { ...delivery({ channel: fresh.id, msgId }, { team: fresh }), msgId }
+    }
+    await im(daemon, onFreshTeam(1))
+    await vi.waitFor(() =>
+      expect(reports.at(-1)?.channels).toContainEqual({
+        id: fresh.id,
+        name: 'NEW · New Team',
+        isPrivate: false,
+        kind: 'channel'
+      })
+    )
+    const afterFirst = reports.length
+    // The bag names the same team on every later delivery, and the row is already reported: the
+    // in-memory set is what stops the work, so watch the write the report path would redo.
+    const named = vi.spyOn(store, 'setDisplayName')
+    await im(daemon, onFreshTeam(2))
+    await im(daemon, onFreshTeam(3))
+    expect(reports.length).toBe(afterFirst)
+    expect(named.mock.calls.filter((call: unknown[]) => call[0] === fresh.id)).toEqual([])
+    expect((daemon as any).channelSnapshots.get(INTEGRATION).channels).toHaveLength(3)
+    await daemon.stop()
+  })
+
+  it('never lets a stalled team list block the reconcile, or the reconcile after it', async () => {
+    // The reconcile is single-flight: a provider that accepts the read and then stalls would
+    // coalesce every later convergence — agents, integrations, inbox replay — behind a report
+    // nothing waits on. The refresh is therefore detached AND deadline-bound.
+    const { daemon } = await boot()
+    stallTeamList = true
+    const reconcile = (daemon as any).connections.reconcileLinearConnections()
+    // No fake clock here on purpose: the read's own deadline is seconds away, so a reconcile
+    // that waited on it could not finish inside this assertion's window.
+    await expect(
+      Promise.race([
+        reconcile.then(() => 'reconciled'),
+        new Promise((resolve) => setTimeout(() => resolve('blocked'), 500))
+      ])
+    ).resolves.toBe('reconciled')
+    // And the next one converges just as freely while the first read is still outstanding.
+    await expect(
+      Promise.race([
+        (daemon as any).connections.reconcileLinearConnections().then(() => 'reconciled'),
+        new Promise((resolve) => setTimeout(() => resolve('blocked'), 500))
+      ])
+    ).resolves.toBe('reconciled')
+    // The rows the earlier successful refresh reported are untouched by the stall.
+    expect((daemon as any).channelSnapshots.get(INTEGRATION).channels).toHaveLength(2)
+    await daemon.stop()
+  })
+
+  it('reports nothing for a delivery whose bag names no team at all', async () => {
+    const { daemon, reports } = await boot()
+    ;(daemon as any).dispatch = vi.fn(async () => null)
+    const before = reports.length
+    await im(daemon, delivery({}, { team: undefined }))
+    expect(reports.length).toBe(before)
     await daemon.stop()
   })
 })
@@ -292,7 +436,7 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     // a genuinely concurrent arrival would be blinded.
     await store.appendInbox({
       id: linearDeliveryReceiptId(stableMessageId(normalized)),
-      sessionKey: sessionKey('linear', WORKSPACE, SESSION, AGENT, transportScope(daemon)),
+      sessionKey: sessionKey('linear', TEAM, SESSION, AGENT, transportScope(daemon)),
       agentId: AGENT,
       msg: '{}',
       completedAt: 1,
@@ -357,7 +501,7 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
 
   it('marks the queued variant when the session is already working', async () => {
     const { daemon, posted } = await boot()
-    const key = sessionKey('linear', WORKSPACE, SESSION, AGENT, transportScope(daemon))
+    const key = sessionKey('linear', TEAM, SESSION, AGENT, transportScope(daemon))
     ;(daemon as any).inflight.add(key)
     await im(daemon, delivery())
     await vi.waitFor(() => expect(acks(posted).length).toBe(1))
@@ -373,11 +517,11 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     await daemon.stop()
   })
 
-  it('records the WORKSPACE name as the session channel name', async () => {
-    // The channel is the workspace, so the issue lives on `threadUrl` and the §8 header instead.
+  it('records the TEAM label as the session channel name', async () => {
+    // The channel is the team, so the issue lives on `threadUrl` and the §8 header instead.
     const { daemon, store } = await boot()
     await im(daemon, delivery())
-    expect((await store.getDisplayNames([WORKSPACE])).get(WORKSPACE)).toBe('Example Workspace')
+    expect((await store.getDisplayNames([TEAM])).get(TEAM)).toBe('ENG · Engineering')
     await daemon.stop()
   })
 
@@ -533,8 +677,13 @@ describe('§5 the Layer-2 surface', () => {
 })
 
 describe('§4.5 the issue-less surface', () => {
-  // The channel stays the workspace; only the BAG loses its issue metadata.
-  const issueless = () => delivery({ threadUrl: undefined }, { issueIdentifier: undefined, issueTitle: undefined })
+  // No issue means no team either, so this session keys on the workspace — the one channel
+  // that coordinate survives on, and one that never earns a row.
+  const issueless = () =>
+    delivery(
+      { threadUrl: undefined, channel: WORKSPACE },
+      { issueIdentifier: undefined, issueTitle: undefined, team: undefined }
+    )
 
   it('answers once and starts NO turn', async () => {
     const { daemon, posted } = await boot()
@@ -548,7 +697,7 @@ describe('§4.5 the issue-less surface', () => {
     await daemon.stop()
   })
 
-  it('keys the session on the workspace + AgentSession UUID and admits it durably before answering', async () => {
+  it('keys the issue-less session on the workspace + AgentSession UUID, admitted before it answers', async () => {
     const { daemon, posted, store } = await boot()
     ;(daemon as any).dispatch = vi.fn(async () => null)
     await im(daemon, issueless())
@@ -574,7 +723,7 @@ describe('§6.3 the stop decoder', () => {
     source: 'platform_action' as const,
     platformId: 'linear',
     agentId: AGENT,
-    sessionKey: `${WORKSPACE}/${SESSION}`,
+    sessionKey: `${TEAM}/${SESSION}`,
     msgId: 'linear:activity-stop',
     botId: BOT,
     integrationId: INTEGRATION,
@@ -585,13 +734,13 @@ describe('§6.3 the stop decoder', () => {
 
   it('interrupts the addressed session and settles it with a `response`', async () => {
     const { daemon, posted, store } = await boot()
-    const key = sessionKey('linear', WORKSPACE, SESSION, AGENT, transportScope(daemon))
+    const key = sessionKey('linear', TEAM, SESSION, AGENT, transportScope(daemon))
     await store.upsertSession({
       key,
       sessionId: 'sess-1',
       agentId: AGENT,
       platform: 'linear',
-      channel: WORKSPACE,
+      channel: TEAM,
       thread: SESSION,
       transportScope: transportScope(daemon),
       acpSessionId: 'acp-1',
