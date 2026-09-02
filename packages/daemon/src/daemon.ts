@@ -3390,17 +3390,8 @@ export class Daemon {
       // after origin convergence succeeds. Otherwise fall back to the ordinary
       // cold workspace path so a live host cannot keep serving an untrusted or
       // stale checkout.
-      if (change.workspaceRepoRename) {
-        try {
-          await this.enqueueAgentWorkspacePreparation(a as LoadedAgent, () =>
-            this.workspaces.convergeGithubAppWorkspaceRename(a as LoadedAgent)
-          )
-        } catch (err) {
-          workspaceNeedsColdRecovery = true
-          this.log.warn(
-            `workspace: canonical rename convergence for "${a.id}" failed; evicting its host: ${formatErr(err)}`
-          )
-        }
+      if (change.workspaceRepoRename && !(await this.convergeWorkspaceRename(a as LoadedAgent))) {
+        workspaceNeedsColdRecovery = true
       }
       // Pause is an operator stop, not merely a gate for the next message. Publish the
       // gate first so no new turn can enter, then interrupt every active logical session
@@ -4040,6 +4031,34 @@ export class Daemon {
       const fence = this.workspaceDispatchFences.get(agentId)
       if (!fence) return
       await fence
+    }
+  }
+
+  // A canonical rename converges the primary and every session clone in place, keeping warm hosts; a session clone that would not follow gets its host evicted (its next turn re-prepares and refuses an untrusted origin), and a primary that would not follow means the ordinary cold workspace path. Answers whether the warm hosts may stay.
+  private async convergeWorkspaceRename(agent: LoadedAgent): Promise<boolean> {
+    try {
+      const { unconvergedSessions } = await this.enqueueAgentWorkspacePreparation(agent, () =>
+        this.workspaces.convergeGithubAppWorkspaceRename(agent)
+      )
+      await this.evictSessionHosts(agent.id, unconvergedSessions)
+      return true
+    } catch (err) {
+      this.log.warn(
+        `workspace: canonical rename convergence for "${agent.id}" failed; evicting its host: ${formatErr(err)}`
+      )
+      return false
+    }
+  }
+
+  /** Stop the session-bound hosts of the agent whose session leaf (hostKeyDirName) is named — the directory they launched in no longer serves them. */
+  private async evictSessionHosts(agentId: string, leaves: readonly string[]): Promise<void> {
+    if (leaves.length === 0) return
+    for (const key of this.hostKeysForAgent(agentId)) {
+      if (hostKeySessionKey(key) === undefined || !leaves.includes(hostKeyDirName(key))) continue
+      this.log.warn(
+        `workspace: session clone ${hostKeyDirName(key)} of "${agentId}" kept its old origin — evicting its host`
+      )
+      await this.stopHostByKey(key)
     }
   }
 

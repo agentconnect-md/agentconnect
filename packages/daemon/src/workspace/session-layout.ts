@@ -74,3 +74,17 @@ function realDirEntries(dir: string): string[] {
 export function hasSessionsDirIn(agentRoot: string): boolean {
   return existsSync(sessionsDirIn(agentRoot))
 }
+
+/** Every session directory ON DISK under `<agentRoot>/sessions`, by leaf name, sorted; symlinks are skipped. */
+export function sessionDirsIn(agentRoot: string): { leaf: string; path: string }[] {
+  const parent = sessionsDirIn(agentRoot)
+  if (!isRealDir(parent)) return []
+  try {
+    return readdirSync(parent, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => ({ leaf: entry.name, path: join(parent, entry.name) }))
+      .sort((a, b) => (a.leaf < b.leaf ? -1 : a.leaf > b.leaf ? 1 : 0))
+  } catch {
+    return []
+  }
+}

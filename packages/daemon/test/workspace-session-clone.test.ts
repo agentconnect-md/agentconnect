@@ -459,3 +459,59 @@ describe('retiring a confined session', () => {
     expect(git(agent.workspace.path, ['branch', '--list', 'dev/*'])).toBe('')
   })
 })
+
+describe('a confined session across workspace changes', () => {
+  // A replaced workspace makes every session directory describe a repository the agent no longer has: they go with the worktrees, and the next turn re-clones from the new definition.
+  it('discards every session directory when the workspace is replaced, and re-clones on the next turn', async () => {
+    const agent = agentFixture()
+    const { primary } = serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    const oldTip = git(cwd, ['rev-parse', 'HEAD'])
+    git(primary!.seed, ['checkout', '-q', '-b', 'trunk'])
+    writeFileSync(join(primary!.seed, 'TRUNK.md'), 'trunk\n')
+    git(primary!.seed, ['add', '-A'])
+    git(primary!.seed, ['commit', '-q', '-m', 'trunk only'])
+    git(primary!.seed, ['push', '-q', 'origin', 'trunk'])
+    const trunkTip = git(primary!.seed, ['rev-parse', 'HEAD'])
+    const onTrunk = { ...agent, workspace: { ...agent.workspace, gitBranch: 'trunk' } } as Agent
+
+    const rollback = await workspaces.prepareWorkspaceForActivation(onTrunk, { reconcileMaterialization: true })
+
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'sessions'))).toBe(false)
+    expect(workspaces.confinedSessionDir(onTrunk, KEY)).toBeUndefined()
+    expect(git(onTrunk.workspace.path, ['symbolic-ref', '--short', 'HEAD'])).toBe('trunk')
+    const again = await workspaces.prepareSessionWorkspace(onTrunk, confined())
+    expect(again).toBe(cwd)
+    expect(git(again, ['rev-parse', 'HEAD'])).toBe(trunkTip)
+    expect(git(again, ['rev-parse', 'HEAD'])).not.toBe(oldTip)
+    expect(existsSync(join(again, 'TRUNK.md'))).toBe(true)
+    expect(rollback).toBeTypeOf('function')
+  })
+
+  it('follows a canonical rename onto every session clone with the primary, reporting the ones that will not', async () => {
+    const agent = agentFixture({ githubApp: true })
+    serveAll(agent)
+    const other = 'slack:C1:1700000000.000200'
+    const first = await workspaces.prepareSessionWorkspace(agent, confined())
+    // The fixture's `file://` origin is what a real clone would have recorded as the authorized URL.
+    git(agent.workspace.path, ['remote', 'set-url', 'origin', PRIMARY_URL])
+    const second = await workspaces.prepareSessionWorkspace(agent, confined({ sessionKey: other }))
+    for (const checkout of [agent.workspace.path, first, second]) {
+      git(checkout, ['remote', 'set-url', 'origin', 'https://github.com/acme/old-name.git'])
+    }
+
+    expect(await workspaces.convergeGithubAppWorkspaceRename(agent)).toEqual({ unconvergedSessions: [] })
+
+    for (const checkout of [agent.workspace.path, first, second]) {
+      expect(git(checkout, ['remote', 'get-url', 'origin'])).toBe(PRIMARY_URL)
+    }
+    // A clone whose origin left the managed host is reported by its leaf and left alone; the rest still follow.
+    git(first, ['remote', 'set-url', 'origin', 'https://other-host.example/acme/elsewhere.git'])
+    git(second, ['remote', 'set-url', 'origin', 'https://github.com/acme/old-name.git'])
+    expect(await workspaces.convergeGithubAppWorkspaceRename(agent)).toEqual({
+      unconvergedSessions: [hostKeyDirName(sessionHostKey(agent.id, KEY))]
+    })
+    expect(git(first, ['remote', 'get-url', 'origin'])).toBe('https://other-host.example/acme/elsewhere.git')
+    expect(git(second, ['remote', 'get-url', 'origin'])).toBe(PRIMARY_URL)
+  })
+})

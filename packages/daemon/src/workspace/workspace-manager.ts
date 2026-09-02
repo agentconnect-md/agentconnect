@@ -58,7 +58,15 @@ import {
 } from './secondary-layout.js'
 import { authorizeWorkspaceGitUrl } from './git-origin-policy.js'
 import { isSessionBranch, sessionBranchName } from './session-branch.js'
-import { hasSessionsDirIn, isRealDir, sessionClonesIn, sessionDirIn, sessionRootCloneIn } from './session-layout.js'
+import {
+  hasSessionsDirIn,
+  isRealDir,
+  sessionClonesIn,
+  sessionDirIn,
+  sessionRootCloneIn,
+  sessionsDirIn,
+  sessionDirsIn
+} from './session-layout.js'
 import { hostKeyDirName, sessionHostKey } from '../acp/host-key.js'
 import { DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
 import { SANDBOX_CHECKOUT_DIR } from '../shim/sandbox-paths.js'
@@ -1004,10 +1012,30 @@ export class WorkspaceManager {
     }
   }
 
-  async convergeGithubAppWorkspaceRename(agent: Agent): Promise<void> {
-    if (!this.usesGithubApp(agent)) return
+  /** Follow a canonical rename onto the primary AND every session clone of it (§11); the session leaves whose clone could not be repointed are returned for the caller to evict, since a live host there would keep pushing to the old origin. */
+  async convergeGithubAppWorkspaceRename(agent: Agent): Promise<{ unconvergedSessions: string[] }> {
+    if (!this.usesGithubApp(agent)) return { unconvergedSessions: [] }
     this.recordWorkspaceMaterialization(agent)
     await this.convergeWorkspaceOrigin(agent)
+    return { unconvergedSessions: await this.convergeSessionCloneOrigins(agent) }
+  }
+
+  /** Repoint each session's primary clone at the canonical origin, the way the primary just was; a clone that refuses (an origin off the managed host, a locked config) is reported by its leaf, not thrown, so one session cannot hold the rename of the rest. */
+  private async convergeSessionCloneOrigins(agent: Agent): Promise<string[]> {
+    if (this.sandboxMode) return []
+    const root = this.primaryRoot(agent)
+    const unconverged: string[] = []
+    for (const { leaf, path } of sessionDirsIn(this.agentRootFor(agent))) {
+      const clone = sessionRootCloneIn(path)
+      if (!isRealDir(join(clone, '.git'))) continue
+      try {
+        await this.convergeOriginInPlaceFor(agent.id, root, clone)
+      } catch (err) {
+        workspaceLog.warn(`workspace: session clone ${leaf} of agent "${agent.id}" kept its origin (${formatErr(err)})`)
+        unconverged.push(leaf)
+      }
+    }
+    return unconverged
   }
 
   ensureWorkspaceMaterialization(agent: Agent): void {
@@ -1176,9 +1204,10 @@ export class WorkspaceManager {
     return await this.validateWorktreesRoot(agent, worktreesPath)
   }
 
-  /** An `rmSync`, so its subject can only ever be this daemon's own disk. */
+  /** Discard every per-session directory of the agent — the worktrees parent and every session's own clones (§11) alike, since a replaced workspace makes both describe a repository the agent no longer has. An `rmSync`, so its subject can only ever be this daemon's own disk. */
   clearSessionWorktrees(agent: Agent): void {
     rmSync(this.localWorktreesPathFor(agent), { recursive: true, force: true })
+    rmSync(sessionsDirIn(this.agentRootFor(agent)), { recursive: true, force: true })
   }
 
   sessionWorktreeId(sessionKey: string): string {
