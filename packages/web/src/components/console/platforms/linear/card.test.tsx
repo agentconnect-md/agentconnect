@@ -235,7 +235,7 @@ describe('the team rows', () => {
   it('names each row by its team alone — the card header already carries the workspace', async () => {
     await render()
 
-    const [eng] = [...host.querySelectorAll('span')].filter((el) => el.textContent === 'Engineering')
+    const [eng] = [...host.querySelectorAll('a, span')].filter((el) => el.textContent === 'Engineering')
     expect(eng).toBeDefined()
     // The row reads "Engineering" — never the team KEY, which is an identifier, never the
     // workspace prefix this card already prints above, and never a "#" Linear has no use for.
@@ -257,19 +257,6 @@ describe('the team rows', () => {
     const keys = [...host.querySelectorAll('span')].filter((el) => el.textContent === 'ENG')
     expect(keys).toHaveLength(1)
     expect(keys[0]!.closest('a')).toBeNull()
-  })
-
-  it('leads each team row with its own colored mark, the way Linear’s team picker does', async () => {
-    await render()
-
-    const marks = [...host.querySelectorAll('[aria-hidden]')].filter((el) =>
-      (el.getAttribute('style') ?? '').includes('background')
-    )
-    // Engineering's icon is a NAME we ship no glyph for, so the mark falls back to its initial;
-    // Design's is an emoji, which is drawn as itself. Both wear the team's own color.
-    expect(marks.map((el) => el.textContent)).toEqual(['E', '🎨'])
-    expect(marks[0]!.getAttribute('style')).toContain('#5E6AD2')
-    expect(marks[1]!.getAttribute('style')).toContain('#26B5CE')
   })
 
   it('carries a trigger per team, Mention or Off and nothing else', async () => {

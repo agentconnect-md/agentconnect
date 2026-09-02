@@ -594,20 +594,12 @@ export interface WebChannelListSemantics {
    */
   splitRowLabel?(label: string): { name: string; hint?: string }
   /**
-   * The colored mark a room row leads with, where the platform gives a conversation its own
-   * icon and tint — a Linear team, which the console draws the way Linear's own team picker
-   * does. It takes the row's DISPLAYED name (post-{@link splitRowLabel}), so a mark that falls
-   * back to an initial takes the team's rather than the workspace's. Direct rows never take it:
-   * their label is a person and the kind-driven `@` markers already lead them. Absent ⇒ the row
-   * leads with {@link roomGlyph} alone, which is every other platform.
-   */
-  RowMark?: ComponentType<{ name: string; icon?: string; color?: string; size?: number }>
-  /**
    * How a room row prints its NAME, where the platform gives the conversation more than a label
    * — a Linear team is followed by its key and opens in Linear. It renders INTO the host's own
    * baseline row (a fragment, not a box), taking the row's DISPLAYED name (post-{@link
    * splitRowLabel}) plus the row's `key` and `url`. Absent ⇒ the host prints the name itself,
-   * which is every other platform; direct rows never take it, as with {@link RowMark}.
+   * which is every other platform; direct rows never take it: their label is a person, and the
+   * kind-driven `@` markers already lead them.
    */
   RowName?: ComponentType<{ name: string; channelKey?: string; url?: string }>
 }

@@ -30,8 +30,8 @@ describe('the Linear team row’s name', () => {
     expect(out).toContain(`href="${TEAM_URL}"`)
     expect(out).toContain('target="_blank"')
     expect(out).toContain('rel="noopener noreferrer"')
-    // The console's external-link affordance, so the row says where the name goes.
-    expect(out).toContain('lucide-external-link')
+    // The name is the whole affordance: no link glyph beside it.
+    expect(out).not.toContain('<svg')
   })
 
   it('prints the name plainly when the row carries no link, and still prints the key', () => {

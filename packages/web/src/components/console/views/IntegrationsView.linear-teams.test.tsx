@@ -173,19 +173,6 @@ describe('the Linear workspace’s Bots row', () => {
     expect(pickers(view)).toHaveLength(2)
   })
 
-  it('leads each team row with the team’s own colored mark', async () => {
-    const view = await expandWorkspace()
-
-    const marks = [...view.querySelectorAll('[aria-hidden]')].filter((el) =>
-      (el.getAttribute('style') ?? '').includes('background')
-    )
-    // Design's emoji icon is drawn as itself; Engineering's is a Linear icon NAME we ship no
-    // glyph for, so the mark falls back to the team's initial. Both wear the team's color.
-    expect(marks.map((el) => el.textContent)).toEqual(['🎨', 'E'])
-    expect(marks[0]!.getAttribute('style')).toContain('#26B5CE')
-    expect(marks[1]!.getAttribute('style')).toContain('#5E6AD2')
-  })
-
   it('prints each team’s key after its name, and links the NAME to the team in Linear', async () => {
     const view = await expandWorkspace()
 
