@@ -204,10 +204,8 @@ async function runConfinedHelper(
     }
     child.stdout.on('data', (chunk: Buffer) => collect(stdout, chunk))
     child.stderr.on('data', (chunk: Buffer) => collect(stderr, chunk))
-    child.stdin.on('error', (error) => {
-      failure ??= error
-      killHelper()
-    })
+    // stdin only carries the start gate, which an ungated helper can outrun; close() kills whatever survives.
+    child.stdin.on('error', () => {})
     child.once('error', (error) => {
       failure ??= error
       killHelper()
