@@ -706,12 +706,23 @@ thread-affinity gate honours a gated agent while that route exists. An
 fact from where it now lives: a gated agent's binding is honoured while that
 agent is the channel's `conversationDefaults` entry. **Moving a team's
 default away from a gated agent therefore withdraws its grant**, and its
-bound sessions' next follow-up re-arbitrates to the new default — exactly
-what happens on Slack when a gated owner loses its channel, and the
-fail-closed reading gating is for. The "owner change never moves a live
+bound sessions become **stoppable but not continuable**: a `prompted`
+follow-up whose affinity is rejected on grant grounds is **refused, not
+re-arbitrated** — on Slack the thread would fall to the new owner, but a
+Linear AgentSession has one writer (§4.6), and letting the new default
+answer inside a session another agent's runtime still holds would put two
+daemons on one feed — while a **stop** bypasses the grant check altogether
+and reaches the bound agent, because a stop can only end work and so leaks
+nothing; the relay's stop path therefore never resolves to an agent that
+does not hold the session. Refusal is silent at the relay (it has no Linear
+egress), so the console's owner selector warns, when it moves a default off
+a private agent, that the agent's live sessions in that team can be stopped
+but will not answer again; a re-mention or a fresh delegation opens a new
+session with the new default. The "owner change never moves a live
 session" row above is stated for unrestricted members, whose continuity
-needs no grant; it is qualified, not broken, for restricted ones, and the
-console's owner selector says so when it moves a default off a private
+needs no grant; for restricted ones it holds in the narrow sense that the
+session is never handed to another agent, and the console's owner selector
+says so when it moves a default off a private
 agent. No new per-agent grant state is introduced: a per-member grant
 independent of the default was considered and would have required a trigger
 that varies per member, which the replicated-trigger model cannot express.
@@ -1221,8 +1232,9 @@ tile.
   derivation, stop → `platform_action`, revoked-event doorbell; team-keyed
   `channel`; the default rung picks the channel's default over the group's
   and loses to a keyword match and to thread affinity; a gated agent's
-  affinity holds while it is the channel's default and its next follow-up
-  re-arbitrates once the default moves, while an unrestricted agent's
+  affinity holds while it is the channel's default; once the default moves,
+  a follow-up to its bound session is refused (no fall-through to the new
+  default) while a stop still reaches it, and an unrestricted agent's
   affinity survives the same move.
 
 ### 9.4 `packages/daemon`
@@ -1846,9 +1858,12 @@ as "this member owns the row and the row is not Off" — and a per-agent
 grant independent of the default (`conversationGrants`, considered) would
 have needed a trigger that varies per member, which the replicated-trigger
 model cannot express. Consequence, stated in §6.2: moving a team's default
-away from a gated agent withdraws its grant and its sessions re-arbitrate to
-the new default on their next follow-up, as on Slack; an unrestricted
-agent's sessions are untouched by the move.
+away from a gated agent withdraws its grant; its bound sessions can still be
+**stopped** (a stop bypasses the grant check — it can only end work) but a
+follow-up is **refused rather than re-arbitrated**, because a Linear
+AgentSession has one writer (§4.6) and the new default must not answer inside
+a session another runtime still holds. An unrestricted agent's sessions are
+untouched by the move.
 
 **Data.** Nothing has shipped, so nothing migrates: the workspace-keyed
 conversation rows and the sessions keyed on `organizationId` are deleted, not
