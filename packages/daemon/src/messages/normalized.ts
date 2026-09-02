@@ -1,4 +1,9 @@
-import type { NormalizedPlatformMessage, PlatformAttachment, SessionImageAttachment } from '@agentconnect.md/protocol'
+import type {
+  NormalizedPlatformMessage,
+  PlatformAttachment,
+  SessionImageAttachment,
+  UserTurnBody
+} from '@agentconnect.md/protocol'
 
 /**
  * A file shared alongside a message. Platform ingresses carry metadata + a
@@ -62,6 +67,13 @@ export interface NormalizedMessage extends Omit<
    *  coordinates and working conventions the model reads once on the system-prompt channel (or the
    *  first prompt block), never a transcript row. Ignored on a follow-up into an open session. */
   standingContext?: string
+  /**
+   * The model text and platform facts behind this turn when they differ from `text`
+   * (`UserTurnBody`): the strategy that assembles a prompt out of a delivery puts the assembled
+   * prompt and the facts it read here, the transcript row persists it as `body`, replay reads
+   * `prompt` back, and the console formats the facts. Absent on an ordinary chat message.
+   */
+  turnBody?: UserTurnBody
   /** Stable automation/source identity recorded as the session trigger when it
    *  differs from the message author. GitHub hook messages, for example, are
    *  authored by the event actor while still being triggered by `hook:<id>`. */
@@ -120,3 +132,9 @@ export function stableTurnId(agentId: string, msg: MessageIdentityFields): strin
 /** The outbound thread-key strategy moved to `platforms/thread-keys.ts` (§7.4) —
  * one registered arm per platform, beside the inbound canonicalization it must
  * agree with. */
+
+/** Append a per-turn block to what the model reads: the assembled prompt when the turn carries one, else `text`. */
+export function appendTurnPrompt(msg: Pick<NormalizedMessage, 'text' | 'turnBody'>, block: string): void {
+  msg.text += block
+  if (msg.turnBody?.prompt !== undefined) msg.turnBody.prompt += block
+}

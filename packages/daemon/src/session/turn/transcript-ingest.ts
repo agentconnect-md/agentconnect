@@ -118,6 +118,8 @@ export async function ingestInboundTranscript(input: TranscriptIngestInput): Pro
     ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
     kind: 'text',
     text: transcriptText,
+    // The model prompt and platform facts behind the row, when the turn assembled them.
+    ...(msg.turnBody ? { body: JSON.stringify(msg.turnBody) } : {}),
     ...(transcriptAttachments.length ? { attachments: transcriptAttachments } : {})
   })
   return { ts, attachments: msg.attachments }

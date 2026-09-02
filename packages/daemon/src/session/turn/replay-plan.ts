@@ -1,4 +1,4 @@
-import type { TranscriptEntry } from '../../store/local-store.js'
+import { transcriptPromptText, type TranscriptEntry } from '../../store/local-store.js'
 import type { MessageOrdering } from '../../platforms/message-ordering.js'
 
 // Cap on transcript entries replayed as catch-up context in one prompt (§8.5),
@@ -123,7 +123,7 @@ export function renderReplayContext(
   return entries
     .flatMap((event) => {
       const quote = quoteFor?.(event, entries)
-      return [...(quote ? [quote] : []), `[${event.sender}] ${event.text}`]
+      return [...(quote ? [quote] : []), `[${event.sender}] ${transcriptPromptText(event)}`]
     })
     .join('\n')
 }

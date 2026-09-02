@@ -22,10 +22,12 @@
  */
 import {
   isGithubPullRequestRevisionEvent,
+  type CodehostTurnFacts,
   type GithubHookMetadata,
   type GitlabHookMetadata,
   type HookContext,
-  type RdMsgHook
+  type RdMsgHook,
+  type UserTurnBody
 } from '@agentconnect.md/protocol'
 import { githubSourceThreadUrl } from './github-source-link.js'
 import type { NormalizedMessage } from './normalized.js'
@@ -450,6 +452,82 @@ export function buildHookStandingContext(msg: RdMsgHook): string | undefined {
   return undefined
 }
 
+/** The code-host facts behind this delivery (`CodehostTurnFacts`), for the console's formatter. */
+export function buildHookTurnFacts(msg: RdMsgHook): CodehostTurnFacts | undefined {
+  const c = msg.context
+  if (!c) return undefined
+  const event = c.action ? `${c.event}:${c.action}` : (c.event ?? 'event')
+  const common = {
+    event,
+    ...(c.action ? { action: c.action } : {}),
+    ...(c.senderLogin || c.authorAssociation
+      ? {
+          author: {
+            ...(c.senderLogin ? { login: c.senderLogin } : {}),
+            ...(c.authorAssociation ? { association: c.authorAssociation } : {})
+          }
+        }
+      : {}),
+    ...(c.labels?.length ? { labels: [...c.labels] } : {}),
+    ...(c.bodyExcerpt ? { body: c.bodyExcerpt } : {}),
+    ...(c.truncated ? { truncated: true } : {})
+  }
+  if (c.source === 'gitlab' && msg.gitlab) {
+    const target = msg.gitlab.target
+    const review = gitlabOpensReviewGeneration(event, msg.gitlab, msg.reviewPolicy)
+      ? 'generation'
+      : target.kind === 'push'
+        ? undefined
+        : 'conversation'
+    return {
+      provider: 'gitlab',
+      ...common,
+      subject: {
+        kind: target.kind,
+        repo: msg.gitlab.projectPath,
+        ...(target.kind !== 'push' ? { number: target.iid } : {}),
+        ...(c.title ? { title: c.title } : {}),
+        ...(c.htmlUrl ? { url: c.htmlUrl } : {})
+      },
+      ...(target.kind === 'merge_request' && target.headSha ? { revision: { head: target.headSha } } : {}),
+      ...(target.kind === 'merge_request' && target.isDraft !== undefined ? { draft: target.isDraft } : {}),
+      ...(target.kind === 'push' ? { ref: target.ref } : {}),
+      ...(review ? { review } : {})
+    }
+  }
+  if (c.source !== 'github') return undefined
+  const github = msg.github
+  const review = trustedInlineReplyTarget(c, github)
+    ? 'inline'
+    : githubOpensReviewGeneration(event, github, msg.reviewPolicy)
+      ? 'generation'
+      : c.number !== undefined
+        ? 'conversation'
+        : undefined
+  const base = github?.baseSha
+  const head = github?.headSha
+  return {
+    provider: 'github',
+    ...common,
+    subject: {
+      ...(github?.subjectKind ? { kind: github.subjectKind } : {}),
+      ...(github?.repoFullName || c.repo ? { repo: github?.repoFullName ?? c.repo } : {}),
+      ...((github?.pullNumber ?? c.number) !== undefined ? { number: github?.pullNumber ?? c.number } : {}),
+      ...(c.title ? { title: c.title } : {}),
+      ...(c.htmlUrl ? { url: c.htmlUrl } : {})
+    },
+    ...(base || head ? { revision: { ...(base ? { base } : {}), ...(head ? { head } : {}) } } : {}),
+    ...(github?.isDraft !== undefined ? { draft: github.isDraft } : {}),
+    ...(review ? { review } : {})
+  }
+}
+
+/** The `UserTurnBody` a code-host delivery persists: the assembled prompt plus its facts. */
+export function buildHookTurnBody(msg: RdMsgHook, prompt: string): UserTurnBody | undefined {
+  const codehost = buildHookTurnFacts(msg)
+  return codehost ? { prompt, codehost } : undefined
+}
+
 /** The turn text: the caller's payload-borne message (+ leftover fields as context). */
 export function buildHookText(msg: RdMsgHook): string {
   if (msg.context?.source === 'gitlab' && msg.gitlab) {
@@ -507,6 +585,8 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
   // so distinct same-millisecond deliveries cannot share a transcript primary key.
   const transcriptTs = `${Date.parse(msg.firedAt)}|${msg.msgId}`
   const standingContext = buildHookStandingContext(msg)
+  const text = buildHookText(msg)
+  const turnBody = buildHookTurnBody(msg, text)
   const target = msg.target
   // With an anchoring target the fire behaves like a cron's: the message lives
   // on the target platform/channel, the pre-anchor thread is a fresh synthetic
@@ -525,9 +605,10 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
       thread: msg.msgId,
       sender: { id: senderId, isBot: false, ...(senderAvatarUrl ? { avatarUrl: senderAvatarUrl } : {}) },
       sessionTriggerId,
-      text: buildHookText(msg),
+      text,
       ...(initialSessionTitle ? { initialSessionTitle } : {}),
       ...(standingContext ? { standingContext } : {}),
+      ...(turnBody ? { turnBody } : {}),
       mentionedBots: [],
       isDm: false,
       trigger: 'hook'
@@ -553,9 +634,10 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
     ...(msg.gitlab ? { transportScope: `gitlab:${msg.gitlab.projectId}` } : {}),
     sender: { id: senderId, isBot: false, ...(senderAvatarUrl ? { avatarUrl: senderAvatarUrl } : {}) },
     sessionTriggerId,
-    text: buildHookText(msg),
+    text,
     ...(initialSessionTitle ? { initialSessionTitle } : {}),
     ...(standingContext ? { standingContext } : {}),
+    ...(turnBody ? { turnBody } : {}),
     mentionedBots: [],
     isDm: false,
     trigger: 'hook',

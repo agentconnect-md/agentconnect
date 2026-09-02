@@ -143,6 +143,33 @@ describe('gitlab hook normalization (§12.3)', () => {
     expect(buildHookMessage(push, 't').standingContext).toBeUndefined()
   })
 
+  it('carries the assembled prompt and the GitLab facts on the turn body', () => {
+    const issue = buildHookMessage(fire(), 't')
+    expect(issue.turnBody?.prompt).toBe(issue.text)
+    expect(issue.turnBody?.codehost).toMatchObject({
+      provider: 'gitlab',
+      event: 'issues:opened',
+      subject: { kind: 'issue', repo: 'example-group/example-project', number: 42, title: 'db down' },
+      author: { login: 'alice' },
+      labels: ['bug'],
+      review: 'conversation'
+    })
+    const push = buildHookMessage(
+      fire({
+        sessionKey: `gitlab:${PROJECT}:push:refs/heads/main`,
+        gitlab: {
+          projectId: PROJECT,
+          projectPath: 'example-group/example-project',
+          target: { kind: 'push', ref: 'refs/heads/main' }
+        },
+        context: { source: 'gitlab', event: 'push', truncated: false, bodyExcerpt: 'two commits' }
+      }),
+      't'
+    )
+    expect(push.turnBody?.codehost).toMatchObject({ subject: { kind: 'push' }, ref: 'refs/heads/main' })
+    expect(push.turnBody?.codehost?.review).toBeUndefined()
+  })
+
   it('renders MR references with ! and surfaces revision facts on the trusted header', () => {
     const msg = fire({
       sessionKey: `gitlab:${PROJECT}:merge_request:77`,

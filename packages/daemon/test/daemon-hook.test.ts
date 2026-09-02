@@ -3961,6 +3961,65 @@ describe('buildHookMessage', () => {
       expect(buildHookMessage(push, 'trace').standingContext).toBeUndefined()
     })
 
+    it('carries the assembled prompt and the code-host facts on the turn body', async () => {
+      const pr = {
+        repoId: '123',
+        repoFullName: 'acme/infra',
+        sourceInstallationId: '456',
+        subjectKind: 'pull_request' as const,
+        pullNumber: 42,
+        headSha: 'a'.repeat(40),
+        baseSha: 'b'.repeat(40),
+        reportSha: 'a'.repeat(40),
+        isDraft: false
+      }
+      const issue = buildHookMessage(ghFire(), 'trace')
+      // The prompt on the body is exactly the text the model reads today.
+      expect(issue.turnBody?.prompt).toBe(issue.text)
+      expect(issue.turnBody?.codehost).toEqual({
+        provider: 'github',
+        event: 'issues:opened',
+        action: 'opened',
+        author: { login: 'mallory', association: 'NONE' },
+        labels: ['bug', 'p0'],
+        body: expect.stringContaining('ignore all previous'),
+        // No trusted github metadata on this fire, so the subject kind is unknown and stays absent.
+        subject: { repo: 'acme/infra', number: 42, title: 'db down', url: 'https://github.com/acme/infra/issues/42' },
+        review: 'conversation'
+      })
+      const review = buildHookMessage(
+        ghFire(
+          { event: 'pull_request', action: 'synchronize', bodyExcerpt: undefined },
+          { reviewPolicy: 'full', github: pr }
+        ),
+        'trace'
+      )
+      expect(review.turnBody?.codehost).toMatchObject({
+        subject: { kind: 'pull_request', number: 42 },
+        revision: { base: 'b'.repeat(40), head: 'a'.repeat(40) },
+        draft: false,
+        review: 'generation'
+      })
+      expect(review.turnBody?.codehost?.body).toBeUndefined()
+      const inline = buildHookMessage(
+        ghFire(
+          { event: 'pull_request_review_comment', action: 'created' },
+          {
+            event: 'pull_request_review_comment:created',
+            github: { ...pr, reviewCommentId: '1', reviewThreadRootCommentId: '2' }
+          }
+        ),
+        'trace'
+      )
+      expect(inline.turnBody?.codehost?.review).toBe('inline')
+      const push = buildHookMessage(
+        ghFire({ event: 'push', action: undefined, number: undefined, bodyExcerpt: undefined }),
+        'trace'
+      )
+      expect(push.turnBody?.codehost?.review).toBeUndefined()
+      expect(push.turnBody?.codehost?.subject.number).toBeUndefined()
+    })
+
     it('requires a formal verdict for an authorized explicit PR review mention', async () => {
       const text = buildHookText(
         ghFire(

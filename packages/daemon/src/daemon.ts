@@ -7847,6 +7847,7 @@ export class Daemon {
       ...(msg.ingressEventTag === SLACK_RESPONSE_FINAL_EVENT_TAG ? { authoritative: true } : {}),
       kind: 'text',
       text: mention ? `${msg.text}\n${mention}`.trim() : msg.text,
+      ...(msg.turnBody ? { body: JSON.stringify(msg.turnBody) } : {}),
       ...(msg.quoted?.text ? { quoted: msg.quoted } : {})
     })
     const after = await this.store.threadTranscriptRevision(transcriptChannel, thread, owner)
@@ -8068,7 +8069,8 @@ export class Daemon {
       ...(entry.msg.transcriptPostId ? { postId: entry.msg.transcriptPostId } : {}),
       recipient: entry.agentId,
       kind: 'text',
-      text: mention ? `${entry.msg.text}\n${mention}`.trim() : entry.msg.text
+      text: mention ? `${entry.msg.text}\n${mention}`.trim() : entry.msg.text,
+      ...(entry.msg.turnBody ? { body: JSON.stringify(entry.msg.turnBody) } : {})
     })
     await this.removeInbox(entry)
     entry.resolve(sessionId)
@@ -8301,7 +8303,14 @@ export class Daemon {
         const next = reviewBatchSettleStep(entry.hookContext, Boolean(entry.cancelledReason), this.clock.now())
         if (next.action !== 'seal') return next
         entry.hookContext = { ...entry.hookContext!, githubReviewBatch: next.sealed }
-        if (next.promptText !== undefined) entry.msg = { ...entry.msg, text: next.promptText }
+        // The batch prompt replaces the single delivery's on BOTH seats: the model reads `turnBody.prompt`
+        // when a turn carries one, and the row's text follows so the two never disagree.
+        if (next.promptText !== undefined)
+          entry.msg = {
+            ...entry.msg,
+            text: next.promptText,
+            ...(entry.msg.turnBody ? { turnBody: { ...entry.msg.turnBody, prompt: next.promptText } } : {})
+          }
         // Only a provider whose batch tool publishes each item withdraws the ordinary reply target.
         if (next.clearReply) entry.githubReply = undefined
         await this.persistHookPayload(entry, true)
