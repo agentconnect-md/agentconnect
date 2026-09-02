@@ -87,6 +87,7 @@ import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { DREAM_TOPIC_RE, MAX_DREAM_FILES } from './dream/dreamer.js'
 import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
+import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from './runtime-defs/claude-runtime.js'
 import {
   DREAM_MODEL_READABLE_CREDENTIALS_REASON,
   DreamRunner,
@@ -4401,8 +4402,24 @@ export class Daemon {
         this.memoryExtractionTokens.set(cacheKey, mcpToken)
         const mcpServers = this.mcpToolServerSpec(mcpToken)
         sessionId = trusted
-          ? await host.newSession(cwd, mcpServers, undefined, MEMORY_DISTILLATION_SYSTEM_PROMPT)
-          : await host.newSession(cwd, mcpServers)
+          ? await host.newSession(
+              cwd,
+              mcpServers,
+              undefined,
+              MEMORY_DISTILLATION_SYSTEM_PROMPT,
+              [],
+              undefined,
+              CLAUDE_HEADLESS_DISALLOWED_TOOLS
+            )
+          : await host.newSession(
+              cwd,
+              mcpServers,
+              undefined,
+              undefined,
+              [],
+              undefined,
+              CLAUDE_HEADLESS_DISALLOWED_TOOLS
+            )
         // Synchronous on purpose: the runtime advertises its commands on a timer right after this
         // resolves, and a registration behind one more await loses that race (#1310 review).
         const passKey = pendingTurnKey(agentId, sessionId)
@@ -4513,8 +4530,8 @@ export class Daemon {
         this.commitMessageDirs.set(agentId, cwd)
       }
       const sessionId = trusted
-        ? await host.newSession(cwd, [], undefined, systemPrompt)
-        : await host.newSession(cwd, [])
+        ? await host.newSession(cwd, [], undefined, systemPrompt, [], undefined, CLAUDE_HEADLESS_DISALLOWED_TOOLS)
+        : await host.newSession(cwd, [], undefined, undefined, [], undefined, CLAUDE_HEADLESS_DISALLOWED_TOOLS)
       const key = pendingTurnKey(agentId, sessionId)
       // Synchronous on purpose: see the distillation pass — the advertisement is already on a timer.
       this.internalPassSessions.add(internalPassSlot.commit(agentId, sessionId), key)
@@ -4819,8 +4836,16 @@ export class Daemon {
     const mcpServers = this.mcpToolServerSpec(mcpToken)
     try {
       const sessionId = trusted
-        ? await host.newSession(cwd, mcpServers, undefined, systemPrompt)
-        : await host.newSession(cwd, mcpServers)
+        ? await host.newSession(
+            cwd,
+            mcpServers,
+            undefined,
+            systemPrompt,
+            [],
+            undefined,
+            CLAUDE_HEADLESS_DISALLOWED_TOOLS
+          )
+        : await host.newSession(cwd, mcpServers, undefined, undefined, [], undefined, CLAUDE_HEADLESS_DISALLOWED_TOOLS)
       ref.sessionId = sessionId
       // Redundant while the dream owns a dedicated host the gate already excludes, but it keeps one
       // rule: every session the daemon opens for itself is registered, synchronously, right here.

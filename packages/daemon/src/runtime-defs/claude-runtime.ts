@@ -162,6 +162,13 @@ export function claudeInnerSandboxSettings(
  * owns all inter-session messaging for its sessions, so the built-in is always wrong. */
 export const CLAUDE_DISALLOWED_BUILTIN_TOOLS = ['SendMessage'] as const
 
+/** Additionally suppressed on the daemon's OWN headless passes (distillation, dream,
+ * commit-message). Those run under a non-mutating mode (`read-only`, else `plan`), and
+ * in plan mode Claude Code can only END a turn through `ExitPlanMode` / `AskUserQuestion`
+ * — both of which need an approver that a headless pass does not have. The call is
+ * aborted, the model retries, and the pass burns its context instead of returning. */
+export const CLAUDE_HEADLESS_DISALLOWED_TOOLS = ['ExitPlanMode', 'AskUserQuestion'] as const
+
 /** A Claude Code runtime (its command/args reference `claude`) — these embed the
  *  @anthropic-ai/claude-agent-sdk, which needs a Claude Code executable. The ONE
  *  Claude predicate: AcpHost and the model-catalog path both delegate here, matching

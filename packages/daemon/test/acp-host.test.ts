@@ -205,6 +205,21 @@ describe('AcpHost.usesMetaSystemPrompt (system-prompt routing per runtime)', () 
 })
 
 describe('claudeSessionMeta (system prompt + memory index over _meta)', () => {
+  it('suppresses only the built-in SendMessage on an ordinary session', () => {
+    expect(claudeSessionMeta(undefined, true)?.claudeCode.options.disallowedTools).toEqual(['SendMessage'])
+  })
+
+  it('also suppresses the approval-gated plan exits on a headless pass', () => {
+    // A headless pass (distillation, dream, commit-message) runs under `plan` when the
+    // runtime advertises no `read-only`, and plan mode can only END through
+    // ExitPlanMode / AskUserQuestion — which no headless caller can approve.
+    const meta = claudeSessionMeta(undefined, true, undefined, undefined, undefined, undefined, false, [
+      'ExitPlanMode',
+      'AskUserQuestion'
+    ])
+    expect(meta?.claudeCode.options.disallowedTools).toEqual(['SendMessage', 'ExitPlanMode', 'AskUserQuestion'])
+  })
+
   it('returns undefined for a non-Claude runtime', () => {
     expect(claudeSessionMeta(undefined, false, 'seed', 'mem')).toBeUndefined()
   })

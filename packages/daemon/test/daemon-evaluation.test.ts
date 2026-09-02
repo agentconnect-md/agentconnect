@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ORGANIZATION_SUGGESTION_REVIEW_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT } from '../src/memory/distill.js'
+import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from '../src/runtime-defs/claude-runtime.js'
 import { EvaluationEventCollector } from '../src/evaluation/index.js'
 import { WAIT } from './wait-support.js'
 
@@ -650,7 +651,15 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
     // Untrusted system-prompt channel: no system prompt at session creation…
     // Distillation now carries the shared memory tools (#41), so the session is
     // created WITH an MCP server rather than the old tool-less shape.
-    expect(host.newSession).toHaveBeenCalledWith(expect.any(String), expect.arrayContaining([expect.anything()]))
+    expect(host.newSession).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining([expect.anything()]),
+      undefined,
+      undefined,
+      [],
+      undefined,
+      CLAUDE_HEADLESS_DISALLOWED_TOOLS
+    )
     // …the policy is prepended inline to the prompt instead, still leading the turn.
     const text = host.prompt.mock.calls[0]![1][0]!.text as string
     expect(text.startsWith(MEMORY_DISTILLATION_SYSTEM_PROMPT)).toBe(true)
@@ -666,7 +675,10 @@ describe('managed memory auto-distillation runtime support (#653)', () => {
       expect.any(String),
       expect.arrayContaining([expect.anything()]),
       undefined,
-      MEMORY_DISTILLATION_SYSTEM_PROMPT
+      MEMORY_DISTILLATION_SYSTEM_PROMPT,
+      [],
+      undefined,
+      CLAUDE_HEADLESS_DISALLOWED_TOOLS
     )
     // Trusted: the prompt carries only the turn data, not the inline policy.
     expect(host.prompt.mock.calls[0]![1][0]!.text).toBe('DISTILL THIS')
