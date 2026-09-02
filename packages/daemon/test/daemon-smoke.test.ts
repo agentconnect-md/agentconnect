@@ -5,6 +5,7 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Daemon } from '../src/daemon.js'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV } from '../src/cp/gitcred-server.js'
+import { agentHostKey } from '../src/acp/host-key.js'
 import { FakeClock } from './cp/fake-clock.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
@@ -178,12 +179,20 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         pullOnNewSession: true,
         skills: []
       }
-      const scratch = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, { runInSandbox: true, cwd }).host
+      const scratch = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+        hostKey: agentHostKey(agent.id),
+        runInSandbox: true,
+        cwd
+      }).host
       expect((scratch as any).opts.env[GITCRED_CAPABILITY_ENV]).toEqual(expect.any(String))
       expect((scratch as any).opts.env[GITCRED_AGENT_ENV]).toBe('bot-a')
       // Without App credentials a scratch workspace still carries no git identity of any kind.
       agent.workspace = { mode: 'from-scratch', path: cwd, gitBranch: 'main', pullOnNewSession: true, skills: [] }
-      const plain = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, { runInSandbox: true, cwd }).host
+      const plain = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+        hostKey: agentHostKey(agent.id),
+        runInSandbox: true,
+        cwd
+      }).host
       expect((plain as any).opts.env[GITCRED_CAPABILITY_ENV]).toBeUndefined()
       expect((plain as any).opts.env.GIT_CONFIG_KEY_0).toBeUndefined()
     } finally {
@@ -215,11 +224,16 @@ describe('Daemon (no Slack, injected ACP host)', () => {
         skills: []
       }
       // A normal (non-dream) host still carries the agent's configured secret…
-      const normal = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, { runInSandbox: true, cwd }).host
+      const normal = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+        hostKey: agentHostKey(agent.id),
+        runInSandbox: true,
+        cwd
+      }).host
       expect((normal as any).opts.env.API_KEY).toBe('super-secret')
       // …but a dream host must not — even sandboxed, the mined transcript's own
       // tools could otherwise read the secret straight from the environment.
       const dreamHost = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+        hostKey: agentHostKey(agent.id),
         runInSandbox: true,
         cwd,
         excludeAgentToolCredentials: true
