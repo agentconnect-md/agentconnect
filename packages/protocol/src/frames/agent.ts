@@ -574,14 +574,19 @@ export const AgentStop = z.object({
 })
 export type AgentStop = z.infer<typeof AgentStop>
 
+// Live per-session activity (§7.4): only `awaiting_permission`/`idle` are emitted today, as approvals park and settle (slack-approval-dm.md §7).
 export const AgentActivity = z.object({
-  // D→C, EVT — activity-probe (§7.4)
+  // D→C, EVT
   agentId: z.string().uuid(),
-  launchId: z.string().uuid(),
+  // Outward session id (session-concept.md §1.1) — the state is stored per session.
+  sessionId: z.string().min(1),
+  // Optional: the daemon keeps no durable launch handle; fencing reads ControlExt, not this.
+  launchId: z.string().uuid().optional(),
   state: z.enum(['thinking', 'tool_call', 'awaiting_permission', 'idle']),
   ts: z.string().datetime()
 })
 export type AgentActivity = z.infer<typeof AgentActivity>
+export type AgentActivityState = AgentActivity['state']
 
 export const AgentScopeDenied = z.object({
   // D→C, EVT — capability-scope audit (§8.1)

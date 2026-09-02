@@ -39,6 +39,49 @@ function memoryStorage() {
 }
 
 describe('syncNotificationSourceSnapshot', () => {
+  it('applies the item’s own resolution text and read flip when its source vanishes', () => {
+    const approval = {
+      category: 'approval' as const,
+      severity: 'warning' as const,
+      sourceKey: 'approval:s1',
+      title: 'Approval needed',
+      message: 'Butler is waiting for permission.',
+      action: { label: 'Open session', href: '/acme/sessions/s1', external: false },
+      resolution: {
+        title: 'Approval resolved',
+        message: 'Butler is no longer waiting.',
+        severity: 'info' as const,
+        read: true
+      }
+    }
+    const pending = syncNotificationSourceSnapshot(
+      emptyNotificationState(),
+      'approvals',
+      [approval],
+      '2026-08-06T01:00:00.000Z',
+      () => 'approval-1'
+    )
+    expect(pending.added).toHaveLength(1)
+    expect(pending.state.notifications[0]).toMatchObject({ read: false, title: 'Approval needed' })
+
+    const resolved = syncNotificationSourceSnapshot(pending.state, 'approvals', [], '2026-08-06T02:00:00.000Z')
+    expect(resolved.added).toEqual([])
+    expect(resolved.state.notifications[0]).toMatchObject({
+      id: 'approval-1',
+      read: true,
+      severity: 'info',
+      title: 'Approval resolved',
+      message: 'Butler is no longer waiting.',
+      resolvedAt: '2026-08-06T02:00:00.000Z'
+    })
+    expect(resolved.state.notifications[0]?.action).toBeUndefined()
+    expect(resolved.state.activeSources.approvals).toEqual([])
+    // The other scopes keep the original behavior: a vanished source only gains `resolvedAt`.
+    const access = syncNotificationSourceSnapshot(emptyNotificationState(), 'sessions-access', [quotaItem])
+    const accessResolved = syncNotificationSourceSnapshot(access.state, 'sessions-access', [])
+    expect(accessResolved.state.notifications[0]).toMatchObject({ read: false, title: quotaItem.title })
+  })
+
   it('adds once, then updates the active row without changing read state or timestamp', () => {
     const first = syncNotificationSourceSnapshot(
       emptyNotificationState(),

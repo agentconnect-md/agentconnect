@@ -67,7 +67,8 @@ function pageRow(hookId: string, id: string, hookKind: string | null = null) {
     hookKind,
     visibility: 'org',
     externalProvider: null,
-    externalResolution: null
+    externalResolution: null,
+    activityState: 'idle'
   }
 }
 

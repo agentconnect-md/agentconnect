@@ -37,6 +37,7 @@ async function world(over?: {
   noChannel?: boolean
   platform?: string
   requesterId?: string
+  activity?: PermissionHost['emitApprovalActivity']
 }) {
   const store = await LocalStore.open({ database: SqliteAsyncDatabase.adopt(new DatabaseSync(':memory:')) })
   const conn = fakeSlackConn()
@@ -79,6 +80,7 @@ async function world(over?: {
     httpSlackSessionTarget: () => undefined,
     maskAgentSecrets: (_agentId, payload) => payload,
     logSessionAction: vi.fn(),
+    emitApprovalActivity: over?.activity ?? vi.fn(),
     cpApprovalRoute: () => ({ approvalRoute: route as never }),
     orgForAgent: () => 'org-1',
     sessionLink: (sessionId) => `https://console.example/sessions/${sessionId}`,
@@ -193,6 +195,57 @@ describe('approval DM (slack-approval-dm.md §5–§6)', () => {
     await expect(decided).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
     expect(w.conn.updateBlocks).toHaveBeenCalledTimes(1)
     expect((await w.store.listPermissionRequests(AGENT))[0]!.status).toBe('expired')
+    await w.store.close()
+  })
+})
+
+describe('approval activity (slack-approval-dm.md §7)', () => {
+  it('flips awaiting_permission on the first park, idle on the last release, and never in between', async () => {
+    const activity = vi.fn()
+    const w = await world({ activity })
+    const first = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
+    await vi.waitFor(() => expect(w.route).toHaveBeenCalledTimes(1))
+    expect(activity).toHaveBeenCalledTimes(1)
+    expect(activity).toHaveBeenLastCalledWith(AGENT, ACP_SESSION, 'awaiting_permission')
+
+    const second = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
+    await vi.waitFor(() => expect(w.route).toHaveBeenCalledTimes(2))
+    // A second request on an already-waiting session is not news to the console.
+    expect(activity).toHaveBeenCalledTimes(1)
+
+    const [firstId, secondId] = w.route.mock.calls.map((call) => (call[0] as { requestId: string }).requestId)
+    await w.coordinator.decideEditorPermission({ agentId: AGENT, requestId: firstId!, decision: 'allow' })
+    await expect(first).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'o-allow' } })
+    // One request settled, one still parked: the session is still waiting.
+    expect(activity).toHaveBeenCalledTimes(1)
+
+    await w.coordinator.decideEditorPermission({ agentId: AGENT, requestId: secondId!, decision: 'deny' })
+    await expect(second).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'o-deny' } })
+    expect(activity).toHaveBeenCalledTimes(2)
+    expect(activity).toHaveBeenLastCalledWith(AGENT, ACP_SESSION, 'idle')
+    await w.store.close()
+  })
+
+  it('clears the wait when the turn is cancelled, and replays only live waits on reconnect', async () => {
+    const activity = vi.fn()
+    const w = await world({ activity })
+    const parked = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
+    await vi.waitFor(() => expect(activity).toHaveBeenCalledWith(AGENT, ACP_SESSION, 'awaiting_permission'))
+
+    // The CP forgot this daemon's waits on disconnect: the replay re-asserts the live one.
+    activity.mockClear()
+    w.coordinator.replayApprovalActivity()
+    expect(activity).toHaveBeenCalledTimes(1)
+    expect(activity).toHaveBeenLastCalledWith(AGENT, ACP_SESSION, 'awaiting_permission')
+
+    await w.coordinator.releaseEditorPermissions(AGENT, ACP_SESSION)
+    await expect(parked).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(activity).toHaveBeenLastCalledWith(AGENT, ACP_SESSION, 'idle')
+
+    // Nothing is waiting any more, so a reconnect replays nothing.
+    activity.mockClear()
+    w.coordinator.replayApprovalActivity()
+    expect(activity).not.toHaveBeenCalled()
     await w.store.close()
   })
 })

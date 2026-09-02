@@ -28,6 +28,7 @@ import type { Transport } from './transport.js'
 import { ConnectionClosed, type ConnChannel, type LifecycleState } from './registry.js'
 import type { DaemonWsDeps } from './deps.js'
 import type { FrameRouter } from './handlers/index.js'
+import { DaemonId } from '../domain/ids.js'
 import { FencingState, checkFencing } from '../orchestrator/fencing.js'
 import { ProtocolError } from '../domain/errors.js'
 
@@ -336,6 +337,24 @@ export class DaemonConnection implements ConnChannel {
     // connection (the fleet would read `offline` while heartbeats keep flowing).
     if (this.daemonId && this.deps.connReg.get(this.daemonId)?.conn === this) {
       this.deps.connReg.remove(this.daemonId)
+      void this.clearAwaitingApprovals(this.daemonId)
+    }
+  }
+
+  /** A gone daemon releases nothing: clear its approval waits; its reconnect replay re-asserts live ones (slack-approval-dm.md §7). */
+  private async clearAwaitingApprovals(daemonId: string): Promise<void> {
+    try {
+      const ts = new Date(this.deps.clock.now()).toISOString()
+      for (const row of await this.deps.session.clearAwaitingPermissionForDaemon(DaemonId(daemonId))) {
+        this.deps.events.publishState(DaemonId(daemonId), {
+          agentId: row.agentId,
+          sessionId: row.id,
+          state: 'idle',
+          ts
+        })
+      }
+    } catch {
+      // Best-effort: a refused write only delays the bell until the daemon's replay or the next reset.
     }
   }
 }

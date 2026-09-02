@@ -118,6 +118,8 @@ export const consoleKeys = {
     consoleKey(orgId, 'gitlab-accounts', bindings),
   agentPermissionRequests: (orgId: string | null | undefined, agentId: string | null | undefined) =>
     agentId ? consoleKey(orgId, 'agent-permission-requests', agentId) : null,
+  /** The org's sessions waiting on an approval — the bell's feed (slack-approval-dm.md §7). */
+  pendingApprovals: (orgId: string | null | undefined) => consoleKey(orgId, 'session-approvals'),
   hookRuns: (orgId: string | null | undefined, hookId: string) => consoleKey(orgId, 'hook-runs', hookId)
 }
 

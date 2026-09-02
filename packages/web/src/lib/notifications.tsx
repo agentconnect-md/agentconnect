@@ -1,14 +1,21 @@
 'use client'
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import type {
-  SessionAccessNotificationAction,
-  SessionAccessNotificationInput
-} from '@/lib/session-access-notifications'
+import type { SessionAccessNotificationAction } from '@/lib/session-access-notifications'
 
 export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error'
-export type NotificationCategory = 'daemon_lifecycle' | 'session_retention' | 'session_access'
-export type NotificationSourceScope = 'sessions-access' | 'usage-access'
+export type NotificationCategory = 'daemon_lifecycle' | 'session_retention' | 'session_access' | 'approval'
+export type NotificationSourceScope = 'sessions-access' | 'usage-access' | 'approvals'
+const SOURCE_SCOPES: readonly NotificationSourceScope[] = ['sessions-access', 'usage-access', 'approvals']
+
+/** What a snapshot item becomes once its source vanishes; absent ⇒ it keeps its text and read state and only gains `resolvedAt`. */
+export interface NotificationResolution {
+  title: string
+  message: string
+  severity?: NotificationSeverity
+  /** Flip to read on resolution — for an item whose only job was to get someone to act. */
+  read?: boolean
+}
 
 export interface NotificationItem {
   id: string
@@ -20,9 +27,15 @@ export interface NotificationItem {
   daemonName?: string
   sourceKey?: string
   action?: SessionAccessNotificationAction
+  resolution?: NotificationResolution
   resolvedAt?: string
   timestamp: string
   read: boolean
+}
+
+/** One active condition in a snapshot scope, keyed by `sourceKey`; the reconciler mints the rest. */
+export type NotificationSnapshotInput = Omit<NotificationItem, 'id' | 'timestamp' | 'read' | 'resolvedAt'> & {
+  sourceKey: string
 }
 
 export interface NotificationStoreState {
@@ -38,8 +51,10 @@ interface NotificationContextValue {
   unreadCount: number
   toasts: NotificationItem[]
   addNotification: (item: AddNotificationInput) => void
-  syncSourceSnapshot: (scope: NotificationSourceScope, items: SessionAccessNotificationInput[]) => void
+  syncSourceSnapshot: (scope: NotificationSourceScope, items: NotificationSnapshotInput[]) => void
   markAsRead: (id: string) => void
+  /** Mark every item of one snapshot source read — for a resolution the user made themselves. */
+  markSourceRead: (sourceKey: string) => void
   markAllAsRead: () => void
   clearAll: () => void
   dismissToast: (id: string) => void
@@ -64,10 +79,7 @@ function browserStorage(storage?: NotificationStorage): NotificationStorage | un
 export function emptyNotificationState(): NotificationStoreState {
   return {
     notifications: [],
-    activeSources: {
-      'sessions-access': [],
-      'usage-access': []
-    }
+    activeSources: { 'sessions-access': [], 'usage-access': [], approvals: [] }
   }
 }
 
@@ -80,16 +92,14 @@ export function loadNotificationState(orgId?: string | null, storage?: Notificat
     const history = historyRaw ? (JSON.parse(historyRaw) as unknown) : []
     const active = activeRaw ? (JSON.parse(activeRaw) as unknown) : {}
     const activeRecord = active && typeof active === 'object' ? (active as Record<string, unknown>) : {}
+    const activeSources = emptyNotificationState().activeSources
+    for (const scope of SOURCE_SCOPES) {
+      const keys = activeRecord[scope]
+      if (Array.isArray(keys)) activeSources[scope] = keys.filter((key): key is string => typeof key === 'string')
+    }
     return {
       notifications: Array.isArray(history) ? (history as NotificationItem[]).slice(0, MAX_NOTIFICATIONS) : [],
-      activeSources: {
-        'sessions-access': Array.isArray(activeRecord['sessions-access'])
-          ? activeRecord['sessions-access'].filter((key): key is string => typeof key === 'string')
-          : [],
-        'usage-access': Array.isArray(activeRecord['usage-access'])
-          ? activeRecord['usage-access'].filter((key): key is string => typeof key === 'string')
-          : []
-      }
+      activeSources
     }
   } catch {
     return emptyNotificationState()
@@ -121,7 +131,7 @@ function defaultNotificationId(): string {
 export function syncNotificationSourceSnapshot(
   state: NotificationStoreState,
   scope: NotificationSourceScope,
-  items: SessionAccessNotificationInput[],
+  items: NotificationSnapshotInput[],
   now = new Date().toISOString(),
   makeId: () => string = defaultNotificationId
 ): { state: NotificationStoreState; added: NotificationItem[] } {
@@ -162,7 +172,19 @@ export function syncNotificationSourceSnapshot(
     const index = notifications.findIndex((item) => item.sourceKey === sourceKey && !item.resolvedAt)
     if (index >= 0) {
       const { action: _action, ...current } = notifications[index]!
-      notifications[index] = { ...current, resolvedAt: now }
+      const resolution = current.resolution
+      notifications[index] = {
+        ...current,
+        resolvedAt: now,
+        ...(resolution
+          ? {
+              title: resolution.title,
+              message: resolution.message,
+              ...(resolution.severity ? { severity: resolution.severity } : {}),
+              ...(resolution.read ? { read: true } : {})
+            }
+          : {})
+      }
     }
   }
 
@@ -225,7 +247,7 @@ export function NotificationProvider({ orgId, children }: { orgId?: string | nul
     }))
   }, [])
 
-  const syncSourceSnapshot = useCallback((scope: NotificationSourceScope, items: SessionAccessNotificationInput[]) => {
+  const syncSourceSnapshot = useCallback((scope: NotificationSourceScope, items: NotificationSnapshotInput[]) => {
     setProviderState((prev) => {
       const nextKeys = new Set(items.map((item) => item.sourceKey))
       const resolvedKeys = new Set(prev.store.activeSources[scope].filter((key) => !nextKeys.has(key)))
@@ -255,6 +277,19 @@ export function NotificationProvider({ orgId, children }: { orgId?: string | nul
     }))
   }, [])
 
+  const markSourceRead = useCallback((sourceKey: string) => {
+    setProviderState((prev) => ({
+      ...prev,
+      store: {
+        ...prev.store,
+        notifications: prev.store.notifications.map((item) =>
+          item.sourceKey === sourceKey && !item.read ? { ...item, read: true } : item
+        )
+      },
+      toasts: prev.toasts.filter((toast) => toast.sourceKey !== sourceKey)
+    }))
+  }, [])
+
   const markAllAsRead = useCallback(() => {
     setProviderState((prev) => ({
       ...prev,
@@ -280,6 +315,7 @@ export function NotificationProvider({ orgId, children }: { orgId?: string | nul
       addNotification,
       syncSourceSnapshot,
       markAsRead,
+      markSourceRead,
       markAllAsRead,
       clearAll,
       dismissToast
@@ -291,6 +327,7 @@ export function NotificationProvider({ orgId, children }: { orgId?: string | nul
       addNotification,
       syncSourceSnapshot,
       markAsRead,
+      markSourceRead,
       markAllAsRead,
       clearAll,
       dismissToast
@@ -306,4 +343,9 @@ export function useNotifications(): NotificationContextValue {
     throw new Error('useNotifications must be used within a NotificationProvider')
   }
   return ctx
+}
+
+/** The notification center if one is mounted — for a component that also renders without the shell. */
+export function useOptionalNotifications(): NotificationContextValue | null {
+  return useContext(NotificationContext)
 }

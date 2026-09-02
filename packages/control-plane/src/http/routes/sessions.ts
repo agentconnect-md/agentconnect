@@ -45,6 +45,7 @@ import { GitCredDeniedError } from '../../github/service.js'
 import { ProtocolError } from '../../domain/errors.js'
 import {
   SessionListPageDto,
+  ActivityStateEnum,
   SessionFacetsDto,
   SessionDetailDto,
   SessionHistoryDto,
@@ -94,7 +95,9 @@ const SessionQueryDto = SessionFilterQueryDto.extend({
   view: z.enum(['grouped', 'flat']).default('grouped'),
   // §5.2 key-addressed member resolver: resolves one conversation's current
   // visible member sessions without paging the grouped list.
-  conversationKey: z.string().min(1).max(512).optional()
+  conversationKey: z.string().min(1).max(512).optional(),
+  // Live wait state (slack-approval-dm.md §7): the console bell asks for `awaiting_permission`.
+  activityState: ActivityStateEnum.optional()
 })
 
 type SessionCursor = { activityMs: number; startedMs: number; id: string }
@@ -423,7 +426,8 @@ function sessionDto(
     visibility: s.visibility,
     externalProvider: s.externalProvider,
     externalResolution: s.externalResolution,
-    contentPurgedAt: s.contentPurgedAt ? s.contentPurgedAt.toISOString() : null
+    contentPurgedAt: s.contentPurgedAt ? s.contentPurgedAt.toISOString() : null,
+    activityState: s.activityState
   }
 }
 
@@ -802,6 +806,7 @@ export function sessionRoutes(deps: HttpDeps) {
           ...(req.query.integration ? { integration: req.query.integration } : {}),
           ...(req.query.channel ? { channel: req.query.channel } : {}),
           ...(req.query.triggeredBy ? { triggeredBy: req.query.triggeredBy } : {}),
+          ...(req.query.activityState ? { activityState: req.query.activityState } : {}),
           ...(Object.keys(codeHostHookIds).length > 0 ? { codeHostHookIds } : {}),
           ...(repoHookIds ? { hookTriggerIds: repoHookIds } : {}),
           ...(cursor ? { cursor } : {}),

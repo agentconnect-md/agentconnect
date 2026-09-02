@@ -111,6 +111,8 @@ export interface CpClientReadyHost {
   memoryConnections(): CpMemoryConnectionRegistry | undefined
   replayHookTerminalReports(): Promise<void>
   replayChannelSnapshots(): Promise<void>
+  /** Re-assert every live approval wait: the CP cleared them when this daemon dropped (slack-approval-dm.md §7). */
+  replayApprovalActivity(): void
   sessionMetadataOutbox(): SessionMetadataOutbox
   webchatMcpRevocations(): WebchatMcpRevocations
   drainSessionPurges(): Promise<void>
@@ -263,6 +265,7 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
       host.cpClient()?.emitMemoryConnectionFacts(host.memoryConnections()?.facts() ?? [])
       await host.replayHookTerminalReports()
       await host.replayChannelSnapshots()
+      host.replayApprovalActivity()
       // Only snapshots written to the durable outbox by this build are
       // replayed. Historical session rows are never scanned or backfilled.
       void host.sessionMetadataOutbox().drainSessionMetadataSnapshots()

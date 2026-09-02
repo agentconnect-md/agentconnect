@@ -1227,6 +1227,8 @@ export interface SessionQuery {
 export interface SessionFilterQuery extends SessionQuery {
   integration?: Platform | CodeHostProvider
   triggeredBy?: string
+  /** Live wait state (slack-approval-dm.md §7) — the console bell asks for `awaiting_permission`. */
+  activityState?: ActivityState
   /** Code-host hook ids keyed by provider: each provider is promoted out of the generic
    *  hook bucket into its own integration, and `integration: 'hook'` excludes them all.
    *  Keyed rather than one field per host, so a new provider needs no new field here. */
@@ -1349,6 +1351,10 @@ export interface SessionRepo {
   /** Filter, keyset-page, and order in Postgres; usage is hydrated only for the
    *  returned page. `total` is computed only when explicitly requested. */
   listPage(q: SessionPageQuery): Promise<SessionPageRecord>
+  /** Persist one session's `agent/activity` state, fenced to its reporting agent (slack-approval-dm.md §7); false ⇒ no such row. */
+  setActivityState(sessionId: SessionId, agentId: AgentId, state: ActivityState): Promise<boolean>
+  /** Reset a gone daemon's `awaiting_permission` rows to `idle`, returning them so the SSE feed can be told. */
+  clearAwaitingPermissionForDaemon(daemonId: DaemonId): Promise<Array<{ id: SessionId; agentId: AgentId }>>
   /** The grouped list (merged-conversation-view.md §5.2): one row per
    *  conversation, newest-first, emit-at-max pagination — a scanned row yields
    *  its conversation only when it is the newest same-key row under the full

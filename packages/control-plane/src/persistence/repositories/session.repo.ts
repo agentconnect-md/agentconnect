@@ -339,6 +339,7 @@ function pageWhereSql(
   if (integration) filters.push(integration)
   if (q.channel) filters.push(Prisma.sql`${a}."channel" = ${q.channel}`)
   if (q.triggeredBy) filters.push(Prisma.sql`${a}."triggeredBy" = ${q.triggeredBy}`)
+  if (q.activityState) filters.push(Prisma.sql`${a}."activityState" = ${q.activityState}::"ActivityState"`)
   if (q.hookTriggerIds) filters.push(hookTriggerSql(q.hookTriggerIds, a))
   filters.push(...conversationParticipantsSql(q, a, probePrefix))
   if (includeCursor && q.cursor) {
@@ -1115,6 +1116,27 @@ export class PgSessionRepo implements SessionRepo {
       `)
     }
     return { recorded: true, session, settled, ...(cls.parentUnsettled ? { parentUnsettled: true } : {}) }
+  }
+
+  async setActivityState(sessionId: SessionId, agentId: AgentId, state: ActivityState): Promise<boolean> {
+    const result = await this.db.sessionMeta.updateMany({
+      where: { id: sessionId, agentId },
+      data: { activityState: state }
+    })
+    return result.count === 1
+  }
+
+  async clearAwaitingPermissionForDaemon(daemonId: DaemonId): Promise<Array<{ id: SessionId; agentId: AgentId }>> {
+    const rows = await this.db.sessionMeta.findMany({
+      where: { daemonId, activityState: 'awaiting_permission' },
+      select: { id: true, agentId: true }
+    })
+    if (rows.length === 0) return []
+    await this.db.sessionMeta.updateMany({
+      where: { id: { in: rows.map((row) => row.id) }, activityState: 'awaiting_permission' },
+      data: { activityState: 'idle' }
+    })
+    return rows.map((row) => ({ id: SessionId(row.id), agentId: AgentId(row.agentId) }))
   }
 
   async listPage(q: SessionPageQuery): Promise<SessionPageRecord> {

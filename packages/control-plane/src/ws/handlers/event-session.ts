@@ -230,6 +230,12 @@ async function recordEventSession(
   // invalidation signal and immediately re-read `/sessions`; publishing first
   // would race that GET against the upsert and leave the new row invisible.
   deps.events.publish(daemonId, p)
+  // A finished session waits on nobody: clear a wait its daemon never got to release (§7).
+  if (p.phase === 'end' && session?.activityState === 'awaiting_permission') {
+    if (await deps.session.setActivityState(SessionId(p.sessionId), agentId, 'idle')) {
+      deps.events.publishState(daemonId, { agentId: p.agentId, sessionId: p.sessionId, state: 'idle', ts: p.ts })
+    }
+  }
   // Fire-and-forget §4.1 activity poke, after commit-then-publish: external
   // sessions only, carrying nothing but the committed scope coordinates.
   if (session?.visibility === 'external' && session.externalScopeId) {

@@ -83,6 +83,8 @@ export interface PermissionSurfaceHost {
   httpSlackSessionTarget(p: Pick<Pending, 'plan'>): string | undefined
   maskAgentSecrets<T>(agentId: string, payload: T): T
   logSessionAction(verb: string, sessionKey: string, actor?: InteractionActor): void
+  /** Tell the CP a session started or stopped waiting on a human (slack-approval-dm.md §7); fire-and-forget. */
+  emitApprovalActivity(agentId: string, acpSessionId: string, state: 'awaiting_permission' | 'idle'): void
   // ── approval-DM routing (slack-approval-dm.md §4–§6) ──
   cpApprovalRoute(): ApprovalRouteChannel | undefined
   orgForAgent(agentId: string): string | undefined
@@ -173,7 +175,42 @@ export class PermissionCoordinator {
     }
   >()
 
+  /** Sessions the CP currently believes are waiting, keyed by `pendingTurnKey` — emit only on a change. */
+  private readonly awaitingApproval = new Map<string, { agentId: string; sessionId: string }>()
+
   constructor(private readonly host: PermissionHost) {}
+
+  /** Any answerable request for the session across the three pending maps (approval elicitations only). */
+  private hasPendingApproval(agentId: string, sessionId: string): boolean {
+    for (const e of this.pendingEditorPermissions.values())
+      if (e.agentId === agentId && e.sessionId === sessionId) return true
+    for (const e of this.pendingChatPermissions.values())
+      if (e.agentId === agentId && e.sessionId === sessionId) return true
+    for (const e of this.pendingElicits.values())
+      if (e.approval && e.agentId === agentId && e.sessionId === sessionId) return true
+    return false
+  }
+
+  /** Re-derive the session's wait state after a map write and report it when it flipped (§7). */
+  private syncApprovalActivity(agentId: string, sessionId: string): void {
+    const key = pendingTurnKey(agentId, sessionId)
+    const awaiting = this.hasPendingApproval(agentId, sessionId)
+    if (awaiting === this.awaitingApproval.has(key)) return
+    if (awaiting) this.awaitingApproval.set(key, { agentId, sessionId })
+    else this.awaitingApproval.delete(key)
+    try {
+      this.host.emitApprovalActivity(agentId, sessionId, awaiting ? 'awaiting_permission' : 'idle')
+    } catch (err) {
+      this.host.log().warn(`approval activity not reported: ${formatErr(err)}`)
+    }
+  }
+
+  /** Re-assert every live wait after a (re)connect: the CP reset them when this daemon dropped (§7). */
+  replayApprovalActivity(): void {
+    for (const { agentId, sessionId } of this.awaitingApproval.values()) {
+      this.host.emitApprovalActivity(agentId, sessionId, 'awaiting_permission')
+    }
+  }
 
   private async noteEditorPermissionRequest(
     id: string,
@@ -276,6 +313,7 @@ export class PermissionCoordinator {
       evaluationParams,
       resolve: resolveResult
     })
+    this.syncApprovalActivity(agentId, sessionId)
     // The human wait starts when the request becomes answerable, not when its row lands — the
     // write used to be synchronous, and billing it to the turn's retry budget would shrink it.
     const wait = this.trackHumanApprovalWait(p, result)
@@ -286,6 +324,7 @@ export class PermissionCoordinator {
       requesterName = (await recorded).requesterName
     } catch (err) {
       this.pendingEditorPermissions.delete(id)
+      this.syncApprovalActivity(agentId, sessionId)
       this.recordedWrites.delete(id)
       resolveResult({ outcome: { outcome: 'cancelled' } })
       await wait
@@ -312,6 +351,7 @@ export class PermissionCoordinator {
       params,
       resolve: resolveResult
     })
+    this.syncApprovalActivity(agentId, sessionId)
     const wait = this.trackHumanApprovalWait(p, result)
     const recorded = this.noteEditorPermissionRequest(id, agentId, sessionId, elicitationApprovalSummary(params), p)
     this.recordedWrites.set(id, recorded)
@@ -320,6 +360,7 @@ export class PermissionCoordinator {
       requesterName = (await recorded).requesterName
     } catch (err) {
       this.pendingEditorPermissions.delete(id)
+      this.syncApprovalActivity(agentId, sessionId)
       this.recordedWrites.delete(id)
       resolveResult({ action: 'cancel' })
       await wait
@@ -350,6 +391,7 @@ export class PermissionCoordinator {
       channel: p.plan.channel,
       resolve: resolveResult
     })
+    this.syncApprovalActivity(agentId, sessionId)
     const recorded = this.noteEditorPermissionRequest(
       requestId,
       agentId,
@@ -363,6 +405,7 @@ export class PermissionCoordinator {
       await recorded
     } catch (err) {
       this.pendingChatPermissions.delete(requestId)
+      this.syncApprovalActivity(agentId, sessionId)
       this.recordedWrites.delete(requestId)
       throw err
     }
@@ -394,6 +437,7 @@ export class PermissionCoordinator {
     }
     if (!ts) {
       this.pendingChatPermissions.delete(requestId)
+      this.syncApprovalActivity(agentId, sessionId)
       await this.resolveStoredPermissionRequest(agentId, requestId, 'expired')
       this.permissionEvaluationDetails.set(evaluationParams, { reason: 'permission_card_failed' })
       live.resolve({ outcome: { outcome: 'cancelled' } })
@@ -592,6 +636,7 @@ export class PermissionCoordinator {
     if (!(await this.resolveStoredPermissionRequest(rec.agentId, requestId, allowed ? 'allowed' : 'denied', by))) return
     this.host.logSessionAction(`permission:${allowed ? 'allowed' : 'denied'}`, rec.sessionId, actor)
     this.pendingEditorPermissions.delete(requestId)
+    this.syncApprovalActivity(rec.agentId, rec.sessionId)
     this.permissionEvaluationDetails.set(rec.evaluationParams, { reason: 'agent_editor' })
     void notify.conn
       .updateBlocks(
@@ -659,6 +704,7 @@ export class PermissionCoordinator {
       return
     this.host.logSessionAction(`permission:${value === null ? 'denied' : 'allowed'}`, rec.sessionId, actor)
     this.pendingEditorPermissions.delete(requestId)
+    this.syncApprovalActivity(rec.agentId, rec.sessionId)
     void notify.conn
       .updateBlocks(
         notify.channel,
@@ -699,6 +745,7 @@ export class PermissionCoordinator {
           return { ok: false, reason: 'permission request is no longer pending' }
         }
         this.pendingElicits.delete(req.requestId)
+        this.syncApprovalActivity(elicitation.agentId, elicitation.sessionId)
         if (elicitation.ts) {
           const decision =
             req.decision === 'allow'
@@ -735,6 +782,7 @@ export class PermissionCoordinator {
         return { ok: false, reason: 'permission request is no longer pending' }
       }
       this.pendingChatPermissions.delete(req.requestId)
+      this.syncApprovalActivity(chat.agentId, chat.sessionId)
       this.permissionEvaluationDetails.set(chat.evaluationParams, { reason: 'agent_editor' })
       if (chat.ts) {
         void chat.conn
@@ -786,6 +834,7 @@ export class PermissionCoordinator {
       return { ok: false, reason: 'permission request is no longer pending' }
     }
     this.pendingEditorPermissions.delete(req.requestId)
+    this.syncApprovalActivity(pending.agentId, pending.sessionId)
     if (pending.notify) {
       const label = `${req.decision === 'allow' ? 'Allowed' : 'Denied'} by ${req.decidedByName ?? 'an Agent editor'}`
       const blocks =
@@ -861,6 +910,7 @@ export class PermissionCoordinator {
     // whose click changed nothing.
     this.host.logSessionAction(`permission:${allowed ? 'allowed' : 'denied'}`, pending.sessionId, input.actor)
     this.pendingChatPermissions.delete(input.requestId)
+    this.syncApprovalActivity(pending.agentId, pending.sessionId)
     this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'chat_user' })
     if (pending.ts) {
       void pending.conn
@@ -909,6 +959,7 @@ export class PermissionCoordinator {
     for (const [id, pending] of this.pendingChatPermissions) {
       if (pending.agentId !== agentId || pending.sessionId !== sessionId) continue
       this.pendingChatPermissions.delete(id)
+      this.syncApprovalActivity(agentId, sessionId)
       await this.resolveStoredPermissionRequest(agentId, id, 'expired')
       this.permissionEvaluationDetails.set(pending.evaluationParams, { reason: 'turn_cancelled' })
       if (pending.ts) {
@@ -930,6 +981,7 @@ export class PermissionCoordinator {
     for (const [id, pending] of this.pendingEditorPermissions) {
       if (pending.agentId !== agentId || pending.sessionId !== sessionId) continue
       this.pendingEditorPermissions.delete(id)
+      this.syncApprovalActivity(agentId, sessionId)
       await this.resolveStoredPermissionRequest(agentId, id, 'expired')
       // Dead buttons must not survive the request (§5.4): retire the DM card in place.
       if (pending.notify) {
@@ -1137,6 +1189,7 @@ export class PermissionCoordinator {
       channel: p.plan.channel,
       resolve: resolveResult
     })
+    this.syncApprovalActivity(agentId, sessionId)
     if (isApproval) {
       const recorded = this.noteEditorPermissionRequest(
         requestId,
@@ -1151,6 +1204,7 @@ export class PermissionCoordinator {
         await recorded
       } catch (err) {
         this.pendingElicits.delete(requestId)
+        this.syncApprovalActivity(agentId, sessionId)
         this.recordedWrites.delete(requestId)
         throw err
       }
@@ -1179,6 +1233,7 @@ export class PermissionCoordinator {
     }
     if (!ts) {
       this.pendingElicits.delete(requestId)
+      this.syncApprovalActivity(agentId, sessionId)
       if (isApproval) await this.resolveStoredPermissionRequest(agentId, requestId, 'expired')
       live.resolve({ action: 'cancel' })
       return await result
@@ -1238,6 +1293,7 @@ export class PermissionCoordinator {
         return
     }
     this.pendingElicits.delete(a.requestId)
+    this.syncApprovalActivity(rec.agentId, rec.sessionId)
     if (rec.ts)
       void rec.conn
         .updateBlocks(rec.channel, rec.ts, buildElicitationResolvedCard(rec.params, decision), 'Input received', true)
@@ -1251,6 +1307,7 @@ export class PermissionCoordinator {
     for (const [id, rec] of this.pendingElicits) {
       if (rec.agentId !== agentId || rec.sessionId !== sessionId) continue
       this.pendingElicits.delete(id)
+      this.syncApprovalActivity(agentId, sessionId)
       if (rec.approval) await this.resolveStoredPermissionRequest(agentId, id, 'expired')
       if (rec.ts)
         void rec.conn

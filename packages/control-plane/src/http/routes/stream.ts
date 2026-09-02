@@ -21,10 +21,10 @@ import { DaemonId, SessionId, type OrgId } from '../../domain/ids.js'
 const KEEPALIVE_MS = 25_000
 
 /**
- * Session-level gate for the live feed (session-visibility.md §5). BOTH envelope
- * variants are session-scoped and both must pass it: the milestone carries a
- * content-derived `summary`, and the activity invalidation still exposes the
- * session's existence, revision, and live activity.
+ * Session-level gate for the live feed (session-visibility.md §5). Every envelope
+ * variant is session-scoped and must pass it: the milestone carries a
+ * content-derived `summary`, and the activity invalidation and wait-state change
+ * still expose the session's existence, revision, and live activity.
  *
  * A row that cannot be read is dropped — an activity event whose milestone never
  * committed has no visibility to check, so it fails closed.
@@ -40,12 +40,10 @@ export function canStreamSession(
 }
 
 function writeEvent(reply: FastifyReply, envelope: SessionEventEnvelope): void {
-  const activity = envelope.activity
-  const payload = JSON.stringify(
-    activity ? { daemonId: envelope.daemonId, activity } : { daemonId: envelope.daemonId, event: envelope.event }
-  )
-  reply.raw.write(`event: ${activity ? 'session-activity' : 'session'}\n`)
-  reply.raw.write(`data: ${payload}\n\n`)
+  const { daemonId, activity, state } = envelope
+  const payload = activity ? { daemonId, activity } : state ? { daemonId, state } : { daemonId, event: envelope.event }
+  reply.raw.write(`event: ${activity ? 'session-activity' : state ? 'session-state' : 'session'}\n`)
+  reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`)
 }
 
 export function streamRoutes(deps: HttpDeps) {
@@ -119,8 +117,8 @@ export function streamRoutes(deps: HttpDeps) {
             if (!(await inOrg(envelope.daemonId))) return
             const ctx = await currentCtx()
             if (!ctx) return
-            const agentId = envelope.activity?.agentId ?? envelope.event?.agentId
-            const sessionId = envelope.activity?.sessionId ?? envelope.event?.sessionId
+            const agentId = envelope.activity?.agentId ?? envelope.state?.agentId ?? envelope.event?.agentId
+            const sessionId = envelope.activity?.sessionId ?? envelope.state?.sessionId ?? envelope.event?.sessionId
             if (!agentId || !sessionId || !(await canSeeSession(agentId, sessionId, ctx))) return
             writeEvent(reply, envelope)
           })()

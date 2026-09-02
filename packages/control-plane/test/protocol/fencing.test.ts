@@ -104,6 +104,7 @@ function readyConn(opts: { sessionEpoch: number }) {
 function agentActivity() {
   return {
     agentId: AGENT,
+    sessionId: 'session-1',
     launchId: LAUNCH,
     state: 'thinking' as const,
     ts: new Date().toISOString()
