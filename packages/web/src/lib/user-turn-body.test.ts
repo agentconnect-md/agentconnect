@@ -52,7 +52,29 @@ describe('linearDescriptionMarkdown', () => {
     })
   })
 
-  it('shows a context without a description element whole rather than guessing', () => {
+  it('reads an envelope with no description element as an issue that has none', () => {
+    // Everything this envelope carries — the identifier, the title, the team — is already a row
+    // of its own, so printing it raw under "Description" was the whole of the bug.
+    const context = '<issue identifier="AC-1">\n<title>who are you</title>\n<team name="AAA"/>\n</issue>'
+    expect(linearDescriptionMarkdown(context)).toEqual({ markdown: '', parsed: true })
+    expect(linearDescriptionMarkdown('<issue><description/></issue>')).toEqual({ markdown: '', parsed: true })
+  })
+
+  it('keeps a description the relay cut before its closing tag', () => {
+    // `promptContext` is byte-truncated at the relay's budget, so a long description can arrive
+    // as an open element with no close. Every word that DID arrive still reads.
+    const cut = '<issue identifier="ENG-3">\n<title>investigate</title>\n<description>The first half of a long'
+    expect(linearDescriptionMarkdown(cut)).toEqual({ markdown: 'The first half of a long', parsed: true })
+  })
+
+  it('takes a description element that carries attributes', () => {
+    expect(linearDescriptionMarkdown('<issue><description format="markdown">ship it</description></issue>')).toEqual({
+      markdown: 'ship it',
+      parsed: true
+    })
+  })
+
+  it('shows a context that is not the envelope at all whole rather than guessing', () => {
     expect(linearDescriptionMarkdown('plain words')).toEqual({ markdown: 'plain words', parsed: false })
   })
 })
