@@ -88,8 +88,9 @@ rather than inventing a Linear-shaped side channel.
 issue (they receive a bounded unsupported-surface response, §4.5 — never a
 crash or silence),
 proactive session creation (`agentSessionCreateOnIssue`) as a cron/sendMessage
-target, marketplace/public-app distribution, per-team configuration (the
-dispatch default is per workspace; a per-team mapping is P3), and **dedicated
+target, marketplace/public-app distribution, per-issue or per-project
+configuration (the dispatch default and trigger are per **team**, §4.3 —
+nothing finer), and **dedicated
 per-agent Linear apps** — every agent fronts through the one deployment app
 with in-content attribution; §4.3 records why the per-agent-app model of
 earlier revisions was dropped.
@@ -670,12 +671,12 @@ mention and drag an already-bound session onto whoever the row currently
 names. Mapping the owner to a default rung instead leaves the order Linear
 needs:
 
-| Linear event                                       | Rung that decides it   | Target                                                           |
-| -------------------------------------------------- | ---------------------- | ---------------------------------------------------------------- |
-| `created` from a mention naming a member           | unscoped keyword slug  | the named member                                                 |
-| `prompted` follow-up in a bound session            | thread continuity      | the session's agent — an owner change never moves a live session |
-| bare `created` (delegation, automation delegation) | `conversationDefaults` | the team row's owner                                             |
-| any of these before the team's row exists          | `defaultAgentId`       | earliest non-gated member — the backstop (§9.4)                  |
+| Linear event                                       | Rung that decides it   | Target                                                                                                                                         |
+| -------------------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `created` from a mention naming a member           | unscoped keyword slug  | the named member                                                                                                                               |
+| `prompted` follow-up in a bound session            | thread continuity      | the session's agent — an owner change never moves a live session of an unrestricted member (a gated member's default seat is its grant, below) |
+| bare `created` (delegation, automation delegation) | `conversationDefaults` | the team row's owner                                                                                                                           |
+| any of these before the team's row exists          | `defaultAgentId`       | earliest non-gated member — the backstop (§9.4)                                                                                                |
 
 Both the keyword rung and the default rungs are gated on the bot actually
 being addressed — which every Linear event is by construction (§6.1), so the
@@ -685,23 +686,30 @@ such gate. An **Off** team row is a muted channel like any other.
 backstop above, and the earlier revision's persisted bot-level preferred
 default stays withdrawn (§9.2, §15).
 
-**Gated members and the grant fact.** Conversation gating
-(resource-visibility.md §14) applies to a Linear bot as to any other: a
-restricted member has no unscoped keyword rung and cannot be the group
-`defaultAgentId`, and its team rows are born `off`. Where the ladder
-elsewhere learns that a gated agent is _granted_ a conversation from the
-channel-scoped route its enabled row compiles to, an `ownerAsDefault`
-platform emits no such route — so the assignment states the grant directly:
-`conversationGrants`, per channel, the gated members whose row there is not
-Off. The relay's thread-affinity gate honours a gated agent's binding while
-it appears in that channel's grants. The grant is a property of the agent's
-own row, **not of who the current default is**, which is what keeps the
-invariant above: change ENG's default from gated A to B and A's bound
-sessions keep routing to A (its row is still enabled) until an operator
-turns A's ENG row Off — exactly when a Slack channel's scoped route would
-have disappeared. Stop resolves through the same affinity, so it reaches the
-same agent. A gated member may hold a team's default only where it is
-granted, and the compile refuses to project it otherwise.
+**Gated members: the default seat is the grant, as on Slack.** Conversation
+gating (resource-visibility.md §14) applies to a Linear bot as to any other:
+a restricted member has no unscoped keyword rung and cannot be the group
+`defaultAgentId`, and a conversation it does not own is one it may not act
+in. The shared-bot model has exactly one grant a gated agent can hold in a
+conversation — **being that conversation's owner while the row is not Off**
+— because the trigger is a property of the conversation replicated across
+its membership rows (`HttpBot.updateConversation` syncs it to every sibling,
+and one Off mutes the channel for the bot), not a per-agent bit; on Slack
+that grant compiles to the owner's channel-scoped route, and the relay's
+thread-affinity gate honours a gated agent while that route exists. An
+`ownerAsDefault` platform emits no such route, so the gate reads the same
+fact from where it now lives: a gated agent's binding is honoured while that
+agent is the channel's `conversationDefaults` entry. **Moving a team's
+default away from a gated agent therefore withdraws its grant**, and its
+bound sessions' next follow-up re-arbitrates to the new default — exactly
+what happens on Slack when a gated owner loses its channel, and the
+fail-closed reading gating is for. The "owner change never moves a live
+session" row above is stated for unrestricted members, whose continuity
+needs no grant; it is qualified, not broken, for restricted ones, and the
+console's owner selector says so when it moves a default off a private
+agent. No new per-agent grant state is introduced: a per-member grant
+independent of the default was considered and would have required a trigger
+that varies per member, which the replicated-trigger model cannot express.
 
 Rejected there: giving gated members **channel-scoped keyword routes**
 instead. Scoped keyword sits above thread affinity, so a follow-up that merely
@@ -1061,19 +1069,18 @@ tile.
     addresses the bot, so a conversation row's owner is a **default**, not an
     ownership claim that may outrank the keyword and continuity rungs. It
     carries **one pre-dispatch read**, in the compile: the row's owner is
-    projected into the assignment's `conversationDefaults` (and a gated
-    member's enabled row into `conversationGrants`) and **no** channel-scoped
-    route is emitted for it (§6.2). The axis was born as `soleConversation`
+    projected into the assignment's `conversationDefaults` and **no**
+    channel-scoped route is emitted for it (§6.2). The axis was born as
+    `soleConversation`
     with three further reads — a `mention` seed for every member, de-gating,
     and a trigger-write refusal — all of which retired with the team model
     (§15): rows now seed and gate through the ordinary `isGatedAgent` arms,
     and the trigger write surfaces accept Linear rows like any other.
-  - **`RcBotAssign` gains two fields**, both keyed by channel id and both
-    empty on every platform without the axis: `conversationDefaults`
+  - **`RcBotAssign` gains one field**, keyed by channel id and empty on every
+    platform without the axis: `conversationDefaults`
     (`{ channel, agentId, daemonId, integrationId }[]` — the per-conversation
-    default rung's table) and `conversationGrants` (`{ channel, agentIds }[]`
-    — the gated members whose row in that channel is enabled, the
-    thread-affinity gate's grant fact, §6.2).
+    default rung's table, and the fact the thread-affinity gate reads for a
+    gated agent on such a platform, §6.2).
   - **Retired with the axis** (`soleConversation`'s three other reads, kept
     here so an implementer does not rebuild them):
     1. ~~**Route projection** — the conversation row's owner maps to the group's
@@ -1083,8 +1090,8 @@ tile.
        reads the axis~~ — `gatesNewConversations` collapses into
        `isGatedAgent`.
     3. ~~**Gating itself** — a restricted member of such a bot is not
-       conversation-gated~~ — gating applies; the grant fact rides
-       `conversationGrants` (§6.2).
+       conversation-gated~~ — gating applies; a gated member's grant is the
+       default seat it holds (§6.2).
     4. ~~**The write-surface guard** — the per-conversation `PATCH` and the
        `setChannelTrigger` tool refuse a `trigger` write~~ —
        `allowsTriggerControl` and `TRIGGER_CONTROL_REFUSAL` are deleted; a
@@ -1139,8 +1146,8 @@ tile.
     the relay drops that first event, and no daemon ever observes it — only
     the CP tick can seed the row that an operator then enables.
   - **The compile projects the rows for an `ownerAsDefault` platform** into
-    `conversationDefaults` and `conversationGrants` and emits no ownership
-    routes (§6.2, §9.1); `soleConversation.ts`, `allowsTriggerControl` and
+    `conversationDefaults` and emits no ownership routes (§6.2, §9.1);
+    `soleConversation.ts`, `allowsTriggerControl` and
     `TRIGGER_CONTROL_REFUSAL` are deleted and `gatesNewConversations`
     collapses into `isGatedAgent`.
   - `installRoutes('org')` — connect-workspace funnel start (records the
@@ -1195,17 +1202,18 @@ tile.
 - `bot-arbitration.ts` — the **per-conversation default rung**, consulted
   after keyword and thread continuity and before `defaultAgentId`, fed by
   the assignment's `conversationDefaults`; and the thread-affinity gate
-  widened to honour a gated agent named in `conversationGrants` for the
-  session's channel, alongside the scoped-route test it already applies
-  (§6.2). Both are platform-neutral: an assignment with the two lists empty
-  behaves exactly as today.
+  widened to honour a gated agent that is the session channel's
+  `conversationDefaults` entry, alongside the scoped-route test it already
+  applies (§6.2). Both are platform-neutral: an assignment with the list
+  empty behaves exactly as today.
 - Tests: signature/timestamp vectors, demux-hint extraction, verified-but-
   unmatched workspace → no candidate, truncation budgets, dedup-identity
   derivation, stop → `platform_action`, revoked-event doorbell; team-keyed
   `channel`; the default rung picks the channel's default over the group's
   and loses to a keyword match and to thread affinity; a gated agent's
-  affinity survives a default change while it is granted and ends when its
-  grant is withdrawn.
+  affinity holds while it is the channel's default and its next follow-up
+  re-arbitrates once the default moves, while an unrestricted agent's
+  affinity survives the same move.
 
 ### 9.4 `packages/daemon`
 
@@ -1566,9 +1574,9 @@ none` skips it along with everything else Linear-visible. There is **no
   session survives an owner change; a team with no row falls to the
   earliest-non-gated `defaultAgentId`; the reconciler tick upserts a row for
   a team the stub starts reporting later, and refreshes a renamed one; a
-  **gated** member's enabled row appears in `conversationGrants` and its
-  disabled row does not, it may hold a team's default only where granted,
-  and the same agent stays gated on an ordinary bot; a `trigger` write on a
+  **gated** member may be set as a team's default and then appears in
+  `conversationDefaults` (its grant) while an Off row keeps it out, and the
+  same agent stays gated on an ordinary bot; a `trigger` write on a
   team row **succeeds** on both generic surfaces (the per-conversation
   `PATCH` and the `setChannelTrigger` tool) and an Off row leaves
   `mutedChannels`; moving a row's owner moves that team's bare delegations
@@ -1816,13 +1824,17 @@ keyword and thread continuity and before the group's `defaultAgentId`. So
 integration), the relay's ladder gains that rung, and the manifest axis is
 renamed to what it now says, `ownerAsDefault`. A gated member on such a
 platform has no scoped route for the relay's thread-affinity gate to find,
-so the assignment also carries the **grant fact** the route encodes
-elsewhere: `conversationGrants`, per channel, the gated members whose row
-there is enabled. The gate honours a gated agent's binding while it is
-granted in the session's channel. The grant is the agent's own row, not the
-current default, so changing a team's default never moves or strands a live
-session (the invariant §6.2 states); only turning that agent's row Off ends
-its follow-ups, exactly when its Slack scoped route would have vanished.
+so the gate reads the same fact from `conversationDefaults`: a gated agent's
+binding is honoured while it is the channel's default. That is the grant
+Slack's model already has — the trigger is replicated across a
+conversation's membership rows, so "this member is enabled here" exists only
+as "this member owns the row and the row is not Off" — and a per-agent
+grant independent of the default (`conversationGrants`, considered) would
+have needed a trigger that varies per member, which the replicated-trigger
+model cannot express. Consequence, stated in §6.2: moving a team's default
+away from a gated agent withdraws its grant and its sessions re-arbitrate to
+the new default on their next follow-up, as on Slack; an unrestricted
+agent's sessions are untouched by the move.
 
 **Data.** Nothing has shipped, so nothing migrates: the workspace-keyed
 conversation rows and the sessions keyed on `organizationId` are deleted, not
@@ -1831,18 +1843,19 @@ threads.
 
 **Change inventory**, in merge order:
 
-1. `packages/protocol` — `conversationDefaults` and `conversationGrants` on
-   `RcBotAssign`; the `soleConversation` axis renamed `ownerAsDefault` (one
-   read). `packages/relay` — the per-conversation default rung in
+1. `packages/protocol` — `conversationDefaults` on `RcBotAssign`; the
+   `soleConversation` axis renamed `ownerAsDefault` (one read).
+   `packages/relay` — the per-conversation default rung in
    `bot-arbitration.ts`, between keyword and `defaultAgentId`; the affinity
-   gate widened to the grants; the Linear plugin keys `channel` on the team.
+   gate widened to a channel's default; the Linear plugin keys `channel` on
+   the team.
 2. `packages/control-plane` — team rows from the provider create tail and
    the member-add path (Linear API `teams`), plus the team upsert on the
    `LinearCredentialReconciler` tick; `soleConversation.ts`,
    `allowsTriggerControl`, `TRIGGER_CONTROL_REFUSAL` deleted;
    `gatesNewConversations` collapsed into `isGatedAgent`; the compile emits
-   `conversationDefaults` and `conversationGrants` from the rows for an
-   `ownerAsDefault` platform and still no ownership routes for it.
+   `conversationDefaults` from the rows for an `ownerAsDefault` platform and
+   still no ownership routes for it.
 3. `packages/daemon` — the connection's `listChannels` answers the team
    list; the daemon reports an unseen team on delivery; `linearChannelName`
    reads the bag's team; the §8 header names the team (already planned for
