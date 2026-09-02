@@ -551,12 +551,16 @@ the invariant-preserving behavior, not a bug; the console flags
 `output.mode: none` on an agent with a Linear integration as a
 misconfiguration warning.
 
-The settling `response` is also the one activity the **console transcript**
-records, as every platform's reply is: the applier appends the bare answer
-(the `text` the converger carries beside the footer-bearing `body`) under the
-session's transcript coordinates. Thoughts, actions, the plan and the footer
-are feed chrome and stay Linear's own — the console already shows the
-reasoning and tool rows from the ACP stream.
+The answer also reaches the **console transcript**, as every platform's reply
+does: beside the footer-bearing `response`, the converger emits a
+`transcript` action carrying the bare final text, and the applier appends it
+under the session's transcript coordinates. It is independent of the feed —
+`none` emits the transcript action and nothing else (that is what "transcript
+only" means), a turn with no Linear port still records it, and a genuinely
+empty final records nothing (the bounded placeholder is Linear chrome, not
+something the agent said). Thoughts, actions, the plan and the footer stay
+Linear's own — the console already shows the reasoning and tool rows from the
+ACP stream.
 
 ### 5.3 Rate limiting
 

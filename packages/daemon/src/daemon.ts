@@ -6310,7 +6310,12 @@ export class Daemon {
    * replay the original ack (so the relay settles) without re-dispatching. For hooks
    * the same replay absorbs a GitHub/manual REDELIVERY of the same deliveryKey.
    */
-  private handleRelayMsg(msg: RdMsg, chat: (event: RdChatEvent) => void): RdAck | Promise<RdAck> {
+  private handleRelayMsg(
+    msg: RdMsg,
+    chat: (event: RdChatEvent) => void,
+    // A re-entry after a won duty claim carries the delivery's one trace; only the first entry watches.
+    inherited?: RelayAckTrace
+  ): RdAck | Promise<RdAck> {
     const dedupKey = `${msg.source === 'im' ? `${msg.botId}:` : ''}${msg.sessionKey}:${msg.msgId}`
     const prior = this.relayMsgAcks.get(dedupKey)
     if (prior) {
@@ -6326,12 +6331,14 @@ export class Daemon {
     // this member does not hold is claimed on receipt — winning serves it here,
     // losing answers `not_holder` so the router re-routes. The verdict is NOT
     // cached in relayMsgAcks: a later grant must not keep replaying a refusal.
-    const trace: RelayAckTrace = { stage: 'received' }
+    const trace: RelayAckTrace = inherited ?? { stage: 'received' }
+    const watch = (task: Promise<RdAck>): Promise<RdAck> =>
+      inherited ? task : this.watchRelayAck(dedupKey, msg, trace, task)
     if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
       trace.stage = 'duty-claim'
       const task = this.dutyCoordinator.claimDutyForTrigger(msg.agentId).then((claimed) => {
         this.pendingRelayMsgAcks.delete(dedupKey)
-        if (claimed.granted) return this.handleRelayMsg(msg, chat)
+        if (claimed.granted) return this.handleRelayMsg(msg, chat, trace)
         return {
           msgId: msg.msgId,
           accepted: false,
@@ -6339,7 +6346,7 @@ export class Daemon {
           ...(claimed.holder ? { holderDaemonId: claimed.holder } : {})
         }
       })
-      const watched = this.watchRelayAck(dedupKey, msg, trace, task)
+      const watched = watch(task)
       this.pendingRelayMsgAcks.set(dedupKey, watched)
       return watched
     }
@@ -6363,7 +6370,7 @@ export class Daemon {
         this.relayMsgAcks.set(dedupKey, settled)
         return settled
       })
-    const watched = this.watchRelayAck(dedupKey, msg, trace, task)
+    const watched = watch(task)
     this.pendingRelayMsgAcks.set(dedupKey, watched)
     return watched
   }

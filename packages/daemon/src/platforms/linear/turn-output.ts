@@ -36,13 +36,14 @@ export interface LinearExternalUrl {
 export type LinearAction =
   | { kind: 'activity'; type: 'thought'; body: string; ephemeral?: boolean }
   | { kind: 'activity'; type: 'action'; action: string; parameter: string; result?: string }
-  // `text` is the bare answer for the console transcript — `body` carries the footer chrome.
-  | { kind: 'activity'; type: 'response'; body: string; text?: string }
+  | { kind: 'activity'; type: 'response'; body: string }
   | { kind: 'activity'; type: 'error'; body: string }
   | { kind: 'activity'; type: 'elicitation'; body: string }
   | { kind: 'plan'; entries: LinearPlanEntry[] }
   | { kind: 'external-urls'; add: LinearExternalUrl[] }
   | { kind: 'attachment'; input: LinearAttachmentInput }
+  // The bare answer for the console transcript, emitted whether or not a `response` posts.
+  | { kind: 'transcript'; text: string }
 
 /** One `attachmentCreate` input — the issue's Resources entry. Linear keys it on `(issueId, url)`,
  *  so re-sending the same URL updates the entry rather than adding a second one. */
@@ -507,8 +508,12 @@ export class LinearConverger {
     if (this.settled) return []
     this.settled = true
     if (isNoResponseBody(this.sentinelTail.trim())) return this.discard()
-    if (!this.policy.response) return this.discard()
     const final = this.collector.finalText(true)?.trim() ?? ''
+    // `none` is transcript-only (§5.2): the answer is still recorded, the feed still sees nothing.
+    if (!this.policy.response) {
+      this.discard()
+      return final ? [{ kind: 'transcript', text: final }] : []
+    }
     // The residual narration IS the final answer on an append-only feed, so it is never
     // re-posted as a thought here; the trailing ephemeral reasoning would be replaced by the
     // response on arrival, so it is dropped rather than paying an API call.
@@ -521,12 +526,9 @@ export class LinearConverger {
     if (this.droppedActions > 0) {
       out.push({ kind: 'activity', type: 'thought', body: `… and ${this.droppedActions} more tool calls` })
     }
-    out.push({
-      kind: 'activity',
-      type: 'response',
-      body: this.responseBody(final, attribution),
-      ...(final ? { text: final } : {})
-    })
+    out.push({ kind: 'activity', type: 'response', body: this.responseBody(final, attribution) })
+    // A silent turn's bounded placeholder is Linear chrome, not something the agent said.
+    if (final) out.push({ kind: 'transcript', text: final })
     return out
   }
 
@@ -741,6 +743,21 @@ export async function applyLinearAction<TTurn extends LinearTurn>(
   action: LinearAction,
   host?: LinearTurnHost
 ): Promise<void> {
+  // The transcript is core's, not Linear's: the answer is recorded under the session's
+  // coordinates whether or not a Linear port exists — the feed chrome stays Linear's own.
+  if (action.kind === 'transcript') {
+    const { transcriptChannel, statusThread } = turn.plan
+    if (!host || !transcriptChannel || !statusThread) return
+    await host.appendTranscript({
+      channel: transcriptChannel,
+      thread: statusThread,
+      ts: host.monotonicTs(),
+      sender: turn.plan.agentId,
+      kind: 'text',
+      text: action.text
+    })
+    return
+  }
   const port = state.conn ?? (turn.conn as LinearEgressPort | undefined)
   const sessionId = turn.plan.thread
   if (!port || !sessionId) return
@@ -754,19 +771,6 @@ export async function applyLinearAction<TTurn extends LinearTurn>(
         state.activityBudget -= 1
       }
       await port.postActivity(sessionId, toActivityInput(action))
-      // The answer is the one activity the console transcript records, as every platform's
-      // reply is — the feed chrome (thoughts, actions, the footer) stays Linear's own.
-      const { transcriptChannel, statusThread } = turn.plan
-      if (action.type === 'response' && action.text && host && transcriptChannel && statusThread) {
-        await host.appendTranscript({
-          channel: transcriptChannel,
-          thread: statusThread,
-          ts: host.monotonicTs(),
-          sender: turn.plan.agentId,
-          kind: 'text',
-          text: action.text
-        })
-      }
       return
     }
     case 'plan': {
