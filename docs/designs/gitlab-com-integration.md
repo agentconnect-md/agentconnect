@@ -1192,9 +1192,11 @@ the logical session and a runtime reads once on the system-prompt channel (or
 as the first prompt block), never as a transcript row. Each delivery's text
 keeps only what is its own: the trusted header, the fenced body, and one line
 saying what this delivery is and which verdict events the hook's review policy
-allows, closed by a one-clause reminder that the daemon owns the reply. A push
-opens no block; a session that begins with one learns the rules from its first
-answerable delivery.
+allows, closed by a one-clause reminder that the daemon owns the reply. The
+block scopes every rule to a turn opened by a delivery: a hook-origin session
+can be continued from the console, where no poster runs, and such a turn is
+answered in the session with nothing posted. A push opens no block; a session
+that begins with one learns the rules from its first answerable delivery.
 
 The poster is the second implementer of the published Layer-2
 `TurnFinalSurface` shape, after GitHub, and reuses the durable single-publish

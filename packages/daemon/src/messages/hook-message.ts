@@ -193,6 +193,13 @@ function reviewVerdictEvents(reviewPolicy: RdMsgHook['reviewPolicy']): { passing
 /** The one clause every per-turn line keeps: the standing rules can fade from a long session's context. */
 const DAEMON_OWNS_REPLY = 'The daemon owns the reply; post nothing yourself.'
 
+/** The block's scope line: a hook-origin session can be continued from the console, where no poster runs
+ *  (webchat-cross-integration-continuation.md §9), so every rule binds a DELIVERY turn, never the session. */
+const DELIVERY_SCOPE = (host: string): string =>
+  `These rules govern a turn opened by a ${host} delivery — its text begins \`${host} \` and ends with a line saying ` +
+  'how the daemon answers it. A turn opened from the console names no such thread: answer it in the session, the ' +
+  'daemon posts nothing for it, and any code-host tool you hold acts at your own discretion.'
+
 /**
  * The GitHub standing block (`NormalizedMessage.standingContext`): everything about answering
  * here that does not change between deliveries of one session — reply ownership, the no-direct-
@@ -202,10 +209,11 @@ const DAEMON_OWNS_REPLY = 'The daemon owns the reply; post nothing yourself.'
 function githubStandingContext(): string {
   return [
     '# GitHub',
-    '- Your final reply is kept in the session transcript and the daemon posts it back to the triggering thread ' +
-      'automatically; it exclusively owns that reply, so return one self-contained final answer and never post it yourself.',
-    '- Do NOT create, update, or delete GitHub comments or formal reviews through `gh`, another CLI, a connector, or a ' +
-      'direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files).',
+    DELIVERY_SCOPE('GitHub'),
+    '- On a delivery turn, your final reply is kept in the session transcript and the daemon posts it back to the ' +
+      'thread that turn names; it exclusively owns that reply, so return one self-contained final answer and never post it yourself.',
+    '- On a delivery turn, do NOT create, update, or delete GitHub comments or formal reviews through `gh`, another CLI, ' +
+      'a connector, or a direct API call — those paths would race or double-post. Other GitHub tools are for READ-only inspection (thread, diff, files).',
     '- A delivery that opens a review generation says so, and names the verdict events. Then use only the structured ' +
       '`submitCodeReview` tool for COMMENT / REQUEST_CHANGES / APPROVE and inline review comments; its `body` must be a ' +
       'complete, self-contained, non-empty public review summary (including for APPROVE), because a submitted, ambiguous, ' +
@@ -356,10 +364,11 @@ export function gitlabOpensReviewGeneration(
 function gitlabStandingContext(): string {
   return [
     '# GitLab',
-    '- Your final reply is kept in the session transcript and the daemon posts it back to the triggering thread ' +
-      'automatically as one note; it exclusively owns that reply, so return one self-contained final answer and never post it yourself.',
-    '- Do NOT create, update, or delete GitLab notes, drafts, or approvals through `glab`, another CLI, a connector, or ' +
-      'a direct API call — those paths would race or double-post. Any other effect — a separate comment, a discussion ' +
+    DELIVERY_SCOPE('GitLab'),
+    '- On a delivery turn, your final reply is kept in the session transcript and the daemon posts it back to the ' +
+      'thread that turn names as one note; it exclusively owns that reply, so return one self-contained final answer and never post it yourself.',
+    '- On a delivery turn, do NOT create, update, or delete GitLab notes, drafts, or approvals through `glab`, another ' +
+      'CLI, a connector, or a direct API call — those paths would race or double-post. Any other effect — a separate comment, a discussion ' +
       'reply, a merge request, a pipeline action — goes through the structured code-host tools when you have them; every ' +
       'other GitLab access is READ-only inspection.',
     '- A delivery that opens a review generation says so, and names the verdict events. Then use only the structured ' +

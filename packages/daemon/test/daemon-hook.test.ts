@@ -3845,8 +3845,13 @@ describe('buildHookMessage', () => {
       // The rules ride the STANDING block (read once per session, never a transcript row).
       const standing = buildHookMessage(ghFire(), 'trace').standingContext!
       expect(standing.startsWith('# GitHub\n')).toBe(true)
+      // Scoped to DELIVERY turns: a hook-origin session continued from the console has no poster.
+      expect(standing).toContain('These rules govern a turn opened by a GitHub delivery')
+      expect(standing).toContain('A turn opened from the console names no such thread')
+      expect(standing).toContain('the daemon posts nothing for it')
+      expect(standing).toContain('On a delivery turn, your final reply')
       expect(standing).toContain('exclusively owns that reply')
-      expect(standing).toContain('Do NOT create, update, or delete GitHub comments or formal reviews')
+      expect(standing).toContain('do NOT create, update, or delete GitHub comments or formal reviews')
       expect(standing).toContain('`gh`, another CLI, a connector, or a direct API call')
       expect(standing).toContain('Other GitHub tools are for READ-only inspection')
       expect(standing).toContain('structured `submitCodeReview` tool')

@@ -102,7 +102,10 @@ describe('gitlab hook normalization (§12.3)', () => {
     expect(text.indexOf(UNTRUSTED_CONTENT_END)).toBeLessThan(text.indexOf('the daemon posts your final back'))
     const standing = buildHookMessage(fire(), 't').standingContext!
     expect(standing.startsWith('# GitLab\n')).toBe(true)
-    expect(standing).toContain('Do NOT create, update, or delete GitLab notes, drafts, or approvals')
+    expect(standing).toContain('These rules govern a turn opened by a GitLab delivery')
+    expect(standing).toContain('A turn opened from the console names no such thread')
+    expect(standing).toContain('On a delivery turn, do NOT create, update, or delete GitLab notes')
+    expect(standing).toContain('do NOT create, update, or delete GitLab notes, drafts, or approvals')
     expect(standing).toContain('`glab`, another CLI, a connector, or a direct API call')
     expect(standing).toContain('structured `submitCodeReview` tool')
     expect(standing).toContain('REQUEST_CHANGES works only while a user has requested the project service account')
