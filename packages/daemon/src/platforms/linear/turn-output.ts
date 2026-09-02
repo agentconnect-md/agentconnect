@@ -36,7 +36,8 @@ export interface LinearExternalUrl {
 export type LinearAction =
   | { kind: 'activity'; type: 'thought'; body: string; ephemeral?: boolean }
   | { kind: 'activity'; type: 'action'; action: string; parameter: string; result?: string }
-  | { kind: 'activity'; type: 'response'; body: string }
+  // `text` is the bare answer for the console transcript — `body` carries the footer chrome.
+  | { kind: 'activity'; type: 'response'; body: string; text?: string }
   | { kind: 'activity'; type: 'error'; body: string }
   | { kind: 'activity'; type: 'elicitation'; body: string }
   | { kind: 'plan'; entries: LinearPlanEntry[] }
@@ -93,7 +94,23 @@ export interface LinearTurn {
     platform: string
     agentId: string
     sessionKey: string
+    /** The console transcript coordinates the settling answer is recorded under. */
+    transcriptChannel?: string
+    statusThread?: string
   }
+}
+
+/** What the applier needs from core: the transcript, which is not platform-shaped. */
+export interface LinearTurnHost {
+  appendTranscript(row: {
+    channel: string
+    thread: string
+    ts: string
+    sender: string
+    kind: 'text'
+    text: string
+  }): Promise<void>
+  monotonicTs(): string
 }
 
 /** Linear's opaque per-turn state (§5): the hard chrome budget and the last plan
@@ -504,7 +521,12 @@ export class LinearConverger {
     if (this.droppedActions > 0) {
       out.push({ kind: 'activity', type: 'thought', body: `… and ${this.droppedActions} more tool calls` })
     }
-    out.push({ kind: 'activity', type: 'response', body: this.responseBody(final, attribution) })
+    out.push({
+      kind: 'activity',
+      type: 'response',
+      body: this.responseBody(final, attribution),
+      ...(final ? { text: final } : {})
+    })
     return out
   }
 
@@ -716,7 +738,8 @@ function isSettlingActivity(action: Extract<LinearAction, { kind: 'activity' }>)
 export async function applyLinearAction<TTurn extends LinearTurn>(
   turn: TTurn,
   state: LinearTurnState,
-  action: LinearAction
+  action: LinearAction,
+  host?: LinearTurnHost
 ): Promise<void> {
   const port = state.conn ?? (turn.conn as LinearEgressPort | undefined)
   const sessionId = turn.plan.thread
@@ -731,6 +754,19 @@ export async function applyLinearAction<TTurn extends LinearTurn>(
         state.activityBudget -= 1
       }
       await port.postActivity(sessionId, toActivityInput(action))
+      // The answer is the one activity the console transcript records, as every platform's
+      // reply is — the feed chrome (thoughts, actions, the footer) stays Linear's own.
+      const { transcriptChannel, statusThread } = turn.plan
+      if (action.type === 'response' && action.text && host && transcriptChannel && statusThread) {
+        await host.appendTranscript({
+          channel: transcriptChannel,
+          thread: statusThread,
+          ts: host.monotonicTs(),
+          sender: turn.plan.agentId,
+          kind: 'text',
+          text: action.text
+        })
+      }
       return
     }
     case 'plan': {

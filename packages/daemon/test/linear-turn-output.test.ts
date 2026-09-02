@@ -143,7 +143,9 @@ describe('LinearConverger — §5.1 event translation', () => {
   it('settles the turn with one response carrying the final answer', () => {
     const c = conv('low')
     c.onUpdate(chunk('The fix is in place.'))
-    expect(c.onFinal()).toEqual([{ kind: 'activity', type: 'response', body: 'The fix is in place.' }])
+    expect(c.onFinal()).toEqual([
+      { kind: 'activity', type: 'response', body: 'The fix is in place.', text: 'The fix is in place.' }
+    ])
   })
 
   it('settles a silent turn with a bounded response — a response is what completes the session', () => {
@@ -662,6 +664,53 @@ describe('applyLinearAction', () => {
     await applyLinearAction(turnFor(port, undefined), state, { kind: 'activity', type: 'response', body: 'x' })
     expect(port.activities).toEqual([])
     expect(state.activityBudget).toBe(initialLinearTurnState().activityBudget)
+  })
+
+  it('records the bare answer in the console transcript, and only the answer', async () => {
+    const port = new FakePort()
+    const rows: { channel: string; thread: string; ts: string; sender: string; kind: string; text: string }[] = []
+    const host = { appendTranscript: async (row: (typeof rows)[number]) => void rows.push(row), monotonicTs: () => '7' }
+    const turn = {
+      conn: port,
+      plan: {
+        thread: 'agent-session-uuid',
+        platform: 'linear',
+        agentId: 'a1',
+        sessionKey: 'k1',
+        transcriptChannel: 'team-1scope',
+        statusThread: 'agent-session-uuid'
+      }
+    }
+    const state = initialLinearTurnState()
+    await applyLinearAction(turn, state, { kind: 'activity', type: 'thought', body: 'thinking' }, host)
+    await applyLinearAction(turn, state, { kind: 'activity', type: 'error', body: 'boom' }, host)
+    // The footer chrome rides `body`; the transcript takes the answer alone.
+    await applyLinearAction(
+      turn,
+      state,
+      { kind: 'activity', type: 'response', body: 'done\n\nsent by agent', text: 'done' },
+      host
+    )
+    // A silent turn's bounded response is Linear chrome, not something the agent said.
+    await applyLinearAction(turn, state, { kind: 'activity', type: 'response', body: EMPTY_RESPONSE_BODY }, host)
+    expect(rows).toEqual([
+      { channel: 'team-1scope', thread: 'agent-session-uuid', ts: '7', sender: 'a1', kind: 'text', text: 'done' }
+    ])
+    expect(port.activities.map((a) => a.activity.type)).toEqual(['thought', 'error', 'response', 'response'])
+  })
+
+  it('records nothing when the turn carries no transcript coordinates', async () => {
+    const port = new FakePort()
+    const rows: unknown[] = []
+    const host = { appendTranscript: async (row: unknown) => void rows.push(row), monotonicTs: () => '7' }
+    await applyLinearAction(
+      linearTurn(port),
+      initialLinearTurnState(),
+      { kind: 'activity', type: 'response', body: 'done', text: 'done' },
+      host
+    )
+    expect(rows).toEqual([])
+    expect(port.activities.map((a) => a.activity)).toEqual([{ type: 'response', body: 'done' }])
   })
 })
 
