@@ -67,10 +67,18 @@ export const SLACK_BOT_SCOPES = [
   // here rather than discovering them one reinstall at a time.
   'channels:join',
   'team:read',
-  'users:read.email'
-  // No `search:read.*` here: the tool that needs them is not on main yet. A scope in this list
-  // makes every existing install incomplete, so it may only arrive WITH the capability that
-  // uses it — otherwise operators reinstall to grant permissions nothing can call.
+  'users:read.email',
+  // `search:read.*` arrives HERE, with `searchPublicMessages` — the rule this list states, that a
+  // scope may only land alongside the capability that calls it, since anything in this list
+  // makes every existing install incomplete. PUBLIC only, and that is
+  // measured rather than cautious: Slack grants `search:read.private` / `.im` / `.mpim` to a bot
+  // — its scope reference says user tokens only, which is wrong — but they return nothing. With
+  // the bot a MEMBER of a private channel, no combination of `channel_types` surfaced a message
+  // posted there, and a DM's text matched nothing at all. Anthropic's own Slack app makes the
+  // same split: bot search is public, private and DM search is a per-user grant.
+  'search:read.public',
+  'search:read.files',
+  'search:read.users'
 ] as const
 
 // Both transports advertise the same events: Socket Mode receives them directly, and the relay's

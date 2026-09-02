@@ -44,7 +44,9 @@ import type {
   PlatformListItem,
   PlatformListPage,
   PlatformReactionSummary,
-  PlatformScheduledMessage
+  PlatformScheduledMessage,
+  PlatformSearchOptions,
+  PlatformSearchResults
 } from '../platforms/contract.js'
 
 /**
@@ -147,6 +149,24 @@ const LIST_FIELD_TYPES = [
   'reference'
 ] as const
 
+/** Bounds on the in-memory search-credential cache — Slack documents no lifetime for an
+ *  action_token, so hold few and briefly rather than guess generously. */
+const SEARCH_TOKEN_CACHE_MAX = 500
+const SEARCH_TOKEN_TTL_MS = 30 * 60 * 1000
+
+/**
+ * A List column's schema `type` is NOT always the key a write uses, so everything crosses this
+ * table before an agent sees it.
+ *
+ * The case that matters most is the one every list has: the primary column is always a text
+ * column, and Slack is explicit that "you may see the `text` property appear in a response as a
+ * fallback, but it is not accepted in the request payload" — a write to it must be `rich_text`.
+ * Reporting the schema type verbatim therefore handed the agent the one key the write endpoints
+ * reject, on the column it would reach for first.
+ *
+ * `null` marks a column Slack computes and no request may set. Those are reported read-only
+ * rather than given a key that would be refused.
+ */
 /** Core names the intent; Slack's alphabet is emoji shortcodes. */
 const SLACK_REACTION_NAMES: Record<PlatformReactionIntent, string> = { seen: 'eyes' }
 
@@ -632,6 +652,27 @@ export type AppLike = {
         rename: (a: unknown) => Promise<unknown>
       }
     }
+    // The Data Access API — the ONLY workspace search a bot token can make, and only with the
+    // ephemeral `action_token` from the message that triggered the turn (`search:read.*`).
+    assistant: {
+      search: {
+        context: (a: unknown) => Promise<{
+          results?: {
+            messages?: {
+              channel_id?: string
+              channel_name?: string
+              message_ts?: string
+              content?: string
+              author_name?: string
+              author_user_id?: string
+              is_author_bot?: boolean
+              permalink?: string
+            }[]
+          }
+          response_metadata?: { next_cursor?: string }
+        }>
+      }
+    }
   }
   init?: () => Promise<void>
   start: () => Promise<void>
@@ -981,6 +1022,9 @@ export class SlackConnection implements PlatformConnection {
       log?.debug(
         `slack: inbound ${kind} ch=${msg.channel} thread=${msg.thread ?? 'none'} user=${msg.sender.id} isBot=${msg.sender.isBot} isDm=${msg.isDm} mentions=[${msg.mentionedBots.join(',')}] text=${JSON.stringify(msg.text.slice(0, 80))}`
       )
+      // Lift the ephemeral search credential BEFORE normalization drops it, and keep it here
+      // rather than on the message: `entry.msg` is persisted to the durable inbox.
+      this.rememberSearchToken(msg.msgId, ev.action_token)
       this.deps.onMessage(msg)
     }
     // message.* events: DMs, and channels the bot reads (needs the matching
@@ -2370,6 +2414,110 @@ export class SlackConnection implements PlatformConnection {
       realName: u.real_name ?? u.profile?.real_name,
       isBot: u.is_bot,
       avatarUrl: u.profile?.image_72 ?? u.profile?.image_48
+    }
+  }
+
+  /**
+   * The ephemeral search credential for one inbound message, by `msgId`.
+   *
+   * IT NEVER LEAVES THIS MODULE. `assistant.search.context` is the only search a BOT token
+   * can make, and it is refused without the `action_token` Slack attaches to the events an
+   * app is addressed in. That token is a credential, and the normalized message it arrives
+   * with is persisted to the durable inbox and replayed after a restart — so it is lifted at
+   * ingress, held here in memory, and handed to nothing: core carries the message ID, and
+   * asks this connection to search on that message's behalf.
+   *
+   * Bounded and time-limited because Slack documents no lifetime. The cap evicts oldest-first
+   * so a busy workspace cannot grow it without bound, and the TTL means a token this daemon
+   * kept across a long idle turn is dropped here rather than sent and refused.
+   */
+  private searchTokens = new Map<string, { token: string; at: number }>()
+
+  private rememberSearchToken(msgId: string, token: string | undefined): void {
+    if (!token) return
+    this.searchTokens.set(msgId, { token, at: Date.now() })
+    if (this.searchTokens.size > SEARCH_TOKEN_CACHE_MAX) {
+      // Map iterates in insertion order, so the first key is the oldest.
+      const oldest = this.searchTokens.keys().next()
+      if (!oldest.done) this.searchTokens.delete(oldest.value)
+    }
+  }
+
+  /** Re-entry point for the HTTP arm: the relay saw the event, so it forwards the token and
+   *  the daemon parks it here — the same memory, reached the other way round. */
+  rememberInboundSearchToken(msgId: string, token: string): void {
+    this.rememberSearchToken(msgId, token)
+  }
+
+  private searchTokenFor(msgId: string): string | undefined {
+    const held = this.searchTokens.get(msgId)
+    if (!held) return undefined
+    if (Date.now() - held.at > SEARCH_TOKEN_TTL_MS) {
+      this.searchTokens.delete(msgId)
+      return undefined
+    }
+    return held.token
+  }
+
+  /**
+   * Workspace search over PUBLIC channels (`assistant.search.context`, the Data Access API).
+   *
+   * `originMsgId` names the inbound message this turn is answering, which is the ONLY thing
+   * that can authorize the call: Slack requires a bot-token search to be triggered by a user
+   * action, and proves it with that message's `action_token`. A turn with no such message —
+   * a cron wake, an agent-to-agent wake, a message that arrived before this daemon started —
+   * has no token, and the refusal says which.
+   */
+  async searchPublicMessages(
+    query: string,
+    options: PlatformSearchOptions,
+    originMsgId: string | undefined
+  ): Promise<PlatformSearchResults> {
+    const actionToken = originMsgId ? this.searchTokenFor(originMsgId) : undefined
+    if (!actionToken) {
+      throw new Error(
+        'Slack search needs the search credential from the message that started this turn, and this turn has none ' +
+          '— Slack issues it only for a message that addresses this app, so a scheduled or agent-initiated turn ' +
+          'cannot search. Ask in the conversation instead.'
+      )
+    }
+    try {
+      const res = await this.app.client.assistant.search.context({
+        query,
+        action_token: actionToken,
+        ...(options.limit !== undefined ? { limit: options.limit } : {}),
+        ...(options.cursor ? { cursor: options.cursor } : {}),
+        // Slack documents this as "scoping the search when applicable" without saying whether it
+        // filters or only weights, so the tool promises narrowing rather than a filter. If a hard
+        // per-channel filter is ever needed, the `modifiers` argument (`in:<#C…>`) is the candidate
+        // — unverified for this method, so not wired on a guess.
+        // Weighting at best. Measured: the same query with and without it returned identical
+        // results, so nothing here may be described to the agent as a channel filter.
+        ...(options.channel ? { context_channel_id: options.channel } : {}),
+        ...(options.includeBots !== undefined ? { include_bots: options.includeBots } : {}),
+        ...(options.before !== undefined ? { before: options.before } : {}),
+        ...(options.after !== undefined ? { after: options.after } : {}),
+        // Public only, because that is all a bot token can reach. Measured, not assumed: with
+        // the private/DM scopes granted and the bot a member of the private channel, no
+        // combination of `channel_types` — including omitting it — returned private content.
+        channel_types: ['public_channel']
+      })
+      const messages = res.results?.messages ?? []
+      return {
+        messages: messages.map((m) => ({
+          channel: m.channel_id ?? '',
+          channelName: m.channel_name,
+          messageTs: m.message_ts ?? '',
+          text: m.content ?? '',
+          author: m.author_name,
+          authorId: m.author_user_id,
+          isBot: m.is_author_bot,
+          permalink: m.permalink
+        })),
+        ...(res.response_metadata?.next_cursor?.trim() ? { nextCursor: res.response_metadata.next_cursor.trim() } : {})
+      }
+    } catch (err) {
+      throw this.toolFailure(err, 'searching messages')
     }
   }
 

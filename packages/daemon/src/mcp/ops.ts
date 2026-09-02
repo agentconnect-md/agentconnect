@@ -56,6 +56,8 @@ import {
   READ_CANVAS_ARGS,
   scheduleMessage,
   SCHEDULE_MESSAGE_ARGS,
+  searchPublicMessages,
+  SEARCH_PUBLIC_MESSAGES_ARGS,
   updateCanvas,
   UPDATE_CANVAS_ARGS,
   type PlatformActionDeps
@@ -231,6 +233,7 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
   ['updateListItem', updateListItem],
   ['createConversation', createConversation],
   ['scheduleMessage', scheduleMessage],
+  ['searchPublicMessages', searchPublicMessages],
   ['createCanvas', createCanvas],
   ['readCanvas', readCanvas],
   ['updateCanvas', updateCanvas]
@@ -288,6 +291,7 @@ export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
   ['updateListItem', UPDATE_LIST_ITEM_ARGS],
   ['createConversation', CREATE_CONVERSATION_ARGS],
   ['scheduleMessage', SCHEDULE_MESSAGE_ARGS],
+  ['searchPublicMessages', SEARCH_PUBLIC_MESSAGES_ARGS],
   ['createCanvas', CREATE_CANVAS_ARGS],
   ['readCanvas', READ_CANVAS_ARGS],
   ['updateCanvas', UPDATE_CANVAS_ARGS],

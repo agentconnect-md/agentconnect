@@ -14,6 +14,8 @@ import type {
   PlatformListPage,
   PlatformReactionSummary,
   PlatformScheduledMessage,
+  PlatformSearchOptions,
+  PlatformSearchResults,
   PlatformThreadMessage,
   PlatformThreadWindow
 } from '../../platforms/contract.js'
@@ -109,6 +111,14 @@ export interface MessageGateway {
   readList?(listId: string, options?: { cursor?: string; limit?: number }): Promise<PlatformListPage>
   addListItem?(listId: string, fields: PlatformListFieldWrite[]): Promise<PlatformListItem>
   updateListItem?(listId: string, itemId: string, fields: PlatformListFieldWrite[]): Promise<void>
+  /** Hand the platform a message to deliver later; the daemon sees nothing at delivery. */
+  scheduleMessage?(channel: string, text: string, postAt: number, thread?: string): Promise<PlatformScheduledMessage>
+  /** Search the workspace on behalf of the inbound message the turn is answering. */
+  searchPublicMessages?(
+    query: string,
+    options: PlatformSearchOptions,
+    originMsgId: string | undefined
+  ): Promise<PlatformSearchResults>
   /** Hand the platform a message to deliver later; the daemon sees nothing at delivery. */
   scheduleMessage?(channel: string, text: string, postAt: number, thread?: string): Promise<PlatformScheduledMessage>
   /** Platform-hosted document pages (Slack Canvas). */

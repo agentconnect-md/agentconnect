@@ -94,6 +94,8 @@ export interface PlatformReadPorts {
   readonly threadHistory?: boolean
   /** `addReaction` / `getReactions`: arbitrary emoji, not just the turn-chrome intent. */
   readonly reactions?: boolean
+  /** `searchPublicMessages`: the platform offers a workspace search this bot identity may run. */
+  readonly publicMessageSearch?: boolean
   /** `createConversation`: the bot may create a channel or open a group conversation. */
   readonly conversationCreate?: boolean
   /** `scheduleMessage`: the platform accepts a message for later delivery. */
@@ -137,6 +139,7 @@ const READ_PORTS = new Map<string, PlatformReadPorts>([
       threadHistory: true,
       reactions: true,
       conversationCreate: true,
+      publicMessageSearch: true,
       scheduledMessages: true,
       canvas: true,
       bookmarks: true,
@@ -242,6 +245,7 @@ export type PlatformToolPort =
   | 'threadHistory'
   | 'reactions'
   | 'conversationCreate'
+  | 'publicMessageSearch'
   | 'scheduledMessages'
   | 'canvas'
   | 'bookmarks'

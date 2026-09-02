@@ -11,6 +11,7 @@ import {
 } from '../src/mcp/ops.js'
 import type { MemoryProvider } from '../src/memory/provider.js'
 import { toolsForIntegrations } from '../src/mcp/tools.js'
+import { EPHEMERAL_RESULT_MARKER } from '../src/session/ephemeral-results.js'
 
 const ctx: SessionContext = {
   agentId: 'bot-a',
@@ -2303,6 +2304,87 @@ describe('executeTool: platform session tools', () => {
     const d = makeDeps({ sessionToolConnectionFor: () => undefined })
     await expect(executeTool(linearCtx, 'getIssue', { issue: 'ENG-1' }, d)).rejects.toThrow(
       /no live Linear connection for integration int-ln/
+    )
+  })
+})
+
+describe('executeTool: searchPublicMessages', () => {
+  const hit = {
+    channel: 'C_CURRENT',
+    channelName: 'general',
+    messageTs: '100.1',
+    text: 'we decided to ship',
+    author: 'alice',
+    authorId: 'U1',
+    isBot: false,
+    permalink: 'https://x/p1'
+  }
+
+  it('searches the bound conversation and passes the turn’s message as the authorization', async () => {
+    const search = vi.fn(async () => ({ messages: [hit], nextCursor: 'page-2' }))
+    const { deps: base } = deps(fakeGateway({ searchPublicMessages: search }))
+    const d: OpsDeps = { ...base, searchOrigin: () => 'slack:C_CURRENT:99.9' }
+
+    const res = (await executeTool(ctx, 'searchPublicMessages', { query: 'shipping decision', limit: 5 }, d)) as Record<
+      string,
+      unknown
+    >
+
+    // The channel is the session's, never the model's — there is no argument for it.
+    expect(search).toHaveBeenCalledWith('shipping decision', { channel: 'C_CURRENT', limit: 5 }, 'slack:C_CURRENT:99.9')
+    expect(res).toMatchObject({ platform: 'slack', query: 'shipping decision', messages: [hit], nextCursor: 'page-2' })
+    // Stamped so the transcript recorder redacts the row — Slack forbids storing what this
+    // API returns, and the note carries the same rule to the agent.
+    expect(res.policy).toContain(EPHEMERAL_RESULT_MARKER)
+  })
+
+  // A cron or agent-to-agent turn has no originating message, so it has nothing to
+  // authorize a search with. The adapter is what refuses; core simply passes undefined.
+  it('passes undefined when no inbound message started the turn', async () => {
+    const search = vi.fn(async () => ({ messages: [] }))
+    const { deps: base } = deps(fakeGateway({ searchPublicMessages: search }))
+    const d: OpsDeps = { ...base, searchOrigin: () => undefined }
+
+    await executeTool(ctx, 'searchPublicMessages', { query: 'anything' }, d)
+    expect(search).toHaveBeenCalledWith('anything', { channel: 'C_CURRENT' }, undefined)
+  })
+
+  it('resolves ISO bounds to the epoch seconds the provider takes, and refuses a bad one', async () => {
+    const search = vi.fn(async () => ({ messages: [] }))
+    const { deps: base } = deps(fakeGateway({ searchPublicMessages: search }))
+    const d: OpsDeps = { ...base, searchOrigin: () => 'origin-1' }
+
+    await executeTool(ctx, 'searchPublicMessages', { query: 'q', after: '2026-01-01T00:00:00Z' }, d)
+    expect(search).toHaveBeenCalledWith(
+      'q',
+      { channel: 'C_CURRENT', after: Date.parse('2026-01-01T00:00:00Z') / 1000 },
+      'origin-1'
+    )
+
+    await expect(executeTool(ctx, 'searchPublicMessages', { query: 'q', before: 'last tuesday' }, d)).rejects.toThrow(
+      /before is not an ISO-8601 instant/
+    )
+  })
+
+  // Slack documents `context_channel_id` as "scoping when applicable" without saying whether it
+  // filters or only weights, so the tool cannot inherit its promise from the provider.
+  // The provider reaches public channels workspace-wide and honours no narrowing, so a hit
+  // from elsewhere is a real answer rather than something to hide. An earlier revision filtered
+  // to the bound conversation and returned nothing at all in a DM or private channel.
+  it('returns hits from other channels rather than filtering them away', async () => {
+    const stray = { ...hit, channel: 'C_ELSEWHERE', text: 'a genuinely relevant hit next door' }
+    const search = vi.fn(async () => ({ messages: [hit, stray] }))
+    const { deps: base } = deps(fakeGateway({ searchPublicMessages: search }))
+    const d: OpsDeps = { ...base, searchOrigin: () => 'origin-1' }
+
+    const res = (await executeTool(ctx, 'searchPublicMessages', { query: 'q' }, d)) as { messages: unknown[] }
+    expect(res.messages).toEqual([hit, stray])
+  })
+
+  it('refuses on a connection that does not offer search', async () => {
+    const { deps: d } = deps(fakeGateway())
+    await expect(executeTool(ctx, 'searchPublicMessages', { query: 'q' }, d)).rejects.toThrow(
+      /message search is unavailable/
     )
   })
 })

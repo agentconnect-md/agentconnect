@@ -16,6 +16,7 @@
 import { z } from 'zod'
 import type { PlatformCanvasEdit } from '../../platforms/contract.js'
 import { platformLabel } from '../../platforms/read-ports.js'
+import { EPHEMERAL_RESULT_NOTE } from '../../session/ephemeral-results.js'
 import type { SessionContext } from './context.js'
 import { resolveGatewayForPlatform, type GatewayDeps } from './gateway.js'
 import { optionalBoolean, optionalBoundedInt, optionalString, parseArgs, requiredEnum, requiredString } from './args.js'
@@ -100,6 +101,19 @@ export const UPDATE_LIST_ITEM_ARGS = z.object({
   fields: listFields
 })
 
+/** `searchPublicMessages` arguments — no platform, integration, or channel selector. Not because the
+ *  search is scoped to one conversation (it is not: a bot search covers the workspace's PUBLIC
+ *  channels) but because none of those selectors would mean anything. The session decides the
+ *  gateway and the credential, and the provider honours no channel narrowing at all. */
+export const SEARCH_PUBLIC_MESSAGES_ARGS = z.object({
+  query: requiredString('query'),
+  limit: optionalBoundedInt('limit', 1, 20),
+  cursor: optionalString('cursor'),
+  includeBots: optionalBoolean('includeBots'),
+  after: optionalString('after'),
+  before: optionalString('before')
+})
+
 export const CREATE_CANVAS_ARGS = z.object({
   ...botSelector,
   title: requiredString('title').max(255, 'title must be at most 255 characters'),
@@ -132,7 +146,13 @@ export const UPDATE_CANVAS_ARGS = z.object({
 })
 
 /** These tools need only the live gateway; the reads' history fallbacks do not apply. */
-export type PlatformActionDeps = GatewayDeps
+export interface PlatformActionDeps extends GatewayDeps {
+  /** The triggering message's `msgId`, or undefined for a turn no inbound message started (a
+   *  cron wake, an agent-to-agent wake, a turn resumed after a restart). Only search needs it:
+   *  the credential it stands for never leaves the platform adapter, because `entry.msg` is
+   *  persisted to the durable inbox and replayed. */
+  searchOrigin?: (ctx: SessionContext) => string | undefined
+}
 
 /** Resolve the target gateway plus the channel the call acts on, with the current
  *  conversation's channel defaulting in only for this session's own bot — another bot has no
@@ -279,6 +299,59 @@ export async function updateListItem(
   if (!gw.updateListItem) throw unsupported(platform, 'lists')
   await gw.updateListItem(parsed.listId, parsed.itemId, parsed.fields)
   return { platform, listId: parsed.listId, itemId: parsed.itemId, updated: true }
+}
+
+/** Epoch seconds from an ISO-8601 instant, or a refusal the agent can repair from. */
+function epochSecondsFrom(key: string, value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  const at = Date.parse(value)
+  if (Number.isNaN(at)) throw new Error(`${key} is not an ISO-8601 instant: ${value}`)
+  return Math.floor(at / 1000)
+}
+
+/**
+ * Search the workspace's PUBLIC channels, using this session's gateway and the credential the
+ * turn's own message carries.
+ *
+ * The current conversation selects the gateway and the credential; it does NOT bound the search
+ * space. An earlier revision filtered results to it and had to be reverted: a bot cannot search
+ * a private channel or DM at all, so the filter returned an empty list wherever the agent was
+ * actually being talked to. Do not reintroduce it — the fix for "search this conversation" is a
+ * different mechanism, not a filter over this one.
+ */
+export async function searchPublicMessages(
+  ctx: SessionContext,
+  args: Record<string, unknown>,
+  deps: PlatformActionDeps
+): Promise<unknown> {
+  const parsed = parseArgs(SEARCH_PUBLIC_MESSAGES_ARGS, args)
+  const gw = ctx.integrationId ? deps.gatewayFor(ctx.integrationId) : undefined
+  if (!gw) throw new Error(`no live platform connection for integration ${ctx.integrationId ?? '(none)'}`)
+  if (!gw.searchPublicMessages) throw unsupported(ctx.platform, 'message search')
+  const after = epochSecondsFrom('after', parsed.after)
+  const before = epochSecondsFrom('before', parsed.before)
+  const results = await gw.searchPublicMessages(
+    parsed.query,
+    {
+      channel: ctx.channel,
+      ...(parsed.limit !== undefined ? { limit: parsed.limit } : {}),
+      ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
+      ...(parsed.includeBots !== undefined ? { includeBots: parsed.includeBots } : {}),
+      ...(after !== undefined ? { after } : {}),
+      ...(before !== undefined ? { before } : {})
+    },
+    deps.searchOrigin?.(ctx)
+  )
+  // NO channel filter. An earlier revision bound the result to this conversation, which the
+  // measurements killed: a bot search reaches only PUBLIC channels, so in the DM or private
+  // channel where an agent is most often talked to, filtering to the current conversation
+  // returned an empty list every time. Workspace-wide public search is what this API is, and
+  // the tool says so rather than filtering a truthful answer down to nothing.
+  // Slack forbids storing what this API returns, so the result is STAMPED: the transcript
+  // recorder redacts a body carrying the marker, and the note tells the agent the same rule
+  // applies to it — do not copy these hits into memory, a canvas, or a file. First key on
+  // purpose, so a runtime that truncates a long echo still carries the marker.
+  return { policy: EPHEMERAL_RESULT_NOTE, platform: ctx.platform, query: parsed.query, ...results }
 }
 
 export async function createConversation(

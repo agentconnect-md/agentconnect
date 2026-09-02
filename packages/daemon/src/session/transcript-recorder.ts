@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { SessionUpdate } from '@agentclientprotocol/sdk'
 import type { PlanBody, ToolBody } from '@agentconnect.md/protocol'
+import { isEphemeralBody, redactEphemeralBody } from './ephemeral-results.js'
 import { planEntriesOf, planSummary } from './plan-entries.js'
 
 /**
@@ -141,7 +142,10 @@ export class TranscriptRecorder {
 /** Serialize a ToolBody, capping the encoded size at MAX_TOOL_BODY_BYTES. When over
  *  cap, drop the biggest free-form tails (rawOutput first, then content) and flag
  *  `truncated` so the read side / UI can show it was capped at write time. */
-function serializeBody(body: ToolBody): string {
+function serializeBody(input: ToolBody): string {
+  // A result whose provider forbids storing it is redacted BEFORE any cap decision: the row
+  // records that the call happened and never what it retrieved, whatever its size.
+  const body = isEphemeralBody(JSON.stringify(input)) ? redactEphemeralBody(input) : input
   let json = JSON.stringify(body)
   if (Buffer.byteLength(json) <= MAX_TOOL_BODY_BYTES) return json
   const capped: ToolBody = { ...body, truncated: true }

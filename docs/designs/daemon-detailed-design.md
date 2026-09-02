@@ -1066,6 +1066,76 @@ chrome, each of these reports the platform's own refusal verbatim, because the a
 for it: an installation whose grant predates a capability scope must see `missing_scope`, not
 a silent success.
 
+`searchPublicMessages` carries two constraints the others do not.
+
+The first is a credential. A BOT token may search only through Slack's Data Access API
+(`assistant.search.context`), which refuses without the ephemeral `action_token` Slack attaches
+to the events where the app is addressed — verified against a real workspace, where a request
+with the scopes but no token answers `invalid_action_token`. That token is a CREDENTIAL, and
+the normalized message it arrives on is persisted to the durable inbox and replayed after a
+restart, so it is never normalized onto the message. Ingress lifts it into the platform
+adapter's memory (bounded, with a TTL, since Slack documents no lifetime); the daemon holds
+only the triggering message's id as the turn's search authorization, and the adapter resolves
+id → credential internally. On the HTTP transport the relay saw the event instead, so it
+forwards the token BESIDE `rd/msg`'s `payload` — never inside it — and the daemon hands it
+straight to the adapter. One consequence is user-visible: a turn nothing addressed (a cron run,
+an agent-to-agent wake) cannot search and says so.
+
+The second is reach, and it is the provider's, not ours. A bot search reaches PUBLIC channels
+across the workspace — including channels the app was never added to — and nothing else. That
+was measured against a real workspace rather than read off the scope table, because the scope
+table is wrong in both directions:
+
+- Slack's reference calls `search:read.private` / `.im` / `.mpim` user-token only. A workspace
+  grants all three to a BOT.
+- Granting them buys nothing. With the bot a MEMBER of a private channel, a message posted
+  there was never returned — not with `channel_types: ['private_channel']`, not with all four
+  surfaces, not with `channel_types` omitted entirely. A DM to the app behaved the same way:
+  its text matched nothing at all, while a semantically similar public message matched twenty.
+
+So the manifest requests `search:read.public` only. Asking an admin to approve searching
+private channels and DMs in exchange for zero retrieved content is the worst kind of permission
+request, and the three scopes were dropped once the measurements came in. The search scopes ride
+in the single `SLACK_BOT_SCOPES` list and arrive WITH this tool, which is that list's own rule:
+a scope there makes every existing install incomplete, so it may only land alongside the
+capability that calls it.
+
+Two narrowing arguments were measured and found not to narrow: `channel_types` returns public
+content when asked for `private_channel`, and `context_channel_id` produced results identical
+to omitting it. Neither may be described to an agent as a filter, and an earlier revision that
+bound the tool to its own conversation had to be reverted — a bot cannot search the private
+channel or DM it is talking in, so binding returned an empty list in exactly the places an
+agent is most often addressed.
+
+Its RESULTS are governed too. Slack's Real-time Search API states that data retrieved from it
+must not be stored or copied, while every other tool result is ordinary transcript material —
+so the search result is stamped, and `session/ephemeral-results.ts` is what the transcript
+recorder consults: a body carrying the marker keeps its call, status and the agent's own query
+and loses what the search retrieved. Detection is a SUBSTRING SCAN of the serialized body
+rather than a field path, because a runtime may echo a tool result in `rawOutput`, in `content`
+blocks, or nested inside either, and a check pinned to one shape would pass while the data left
+through another. The same constraint binds the agent, which the tool description states: use
+the hits in the reply, do not copy them into memory, a canvas, or a file.
+
+**The boundary this reaches is AgentConnect's own durable state, and no further.** The result
+is delivered through the ACP runtime, which keeps its own conversation history — `session/load`
+replays that whole historical tool stream — so a copy outlives the turn in a store the daemon
+does not own, and ACP offers no way to mark a tool result unpersistable. Every claim made to
+the agent and in the console is therefore worded as "AgentConnect keeps no copy", never "no copy
+is kept".
+
+That remaining copy is judged acceptable rather than closed, and the reasoning is worth keeping
+because it is inference. Slack positions this API as LLM context and ships its own MCP server on
+it to AI clients whose conversations are equally durable, so the same copy exists wherever that
+product is used as designed; and Slack names the harm as storing customer data on external
+servers, which is what the redacted transcript was and what a model's working context is not.
+Supporting asymmetry: the legacy user-token `search.messages` carries no such clause at all.
+None of that is an explicit safe harbour for durable runtime history, so two things stand.
+**Confirm the reading with Slack before distributing this beyond first-party use**, and keep the
+fallback scoped: gate the tool on the runtime advertising `sessionCapabilities.delete` and drop
+the session after a turn that searched (`AcpHost.deleteSession`, defined but not yet wired),
+which trades session continuity for a proven no-retention boundary.
+
 Two more families join on the same port mechanism. **Bookmarks** (`listBookmarks` /
 `addBookmark` / `removeBookmark`) pin links at the top of a conversation; the write tool says
 plainly that a bookmark outlives the task, because it is channel-visible state an agent can

@@ -52,6 +52,11 @@ const EXEMPT: Record<string, string> = {
   toolFailure: 'private Slack-error sanitizer behind the agent-callable actions',
   canvasLink: 'private files.info read behind createCanvas',
   canvasSections: 'private canvases.sections.lookup behind readCanvas',
+  rememberSearchToken: 'private ingress-side credential parking, behind rememberInboundSearchToken',
+  searchTokenFor: 'private credential lookup behind searchPublicMessages',
+  // The Arena's transport receives no provider events, so nothing ever parks a credential
+  // for it — and `searchPublicMessages` (which the virtual DOES implement) refuses regardless.
+  rememberInboundSearchToken: 'HTTP-arm credential handoff; the Arena has no relay ingress',
   // Interactive Slack surfaces (Block Kit actions / modals) are driven by
   // Bolt callbacks the virtual transport never receives; the daemon only
   // invokes them from those callbacks.

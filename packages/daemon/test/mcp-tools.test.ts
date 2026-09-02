@@ -79,6 +79,7 @@ describe('toolsForIntegrations', () => {
     'addReaction',
     'getReactions',
     'createConversation',
+    'searchPublicMessages',
     'scheduleMessage',
     'createCanvas',
     'readCanvas',
@@ -138,6 +139,14 @@ describe('toolsForIntegrations', () => {
       )
     for (const gated of PORT_GATED) {
       expect(props(gated), gated).not.toContain('platform')
+      // `searchPublicMessages` is the one exception, and it is not an oversight. Its credential is
+      // parked against the bot that RECEIVED the triggering message, so naming another bot on
+      // the same platform could only ever produce "this turn has no search credential". A knob
+      // whose every setting but one fails is worse than no knob.
+      if (gated === 'searchPublicMessages') {
+        expect(props(gated), gated).not.toContain('integrationId')
+        continue
+      }
       expect(props(gated), gated).toContain('integrationId')
     }
   })
@@ -475,6 +484,7 @@ describe('toolsForIntegrations', () => {
         'addReaction',
         'getReactions',
         'createConversation',
+        'searchPublicMessages',
         'scheduleMessage',
         'createCanvas',
         'readCanvas',

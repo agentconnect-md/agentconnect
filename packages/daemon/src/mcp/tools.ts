@@ -469,6 +469,7 @@ function buildReadTools(platforms: string[], currentPlatform?: string): ToolDesc
     ...buildThreadHistoryTool(offered('threadHistory'), sameBotSelector),
     ...buildReactionTools(offered('reactions'), sameBotSelector),
     ...buildConversationCreateTool(offered('conversationCreate'), sameBotSelector),
+    ...buildSearchTool(offered('publicMessageSearch')),
     ...buildBookmarkTools(offered('bookmarks'), sameBotSelector),
     ...buildListTools(offered('lists'), sameBotSelector),
     ...buildScheduleMessageTool(offered('scheduledMessages'), sameBotSelector),
@@ -679,6 +680,52 @@ function buildListTools(offered: boolean, integrationId: SchemaProp): ToolDescri
           fields
         },
         ['listId', 'itemId', 'fields']
+      )
+    }
+  ]
+}
+
+/**
+ * `searchPublicMessages` — workspace-wide relevance search over PUBLIC channels, which is the whole
+ * of what Slack's Real-time Search API gives a bot token.
+ *
+ * An earlier revision bound it to the current conversation. Measurement against a real
+ * workspace killed that: `search:read.private` / `.im` / `.mpim` ARE grantable to a bot
+ * (Slack's scope reference says otherwise and is wrong), but no combination of `channel_types`
+ * — including omitting it — returns private or DM content, even for a private channel the bot
+ * belongs to. Binding to the conversation therefore returned an empty list in exactly the
+ * places an agent is most often talked to. Neither `context_channel_id` nor `channel_types`
+ * filters, so no narrowing can be promised at all: the honest tool is the one the API
+ * implements, described exactly.
+ */
+function buildSearchTool(enabled: boolean): ToolDescriptor[] {
+  if (!enabled) return []
+  return [
+    {
+      name: 'searchPublicMessages',
+      description:
+        'Search the workspace’s PUBLIC channels — the way to answer "what was decided about X" or "has anyone hit ' +
+        'this before" across conversations you are not part of. Ranked by relevance, not recency. Each hit carries ' +
+        'its channel, author, text, timestamp and permalink. ' +
+        'The name is the first limit: private channels and DMs are never searched, INCLUDING the conversation you ' +
+        'are in right now, so this cannot look through the discussion you are having. Two more follow from it. ' +
+        'Hits may sit in channels you were never added to — `getThreadHistory` opens one only where you are a ' +
+        'member, so expect it to refuse on some and answer from the hit’s own text and permalink instead. And the ' +
+        'search is authorized by the message that started this turn, so a scheduled run, a turn another agent ' +
+        'woke, or a channel message that did not address you cannot search, and will say so. Page with `cursor`. ' +
+        'Slack does not permit these results to be stored or copied, so AgentConnect keeps none of them in ' +
+        'its own transcript and the same restraint applies to you: answer from them, but do not copy them into ' +
+        'memory, a canvas, or a file. Search again if you need them later.',
+      inputSchema: obj(
+        {
+          query: { type: 'string', minLength: 1, description: 'What to look for, in the user’s own words.' },
+          limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Hits per page (max 20, default 20).' },
+          cursor: { type: 'string', description: 'Cursor from a previous page.' },
+          includeBots: { type: 'boolean', description: 'Include messages written by bots (default false).' },
+          after: { type: 'string', description: 'Only messages after this ISO-8601 instant.' },
+          before: { type: 'string', description: 'Only messages before this ISO-8601 instant.' }
+        },
+        ['query']
       )
     }
   ]

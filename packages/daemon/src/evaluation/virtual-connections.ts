@@ -512,6 +512,10 @@ export class VirtualSlackConnection implements PlatformConnection {
     this.unmodelled('new conversations')
   }
 
+  async searchPublicMessages(): Promise<never> {
+    this.unmodelled('workspace searches')
+  }
+
   async listBookmarks(): Promise<never> {
     this.unmodelled('bookmarks')
   }

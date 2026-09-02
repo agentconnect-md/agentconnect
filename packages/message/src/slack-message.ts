@@ -41,6 +41,14 @@ export interface SlackMessageLike {
   files?: SlackFile[]
   blocks?: unknown[]
   attachments?: unknown[]
+  /**
+   * EPHEMERAL search credential Slack attaches to the events an app is mentioned in
+   * (`app_mention`, and `message.*` where the app is addressed). It is the only way a BOT
+   * token may call the Data Access API, and it is a credential: it must never be normalized
+   * onto {@link NormalizedPlatformMessage}, persisted, logged, or forwarded to the control
+   * plane. Ingress lifts it into memory and drops it here.
+   */
+  action_token?: string
   /** Slack message metadata. AgentConnect stamps its own authorship/response block
    *  here (`event_type: 'agentconnect_thread_event'`); chrome carries a different
    *  event type. Any app in the workspace can write metadata, so what is read out of
