@@ -84,7 +84,6 @@ const INSTALL: IntegrationRow = {
   workspace: 'Example Workspace',
   daemon: 'edge-1',
   status: 'online',
-  agentCount: '2',
   channels: [
     { channelId: 'team-des', name: 'DES · Design', kind: 'channel', trigger: 'off', agentId: 'agent-b' },
     { channelId: 'team-eng', name: 'ENG · Engineering', kind: 'channel', trigger: 'mention', agentId: 'agent-a' }
@@ -138,10 +137,22 @@ describe('the Linear workspace’s Bots row', () => {
   it('expands to the workspace’s team rows, each with its own dispatch selector', async () => {
     const view = await expandWorkspace()
 
-    expect(view.textContent).toContain('DES · Design')
-    expect(view.textContent).toContain('ENG · Engineering')
+    // Named as Linear names a team: the name, then its key dimmed behind it.
+    expect(view.textContent).toContain('DesignDES')
+    expect(view.textContent).toContain('EngineeringENG')
     // Not the retired single line that stood for the whole workspace.
     expect(pickers(view)).toHaveLength(2)
+  })
+
+  it('drops the dispatch column when one agent is the only member', async () => {
+    // Nothing to pick between: the column would name that agent on every team row.
+    mocks.bots = [{ ...WORKSPACE, agentIds: ['agent-a'] }]
+    mocks.integrations = [{ ...INSTALL, channels: INSTALL.channels.map((c) => ({ ...c, agentId: 'agent-a' })) }]
+    const view = await expandWorkspace()
+
+    expect(view.textContent).toContain('EngineeringENG')
+    expect(view.textContent).not.toContain('Default dispatch')
+    expect(pickers(view)).toHaveLength(0)
   })
 
   it('names the room with Linear’s own noun for assistive tech', async () => {

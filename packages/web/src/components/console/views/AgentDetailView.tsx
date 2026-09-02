@@ -1653,15 +1653,6 @@ export default function AgentDetailView() {
                                     <span className="dot h-[6px] w-[6px] bg-(--status-online)" />
                                     connected
                                   </span>
-                                  {g.shareable && (
-                                    <span
-                                      className="badge bg-(--surface-app) text-(--text-tertiary)"
-                                      title="Shared bot — used by multiple agents, inbound via a relay. Each channel dispatches to one of them by default."
-                                    >
-                                      <Icon name="users" size={11} />
-                                      shared · {g.agentCount} {g.agentCount === '1' ? 'agent' : 'agents'}
-                                    </span>
-                                  )}
                                 </div>
                               </div>
                             </Link>
