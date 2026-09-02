@@ -3047,6 +3047,14 @@ export class LocalStore {
     return row?.ts ?? null
   }
 
+  /** Every session key of the agent, open or closed — a row's existence is what keeps its session pod's claim (git-workspace-model §11). */
+  async sessionKeysForAgent(agentId: string): Promise<string[]> {
+    const rows = (await this.db.prepare('SELECT key FROM sessions WHERE agentId = ?').all(agentId)) as Array<{
+      key: string
+    }>
+    return rows.map((row) => row.key)
+  }
+
   /** One session's own last activity (epoch ms), or null once closed or gone — reaps a session-bound host. */
   async sessionLastActivityTs(key: string): Promise<number | null> {
     const row = (await this.db

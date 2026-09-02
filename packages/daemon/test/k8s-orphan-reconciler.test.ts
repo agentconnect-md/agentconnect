@@ -10,7 +10,13 @@ import {
   resolveOrphanReconcilerSettings,
   type OrphanReconcilerDeps
 } from '../src/k8s/orphan-reconciler.js'
-import { AC_LABEL_AGENT, AC_LABEL_ORG } from '../src/k8s/sandbox-identity.js'
+import {
+  AC_LABEL_AGENT,
+  AC_LABEL_ORG,
+  AC_LABEL_SESSION,
+  sandboxClaimName,
+  sessionSandboxSubject
+} from '../src/k8s/sandbox-identity.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, probeAgentId } from '../src/k8s/probe-claim.js'
 import { SandboxApi, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 
@@ -49,6 +55,31 @@ function claim(
     spec: {
       warmPoolRef: { name: 'pool' },
       additionalPodMetadata: { labels: { [AC_LABEL_ORG]: 'org-1', [AC_LABEL_AGENT]: agentId } }
+    },
+    ...(opts.sandbox ? { status: { sandbox: { name: opts.sandbox } } } : {})
+  }
+}
+
+/** A session pod's claim (git-workspace-model §11): the agent's label beside the session's, under the session's name. */
+function sessionClaim(
+  agentId: string,
+  leaf: string,
+  opts: { createdAt?: number; sandbox?: string } = {}
+): SandboxClaim {
+  const name = sandboxClaimName(sessionSandboxSubject(agentId, leaf))
+  return {
+    metadata: {
+      name,
+      uid: `uid-${name}`,
+      resourceVersion: `rv-${name}`,
+      creationTimestamp: new Date(opts.createdAt ?? T0 - HOUR).toISOString(),
+      labels: { [AC_LABEL_ORG]: 'org-1', [AC_LABEL_AGENT]: agentId, [AC_LABEL_SESSION]: leaf }
+    },
+    spec: {
+      warmPoolRef: { name: 'pool' },
+      additionalPodMetadata: {
+        labels: { [AC_LABEL_ORG]: 'org-1', [AC_LABEL_AGENT]: agentId, [AC_LABEL_SESSION]: leaf }
+      }
     },
     ...(opts.sandbox ? { status: { sandbox: { name: opts.sandbox } } } : {})
   }
@@ -223,3 +254,105 @@ describe('orphan reconciler', () => {
     expect(r.warns.filter((m) => m.includes('not permitted'))).toHaveLength(1)
   })
 })
+
+describe('orphan reconciler and session pods (git-workspace-model §11)', () => {
+  const KEPT = 'session-aaaaaaaaaaaaaaaaaaaaaaaa'
+  const GONE_LEAF = 'session-bbbbbbbbbbbbbbbbbbbbbbbb'
+  const claimPath = (agentId: string, leaf: string) =>
+    `/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/agent-sandboxes/sandboxclaims/${sandboxClaimName(sessionSandboxSubject(agentId, leaf))}`
+
+  it("collects a live agent's session pod whose row is gone, keeps the one whose row remains and the agent's own", async () => {
+    const { api, deletes } = await cluster(
+      [
+        claim(LIVE, { sandbox: 'sb-live' }),
+        sessionClaim(LIVE, KEPT, { sandbox: 'sb-kept' }),
+        sessionClaim(LIVE, GONE_LEAF, { sandbox: 'sb-gone' })
+      ],
+      // A claimless Sandbox with a session label answers to the same rule.
+      [sandbox('sb-stray', LIVE), withSessionLabel(sandbox('sb-stray-session', LIVE), GONE_LEAF)]
+    )
+    const askedSessions: Array<{ agentId: string; leaf: string }>[] = []
+    const r = reconciler({
+      api,
+      liveSessionLeaves: async (sessions) => {
+        askedSessions.push(sessions)
+        return new Set([sessionSandboxSubject(LIVE, KEPT)])
+      }
+    })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 5, orphaned: 2, deleted: 2, skippedLive: 3, failed: 0 })
+    expect(deletes.map((entry) => entry.path)).toEqual([
+      claimPath(LIVE, GONE_LEAF),
+      '/apis/agents.x-k8s.io/v1beta1/namespaces/agent-sandboxes/sandboxes/sb-stray-session'
+    ])
+    // One question per run, about the session pods of live agents only, and never about the agent's own pod.
+    expect(askedSessions).toEqual([
+      [
+        { agentId: LIVE, leaf: KEPT },
+        { agentId: LIVE, leaf: GONE_LEAF },
+        { agentId: LIVE, leaf: GONE_LEAF }
+      ]
+    ])
+    expect(r.infos.some((line) => line.includes(`session ${GONE_LEAF}`))).toBe(true)
+  })
+
+  it('reads a session pod as live when nothing can answer for its session', async () => {
+    const { api, deletes } = await cluster([sessionClaim(LIVE, GONE_LEAF, { sandbox: 'sb-gone' })], [])
+    const r = reconciler({ api })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 0, deleted: 0, skippedLive: 1 })
+    expect(deletes).toEqual([])
+  })
+
+  it('reads every session pod as live when the store will not answer, and still sweeps the rest', async () => {
+    const { api, deletes } = await cluster(
+      [sessionClaim(LIVE, GONE_LEAF, { sandbox: 'sb-gone' }), claim(GONE, { sandbox: 'sb-agent-gone' })],
+      []
+    )
+    const r = reconciler({
+      api,
+      liveSessionLeaves: async () => {
+        throw new Error('store unreachable')
+      }
+    })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 2, orphaned: 1, deleted: 1, skippedLive: 1, failed: 0 })
+    expect(deletes.map((entry) => entry.path)).toEqual([
+      `/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/agent-sandboxes/sandboxclaims/agent-${GONE}`
+    ])
+    expect(r.warns.some((line) => line.includes('keeping every session pod'))).toBe(true)
+  })
+
+  it("collects a gone agent's session pod on the agent rule alone, asking about no sessions", async () => {
+    const { api, deletes } = await cluster([sessionClaim(GONE, KEPT, { sandbox: 'sb-gone' })], [])
+    const askedSessions: unknown[] = []
+    const r = reconciler({
+      api,
+      liveSessionLeaves: async (sessions) => {
+        askedSessions.push(sessions)
+        return new Set()
+      }
+    })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 1, deleted: 1 })
+    expect(deletes.map((entry) => entry.path)).toEqual([claimPath(GONE, KEPT)])
+    expect(askedSessions).toEqual([])
+  })
+
+  it("leaves a live agent's young session pod alone even when its row is gone", async () => {
+    const { api, deletes } = await cluster([sessionClaim(LIVE, GONE_LEAF, { createdAt: T0 - GRACE + 1 })], [])
+    const r = reconciler({ api, liveSessionLeaves: async () => new Set() })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 0, skippedGrace: 1 })
+    expect(deletes).toEqual([])
+  })
+})
+
+/** The same Sandbox, carrying a session label on its pod template the way the controller propagates it. */
+function withSessionLabel(object: Sandbox, leaf: string): Sandbox {
+  return {
+    ...object,
+    spec: {
+      ...object.spec,
+      podTemplate: {
+        ...object.spec?.podTemplate,
+        metadata: { labels: { ...object.spec?.podTemplate?.metadata?.labels, [AC_LABEL_SESSION]: leaf } }
+      }
+    }
+  }
+}

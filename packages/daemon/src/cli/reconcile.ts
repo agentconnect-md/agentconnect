@@ -10,7 +10,9 @@
  * Both halves run in the one job because they ask the control plane the SAME question: the batched
  * `agent/exists` read answers "is this leaked?" for a `SandboxClaim` and for an outbox row alike.
  * The store half is skipped where no shared data plane is mounted — a local single-daemon store has
- * one owner forever and its rows are its own to drain.
+ * one owner forever and its rows are its own to drain. The store is also what answers for a SESSION
+ * pod (git-workspace-model.md §11): its claim lives as long as its session row, so a pod whose row is
+ * gone is an orphan — and without a store every session pod reads as live.
  *
  * The connection registers as an OBSERVER. It presents the same projected pool identity a member
  * does, so the control plane admits it on the same TokenReview path, but it is enrolled in no
@@ -36,6 +38,9 @@ import { DATA_PLANE_CONFIG_PATH } from '../store/postgres-config.js'
 import { openMountedPostgresDataPlane } from '../store/postgres-data-plane.js'
 import { StoreRetentionSweeper, resolveStoreRetentionSettings } from '../store/retention.js'
 import type { RetentionCapableStore } from '../store/retention.js'
+import type { LocalStore } from '../store/local-store.js'
+import { hostKeyDirName, sessionHostKey } from '../acp/host-key.js'
+import { sessionSandboxSubject } from '../k8s/sandbox-identity.js'
 import { DAEMON_VERSION } from '../version.js'
 
 const REQUEST_TIMEOUT_MS = 15_000
@@ -46,9 +51,9 @@ export interface ExistenceReader {
   close: () => void
 }
 
-/** The shared data-plane store, plus how to give it back. */
+/** The shared data-plane store, plus how to give it back; one that lists session keys also answers for session pods. */
 export interface ReapableStore {
-  store: RetentionCapableStore
+  store: RetentionCapableStore & Partial<Pick<LocalStore, 'sessionKeysForAgent'>>
   close: () => Promise<void>
 }
 
@@ -90,9 +95,18 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
     if (!url) throw new Error(`reconcile requires the control plane's address in ${CP_URL_ENV}`)
     cp = await (opts.connectCp ?? connectObserver)(url)
     const liveAgents = cp.liveAgents
-    const reconciler = new OrphanReconciler({ api, liveAgents, settings, log })
-    const summary = await reconciler.sweep()
+    // The store first: it is what answers for a session pod's row (git-workspace-model.md §11).
     mounted = await (opts.openStore ?? openSharedStore)()
+    const sessionKeys = mounted?.store.sessionKeysForAgent?.bind(mounted.store)
+    const liveSessionLeaves = sessionKeys ? liveSessionLeavesFrom(sessionKeys) : undefined
+    const reconciler = new OrphanReconciler({
+      api,
+      liveAgents,
+      ...(liveSessionLeaves ? { liveSessionLeaves } : {}),
+      settings,
+      log
+    })
+    const summary = await reconciler.sweep()
     // No data plane is not a failure: this deployment keeps no shared store to sweep.
     // No `ownerId`: a one-shot job owns no rows, so every rule keeps its conservative window.
     const storeSummary = mounted
@@ -107,6 +121,21 @@ export async function runReconcileOnce(opts: ReconcileOnceOpts = {}): Promise<nu
   } finally {
     cp?.close()
     await mounted?.close().catch(() => undefined)
+  }
+}
+
+/** Which session pods still have a row: one store read per agent, the leaves derived as the host keys derive them. */
+function liveSessionLeavesFrom(
+  sessionKeysForAgent: LocalStore['sessionKeysForAgent']
+): NonNullable<ConstructorParameters<typeof OrphanReconciler>[0]['liveSessionLeaves']> {
+  return async (sessions) => {
+    const live = new Set<string>()
+    for (const agentId of new Set(sessions.map((session) => session.agentId))) {
+      for (const key of await sessionKeysForAgent(agentId)) {
+        live.add(sessionSandboxSubject(agentId, hostKeyDirName(sessionHostKey(agentId, key))))
+      }
+    }
+    return live
   }
 }
 

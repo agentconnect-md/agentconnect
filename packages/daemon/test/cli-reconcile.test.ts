@@ -6,7 +6,14 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { K8sHttp } from '@agentconnect.md/k8s-client'
 import { closeFakeApiServers, fakeApiServer } from '@agentconnect.md/k8s-client/testing'
 import { buildEnvelope, decodeEnvelope, encode, type AnyFrame } from '@agentconnect.md/protocol'
-import { AC_LABEL_AGENT, AC_LABEL_ORG } from '../src/k8s/sandbox-identity.js'
+import {
+  AC_LABEL_AGENT,
+  AC_LABEL_ORG,
+  AC_LABEL_SESSION,
+  sandboxClaimName,
+  sessionSandboxSubject
+} from '../src/k8s/sandbox-identity.js'
+import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { SandboxApi, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 import { ORPHAN_DELETE_ENV } from '../src/k8s/orphan-reconciler.js'
 import { STORE_ORPHAN_DELETE_ENV } from '../src/store/retention.js'
@@ -32,8 +39,19 @@ function claim(agentId: string): SandboxClaim {
   }
 }
 
-/** A cluster holding two claims — one of a live agent, one of a forgotten one. */
-async function cluster(opts: { deleteStatus?: number } = {}) {
+/** A live agent's session pod claim (git-workspace-model §11), by the session key its row would carry. */
+function sessionClaim(agentId: string, sessionKey: string): SandboxClaim {
+  const leaf = hostKeyDirName(sessionHostKey(agentId, sessionKey))
+  const name = sandboxClaimName(sessionSandboxSubject(agentId, leaf))
+  const labels = { [AC_LABEL_ORG]: 'org-1', [AC_LABEL_AGENT]: agentId, [AC_LABEL_SESSION]: leaf }
+  return {
+    metadata: { name, uid: `uid-${name}`, resourceVersion: `rv-${name}`, creationTimestamp: OLD, labels },
+    spec: { warmPoolRef: { name: 'pool' }, additionalPodMetadata: { labels } }
+  }
+}
+
+/** A cluster holding two claims — one of a live agent, one of a forgotten one — plus any extra. */
+async function cluster(opts: { deleteStatus?: number; extraClaims?: SandboxClaim[] } = {}) {
   const deletes: string[] = []
   const { config } = await fakeApiServer(({ method, url }) => {
     if (method === 'DELETE') {
@@ -41,7 +59,9 @@ async function cluster(opts: { deleteStatus?: number } = {}) {
       if (opts.deleteStatus) return { status: opts.deleteStatus, json: { kind: 'Status', reason: 'Forbidden' } }
       return { json: {} }
     }
-    if (url.pathname.endsWith('/sandboxclaims')) return { json: { items: [claim(LIVE), claim(GONE)] } }
+    if (url.pathname.endsWith('/sandboxclaims')) {
+      return { json: { items: [claim(LIVE), claim(GONE), ...(opts.extraClaims ?? [])] } }
+    }
     if (url.pathname.endsWith('/sandboxes')) return { json: { items: [] } }
     return { status: 404, json: { kind: 'Status', reason: 'NotFound' } }
   })
@@ -117,6 +137,55 @@ describe('reconcile --once', () => {
     expect(infos.at(-1)).toContain('agent-gone=1 horizon=0')
     expect(infos.at(-1)).toContain('session-purge=1')
     expect(closed).toBe(true)
+  })
+
+  it('asks the shared store which session pods still have a row, and collects the rest (§11)', async () => {
+    const kept = 'slack:C1:T-kept:agent'
+    const gone = 'slack:C1:T-gone:agent'
+    const { api, deletes } = await cluster({ extraClaims: [sessionClaim(LIVE, kept), sessionClaim(LIVE, gone)] })
+    const asked: string[] = []
+    const code = await runReconcileOnce({
+      api,
+      connectCp: fakeCp().connectCp,
+      apiUrl: 'wss://cp.example.test/daemon/ws',
+      env: { [ORPHAN_DELETE_ENV]: 'true' },
+      openStore: async () => ({
+        store: {
+          ...storeOf({}, []),
+          sessionKeysForAgent: async (agentId: string) => {
+            asked.push(agentId)
+            return agentId === LIVE ? [kept] : []
+          }
+        },
+        close: async () => undefined
+      }),
+      log: { info: () => {}, warn: () => {} }
+    })
+    expect(code).toBe(0)
+    expect(asked).toEqual([LIVE])
+    const claims = '/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/agent-sandboxes/sandboxclaims'
+    expect(deletes.sort()).toEqual(
+      [
+        `${claims}/agent-${GONE}`,
+        `${claims}/${sandboxClaimName(sessionSandboxSubject(LIVE, hostKeyDirName(sessionHostKey(LIVE, gone))))}`
+      ].sort()
+    )
+  })
+
+  it('keeps every session pod when no shared store is mounted to answer for its row', async () => {
+    const { api, deletes } = await cluster({ extraClaims: [sessionClaim(LIVE, 'slack:C1:T-any:agent')] })
+    const code = await runReconcileOnce({
+      api,
+      connectCp: fakeCp().connectCp,
+      apiUrl: 'wss://cp.example.test/daemon/ws',
+      env: { [ORPHAN_DELETE_ENV]: 'true' },
+      openStore: async () => undefined,
+      log: { info: () => {}, warn: () => {} }
+    })
+    expect(code).toBe(0)
+    expect(deletes).toEqual([
+      `/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/agent-sandboxes/sandboxclaims/agent-${GONE}`
+    ])
   })
 
   it('exits 1 when the store sweep left an orphan behind, however clean the cluster was', async () => {

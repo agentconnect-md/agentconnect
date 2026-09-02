@@ -354,7 +354,12 @@ exist (`agent/exists` → `agent/exists/ok`, install-wide, advertised as the
   the grace period old (default 10 minutes);
 - a probe claim past the window the probe stamped on it;
 - a Sandbox no claim binds, whose agent the control plane no longer knows,
-  under the same grace.
+  under the same grace;
+- a session pod (`agentconnect.md/session` beside the agent label,
+  [git-workspace-model.md](git-workspace-model.md) §11) whose agent lives but
+  whose session row is gone from the shared store, under the same grace — the
+  job asks the store once per run, and a session nobody can answer for (no
+  store mounted, a read that failed) reads as live.
 
 **Safety rules.** An object of a live agent is never touched, a claimless
 Sandbox included — deleting a claim deletes the workspace volume and is
