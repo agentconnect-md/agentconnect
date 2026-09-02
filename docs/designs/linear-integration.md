@@ -328,10 +328,15 @@ issue's team (§4.5):
   the same shape as a Slack workspace with its channels, and it takes the
   same controls: each team row has an owner (the dispatch default a bare
   delegation reaches) and a trigger that can be **Off**, so "review-bot
-  handles ENG but stays out of DESIGN" is one row's setting. Conversation
-  gating applies as everywhere else: a private member's rows are born `off`
-  and an operator enables the teams it may work in; an unrestricted member's
-  rows are born `mention` (§9.2). Slack's `any` has no Linear meaning: the
+  handles ENG but stays out of DESIGN" is one row's setting. As on every
+  shared bot the trigger is **per team for the whole bot** — replicated
+  across the members' sibling rows, one Off muting the team for all of them
+  — and the owner is who a bare delegation reaches; a member that is not the
+  owner takes part only when a mention names it. Conversation gating applies
+  as everywhere else: a private member can act in a team only as its owner,
+  a team whose linking agent is private is born `off` until an operator
+  enables it, and a team whose linking agent is unrestricted is born
+  `mention` (§9.2). Slack's `any` has no Linear meaning: the
   platform emits no unaddressed traffic to opt into — every event is a
   delegation, an app mention, a follow-up inside a session the agent already
   owns, or a stop — so the trigger has two live values here, `mention` and
@@ -771,9 +776,9 @@ until they exist, the platform-app funnel's self-disable pattern.
 integration does: an agent's integrations page, from the Linear card's
 **Connect another workspace…** hand-off (§9.5). There is **no default-agent
 step** — the agent the flow started from becomes the workspace's first member
-and, being its only member, its initial dispatch default; moving the default
-later is the conversation row's selector (§6.2), not an install decision. The
-admin is sent to
+and, being its only member, the initial dispatch default of every team row
+the connect tail writes (§9.2); moving a team's default later is that row's
+selector (§6.2), not an install decision. The admin is sent to
 
 ```text
 https://linear.app/oauth/authorize?client_id=…&redirect_uri=…&response_type=code
@@ -1129,8 +1134,12 @@ tile.
     named `<KEY> · <Team name>`, with the linking agent as owner; each
     add-member writes its sibling rows, the shared-bot shape where every
     active integration repeats a conversation's state and exactly one row
-    per team carries the owner. Triggers seed through the ordinary arm:
-    `mention` for an unrestricted member, `off` for a gated one. No new
+    per team carries the owner. The trigger is one per team for the whole bot: born `mention` when the
+    linking agent is unrestricted and `off` when it is gated
+    (`gatesNewConversations` at row creation, exactly as a Slack channel row
+    is seeded), and copied onto every sibling row a later add-member writes —
+    the replicated-trigger contract `HttpBot.updateConversation` keeps, so a
+    member never carries a trigger of its own. No new
     broadcast is needed: both paths already end in `syncBot`, which publishes
     the routes the new rows change.
   - **Team discovery after the install has two paths, and the slow one is
@@ -1175,16 +1184,17 @@ tile.
     inspection: the shipped compile's keyword-disambiguation loop already
     emits exactly the member-name routes §4.3 needs, so member addressing
     costs no contract change at all.)
-  - **No generic core change.** An earlier revision asked core for one — a
-    persisted bot-level **preferred default agent** (`Bot.preferredAgentId`),
-    preferred by the orchestrator's compile over its earliest-non-gated
-    fallback. It is **withdrawn** (§15): it existed only because
-    issue-as-channel left a connected workspace with no standing conversation
-    row, and therefore nowhere durable to keep a default. Once the workspace
-    IS the conversation, that row is the carrier, the compile needs no new
-    input, and the console's dispatch selector is the generic
-    conversation-owner PATCH. Where the column or its DTO field has already
-    landed, it comes back out.
+  - **The one generic core change is the per-conversation default rung**
+    (§6.2, §9.1): the compile projects each team row's owner into
+    `conversationDefaults` for an `ownerAsDefault` platform, and the relay
+    consults it after keyword and continuity. The conversation row remains
+    the carrier of the default and the console's dispatch selector remains
+    the generic conversation-owner PATCH; what core gains is a way to
+    deliver that owner without an ownership route. An earlier revision asked
+    instead for a persisted bot-level **preferred default agent**
+    (`Bot.preferredAgentId`); that stays **withdrawn** (§15) — it existed
+    only because issue-as-channel left the workspace with no standing
+    conversation row, and a team row is one.
 - Prisma: new `linear_token` and `linear_install_state` tables only — Bot
   identity rides the existing D6 columns, and `platform` columns are already
   text.
@@ -1323,7 +1333,8 @@ tile.
     hand-off to the OAuth funnel (§7.1) that doubles as the empty state.
     There is no default-agent step and no member counts in the rows: the
     linking agent becomes a member, and the first member of a freshly
-    connected workspace is its dispatch default by construction. Tile
+    connected workspace is every team's dispatch default by construction,
+    until the team rows are edited. Tile
     availability = daemon capability ∧ `relayCapability.available` ∧ the
     deployment app being configured.
   - `apiBindings` — connect-funnel, connect-status, reconnect, and member
@@ -1567,8 +1578,9 @@ none` skips it along with everything else Linear-visible. There is **no
   recompiles the compile's existing member-name keyword routes without
   touching the token; **the connect tail and each add-member create the
   team rows themselves** from a stubbed `teams` answer — one per team,
-  `mention` for an unrestricted member and `off` for a gated one, owner on
-  the linking agent, no daemon involved — and the compile projects each
+  the trigger seeded from the linking agent (`mention` unrestricted, `off`
+  gated) and copied onto each later member's sibling row, owner on the
+  linking agent, no daemon involved — and the compile projects each
   row's owner into `conversationDefaults` while emitting **no channel-scoped
   route**, so a named mention still reaches the named member and a bound
   session survives an owner change; a team with no row falls to the
