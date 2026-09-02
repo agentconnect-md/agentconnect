@@ -210,6 +210,11 @@ export class PermissionCoordinator {
     return [...this.awaitingApproval.values()]
   }
 
+  /** Whether the session still has an answerable request — the emit-time check behind every `awaiting_permission`. */
+  isAwaitingApproval(agentId: string, sessionId: string): boolean {
+    return this.awaitingApproval.has(pendingTurnKey(agentId, sessionId))
+  }
+
   /** Re-assert every live wait after a (re)connect: the CP reset them when this daemon dropped (§7). */
   replayApprovalActivity(): void {
     for (const { agentId, sessionId } of this.awaitingApproval.values()) {

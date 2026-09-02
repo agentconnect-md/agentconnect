@@ -1389,6 +1389,7 @@ export class Daemon {
       for (const wait of this.permissions.liveApprovalWaits()) {
         if (wait.agentId !== agentId) continue
         const outward = (await this.outwardSessionIdForAcp(agentId, wait.sessionId)) ?? wait.sessionId
+        // The snapshot above is stale by now; the emit itself re-checks the wait is still live.
         if (outward === outwardSessionId) this.emitApprovalActivity(agentId, wait.sessionId, 'awaiting_permission')
       }
     } catch (err) {
@@ -8306,6 +8307,9 @@ export class Daemon {
     this.approvalActivityChain = this.approvalActivityChain.then(async () => {
       try {
         const sessionId = (await this.outwardSessionIdForAcp(agentId, acpSessionId)) ?? acpSessionId
+        // Re-checked after the lookup with no await before the send: a settle that landed meanwhile
+        // already queued its `idle` ahead of this task, and a stale `awaiting_permission` must not follow it.
+        if (state === 'awaiting_permission' && !this.permissions.isAwaitingApproval(agentId, acpSessionId)) return
         this.cpClient?.emitAgentActivity?.({ agentId, sessionId, state, ts: new Date(this.clock.now()).toISOString() })
       } catch (err) {
         this.log.warn(`approval activity for agent "${agentId}" not reported: ${formatErr(err)}`)

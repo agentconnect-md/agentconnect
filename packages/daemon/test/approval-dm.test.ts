@@ -232,6 +232,9 @@ describe('approval activity (slack-approval-dm.md §7)', () => {
     const parked = w.coordinator.onAcpPermission(AGENT, ACP_SESSION, permissionParams())
     await vi.waitFor(() => expect(activity).toHaveBeenCalledWith(AGENT, ACP_SESSION, 'awaiting_permission'))
 
+    expect(w.coordinator.isAwaitingApproval(AGENT, ACP_SESSION)).toBe(true)
+    expect(w.coordinator.isAwaitingApproval(AGENT, 'acp-other')).toBe(false)
+
     // The CP forgot this daemon's waits on disconnect: the replay re-asserts the live one.
     activity.mockClear()
     w.coordinator.replayApprovalActivity()
@@ -241,6 +244,7 @@ describe('approval activity (slack-approval-dm.md §7)', () => {
     await w.coordinator.releaseEditorPermissions(AGENT, ACP_SESSION)
     await expect(parked).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
     expect(activity).toHaveBeenLastCalledWith(AGENT, ACP_SESSION, 'idle')
+    expect(w.coordinator.isAwaitingApproval(AGENT, ACP_SESSION)).toBe(false)
 
     // Nothing is waiting any more, so a reconnect replays nothing.
     activity.mockClear()
