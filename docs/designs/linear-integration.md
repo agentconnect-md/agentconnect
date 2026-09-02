@@ -1,6 +1,7 @@
 # Linear Integration Design
 
-> **Status:** Proposed. Revised 2026-08 against the shipped
+> **Status:** P1 shipped and live-verified on the test environment
+> (2026-09-02, see §13 and the §14 live checklist). Revised 2026-08 against the shipped
 > [integration-plugin-architecture.md](integration-plugin-architecture.md): Linear
 > now lands as a standard platform module — the four host contracts, registry
 > lines, and the enumerated daemon composition set of §9.4 — and this doc's
@@ -1343,6 +1344,11 @@ tile.
   (named in the ack) → streamed activities → response; `@<agent-name>` routes
   to the named member; moving the row's selector moves the next bare
   delegation; reply and stop work; sessions render in the console.
+  **Shipped 2026-09-02.** Two items the live pass added on top of the list
+  above: the session sits in the issue's Resources from its first turn
+  (`attachmentCreate`, §5 table), and the delegator is named in the §8 header
+  and the session list (a `created` event carries only `creatorId`, so the
+  daemon resolves the name itself, full name first).
 - **P2 — workflow polish.** Plan sync; `externalUrls` (PR + console links);
   issue auto-start transition; daemon-local Linear read tool (bounded
   `getIssue`/comments via the connection token); elicitation deep-link card.
@@ -1412,6 +1418,16 @@ tile.
   a self-hosted daemon — the pool leg additionally proves the deployment's
   egress policy admits `api.linear.app` and that `linearcred` brokerage works
   through pool placement.
+  **Run 2026-09-02** against the test environment, both legs: delegate,
+  follow-up on the same session, the default-dispatch switch, the ack /
+  footer attribution, the console deep link and the Resources entry all
+  passed. Still to exercise live: `@<agent-name>` mention routing, stop,
+  redelivery replay, the 24 h token refresh, and workspace revoke. Two
+  lessons the run left behind — the gateway route set is part of the
+  platform contract (`/linear/events` was missing from the chart's relay
+  rule, and the render contract now pins it), and a self-hosted daemon behind
+  the release train writes its old model into the shared directory rows, so
+  a stale-looking label is a version question before it is a code question.
 
 ## 15. Open questions
 
