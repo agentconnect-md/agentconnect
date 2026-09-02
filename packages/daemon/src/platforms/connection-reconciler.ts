@@ -54,6 +54,10 @@ import { consolidateLinear, linearConnKey, LinearConnection } from './linear/con
 import type { ObservedChat } from './observed-channels.js'
 import { ConnectionPool, type ConnectionKey } from './registry.js'
 
+/** Deadline on the detached Linear team-list refresh — long enough for a slow answer, short
+ *  enough that a stalled provider does not leave a request hanging for the next reconcile. */
+const LINEAR_TEAM_LIST_MS = 5_000
+
 /** Any live platform client this lifecycle opens, prunes or binds. */
 export type PlatformConnection =
   SlackConnection | TelegramConnection | DiscordConnection | FeishuConnection | LinearConnection
@@ -768,7 +772,7 @@ export class ConnectionReconciler {
             this.log.info(`linear: bound integration ${integrationId} onto existing workspace client`)
           }
         }
-        await this.observeLinearTeams(existing, group.integrations)
+        this.reportLinearTeams(existing, group.integrations)
         continue
       }
       if (!this.linearPool.beginConnect(group.key)) continue
@@ -798,21 +802,35 @@ export class ConnectionReconciler {
         this.linearPool.endConnect(group.key)
       }
       // Outside the try: the report describes the INSTALL, not the token, so a warm-up that
-      // failed must still mint the conversation row every later delegation routes through.
-      await this.observeLinearTeams(conn, group.integrations)
+      // failed must still refresh the rows every later delegation routes through.
+      this.reportLinearTeams(conn, group.integrations)
     }
   }
 
-  /** The workspace's teams as this integration's observed conversations (§4.5) — one row per
-   *  team, named `<KEY> · <Team name>`. A NAME REFRESH, not the seeder: the CP writes these rows
-   *  synchronously in the install paths, so an empty answer (no token yet, a refusal) costs a
-   *  refresh, never a route. */
+  /** Start the team-list refresh without joining it to the reconcile — see
+   *  {@link observeLinearTeams} for why nothing may wait on it. It handles its own failures. */
+  private reportLinearTeams(conn: LinearConnection, integrations: readonly { integrationId: string }[]): void {
+    void this.observeLinearTeams(conn, integrations)
+  }
+
+  /**
+   * The workspace's teams as this integration's observed conversations (§4.5) — one row per
+   * team, named `<KEY> · <Team name>`. A NAME REFRESH, not the seeder: the CP writes these rows
+   * synchronously in the install paths, so an empty answer (no token yet, a refusal, a blown
+   * deadline) costs a refresh, never a route.
+   *
+   * OFF THE RECONCILE'S CRITICAL PATH, and bounded on top. The reconcile is single-flight, so a
+   * provider that accepts the team-list read and then stalls would coalesce every later
+   * convergence — agent changes, integration changes, inbox replay — behind a report nothing
+   * waits on. Callers therefore fire this and move on, and the read still carries its own
+   * {@link LINEAR_TEAM_LIST_MS} deadline so a stalled request cannot linger either.
+   */
   private async observeLinearTeams(
     conn: LinearConnection,
     integrations: readonly { integrationId: string }[]
   ): Promise<void> {
     try {
-      const teams = await conn.listChannels()
+      const teams = await conn.listChannels({ signal: AbortSignal.timeout(LINEAR_TEAM_LIST_MS) })
       if (teams.length === 0) return
       const chats: ObservedChat[] = teams.map((team) => ({
         id: team.id,

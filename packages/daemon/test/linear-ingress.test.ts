@@ -115,12 +115,26 @@ const TEAM_NODES = [
  * test, so no later FILE inherits it either.
  */
 let realFetch: typeof fetch
+/** Flipped by the stall test: the team-list request is accepted and then never answered. */
+let stallTeamList = false
 beforeEach(() => {
+  stallTeamList = false
   realFetch = globalThis.fetch
   vi.stubGlobal('fetch', async (url: unknown, init: unknown) => {
     if (String(url) !== LINEAR_GRAPHQL_ENDPOINT) return await realFetch(url as string, init as RequestInit)
     const body = JSON.parse((init as { body: string }).body) as { query: string }
-    const data = body.query.includes('teams(first:') ? { teams: { nodes: TEAM_NODES } } : {}
+    const teamList = body.query.includes('teams(first:')
+    // Honour the caller's signal so the stall ends at ITS deadline, exactly as a real stalled
+    // endpoint would — never as a promise nothing can settle.
+    if (teamList && stallTeamList) {
+      const signal = (init as { signal?: AbortSignal }).signal
+      return await new Promise<Response>((_resolve, reject) => {
+        if (!signal) return
+        if (signal.aborted) return reject(new Error('aborted'))
+        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })
+    }
+    const data = teamList ? { teams: { nodes: TEAM_NODES } } : {}
     return {
       ok: true,
       status: 200,
@@ -267,27 +281,34 @@ const im = async (daemon: Daemon, msg: unknown) => await (daemon as any).handleR
 describe('§4.5 the teams as the observed conversations', () => {
   it('reports the team list at reconcile, as a name refresh over the rows the CP already wrote', async () => {
     const { daemon } = await boot()
-    const snapshot = (daemon as any).channelSnapshots.get(INTEGRATION)
-    expect(snapshot).toMatchObject({ authoritative: false })
-    expect(snapshot.channels).toEqual([
-      { id: TEAM, name: 'ENG · Engineering', isPrivate: false, kind: 'channel' },
-      { id: OTHER_TEAM, name: 'DOCS · Docs', isPrivate: false, kind: 'channel' }
-    ])
+    // The refresh is detached from the reconcile (it may not block convergence), so wait for it
+    // rather than assuming it landed inside the awaited call.
+    await vi.waitFor(() =>
+      expect((daemon as any).channelSnapshots.get(INTEGRATION)).toEqual({
+        authoritative: false,
+        channels: [
+          { id: TEAM, name: 'ENG · Engineering', isPrivate: false, kind: 'channel' },
+          { id: OTHER_TEAM, name: 'DOCS · Docs', isPrivate: false, kind: 'channel' }
+        ]
+      })
+    )
     await daemon.stop()
   })
 
   it('labels each team id so the console never shows a bare team UUID', async () => {
     const { daemon, store } = await boot()
-    const names = await store.getDisplayNames([TEAM, OTHER_TEAM])
-    expect(names.get(TEAM)).toBe('ENG · Engineering')
-    expect(names.get(OTHER_TEAM)).toBe('DOCS · Docs')
+    await vi.waitFor(async () => {
+      const names = await store.getDisplayNames([TEAM, OTHER_TEAM])
+      expect(names.get(TEAM)).toBe('ENG · Engineering')
+      expect(names.get(OTHER_TEAM)).toBe('DOCS · Docs')
+    })
     await daemon.stop()
   })
 
   it('re-reports on a reconcile that only rebinds, without duplicating the rows', async () => {
     const { daemon } = await boot()
     await (daemon as any).connections.reconcileLinearConnections()
-    expect((daemon as any).channelSnapshots.get(INTEGRATION).channels).toHaveLength(2)
+    await vi.waitFor(() => expect((daemon as any).channelSnapshots.get(INTEGRATION)?.channels).toHaveLength(2))
     await daemon.stop()
   })
 
@@ -321,6 +342,33 @@ describe('§4.5 the teams as the observed conversations', () => {
     expect(reports.length).toBe(afterFirst)
     expect(named.mock.calls.filter((call: unknown[]) => call[0] === fresh.id)).toEqual([])
     expect((daemon as any).channelSnapshots.get(INTEGRATION).channels).toHaveLength(3)
+    await daemon.stop()
+  })
+
+  it('never lets a stalled team list block the reconcile, or the reconcile after it', async () => {
+    // The reconcile is single-flight: a provider that accepts the read and then stalls would
+    // coalesce every later convergence — agents, integrations, inbox replay — behind a report
+    // nothing waits on. The refresh is therefore detached AND deadline-bound.
+    const { daemon } = await boot()
+    stallTeamList = true
+    const reconcile = (daemon as any).connections.reconcileLinearConnections()
+    // No fake clock here on purpose: the read's own deadline is seconds away, so a reconcile
+    // that waited on it could not finish inside this assertion's window.
+    await expect(
+      Promise.race([
+        reconcile.then(() => 'reconciled'),
+        new Promise((resolve) => setTimeout(() => resolve('blocked'), 500))
+      ])
+    ).resolves.toBe('reconciled')
+    // And the next one converges just as freely while the first read is still outstanding.
+    await expect(
+      Promise.race([
+        (daemon as any).connections.reconcileLinearConnections().then(() => 'reconciled'),
+        new Promise((resolve) => setTimeout(() => resolve('blocked'), 500))
+      ])
+    ).resolves.toBe('reconciled')
+    // The rows the earlier successful refresh reported are untouched by the stall.
+    expect((daemon as any).channelSnapshots.get(INTEGRATION).channels).toHaveLength(2)
     await daemon.stop()
   })
 

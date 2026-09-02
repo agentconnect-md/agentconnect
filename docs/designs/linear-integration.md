@@ -1332,7 +1332,10 @@ tile.
     `leaveChannel`, `downloadFile` deferred). The two team reads **landed**
     with the team-as-channel change: `team(id) { id key name }` and
     `teams(first: 100) { nodes { id key name } }`, both on the direct read
-    path, each degrading to the bare id / an empty list on a refusal.
+    path, each degrading to the bare id / an empty list on a refusal, and both
+    **deadline-bound end to end** through the same `signal` `issueFacts` uses —
+    the caller's, else the port's own — so a provider that accepts and then
+    stalls costs a display name and never a caller.
   - `turn-output.ts` — the streaming Layer-2 surface + `LinearConverger` +
     `LinearAction` (§5).
   - message strategy — `adapterExt.linear` → prompt assembly and fencing
@@ -1398,8 +1401,11 @@ tile.
     install. Seeding the dispatch default from a daemon report would have
     made it depend on a live daemon and on report timing, and the window
     that opens is exactly the one a bare delegation arrives in.
-    **Landed** as two seats: the reconcile reports `listChannels` in one
-    frame per integration (`observePlatformChats`), and a delivery whose bag
+    **Landed** as two seats, and **neither is on a critical path**: the
+    reconcile FIRES the `listChannels` refresh (one `observePlatformChats`
+    frame per integration) without joining it, because the reconcile is
+    single-flight and a stalled read would otherwise coalesce every later
+    convergence behind a report nothing waits on; and a delivery whose bag
     names a team not yet reported on that integration reports that team, once
     per `(integration, team)` on an in-memory set, fire-and-forget so the
     report never sits inside the ≤10 s ack budget.

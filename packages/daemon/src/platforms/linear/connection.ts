@@ -52,6 +52,9 @@ const RENEW_RETRY_MS = 60_000
 /** Cap on the team list one report carries — the console's channel rows, not a full crawl. */
 const MAX_LISTED_TEAMS = 100
 
+/** A read port's own deadline when its caller sets none — a stall costs a name, never a caller. */
+export const LINEAR_READ_DEADLINE_MS = 5_000
+
 /**
  * A retry of `agentActivityCreate` is only safe because the input carries our own id: creation
  * is append-only (§15), so an indeterminate failure — transport loss, 5xx after the write
@@ -471,20 +474,23 @@ export class LinearConnection implements PlatformConnection {
 
   /**
    * The channel is the issue's TEAM (§4.5), so this names the team behind a channel id —
-   * `<KEY> · <Team name>`, one bounded direct read, never an issue: the one display slot is
-   * shared by every session in the team.
+   * `<KEY> · <Team name>`, never an issue: the one display slot is shared by every session in
+   * the team.
    *
-   * On the DIRECT read path like `getUserProfile`, and degrading to the bare id on any refusal:
-   * a row the console cannot label still routes. The workspace id — the issue-less channel,
-   * which has no team — is answered from the spec without a lookup at all.
+   * On the DIRECT read path like `getUserProfile`, and DEADLINE-BOUND end to end: the caller's
+   * signal when it has one, else {@link LINEAR_READ_DEADLINE_MS} of its own, because a provider
+   * that accepts and then stalls must cost a display name and never a caller. Degrades to the
+   * bare id on any refusal — a row the console cannot label still routes. The workspace id — the
+   * issue-less channel, which has no team — is answered from the spec without a lookup at all.
    */
-  async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {
+  async getChannelInfo(channel: string, opts: { signal?: AbortSignal } = {}): Promise<PlatformChannelInfo> {
     if (channel === this.organizationId) {
       const name = linearChannelName(undefined, this)
       return { id: channel, ...(name !== channel ? { name } : {}), isIm: false }
     }
     try {
-      const data = await this.graphql<{ team?: LinearTeamRef | null }>(TEAM_QUERY, { id: channel })
+      const signal = opts.signal ?? AbortSignal.timeout(LINEAR_READ_DEADLINE_MS)
+      const data = await this.graphql<{ team?: LinearTeamRef | null }>(TEAM_QUERY, { id: channel }, signal)
       const name = data.team ? linearChannelName({ ...data.team, id: channel }) : ''
       return { id: channel, ...(name && name !== channel ? { name } : {}), isIm: false }
     } catch (err) {
@@ -522,12 +528,17 @@ export class LinearConnection implements PlatformConnection {
     return []
   }
 
-  /** The workspace's teams — the channels of this install (§4.5). Bounded at
-   *  {@link MAX_LISTED_TEAMS}; a refusal answers empty rather than throwing, because the report
-   *  it feeds is a non-authoritative name refresh over rows the CP already wrote (§9.2). */
-  async listChannels(): Promise<PlatformChannelRef[]> {
+  /**
+   * The workspace's teams — the channels of this install (§4.5). Bounded three ways: at
+   * {@link MAX_LISTED_TEAMS} rows, by the caller's `signal` (else
+   * {@link LINEAR_READ_DEADLINE_MS}) end to end including the token wait, and by answering
+   * empty rather than throwing — the report it feeds is a non-authoritative name refresh over
+   * rows the CP already wrote (§9.2), so it may never outlive its deadline or fail a caller.
+   */
+  async listChannels(opts: { signal?: AbortSignal } = {}): Promise<PlatformChannelRef[]> {
     try {
-      const data = await this.graphql<{ teams?: { nodes?: LinearTeamRef[] } | null }>(TEAMS_QUERY, {})
+      const signal = opts.signal ?? AbortSignal.timeout(LINEAR_READ_DEADLINE_MS)
+      const data = await this.graphql<{ teams?: { nodes?: LinearTeamRef[] } | null }>(TEAMS_QUERY, {}, signal)
       return (data.teams?.nodes ?? [])
         .filter((node) => Boolean(node?.id))
         .map((node) => {

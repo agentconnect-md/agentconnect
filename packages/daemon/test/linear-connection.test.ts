@@ -820,6 +820,51 @@ describe('linear read port (§9.4 — what Linear affords)', () => {
     expect(await refused.conn.listChannels()).toEqual([])
   })
 
+  it('bounds both team reads end to end — the caller’s deadline, else one of their own', async () => {
+    // A provider that accepts and then stalls may cost a display name, never a caller: the read
+    // is signalled all the way down, and the signal covers the token wait as well (§9.4).
+    const listing = harness({ respond: () => jsonResponse({ data: { teams: { nodes: [] } } }) })
+    await listing.conn.listChannels()
+    expect(listing.calls[0]!.signal?.aborted).toBe(false)
+    const naming = harness({ respond: () => jsonResponse({ data: { team: null } }) })
+    await naming.conn.getChannelInfo(TEAM)
+    expect(naming.calls[0]!.signal?.aborted).toBe(false)
+    // A caller's own deadline wins, and one already blown answers WITHOUT sending anything —
+    // the read gives up on the token wait rather than turning into a live request.
+    const passed = new AbortController().signal
+    const custom = harness({ respond: () => jsonResponse({ data: { teams: { nodes: [] } } }) })
+    await custom.conn.listChannels({ signal: passed })
+    expect(custom.calls[0]!.signal).toBe(passed)
+    const blown = harness()
+    expect(await blown.conn.listChannels({ signal: AbortSignal.abort() })).toEqual([])
+    expect(await blown.conn.getChannelInfo(TEAM, { signal: AbortSignal.abort() })).toEqual({
+      id: TEAM,
+      isIm: false
+    })
+    expect(blown.calls).toHaveLength(0)
+  })
+
+  it('gives up on a stalled endpoint at the deadline instead of hanging its caller', async () => {
+    // The failure this exists for: a request the provider ACCEPTS and never answers. The signal
+    // reaches `fetch`, so the read ends at its own deadline and degrades like any refusal.
+    const conn = new LinearConnection({
+      group: group(),
+      requestToken: async () => ({ accessToken: 'renewed', expiresAt: FRESH_EXPIRY }),
+      fetchImpl: ((_url: unknown, init: unknown) =>
+        new Promise((_resolve, reject) => {
+          const signal = (init as { signal?: AbortSignal }).signal
+          signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+        })) as unknown as typeof fetch,
+      sendIntervalMs: 0,
+      now: () => START,
+      sleep: async () => {},
+      setTimer: () => undefined,
+      clearTimer: () => {}
+    })
+    expect(await conn.listChannels({ signal: AbortSignal.timeout(20) })).toEqual([])
+    expect(await conn.getChannelInfo(TEAM, { signal: AbortSignal.timeout(20) })).toEqual({ id: TEAM, isIm: false })
+  })
+
   it('strips the relay’s linear: prefix for the user query and answers under the caller’s key', async () => {
     const { conn, calls } = harness({
       respond: () => jsonResponse({ data: { user: { id: 'user-9', name: 'Ada Lovelace', displayName: 'ada' } } })
