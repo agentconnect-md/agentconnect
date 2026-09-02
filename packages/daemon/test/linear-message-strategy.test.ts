@@ -209,7 +209,7 @@ describe('§8 daemon-authored standing block', () => {
       `- Issue: TEAM-123 (id ${ISSUE_UUID}) — "Ship the thing" — ${ISSUE_URL}`,
       `- Team: Engineering (key ENG, id ${TEAM})`,
       '',
-      expect.stringContaining('Working here: your plan is already live in this session')
+      expect.stringContaining('Working here: the title and description are the brief')
     ])
   })
 
@@ -224,6 +224,9 @@ describe('§8 daemon-authored standing block', () => {
   it('sends the plan to the session and the outcome to a comment, and forbids a hand-written signature', () => {
     const convention = lines().at(-1) ?? ''
     expect(convention).toContain('never post it as a comment')
+    // The brief is worked as written: no standing invitation to ask before starting.
+    expect(convention).toContain('sensible defaults over questions')
+    expect(convention).not.toContain('ask in your response before working')
     expect(convention).toContain('OUTCOME')
     expect(convention).toContain('you never sign it')
     expect(convention).not.toContain('put the plan')
