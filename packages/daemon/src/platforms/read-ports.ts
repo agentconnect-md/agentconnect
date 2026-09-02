@@ -39,6 +39,7 @@
  */
 import type { ZodType } from 'zod'
 import type { SessionContext } from '../mcp/ops/context.js'
+import type { ReplyAttributionInfo } from '../messages/attribution.js'
 import type { ToolDescriptor } from '../tool-schema/descriptor.js'
 import { LINEAR_SESSION_TOOLS } from './linear/agent-tools.js'
 import { SLACK_ATTACHMENT_TOOL } from './slack/attachments.js'
@@ -74,7 +75,21 @@ export interface PlatformSessionTools {
   readonly descriptors: readonly ToolDescriptor[]
   /** The dispatch-boundary validator per tool name; the parity test holds both sides together. */
   readonly argSchemas: ReadonlyMap<string, ZodType>
-  execute(name: string, ctx: SessionContext, args: Record<string, unknown>, connection: unknown): Promise<unknown>
+  execute(
+    name: string,
+    ctx: SessionContext,
+    args: Record<string, unknown>,
+    env: PlatformSessionToolEnv
+  ): Promise<unknown>
+}
+
+/** What a session tool acts through beyond its own arguments — daemon facts, never model input. */
+export interface PlatformSessionToolEnv {
+  /** The session's own live platform connection (`sessionToolConnectionFor`). */
+  readonly connection: unknown
+  /** This turn's footer identity, for a tool that publishes text the agent must be named on.
+   *  Lazy because most tools never render it; undefined when the agent's footer chrome is off. */
+  readonly attribution?: () => Promise<ReplyAttributionInfo | undefined>
 }
 
 /** One platform's read-port declaration — the pre-connection half of the ask. */

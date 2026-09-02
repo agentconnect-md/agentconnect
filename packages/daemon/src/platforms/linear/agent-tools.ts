@@ -12,10 +12,13 @@
  */
 import { randomUUID } from 'node:crypto'
 import { z, type ZodType } from 'zod'
+import { appendGithubMarkdownChrome } from '../../github/poster.js'
 import { optionalBoundedInt, optionalNumber, optionalString, parseArgs, requiredString } from '../../mcp/ops/args.js'
 import type { SessionContext } from '../../mcp/ops/context.js'
+import type { ReplyAttributionInfo } from '../../messages/attribution.js'
 import { obj, type ToolDescriptor } from '../../tool-schema/descriptor.js'
-import type { PlatformSessionTools } from '../read-ports.js'
+import type { PlatformSessionTools, PlatformSessionToolEnv } from '../read-ports.js'
+import { linearAttributionFooter, linearAttributionOf } from './turn-output.js'
 
 /** The slice of the connection these tools need: one paced, authenticated GraphQL request. A
  *  create passes `onDuplicateKey` with a client-minted id in its input, so the connection's
@@ -236,8 +239,9 @@ export const LINEAR_TOOLS: ToolDescriptor[] = [
   {
     name: 'createIssueComment',
     description:
-      'Comment on an issue, Markdown; `parent` replies inside a comment thread. The comment is posted as the ' +
-      'AgentConnect app — sign it if the reader should know which agent wrote it.',
+      'Comment on an issue, Markdown; `parent` replies inside a comment thread. Post the OUTCOME of finished ' +
+      'work, never a plan — the session already shows that. Do not sign the comment: your attribution footer ' +
+      'is appended for you.',
     inputSchema: obj({ issue: issueRef, body: str('Comment body, Markdown.'), parent: str('Parent comment id.') }, [
       'issue',
       'body'
@@ -828,11 +832,46 @@ async function updateIssue(client: LinearToolClient, args: Record<string, unknow
   return { updated: Object.keys(input), issue: projectIssue(updated, SNIPPET_MAX) }
 }
 
-async function createIssueComment(client: LinearToolClient, args: Record<string, unknown>) {
+/** What a write tool knows about the acting turn beyond its arguments — daemon facts only. */
+interface LinearToolCall {
+  agentName?: string
+  attribution?: () => Promise<ReplyAttributionInfo | undefined>
+}
+
+/** A trailing dash line naming the acting agent — the signature the model used to be told to
+ *  write, and still reaches for. A single `-` is never matched: that is a list item. */
+const SIGNATURE_LINE = /^\s*[*_]{0,2}\s*(?:\u2014|\u2013|--)\s*(.+?)\s*[*_]{0,2}\s*$/
+
+/** Drop that line so the appended footer is the comment's only attribution. */
+export function stripAgentSignature(body: string, names: readonly (string | undefined)[]): string {
+  const wanted = names.flatMap((n) => (n?.trim() ? [n.trim().toLowerCase()] : []))
+  if (wanted.length === 0) return body
+  const lines = body.split('\n')
+  let last = lines.length - 1
+  while (last >= 0 && lines[last]!.trim() === '') last--
+  const signed = last >= 0 ? SIGNATURE_LINE.exec(lines[last]!) : null
+  if (!signed) return body
+  const claimed = signed[1]!
+    .replace(/\s*\([^()]*\)$/, '')
+    .trim()
+    .toLowerCase()
+  if (!wanted.includes(claimed)) return body
+  return lines.slice(0, last).join('\n').trimEnd()
+}
+
+async function createIssueComment(client: LinearToolClient, args: Record<string, unknown>, call: LinearToolCall) {
   const a = parseArgs(CREATE_ISSUE_COMMENT_ARGS, args)
   const target = await resolveIssue(client, a.issue)
   const id = randomUUID()
-  const input = { id, issueId: target.id, body: a.body, ...(a.parent ? { parentId: a.parent.trim() } : {}) }
+  const info = await call.attribution?.()
+  // Attribution is the DAEMON's line, not the model's: strip whatever it signed with, then append
+  // the same muted footer the turn's `response` activity carries (§5) — every agent posts through
+  // the one deployment app, so identity can live nowhere but the content.
+  const body = appendGithubMarkdownChrome(
+    stripAgentSignature(a.body, [call.agentName, info?.botName]),
+    info ? linearAttributionFooter(linearAttributionOf(info)) : ''
+  )
+  const input = { id, issueId: target.id, body, ...(a.parent ? { parentId: a.parent.trim() } : {}) }
   type Payload = {
     commentCreate?: { success?: boolean; comment?: { id?: string; url?: string; createdAt?: string } | null }
   }
@@ -1127,7 +1166,10 @@ async function updateInitiative(client: LinearToolClient, args: Record<string, u
   return { updated: Object.keys(input), initiative: projectInitiative(updated) }
 }
 
-const TOOLS: Record<string, (client: LinearToolClient, args: Record<string, unknown>) => Promise<unknown>> = {
+const TOOLS: Record<
+  string,
+  (client: LinearToolClient, args: Record<string, unknown>, call: LinearToolCall) => Promise<unknown>
+> = {
   getIssue,
   listIssues,
   listIssueComments,
@@ -1162,12 +1204,15 @@ export const LINEAR_SESSION_TOOLS: PlatformSessionTools = {
   argSchemas: LINEAR_TOOL_ARG_SCHEMAS,
   async execute(
     name: string,
-    _ctx: SessionContext,
+    ctx: SessionContext,
     args: Record<string, unknown>,
-    connection: unknown
+    env: PlatformSessionToolEnv
   ): Promise<unknown> {
     const tool = TOOLS[name]
     if (!tool) throw new Error(`unknown tool: ${name}`)
-    return await tool(asClient(connection), args)
+    return await tool(asClient(env.connection), args, {
+      ...(ctx.agentName ? { agentName: ctx.agentName } : {}),
+      ...(env.attribution ? { attribution: env.attribution } : {})
+    })
   }
 }

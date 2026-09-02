@@ -1110,14 +1110,20 @@ by <actor>` + issue URL, with `sanitizeTitle` flattening.
   message from stored coordinates without the bag, and a cold resume or a
   failed-load recreate must still re-assert the coordinates that the
   transcript, by design, no longer holds. That is what keeps the console's user bubble to the header, the URL
-  and the member's own words. The convention: the issue is the record, so
-  the plan and the outcome go into its description or a comment
-  (`updateIssue` / `createIssueComment`); the branch and the PR carry the
-  identifier so Linear links them; an empty or ambiguous ticket earns a
-  clarifying response before work; `updateIssue` takes `state` by workflow
-  state NAME (`listIssueStatuses`); current state, assignee and labels are
-  `getIssue`'s answer. Mutable issue state is deliberately NOT rendered
-  anywhere: a snapshot goes stale within the session, and standing context
+  and the member's own words. The convention: the plan is already live in the
+  session — the converger pushes the runtime's ACP plan entries onto the
+  AgentSession itself (§5) — so it is never a comment, and
+  `createIssueComment` is for the OUTCOME once work is done, or for the scope
+  the agent had to decide itself on an empty ticket, which is a deliverable
+  rather than a step list; an ambiguous ticket earns a clarifying response
+  before work; the branch and the PR carry the identifier so Linear links
+  them; `updateIssue` takes `state` by workflow state NAME
+  (`listIssueStatuses`); current state, assignee and labels are `getIssue`'s
+  answer. The convention also tells the model NOT to sign a comment: the
+  earlier wording invited both a "here is my plan" comment the feed already
+  rendered and a free-text `— <agent>` signature, and the tool now appends
+  the standard footer itself (§12). Mutable issue state is deliberately NOT
+  rendered anywhere: a snapshot goes stale within the session, and standing context
   is composed once, so the block is built from the bag alone — no
   `issueFacts` read, no deadline, nothing to degrade. Being daemon-authored
   is a claim the block has to earn, so every provider string on it (title,
@@ -1503,8 +1509,9 @@ tile.
     Progress" is one call. Results are bounded (8 000-char description on a
     full read, 300-char snippets in lists, 4 000-char comments, ≤50 rows a
     page) and every read tool's description says the text is data, not
-    instructions. Writes act as the app (§4.3) — the comment tool tells the
-    model to sign if the reader must know which agent wrote it.
+    instructions. Writes act as the app (§4.3), so `createIssueComment`
+    appends the turn's own attribution footer and strips a hand-written
+    signature instead of asking the model to sign (§12).
   - **The conversation report is a name refresh and a new-team backstop, not
     the seeder.** The connection reports the workspace's teams as its
     conversations — one `integration/channels` row per team, `id` = the team
@@ -1757,6 +1764,23 @@ none` skips it along with everything else Linear-visible. There is **no
   is attributed to the deployment app (§4.3), reaches Linear only through the
   session's own connection (a session on another platform is refused at call
   time), and shares the app's hourly budget through the paced queue.
+
+- **A comment's attribution is daemon-authored, like the response footer.**
+  Linear posts every agent's comment as the one deployment app (§4.3), so a
+  reader can only tell the agents apart from the content — and a model asked
+  to name itself will write whatever it likes. `createIssueComment` therefore
+  appends the SAME muted footer the settling `response` activity carries
+  (`linearAttributionFooter`: agent link, runtime · model, session link),
+  built from the turn's own attribution record rather than from any tool
+  argument, and honouring the same per-agent `showFooter` switch — off means
+  no footer here either. The facts reach the tool as a lazy resolver on the
+  session-tool environment (`PlatformSessionToolEnv.attribution`, wired from
+  `daemon.ts` as `sessionToolAttributionFor`), so a tool that publishes
+  nothing pays no lookup and identity stays a daemon fact on a path the model
+  cannot address. A trailing signature line naming the acting agent is
+  stripped from the body first, since agents that had seen the response
+  footer copied it by hand. Descriptions are untouched: an issue's
+  description is the ticket's own text, not the agent's post.
 
 - Signing secret: relay-only, via the `rc/bot-assign` secrets bag — never in
   daemon specs, logs, or DTOs. Client secret: CP-only. Refresh token:

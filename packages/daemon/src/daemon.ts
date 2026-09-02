@@ -54,7 +54,7 @@ import { TerminalOutputFolder } from './session/terminal-output-folder.js'
 import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
-import type { CodeHostEffectReq, SetSessionTitleReq } from './mcp/ops.js'
+import type { CodeHostEffectReq, SessionContext, SetSessionTitleReq } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
 import { gitlabApiBaseUrl } from './gitlab/api-base.js'
@@ -164,6 +164,7 @@ import {
   slackStreamRecipient,
   type SlackTurnState
 } from './platforms/slack/turn-output.js'
+import type { ReplyAttributionInfo } from './messages/attribution.js'
 import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import { mentionedUserIds, substituteUserMentions } from './slack/mentions.js'
 import {
@@ -2422,6 +2423,9 @@ export class Daemon {
       // A platform's own session tools act through ANY platform's connection — including the one
       // the reply-surface registry above omits (Linear, §4.6).
       sessionToolConnectionFor: (integrationId) => this.anyConnForIntegration(integrationId),
+      // The footer a session tool appends to text it publishes as the agent (Linear comments):
+      // the SAME identity the turn's response carries, resolved from the trusted session context.
+      sessionToolAttributionFor: (ctx) => this.sessionToolAttribution(ctx),
       // History-backed discovery for platforms whose bot API can't enumerate chats/users
       // (Telegram): only the sole current physical bot's scoped history is reachable.
       observedChannels: async (agentId, platform) => {
@@ -4787,6 +4791,25 @@ export class Daemon {
     // Cancellation is latched on the exact active key; absence of an active turn
     // fails closed (the token outlives nothing).
     return active !== undefined && !active.cancelledReason
+  }
+
+  /** The footer identity for a platform session tool that publishes agent-authored text
+   *  (Linear's `createIssueComment`): the same facts the turn's response footer carries, read
+   *  from the trusted session context. Undefined when the agent's footer chrome is off. */
+  private async sessionToolAttribution(ctx: SessionContext): Promise<ReplyAttributionInfo | undefined> {
+    const agent = this.agents.get(ctx.agentId)
+    if (!agent?.output.showFooter) return undefined
+    const key = sessionKey(ctx.platform, ctx.channel, ctx.thread, ctx.agentId, ctx.transportScope)
+    const rec = await this.store?.getSession(key)
+    return {
+      botName: agent.name,
+      botUrl: this.agentLink(ctx.agentId),
+      runtime: this.runtimeFacts.runtimeNames()[agent.runtime] ?? agent.runtime,
+      model: (await this.store?.getObservedModel(key)) ?? 'default',
+      sessionUrl: rec?.sessionId
+        ? this.sessionLink(rec.sessionId, this.sessionLinkSource(ctx.platform, ctx.integrationId))
+        : ''
+    }
   }
 
   private async runDreamExtraction(
