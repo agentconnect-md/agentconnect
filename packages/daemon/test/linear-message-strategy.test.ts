@@ -333,6 +333,11 @@ describe('the turn shape §8 names', () => {
       expect(linearSessionTitle(ext())).toBe('TEAM-123: Ship the thing')
       expect(linearSessionTitle(ext({ issueTitle: undefined }))).toBe('TEAM-123')
       expect(linearSessionTitle(ext({ issueIdentifier: undefined }))).toBeUndefined()
+      // The shared 80-character session-title bound, as for a first-message or runtime title.
+      const long = linearSessionTitle(ext({ issueTitle: 'x'.repeat(150) }))!
+      expect([...long]).toHaveLength(80)
+      expect(long.startsWith('TEAM-123: xxx')).toBe(true)
+      expect(long.endsWith('…')).toBe(true)
     })
   })
 

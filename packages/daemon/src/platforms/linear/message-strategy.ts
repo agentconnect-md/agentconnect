@@ -27,6 +27,7 @@ import {
 } from '../../messages/hook-message.js'
 import type { NormalizedMessage } from '../../messages/normalized.js'
 import type { LinearTurnFacts } from '@agentconnect.md/protocol'
+import { clampRuntimeTitle } from '../../session/derive-title.js'
 
 /** One earlier comment the relay budgeted into the bag. Only the fields it forwards exist. */
 const LinearPreviousComment = z.object({
@@ -325,13 +326,13 @@ export function linearDisplayText(msg: Pick<NormalizedMessage, 'text'>, ext: Lin
   return comment ? `${head}\n${comment}` : head
 }
 
-/** `ENG-3: title` — the session's born title, the shape the code-host sessions use. */
+/** `ENG-3: title` — the session's born title, the shape the code-host sessions use, under the
+ *  one session-title bound every other title source honours. */
 export function linearSessionTitle(ext: LinearAdapterExt): string | undefined {
   if (!ext.issueIdentifier) return undefined
+  const identifier = sanitizeTitle(ext.issueIdentifier, FACT_MAX_CHARS)
   const title = ext.issueTitle ? sanitizeTitle(ext.issueTitle) : ''
-  return title
-    ? `${sanitizeTitle(ext.issueIdentifier, FACT_MAX_CHARS)}: ${title}`
-    : sanitizeTitle(ext.issueIdentifier, FACT_MAX_CHARS)
+  return clampRuntimeTitle(title ? `${identifier}: ${title}` : identifier)
 }
 
 /** The Linear facts behind this delivery (`LinearTurnFacts`), for the console's formatter. */

@@ -571,7 +571,12 @@ export function hookDisplayText(msg: RdMsgHook): string | undefined {
   const subject = hookSubjectLabel(msg)
   const title = c.title ? ` · ${c.title.split('\n', 1)[0]!.trim()}` : ''
   if (msg.gitlab?.target.kind === 'push') return `Pushed ${subject}`
-  if (c.event === 'push') return `Pushed to ${subject}`
+  if (c.event === 'push') {
+    // A GitHub push carries no subject, but its affinity key is `<prefix>#refs/heads/main`, so the
+    // thread segment IS the ref — except under `shared` / `perDelivery` keys, which name no branch.
+    const { thread } = splitSessionKey(msg)
+    return thread?.startsWith('refs/') ? `Pushed ${thread}` : `Pushed to ${subject}`
+  }
   const verb = c.action ? ACTION_VERBS[c.action] : undefined
   if (verb) return `${verb} ${subject}${title}`
   const event = c.action ? `${c.event}:${c.action}` : (c.event ?? 'event')

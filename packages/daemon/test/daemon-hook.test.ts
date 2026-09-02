@@ -4035,6 +4035,15 @@ describe('buildHookMessage', () => {
       )
       expect(push.turnBody?.codehost?.review).toBeUndefined()
       expect(push.turnBody?.codehost?.subject.number).toBeUndefined()
+      // A per-branch push key names the ref; a shared key names no branch, so the repo stands in.
+      const branchPush = buildHookMessage(
+        ghFire(
+          { event: 'push', action: undefined, number: undefined, bodyExcerpt: undefined },
+          { sessionKey: 'acme/infra#refs/heads/main' }
+        ),
+        'trace'
+      )
+      expect(branchPush.text).toBe('Pushed refs/heads/main')
       expect(push.text).toBe('Pushed to acme/infra')
     })
 
