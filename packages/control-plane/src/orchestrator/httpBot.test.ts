@@ -4,7 +4,7 @@ import { AgentDelivery } from './agentDelivery.js'
 import type { PlacementResolver } from './placementResolver.js'
 import type { GatedDmSeedResolver } from './linkedDm.js'
 import { RelayRegistry, type RelayChannel } from '../ws/relay-registry.js'
-import type { RcBotAssign, RelayCpFrameType } from '@agentconnect.md/protocol'
+import type { RcBotAssign, RcRoutes, RelayCpFrameType } from '@agentconnect.md/protocol'
 import { AgentId, BotId, DaemonId, IntegrationId, OrgId } from '../domain/ids.js'
 import type {
   BotRepo,
@@ -1156,6 +1156,34 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       const res = await makeOrch().lookupThread({ botId: BOT, sessionKey: 'C1/123.456' })
       expect(res.target).toEqual({ agentId: ALICE, daemonId: D1 })
     })
+
+    it('answers a STOP-mode lookup GRANT-BLIND, with the holder install attached', async () => {
+      // linear-integration.md §9.3: a stop can only end work, so it must still reach the runtime
+      // that holds the session after the conversation's default moved off its gated holder.
+      gatedAgents = new Set([ALICE])
+      threadBinding = { agentId: ALICE, daemonId: DaemonId(D1) }
+      channels = [] // no enabled row for ALICE in C1 — the ordinary mode refuses this exact case
+      const res = await makeOrch().lookupThread({ botId: BOT, sessionKey: 'C1/123.456', mode: 'stop' })
+      expect(res.target).toEqual({ agentId: ALICE, daemonId: D1, integrationId: INT_A })
+      // A stop is delivered to the one holder, never fanned across a room.
+      expect(res.participants).toEqual([])
+    })
+
+    it('answers a STOP-mode affinity miss from session_meta, still grant-blind', async () => {
+      gatedAgents = new Set([ALICE])
+      threadBinding = null
+      threadOwner = { agentId: ALICE }
+      channels = []
+      const res = await makeOrch().lookupThread({ botId: BOT, sessionKey: 'C1/123.456', mode: 'stop' })
+      expect(res.target).toEqual({ agentId: ALICE, daemonId: D1, integrationId: INT_A })
+    })
+
+    it('answers a STOP-mode lookup with nobody when no member is routable for the holder', async () => {
+      threadBinding = { agentId: ALICE, daemonId: DaemonId(D1) }
+      const orch = makeOrch(PLATFORMS, { routableDaemon: async () => null })
+      const res = await orch.lookupThread({ botId: BOT, sessionKey: 'C1/123.456', mode: 'stop' })
+      expect(res.target).toBeNull()
+    })
   })
 
   it('releases the bot (rc/bot-unassign) when transport is socket (no relay ingress)', async () => {
@@ -1474,10 +1502,11 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
     expect(ch.sends).toEqual([{ type: 'rc/bot-unassign', payload: { botId: BOT, credentialRevision: 1 } }]) // re-stamp only
   })
 
-  describe('a sole-conversation platform (§5 soleConversation)', () => {
-    // A connected Linear workspace: the install names the ONE conversation it can reach, so its
-    // row is the workspace default rather than a channel-scoped route.
-    const WORKSPACE = 'org-linear-1'
+  describe('an ownerAsDefault platform (§5, read through soleConversation)', () => {
+    // A connected Linear workspace: each team row's owner is that CONVERSATION's default rather
+    // than a channel-scoped route, which would outrank the keyword and continuity rungs.
+    const TEAM_A = 'team-linear-a'
+    const TEAM_B = 'team-linear-b'
     // The real Linear provider needs a token service and a live app config; this compile reads
     // nothing from it but the relay projection's existence, so a relabelled stub is enough.
     const LINEAR_PLATFORMS = buildCpPlatformRegistry([
@@ -1490,44 +1519,84 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
         { ...integration(INT_A, ALICE), platform: 'linear' },
         { ...integration(INT_B, BOB), platform: 'linear' }
       ]
-      channels = [channel({ integrationId: INT_B, channelId: WORKSPACE, agentId: BOB, trigger: 'mention' })]
+      channels = [
+        channel({ integrationId: INT_B, channelId: TEAM_A, agentId: BOB, trigger: 'mention' }),
+        channel({ integrationId: INT_A, channelId: TEAM_B, agentId: ALICE, trigger: 'mention' })
+      ]
     })
 
-    it('emits NO channel-scoped route and makes the row owner the group default', async () => {
+    it('emits NO channel-scoped route and projects each row owner into conversationDefaults', async () => {
       await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
 
       // The whole correction: a scoped `mention` rule here would be the FIRST rung, and every
       // Linear event marks the app as mentioned — so it would swallow keyword selection and
-      // thread continuity alike.
+      // thread continuity alike. The owner rides the per-conversation default rung instead.
       expect(assign.routes.some((r) => r.scope !== undefined)).toBe(false)
       const keywords = assign.routes
         .filter((r) => r.match.kind === 'keyword')
         .map((r) => (r.match as { value: string }).value)
         .sort()
       expect(keywords).toEqual(['alice', 'bob'])
-      // The ROW outranks the earliest-member derivation (ALICE installs first): the workspace
-      // conversation's owner IS the default.
-      expect(assign.defaultAgentId).toBe(BOB)
-      expect(assign.defaultDaemonId).toBe(D2)
+      expect(assign.ownerAsDefault).toBe(true)
+      expect([...assign.conversationDefaults].sort((a, b) => a.channel.localeCompare(b.channel))).toEqual([
+        { channel: TEAM_A, agentId: BOB, daemonId: D2, integrationId: INT_B },
+        { channel: TEAM_B, agentId: ALICE, daemonId: D1, integrationId: INT_A }
+      ])
+      // The group default keeps its GENERIC earliest-non-gated derivation as the backstop for a
+      // team that has no row yet — ALICE installs first.
+      expect(assign.defaultAgentId).toBe(ALICE)
+      expect(assign.defaultDaemonId).toBe(D1)
+    })
+
+    it('leaves an Off row out of the defaults, so a muted team resolves to nothing', async () => {
+      channels = [
+        channel({ integrationId: INT_B, channelId: TEAM_A, agentId: BOB, trigger: 'off' }),
+        channel({ integrationId: INT_A, channelId: TEAM_B, agentId: ALICE, trigger: 'mention' })
+      ]
+      await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
+      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
+      expect(assign.conversationDefaults.map((d) => d.channel)).toEqual([TEAM_B])
+      expect(assign.mutedChannels).toContain(TEAM_A)
+      // The generic backstop is untouched by the mute — it is what a team with no row falls to.
+      expect(assign.defaultAgentId).toBe(ALICE)
     })
 
     it('carries a RESTRICTED member as UNGATED, so a private linking agent is routable at all', async () => {
-      // §14's fail-open worry presumes conversations the install never granted. Here the install
-      // granted the only one, so the member is not conversation-gated ON THIS BOT — which is what
-      // keeps the relay's three gated fences (the keyword rung, the default derivation, and the
-      // scoped-route requirement `agentTarget`/thread continuity impose) from stranding it.
+      // §14's fail-open worry presumes conversations the install never granted. Today's de-gating
+      // arm still applies on this platform, which is what keeps the relay's gated fences (the
+      // keyword rung, the default derivation, the scoped-route requirement) from stranding it.
       gatedAgents = new Set([BOB])
       await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
       const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
 
       expect(assign.gatedAgentIds).toEqual([])
-      expect(assign.defaultAgentId).toBe(BOB)
+      // Its seat is the team's own default, not the group's.
+      expect(assign.conversationDefaults).toContainEqual({
+        channel: TEAM_A,
+        agentId: BOB,
+        daemonId: D2,
+        integrationId: INT_B
+      })
       expect(assign.routes.some((r) => r.agentId === BOB && r.match.kind === 'keyword' && r.scope === undefined)).toBe(
         true
       )
       // The daemon's own last-hop backstop must agree, or it would refuse what the relay routed.
       expect(upserts.every((u) => u.spec.core?.mode === 'shared')).toBe(true)
+    })
+
+    it('carries the defaults on the rc/routes HOT UPDATE, so an owner edit converges', async () => {
+      // An owner edit persists and converges through syncRoutes — without the field on the hot
+      // update every connected relay would keep the old default, and with it the old grant.
+      await makeOrch(LINEAR_PLATFORMS).setChannelAgent(BOT, TEAM_A, ALICE)
+      const routes = ch.sends.filter((s) => s.type === 'rc/routes').at(-1)!.payload as RcRoutes
+      expect(routes.conversationDefaults).toContainEqual({
+        channel: TEAM_A,
+        agentId: ALICE,
+        daemonId: D1,
+        integrationId: INT_A
+      })
+      expect(routes.routes.some((r) => r.scope !== undefined)).toBe(false)
     })
 
     it('still gates that same agent on an ORDINARY bot, so its name leaks nowhere', async () => {
@@ -1543,16 +1612,6 @@ describe('HttpBotOrchestrator — attributed route compilation (§10)', () => {
       expect(assign.gatedAgentIds).toEqual([BOB])
       expect(assign.defaultAgentId).toBe(ALICE)
       expect(assign.routes.some((r) => r.agentId === BOB && r.match.kind === 'keyword')).toBe(false)
-    })
-
-    it('mutes an Off workspace and leaves the group without a default', async () => {
-      channels = [channel({ integrationId: INT_B, channelId: WORKSPACE, agentId: BOB, trigger: 'off' })]
-      await makeOrch(LINEAR_PLATFORMS).syncBot(BOT)
-      const assign = ch.sends.find((s) => s.type === 'rc/bot-assign')?.payload as RcBotAssign
-
-      expect(assign.mutedChannels).toContain(WORKSPACE)
-      // No enabled row, so no workspace default — the bot preference does not resurrect one.
-      expect(assign.defaultAgentId).toBe(ALICE)
     })
   })
 })

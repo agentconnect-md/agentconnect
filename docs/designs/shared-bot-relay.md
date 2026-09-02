@@ -380,7 +380,11 @@ conversation settings. The relay applies the shared routing ladder:
 1. an explicit agent selection or scoped conversation owner;
 2. existing thread affinity;
 3. agent-slug keyword disambiguation;
-4. the bot's default agent for a bare mention or direct message.
+4. the conversation's own default agent, where the platform compiles a row's
+   owner to a default rather than to a scoped ownership route
+   ([linear-integration.md](linear-integration.md) §6.2 — empty elsewhere, so
+   the rung is invisible on every platform that does not use it);
+5. the bot's default agent for a bare mention or direct message.
 
 Before compiling routes, CP converges each observed conversation to one canonical
 owner row and replicates its effective trigger across the sibling membership rows,

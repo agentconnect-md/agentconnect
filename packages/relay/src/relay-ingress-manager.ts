@@ -40,6 +40,7 @@ import { DemuxIndex, IngressPool, relayIngressPlugins } from './platforms/regist
 import type {
   HandledDelivery,
   RelayBotIngress,
+  RelayForwardOutcome,
   RelayIngressHost,
   RelayIngressSidecar,
   RelayPlatformIngressPlugin
@@ -203,6 +204,7 @@ export class RelayIngressManager {
         channelOwner: (botId, channelId) => this.router.channelOwner(botId, channelId),
         targetForAgentId: (botId, agentId) => this.router.targetForAgentId(botId, agentId),
         resolveTarget: (botId, coords) => this.resolveConversationTarget(botId, coords),
+        resolveBoundTarget: (botId, sessionKey) => this.resolveBoundTarget(botId, sessionKey),
         conversationParticipants: (botId, coords) =>
           this.router.conversationParticipants(
             botId,
@@ -878,14 +880,14 @@ export class RelayIngressManager {
     botId: string,
     msg: import('@agentconnect.md/protocol').WireNormalizedMessage,
     sidecar?: RelayIngressSidecar
-  ): Promise<void> {
+  ): Promise<RelayForwardOutcome> {
     // send-message-routing-rework.md §2.3/§6: agent-authored traffic takes its OWN
     // ladder and never continues into the human one. Handled BEFORE arbitration for the
     // same reason the blanket filter used to be: an agent's platform copy must not mutate
     // thread affinity or produce a CP assignment report on its way through.
     if (this.isAgentBotMessage(botId, msg)) {
       await this.forwardVerifiedAgentMessage(botId, msg, sidecar)
-      return
+      return 'accepted'
     }
     const sessionKey = sessionKeyOf(msg)
     const assignment = this.router.get(botId)
@@ -900,7 +902,16 @@ export class RelayIngressManager {
     const addressesBot = msg.isDm || (msg.isGroupDm === true && namesThisBot)
     if (addressesBot && !msg.sender.isBot) await this.reportObservedConversation(botId, msg)
     const prior = this.router.peekAffinity(botId, sessionKey)
-    let tgt = this.router.route(botId, msg)
+    const arbitration = this.router.routeResult(botId, msg)
+    // Terminal (linear-integration.md §6.2): the channel's default moved off the gated
+    // agent this session is bound to, so the follow-up is refused rather than handed to
+    // the new default — a single-writer session must not gain a second runtime. Nothing
+    // below the affinity rung runs, including the CP backstop and the gating notice.
+    if (arbitration.kind === 'refused') {
+      this.deps.log.debug(`relay-ingress(${botId}): refused ${msg.msgId} in ${sessionKey} — ${arbitration.reason}`)
+      return 'refused'
+    }
+    let tgt: RouteTarget | null = arbitration.kind === 'target' ? arbitration.target : null
     // Third-party bots retain their strict explicit-mention-only behavior. Participant
     // fan-out is for humans and verified AgentConnect authors; treating an arbitrary bot
     // like a person in the room would let one mention wake unrelated joined agents.
@@ -948,18 +959,18 @@ export class RelayIngressManager {
           if (!this.ingestFor(botId)?.egress) tgt = this.router.soleGatedTarget(botId) ?? null
           if (!tgt) {
             await this.noticeGatedUnrouted(botId, msg)
-            return
+            return 'accepted'
           }
         }
       }
       // Backstop leg: only a real un-mentioned threaded follow-up is worth a CP lookup.
       if (!tgt) {
-        if (!this.router.isUnmentionedThreadFollowup(botId, msg)) return
+        if (!this.router.isUnmentionedThreadFollowup(botId, msg)) return 'accepted'
         let lookup: Awaited<ReturnType<RelayIngressManagerDeps['lookupThread']>>
         try {
           lookup = await this.deps.lookupThread({ botId, sessionKey })
         } catch {
-          return // CP down — drop (bounded loss); a mention re-anchors the thread.
+          return 'accepted' // CP down — drop (bounded loss); a mention re-anchors the thread.
         }
         for (const participant of lookup.participants) {
           const current = this.router.agentTarget(botId, participant.agentId, msg.channel)
@@ -969,12 +980,17 @@ export class RelayIngressManager {
         }
         if (!lookup.target && lookup.participants.length === 0) {
           this.router.rememberNoAffinity(botId, sessionKey)
-          return
+          return 'accepted'
         }
         // Seeded from the CP — do NOT report it back (it came from the CP).
         if (lookup.target) {
-          if (!this.router.seedLookupTarget(botId, sessionKey, lookup.target)) return
-          tgt = this.router.route(botId, msg)
+          if (!this.router.seedLookupTarget(botId, sessionKey, lookup.target)) return 'accepted'
+          const seeded = this.router.routeResult(botId, msg)
+          if (seeded.kind === 'refused') {
+            this.deps.log.debug(`relay-ingress(${botId}): refused ${msg.msgId} in ${sessionKey} — ${seeded.reason}`)
+            return 'refused'
+          }
+          tgt = seeded.kind === 'target' ? seeded.target : null
         }
         conversationTargets = msg.sender.isBot
           ? tgt
@@ -983,7 +999,7 @@ export class RelayIngressManager {
           : this.router.conversationTargets(botId, msg, tgt, undefined, [], (target) =>
               this.reportHumanParticipant(botId, sessionKey, msg.channel, tgt, target)
             )
-        if (!tgt && conversationTargets.length === 0) return
+        if (!tgt && conversationTargets.length === 0) return 'accepted'
       }
     }
     // A single-owner route is only the compatibility/reporting primary. Delivery is to
@@ -1039,6 +1055,7 @@ export class RelayIngressManager {
         )
       }
     }
+    return 'accepted'
   }
 
   /**
@@ -1118,6 +1135,32 @@ export class RelayIngressManager {
         `relay-ingress(${botId}): gating notice failed in ch=${msg.channel}: ${(err as Error).message}`
       )
     }
+  }
+
+  /**
+   * The Stop-only bound-target lookup (§8 directory.resolveBoundTarget,
+   * linear-integration.md §9.3). Bot-scoped and grant-blind: it answers with the
+   * runtime that HOLDS the session or with nobody, and never arbitrates — a miss
+   * resolving to the channel's current default would put a second daemon on a
+   * single-writer feed. The CP leg is the ordinary pull-on-miss backstop in `stop`
+   * mode, which makes the CP's own answer grant-blind too.
+   */
+  private async resolveBoundTarget(botId: string, sessionKey: string): Promise<RouteTarget | undefined> {
+    const placed = (candidate: RouteTarget | undefined): RouteTarget | undefined =>
+      candidate && this.deps.getDaemon(candidate.daemonId) ? candidate : undefined
+    const local = placed(this.router.boundTarget(botId, sessionKey))
+    if (local) return local
+    let lookup: Awaited<ReturnType<RelayIngressManagerDeps['lookupThread']>>
+    try {
+      lookup = await this.deps.lookupThread({ botId, sessionKey, mode: 'stop' })
+    } catch {
+      return undefined // CP down — nobody, rather than a guess at the holder.
+    }
+    if (!lookup.target) return undefined
+    // Cached back through the same validation a memory hit takes, so a second stop on
+    // the same session costs no CP round trip.
+    const seeded = this.router.seedLookupTarget(botId, sessionKey, lookup.target)
+    return placed(seeded?.integrationId ? seeded : undefined)
   }
 
   /**

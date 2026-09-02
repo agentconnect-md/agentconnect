@@ -33,6 +33,9 @@ const LinearPreviousComment = z.object({
 export const LinearAdapterExtSchema = z.object({
   agentSessionId: z.string().min(1),
   event: z.enum(['created', 'prompted']).optional(),
+  // The issue's team — the channel coordinate itself (§4.5). Read tolerantly here; the
+  // coordinates, `channelName` and the §8 header adopt it in their own change.
+  team: z.object({ id: z.string(), key: z.string().optional(), name: z.string().optional() }).optional(),
   issueId: z.string().optional(),
   issueIdentifier: z.string().optional(),
   issueTitle: z.string().optional(),

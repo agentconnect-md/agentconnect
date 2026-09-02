@@ -3,6 +3,7 @@
 import type { RdMsgPlatformAction } from '@agentconnect.md/protocol'
 import {
   LinearHttpIngest,
+  linearChannelOf,
   linearDedupId,
   linearIsStop,
   normalizeLinearEvent,
@@ -20,20 +21,22 @@ export interface LinearStopAction {
   agentSessionId: string
 }
 
-// A stop is an interaction, not a message: it takes the directory ladder, and because a Linear
-// session is bound to one agent at creation (§4.5) the conversation's own target is the holder.
-export function forwardLinearStop(
+// A stop is an interaction, not a message, and a Linear session is bound to one agent at
+// creation (§4.5) — so it takes the BOUND-target lookup, never ordinary arbitration: reaching
+// the channel's current default instead would settle a session another runtime still holds.
+export async function forwardLinearStop(
   host: RelayIngressHost,
   ingest: LinearHttpIngest,
   event: LinearAgentSessionEvent,
   msgId: string
-): void {
+): Promise<void> {
   const botId = ingest.botId
   const session = event.agentSession
-  const channelId = ingest.identity.organizationId
-  const route = host.directory.resolveTarget(botId, { channelId, threadTs: session.id })
+  const channelId = linearChannelOf(event, ingest.identity)
+  const sessionKey = sessionKeyOf({ channel: channelId, thread: session.id })
+  const route = await host.directory.resolveBoundTarget(botId, sessionKey)
   if (!route) {
-    host.log.warn(`relay-ingress(${botId}): Linear stop for session ${session.id} has no current target`)
+    host.log.warn(`relay-ingress(${botId}): Linear stop for session ${session.id} reaches no bound agent — dropped`)
     return
   }
   const payload: LinearStopAction = { kind: 'stop', agentSessionId: session.id }
@@ -42,13 +45,13 @@ export function forwardLinearStop(
     platformId: 'linear',
     agentId: route.agentId,
     integrationId: route.integrationId,
-    sessionKey: sessionKeyOf({ channel: channelId, thread: session.id }),
+    sessionKey,
     msgId,
     botId,
     ...(event.agentActivity?.user?.id ? { userId: event.agentActivity.user.id } : {}),
     payload
   }
-  void host
+  await host
     .forwardAction(rd, route)
     .then((ack) => {
       if (!ack.accepted) host.log.warn(`relay-ingress(${botId}): daemon rejected Linear stop (${ack.reason ?? '?'})`)
@@ -119,12 +122,19 @@ export const linearIngressPlugin: RelayPlatformIngressPlugin<LinearHttpIngest, V
     }
     if (host.dedupSeen(msgId)) return {}
     if (linearIsStop(event)) {
-      forwardLinearStop(host, ingest, event, msgId)
+      void forwardLinearStop(host, ingest, event, msgId)
       return {}
     }
     const message = normalizeLinearEvent(event, msgId, ingest.identity)
     void host
       .forward(botId, message)
+      .then((outcome) => {
+        // §6.2's terminal refusal: the team's default moved off the gated agent bound to this
+        // session, so the delivery is dropped — Linear still gets its 200, and nothing answers.
+        if (outcome === 'refused') {
+          host.log.debug(`relay-ingress(${botId}): dropped Linear ${msgId} — the session's grant was withdrawn`)
+        }
+      })
       .catch((err) => host.log.warn(`linear ingress: event handler error: ${(err as Error).message}`))
     return {}
   }

@@ -7,15 +7,27 @@
  * The ladder mirrors the daemon's local arbitration (routing-table.ts) but over
  * ALREADY-ATTRIBUTED routes, and adapted for the multi-agent ambiguity (all agents
  * answer as one bot user id): channel ownership → thread continuity → keyword
- * (agent slug) → the group's default agent for a bare @bot / DM. There is NO
- * unscoped mention rule (it would starve keyword disambiguation, §10.4); the bare
- * @bot fallback is the `defaultAgentId` rung instead.
+ * (agent slug) → the channel's own default → the group's default agent for a bare
+ * @bot / DM. There is NO unscoped mention rule (it would starve keyword
+ * disambiguation, §10.4); the bare @bot fallback is the `defaultAgentId` rung instead.
  *
  * Pure data + a pure `arbitrate()` — no I/O, no Slack, no sockets — so it unit
  * tests without a live ingest.
  */
-import { arbitrateSharedBot, sharedBotScopeMatches, sharedBotSessionKey } from '@agentconnect.md/activation-policy'
-import type { AttributedRoute, RcAgentDirEntry, RcBotAssign, WireNormalizedMessage } from '@agentconnect.md/protocol'
+import {
+  arbitrateSharedBot,
+  arbitrateSharedBotResult,
+  sharedBotScopeMatches,
+  sharedBotSessionKey,
+  type SharedBotArbitration
+} from '@agentconnect.md/activation-policy'
+import type {
+  AttributedRoute,
+  RcAgentDirEntry,
+  RcBotAssign,
+  RcConversationDefault,
+  WireNormalizedMessage
+} from '@agentconnect.md/protocol'
 import { isThreadRootMessage } from '@agentconnect.md/message'
 
 /** A bot's full relay-side assignment (from `rc/bot-assign`). Secret material. */
@@ -76,6 +88,13 @@ export interface BotAssignment {
   /** §14.3: DM conversation ids whose notice was ACTUALLY DELIVERED (pool-wide
    *  latch for single-copy DM messages; never mere row discovery). */
   noticedDmConversations?: string[]
+  /** Per-conversation defaults (linear-integration.md §6.2): the ladder rung between
+   *  the unscoped keyword slug and `defaultAgentId`, and the grant a gated agent holds
+   *  where a conversation row's owner compiles to a default instead of a route. */
+  conversationDefaults?: RcConversationDefault[]
+  /** True where that projection is what the platform does with a row's owner. On such
+   *  an assignment the affinity gate's rejection of a gated binding is TERMINAL. */
+  ownerAsDefault?: boolean
 }
 
 /** Keep the directory shape identical on full assignments and `rc/routes` updates. */
@@ -177,6 +196,7 @@ export class BotArbitrationRouter {
       | 'gatedOffChannels'
       | 'noticeAuthority'
       | 'noticedDmConversations'
+      | 'conversationDefaults'
     >
   ): void {
     const a = this.bots.get(botId)
@@ -191,6 +211,9 @@ export class BotArbitrationRouter {
     a.gatedOffChannels = patch.gatedOffChannels
     a.noticeAuthority = patch.noticeAuthority
     a.noticedDmConversations = patch.noticedDmConversations
+    // An owner edit converges through here, so the defaults are replaced with the routes:
+    // otherwise a connected relay keeps the old default — and the old grant — forever.
+    a.conversationDefaults = patch.conversationDefaults
   }
 
   remove(botId: string): BotAssignment | undefined {
@@ -411,7 +434,7 @@ export class BotArbitrationRouter {
   seedLookupTarget(
     botId: string,
     sessionKey: string,
-    lookup: { agentId: string; daemonId: string }
+    lookup: { agentId: string; daemonId: string; integrationId?: string }
   ): RouteTarget | null {
     const a = this.bots.get(botId)
     if (!a) return null
@@ -420,7 +443,13 @@ export class BotArbitrationRouter {
     const tgt: RouteTarget = {
       agentId: lookup.agentId,
       daemonId: lookup.daemonId,
-      integrationId: route?.integrationId ?? ''
+      // The CP names the holder's install on this bot; the local directory is the backfill
+      // for an older CP that omits it, and the empty string for a route-less member.
+      integrationId:
+        lookup.integrationId ??
+        route?.integrationId ??
+        a.agents.find((x) => x.agentId === lookup.agentId)?.integrationId ??
+        ''
     }
     this.setAffinity(botId, sessionKey, tgt)
     return tgt
@@ -440,12 +469,38 @@ export class BotArbitrationRouter {
 
   /** Resolve one message; records live affinity for the resolved thread. */
   route(botId: string, msg: WireNormalizedMessage): RouteTarget | null {
+    const result = this.routeResult(botId, msg)
+    return result.kind === 'target' ? result.target : null
+  }
+
+  /** {@link route} keeping the terminal `grant-withdrawn` refusal distinguishable from
+   *  an ordinary miss, so the caller drops instead of continuing down the ladder. */
+  routeResult(botId: string, msg: WireNormalizedMessage): SharedBotArbitration {
     const a = this.bots.get(botId)
-    if (!a) return null
+    if (!a) return { kind: 'none' }
     const aff = this.affinity.get(botId) ?? this.affinity.set(botId, new Map()).get(botId)!
-    const tgt = arbitrate(a, msg, aff)
-    if (tgt) aff.set(sessionKeyOf(msg), tgt)
-    return tgt
+    const result = arbitrateSharedBotResult(a, msg, aff)
+    if (result.kind === 'target') aff.set(sessionKeyOf(msg), result.target)
+    return result
+  }
+
+  /**
+   * The STOP-only bound-target lookup (linear-integration.md §9.3): this bot's stored
+   * affinity for `sessionKey`, validated against current membership but NOT against the
+   * grant — a stop can only end work, so it must still reach a holder whose conversation
+   * default has since moved away. Never falls through to arbitration: the new default
+   * must not answer inside a session another runtime holds.
+   */
+  boundTarget(botId: string, sessionKey: string): RouteTarget | undefined {
+    const a = this.bots.get(botId)
+    const bound = this.affinity.get(botId)?.get(sessionKey)
+    if (!a || !bound) return undefined
+    if (!a.members.some((m) => m.daemonId === bound.daemonId && m.agentIds.includes(bound.agentId))) return undefined
+    if (bound.integrationId) return bound
+    const integrationId =
+      a.routes.find((r) => r.agentId === bound.agentId)?.integrationId ??
+      a.agents.find((x) => x.agentId === bound.agentId)?.integrationId
+    return integrationId ? { ...bound, integrationId } : undefined
   }
 
   /**
@@ -644,6 +699,8 @@ export function toBotAssignment(a: RcBotAssign): BotAssignment | null {
     mutedChannels: a.mutedChannels,
     gatedOffChannels: a.gatedOffChannels,
     noticedDmConversations: a.noticedDmConversations,
+    conversationDefaults: a.conversationDefaults,
+    ownerAsDefault: a.ownerAsDefault,
     ...(a.noticeAuthority ? { noticeAuthority: a.noticeAuthority } : {})
   }
 }

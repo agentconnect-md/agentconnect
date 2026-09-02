@@ -11,7 +11,7 @@ const ROUTE: RouteTarget = {
 }
 
 const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
-  forward: async () => {},
+  forward: async () => 'accepted' as const,
   forwardAction: vi.fn(async (msg) => ({ msgId: msg.msgId, accepted: true })),
   reportChannels: () => {},
   reportRevoked: vi.fn(),
@@ -20,6 +20,7 @@ const host = (over: Partial<RelayIngressHost> = {}): RelayIngressHost => ({
     channelOwner: () => undefined,
     targetForAgentId: () => undefined,
     resolveTarget: () => ROUTE,
+    resolveBoundTarget: async () => ROUTE,
     conversationParticipants: () => [],
     targetForAgent: () => ROUTE,
     integrationTarget: () => ROUTE,
@@ -125,6 +126,7 @@ describe('slack ingress plugin — review-pinned regressions', () => {
         channelOwner: () => undefined,
         targetForAgentId: () => undefined,
         resolveTarget: () => ROUTE,
+        resolveBoundTarget: async () => ROUTE,
         conversationParticipants: () => [sameDaemonSibling, other],
         targetForAgent: () => ROUTE,
         integrationTarget: () => ROUTE,
@@ -150,6 +152,7 @@ describe('slack ingress plugin — review-pinned regressions', () => {
         channelOwner: () => undefined,
         targetForAgentId: () => undefined,
         resolveTarget: () => undefined,
+        resolveBoundTarget: async () => undefined,
         conversationParticipants: () => [ROUTE],
         targetForAgent: () => undefined,
         integrationTarget: () => undefined,

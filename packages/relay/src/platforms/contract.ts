@@ -122,12 +122,19 @@ export interface RelayIngressSidecar {
   searchActionToken?: string
 }
 
+/** Core's verdict on one forwarded message. `refused` is the TERMINAL
+ *  `grant-withdrawn` result of linear-integration.md §6.2 — the channel's default
+ *  moved off the gated agent that holds this session, so nothing was forwarded and
+ *  nothing below the affinity rung was consulted. `accepted` means core handled the
+ *  message; it does not promise a daemon took it (delivery is bounded loss). */
+export type RelayForwardOutcome = 'accepted' | 'refused'
+
 export interface RelayIngressHost {
   /** Forward one NORMALIZED inbound message. Core owns arbitration: it resolves
    *  the owning agent/daemon and constructs the pre-addressed `rd/msg` — the
    *  plugin supplies conversation content, never target identity. The promise
    *  is the delivery attempt's completion (drop counting rides it). */
-  forward(botId: string, message: WireNormalizedMessage, sidecar?: RelayIngressSidecar): Promise<void>
+  forward(botId: string, message: WireNormalizedMessage, sidecar?: RelayIngressSidecar): Promise<RelayForwardOutcome>
   /** Forward one platform interaction as a §6.6 platform_action and return the
    *  daemon's ack — the sync-response race (see the module doc) awaits this.
    *  `msgId` is the DEDUP IDENTITY, and the plugin mints it (it derives from
@@ -164,6 +171,17 @@ export interface RelayIngressHost {
      * answers the platform accordingly and forwards nothing).
      */
     resolveTarget(botId: string, coords: { channelId: string; threadTs: string }): RouteTarget | undefined
+    /**
+     * The STOP-only bound-target lookup (linear-integration.md §9.3): the session's
+     * stored affinity target, validated against current membership and placement (the
+     * agent is still a member and its daemon is connected) but NOT against the grant,
+     * so a stop still reaches a holder whose conversation default has moved away. On a
+     * memory miss it asks the CP through the `rc/thread-lookup` pull-on-miss backstop
+     * in `stop` mode and caches a validated hit back. It NEVER arbitrates: a miss must
+     * resolve to nobody rather than to the channel's new default, which would put two
+     * daemons on one single-writer feed. `undefined` = nobody holds it.
+     */
+    resolveBoundTarget(botId: string, sessionKey: string): Promise<RouteTarget | undefined>
     /** The conversation's remembered participant set, re-resolved through the member
      *  directory with the mute/gate fences applied — the recipients of a session-level
      *  event that must reach EVERY participant (Slack's native Stop), where the

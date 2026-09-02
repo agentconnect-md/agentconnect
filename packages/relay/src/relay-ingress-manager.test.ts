@@ -1408,6 +1408,93 @@ describe('RelayIngressManager thread affinity (report + pull-on-miss)', () => {
     expect(reportThreadAssign).not.toHaveBeenCalled()
   })
 
+  describe('directory.resolveBoundTarget — the Stop-only lookup (linear-integration.md §9.3)', () => {
+    const SESSION_KEY = 'C123/agent-session-1'
+    const BOUND = { agentId: AGENT_ID, daemonId: DAEMON_ID, integrationId: INTEGRATION_ID }
+
+    it('answers the memory hit without ever asking the CP', async () => {
+      const { daemon } = online()
+      const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
+        botId: BOT_ID,
+        sessionKey: SESSION_KEY,
+        target: null,
+        participants: []
+      }))
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(channelOwned())
+      internals.router.setAffinity(BOT_ID, SESSION_KEY, BOUND)
+
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toEqual(BOUND)
+      expect(lookupThread).not.toHaveBeenCalled()
+    })
+
+    it('asks the CP in STOP mode on a memory miss and caches the validated hit back', async () => {
+      const { daemon } = online()
+      const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
+        botId: BOT_ID,
+        sessionKey: SESSION_KEY,
+        target: { agentId: AGENT_ID, daemonId: DAEMON_ID, integrationId: INTEGRATION_ID },
+        participants: []
+      }))
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(channelOwned())
+
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toEqual(BOUND)
+      expect(lookupThread).toHaveBeenCalledWith({ botId: BOT_ID, sessionKey: SESSION_KEY, mode: 'stop' })
+      // Cached: a second stop on the same session costs no round trip.
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toEqual(BOUND)
+      expect(lookupThread).toHaveBeenCalledTimes(1)
+    })
+
+    it('answers NOBODY when the CP holds no binding, and never arbitrates a replacement', async () => {
+      const { daemon } = online()
+      const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
+        botId: BOT_ID,
+        sessionKey: SESSION_KEY,
+        target: null,
+        participants: []
+      }))
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))
+      const internals = internalsOf(manager)
+      // The bot HAS a channel owner and a group default, both of which ordinary arbitration would
+      // happily return — a stop must reach the holder or nobody (§9.3).
+      internals.router.upsert(channelOwned())
+
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toBeUndefined()
+    })
+
+    it('drops a bound holder whose daemon is not connected to this relay', async () => {
+      const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => ({
+        botId: BOT_ID,
+        sessionKey: SESSION_KEY,
+        target: null,
+        participants: []
+      }))
+      const manager = new RelayIngressManager(deps({ getDaemon: () => undefined, lookupThread }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(channelOwned())
+      internals.router.setAffinity(BOT_ID, SESSION_KEY, BOUND)
+
+      // Placement is part of the validation, so an unplaced holder falls to the CP leg and then
+      // to nobody, rather than being handed a route no daemon on this pod can take.
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toBeUndefined()
+    })
+
+    it('answers nobody when the CP link is down', async () => {
+      const { daemon } = online()
+      const lookupThread = vi.fn(async (): Promise<RcThreadLookupOk> => {
+        throw new Error('cp link down')
+      })
+      const manager = new RelayIngressManager(deps({ getDaemon: () => daemon, lookupThread }))
+      const internals = internalsOf(manager)
+      internals.router.upsert(channelOwned())
+
+      expect(await internals.ingressHost.directory.resolveBoundTarget(BOT_ID, SESSION_KEY)).toBeUndefined()
+    })
+  })
+
   it('restores every durable participant from CP lookup after a relay restart', async () => {
     const first = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))
     const second = vi.fn(async (m: RdMsgIm): Promise<RdAck> => ({ msgId: m.msgId, accepted: true }))

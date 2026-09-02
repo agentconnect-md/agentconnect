@@ -472,6 +472,58 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     expect(r.frame.payload.secrets.signingSecret).toBe('sign-x')
   })
 
+  it('round-trips the per-conversation default rung on rc/bot-assign and rc/routes', () => {
+    // linear-integration.md §6.2 — the table the relay consults between the keyword slug and
+    // `defaultAgentId`, plus the axis that makes a rejected gated affinity terminal there.
+    const conversationDefaults = [
+      { channel: 'team-a', agentId: AGENT_ID, daemonId: DAEMON_ID, integrationId: INTEGRATION_ID }
+    ]
+    const assign = decodeRelayCpFrame(
+      envelope('rc/bot-assign', {
+        botId: DAEMON_ID,
+        platform: 'linear',
+        secrets: { signingSecret: 'sign-x' },
+        members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+        routes: [],
+        conversationDefaults,
+        ownerAsDefault: true
+      })
+    )
+    expect(assign.ok).toBe(true)
+    if (!assign.ok || assign.frame.type !== 'rc/bot-assign') throw new Error('narrow')
+    expect(assign.frame.payload.conversationDefaults).toEqual(conversationDefaults)
+    expect(assign.frame.payload.ownerAsDefault).toBe(true)
+
+    // The owner edit converges over the HOT update, so the same table rides rc/routes.
+    const routes = decodeRelayCpFrame(
+      envelope('rc/routes', {
+        botId: DAEMON_ID,
+        members: [{ daemonId: DAEMON_ID, agentIds: [AGENT_ID] }],
+        routes: [],
+        conversationDefaults
+      })
+    )
+    expect(routes.ok).toBe(true)
+    if (!routes.ok || routes.frame.type !== 'rc/routes') throw new Error('narrow')
+    expect(routes.frame.payload.conversationDefaults).toEqual(conversationDefaults)
+  })
+
+  it('defaults the per-conversation rung to empty and the axis to false on every other platform', () => {
+    const r = decodeRelayCpFrame(
+      envelope('rc/bot-assign', {
+        botId: DAEMON_ID,
+        platform: 'slack',
+        secrets: { botToken: 'xoxb-x', signingSecret: 'sign-x' },
+        members: [],
+        routes: []
+      })
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || r.frame.type !== 'rc/bot-assign') throw new Error('narrow')
+    expect(r.frame.payload.conversationDefaults).toEqual([])
+    expect(r.frame.payload.ownerAsDefault).toBe(false)
+  })
+
   it('round-trips a Feishu HTTP assignment without provider API credentials', () => {
     const r = decodeRelayCpFrame(
       envelope('rc/bot-assign', {
@@ -668,6 +720,28 @@ describe('relay↔CP wire — skeleton frame codec (shared-bot-relay.md §7.1)',
     if (hit.frame.type !== 'rc/thread-lookup/ok') throw new Error('narrow')
     expect(hit.frame.payload.target?.agentId).toBe(AGENT_ID)
     expect(hit.frame.payload.participants).toEqual([{ agentId: AGENT_ID, daemonId: DAEMON_ID }])
+    // Stop mode (§9.3): the request names it, and the reply pre-addresses the holder's install
+    // so the relay can build the `platform_action` without a second resolution.
+    const stop = decodeRelayCpFrame(
+      envelope('rc/thread-lookup', { botId: DAEMON_ID, sessionKey: 'C1/ts', mode: 'stop' })
+    )
+    expect(stop.ok).toBe(true)
+    if (!stop.ok || stop.frame.type !== 'rc/thread-lookup') throw new Error('narrow')
+    expect(stop.frame.payload.mode).toBe('stop')
+    const bound = decodeRelayCpFrame(
+      envelope('rc/thread-lookup/ok', {
+        botId: DAEMON_ID,
+        sessionKey: 'C1/ts',
+        target: { agentId: AGENT_ID, daemonId: DAEMON_ID, integrationId: INTEGRATION_ID }
+      })
+    )
+    expect(bound.ok).toBe(true)
+    if (!bound.ok || bound.frame.type !== 'rc/thread-lookup/ok') throw new Error('narrow')
+    expect(bound.frame.payload.target?.integrationId).toBe(INTEGRATION_ID)
+    // An absent mode is the ORDINARY, gated lookup — not a third state.
+    const plain = decodeRelayCpFrame(envelope('rc/thread-lookup', { botId: DAEMON_ID, sessionKey: 'C1/ts' }))
+    if (!plain.ok || plain.frame.type !== 'rc/thread-lookup') throw new Error('narrow')
+    expect(plain.frame.payload.mode).toBeUndefined()
     // reply leg — a miss (no binding)
     expect(
       decodeRelayCpFrame(envelope('rc/thread-lookup/ok', { botId: DAEMON_ID, sessionKey: 'C1/ts', target: null })).ok
