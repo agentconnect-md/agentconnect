@@ -14,6 +14,7 @@
 import {
   buildRelayDaemonFrame,
   decodeRelayDaemonFrame,
+  NIL_UUID,
   RD_HEADLESS_AGENT_DELIVERY_V1,
   RD_AGENT_IMPLICIT_ROUTING_V1,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
@@ -199,22 +200,47 @@ export class RelayClient {
     return this.correlator.request(frame, (e) => this.transport!.send(e))
   }
 
+  /** The `type` of a frame that failed to decode, for the log line — never its payload. */
+  private static frameTypeOf(text: string): string {
+    try {
+      const type = (JSON.parse(text) as { type?: unknown }).type
+      return typeof type === 'string' ? type : 'untyped'
+    } catch {
+      return 'non-JSON'
+    }
+  }
+
   private async onText(text: string): Promise<void> {
     const decoded = decodeRelayDaemonFrame(text)
     if (!decoded.ok) {
+      const code =
+        decoded.msg === 'FRAME_TOO_LARGE'
+          ? 'FRAME_TOO_LARGE'
+          : decoded.msg === 'UNKNOWN_FRAME'
+            ? 'UNKNOWN_FRAME'
+            : 'BAD_PAYLOAD'
       if (decoded.corr) {
-        const code =
-          decoded.msg === 'FRAME_TOO_LARGE'
-            ? 'FRAME_TOO_LARGE'
-            : decoded.msg === 'UNKNOWN_FRAME'
-              ? 'UNKNOWN_FRAME'
-              : 'BAD_PAYLOAD'
         this.correlator.reject(decoded.corr, new WireError(code, `invalid correlated reply: ${decoded.msg}`, false))
+        return
+      }
+      // A request this build cannot read: say so here AND answer the relay with a correlated
+      // `error`, so its forward fails at once with the reason instead of timing out in silence.
+      const reason = decoded.msg.slice(0, 300)
+      this.deps.log.warn(
+        `relay(${this.relayId}): dropping undecodable ${RelayClient.frameTypeOf(text)} frame ${decoded.id} (${Buffer.byteLength(text)} bytes): ${reason}`
+      )
+      if (decoded.id !== NIL_UUID) {
+        this.transport?.send(
+          JSON.stringify(
+            buildRelayDaemonFrame('error', { code, message: reason, retryable: false }, { corr: decoded.id })
+          )
+        )
       }
       return
     }
     const frame = decoded.frame
     if (frame.corr && this.correlator.settle(frame)) return
+    this.deps.log.debug(`relay(${this.relayId}): ← ${frame.type} ${frame.id} (${Buffer.byteLength(text)} bytes)`)
     if (frame.type === 'rd/msg') {
       await this.handleMsg(frame.id, frame.payload)
       return

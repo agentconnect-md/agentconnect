@@ -113,7 +113,19 @@ export class RelayDaemonConnection {
   async sendMsg(payload: RdMsg): Promise<RdAck> {
     if (this.state !== 'READY') throw new WireError('INTERNAL', `rd link not ready (${this.state})`, true)
     const frame = buildRelayDaemonFrame('rd/msg', payload)
-    const rep = await this.correlator.request(frame, (e) => this.transport.send(e))
+    let bytes = 0
+    let rep: RelayDaemonFrame
+    try {
+      rep = await this.correlator.request(frame, (e) => {
+        bytes = Buffer.byteLength(e)
+        this.transport.send(e)
+      })
+    } catch (err) {
+      // The daemon drops an undecodable or oversized frame without a reply, so the size is the one
+      // fact the sender can add to a timeout.
+      if (err instanceof WireError) throw new WireError(err.code, `${err.message} (${bytes} bytes)`, err.retryable)
+      throw err
+    }
     if (rep.type !== 'rd/ack') throw new WireError('INTERNAL', `expected rd/ack, got ${rep.type}`, false)
     return rep.payload
   }

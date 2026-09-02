@@ -1588,7 +1588,11 @@ none` skips it along with everything else Linear-visible. There is **no
    `linear:receipt` / `linear:actor-name` / `linear:issue-facts`, `dispatch`,
    `admitted`, or `duty-claim`), and again with the elapsed time when the ack
    finally lands, so a stall names its step instead of surfacing only as the
-   relay's "no ack after 5 tries" drop.
+   relay's "no ack after 5 tries" drop. A frame the daemon cannot decode at all
+   is not silent either: the daemon logs the frame type, id, size and the
+   schema reason, and answers the relay with a correlated `error` so the
+   forward fails at once with that reason; the relay's timeout message carries
+   the frame size for the case where nothing comes back.
 3. **PR links.** The converger collects pull/merge-request URLs from the
    agent's own message text over the turn (`codeHostLinks`: `PR #123` for a
    GitHub pull, `MR !45` for a GitLab merge request, each URL once) and

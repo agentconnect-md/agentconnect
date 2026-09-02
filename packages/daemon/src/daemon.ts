@@ -6584,7 +6584,9 @@ export class Daemon {
     // CP ships a gated install's enabled set even in relay-managed mode).
     if (!this.gatedAdmission(msg.integrationId, normalized)) {
       this.maybeGatedNotice(normalized, [msg.integrationId])
-      this.log.debug(`relay: dropped ${msg.msgId} for gated integration ${msg.integrationId} (conversation off)`)
+      this.log.debug(
+        `relay: dropped ${msg.msgId} for gated integration ${msg.integrationId} (${normalized.platform} conversation ${normalized.channel} off)`
+      )
       return { msgId: msg.msgId, accepted: true }
     }
     // HTTP-bot IM bypasses onInbound() because the relay already arbitrated the
