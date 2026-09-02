@@ -35,10 +35,11 @@ export default function LarkFeishuSwitcher({
     variant === 'login'
       ? 'font-sans text-[14px] font-semibold leading-normal text-(--text-primary)'
       : 'font-sans text-[12px] font-semibold leading-normal text-(--text-primary)'
+  // The alternate cloud rides at two-thirds of the active word — present, never competing with it.
   const alternateClassName =
     variant === 'login'
-      ? 'pointer-events-auto cursor-pointer rounded-[2px] border-0 bg-transparent p-0 font-sans text-[12px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-not-allowed disabled:opacity-50'
-      : 'cursor-pointer rounded-[2px] border-0 bg-transparent p-0 font-sans text-[10px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-not-allowed disabled:opacity-50'
+      ? 'pointer-events-auto cursor-pointer rounded-[2px] border-0 bg-transparent p-0 font-sans text-[9px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-not-allowed disabled:opacity-50'
+      : 'cursor-pointer rounded-[2px] border-0 bg-transparent p-0 font-sans text-[8px] font-medium leading-normal text-(--text-tertiary) hover:text-(--brand) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--brand) disabled:cursor-not-allowed disabled:opacity-50'
 
   return (
     <span className="inline-flex items-baseline whitespace-nowrap">
@@ -49,7 +50,7 @@ export default function LarkFeishuSwitcher({
       {/* The slash hugs both words: spaced out, the label reached the install tile's edge. */}
       <span
         aria-hidden="true"
-        className={`mx-[1px] font-sans font-normal leading-normal text-(--text-tertiary) ${variant === 'login' ? 'text-[11px]' : 'text-[10px]'}`}
+        className={`mx-[1px] font-sans font-normal leading-normal text-(--text-tertiary) ${variant === 'login' ? 'text-[9px]' : 'text-[8px]'}`}
       >
         /
       </span>
