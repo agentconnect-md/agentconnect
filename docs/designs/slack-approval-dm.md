@@ -334,19 +334,56 @@ acting-user field on the relay frame, and the §6.3 checks in
 `handleElicitChoice` for DM-originated cards — so both request kinds get
 identical interactive DMs; the two runtimes must not diverge here.
 
-## 7. Console notification states — deferred
+## 7. Console notification states
 
-The issue also asks the notification bell to show a pending approval as
-unread and a resolved one as read ("_X_ has approved/declined"). Deferred
-out of this delivery: the console has **no cross-agent pending signal** to
-feed a bell — the only live source is the per-agent daemon proxy (polled
-on detail pages), and the protocol's `agent/activity` frame with
-`ActivityState.awaiting_permission` is declared but never emitted by any
-daemon nor handled by the CP. A future effort can revive that frame (emit
-on park/release, persist the enum `SessionMeta.activityState` already has
-a column for) and hang a client-local `approval` category off it. Until
-then the decider's name lands on the approval cards themselves (§6), which
-is where an editor already looks — tracked in a follow-up issue.
+The console bell shows a session that is waiting on a human as an **unread**
+item and flips it to a **read** "Approval resolved" item once the wait ends.
+Delivered after the DM work as its own change (#1704); this section records
+the shape that shipped, which is narrower than the issue's original ask.
+
+**Signal.** The daemon's permission coordinator emits the protocol's
+`agent/activity` frame — revived for this purpose, and now carrying the
+session's outward id — with `awaiting_permission` when the **first**
+answerable request parks on a session and `idle` when the **last** one
+settles, whatever path it took: an editor-path permission or elicitation, or
+an in-conversation chat card (all three are decidable from the console).
+`thinking` and `tool_call` remain declared but unemitted. The CP persists the
+enum into `SessionMeta.activityState`, fenced to the reporting agent, and
+publishes a `session-state` event on the org SSE stream after commit. Two
+guards keep the column honest: the CP resets a daemon's `awaiting_permission`
+rows to `idle` when that daemon's connection closes and when a session's `end`
+milestone lands, and the daemon re-asserts its live waits from the
+coordinator's in-memory set on every (re)connect, after its durable session
+metadata outbox has drained, and again for one session whenever that
+session's metadata snapshot is acknowledged — the CP has no row to flag until
+then, so a wait reported earlier was dropped, and the drain's own retry path
+is what makes the acknowledgement the reliable trigger.
+Every approval-state write on the CP — the handler's persist, the close
+clear, and a silent clear on `register` — runs on one per-daemon tail in the
+connection registry, so the last mutation a connection makes is always its
+clear, a fast reconnect's replay always writes after it, and a superseded
+socket's leftovers cannot outlive the connection that made them.
+
+**Feed.** `GET /orgs/:orgId/sessions?view=flat&activityState=awaiting_permission`
+— an activity-state filter on the existing list route, whose rows now carry
+`activityState`. The console holds one shell-wide read of it, revalidated on
+the `session-state` SSE event and on stream reconnect; there is no poll.
+Client-side, the bell keeps only sessions whose agent carries the caller's
+`canEdit` flag — the predicate the decision route enforces (§2) — so a viewer
+never sees an item it cannot act on. The session list itself shows no marker.
+
+**Bell.** A client-local `approval` category driven by the notification
+center's snapshot reconciler, keyed per session. Pending: an unread item
+("Approval needed", agent name, session title) that raises a toast and
+deep-links to the session page. Resolved: when the session leaves the pending
+set the item flips to read and renders "Approval resolved" — with **no decider
+name and no decision**, and no distinction between allowed, denied, and
+expired, because the CP never sees any of those and the browser makes no
+per-agent lookup to learn them. The decider stays on the approval cards (§6).
+A decision made from the current tab flips its item to read immediately. A
+tab that was closed while a request was pending sees the same read item on
+its first snapshot after reload. Read state stays per-browser, and §8 still
+holds: nothing about approvals is stored server-side beyond the enum.
 
 ## 8. Explicit non-goal: a server-side notification store
 

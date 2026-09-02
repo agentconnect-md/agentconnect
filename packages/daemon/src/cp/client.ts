@@ -16,6 +16,7 @@ import type {
   UsageReport,
   EventSession,
   SessionActivity,
+  AgentActivity,
   SessionPurged,
   IntegrationChannels,
   CronReport,
@@ -737,6 +738,12 @@ export class CpClient {
       throw new WireError('INTERNAL', `expected event/session-purged ack, got ${rep.type}`, false)
     }
     return 'acknowledged'
+  }
+
+  /** D→C `agent/activity` EVT, fire-and-forget — the approval bell's signal (slack-approval-dm.md §7); every CP knows the frame. */
+  emitAgentActivity(activity: AgentActivity): void {
+    if (this.state !== 'READY' && this.state !== 'DRAINING') return
+    this.transport?.send(encode(this.scopedFrame('agent/activity', activity)))
   }
 
   /** Signal a durable transcript mutation without putting message content on the control WS. */

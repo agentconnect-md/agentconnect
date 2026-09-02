@@ -28,6 +28,7 @@ import type { Transport } from './transport.js'
 import { ConnectionClosed, type ConnChannel, type LifecycleState } from './registry.js'
 import type { DaemonWsDeps } from './deps.js'
 import type { FrameRouter } from './handlers/index.js'
+import { clearAwaitingApprovals } from './approval-waits.js'
 import { FencingState, checkFencing } from '../orchestrator/fencing.js'
 import { ProtocolError } from '../domain/errors.js'
 
@@ -336,6 +337,10 @@ export class DaemonConnection implements ConnChannel {
     // connection (the fleet would read `offline` while heartbeats keep flowing).
     if (this.daemonId && this.deps.connReg.get(this.daemonId)?.conn === this) {
       this.deps.connReg.remove(this.daemonId)
+      // Queued on the per-daemon tail behind this socket's own in-flight `agent/activity` writes, so the
+      // clear is its last mutation, and ahead of a reconnect's replay, which waits on the same tail (§7).
+      const daemonId = this.daemonId
+      void this.deps.connReg.runApprovalMutation(daemonId, () => clearAwaitingApprovals(this.deps, daemonId, true))
     }
   }
 }

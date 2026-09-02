@@ -100,6 +100,8 @@ import {
   withDaemonCapability,
   type DaemonCapabilityDto,
   fetchSessionFacets,
+  fetchPendingApprovalSessions,
+  type PendingApprovalSession,
   subscribeSessionEvents,
   fetchCrons,
   fetchUsage,
@@ -207,6 +209,8 @@ interface ConsoleData {
   /** Trustworthy unfiltered access snapshots; null while loading, validating, failed, or absent on an older server. */
   sessionAccessSnapshot: AccessNotificationSnapshot | null
   usageAccessSnapshot: AccessNotificationSnapshot | null
+  /** Sessions waiting on a human approval (slack-approval-dm.md §7); null until loaded or in mock mode. */
+  pendingApprovalSessions: PendingApprovalSession[] | null
   /** Resolve an agent by id; undefined for an unknown id (live console, no demo fallback). */
   getAgent: (id: string) => Agent | undefined
   getSessions: (id: string) => Session[]
@@ -869,6 +873,12 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     isLoading: membersIsLoading,
     mutate: mutateMembers
   } = useSWR<MemberDto[]>(MOCK_MODE ? null : consoleKeys.members(orgKey), ([, orgId]) => fetchMembers(orgId as string))
+  // No interval: the SSE `session-state` event and the reconnect revalidation are the only triggers.
+  const { data: pendingApprovalSessionsData, mutate: mutatePendingApprovals } = useSWR<PendingApprovalSession[]>(
+    MOCK_MODE ? null : consoleKeys.pendingApprovals(orgKey),
+    ([, orgId]) => fetchPendingApprovalSessions(orgId as string)
+  )
+  const pendingApprovalSessions = pendingApprovalSessionsData ?? null
   const {
     data: usage24hData,
     error: usage24hError,
@@ -904,7 +914,10 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
         Array.isArray(key) &&
         ((key[0] === 'console' &&
           key[1] === orgKey &&
-          (key[2] === 'sessions' || key[2] === 'session-facets' || key[2] === 'session-detail')) ||
+          (key[2] === 'sessions' ||
+            key[2] === 'session-facets' ||
+            key[2] === 'session-detail' ||
+            key[2] === 'session-approvals')) ||
           (key[0] === 'conversation-by-key' && key[1] === orgKey))
     )
   }, [mutateCache, orgKey])
@@ -991,7 +1004,8 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
         setSessionActivityVersionById((current) => ({
           ...current,
           [sessionId]: (current[sessionId] ?? 0) + 1
-        }))
+        })),
+      onState: () => void mutatePendingApprovals()
     })
     return () => {
       sessionRefreshGenerationRef.current++
@@ -1002,7 +1016,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
         sessionRefreshTimerRef.current = null
       }
     }
-  }, [orgLoading, activeOrg?.id, drainSessionRefreshes])
+  }, [orgLoading, activeOrg?.id, drainSessionRefreshes, mutatePendingApprovals])
 
   const members = MOCK_MODE ? MOCK_MEMBERS : (fetchedMembers ?? [])
   const membersLoaded = MOCK_MODE || fetchedMembers !== undefined
@@ -1632,6 +1646,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       usage24h,
       sessionAccessSnapshot,
       usageAccessSnapshot,
+      pendingApprovalSessions,
       getAgent,
       getSessions,
       createAgent,
@@ -1713,6 +1728,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
       usage24h,
       sessionAccessSnapshot,
       usageAccessSnapshot,
+      pendingApprovalSessions,
       getAgent,
       getSessions,
       createAgent,

@@ -105,6 +105,29 @@ export class ConnectionRegistry {
     return this.byDaemon.has(daemonId)
   }
 
+  /** Per-daemon tail of approval-state writes — `agent/activity` persists and the register/close clears — so they commit in arrival order (slack-approval-dm.md §7). */
+  private readonly approvalMutations = new Map<string, Promise<unknown>>()
+
+  /** Run one approval-state mutation after every earlier one for the daemon; a failed predecessor never blocks the next. */
+  runApprovalMutation<T>(daemonId: string, mutate: () => Promise<T>): Promise<T> {
+    const prior = this.approvalMutations.get(daemonId) ?? Promise.resolve()
+    const run = prior.then(mutate, mutate)
+    const tracked: Promise<unknown> = run.then(
+      () => undefined,
+      () => undefined
+    )
+    void tracked.then(() => {
+      if (this.approvalMutations.get(daemonId) === tracked) this.approvalMutations.delete(daemonId)
+    })
+    this.approvalMutations.set(daemonId, tracked)
+    return run
+  }
+
+  /** Resolves once every queued approval-state mutation for the daemon has settled; immediately when none is in flight. */
+  approvalMutationsSettled(daemonId: string): Promise<void> {
+    return (this.approvalMutations.get(daemonId) ?? Promise.resolve()).then(() => undefined)
+  }
+
   /** Publish the point at which a newly-authenticated connection may accept
    * control frames, waking idempotent commands interrupted on an older epoch. */
   markReady(daemonId: string, conn: ConnChannel): DaemonConnState | undefined {

@@ -6,19 +6,22 @@
  * in-process pub/sub for the co-process MVP; the Go split replaces the
  * implementation behind this port (e.g. a broker) without touching either edge.
  */
-import type { EventSession, SessionActivity } from '@agentconnect.md/protocol'
+import type { AgentActivity, EventSession, SessionActivity } from '@agentconnect.md/protocol'
 import type { DaemonId } from '../domain/ids.js'
 
 /** A metadata event as relayed to subscribers, stamped with its reporting daemon. */
 export type SessionEventEnvelope =
-  | { daemonId: DaemonId; event: EventSession; activity?: never }
-  | { daemonId: DaemonId; activity: SessionActivity; event?: never }
+  | { daemonId: DaemonId; event: EventSession; activity?: never; state?: never }
+  | { daemonId: DaemonId; activity: SessionActivity; event?: never; state?: never }
+  | { daemonId: DaemonId; state: AgentActivity; event?: never; activity?: never }
 
 export interface SessionEventSink {
   /** Fan a converged milestone out to all current subscribers. */
   publish(daemonId: DaemonId, ev: EventSession): void
   /** Fan a body-free transcript invalidation out to current subscribers. */
   publishActivity(daemonId: DaemonId, activity: SessionActivity): void
+  /** Fan a session's live wait-state change out (slack-approval-dm.md §7). */
+  publishState(daemonId: DaemonId, state: AgentActivity): void
   /** Subscribe; returns an unsubscribe fn. */
   subscribe(cb: (e: SessionEventEnvelope) => void): () => void
 }
@@ -34,6 +37,10 @@ export class InMemorySessionEventSink implements SessionEventSink {
 
   publishActivity(daemonId: DaemonId, activity: SessionActivity): void {
     this.fanOut({ daemonId, activity })
+  }
+
+  publishState(daemonId: DaemonId, state: AgentActivity): void {
+    this.fanOut({ daemonId, state })
   }
 
   private fanOut(envelope: SessionEventEnvelope): void {

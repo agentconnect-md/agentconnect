@@ -6,6 +6,8 @@ import { decideAgentPermissionRequest, fetchAgentPermissionRequests, type AgentP
 import { MOCK_MODE } from '@/lib/data'
 import { useOrgs } from '@/lib/org-context'
 import { consoleKeys } from '@/lib/swr-keys'
+import { useOptionalNotifications } from '@/lib/notifications'
+import { approvalSourceKey } from '@/lib/approval-notifications'
 import { Button, Icon } from '@/components/ui'
 
 export function ApprovalRequestsCard({
@@ -24,6 +26,7 @@ export function ApprovalRequestsCard({
   className?: string
 }) {
   const { activeOrg } = useOrgs()
+  const notifications = useOptionalNotifications()
   const requestsKey = MOCK_MODE ? null : consoleKeys.agentPermissionRequests(activeOrg?.id, agentId)
   const {
     data: allRequests,
@@ -61,6 +64,8 @@ export function ApprovalRequestsCard({
     setDecisionError(null)
     try {
       await decideAgentPermissionRequest(agentId, request.id, decision)
+      // A decision made here needs no bell item to say so (slack-approval-dm.md §7).
+      if (request.sessionId) notifications?.markSourceRead(approvalSourceKey(request.sessionId))
       void mutate(
         (rows) =>
           rows?.map((row) =>

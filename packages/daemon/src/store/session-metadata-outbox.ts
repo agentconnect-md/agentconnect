@@ -41,6 +41,8 @@ export interface SessionMetadataHost {
   servesAgent(agentId: string): boolean
   sessionLink(acpSessionId: string): string
   sessionThreadUrl(session: SessionRecord): string | undefined
+  /** The CP acknowledged this session's snapshot: a live approval wait on it can be re-asserted now (slack-approval-dm.md §7). */
+  onSessionMetadataCommitted?(agentId: string, outwardSessionId: string): void
 }
 
 export interface SessionMetadataSnapshotInput {
@@ -317,6 +319,7 @@ export class SessionMetadataOutbox {
         // Revision fencing: an event produced while this request was in flight
         // remains pending instead of being cleared by the older ACK.
         await store.acknowledgeSessionMetadataSnapshot(row.agentId, row.sessionId, row.revision, daemonId)
+        this.host.onSessionMetadataCommitted?.(row.agentId, row.sessionId)
       } catch (err) {
         if (!row) {
           this.host.warn(`event/session outbox read failed (${formatErr(err)})`)

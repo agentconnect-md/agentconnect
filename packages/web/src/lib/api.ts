@@ -398,6 +398,8 @@ export interface SessionDto {
   // Absent/null on a CP that predates session visibility — treated as 'org'
   // (matching the server-side backfill of legacy rows).
   visibility?: SessionVisibility | null
+  /** Live wait state (slack-approval-dm.md §7); absent on a CP that predates it. */
+  activityState?: SessionActivityState | null
   externalProvider?: string | null
   externalResolution?: 'pending' | 'settled' | 'invalid' | null
   triggeredBy: string | null
@@ -1391,10 +1393,22 @@ export interface SessionActivityDto {
   ts: string
 }
 
+export type SessionActivityState = 'thinking' | 'tool_call' | 'awaiting_permission' | 'idle'
+
+/** A session's live wait-state change (`session-state` SSE event, slack-approval-dm.md §7). */
+export interface SessionStateDto {
+  sessionId: string
+  agentId: string
+  state: SessionActivityState
+  ts: string
+}
+
 export interface SessionEventHandlers {
   onConnect: () => void
   onSession: () => void
   onActivity: (activity: SessionActivityDto) => void
+  /** Optional: a wait-state flip invalidates only the pending-approvals read. */
+  onState?: (state: SessionStateDto) => void
 }
 
 // Reopen the stream periodically so each cycle asks the SDK for a current OIDC
@@ -1448,6 +1462,17 @@ async function readSessionEventStream(
     const parser = createSseParser((event) => {
       if (event.event === 'session') {
         handlers.onSession()
+        return
+      }
+      if (event.event === 'session-state') {
+        try {
+          const state = (JSON.parse(event.data) as { state?: SessionStateDto }).state
+          if (state && typeof state.sessionId === 'string' && typeof state.agentId === 'string') {
+            handlers.onState?.(state)
+          }
+        } catch {
+          // A malformed optional signal is ignored; reconnect/focus refresh heals it.
+        }
         return
       }
       if (event.event !== 'session-activity') return
@@ -2220,6 +2245,26 @@ export async function fetchSessions(
     ...(page.accessSyncDegraded !== undefined ? { accessSyncDegraded: page.accessSyncDegraded } : {}),
     ...(page.accessIssues !== undefined ? { accessIssues: page.accessIssues } : {})
   }
+}
+
+/** A session parked on a human approval, as the bell needs it (slack-approval-dm.md §7). */
+export interface PendingApprovalSession {
+  sessionId: string
+  agentId: string
+  agentName: string | null
+  title: string | null
+}
+
+/** The org's sessions waiting on an approval — the bell's one cross-agent read. Flat rows, newest first. */
+export async function fetchPendingApprovalSessions(orgId?: string): Promise<PendingApprovalSession[]> {
+  const q = new URLSearchParams({ view: 'flat', activityState: 'awaiting_permission', limit: '200' })
+  const page = await apiGet<SessionListPageDto>(`${orgBase(orgId)}/sessions?${q.toString()}`)
+  return (page.sessions ?? []).map((s) => ({
+    sessionId: s.sessionId,
+    agentId: s.agentId,
+    agentName: s.agentName ?? null,
+    title: s.title
+  }))
 }
 
 /** What the key-addressed resolver answered for one conversation. */

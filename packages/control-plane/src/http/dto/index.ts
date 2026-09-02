@@ -2707,6 +2707,8 @@ export const SessionUsageDto = z.object({
   costAmount: z.number().optional(),
   costCurrency: z.string().optional()
 })
+/** `SessionMeta.activityState`; only `awaiting_permission`/`idle` are emitted today (slack-approval-dm.md §7). */
+export const ActivityStateEnum = z.enum(['thinking', 'tool_call', 'awaiting_permission', 'idle'])
 export const SessionDto = z.object({
   sessionId: z.string(),
   sessionKey: SessionKeyDto,
@@ -2749,7 +2751,9 @@ export const SessionDto = z.object({
   /** Retention GC (#485): when the owning daemon deleted this session's local
    *  content. Non-null ⇒ the transcript is gone for good; this metadata is all
    *  that remains, and the console marks the row instead of offering a replay. */
-  contentPurgedAt: z.string().nullable()
+  contentPurgedAt: z.string().nullable(),
+  /** Live wait state from `agent/activity` (slack-approval-dm.md §7); `awaiting_permission` feeds the console bell. */
+  activityState: ActivityStateEnum
 })
 export const SessionListDto = z.array(SessionDto)
 export const SessionFacetsDto = z.object({

@@ -27,6 +27,7 @@ import {
 } from '@agentconnect.md/protocol'
 import { AgentId, DaemonId } from '../../domain/ids.js'
 import type { Handler } from './index.js'
+import { clearAwaitingApprovals } from '../approval-waits.js'
 
 export const handleRegister: Handler = async (frame, conn, deps) => {
   if (!isFrame('register')(frame)) return
@@ -47,6 +48,9 @@ export const handleRegister: Handler = async (frame, conn, deps) => {
   await deps.registry.upsertOnRegister(did, req)
   // A fresh registration clears the member's draining declaration (frames/duty.ts).
   deps.dutyLease.onRegister(did)
+  // Silent reset of the daemon's approval waits ahead of its replay (§7): a superseded socket's
+  // late `awaiting_permission` or a skipped close clear must not outlive the connection that made it.
+  void deps.connReg.runApprovalMutation(conn.daemonId, () => clearAwaitingApprovals(deps, conn.daemonId, false))
   const snap = await deps.orchestrator.reconcile(did, req)
 
   // Update the live index: capabilities/maxAgents + the bound session set.

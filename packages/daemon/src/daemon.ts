@@ -1378,7 +1378,22 @@ export class Daemon {
       agents: () => this.agents,
       servesAgent: (agentId) => this.servesAgent(agentId),
       sessionLink: (acpSessionId) => this.sessionLink(acpSessionId),
-      sessionThreadUrl: (session) => this.sessionThreadUrl(session)
+      sessionThreadUrl: (session) => this.sessionThreadUrl(session),
+      onSessionMetadataCommitted: (agentId, sessionId) => void this.reassertApprovalWait(agentId, sessionId)
+    }
+  }
+
+  /** The session's row now exists at the CP: re-assert a live wait it may have dropped for lack of one (§7). */
+  private async reassertApprovalWait(agentId: string, outwardSessionId: string): Promise<void> {
+    try {
+      for (const wait of this.permissions.liveApprovalWaits()) {
+        if (wait.agentId !== agentId) continue
+        const outward = (await this.outwardSessionIdForAcp(agentId, wait.sessionId)) ?? wait.sessionId
+        // The snapshot above is stale by now; the emit itself re-checks the wait is still live.
+        if (outward === outwardSessionId) this.emitApprovalActivity(agentId, wait.sessionId, 'awaiting_permission')
+      }
+    } catch (err) {
+      this.log.warn(`approval wait for session "${outwardSessionId}" not re-asserted: ${formatErr(err)}`)
     }
   }
 
@@ -8294,6 +8309,7 @@ export class Daemon {
       httpSlackSessionTarget: (p) => this.httpSlackSessionTarget(p),
       maskAgentSecrets: <T>(agentId: string, payload: T): T => this.maskAgentSecrets(agentId, payload),
       logSessionAction: (verb, sessionKey, actor) => this.commands.logSessionAction(verb, sessionKey, actor),
+      emitApprovalActivity: (agentId, acpSessionId, state) => this.emitApprovalActivity(agentId, acpSessionId, state),
       // ── approval-DM routing (slack-approval-dm.md §4–§6) ──
       cpApprovalRoute: () =>
         this.cpClient?.supportsServerFeature?.(APPROVAL_DM_ROUTE_V1_FEATURE) === true ? this.cpClient : undefined,
@@ -8311,6 +8327,24 @@ export class Daemon {
       slackDmSessionTarget: (p, integrationId) =>
         encodeSharedSlackStatusTarget({ agentId: p.plan.agentId, integrationId, sessionKey: p.plan.sessionKey })
     }
+  }
+
+  /** Serializes `agent/activity` emits: two flips on one session must reach the CP in order. */
+  private approvalActivityChain: Promise<void> = Promise.resolve()
+
+  /** D→C `agent/activity` for the approval bell (slack-approval-dm.md §7); best-effort, the reconnect replay converges it. */
+  private emitApprovalActivity(agentId: string, acpSessionId: string, state: 'awaiting_permission' | 'idle'): void {
+    this.approvalActivityChain = this.approvalActivityChain.then(async () => {
+      try {
+        const sessionId = (await this.outwardSessionIdForAcp(agentId, acpSessionId)) ?? acpSessionId
+        // Re-checked after the lookup with no await before the send: a settle that landed meanwhile
+        // already queued its `idle` ahead of this task, and a stale `awaiting_permission` must not follow it.
+        if (state === 'awaiting_permission' && !this.permissions.isAwaitingApproval(agentId, acpSessionId)) return
+        this.cpClient?.emitAgentActivity?.({ agentId, sessionId, state, ts: new Date(this.clock.now()).toISOString() })
+      } catch (err) {
+        this.log.warn(`approval activity for agent "${agentId}" not reported: ${formatErr(err)}`)
+      }
+    })
   }
 
   /** Everything the collaboration coordinator touches on the Daemon — turn state, the CP/relay seam, dispatch. */
@@ -16554,6 +16588,7 @@ export class Daemon {
       memoryConnections: () => this.memoryConnections,
       replayHookTerminalReports: () => this.replayHookTerminalReports(),
       replayChannelSnapshots: () => this.replayChannelSnapshots(),
+      replayApprovalActivity: () => this.permissions.replayApprovalActivity(),
       sessionMetadataOutbox: () => this.sessionMetadataOutbox,
       webchatMcpRevocations: () => this.webchatMcpRevocations,
       drainSessionPurges: () => this.drainSessionPurges(),

@@ -41,6 +41,7 @@ function row(overrides: Record<string, unknown>) {
     visibility: 'org',
     externalProvider: null,
     externalResolution: null,
+    activityState: 'idle',
     ...overrides
   }
 }
