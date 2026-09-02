@@ -29,6 +29,7 @@ import {
   type ClaudeProtectedSettings,
   ULTRACODE_EFFORT
 } from '../runtime-defs/claude-runtime.js'
+import { runtimeExecutableHints } from '../runtime-defs/executable-hints.js'
 import {
   LocalDriver,
   type AcpSandboxLaunch,
@@ -601,18 +602,9 @@ export class AcpHost {
     }
   ) {}
 
-  /** A Claude Code runtime (its command/args reference `claude`) — these embed the
-   *  @anthropic-ai/claude-agent-sdk, which needs a Claude Code executable. The one
-   *  predicate lives in claude-runtime.ts, shared with the model-catalog path. */
+  /** A Claude Code runtime — the one predicate lives in claude-runtime.ts, shared with the model-catalog path. */
   private isClaudeRuntime(): boolean {
     return isClaudeRuntimeDef(this.runtime)
-  }
-
-  /** codex-acp accepts CODEX_PATH to reuse the operator-installed Codex CLI instead of its bundled fallback. */
-  private isCodexRuntime(): boolean {
-    return [this.runtime.command, ...this.runtime.args].some((part) =>
-      /(?:^|[\\/@])codex-acp(?:@[^\\/]*)?$/i.test(part)
-    )
   }
 
   async start(): Promise<void> {
@@ -652,19 +644,12 @@ export class AcpHost {
     // --disable-builtin-mcps) that must reach the adapter as CLI args.
     const spawnArgs = [...this.runtime.args, ...(isolateAccountApps ? appIsolation.appendArgs : [])]
     const driver = this.opts.driver ?? new LocalDriver({ log: this.opts.log })
-    const hints = [
-      ...(this.isClaudeRuntime() ? [{ envVar: 'CLAUDE_CODE_EXECUTABLE', command: 'claude' }] : []),
-      ...(this.isCodexRuntime() ? [{ envVar: 'CODEX_PATH', command: 'codex' }] : [])
-    ]
+    const hints = runtimeExecutableHints(this.runtime)
     const spawned = await driver.launch({
       command: this.runtime.command,
       args: spawnArgs,
       env: env as Record<string, string>,
-      // The claude-agent-sdk resolves the Claude Code binary from its own bundled
-      // native package (an OPTIONAL npm dep, often missing under npx / --omit=optional)
-      // OR from `CLAUDE_CODE_EXECUTABLE`. If nothing set it but a `claude` CLI is on
-      // PATH, point at it so an out-of-the-box Claude Code install just works. The
-      // lookup belongs to the driver: only it knows the filesystem the runtime sees.
+      // Resolving a hint belongs to the driver: only it knows the filesystem the runtime sees.
       ...(hints.length > 0 ? { hints } : {}),
       ...(this.opts.files?.length ? { files: this.opts.files } : {}),
       ...(this.opts.suppressChildStderr !== undefined ? { suppressChildStderr: this.opts.suppressChildStderr } : {}),
