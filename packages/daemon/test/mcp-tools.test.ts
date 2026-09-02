@@ -541,3 +541,31 @@ describe('toolsForIntegrations', () => {
     expect(properties.replies.items.properties).not.toHaveProperty('number')
   })
 })
+
+describe('platform session tools (read-ports.ts `sessionTools`)', () => {
+  const linearInt: Integration = {
+    id: 'int-ln',
+    platform: 'linear',
+    core: { mode: 'shared', bindRules: [], mutedChannels: [], gated: false },
+    config: {}
+  } as Integration
+  const LINEAR_TOOL_NAMES = ['getIssue', 'listIssues', 'createIssue', 'updateIssue', 'createIssueComment', 'listTeams']
+
+  it('injects Linear’s tool family into a Linear session, and into no other session of the same agent', () => {
+    const bridged = [slackInt, linearInt]
+    const namesOn = (currentPlatform: string) => toolsForIntegrations(bridged, { currentPlatform }).map((t) => t.name)
+    expect(namesOn('linear')).toEqual(expect.arrayContaining(LINEAR_TOOL_NAMES))
+    for (const gated of LINEAR_TOOL_NAMES) {
+      expect(namesOn('slack')).not.toContain(gated)
+      expect(namesOn('webchat')).not.toContain(gated)
+    }
+    // A single-platform Linear agent's only platform is its session platform.
+    expect(toolsForIntegrations([linearInt]).map((t) => t.name)).toEqual(expect.arrayContaining(LINEAR_TOOL_NAMES))
+    // Slack's own port-gated tools stay out of the Linear session in return.
+    expect(namesOn('linear')).not.toContain('createCanvas')
+  })
+
+  it('reserves every platform’s session tool name in the auto-allow set', () => {
+    for (const name of LINEAR_TOOL_NAMES) expect(ALL_TOOL_NAMES).toContain(name)
+  })
+})

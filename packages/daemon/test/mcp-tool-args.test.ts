@@ -8,6 +8,7 @@ import {
   toolsForIntegrations
 } from '../src/mcp/tools.js'
 import { externalMemoryTools } from '../src/memory/tools.js'
+import { allPortPlatforms, sessionToolsFor } from '../src/platforms/read-ports.js'
 import type { ToolDescriptor } from '../src/tool-schema/descriptor.js'
 import type { Integration } from '../src/agents/agent-schema.js'
 
@@ -84,4 +85,17 @@ describe('advertised tool schemas agree with their zod validators', () => {
     const branch = root.oneOf!.find((candidate) => candidate.required?.includes(target))!
     expect(validatorFields(schema)).toEqual(fields(branch))
   })
+})
+
+describe('platform session tools advertise exactly what their validators take', () => {
+  for (const platform of allPortPlatforms()) {
+    const family = sessionToolsFor(platform)
+    if (!family) continue
+    it.each(family.descriptors.map((d) => d.name))(`${platform}: %s`, (name) => {
+      const descriptor = family.descriptors.find((d) => d.name === name)!
+      const schema = family.argSchemas.get(name)
+      expect(schema, `${name} has no validator`).toBeDefined()
+      expect(validatorFields(schema!)).toEqual(fields(descriptor.inputSchema as ObjectSchemaView))
+    })
+  }
 })

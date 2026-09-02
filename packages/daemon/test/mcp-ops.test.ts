@@ -2264,3 +2264,45 @@ describe('executeTool: replyGithubReviewThreads', () => {
     ).rejects.toThrow(/positive decimal string/)
   })
 })
+
+describe('executeTool: platform session tools', () => {
+  const linearCtx: SessionContext = {
+    ...ctx,
+    platform: 'linear',
+    integrationId: 'int-ln',
+    channel: 'org-uuid',
+    thread: 'session-uuid',
+    integrations: [{ id: 'int-ln', platform: 'linear' }]
+  }
+
+  it('routes a Linear tool to the platform’s own dispatch through the session’s connection', async () => {
+    const request = vi.fn(async () => ({ teams: { nodes: [{ id: 't-1', key: 'ENG', name: 'Engineering' }] } }))
+    const d = makeDeps({ sessionToolConnectionFor: () => ({ request }) })
+    const res = await executeTool(linearCtx, 'listTeams', {}, d)
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(res).toEqual({ teams: [{ key: 'ENG', name: 'Engineering', id: 't-1' }] })
+  })
+
+  it('refuses the tool from a session on any other platform, before touching a connection', async () => {
+    const sessionToolConnectionFor = vi.fn(() => ({ request: vi.fn() }))
+    const d = makeDeps({ sessionToolConnectionFor })
+    await expect(executeTool(ctx, 'listTeams', {}, d)).rejects.toThrow(/only available in a Linear session/)
+    expect(sessionToolConnectionFor).not.toHaveBeenCalled()
+  })
+
+  it('never falls back to the reply-surface registry, which omits Linear by design', async () => {
+    // A daemon that wires only `gatewayFor` — even one answering a Linear-shaped connection —
+    // has not wired these tools: the reply registry is the wrong lookup, not a fallback.
+    const gatewayFor = vi.fn(() => ({ ...fakeGateway(), request: vi.fn() }) as unknown as MessageGateway)
+    const d = makeDeps({ gatewayFor })
+    await expect(executeTool(linearCtx, 'listTeams', {}, d)).rejects.toThrow(/not wired on this daemon/)
+    expect(gatewayFor).not.toHaveBeenCalled()
+  })
+
+  it('names the missing connection when the Linear session has none live', async () => {
+    const d = makeDeps({ sessionToolConnectionFor: () => undefined })
+    await expect(executeTool(linearCtx, 'getIssue', { issue: 'ENG-1' }, d)).rejects.toThrow(
+      /no live Linear connection for integration int-ln/
+    )
+  })
+})

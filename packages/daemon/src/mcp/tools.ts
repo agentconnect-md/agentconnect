@@ -4,8 +4,10 @@ import { SESSION_TITLE_TOOL_NAME } from './session-title-tool.js'
 import {
   allAttachmentReadTools,
   allPortPlatforms,
+  allSessionToolDescriptors,
   declaresPort,
   attachmentReadToolsFor,
+  sessionToolsFor,
   type PlatformToolPort
 } from '../platforms/read-ports.js'
 import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
@@ -1256,6 +1258,8 @@ export const ALL_TOOL_NAMES = [
       // the auto-allow set is about NAMES, and a name a platform can inject must
       // be listed even for an agent that will never see it.
       ...allAttachmentReadTools(),
+      // Every platform's session-scoped tool family, for the same reason.
+      ...allSessionToolDescriptors(),
       ...MEMORY_TOOLS,
       ...KNOWLEDGE_TOOLS,
       ...COLLABORATION_TOOLS,
@@ -1319,5 +1323,9 @@ export function toolsForIntegrations(
   // not integration order, so an agent's tool list does not reshuffle because its
   // integrations happened to be stored the other way round.
   add(attachmentReadToolsFor(platforms))
+  // The session platform's OWN tool family (`sessionTools`): platform-shaped tools that exist
+  // only where the session is, so a Linear-connected agent's Slack sessions carry none of them.
+  const sessionPlatform = options.currentPlatform ?? (platforms.length === 1 ? platforms[0] : undefined)
+  add([...(sessionToolsFor(sessionPlatform)?.descriptors ?? [])])
   return tools
 }
