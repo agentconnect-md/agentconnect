@@ -92,6 +92,7 @@
  * directories is exactly why D1 keeps modules in this tree (see
  * packages/web/STYLE.md).
  */
+import type { UserTurnBody } from '@agentconnect.md/protocol'
 import type { ComponentType, ReactNode } from 'react'
 import type { BotDto, CreateIntegrationInput, SessionMessageDto } from '@/lib/api'
 import type { Agent, IntegrationRow } from '@/lib/data'
@@ -756,6 +757,18 @@ export interface WebPlatformModule<TApi = unknown> {
    * call site has a `ctx` to pass.
    */
   textRenderer?: ComponentType<{ text: string }>
+  /**
+   * The formatter for the facts behind one of this platform's user turns
+   * (`UserTurnBody`, transcript-full-tool-body.md §9): what the console shows
+   * under a delivery bubble's "more" — the issue, the team, the delegator,
+   * the description — as a structured block rather than the raw prompt. The
+   * host (`UserTurnDetails`) resolves it from the row's platform through
+   * `platformTurnFacts` and mounts it under the divider; absent ⇒ the fold
+   * offers nothing for this platform's rows, which is every chat platform,
+   * whose rows carry no body at all. GitHub and GitLab are not modules, so
+   * their formatter is the host's own, keyed by `body.codehost`.
+   */
+  turnFacts?: ComponentType<{ body: UserTurnBody }>
   /**
    * Provider-native duplicate identity of one transcript row — the
    * per-platform arms of the merged-conversation dedupe (Slack decimal ts,

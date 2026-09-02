@@ -66,6 +66,9 @@ import { useProfile } from '@/lib/profile'
 import { usePgDraft, usePgDraftHasText, usePlayground } from '@/components/console/PlaygroundProvider'
 import { AgentIconView, LoadingState, ModelMark, PlatformMark, SocialLoginMark, Spinner } from '@/components/marks'
 import { MessageText } from '@/components/console/MessageText'
+import { UserTurnDetails } from '../UserTurnDetails'
+import { parseUserTurnBody } from '@/lib/user-turn-body'
+import type { UserTurnBody } from '@agentconnect.md/protocol'
 import { NotFound } from '@/components/console/NotFound'
 import { Avatar, Button, Icon } from '@/components/ui'
 import { GitlabRerunButton } from '@/components/console/GitlabRerunButton'
@@ -1127,6 +1130,8 @@ type Turn =
       cronId: string | null
       /** The platform this message was authored on — see `FmtStep.platform`. */
       platform?: string
+      /** The facts behind a delivery turn (transcript-full-tool-body.md §9) — the bubble's "more". */
+      body?: UserTurnBody
     }
   // `wake` marks a block opened by a background-task wake that no reply has
   // merged into yet — the run that follows binds to it, then clears the flag.
@@ -3112,7 +3117,8 @@ export default function SessionDetailView() {
           image: m.attachments?.[0],
           isCron: !!cron,
           cronId: cron?.id ?? null,
-          platform: rowPlatform
+          platform: rowPlatform,
+          body: parseUserTurnBody(m.body)
         })
       }
     }
@@ -4051,6 +4057,7 @@ export default function SessionDetailView() {
                                   />
                                 )}
                                 {turn.text && <MessageText text={turn.text} platform={turn.platform} />}
+                                {turn.body && <UserTurnDetails body={turn.body} platform={turn.platform} />}
                               </div>
                               {/* Sent bubbles are complete by definition — the copy affordance
                         (hover-revealed, right-aligned under the bubble) always mounts.
