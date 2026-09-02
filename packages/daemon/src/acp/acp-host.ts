@@ -37,6 +37,7 @@ import {
   type SpawnFile,
   type SpawnedRuntime
 } from './spawn-driver.js'
+import type { HostKey } from './host-key.js'
 import type { Logger } from '../log.js'
 import { accountAppIsolation } from './account-apps.js'
 
@@ -599,6 +600,8 @@ export class AcpHost {
        *  cluster driver launches it in a sandbox pod and carries ACP over the
        *  network, leaving everything below this line unchanged. */
       driver?: SpawnDriver
+      /** The host this runtime serves, handed to the driver so a cluster launch claims that host's pod. */
+      hostKey?: HostKey
       log?: Logger
     }
   ) {}
@@ -654,7 +657,8 @@ export class AcpHost {
       ...(hints.length > 0 ? { hints } : {}),
       ...(this.opts.files?.length ? { files: this.opts.files } : {}),
       ...(this.opts.suppressChildStderr !== undefined ? { suppressChildStderr: this.opts.suppressChildStderr } : {}),
-      ...(this.opts.sandbox ? { sandbox: this.opts.sandbox } : {})
+      ...(this.opts.sandbox ? { sandbox: this.opts.sandbox } : {}),
+      ...(this.opts.hostKey ? { hostKey: this.opts.hostKey } : {})
     })
     this.spawned = spawned
     spawned.onExit(() => {

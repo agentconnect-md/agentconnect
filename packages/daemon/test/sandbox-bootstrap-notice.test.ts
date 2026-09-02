@@ -58,7 +58,7 @@ function coldSandbox(daemon: Daemon): void {
     memoryFsFor: () => new LocalMemoryFs(mkdtempSync(join(tmpdir(), 'ac-sandbox-notice-mem-'))),
     autoMergeFor: () => undefined,
     releaseAgent: () => {},
-    launchedAgents: () => [],
+    launched: () => [],
     stop: async () => {}
   }
 }

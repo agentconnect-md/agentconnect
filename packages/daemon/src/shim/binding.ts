@@ -4,6 +4,8 @@ import type { ShimCapability } from './protocol.js'
 /** What the daemon knows about a sandbox it launched before dialing its shim. */
 export interface SpawnRecord {
   agentId: string
+  /** What the pod is claimed for — the agent, or one of its confined sessions; absent means the agent's own pod. */
+  subject?: string
   /** Sandbox object UID — from the Sandbox's own `metadata.uid`; the claim has none. */
   sandboxUid: string
   /** Monotonic per-agent counter, incremented on every launch of a new pod. */
@@ -30,6 +32,11 @@ export type BindResult =
   | { ok: true; credential: string; binding: Binding; superseded: Binding[] }
   /** A newer launch already holds this sandbox's channel; the caller must not bind. */
   | { ok: false; reason: 'superseded_generation' | 'generation_claimed_by_another_pod'; current: number }
+
+/** The launch identity a record binds: its subject, which for the agent's own pod is the agent id. */
+export function spawnSubject(record: Pick<SpawnRecord, 'agentId' | 'subject'>): string {
+  return record.subject ?? record.agentId
+}
 
 /** Constant-time compare that cannot throw on a length mismatch. */
 function sameSecret(a: string, b: string): boolean {
@@ -65,7 +72,7 @@ export class ShimBindingRegistry {
    * and generation, re-obtained by re-handshaking, so no long-lived credential is in the
    * sandbox.
    *
-   * Binding supersedes every earlier binding for the same launch identity — the agent's
+   * Binding supersedes every earlier binding for the same launch identity — the subject's
    * sandbox — NOT merely the same pod UID. A rescheduled or resumed pod arrives with a
    * NEW UID, so keying supersession on the pod would leave the evicted incarnation's
    * credential live and its generation authorized: precisely the replay the fence exists
@@ -74,7 +81,7 @@ export class ShimBindingRegistry {
   bind(record: SpawnRecord, pod: { name: string; uid: string }): BindResult {
     const superseded: Binding[] = []
     for (const [credential, existing] of [...this.byCredential]) {
-      if (existing.agentId !== record.agentId || existing.sandboxUid !== record.sandboxUid) continue
+      if (spawnSubject(existing) !== spawnSubject(record) || existing.sandboxUid !== record.sandboxUid) continue
       // Monotonic in the generation, mutating nothing when it is not: an older incarnation
       // can bind AFTER a newer one — a terminating pod reconnecting during overlap, or
       // simply a slower TokenReview — and replacing the current binding would hand the
@@ -143,10 +150,10 @@ export class ShimBindingRegistry {
     if (this.credentialByPod.get(binding.podUid) === credential) this.credentialByPod.delete(binding.podUid)
   }
 
-  /** Drop every binding for an agent, across pod incarnations. */
-  revokeAgent(agentId: string): void {
+  /** Drop every binding for a subject's pod, across its incarnations; a sibling session pod's stay. */
+  revokeSubject(subject: string): void {
     for (const [credential, binding] of [...this.byCredential]) {
-      if (binding.agentId !== agentId) continue
+      if (spawnSubject(binding) !== subject) continue
       this.byCredential.delete(credential)
       this.credentialByPod.delete(binding.podUid)
     }

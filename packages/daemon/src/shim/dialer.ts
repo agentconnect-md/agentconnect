@@ -1,6 +1,6 @@
 import { Backoff, ClientTransport, systemClock, type BackoffOpts, type Clock } from '@agentconnect.md/connection'
 import { noopClusterMetrics, type ClusterMetrics } from '../metrics/cluster-metrics.js'
-import { ShimBindingRegistry, type Binding, type SpawnRecord } from './binding.js'
+import { ShimBindingRegistry, spawnSubject, type Binding, type SpawnRecord } from './binding.js'
 import {
   DEFAULT_CREDENTIAL_TTL_MS,
   sanitizeWorkspaceRoot,
@@ -42,7 +42,8 @@ export interface ShimDialerDeps {
   metrics?: ClusterMetrics
   log: { info: (message: string) => void; warn: (message: string) => void }
   onConnection?: (connection: ShimConnection) => void
-  onConnectionLost?: (agentId: string, reason: string) => void
+  /** Named by the launch's subject, which for the agent's own pod is the agent id. */
+  onConnectionLost?: (subject: string, reason: string) => void
 }
 
 interface SupervisedDial {
@@ -57,7 +58,7 @@ interface SupervisedDial {
   rejectReady: (error: Error) => void
 }
 
-/** The daemon-side owner of outbound sandbox channels. */
+/** The daemon-side owner of outbound sandbox channels, one supervised dial per launch subject. */
 export class ShimDialer {
   private readonly registry: ShimBindingRegistry
   private readonly metrics: ClusterMetrics
@@ -74,7 +75,7 @@ export class ShimDialer {
   }
 
   connect(endpoint: string, record: SpawnRecord, timeoutMs: number): Promise<ShimConnection> {
-    const existing = this.dials.get(record.agentId)
+    const existing = this.dials.get(spawnSubject(record))
     if (
       existing &&
       !existing.stopped &&
@@ -91,13 +92,13 @@ export class ShimDialer {
       readySettled: false,
       ...this.freshReady()
     }
-    this.dials.set(record.agentId, dial)
+    this.dials.set(spawnSubject(record), dial)
     void this.supervise(dial, timeoutMs)
     return this.awaitReady(dial, timeoutMs)
   }
 
-  connectionsFor(agentId: string): ShimConnection[] {
-    const current = this.dials.get(agentId)?.current
+  connectionsFor(subject: string): ShimConnection[] {
+    const current = this.dials.get(subject)?.current
     return current ? [current] : []
   }
 
@@ -105,11 +106,12 @@ export class ShimDialer {
     return this.registry.authorize(input)
   }
 
-  revokeAgent(agentId: string): void {
-    const dial = this.dials.get(agentId)
+  /** Stop a subject's dial and drop its credentials; the agent's other pods are untouched. */
+  revoke(subject: string): void {
+    const dial = this.dials.get(subject)
     if (dial) this.stopDial(dial, 'binding revoked')
-    this.dials.delete(agentId)
-    this.registry.revokeAgent(agentId)
+    this.dials.delete(subject)
+    this.registry.revokeSubject(subject)
   }
 
   stop(): void {
@@ -162,7 +164,7 @@ export class ShimDialer {
         }
         this.registry.revokeIssued(connection.issuedCredential)
         if (dial.stopped) return
-        this.deps.onConnectionLost?.(dial.record.agentId, `shim channel closed (${close.code})`)
+        this.deps.onConnectionLost?.(spawnSubject(dial.record), `shim channel closed (${close.code})`)
         const delay = close.reason === 'rebinding' ? 0 : reconnect.next()
         if (delay > 0) await this.delay(delay)
       } catch (error) {
@@ -174,7 +176,7 @@ export class ShimDialer {
             dial.rejectReady(failure)
           }
           dial.stopped = true
-          if (this.dials.get(dial.record.agentId) === dial) this.dials.delete(dial.record.agentId)
+          if (this.dials.get(spawnSubject(dial.record)) === dial) this.dials.delete(spawnSubject(dial.record))
           return
         }
         const delay = everBound ? reconnect.next() : startup.next()
@@ -260,7 +262,7 @@ export class ShimDialer {
    * Its rejection is pre-observed, deliberately: a revoke or a supersede stops the dial whether
    * or not anything is waiting for its next connection, and that teardown is expected — the
    * caller that IS waiting still receives it through {@link awaitReady}, which attaches its own
-   * handlers. Without this, an ordinary `revokeAgent` surfaced as an unhandled rejection.
+   * handlers. Without this, an ordinary `revoke` surfaced as an unhandled rejection.
    */
   private freshReady(): Pick<SupervisedDial, 'ready' | 'resolveReady' | 'rejectReady'> {
     let resolveReady: (connection: ShimConnection) => void = () => {}

@@ -147,7 +147,7 @@ function fakeK8sPlane(bound: boolean) {
     memoryFsFor: () => new LocalMemoryFs(mkdtempSync(join(tmpdir(), 'ac-wc-mem-'))),
     autoMergeFor: () => undefined,
     releaseAgent: () => {},
-    launchedAgents: () => [],
+    launched: () => [],
     stop: async () => {}
   }
 }

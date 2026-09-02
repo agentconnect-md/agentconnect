@@ -22,7 +22,7 @@ export interface SandboxLeaseDeps {
  * Who holds a Sandbox and who may change its operating mode.
  *
  * Three pieces of state that only make sense together: the per-Sandbox work count, the
- * per-Sandbox transition queue that serializes mode writes, and the per-agent gate that an
+ * per-Sandbox transition queue that serializes mode writes, and the per-subject gate that an
  * idle suspension publishes so acquisition waits it out instead of racing it.
  */
 export class SandboxLease {
@@ -33,9 +33,10 @@ export class SandboxLease {
    *  return while an earlier suspend patch was still in flight, and the older write would
    *  then land last and reverse the newer decision. Serializing removes that entirely. */
   private readonly modeQueue = new Map<string, Promise<void>>()
-  /** Idle suspensions in flight, per agent. `busy` COUNTS work but does not exclude it, so a
+  /** Idle suspensions in flight, per subject. `busy` COUNTS work but does not exclude it, so a
    *  dispatch admitted while the suspend was mid-write would otherwise lose its pod. Acquisition
    *  waits this out and then re-claims, which is the ordinary resume path. */
+  // Per SUBJECT, never per agent: a subject owns exactly one Sandbox, so the gate and the `busy` count it pairs with name one pod — an agent-keyed gate would let a session pod's suspend refuse its sibling's acquisition.
   private readonly suspending = new Map<string, Promise<void>>()
 
   constructor(private readonly deps: SandboxLeaseDeps) {}
@@ -55,8 +56,8 @@ export class SandboxLease {
   }
 
   /** The suspension gate to wait on before reading a cached launch, or undefined when none is open. */
-  suspensionOf(agentId: string): Promise<void> | undefined {
-    return this.suspending.get(agentId)
+  suspensionOf(subject: string): Promise<void> | undefined {
+    return this.suspending.get(subject)
   }
 
   /**
@@ -71,11 +72,11 @@ export class SandboxLease {
    *
    * `onSuspended` runs once the write lands, for the launch-side state the caller owns.
    */
-  async suspendIfIdle(agentId: string, sandboxName: string, onSuspended: () => void): Promise<'suspended' | 'busy'> {
-    if (this.suspending.has(agentId)) return 'busy'
+  async suspendIfIdle(subject: string, sandboxName: string, onSuspended: () => void): Promise<'suspended' | 'busy'> {
+    if (this.suspending.has(subject)) return 'busy'
     if ((this.busy.get(sandboxName) ?? 0) > 0) return 'busy'
     let opened: () => void = () => {}
-    this.suspending.set(agentId, new Promise<void>((resolve) => (opened = resolve)))
+    this.suspending.set(subject, new Promise<void>((resolve) => (opened = resolve)))
     this.retain(sandboxName)
     try {
       await this.queueMode(sandboxName, 'Suspended')
@@ -85,7 +86,7 @@ export class SandboxLease {
       this.release(sandboxName)
       // Dropped BEFORE the gate opens, so a waiter that resumes cannot observe a suspension that
       // is still registered and refuse itself in this call's place.
-      this.suspending.delete(agentId)
+      this.suspending.delete(subject)
       opened()
     }
   }

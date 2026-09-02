@@ -49,6 +49,7 @@ import { localWorkspaceFs, type WorkspaceFs, type WorkspacePlacement } from './w
 import { gitmoduleRepos } from './gitmodules.js'
 import {
   isRepoSegment,
+  PRIMARY_CHECKOUT_DIR,
   secondaryRootsDirIn,
   secondarySubtreesIn,
   secondarySubtreesUnder,
@@ -61,7 +62,7 @@ import { isSessionBranch, sessionBranchName } from './session-branch.js'
 import {
   hasSessionsDirIn,
   isRealDir,
-  sessionClonesIn,
+  sessionClonesUnder,
   sessionDirIn,
   sessionRootCloneIn,
   sessionsDirIn,
@@ -218,6 +219,8 @@ export class WorkspaceManager {
   private gitRunnerResolver: WorkspaceGitRunnerResolver | undefined
   private fsResolver: WorkspaceFsResolver | undefined
   private pathClearer: WorkspacePathClearer | undefined
+  /** Pool only: retire every session pod of an agent whose workspace is being replaced — the clones they hold describe the old repository (§11). */
+  private sessionsDiscarder: ((agentId: string) => Promise<void>) | undefined
   private workspacesLiveInSandboxes = false
 
   setGitRunnerResolver(resolver: WorkspaceGitRunnerResolver | undefined): void {
@@ -230,6 +233,10 @@ export class WorkspaceManager {
 
   setPathClearer(clearer: WorkspacePathClearer | undefined): void {
     this.pathClearer = clearer
+  }
+
+  setSessionsDiscarder(discarder: ((agentId: string) => Promise<void>) | undefined): void {
+    this.sessionsDiscarder = discarder
   }
 
   setSandboxMode(enabled: boolean): void {
@@ -1221,13 +1228,17 @@ export class WorkspaceManager {
 
   /** `<agentDir>/sessions/<leaf>` — the directory a confined session owns, whether or not it exists yet (§11); the leaf is the session host's, so policy directory and clones name one session. */
   sessionDir(agent: Agent, sessionKey: string): string {
-    return sessionDirIn(this.agentRootFor(agent), hostKeyDirName(sessionHostKey(agent.id, sessionKey)))
+    // On a pool it is on the session's OWN pod, under the mount the install's pods share; the leaf routes it there.
+    const root = this.sandboxMode
+      ? (this.sandboxMountFor(agent.id) ?? DEFAULT_SHIM_WORKSPACE_ROOT)
+      : this.agentRootFor(agent)
+    return sessionDirIn(root, hostKeyDirName(sessionHostKey(agent.id, sessionKey)))
   }
 
   /** The session's own directory when it HAS one on this disk, else undefined — the disk, not the request, decides a session's tier, so reads and preparation cannot disagree. */
   confinedSessionDir(agent: Agent, sessionKey: string): string | undefined {
-    // A pod agent's sessions live on its volume as worktrees; nothing here is its.
-    if (this.sandboxMode) return undefined
+    // A pool member is always the confined tier (§11): every isolated session has its own pod and directory, so the policy answers where no disk can be asked.
+    if (this.sandboxMode) return this.sessionDir(agent, sessionKey)
     const dir = this.sessionDir(agent, sessionKey)
     return isRealDir(dir) ? dir : undefined
   }
@@ -1295,35 +1306,34 @@ export class WorkspaceManager {
    * — so a kept aggregate that nonetheless removed something is flagged `partial`, which is what
    * tells the caller its warm attachment is stale even though the session survives.
    */
-  async removeSessionWorktree(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval> {
-    const roots = await this.sessionWorktreeRoots(agent)
-    const sessionDir = this.confinedSessionDir(agent, sessionKey)
+  // `scope` lets a pool caller judge the two halves on the pods that hold them: the session's clones on its own pod, the legacy worktrees on the agent's.
+  async removeSessionWorktree(
+    agent: Agent,
+    sessionKey: string,
+    scope: 'all' | 'clones' | 'worktrees' = 'all'
+  ): Promise<SessionWorktreeRemoval> {
+    const roots = scope === 'clones' ? [] : await this.sessionWorktreeRoots(agent)
+    const sessionDir = scope === 'worktrees' ? undefined : this.confinedSessionDir(agent, sessionKey)
     if (roots.length === 0 && sessionDir === undefined) {
+      if (scope !== 'all') return { outcome: 'absent' }
       return { outcome: 'failed', error: 'agent workspace is not a Git repository' }
     }
     const id = this.sessionWorktreeId(sessionKey)
-    let retained: SessionWorktreeRemoval | undefined
-    let failed: SessionWorktreeRemoval | undefined
-    let removed = false
-    const note = (result: SessionWorktreeRemoval): void => {
-      if (result.outcome === 'retained') retained ??= result
-      else if (result.outcome === 'failed') failed ??= result
-      else if (result.outcome === 'removed') removed = true
-    }
+    const results: SessionWorktreeRemoval[] = []
     // The session's own directory first (§11), then any worktree left from before the agent was confined — the legacy loop also drops the shared roots' review refs, registrations and cwd attestation.
-    if (sessionDir !== undefined) note(await this.removeSessionClones(agent, sessionDir, id))
-    for (const root of roots) note(await this.removeRootSessionWorktree(agent, root, id))
-    const kept = retained ?? failed
-    if (kept) return removed ? { ...kept, partial: true } : kept
-    return removed ? { outcome: 'removed' } : { outcome: 'absent' }
+    if (sessionDir !== undefined) results.push(await this.removeSessionClones(agent, sessionDir, id))
+    for (const root of roots) results.push(await this.removeRootSessionWorktree(agent, root, id))
+    return foldSessionRemovals(results)
   }
 
   // Remove one confined session's directory with every clone in it (§11) under a session worktree's rules — clean tree, no commit unreachable from a remote, review snapshots exempt — over EVERY local ref, not just HEAD: this removes the object store, so a side branch or a stash is work the checked-out branch cannot speak for.
   private async removeSessionClones(agent: Agent, sessionDir: string, id: string): Promise<SessionWorktreeRemoval> {
     const fs = this.fsFor(agent.id)
     try {
+      // Asked of the filesystem holding it: a pool session's directory is on its pod, never on this disk.
+      if ((await fs.stat(sessionDir)) === 'missing') return { outcome: 'absent' }
       const canonical = await this.validateSessionDir(agent, sessionDir)
-      for (const clone of sessionClonesIn(canonical)) {
+      for (const clone of await sessionClonesUnder(fs, canonical)) {
         if ((await fs.stat(join(clone.path, '.git'))) === 'missing') {
           // No `.git` to interrogate: reclaim only a provably empty leftover, in one operation.
           if (!(await fs.rmdir(clone.path))) return { outcome: 'retained', reason: 'dirty' }
@@ -1362,6 +1372,12 @@ export class WorkspaceManager {
   private async validateSessionDir(agent: Agent, sessionDir: string): Promise<string> {
     if ((await this.fsFor(agent.id).stat(sessionDir)) === 'other')
       throw new Error('session directory must not be a symlink')
+    // On a pod the shim's fd-anchored descent is the containment (see validateWorktreesRoot); this side proves only that it composed the path under the mount.
+    const mount = this.sandboxMountFor(agent.id)
+    if (mount !== undefined) {
+      if (escapesRoot(mount, sessionDir)) throw new Error('session directory resolves outside the mount')
+      return sessionDir
+    }
     const agentRoot = realpathSync(this.agentRootFor(agent))
     const canonical = realpathSync(sessionDir)
     if (escapesRoot(agentRoot, canonical)) throw new Error('session directory resolves outside the agent directory')
@@ -1907,7 +1923,8 @@ export class WorkspaceManager {
     root: WorkspaceRoot,
     request: PrepareSessionWorkspaceRequest
   ): Promise<string> {
-    if (request.confined || this.confinedSessionDir(agent, request.sessionKey) !== undefined) {
+    // Locally the disk decides — a session that has a directory keeps it; on a pool the request does, and the worktree branch below serves only a session prepared before this tier.
+    if (request.confined || (!this.sandboxMode && this.confinedSessionDir(agent, request.sessionKey) !== undefined)) {
       return await this.prepareRootSessionClone(agent, root, request)
     }
     return await this.prepareRootSessionWorktree(agent, root, request)
@@ -1977,7 +1994,8 @@ export class WorkspaceManager {
   // A blobless partial clone of one root for a session (§11) — whole history, file contents on demand — straight from the remote through the daemon's credential path like a primary's first clone: never a hardlink of the primary (a session with write on its own `.git` could reach the shared inodes), never `--shared`; a remote that refuses the filter answers with a full clone, and a clone that fails fails the session.
   private async cloneSessionRootAt(agentId: string, root: WorkspaceRoot, cwd: string): Promise<void> {
     if (root.githubApp) await preWarmGitCred(agentId, 'clone')
-    const git = this.runnerFor(agentId).withEnv(this.sessionCloneGitEnv(agentId, root))
+    // Run in the target's parent, which names the pod that owns it: a runner with no cwd is the agent pod's.
+    const git = this.runnerFor(agentId, dirname(cwd)).withEnv(this.sessionCloneGitEnv(agentId, root))
     await git.clone(root.cloneUrl, cwd, ['--filter=blob:none', '--branch', root.branch, '--single-branch'])
     if (root.githubApp) await writeRepoHelperConfig(this.runnerFor(agentId, cwd), agentId, root.managed)
   }
@@ -2018,14 +2036,14 @@ export class WorkspaceManager {
     return agentDir === undefined ? root : join(root, ...agentDir.split('/'))
   }
 
-  /** The checkout root a cluster session stands in: its own worktree beside the checkout when the
-   *  session is isolated, the checkout itself when every session shares it. */
+  /** The checkout root a cluster session stands in: its own clone on its own pod when the session is
+   *  isolated (§11), the agent pod's checkout when every session shares it. */
   private clusterSessionRootAt(agent: Agent, runtimeRoot: string | undefined, request?: ClusterSessionScope): string {
     const mount = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
     if (agent.workspace.mode !== 'git-repo' || request?.isolation !== 'session' || request.sessionKey === undefined) {
       return this.clusterWorkspaceCheckout(agent, mount)
     }
-    return join(this.worktreesPathAt(agent, mount), this.sessionWorktreeId(request.sessionKey))
+    return sessionRootCloneIn(sessionDirIn(mount, hostKeyDirName(sessionHostKey(agent.id, request.sessionKey))))
   }
 
   clusterWorkspaceCheckout(agent: Agent, runtimeRoot: string | undefined): string {
@@ -2052,6 +2070,10 @@ export class WorkspaceManager {
     request?: PrepareSessionWorkspaceRequest
   ): Promise<string> {
     const root = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
+    // A pool member is always the confined tier (§11): an isolated session prepares on its own pod, whether or not the request says so.
+    if (request?.confined || request?.isolation === 'session') {
+      return await this.prepareClusterConfinedSession(agent, root, { ...request, confined: true })
+    }
     const checkout = join(root, SANDBOX_CHECKOUT_DIR)
     const targetMarker = this.materializationKey(agent)
     const stored = this.readMaterialization(agent)
@@ -2160,15 +2182,40 @@ export class WorkspaceManager {
     return await this.prepareClusterSessionCwd(agent, root, request)
   }
 
-  /**
-   * The pod cwd one session stands in, once its checkout is ready.
-   *
-   * The same shapes the local path has, against the same portable code: a shared session gets the
-   * checkout, an isolated one its own `<mount>/worktrees/<sid>` (which is also what gives a pool
-   * agent an exact same-repository review checkout), a review of a secondary root that root's own
-   * exact worktree, and a review with no local checkout to trust an empty daemon-owned directory
-   * beside them.
-   */
+  // §11 on a pool: the session's clones live on ITS pod under `<mount>/sessions/<leaf>`, cloned from the remotes exactly as a confined self-hosted session's are; the agent pod's checkout is not consulted, and its secondary roots are materialized only for the attestation a reviewed root records there.
+  private async prepareClusterConfinedSession(
+    agent: Agent,
+    mount: string,
+    request: PrepareSessionWorkspaceRequest
+  ): Promise<string> {
+    if (request.githubReviewRevisionOnly) {
+      if (agent.workspace.mode !== 'git-repo' || request.isolation !== 'session' || request.review) {
+        throw new Error('github revision-only workspace requires an isolated git-repo review session')
+      }
+      await this.forgetSessionCwdRoots(agent, this.sessionWorktreeId(request.sessionKey))
+      // An empty daemon-owned cwd INSIDE the session directory, so the session's own pod answers for it.
+      return await this.prepareGithubRevisionOnlyWorkspace(
+        agent,
+        PRIMARY_CHECKOUT_DIR,
+        this.sessionDir(agent, request.sessionKey)
+      )
+    }
+    const reviewRoot = this.reviewedSecondaryRoot(agent, request)
+    await this.prepareSecondaryRoots(agent)
+    const cwdRoot = reviewRoot ?? (await this.resumedReviewedRoot(agent, request))
+    if (cwdRoot) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, {})
+    const cwd =
+      agent.workspace.mode === 'git-repo'
+        ? await this.prepareRootSessionClone(agent, this.primaryRootAt(agent, mount), request)
+        : undefined
+    await this.prepareReferenceSessionWorktrees(agent, this.referenceRootsOf(agent), request)
+    // A from-scratch session keeps the mount as its cwd — on its own pod, so it is private by construction.
+    if (cwd === undefined) return this.clusterWorkspaceCheckout(agent, mount)
+    return this.resolveRootAcpCwd(agent.id, cwd, normalizeRepoSubdir(agent.workspace.agentDir))
+  }
+
+  // The agent pod's cwd for a SHARED session, once its checkout is ready: the checkout itself, or a reviewed secondary root's exact worktree (decision 5); an isolated session never reaches here — it prepares on its own pod (§11).
+
   private async prepareClusterSessionCwd(
     agent: Agent,
     mount: string,
@@ -2192,14 +2239,6 @@ export class WorkspaceManager {
     await this.prepareSecondaryRoots(agent)
     const cwdRoot = reviewRoot ?? (request ? await this.resumedReviewedRoot(agent, request) : undefined)
     if (cwdRoot && request) return await this.prepareReviewedRootWorkspace(agent, cwdRoot, request, {})
-    if (request?.isolation === 'session') {
-      // A from-scratch workspace keeps the mount: isolation has no clone to branch off, as locally —
-      // but its secondaries still get per-session worktrees (decisions 4 and 5).
-      if (agent.workspace.mode === 'git-repo') {
-        await this.prepareRootSessionWorktree(agent, this.primaryRootAt(agent, mount), request)
-      }
-      await this.prepareReferenceSessionWorktrees(agent, this.referenceRootsOf(agent), request)
-    }
     return this.clusterWorkspaceCwd(agent, mount, request)
   }
 
@@ -2469,6 +2508,12 @@ export class WorkspaceManager {
       // has no checkout, which preparation clones, or has one that convergence fixes.
       if (reconcileMaterialization && replace && previousMaterialization !== undefined) {
         this.writePendingConversion(agent, targetMaterialization)
+      }
+      // What `clearSessionWorktrees` does locally: every session pod's clone is of the repository being replaced.
+      if (replace) {
+        await this.sessionsDiscarder?.(agent.id).catch((err: unknown) => {
+          workspaceLog.warn(`workspace: could not retire the session sandboxes of "${agent.id}" (${formatErr(err)})`)
+        })
       }
       return () => {}
     }
@@ -2802,6 +2847,22 @@ export type WorkspacePathClearer = (agentId: string, root: string) => Promise<st
 /** The stable daemon-owned worktree directory for one logical session. Derived,
  * never stored — the id is a hex hash, so the path always sits under the agent's
  * worktrees root. */
+
+/** Fold per-root outcomes conservatively: one retained root keeps the session, a failure is a failure, and a removal beside a kept one is flagged `partial`. */
+export function foldSessionRemovals(results: readonly SessionWorktreeRemoval[]): SessionWorktreeRemoval {
+  let retained: SessionWorktreeRemoval | undefined
+  let failed: SessionWorktreeRemoval | undefined
+  let removed = false
+  for (const result of results) {
+    if (result.outcome === 'retained') retained ??= result
+    else if (result.outcome === 'failed') failed ??= result
+    else if (result.outcome === 'removed') removed = true
+    if (result.partial) removed = true
+  }
+  const kept = retained ?? failed
+  if (kept) return removed ? { ...kept, partial: true } : kept
+  return removed ? { outcome: 'removed' } : { outcome: 'absent' }
+}
 
 export type SessionWorktreeRemoval = (
   | { outcome: 'removed' }

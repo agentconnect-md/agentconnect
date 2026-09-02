@@ -1,9 +1,82 @@
 import type { ShimCapability } from '../shim/protocol.js'
 import type { Sandbox } from './sandbox-api.js'
+import { hostKeyAgentId, hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
+import { sessionDirIn } from '../workspace/session-layout.js'
 
 /** Label domain the claim controller must be configured to allow. */
 export const AC_LABEL_ORG = 'agentconnect.md/org'
 export const AC_LABEL_AGENT = 'agentconnect.md/agent'
+/** The session leaf of a per-session pod, beside — never inside — the agent label the reconciler validates as a UUID. */
+export const AC_LABEL_SESSION = 'agentconnect.md/session'
+
+// What a Sandbox is claimed for: the agent's shared pod, or one confined session's own (git-workspace-model §11). A plain agent id IS the agent pod's subject, so the alias is deliberate: every agent-keyed caller is already a subject-keyed one.
+export type SandboxSubject = string
+
+// A slash never appears in an agent id or a `session-<hex>` leaf, and unlike the host key's NUL it survives a Postgres TEXT column and a log line.
+const SESSION_SUBJECT_SEPARATOR = '/'
+
+/** The subject of the agent's shared pod — the agent id itself, so every agent-keyed caller is already a subject-keyed one. */
+export function agentSandboxSubject(agentId: string): SandboxSubject {
+  return agentId
+}
+
+/** The subject of one confined session's pod, by the leaf its host key names (`session-<24 hex>`). */
+export function sessionSandboxSubject(agentId: string, leaf: string): SandboxSubject {
+  return `${agentId}${SESSION_SUBJECT_SEPARATOR}${leaf}`
+}
+
+/** The pod a host launches into: the agent's for its shared host, the session's own for a session-bound host. */
+export function sandboxSubjectFor(key: HostKey): SandboxSubject {
+  const agentId = hostKeyAgentId(key)
+  return hostKeySessionKey(key) === undefined
+    ? agentSandboxSubject(agentId)
+    : sessionSandboxSubject(agentId, hostKeyDirName(key))
+}
+
+export function sandboxSubjectAgentId(subject: string): string {
+  const at = subject.indexOf(SESSION_SUBJECT_SEPARATOR)
+  return at < 0 ? subject : subject.slice(0, at)
+}
+
+/** The session leaf of a per-session pod's subject, or undefined for the agent's shared pod. */
+export function sandboxSubjectSessionLeaf(subject: string): string | undefined {
+  const at = subject.indexOf(SESSION_SUBJECT_SEPARATOR)
+  return at < 0 ? undefined : subject.slice(at + 1)
+}
+
+// Kept under 63 characters so the Sandbox and Service the controller names after the claim stay DNS labels: the leaf's hash is truncated in the NAME only; the label carries the whole leaf.
+export function sandboxClaimName(subject: string): string {
+  const leaf = sandboxSubjectSessionLeaf(subject)
+  const base = `agent-${sandboxSubjectAgentId(subject)}`
+  return leaf === undefined ? base : `${base}-${leaf.replace(/^session-/, '').slice(0, 16)}`
+}
+
+/** The pod a workspace path lives on: the session pod whose `<mount>/sessions/<leaf>` holds it, else the agent's own (§11). */
+export function sandboxSubjectForPath(
+  agentId: string,
+  path: string | undefined,
+  sessionPods: ReadonlyArray<{ subject: SandboxSubject; mount: string }>
+): SandboxSubject {
+  if (path !== undefined) {
+    for (const pod of sessionPods) {
+      const leaf = sandboxSubjectSessionLeaf(pod.subject)
+      if (leaf === undefined) continue
+      const dir = sessionDirIn(pod.mount, leaf)
+      if (path === dir || path.startsWith(`${dir}/`)) return pod.subject
+    }
+  }
+  return agentSandboxSubject(agentId)
+}
+
+/** The pod labels a subject's claim carries: the tenant, the agent, and — for a session pod — its leaf. */
+export function sandboxPodLabels(orgId: string, subject: string): Record<string, string> {
+  const leaf = sandboxSubjectSessionLeaf(subject)
+  return {
+    [AC_LABEL_ORG]: orgId,
+    [AC_LABEL_AGENT]: sandboxSubjectAgentId(subject),
+    ...(leaf === undefined ? {} : { [AC_LABEL_SESSION]: leaf })
+  }
+}
 
 /** Where agent-sandbox records the pod a Sandbox is backed by — the only pod reference the daemon can read, since `SandboxStatus` carries none and the Pod API is outside its Role. */
 export const SANDBOX_POD_NAME_ANNOTATION = 'agents.x-k8s.io/pod-name'

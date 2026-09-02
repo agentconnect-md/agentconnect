@@ -280,6 +280,27 @@ record at pod-name time — and the holder then dials the shim and binds at its
 term (§7). Cold, warm, and resume paths are already distinguished and metered
 (`LaunchTimer.observedPath`). **No new wake machinery exists here.**
 
+**One pod per session, beside the agent's
+([git-workspace-model.md](git-workspace-model.md) §11).** An isolated session on a
+pool member is the confined tier, so its host launches into a pod of its own: the
+claim is `agent-<agentId>-<16 hex of the session leaf>`, its pod labelled
+`agentconnect.md/agent` AND `agentconnect.md/session` (the leaf,
+`session-<24 hex>`), and the same labels ride the claim's own metadata so a
+successor member can list an agent's session claims without knowing its
+sessions. The session's clones and HOME live on that pod's volume under
+`<mount>/sessions/<leaf>/`; the agent pod keeps the primary checkout, the
+secondary roots and managed memory, and a session runtime binds and holds it as
+its companion for the runtime's life, so a running runtime still implies a
+reachable agent pod. Every workspace path is routed to the pod that owns it.
+Sleep is per pod — a quiet session pod suspends on its own session's activity
+while its siblings and the agent pod stay — and the claim goes with the
+session's row: retention deletes it (volume and all) once the clone has passed
+the dirty and unique-commit rules, a replaced workspace retires every session
+pod of the agent, and agent removal deletes them all. Shared-isolation sessions
+are unchanged: one pod per agent, in the primary checkout. Admission still
+counts agents (`maxAgents`); session pods are bounded by session admission and
+the idle sweep.
+
 ### Orphan reconciliation
 
 Teardown is best-effort and a member can die mid-way — a rollout, an OOM, a

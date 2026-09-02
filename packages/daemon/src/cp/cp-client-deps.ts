@@ -381,8 +381,9 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     agentWake: createAgentWaker({
       ...(host.k8sPlane()
         ? {
+            // The agent's OWN pod: the console browses the primary checkout there, whatever session pods are up.
             sandbox: {
-              isRunning: (id) => host.k8sPlane()!.runsInSandbox(id),
+              isRunning: (id) => host.k8sPlane()!.sandboxBound(id),
               ensureChannel: (id) => host.k8sPlane()!.ensureChannel(id)
             }
           }

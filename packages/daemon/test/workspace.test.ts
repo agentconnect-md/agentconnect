@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import type { Agent } from '../src/agents/agent-schema.js'
+import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { configureWorkspaceGitOrigins } from '../src/workspace/git-origin-policy.js'
 import { DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS } from '@agentconnect.md/protocol'
 
@@ -1160,13 +1161,13 @@ describe.skipIf(process.platform === 'win32')('workspaces.clusterWorkspaceCwd(--
     expect(workspaces.clusterWorkspaceCwd(agent, '/agent')).not.toContain('/var/lib/agentconnect')
   })
 
-  it('puts a session-isolated cwd in its own worktree beside the checkout', () => {
-    // The worktrees parent is the pod's, not the agent directory's: the daemon composes it in the
-    // coordinates the runtime and the shim both read.
+  it('puts a session-isolated cwd in the clone on its own pod, never a worktree of the checkout (§11)', () => {
+    // The session directory is the pod's, not the agent directory's: the daemon composes it in the
+    // coordinates the runtime and the shim both read, under the leaf the session host is named by.
     const agent = gitRepoAgent('/var/lib/agentconnect/agents/bot-git/workspace')
-    const id = workspaces.sessionWorktreeId('sess-1')
+    const leaf = hostKeyDirName(sessionHostKey(agent.id, 'sess-1'))
     expect(workspaces.clusterWorkspaceCwd(agent, '/agent', { isolation: 'session', sessionKey: 'sess-1' })).toBe(
-      `/agent/worktrees/${id}`
+      `/agent/sessions/${leaf}/workspace`
     )
   })
 

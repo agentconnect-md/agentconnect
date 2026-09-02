@@ -163,7 +163,7 @@ async function clusterUnderTest(options: { credentialTtlMs?: number } = {}): Pro
     generations: fakeGenerations(),
     connectChannel: (record: SpawnRecord, _podIp, timeoutMs) =>
       dialer.connect(`ws://127.0.0.1:${port}`, record, timeoutMs),
-    revokeChannel: (agentId) => dialer.revokeAgent(agentId),
+    revokeChannel: (agentId) => dialer.revoke(agentId),
     readyTimeoutMs: 15_000,
     log: { info: () => {}, warn: () => {}, debug: () => {} }
   })

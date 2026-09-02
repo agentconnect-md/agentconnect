@@ -86,6 +86,13 @@ import { GitCredServer, gitcredShimPath, gitcredSocketPath, writeGitcredShim } f
 import { AutoMergeWatcher } from './github/auto-merge/watcher.js'
 import { SandboxHolds } from './k8s/sandbox-hold.js'
 import {
+  agentSandboxSubject,
+  sandboxSubjectFor,
+  sandboxSubjectSessionLeaf,
+  sessionSandboxSubject,
+  type SandboxSubject
+} from './k8s/sandbox-identity.js'
+import {
   daemonGitCredentialTarget,
   initGitInjection,
   managedCredentialScope,
@@ -183,6 +190,7 @@ import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import { mentionedUserIds, substituteUserMentions } from './slack/mentions.js'
 import {
   WorkspaceManager,
+  foldSessionRemovals,
   type PrepareSessionWorkspaceRequest,
   type RetiredRootRemoval,
   type SessionWorktreeRemoval
@@ -1914,6 +1922,8 @@ export class Daemon {
       // And the one destructive operation a cluster workspace needs, for the same reason: a
       // partial clone sits on a volume no `rmSync` here can reach.
       this.workspaces.setPathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
+      // And the pool's form of `clearSessionWorktrees`: a replaced workspace retires every session pod (§11).
+      this.workspaces.setSessionsDiscarder((agentId) => this.discardSessionSandboxes(agentId))
       // And the mode itself, which decides what workspace operations are available at all: an
       // in-place conversion has no pod-side implementation of its rollback contract.
       this.workspaces.setSandboxMode(true)
@@ -2332,7 +2342,7 @@ export class Daemon {
                 (!this.dutyCoordinator.dutyEnforced() || this.duties.holdsAgent(agent.id))
             )
             .map((agent) => agent.id),
-        reachable: (agentId) => !this.k8sPlane || this.k8sPlane.runsInSandbox(agentId),
+        reachable: (agentId) => !this.k8sPlane || this.k8sPlane.sandboxBound(agentId),
         distill: async (agentId, turn) => {
           const agent = this.agents.get(agentId)
           if (!agent) throw new Error(`unknown agent ${agentId}`)
@@ -2879,14 +2889,14 @@ export class Daemon {
       // Must hand back a *started* host: handle() calls host.newSession() immediately,
       // which needs the ACP connection that start() establishes.
       hostFor: (agentId, request, cwd) =>
-        this.ensureHostAsync(this.hostKeyFor(agentId, request.sessionKey), { session: { workspace: request, cwd } }),
+        this.ensureHostAsync(this.hostKeyForRequest(agentId, request), { session: { workspace: request, cwd } }),
       // A constructed AcpHost is not yet running. Keep the session on the cold
       // path until initialize succeeds so concurrent waiters consume hostFor's
       // single preparation rather than starting a warm preparation afterward.
-      isHostRunning: (agentId, request) => this.readyHosts.has(this.hostKeyFor(agentId, request.sessionKey)),
+      isHostRunning: (agentId, request) => this.readyHosts.has(this.hostKeyForRequest(agentId, request)),
       // A session-bound host was launched in the session's directory; the runtime session opens there.
       boundHostCwd: (agentId, request) => {
-        const key = this.hostKeyFor(agentId, request.sessionKey)
+        const key = this.hostKeyForRequest(agentId, request)
         return hostKeySessionKey(key) === undefined ? undefined : this.hostLaunch.get(key)?.cwd
       },
       agentById: (id) => this.agents.get(id),
@@ -3576,17 +3586,35 @@ export class Daemon {
     )
   }
 
-  // git-workspace-model §11: a confined self-hosted session gets its own host; a pool launch dials the agent's one pod, so it keeps the shared host.
-  private perSessionHost(agent: Agent): boolean {
-    return !this.k8s && this.agentRunsInSandbox(agent)
+  // What each session's row says its isolation is, as the requests that reached this member reported it — the one fact a pool member's host keying needs without a store round trip.
+  private readonly sessionIsolation = new Map<string, 'shared' | 'session'>()
+
+  // git-workspace-model §11: a confined self-hosted launch gives every session its own host; a pool member gives an isolated session its own host AND pod, while a shared one keeps the agent's host in the agent's pod.
+  private perSessionHost(agent: Agent, sessionKey?: string): boolean {
+    if (this.k8s) return sessionKey !== undefined && this.sessionIsolation.get(sessionKey) === 'session'
+    return this.agentRunsInSandbox(agent)
   }
 
   /** The host that serves `sessionKey` of this agent: its own under perSessionHost, else the shared one. */
   private hostKeyFor(agentId: string, sessionKey?: string): HostKey {
     const agent = this.agents.get(agentId)
-    return sessionKey !== undefined && agent && this.perSessionHost(agent)
+    return sessionKey !== undefined && agent && this.perSessionHost(agent, sessionKey)
       ? sessionHostKey(agentId, sessionKey)
       : agentHostKey(agentId)
+  }
+
+  /** {@link hostKeyFor} for a caller holding the session's workspace request, which is where its isolation is learned. */
+  private hostKeyForRequest(
+    agentId: string,
+    request: Pick<PrepareSessionWorkspaceRequest, 'sessionKey' | 'isolation'>
+  ): HostKey {
+    this.sessionIsolation.set(request.sessionKey, request.isolation)
+    return this.hostKeyFor(agentId, request.sessionKey)
+  }
+
+  /** The pod a session-bound host launches into, or undefined for one that shares the agent's (a dream, a model-session host). */
+  private podSubjectFor(agent: Agent, hostKey: HostKey): SandboxSubject | undefined {
+    return this.perSessionHost(agent, hostKeySessionKey(hostKey)) ? sandboxSubjectFor(hostKey) : undefined
   }
 
   /** Every host key the agent has live, starting or stopping, plus its shared one (its start fence). */
@@ -3721,11 +3749,25 @@ export class Daemon {
       // The pod's own preparation: clone and pull happen on its volume through the runner, and
       // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
       // all land on this daemon's disk, describing a filesystem the runtime never reads.
-      return await this.withAgentVolume(agent.id, async () => {
-        const cwd = await this.workspaces.prepareClusterWorkspace(agent, plane.workspaceRootFor(agent.id), request)
-        await this.reconcileClusterSkills(agent)
+      if (request) this.sessionIsolation.set(request.sessionKey, request.isolation)
+      const agentPod = agentSandboxSubject(agent.id)
+      // §11: an isolated session prepares on ITS pod (its clones, its skills); the agent pod is held beside it for the secondary-root attestation and the reads that follow.
+      const pod =
+        request && this.perSessionHost(agent, request.sessionKey)
+          ? sandboxSubjectFor(sessionHostKey(agent.id, request.sessionKey))
+          : agentPod
+      const prepare = async (): Promise<string> => {
+        const cwd = await this.workspaces.prepareClusterWorkspace(
+          agent,
+          plane.workspaceRootFor(pod),
+          pod === agentPod ? request : { ...request!, confined: true }
+        )
+        await this.reconcileClusterSkills(agent, pod)
         return cwd
-      })
+      }
+      return await this.withSandboxVolume(agentPod, () =>
+        pod === agentPod ? prepare() : this.withSandboxVolume(pod, prepare)
+      )
     }
     if (!this.opts.hostFactory) assertExclusiveAgentWorkspaces([agent as LoadedAgent])
     const opts = {
@@ -3743,9 +3785,9 @@ export class Daemon {
       : this.workspaces.prepareWorkspace(agent, opts)
   }
 
-  private async reconcileClusterSkills(agent: Agent): Promise<void> {
+  private async reconcileClusterSkills(agent: Agent, pod: SandboxSubject): Promise<void> {
     const plane = this.k8sPlane
-    const client = plane?.skillClientFor?.(agent.id)
+    const client = plane?.skillClientFor?.(pod)
     const agentDir = (agent as { dir?: string }).dir
     const dreamed = agentDir
       ? await acceptedDreamSkillSources({ dir: agentDir }).catch((error: unknown) => {
@@ -3753,8 +3795,8 @@ export class Daemon {
           return []
         })
       : []
-    const workspaceIncarnation = plane?.workspaceIncarnationFor?.(agent.id)
-    const shimGeneration = plane?.shimGenerationFor?.(agent.id)
+    const workspaceIncarnation = plane?.workspaceIncarnationFor?.(pod)
+    const shimGeneration = plane?.shimGenerationFor?.(pod)
     const duty = this.duties.dutyForAgent(agent.id)
     const daemonId = this.cfg.daemonId
     const skillsAgentId = this.runtimeCatalog.entries[agent.runtime]?.skillsAgentId
@@ -3903,8 +3945,8 @@ export class Daemon {
         gitResolutions,
         client,
         isLaunchCurrent: () =>
-          plane.workspaceIncarnationFor?.(agent.id) === workspaceIncarnation &&
-          plane.shimGenerationFor?.(agent.id) === shimGeneration
+          plane.workspaceIncarnationFor?.(pod) === workspaceIncarnation &&
+          plane.shimGenerationFor?.(pod) === shimGeneration
       })
     } finally {
       await rm(scratch, { recursive: true, force: true })
@@ -3912,18 +3954,19 @@ export class Daemon {
   }
 
   /**
-   * Run `work` with the agent's workspace volume reachable, whatever holds it.
+   * Run `work` with a pod's workspace volume reachable, whatever holds it — the agent's own pod for
+   * the agent id, a session's pod for its subject.
    *
    * On a cluster that is one Sandbox lease around the WHOLE operation, not just the bind: everything
    * inside runs in the pod, so a rollout's drain request landing mid-clone — or an idle sweep landing
    * mid-removal — would otherwise suspend the pod underneath work this daemon already admitted, and a
    * suspended pod serves neither exec nor fs. Locally there is nothing to hold.
    */
-  private async withAgentVolume<T>(agentId: string, work: () => Promise<T>): Promise<T> {
+  private async withSandboxVolume<T>(subject: string, work: () => Promise<T>): Promise<T> {
     const plane = this.k8sPlane
     if (!plane) return await work()
-    return await plane.withSandbox(agentId, async () => {
-      await plane.ensureChannel(agentId)
+    return await plane.withSandbox(subject, async () => {
+      await plane.ensureChannel(subject)
       return await work()
     })
   }
@@ -4355,10 +4398,12 @@ export class Daemon {
     // Filled right after construction, so the terminal reap can prove the host that exited is
     // still the memoized one before evicting anything.
     const constructed: { host?: AcpHost } = {}
+    const podSubject = this.k8sPlane ? this.podSubjectFor(agent, opts.hostKey) : undefined
     const host = new AcpHost(launchRuntime, {
-      // In --k8s the runtime runs in the agent's own Sandbox pod; everywhere else AcpHost falls
-      // back to its LocalDriver, which is what a self-hosted daemon wants.
-      ...(this.k8sPlane ? { driver: this.k8sPlane.driver } : {}),
+      // In --k8s the runtime runs in a Sandbox pod — the agent's own, or the session's own for an isolated
+      // session's host (§11); everywhere else AcpHost falls back to its LocalDriver, which is what a
+      // self-hosted daemon wants.
+      ...(this.k8sPlane ? { driver: this.k8sPlane.driver, ...(podSubject ? { hostKey: opts.hostKey } : {}) } : {}),
       onUpdate,
       onPermission: (sid, params) => this.permissions.onAcpPermission(opts.hostKey, sid, params),
       ...(this.evalHooks.enabled
@@ -11287,13 +11332,13 @@ export class Daemon {
     const { entry, key, agent } = run
     const { agentId, webchat } = entry
     if (!p.selectedHost) {
-      const hostKey = this.hostKeyFor(agentId, key)
+      const workspace = {
+        sessionKey: key,
+        isolation: (await this.store.getSession(key))?.workspaceIsolation ?? 'shared'
+      }
+      const hostKey = this.hostKeyForRequest(agentId, workspace)
       // Normally a join of the host handle() started; a session-bound host evicted since re-launches in its directory.
-      const ordinaryHost = await this.ensureHostAsync(hostKey, {
-        session: {
-          workspace: { sessionKey: key, isolation: (await this.store.getSession(key))?.workspaceIsolation ?? 'shared' }
-        }
-      })
+      const ordinaryHost = await this.ensureHostAsync(hostKey, { session: { workspace } })
       p.selectedHost = this.selectedOrdinaryTurnHost(hostKey, ordinaryHost)
       entry.selectedHost = p.selectedHost
     }
@@ -15679,11 +15724,8 @@ export class Daemon {
       // being judged. A pod that will not come up is THIS session's failure, never the whole
       // sweep's — it retries next pass.
       // A session directory of its own (§11) is judged even when no shared root remains to hang a worktree off.
-      const result = await this.withAgentVolume(rec.agentId, async () =>
-        (await this.workspaces.hasSessionWorktreeRoots(currentAgent)) ||
-        this.workspaces.confinedSessionDir(currentAgent, rec.key) !== undefined
-          ? await this.workspaces.removeSessionWorktree(currentAgent, rec.key)
-          : undefined
+      const result = await this.withSandboxVolume(rec.agentId, () =>
+        this.judgeSessionDirectories(currentAgent, rec.key)
       ).catch((err: unknown): SessionWorktreeRemoval => ({ outcome: 'failed', error: (err as Error).message }))
       if (result === undefined) return { outcome: 'not_applicable' }
       // `partial` too: a kept aggregate can still have removed another root's worktree, and a warm
@@ -15700,6 +15742,28 @@ export class Daemon {
       }
       return result
     })
+  }
+
+  // Locally one call judges every root; on a pool the legacy worktrees are judged on the agent pod and the session's clones on its own pod — woken only when it has one, since a session that never launched there has nothing to judge.
+  private async judgeSessionDirectories(agent: Agent, sessionKey: string): Promise<SessionWorktreeRemoval | undefined> {
+    const plane = this.k8sPlane
+    if (!plane) {
+      return (await this.workspaces.hasSessionWorktreeRoots(agent)) ||
+        this.workspaces.confinedSessionDir(agent, sessionKey) !== undefined
+        ? await this.workspaces.removeSessionWorktree(agent, sessionKey)
+        : undefined
+    }
+    const results: SessionWorktreeRemoval[] = []
+    if (await this.workspaces.hasSessionWorktreeRoots(agent)) {
+      results.push(await this.workspaces.removeSessionWorktree(agent, sessionKey, 'worktrees'))
+    }
+    const pod = sessionSandboxSubject(agent.id, hostKeyDirName(sessionHostKey(agent.id, sessionKey)))
+    if (await plane.hasSandbox(pod)) {
+      results.push(
+        await this.withSandboxVolume(pod, () => this.workspaces.removeSessionWorktree(agent, sessionKey, 'clones'))
+      )
+    }
+    return results.length === 0 ? undefined : foldSessionRemovals(results)
   }
 
   private async sweepSessionRetention(): Promise<void> {
@@ -15772,6 +15836,7 @@ export class Daemon {
           this.sdkLease.delete(sdkLeaseKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
         await this.modelSessions.release(rec.key)
         await this.stopSessionHost(rec.agentId, rec.key, { ...sessionHost, row: rec })
+        await this.discardSessionSandbox(rec.agentId, rec.key)
       }
     }
     this.log.info(
@@ -15816,7 +15881,7 @@ export class Daemon {
       // bound is skipped: retiring a root is never worth waking a suspended pod, and the next pass
       // that finds one bound sweeps it.
       if (this.workspaces.sandboxMode && this.workspaces.sandboxMountFor(agent.id) === undefined) continue
-      const pending = await this.withAgentVolume(agent.id, () => this.workspaces.retiredSecondaryRoots(agent)).catch(
+      const pending = await this.withSandboxVolume(agent.id, () => this.workspaces.retiredSecondaryRoots(agent)).catch(
         (err: unknown) => {
           failures.push((err as Error).message)
           return []
@@ -15832,7 +15897,7 @@ export class Daemon {
         const current = this.agents.get(agent.id)
         if (!current) return undefined
         // The volume has to be up and bound for the removal, as it was for the preparation.
-        return await this.withAgentVolume(agent.id, async () => {
+        return await this.withSandboxVolume(agent.id, async () => {
           // Re-listed inside the fence: the spec may have re-authorized a repository while this pass
           // waited for the queue, which un-retires its root in place.
           const results: RetiredRootRemoval[] = []
@@ -16163,16 +16228,33 @@ export class Daemon {
   private async sweepIdleSandboxes(now: number, ttl: number): Promise<void> {
     const plane = this.k8sPlane
     if (!plane) return
-    for (const { agentId, since } of plane.launchedAgents()) {
+    for (const { subject, agentId, since } of plane.launched()) {
       // Suspend is the holder's decision (k8s-daemon-pool §4); an ex-holder must not touch its successor's pod.
       if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(agentId)) continue
       // A live host owns the decision above; suspending under it would pull the pod out from
-      // beneath a runtime that is merely between turns.
-      if (this.hasHostForAgent(agentId) || this.modelSessions.hasStartedHostForAgent(agentId)) continue
+      // beneath a runtime that is merely between turns. A session pod answers to ITS host alone (§11);
+      // the agent pod, to every host of the agent — a session runtime holds it as its companion.
+      const leaf = sandboxSubjectSessionLeaf(subject)
+      const hostKey =
+        leaf === undefined ? undefined : this.hostKeysForAgent(agentId).find((key) => hostKeyDirName(key) === leaf)
+      if (leaf === undefined && (this.hasHostForAgent(agentId) || this.modelSessions.hasStartedHostForAgent(agentId)))
+        continue
+      if (hostKey !== undefined && (this.hosts.has(hostKey) || this.hostStarts.has(hostKey))) continue
       if ((this.activeDispatchesByAgent.get(agentId)?.size ?? 0) > 0) continue
-      if ([...this.pending.values()].some((p) => p.plan.agentId === agentId)) continue
+      // A session pod taken over without its host is judged by the agent's activity — the wider window.
+      const sessionKey = hostKey === undefined ? undefined : hostKeySessionKey(hostKey)
+      if (
+        [...this.pending.values()].some(
+          (p) => p.plan.agentId === agentId && (sessionKey === undefined || p.plan.sessionKey === sessionKey)
+        )
+      )
+        continue
       // Shared-store activity, floored at when this member took the launch: a full window, not epoch-idle.
-      const last = Math.max((await this.store.agentLastActivityTs(agentId)) ?? 0, since)
+      const activity =
+        sessionKey === undefined
+          ? await this.store.agentLastActivityTs(agentId)
+          : await this.store.sessionLastActivityTs(sessionKey)
+      const last = Math.max(activity ?? 0, since)
       if (now - last <= ttl) continue
       // A console page is watching work a suspend would throw away — uncommitted edits on the pod's
       // volume, or an armed in-pod merge watcher. The lease is renewed by that page and lapses on
@@ -16184,15 +16266,15 @@ export class Daemon {
         continue
       }
       void plane
-        .suspendIdle(agentId)
+        .suspendIdle(subject)
         .then((outcome) => {
           if (outcome !== 'suspended') return
           this.log.info(
-            `idle: suspended the sandbox for agent "${agentId}" (idle ${Math.round((now - last) / 1000)}s) — ` +
+            `idle: suspended the sandbox "${subject}" (idle ${Math.round((now - last) / 1000)}s) — ` +
               `its workspace volume is kept and the next message resumes onto it`
           )
         })
-        .catch((err) => this.log.warn(`idle: suspending the sandbox for agent "${agentId}" failed: ${formatErr(err)}`))
+        .catch((err) => this.log.warn(`idle: suspending the sandbox "${subject}" failed: ${formatErr(err)}`))
     }
   }
 
@@ -16239,6 +16321,30 @@ export class Daemon {
         `cluster: could not delete the sandbox for removed agent "${agentId}" (${formatErr(err)}) — ` +
           `sandboxclaim "${plane.driver.claimName(agentId)}" is left for the orphan reconciler`
       )
+    }
+  }
+
+  /** Cluster only: a retired session's pod goes with its row — the claim, and the clones and HOME on its volume (§11). Best effort like the agent's; the orphan reconciler collects a leftover. */
+  private async discardSessionSandbox(agentId: string, sessionKey: string): Promise<void> {
+    const plane = this.k8sPlane
+    if (!plane) return
+    const leaf = hostKeyDirName(sessionHostKey(agentId, sessionKey))
+    try {
+      await plane.discardSession(agentId, leaf)
+    } catch (err) {
+      this.log.warn(
+        `cluster: could not delete the sandbox of retired session ${sessionKey} (${formatErr(err)}) — ` +
+          `sandboxclaim "${plane.driver.claimName(sessionSandboxSubject(agentId, leaf))}" is left for the orphan reconciler`
+      )
+    }
+  }
+
+  /** Cluster only: retire every session pod of the agent — a replaced workspace leaves them holding the old repository (§11). */
+  private async discardSessionSandboxes(agentId: string): Promise<void> {
+    const plane = this.k8sPlane
+    if (!plane) return
+    for (const subject of await plane.driver.sessionClaimSubjects(agentId)) {
+      await plane.discardSession(agentId, sandboxSubjectSessionLeaf(subject)!)
     }
   }
 
