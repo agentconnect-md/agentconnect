@@ -171,6 +171,7 @@ export function prepareRuntimeLaunch(opts: {
   /** Additional daemon-derived workspace parents (for session worktrees).
    * Every entry is revalidated as a strict descendant of scopeDir. */
   trustedWorkspaceWriteRoots?: string[]
+  trustedPrimaryCheckout?: string
   /** Test seam. Shared login remains Linux-only with the sandbox rollout. */
   credentialPlatform?: NodeJS.Platform
   sandboxMechanism?: SandboxMechanism
@@ -378,8 +379,16 @@ export function prepareRuntimeLaunch(opts: {
   // An isolated session's cwd is its own worktree, but that worktree's index — and every ref and
   // object its commits write — live in the OWNER checkout's `.git`, which no other carve-back
   // covers. Without these the confined runtime cannot even run `git status` in its own worktree.
+  // The primary checkout is the daemon's own record of it: a locally authored agent may keep a
+  // path the default layout does not name, and its worktrees still hang off THAT checkout.
+  const primaryCheckout = opts.trustedPrimaryCheckout
+    ? safeRoot(opts.trustedPrimaryCheckout, 'trusted primary checkout')
+    : primaryCheckoutIn(agentRoot)
+  if (primaryCheckout === agentRoot || !inside(agentRoot, primaryCheckout)) {
+    throw new Error(`trusted primary checkout "${primaryCheckout}" is outside the agent root`)
+  }
   const gitMetadataWriteRoots = compactReadRoots(
-    [primaryCheckoutIn(agentRoot), ...secondaryCheckoutsIn(agentRoot)]
+    [primaryCheckout, ...secondaryCheckoutsIn(agentRoot)]
       .map((checkout) => join(checkout, '.git'))
       .filter((gitDir) => existsSync(gitDir) && lstatSync(gitDir).isDirectory())
       .map((gitDir) => {

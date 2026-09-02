@@ -153,6 +153,7 @@ export function composeRuntimeLaunch(opts: {
    * descendants such as the AgentConnect MCP bridge. */
   runtimeReadRoots?: string[]
   trustedWorkspaceWriteRoots?: string[]
+  trustedPrimaryCheckout?: string
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
   allowModelToolUnixSockets?: boolean
@@ -194,6 +195,7 @@ export function composeRuntimeLaunch(opts: {
     agentsRoot: opts.agentsRoot,
     trustedRuntimeReadRoots: [...(sandboxAccess?.readRoots ?? []), ...(opts.runtimeReadRoots ?? [])],
     trustedWorkspaceWriteRoots: opts.trustedWorkspaceWriteRoots,
+    trustedPrimaryCheckout: opts.trustedPrimaryCheckout,
     sandboxMechanism: opts.sandboxMechanism,
     mcpSocketPath: opts.mcpSocketPath,
     allowModelToolUnixSockets: opts.allowModelToolUnixSockets,

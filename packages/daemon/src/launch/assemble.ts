@@ -39,6 +39,7 @@ export interface AssembleRuntimeLaunchOptions {
   /** Daemon-owned code/socket/config carve-backs; a function receives the final launch env. */
   runtimeReadRoots?: string[] | ((launchEnv: Record<string, string>) => string[] | undefined)
   trustedWorkspaceWriteRoots?: string[]
+  trustedPrimaryCheckout?: string
   sandboxMechanism?: SandboxMechanism
   mcpSocketPath?: string
   allowModelToolUnixSockets?: boolean
@@ -89,6 +90,7 @@ export function assembleRuntimeLaunch(opts: AssembleRuntimeLaunchOptions): Assem
     explicitEnv: launchEnv,
     runtimeReadRoots,
     trustedWorkspaceWriteRoots: opts.trustedWorkspaceWriteRoots,
+    trustedPrimaryCheckout: opts.trustedPrimaryCheckout,
     sandboxMechanism: opts.sandboxMechanism,
     mcpSocketPath: opts.mcpSocketPath,
     allowModelToolUnixSockets: opts.allowModelToolUnixSockets,
