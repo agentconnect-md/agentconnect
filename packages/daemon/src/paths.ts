@@ -30,6 +30,11 @@ export function defaultAgentsDir(root: string): string {
   return join(root, 'agents')
 }
 
+/** Daemon-owned ACP adapter installs — never under a HOME, because the adapter is the runtime's parent. */
+export function runtimeStoreDir(root: string): string {
+  return join(root, 'runtimes')
+}
+
 export function registryPath(root: string): string {
   return join(root, 'acp_registry.json')
 }

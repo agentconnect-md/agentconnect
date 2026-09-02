@@ -6,8 +6,9 @@ export interface ManagedRuntimeEntry {
   runtime: RuntimeDef
 }
 
-/** AgentConnect-maintained runtime builds that intentionally override the
- * public ACP registry. Explicit operator config remains the final authority. */
+/** AgentConnect-maintained runtime builds that intentionally override the public ACP registry.
+ *  Explicit operator config remains the final authority. The daemon installs each `npx` spec below
+ *  into its own runtime store at start and launches from there, never through `npx` (runtime-store.ts). */
 export const MANAGED_RUNTIME_CATALOG: Readonly<Record<string, ManagedRuntimeEntry>> = Object.freeze({
   'codex-acp': {
     name: 'Codex',
