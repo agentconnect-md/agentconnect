@@ -6,7 +6,6 @@ import { LinearWizardBody } from './Body'
 import { LinearWorkspaceCard, LinearWorkspaceHeaderActions, LinearWorkspaceRows } from './card'
 import { linearLinkInput } from './link'
 import { LinearMark } from './mark'
-import { LinearTeamGlyph } from './team-glyph'
 import { LinearTeamName } from './team-name'
 import { linearSettingsFragments } from './settings'
 import { LinearTurnFacts } from './turn-facts'
@@ -69,7 +68,6 @@ export const linearModule: WebPlatformModule<LinearApi> = {
     // which already names it, so the row keeps the TEAM alone — and never the team KEY, which is
     // an identifier rather than a label and is not in the stored name at all.
     // A team leads with its own icon and color, the way Linear's own team picker draws it.
-    RowMark: LinearTeamGlyph,
     // …and prints its key after the name, off the row's own field, with the name linking to
     // the team in Linear — neither is ever read back out of the label.
     RowName: LinearTeamName,

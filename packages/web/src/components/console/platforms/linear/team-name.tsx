@@ -7,8 +7,6 @@
 // Only the name is the anchor: the key sits beside it as plain text, so a reader can copy the
 // identifier without arming a navigation.
 
-import { Icon } from '@/components/ui'
-
 export function LinearTeamName({ name, channelKey, url }: { name: string; channelKey?: string; url?: string }) {
   return (
     <>
@@ -20,10 +18,9 @@ export function LinearTeamName({ name, channelKey, url }: { name: string; channe
           title={`Open ${name} in Linear`}
           // The row's own type and color, not a link's: this is the row's label, which happens
           // to lead somewhere. The console's inline links read the same way (`GitlabCard`).
-          className="inline-flex min-w-0 items-center gap-[4px] text-inherit no-underline hover:underline"
+          className="min-w-0 truncate text-inherit no-underline hover:underline"
         >
-          <span className="min-w-0 truncate">{name}</span>
-          <Icon name="external-link" size={11} color="var(--text-tertiary)" className="flex-none" />
+          {name}
         </a>
       ) : (
         // A workspace whose URL segment is not known yet still prints its name and its key.

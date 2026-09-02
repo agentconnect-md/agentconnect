@@ -29,7 +29,7 @@ import {
   type MeDto
 } from '@/lib/api'
 import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/data'
-import { roomGlyph, roomPlural, rowLabelParts, rowMark, rowName } from '@/components/console/IntegrationChannelList'
+import { roomGlyph, roomPlural, rowLabelParts, rowName } from '@/components/console/IntegrationChannelList'
 import {
   botCardCopy,
   botSharingEditable,
@@ -549,9 +549,6 @@ function BotsCard({
                           const glyph = roomGlyph(c.kind, b.platform)
                           const glyphIcon =
                             glyph === '@@' ? 'users' : glyph === '@' ? 'at-sign' : glyph === '#' ? 'hash' : null
-                          // A platform that gives the conversation its own icon and tint draws that
-                          // instead — a Linear team is told apart by its color, not by a room sigil.
-                          const Mark = rowMark(c.kind, b.platform)
                           const Name = rowName(c.kind, b.platform)
                           return (
                             <Fragment key={c.channelId}>
@@ -564,17 +561,13 @@ function BotsCard({
                                 className={`grid ${chanGrid} items-center gap-[11px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0`}
                               >
                                 <span className="mono flex min-w-0 items-center gap-[7px] text-[12px]">
-                                  {Mark ? (
-                                    <Mark name={label.name} icon={c.icon} color={c.color} size={15} />
-                                  ) : (
-                                    glyphIcon && (
-                                      <Icon
-                                        name={glyphIcon}
-                                        size={12}
-                                        color="var(--text-tertiary)"
-                                        className="flex-none"
-                                      />
-                                    )
+                                  {glyphIcon && (
+                                    <Icon
+                                      name={glyphIcon}
+                                      size={12}
+                                      color="var(--text-tertiary)"
+                                      className="flex-none"
+                                    />
                                   )}
                                   {/* The room's noun is the platform's own; the two direct kinds are platform-free. */}
                                   <span className="sr-only">

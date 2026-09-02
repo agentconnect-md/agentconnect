@@ -11,7 +11,6 @@ import {
   roomPlural,
   rowLabel,
   rowLabelParts,
-  rowMark,
   rowMenuAction,
   rowName
 } from './IntegrationChannelList'
@@ -438,21 +437,6 @@ describe('roomPlural', () => {
   })
 })
 
-describe('rowMark', () => {
-  it('is the platform’s own, and only where the platform declares one', () => {
-    expect(rowMark('channel', 'linear')).toBeDefined()
-    // Every other platform leads its rows with the kind-driven glyph alone.
-    for (const platform of ['slack', 'discord', 'telegram', 'feishu', undefined]) {
-      expect(rowMark('channel', platform)).toBeUndefined()
-    }
-  })
-
-  it('never marks a direct row — its label is a person, and `@`/`@@` already lead it', () => {
-    expect(rowMark('im', 'linear')).toBeUndefined()
-    expect(rowMark('mpim', 'linear')).toBeUndefined()
-  })
-})
-
 // One member is no choice: the picker would name that agent and offer nothing to pick.
 describe('IntegrationChannelList default dispatch on a one-member bot', () => {
   const render = (botId: string) =>
@@ -563,7 +547,7 @@ describe('IntegrationChannelList row name, where the platform gives one', () => 
   it('prints the team’s key after its name and links the NAME to the team in Linear', () => {
     const html = render()
     expect(html).toContain('href="https://linear.app/example-workspace/team/ENG"')
-    expect(html).toContain('>Engineering</span>')
+    expect(html).toContain('>Engineering</a>')
     expect(html).toContain('>ENG<')
     // The stored label still carries the workspace and never the key (§4.5).
     expect(html).not.toContain('Acme / Engineering</span>')

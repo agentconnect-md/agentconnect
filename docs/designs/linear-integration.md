@@ -450,9 +450,9 @@ name>`, e.g. `Acme / Engineering`: the two NAMES a member says out loud,
     daemon report can add or replace a glyph and never retract one. Without that
     split, a team whose icon was removed in Linear would keep the old one
     forever and the reconciler would re-run the same no-op write on every tick.
-    The console does **not** vendor Linear's icon set: an emoji is rendered as
-    itself, and a named icon falls back to the team's initial on the team's own
-    color (§9.5).
+    The console draws no mark from them (§9.5): Linear serves the icon as a
+    NAME out of its own set, never as a glyph, and an initial standing in for
+    it said nothing — the pair rides the row unrendered.
   - **A team carries its key and its page, as fields.** `IntegrationChannel.key`
     / `.url` and `integration_channel.key` / `.url` hold the team's short handle
     (`ENG`) and `https://linear.app/<workspace urlKey>/team/<KEY>`, on exactly
@@ -1675,22 +1675,12 @@ tile.
     `<Workspace name> / <Team name>` apart: these rows always sit under one
     workspace's own card, which already names it, so the row keeps the team
     alone. The label itself is unchanged, and the host keeps the whole of it
-    as the row's accessible name. A sixth, `RowMark`, is the colored glyph the
-    row leads with — the way Linear's own team picker draws a team (§4.5). We
-    do **not** vendor Linear's icon set: shipping someone else's icon font to
-    fill a 16 px square would go stale the moment they add one, so the mark
-    renders the team's **emoji** when the icon is one and otherwise the team's
-    **initial**, either way on the team's own color (a translucent ground of
-    the same value, so it sits correctly in both themes). Both halves are
-    **grapheme** work: a flag is a pair of regional indicators and a keycap is a
-    digit plus a combining mark, so a code-point read draws half of each, and
-    `Extended_Pictographic` calls neither an emoji. The mark segments with
-    `Intl.Segmenter` and tests the whole grapheme against `RGI_Emoji`, with an
-    explicit union (pictographic base | regional-indicator pair | keycap
-    sequence) for an engine without `v`-mode sequence properties. Direct rows never
-    take it — their label is a person, and the `@`/`@@` markers already lead
-    them — and every other platform declares none, so its rows are untouched. A
-    seventh, `RowName`, is how the row prints that label: the team's NAME, which
+    as the row's accessible name. The row leads with no mark: Linear serves a team's icon as a NAME out of
+    its own set (`Gears`), never as a glyph, so the console could only ever
+    approximate it or stand an initial in its place, and an `E` for
+    Engineering said nothing — the `RowMark` member that drew it was withdrawn
+    with its only implementer. A
+    sixth, `RowName`, is how the row prints that label: the team's NAME, which
     OPENS the team in Linear, then its **key** in muted text after it (§4.5).
     Only the name is the anchor — a key beside a link is an identifier a reader
     can take, while a key inside one is a second thing to click by accident —
