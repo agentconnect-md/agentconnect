@@ -610,6 +610,9 @@ function acpUpdateChainKey(agentId: string, sessionId: string): string {
 // One agent-discovery pass: what this daemon will serve, plus the whole active fleet on disk.
 type AgentListSnapshot = { agents: LoadedAgent[]; activeFleet: LoadedAgent[] }
 
+/** How long a Linear delivery waits for the delegator's name before dispatching with the id. */
+const LINEAR_ACTOR_LOOKUP_MS = 1500
+
 export class Daemon {
   // This daemon's workspace execution plane. Owned per instance, so two daemons in one process
   // (the test suite, and a k8s daemon beside a local one) cannot inherit each other's git runner,
@@ -6632,12 +6635,40 @@ export class Daemon {
       this.log.info(`linear: session ${ext.agentSessionId} has no issue — answered without starting a turn`)
       return 'settled'
     }
+    const conn = this.lnConnByIntegration.get(msg.integrationId)
+    if (conn) {
+      // Sender and mentions resolve off the hot path, as on every platform whose messages carry
+      // ids alone — the session list and its avatars read the cache this fills.
+      this.channelNameResolver?.noteMessage(conn, normalized)
+      // The §8 header names the delegator, and a `created` event carries only `creatorId`: a
+      // bounded lookup fills the name the relay could not, the cache first. A miss keeps the id.
+      if (!normalized.sender.name) {
+        const name = await this.linearActorName(conn, normalized.sender.id)
+        if (name) normalized.sender = { ...normalized.sender, name }
+      }
+    }
     applyLinearMessageStrategy(normalized)
     // No per-event channel name: the channel is the WORKSPACE, so its label is install-scoped and
     // already written when the connection reported the workspace (§4.5). Writing the issue here
     // would thrash the one display slot and relabel every sibling session in the workspace; the
     // issue rides `threadUrl` and the §8 trusted header, which are session-scoped.
     return 'dispatch'
+  }
+
+  /** The delegator's display name for the §8 header: the cache, else one lookup bounded by
+   *  {@link LINEAR_ACTOR_LOOKUP_MS} so a slow provider never holds the delivery. */
+  private async linearActorName(conn: LinearConnection, senderId: string): Promise<string | undefined> {
+    const cached = (await this.store.getDisplayNames([senderId])).get(senderId)
+    if (cached) return cached
+    const lookup = conn
+      .getUserProfile(senderId)
+      .then((p) => p.name || p.realName || undefined)
+      .catch(() => undefined)
+    const deadline = new Promise<undefined>((resolve) => {
+      const timer = setTimeout(() => resolve(undefined), LINEAR_ACTOR_LOOKUP_MS)
+      timer.unref?.()
+    })
+    return await Promise.race([lookup, deadline])
   }
 
   /** Has this daemon already served this exact Linear delivery? A read failure answers NO:

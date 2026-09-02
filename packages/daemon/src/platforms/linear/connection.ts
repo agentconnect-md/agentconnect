@@ -14,9 +14,10 @@
  * cached token keeps serving until it actually expires, and only then does a send fail.
  * Token material never reaches a log line.
  *
- * The read port answers what Linear affords: `getChannelInfo` resolves the issue and
- * `getUserProfile` the Linear user; everything else answers empty. There is no bot
- * channel enumeration, no leave affordance, and attachment download is deferred.
+ * The read port answers what Linear affords: `getChannelInfo` names the connected
+ * workspace — the channel (§4.5) — and `getUserProfile` the Linear user, whose id the
+ * relay prefixes `linear:`; everything else answers empty. There is no bot channel
+ * enumeration, no leave affordance, and attachment download is deferred.
  */
 import { randomUUID } from 'node:crypto'
 import type { IntegrationLinearConfig, LinearCredGrant } from '@agentconnect.md/protocol'
@@ -192,6 +193,11 @@ const defaultSetTimer = (fn: () => void, ms: number): unknown => {
   return t
 }
 
+/** The relay's sender id is `linear:<userId>` (§6.1); Linear's API wants the bare id. */
+export function bareLinearUserId(id: string): string {
+  return id.startsWith('linear:') ? id.slice('linear:'.length) : id
+}
+
 export class LinearConnection implements PlatformConnection {
   /** All outbound writes funnel through one queue so activities land in converger order. */
   private readonly queue: PlatformSendQueue
@@ -343,42 +349,34 @@ export class LinearConnection implements PlatformConnection {
 
   // ── 3. read / query port ──
 
-  /** The issue behind a session's channel id. `channel` is the issue UUID, or — for a
-   *  session with no issue (§4.5) — the AgentSession UUID, which resolves nothing and
-   *  answers the bare id rather than throwing. */
+  /** The channel is the connected workspace (§4.5), whose name the spec already carries — no
+   *  lookup, and never an issue: the one display slot is shared by every session in it. */
   async getChannelInfo(channel: string): Promise<PlatformChannelInfo> {
-    try {
-      const data = await this.graphql<{
-        issue?: { id?: string; identifier?: string; title?: string } | null
-      }>(ISSUE_QUERY, { id: channel })
-      const issue = data.issue
-      if (!issue) return { id: channel, isIm: false }
-      const name = [issue.identifier, issue.title].filter((p) => p !== undefined && p !== '').join(' · ')
-      return { id: channel, ...(name ? { name } : {}), isIm: false }
-    } catch (err) {
-      this.deps.log?.debug(`linear: issue lookup failed (${channel}): ${(err as Error).message}`)
-      return { id: channel, isIm: false }
-    }
+    const name = this.workspaceName?.trim()
+    return { id: channel, ...(name ? { name } : {}), isIm: false }
   }
 
+  /** Answers under the caller's own key: the relay hands out `linear:<userId>`, Linear wants the
+   *  bare id, and the display cache is keyed by whatever the message carried. */
   async getUserProfile(user: string): Promise<PlatformUserProfile> {
+    const id = bareLinearUserId(user)
     try {
       const data = await this.graphql<{
         user?: { id?: string; name?: string; displayName?: string; avatarUrl?: string | null } | null
-      }>(USER_QUERY, { id: user })
+      }>(USER_QUERY, { id })
       const u = data.user
-      if (!u) return { id: user, isBot: this.isSelfAuthored(user) }
+      if (!u) return { id: user, isBot: this.isSelfAuthored(id) }
       return {
-        id: u.id ?? user,
+        id: user,
         ...(u.displayName ? { name: u.displayName } : {}),
         ...(u.name ? { realName: u.name } : {}),
         ...(u.avatarUrl ? { avatarUrl: u.avatarUrl } : {}),
         // A plain user read carries no bot flag; the app's own id is the one we can name (§7.2).
-        isBot: this.isSelfAuthored(u.id ?? user)
+        isBot: this.isSelfAuthored(u.id ?? id)
       }
     } catch (err) {
-      this.deps.log?.debug(`linear: user lookup failed (${user}): ${(err as Error).message}`)
-      return { id: user, isBot: this.isSelfAuthored(user) }
+      this.deps.log?.debug(`linear: user lookup failed (${id}): ${(err as Error).message}`)
+      return { id: user, isBot: this.isSelfAuthored(id) }
     }
   }
 
@@ -588,10 +586,6 @@ const AGENT_ACTIVITY_CREATE = `mutation AgentActivityCreate($input: AgentActivit
 
 const AGENT_SESSION_UPDATE = `mutation AgentSessionUpdate($id: String!, $input: AgentSessionUpdateInput!) {
   agentSessionUpdate(id: $id, input: $input) { success }
-}`
-
-const ISSUE_QUERY = `query Issue($id: String!) {
-  issue(id: $id) { id identifier title url }
 }`
 
 const USER_QUERY = `query User($id: String!) {
