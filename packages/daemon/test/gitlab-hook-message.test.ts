@@ -145,7 +145,8 @@ describe('gitlab hook normalization (§12.3)', () => {
 
   it('carries the assembled prompt and the GitLab facts on the turn body', () => {
     const issue = buildHookMessage(fire(), 't')
-    expect(issue.turnBody?.prompt).toBe(issue.text)
+    expect(issue.turnBody?.prompt).toBe(buildHookText(fire()))
+    expect(issue.text).toBe('Opened issue #42 · db down')
     expect(issue.turnBody?.codehost).toMatchObject({
       provider: 'gitlab',
       event: 'issues:opened',
@@ -168,6 +169,14 @@ describe('gitlab hook normalization (§12.3)', () => {
     )
     expect(push.turnBody?.codehost).toMatchObject({ subject: { kind: 'push' }, ref: 'refs/heads/main' })
     expect(push.turnBody?.codehost?.review).toBeUndefined()
+    expect(push.text).toBe('Pushed refs/heads/main')
+    const note = buildHookMessage(
+      fire({
+        context: { source: 'gitlab', event: 'note', number: 42, truncated: false, bodyExcerpt: 'can you retry?' }
+      }),
+      't'
+    )
+    expect(note.text).toBe('can you retry?')
   })
 
   it('renders MR references with ! and surfaces revision facts on the trusted header', () => {

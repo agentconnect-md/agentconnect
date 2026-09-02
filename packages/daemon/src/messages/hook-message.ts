@@ -522,6 +522,62 @@ export function buildHookTurnFacts(msg: RdMsgHook): CodehostTurnFacts | undefine
   }
 }
 
+/** Event actions that are a person writing a comment: the excerpt IS what they said. */
+const COMMENT_EVENTS = new Set(['issue_comment', 'pull_request_review_comment', 'pull_request_review', 'note'])
+
+/** `opened` → `Opened`, the console's verb for an event action; unknown actions keep the raw pair. */
+const ACTION_VERBS: Record<string, string> = {
+  opened: 'Opened',
+  reopened: 'Reopened',
+  closed: 'Closed',
+  merged: 'Merged',
+  synchronize: 'Pushed to',
+  edited: 'Edited',
+  ready_for_review: 'Marked ready',
+  converted_to_draft: 'Converted to draft',
+  review_requested: 'Requested review on',
+  labeled: 'Labeled',
+  unlabeled: 'Unlabeled',
+  assigned: 'Assigned',
+  unassigned: 'Unassigned',
+  rerequested: 'Re-requested checks on',
+  requested_action: 'Requested an action on',
+  submitted: 'Reviewed'
+}
+
+/** `PR #42` / `issue #42` / `MR !77` — the subject as a person would say it. */
+function hookSubjectLabel(msg: RdMsgHook): string {
+  const c = msg.context
+  if (msg.gitlab) {
+    const target = msg.gitlab.target
+    if (target.kind === 'push') return target.ref
+    return target.kind === 'merge_request' ? `MR !${target.iid}` : `issue #${target.iid}`
+  }
+  const number = msg.github?.pullNumber ?? c?.number
+  if (number === undefined) return c?.repo ?? 'this repository'
+  const kind = msg.github?.subjectKind
+  return kind === 'pull_request' ? `PR #${number}` : kind === 'issue' ? `issue #${number}` : `#${number}`
+}
+
+/**
+ * The console's short form of a code-host delivery (`NormalizedMessage.text`): what the person
+ * did, as a person would say it. A comment IS what they said, so it stands verbatim; every other
+ * event is one line — verb, subject, title — and the assembled prompt lives on the turn body.
+ */
+export function hookDisplayText(msg: RdMsgHook): string | undefined {
+  const c = msg.context
+  if (!c || (c.source !== 'github' && c.source !== 'gitlab')) return undefined
+  if (c.event && COMMENT_EVENTS.has(c.event) && c.bodyExcerpt?.trim()) return c.bodyExcerpt.trim()
+  const subject = hookSubjectLabel(msg)
+  const title = c.title ? ` · ${c.title.split('\n', 1)[0]!.trim()}` : ''
+  if (msg.gitlab?.target.kind === 'push') return `Pushed ${subject}`
+  if (c.event === 'push') return `Pushed to ${subject}`
+  const verb = c.action ? ACTION_VERBS[c.action] : undefined
+  if (verb) return `${verb} ${subject}${title}`
+  const event = c.action ? `${c.event}:${c.action}` : (c.event ?? 'event')
+  return `${event} on ${subject}${title}`
+}
+
 /** The `UserTurnBody` a code-host delivery persists: the assembled prompt plus its facts. */
 export function buildHookTurnBody(msg: RdMsgHook, prompt: string): UserTurnBody | undefined {
   const codehost = buildHookTurnFacts(msg)
@@ -585,8 +641,10 @@ export function buildHookMessage(msg: RdMsgHook, traceId: string): NormalizedMes
   // so distinct same-millisecond deliveries cannot share a transcript primary key.
   const transcriptTs = `${Date.parse(msg.firedAt)}|${msg.msgId}`
   const standingContext = buildHookStandingContext(msg)
-  const text = buildHookText(msg)
-  const turnBody = buildHookTurnBody(msg, text)
+  const prompt = buildHookText(msg)
+  const turnBody = buildHookTurnBody(msg, prompt)
+  // With a turn body the row's text is the console's short form; without one it is the prompt.
+  const text = (turnBody && hookDisplayText(msg)) || prompt
   const target = msg.target
   // With an anchoring target the fire behaves like a cron's: the message lives
   // on the target platform/channel, the pre-anchor thread is a fresh synthetic

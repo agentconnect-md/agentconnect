@@ -280,10 +280,13 @@ together. The reader carries a text row's body inline when it fits the preview
 cap; an oversized one keeps the facts and drops the prompt under
 `bodyTruncated`, since the console renders the facts and never the prompt.
 
-Today every strategy sets `prompt === text`, so the model and the console see
-what they always did. The split lands in two later steps: the strategies put
-the member's own words on `text`, then the console folds the facts behind a
-"more" control with one formatter per platform.
+The Linear and code-host strategies put the console's short form on the row's
+`text` — the member's words on a follow-up or a comment, otherwise one line
+naming what happened (`Delegated ENG-3 · title`, `Opened PR #42 · title`) —
+and the assembled prompt on `prompt`, so the model reads exactly what it did
+before while the bubble shows what a person would say. A turn without a body
+still has its text as its prompt. The remaining step is the console: the facts
+fold behind a "more" control with one formatter per platform.
 
 ## 10. Compatibility
 

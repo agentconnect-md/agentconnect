@@ -8335,12 +8335,18 @@ export class Daemon {
         entry.hookContext = { ...entry.hookContext!, githubReviewBatch: next.sealed }
         // The batch prompt replaces the single delivery's on BOTH seats: the model reads `turnBody.prompt`
         // when a turn carries one, and the row's text follows so the two never disagree.
-        if (next.promptText !== undefined)
-          entry.msg = {
-            ...entry.msg,
-            text: next.promptText,
-            ...(entry.msg.turnBody ? { turnBody: { ...entry.msg.turnBody, prompt: next.promptText } } : {})
-          }
+        if (next.promptText !== undefined) {
+          const body = entry.msg.turnBody
+          const subject = body?.codehost?.subject
+          entry.msg = body
+            ? {
+                ...entry.msg,
+                // The console's short form for a sealed batch; the model reads the batch prompt.
+                text: `${next.sealed.items.length} inline review comments${subject?.number !== undefined ? ` on #${subject.number}` : ''}`,
+                turnBody: { ...body, prompt: next.promptText }
+              }
+            : { ...entry.msg, text: next.promptText }
+        }
         // Only a provider whose batch tool publishes each item withdraws the ordinary reply target.
         if (next.clearReply) entry.githubReply = undefined
         await this.persistHookPayload(entry, true)

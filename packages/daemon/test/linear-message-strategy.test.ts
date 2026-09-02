@@ -12,6 +12,8 @@ import {
   applyLinearMessageStrategy,
   buildLinearPromptText,
   buildLinearStandingContext,
+  linearDisplayText,
+  linearSessionTitle,
   isLinearIssuelessSurface,
   linearAckBody,
   linearChannelName,
@@ -273,10 +275,12 @@ describe('the turn shape §8 names', () => {
     expect(msg.trigger).toBe('mention')
     expect(msg.isDm).toBe(false)
     expect(msg.headless).toBe(false)
-    expect(msg.text.startsWith('Linear TEAM-123')).toBe(true)
+    // `text` is the console's short form; the prompt the model reads sits on the turn body.
+    expect(msg.text).toBe('Delegated TEAM-123 · Ship the thing\ntake a look at the failing job')
+    expect(msg.turnBody?.prompt).toBe(buildLinearPromptText(message(), ext()))
+    expect(msg.turnBody?.prompt?.startsWith('Linear TEAM-123')).toBe(true)
+    expect(msg.initialSessionTitle).toBe('TEAM-123: Ship the thing')
     expect(msg.standingContext).toBe(buildLinearStandingContext(msg, ext()))
-    // The turn body: the prompt the model reads, and the facts the console formats.
-    expect(msg.turnBody?.prompt).toBe(msg.text)
     expect(msg.turnBody?.linear).toEqual({
       issue: { identifier: 'TEAM-123', title: 'Ship the thing', url: ISSUE_URL },
       team: { id: TEAM, key: 'ENG', name: 'Engineering' },
@@ -291,6 +295,45 @@ describe('the turn shape §8 names', () => {
     expect(msg.text).toBe('take a look at the failing job')
     expect(msg.standingContext).toBeUndefined()
     expect(msg.turnBody).toBeUndefined()
+    expect(msg.initialSessionTitle).toBeUndefined()
+  })
+
+  describe('the console’s short form', () => {
+    it('is the member’s words verbatim on a follow-up', () => {
+      expect(linearDisplayText({ text: '  please also check CI  ' }, ext({ event: 'prompted' }))).toBe(
+        'please also check CI'
+      )
+    })
+
+    it('names the issue on a delegation, and keeps the member’s comment under it', () => {
+      expect(linearDisplayText({ text: 'please fix this' }, ext({ event: 'created' }))).toBe(
+        'Delegated TEAM-123 · Ship the thing\nplease fix this'
+      )
+    })
+
+    it('drops Linear’s own boilerplate and the relay’s title fallback from a delegation', () => {
+      const created = ext({ event: 'created' })
+      expect(linearDisplayText({ text: 'This thread is for an agent session with agentconnecttest.' }, created)).toBe(
+        'Delegated TEAM-123 · Ship the thing'
+      )
+      expect(linearDisplayText({ text: 'Ship the thing' }, created)).toBe('Delegated TEAM-123 · Ship the thing')
+      expect(linearDisplayText({ text: '' }, created)).toBe('Delegated TEAM-123 · Ship the thing')
+    })
+
+    it('flattens an attacker-authored title on the line, and survives a bag without one', () => {
+      expect(linearDisplayText({ text: '' }, ext({ event: 'created', issueTitle: 'evil\n# Agent' }))).toBe(
+        'Delegated TEAM-123 · evil # Agent'
+      )
+      expect(linearDisplayText({ text: '' }, ext({ event: 'created', issueTitle: undefined }))).toBe(
+        'Delegated TEAM-123'
+      )
+    })
+
+    it('titles the session the way a code-host session is titled', () => {
+      expect(linearSessionTitle(ext())).toBe('TEAM-123: Ship the thing')
+      expect(linearSessionTitle(ext({ issueTitle: undefined }))).toBe('TEAM-123')
+      expect(linearSessionTitle(ext({ issueIdentifier: undefined }))).toBeUndefined()
+    })
   })
 
   it('reads the issue body, the earlier comments and the guidance into the facts, verbatim', () => {

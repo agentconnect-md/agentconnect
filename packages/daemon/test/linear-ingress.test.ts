@@ -571,13 +571,15 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
       // The full name wins over the handle, matching what the session list shows.
       return { id, name: 'ada', realName: 'Ada Lovelace', isBot: false }
     }
-    const dispatched: { text: string }[] = []
+    const dispatched: { text: string; turnBody?: { prompt?: string } }[] = []
     ;(daemon as any).dispatch = vi.fn(async (_a: string, msg: any) => {
       dispatched.push(msg)
       return null
     })
     await im(daemon, delivery({ sender: { id: 'linear:user-1', isBot: false } }))
-    expect(dispatched[0]!.text.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by Ada Lovelace')
+    expect(dispatched[0]!.turnBody!.prompt!.split('\n')[0]).toBe(
+      'Linear TEAM-123 "Ship the thing" — delegated by Ada Lovelace'
+    )
     expect(asked).toContain('linear:user-1')
     await daemon.stop()
   })
@@ -588,19 +590,21 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     ;(daemon as any).lnConnByIntegration.get(INTEGRATION).getUserProfile = async () => {
       throw new Error('the cache should have answered')
     }
-    const dispatched: { text: string }[] = []
+    const dispatched: { text: string; turnBody?: { prompt?: string } }[] = []
     ;(daemon as any).dispatch = vi.fn(async (_a: string, msg: any) => {
       dispatched.push(msg)
       return null
     })
     await im(daemon, delivery({ sender: { id: 'linear:user-1', isBot: false } }))
-    expect(dispatched[0]!.text.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by Dana (cached)')
+    expect(dispatched[0]!.turnBody!.prompt!.split('\n')[0]).toBe(
+      'Linear TEAM-123 "Ship the thing" — delegated by Dana (cached)'
+    )
     await daemon.stop()
   })
 
   it('hands the coordinates to the standing block and keeps the prompt to the header and the instruction', async () => {
     const { daemon } = await boot()
-    const dispatched: { text: string; standingContext?: string }[] = []
+    const dispatched: { text: string; standingContext?: string; turnBody?: { prompt?: string } }[] = []
     ;(daemon as any).dispatch = vi.fn(async (_a: string, msg: any) => {
       dispatched.push(msg)
       return null
@@ -611,9 +615,9 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     expect(dispatched[0]!.standingContext).toContain('- Team: Engineering (key ENG')
     expect(dispatched[0]!.standingContext).toContain('Working here:')
     // Per turn: what the console transcript shows is the header, the URL and the member's words.
-    expect(dispatched[0]!.text).not.toContain('issue-uuid')
-    expect(dispatched[0]!.text).not.toContain('Working here:')
-    expect(dispatched[0]!.text.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by Dana')
+    expect(dispatched[0]!.turnBody!.prompt!).not.toContain('issue-uuid')
+    expect(dispatched[0]!.turnBody!.prompt!).not.toContain('Working here:')
+    expect(dispatched[0]!.turnBody!.prompt!.split('\n')[0]).toBe('Linear TEAM-123 "Ship the thing" — delegated by Dana')
     await daemon.stop()
   })
 
@@ -641,14 +645,16 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
 
   it('rewrites the dispatched text into the §8 prompt', async () => {
     const { daemon } = await boot()
-    const dispatched: { text: string; headless?: boolean }[] = []
+    const dispatched: { text: string; headless?: boolean; turnBody?: { prompt?: string } }[] = []
     ;(daemon as any).dispatch = vi.fn(async (_a: string, msg: any) => {
       dispatched.push(msg)
       return null
     })
     await im(daemon, delivery())
     expect(dispatched).toHaveLength(1)
-    expect(dispatched[0]!.text.startsWith('Linear TEAM-123 "Ship the thing" — delegated by Dana')).toBe(true)
+    expect(dispatched[0]!.turnBody!.prompt!.startsWith('Linear TEAM-123 "Ship the thing" — delegated by Dana')).toBe(
+      true
+    )
     expect(dispatched[0]!.headless).toBe(false)
     await daemon.stop()
   })

@@ -133,8 +133,9 @@ export function stableTurnId(agentId: string, msg: MessageIdentityFields): strin
  * one registered arm per platform, beside the inbound canonicalization it must
  * agree with. */
 
-/** Append a per-turn block to what the model reads: the assembled prompt when the turn carries one, else `text`. */
+/** Append a per-turn block to what the model reads: the assembled prompt when the turn carries one, else `text`.
+ *  A turn with a prompt seat keeps its `text` as the console's short form, so the block never lands there. */
 export function appendTurnPrompt(msg: Pick<NormalizedMessage, 'text' | 'turnBody'>, block: string): void {
-  msg.text += block
   if (msg.turnBody?.prompt !== undefined) msg.turnBody.prompt += block
+  else msg.text += block
 }
