@@ -370,7 +370,13 @@ check('the agent-browser wrapper answers a bare install and defers otherwise', (
   const version = inImage(`${wrapper} --version`)
   if (!/^agent-browser \d+\.\d+\.\d+/.test(version))
     throw new Error(`the wrapper did not reach the real CLI: ${version}`)
-  return `${version}, install answered locally`
+  // An ACP child is spawned from an allowlist, so the image ENV may not reach the agent at all: the wrapper has
+  // to default the variable itself. Checked with it unset, which is the case an image-env-only check cannot see.
+  const unset = inImage(`env -u AGENT_BROWSER_EXECUTABLE_PATH ${wrapper} install`)
+  if (!unset.includes('/opt/agentconnect/browser/chrome')) {
+    throw new Error(`the wrapper does not default the browser path when the env is unset: ${unset}`)
+  }
+  return `${version}, install answered locally, path defaulted with the env unset`
 })
 
 // A build step that ran as root inside the workspace leaves state the runtime cannot write, and

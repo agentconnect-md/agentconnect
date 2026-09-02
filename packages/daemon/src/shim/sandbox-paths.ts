@@ -28,6 +28,10 @@ export const SANDBOX_MCP_BRIDGE_ENTRY = '/opt/agentconnect/shim/mcp-bridge.js'
 // generator, and neither should become a command an agent can run by name.
 export const SANDBOX_GH_WRAPPER_DIR = '/opt/agentconnect/pathbin'
 
+/** Pod env naming the Chrome the image bakes — agent-browser's only browser-location hook, so an ACP child
+ *  without it downloads one of its own. Set by the image, projected onto the child by acp-runner. */
+export const SANDBOX_BROWSER_EXECUTABLE_ENV = 'AGENT_BROWSER_EXECUTABLE_PATH'
+
 /** Where daemon-written, per-agent git configuration is materialized in the pod. Under /run rather
  *  than the workspace volume: it is regenerated per launch and belongs to the POD, so a resumed
  *  workspace must not carry a previous incarnation's copy. */

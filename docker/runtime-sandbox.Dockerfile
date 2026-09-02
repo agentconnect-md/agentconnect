@@ -229,6 +229,9 @@ COPY --from=chrome --chown=0:0 /out /opt/agentconnect/browser
 RUN printf '%s\n' \
   '#!/bin/sh' \
   '# agentconnect: this sandbox bakes Chrome, so a bare `install` has nothing to fetch. See runtime-sandbox.Dockerfile.' \
+  '# Defaulted here too, not only in ENV: an ACP child is spawned from an allowlist, so the image env may not reach it.' \
+  ': "${AGENT_BROWSER_EXECUTABLE_PATH:=/opt/agentconnect/browser/chrome}"' \
+  'export AGENT_BROWSER_EXECUTABLE_PATH' \
   'if [ "$1" = install ]; then' \
   '  shift' \
   '  case "$*" in' \
@@ -286,8 +289,9 @@ RUN mkdir -p /opt/agentconnect/runtime \
 # AC_CODEX_BASE_URL/AC_CODEX_API_KEY → OPENAI_BASE_URL/OPENAI_API_KEY, and
 # AC_DEEPSEEK_BASE_URL/AC_DEEPSEEK_API_KEY → DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY onto the matching
 # runtime only, and a value the daemon already sent for that runtime wins (src/shim/acp-runner.ts).
-# AGENT_BROWSER_EXECUTABLE_PATH is agent-browser's only browser-location hook — `install` has no --path and
-# nothing points its $HOME cache at the image — so this env is what stops it downloading a Chrome of its own.
+# AGENT_BROWSER_EXECUTABLE_PATH is agent-browser's only browser-location hook — `install` has no --path and nothing
+# points its $HOME cache at the image. Name must match SANDBOX_BROWSER_EXECUTABLE_ENV in src/shim/sandbox-paths.ts:
+# an ACP child is spawned from an allowlist, so acp-runner has to project this one onto it deliberately.
 ENV HOME=/agent \
   AGENT_BROWSER_EXECUTABLE_PATH=/opt/agentconnect/browser/chrome \
   AC_SHIM_WORKSPACE_ROOT=/agent \

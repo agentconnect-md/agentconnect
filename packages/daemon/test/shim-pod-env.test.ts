@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AcpRunner, ghWrapperPath, type ResolveCommand } from '../src/shim/acp-runner.js'
-import { SANDBOX_GH_WRAPPER_DIR } from '../src/shim/sandbox-paths.js'
+import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_GH_WRAPPER_DIR } from '../src/shim/sandbox-paths.js'
 
 // The sandbox spawns with what the daemon sent PLUS the pod's own filesystem basics. The daemon
 // composes the agent's configuration but describes a different machine: it was sending its own
@@ -31,6 +31,57 @@ describe('sandbox spawn environment', () => {
     // SandboxTemplate, which are forwarded deliberately elsewhere rather than in bulk.
     expect(env.SANDBOX_SECRET).toBeUndefined()
     await runner.close(1_000).catch(() => {})
+  })
+
+  // The image bakes Chrome and names it in the pod env, but the child is spawned from an allowlist — so without
+  // this projection agent-browser sees no browser and downloads its own onto the workspace volume.
+  it("projects the pod's baked-browser path onto the child", async () => {
+    const seen: Array<Record<string, string>> = []
+    const runner = new AcpRunner({
+      emit: () => {},
+      podEnv: {
+        HOME: '/agent',
+        PATH: '/usr/bin',
+        [SANDBOX_BROWSER_EXECUTABLE_ENV]: '/opt/agentconnect/browser/chrome'
+      },
+      resolveCommand: ((command, env) => {
+        seen.push({ ...env })
+        return command
+      }) satisfies ResolveCommand,
+      log: { info: () => {}, warn: () => {} }
+    } as never)
+    await openOf(runner)({ op: 'open', command: 'true', args: [], env: {} }).catch(() => {})
+    expect(seen.at(-1)?.[SANDBOX_BROWSER_EXECUTABLE_ENV]).toBe('/opt/agentconnect/browser/chrome')
+    await runner.close(1_000).catch(() => {})
+  })
+
+  // An image that ships no baked browser must not gain an env naming one, and a daemon that named a browser
+  // deliberately stays authoritative — the same fill-in rule the provider pairs follow.
+  it('leaves the baked-browser path alone when the image ships none or the daemon sent one', async () => {
+    const seen: Array<Record<string, string>> = []
+    const runnerOf = (podEnv: Record<string, string>) =>
+      new AcpRunner({
+        emit: () => {},
+        podEnv,
+        resolveCommand: ((command, env) => {
+          seen.push({ ...env })
+          return command
+        }) satisfies ResolveCommand,
+        log: { info: () => {}, warn: () => {} }
+      } as never)
+    const bare = runnerOf({ HOME: '/agent', PATH: '/usr/bin' })
+    await openOf(bare)({ op: 'open', command: 'true', args: [], env: {} }).catch(() => {})
+    expect(seen.at(-1)?.[SANDBOX_BROWSER_EXECUTABLE_ENV]).toBeUndefined()
+    await bare.close(1_000).catch(() => {})
+    const both = runnerOf({ HOME: '/agent', PATH: '/usr/bin', [SANDBOX_BROWSER_EXECUTABLE_ENV]: '/opt/baked' })
+    await openOf(both)({
+      op: 'open',
+      command: 'true',
+      args: [],
+      env: { [SANDBOX_BROWSER_EXECUTABLE_ENV]: '/sent/by/daemon' }
+    }).catch(() => {})
+    expect(seen.at(-1)?.[SANDBOX_BROWSER_EXECUTABLE_ENV]).toBe('/sent/by/daemon')
+    await both.close(1_000).catch(() => {})
   })
 
   it('lets the daemon override a pod value it deliberately set', async () => {
