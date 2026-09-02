@@ -1244,14 +1244,16 @@ export default function AddIntegrationModal({
           </div>
         )}
         <div className="fldlbl mb-2">Platform</div>
-        {/* One column per offered tile — complete literal strings, so the flagged
-            GitLab tile widens the row instead of wrapping a lone tile below it. */}
+        {/* One column per offered tile — complete literal strings, so every tile shares
+            the one row (the flagged GitLab tile widens it rather than wrapping below). */}
         <div
-          className={
-            platformTiles.length > 6
-              ? 'mb-[18px] grid grid-cols-2 gap-[10px] desktop:grid-cols-7'
-              : 'mb-[18px] grid grid-cols-2 gap-[10px] desktop:grid-cols-6'
-          }
+          className={`mb-[18px] grid grid-cols-2 gap-2 ${
+            platformTiles.length > 7
+              ? 'desktop:grid-cols-8'
+              : platformTiles.length > 6
+                ? 'desktop:grid-cols-7'
+                : 'desktop:grid-cols-6'
+          }`}
         >
           {platformTiles.map((candidate) => {
             const available = isPlatformAvailable(candidate.key)
@@ -1259,7 +1261,7 @@ export default function AddIntegrationModal({
             return (
               <div
                 key={candidate.key}
-                className={`${on ? 'ptile on' : 'ptile'} desktop:flex-col desktop:justify-center desktop:gap-[6px] desktop:px-2 desktop:text-center ${
+                className={`${on ? 'ptile on' : 'ptile'} desktop:flex-col desktop:justify-center desktop:gap-[5px] desktop:px-1.5 desktop:py-[9px] desktop:text-center ${
                   available ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
                 }`}
                 aria-disabled={!available}
@@ -1267,11 +1269,11 @@ export default function AddIntegrationModal({
                 onClick={available ? () => pickPlatform(candidate.key) : undefined}
               >
                 {candidate.key === 'github' ? (
-                  <span className="flex h-[26px] w-[26px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
+                  <span className="flex h-[22px] w-[22px] flex-none items-center justify-center [&>svg]:h-full [&>svg]:w-full">
                     <GithubMark />
                   </span>
                 ) : (
-                  <span className="flex h-[26px] w-[26px] flex-none items-center justify-center">
+                  <span className="flex h-[22px] w-[22px] flex-none items-center justify-center">
                     <PlatformMark platform={candidate.key} fillPct={100} />
                   </span>
                 )}
@@ -1288,7 +1290,7 @@ export default function AddIntegrationModal({
                     }}
                   />
                 ) : (
-                  <span className="font-sans text-[13px] font-semibold leading-normal">{candidate.label}</span>
+                  <span className="font-sans text-[12px] font-semibold leading-normal">{candidate.label}</span>
                 )}
               </div>
             )

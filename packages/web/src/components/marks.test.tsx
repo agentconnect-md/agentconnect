@@ -130,7 +130,7 @@ describe('PlatformMark', () => {
 
   it('caps the square brand glyphs at 80% while other marks honour a full-bleed box', () => {
     // No padding inside this artwork, so an uncapped fillPct=100 would outsize the marks beside it.
-    for (const platform of ['github', 'gitlab', 'discord']) {
+    for (const platform of ['github', 'gitlab', 'discord', 'linear']) {
       // Slack belongs here too, but renders without `ssr`, so SSR gives it an empty <span>.
       const markup = renderToStaticMarkup(<PlatformMark platform={platform} fillPct={100} />)
       expect(markup, platform).toContain('width:80%')
