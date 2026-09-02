@@ -1511,7 +1511,22 @@ tile.
     by turning its row Off or unlinking the workspace). The generic
     conversation card renders the team rows; the module's own card draws
     only the workspace-level chrome above them. The module's
-    `soleConversation` flag is gone.
+    `soleConversation` flag is gone. **Landed** with the team-as-channel
+    change, and the three reads core needed are capabilities rather than a
+    platform name: `roster: 'derived'` (the row list is the workspace's own,
+    so no row offers a way out and the module's `footerNote` replaces the
+    host's "appears here once the bot is added to it"), `triggers` (the room
+    row's vocabulary — `['off', 'mention']` here, because the platform emits
+    nothing for `any` to match), and `ownerChangeWarning`, the §6.2 copy the
+    two owner selectors confirm through
+    (`components/console/OwnerChangeGuard.tsx`, shared by the agent card's
+    rows and the org Bots roster) when a move takes a team's default off a
+    **restricted** agent — its live sessions there can be stopped but will
+    not answer again, and a new mention or delegation opens a session with
+    the new default. The org Bots row expands to the same team rows: the
+    workspace-shaped "Default dispatch" line it used to show is gone with the
+    flag, and Reconnect / Disconnect stay row actions. The session list needed
+    nothing: it already buckets by the session's channel, which is the team.
   - `messageIdentity` — agent-activity id, else `null` (never dedupes).
   - `transcriptOrdering` — default `'seq'`.
 
@@ -1686,10 +1701,14 @@ none` skips it along with everything else Linear-visible. There is **no
   compile) → daemon (coordinates, report) → web (team rows under the Bots
   row). Unreleased, so nothing is rewritten: one migration deletes the
   workspace-keyed conversation rows and sessions.
-  **Landed:** the protocol + relay rung, and the control-plane half — the
-  renamed axis, the team rows from the connect tail and the reconciler tick,
-  and the retirement of `soleConversation.ts` / `allowsTriggerControl` /
-  `gatesNewConversations`. Daemon and web remain.
+  **Landed, all four stages:** the protocol + relay rung; the control-plane
+  half — the renamed axis, the team rows from the connect tail and the
+  reconciler tick, and the retirement of `soleConversation.ts` /
+  `allowsTriggerControl` / `gatesNewConversations`; the daemon's team
+  coordinates and its team-list report; and the console, as §9.5 records —
+  the `soleConversation` axis gone from the web contract, both card surfaces
+  rendering the generic team rows, and the owner selector confirming a move
+  off a private agent.
 - **P3 — breadth.** Label → skill playbook mapping; per-team dispatch
   defaults, which did reopen §15's granularity argument and became P2.5
   above; proactive

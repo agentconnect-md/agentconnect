@@ -8,6 +8,7 @@ import { Icon } from '@/components/ui'
 import { AgentIconView } from '@/components/marks'
 import { channelListSemantics } from '@/components/console/platforms/registry'
 import { TriggerSelect, type TriggerOption } from '@/components/console/TriggerSelect'
+import { useOwnerChangeGuard } from '@/components/console/OwnerChangeGuard'
 import type { AgentIcon } from '@/lib/agent-icon'
 import { chatPlatformName } from '@/lib/platform-labels'
 
@@ -39,21 +40,24 @@ function TriggerToggle({
   // else to say so. A GROUP DM takes the channel's choice, not the DM's: several people
   // share it, so "every message" must stay opt-in.
   const here = `this ${rowNoun(channel.kind, platform)}`
+  // The room's vocabulary is the platform's: nothing matches "any message" where no unaddressed traffic exists.
+  const allowed = channelListSemantics(platform).triggers
+  const roomOptions: TriggerOption<IntegrationChannelRow['trigger']>[] = [
+    { value: 'off', label: 'off', hint: `The agent doesn't respond in ${here}, even when @-mentioned.` },
+    { value: 'any', label: 'any message', hint: `The agent responds to every message in ${here}.` },
+    {
+      value: 'mention',
+      label: '@-mention',
+      hint: "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention."
+    }
+  ]
   const options: TriggerOption<IntegrationChannelRow['trigger']>[] =
     channel.kind === 'im'
       ? [
           { value: 'off', label: 'off', hint: "The agent doesn't respond in this conversation." },
           { value: 'any', label: 'on', hint: 'The agent responds to messages in this conversation.' }
         ]
-      : [
-          { value: 'off', label: 'off', hint: `The agent doesn't respond in ${here}, even when @-mentioned.` },
-          { value: 'any', label: 'any message', hint: `The agent responds to every message in ${here}.` },
-          {
-            value: 'mention',
-            label: '@-mention',
-            hint: "The agent responds when @-mentioned. Follow-ups in a thread it has joined don't need another mention."
-          }
-        ]
+      : roomOptions.filter((o) => !allowed || allowed.includes(o.value))
   return (
     <TriggerSelect
       options={options}
@@ -161,8 +165,9 @@ function groupHeader(label: string, padX: number, action?: ReactNode) {
   )
 }
 
-/** One agent that shares the bot — the shape the default-dispatch popover renders. */
-type MemberAgent = { id: string; label: string; runtime: string; icon?: AgentIcon | null }
+/** One agent that shares the bot — the shape the default-dispatch popover renders.
+ *  `restricted` is what makes a default move consequential (§6.2), so it travels with it. */
+type MemberAgent = { id: string; label: string; runtime: string; restricted: boolean; icon?: AgentIcon | null }
 
 // Per-platform display semantics come from the platform modules
 // ({@link WebChannelListSemantics}, §10); the ALGORITHMS below — grouping, the
@@ -535,6 +540,23 @@ export function IntegrationChannelList({
 }) {
   const { setChannelTrigger, setChannelAgent, forgetChannel, leaveConversation, bots, agents, integrations } =
     useConsoleData()
+  const ownerGuard = useOwnerChangeGuard()
+  // A derived roster is the platform's own list — nothing is observed into it, and nothing is dropped from here.
+  const derivedRoster = channelListSemantics(platform).roster === 'derived'
+  // Where rows come from, plus the platform's tail — which on a derived roster IS the arrival sentence, so it leads.
+  const footerNote = channelListSemantics(platform).footerNote
+  const footerSentences = [
+    ...(derivedRoster
+      ? footerNote
+        ? [footerNote]
+        : []
+      : [
+          `${roomArticle(roomNoun(platform))} ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per conversation.`,
+          'Direct messages appear when someone writes to the bot.'
+        ]),
+    ...(shareable ? ['Default dispatch is the agent who handles unmatched messages in the conversation.'] : []),
+    ...(!derivedRoster && footerNote ? [footerNote] : [])
+  ]
   // A platform refusal is the useful half of a failed Leave — a missing scope or a
   // last-member channel tells the operator what to do — so it is shown verbatim
   // rather than collapsed into "something went wrong".
@@ -551,7 +573,13 @@ export function IntegrationChannelList({
   const memberIds = shareable && botId ? (bots.find((b) => b.id === botId)?.agentIds ?? []) : []
   const member = (id: string): MemberAgent => {
     const a = agents.find((x) => x.id === id)
-    return { id, label: a ? agentLabel(a) : id, runtime: a?.runtime ?? a?.model ?? '', icon: a?.icon }
+    return {
+      id,
+      label: a ? agentLabel(a) : id,
+      runtime: a?.runtime ?? a?.model ?? '',
+      restricted: a?.visibility === 'restricted',
+      icon: a?.icon
+    }
   }
   // The agents that share this bot. A conversation's default is its explicit owner —
   // this row's when the CP stamped it, else whichever sibling install of the bot
@@ -625,7 +653,11 @@ export function IntegrationChannelList({
                 current={def}
                 viewer={viewer}
                 disabled={!integrationId}
-                onClaim={(id) => setChannelAgent(integrationId!, c.channelId, id)}
+                onClaim={(id) =>
+                  ownerGuard.guard({ platform, from: def, toId: id, room: rowLabel(c) }, () =>
+                    setChannelAgent(integrationId!, c.channelId, id)
+                  )
+                }
               />
               {/* The design separates the two controls with a hairline — default
                   dispatch and trigger are different decisions, not one bar. */}
@@ -638,10 +670,9 @@ export function IntegrationChannelList({
             disabled={!integrationId}
             onChange={(trigger) => setChannelTrigger(integrationId!, c.channelId, trigger)}
           />
-          {/* Demo rows have no integration to act on, so they carry no button at all rather than an
-              inert one. Both callbacks are always wired; which ONE the row spends is `rowMenuAction`'s
-              call, so that rule lives in one place. */}
-          {integrationId && (
+          {/* Demo rows carry no button rather than an inert one, and a derived roster none at all — the
+              platform owns the list. Which of the two callbacks a row spends is `rowMenuAction`'s call. */}
+          {integrationId && !derivedRoster && (
             <RowAction
               channel={c}
               platform={platform}
@@ -665,7 +696,7 @@ export function IntegrationChannelList({
         >
           <Icon name="lock" size={13} className="mt-[2px] flex-none" />
           <span>
-            {`This agent is private: conversations start off. Enable each ${roomNoun(platform)} or direct message below before the agent responds there.`}
+            {`This agent is private: conversations start off. Enable each ${roomNoun(platform)}${derivedRoster ? '' : ' or direct message'} below before the agent responds there.`}
           </span>
         </div>
       )}
@@ -692,20 +723,9 @@ export function IntegrationChannelList({
         style={{ padding: `10px ${padX}px` }}
       >
         <Icon name="info" size={14} className="mt-[3px] flex-none" />
-        <span>
-          {/* Says where rows COME FROM, and — only where the row menu cannot do it —
-              where leaving is done instead. It deliberately no longer narrates the
-              menu's own items: those explain themselves on screen, and repeating them
-              here in different words was most of what made this card read oddly. */}
-          {`${roomArticle(roomNoun(platform))} ${roomNoun(platform)} appears here once the bot is added to it, and its trigger is set per conversation.`}
-          {' Direct messages appear when someone writes to the bot.'}
-          {shareable && ' Default dispatch is the agent who handles unmatched messages in the conversation.'}
-          {/* The platform's own tail, when it has one: Discord's servers-not-channels
-              note, Slack's remove-it-in-Slack note (which encodes an authoritative
-              membership snapshot — the list updates by itself). */}
-          {channelListSemantics(platform).footerNote && ` ${channelListSemantics(platform).footerNote}`}
-        </span>
+        <span>{footerSentences.join(' ')}</span>
       </div>
+      {ownerGuard.dialog}
     </>
   )
 }

@@ -5,6 +5,8 @@
 
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { sessionFromDto, type SessionDto } from '@/lib/api'
+import { sessionChannelFilterValue } from '@/lib/data'
 import { PLATFORM_MARK_IDS } from '../marks'
 import { BOT_PLATFORMS, INTEGRATION_BLURB, isCoreTriggerKind } from '../host-projections'
 import {
@@ -66,27 +68,52 @@ describe('the linear mark', () => {
 })
 
 describe('the linear transcript and card semantics', () => {
-  it('declares NO channel list, and its own agent-card body instead', () => {
-    // The generic list enumerates rooms a bot was added to, each with a trigger and a
-    // way out. A Linear workspace has none of those, and its issues are not a roster
-    // the console keeps — so the module renders the workspace itself and the list is
-    // never reached. Declaring semantics for it would describe a list that must not
-    // exist; absence is the declaration.
-    expect(linearModule.channelList).toBeUndefined()
-    expect(linearModule.agentCard?.Body).toBeDefined()
-    expect(platformAgentCard('linear')?.Body).toBe(linearModule.agentCard?.Body)
-    // Falling back to the host defaults is what "never rendered" looks like from the
-    // lookup's side — no borrowed noun, no invented issue vocabulary.
-    expect(channelListSemantics('linear')).toEqual(DEFAULT_CHANNEL_LIST)
+  it('calls the room a team, with no glyph and no way out of one', () => {
+    // The TEAM is the channel (§4.3): the generic list renders one row per team, and the
+    // roster is the workspace's own — the CP upserts it — so nothing here is left or
+    // dropped. A team goes quiet by turning its row Off, or the workspace by unlinking.
+    const semantics = channelListSemantics('linear')
+    expect(semantics.roomNoun).toBe('team')
+    expect(semantics.roomGlyph).toBe('')
+    expect(semantics.leave).toBe('none')
+    expect(semantics.roster).toBe('derived')
+    expect(semantics).not.toEqual(DEFAULT_CHANNEL_LIST)
   })
 
-  it('is the only module that replaces the agent card', () => {
+  it('offers Mention and Off, never "any message"', () => {
+    // Every Linear event is addressed by construction (§6.1), so an "any message" arm
+    // would match nothing an operator could ever observe.
+    expect(channelListSemantics('linear').triggers).toEqual(['off', 'mention'])
+  })
+
+  it('warns before a team’s default leaves a private agent', () => {
+    // §6.2: on an owner-as-default platform the seat IS the gated agent's grant.
+    const warning = channelListSemantics('linear').ownerChangeWarning
+    expect(warning).toBeDefined()
+    // A bare verb, per the console's modal convention — never "Yes, move it".
+    expect(warning?.confirmLabel).toBe('Move')
+    const body = warning!.body({ owner: 'triage-bot', room: 'ENG · Engineering' })
+    expect(body).toContain('triage-bot is a private agent')
+    expect(body).toContain('can still be stopped, but it will not answer in them again')
+  })
+
+  it('wraps that list in its own card body, and is the only module that does', () => {
+    expect(linearModule.agentCard?.Body).toBeDefined()
+    expect(platformAgentCard('linear')?.Body).toBe(linearModule.agentCard?.Body)
     const withOwnCard = platformRegistry.all().filter((m) => m.agentCard)
     expect(withOwnCard.map((m) => m.platformId)).toEqual(['linear'])
-    // Every other platform keeps the generic list, so each still declares — or
-    // defaults — its own room semantics.
     for (const m of platformRegistry.all()) {
       if (m.platformId !== 'linear') expect(platformAgentCard(m.platformId), m.platformId).toBeUndefined()
+    }
+  })
+
+  it('is the only module whose roster is derived, or whose triggers are narrowed', () => {
+    // Both are capabilities core reads; neither may become "the platform is Linear".
+    for (const m of platformRegistry.all()) {
+      if (m.platformId === 'linear') continue
+      expect(m.channelList?.roster, m.platformId).toBeUndefined()
+      expect(m.channelList?.triggers, m.platformId).toBeUndefined()
+      expect(m.channelList?.ownerChangeWarning, m.platformId).toBeUndefined()
     }
   })
 
@@ -111,5 +138,38 @@ describe('the linear api bindings', () => {
     // console could loop over is visibility-filtered; only the server sees every member.
     expect(Object.keys(linearApi).sort()).toEqual(['disconnect', 'getConnect', 'reconnect', 'startConnect'])
     expect(module().apiBindings).toBe(linearApi)
+  })
+})
+
+describe('the linear session list', () => {
+  // The daemon keys a session on its issue's TEAM and labels it `<KEY> · <Team name>`
+  // (§4.3), so the console's generic per-channel grouping buckets by team with no
+  // Linear arm anywhere: nothing collapses a workspace into one group.
+  const session = (channel: string, channelName: string): SessionDto =>
+    ({
+      sessionId: `s-${channel}`,
+      sessionKey: { platform: 'linear', channel, thread: 'issue-1' },
+      agentId: 'agent-a',
+      title: 'Ship it',
+      status: 'running',
+      lastActivityAt: '2026-09-01T00:00:00.000Z',
+      usage: null,
+      triggeredBy: 'u1',
+      triggeredByName: 'Dana Reyes',
+      hookKind: null,
+      channelName,
+      threadUrl: null,
+      visibility: 'org'
+    }) as unknown as SessionDto
+
+  it('buckets a workspace’s sessions by their team, not into one group', () => {
+    const eng = sessionFromDto(session('team-eng', 'ENG · Engineering'))
+    const des = sessionFromDto(session('team-des', 'DES · Design'))
+
+    expect(eng.channel).toContain('ENG · Engineering')
+    expect(des.channel).toContain('DES · Design')
+    expect(sessionChannelFilterValue(eng)).toBe('team-eng')
+    expect(sessionChannelFilterValue(des)).toBe('team-des')
+    expect(sessionChannelFilterValue(eng)).not.toBe(sessionChannelFilterValue(des))
   })
 })
