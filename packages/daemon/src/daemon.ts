@@ -6814,7 +6814,9 @@ export class Daemon {
     const key = `${integrationId}\u0000${team.id}`
     if (this.linearReportedTeams.has(key)) return
     this.linearReportedTeams.add(key)
-    const name = linearChannelName(team)
+    // The connection carries the workspace name the label leads with; without it the row is
+    // still named, by its team alone, which is what the CP writes for the same team.
+    const name = linearChannelName(team, this.lnConnByIntegration.get(integrationId))
     void this.observedChannelsSync
       .observePlatformChat('linear', { id: team.id, ...(name ? { name } : {}), isPrivate: false }, [integrationId])
       .catch((err: unknown) => {

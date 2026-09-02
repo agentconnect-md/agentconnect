@@ -92,7 +92,7 @@ describe('the linear transcript and card semantics', () => {
     expect(warning).toBeDefined()
     // A bare verb, per the console's modal convention — never "Yes, move it".
     expect(warning?.confirmLabel).toBe('Move')
-    const body = warning!.body({ owner: 'triage-bot', room: 'ENG · Engineering' })
+    const body = warning!.body({ owner: 'triage-bot', room: 'Acme / Engineering' })
     expect(body).toContain('triage-bot is a private agent')
     expect(body).toContain('can still be stopped, but it will not answer in them again')
   })
@@ -164,8 +164,8 @@ describe('the linear api bindings', () => {
 })
 
 describe('the linear session list', () => {
-  // The daemon keys a session on its issue's TEAM and labels it `<KEY> · <Team name>`
-  // (§4.3), so the console's generic per-channel grouping buckets by team with no
+  // The daemon keys a session on its issue's TEAM and labels it `<Workspace name> / <Team
+  // name>` (§4.3), so the console's generic per-channel grouping buckets by team with no
   // Linear arm anywhere: nothing collapses a workspace into one group.
   const session = (channel: string, channelName: string): SessionDto =>
     ({
@@ -185,13 +185,23 @@ describe('the linear session list', () => {
     }) as unknown as SessionDto
 
   it('buckets a workspace’s sessions by their team, not into one group', () => {
-    const eng = sessionFromDto(session('team-eng', 'ENG · Engineering'))
-    const des = sessionFromDto(session('team-des', 'DES · Design'))
+    const eng = sessionFromDto(session('team-eng', 'Acme / Engineering'))
+    const des = sessionFromDto(session('team-des', 'Acme / Design'))
 
-    expect(eng.channel).toContain('ENG · Engineering')
-    expect(des.channel).toContain('DES · Design')
+    expect(eng.channel).toContain('Acme / Engineering')
+    expect(des.channel).toContain('Acme / Design')
     expect(sessionChannelFilterValue(eng)).toBe('team-eng')
     expect(sessionChannelFilterValue(des)).toBe('team-des')
     expect(sessionChannelFilterValue(eng)).not.toBe(sessionChannelFilterValue(des))
+  })
+
+  it('labels a session with the workspace and the team, with no "#" and no team key', () => {
+    // A Linear room is a team, not a channel: the session list must not borrow Slack's sigil,
+    // and the team key is an identifier the label never carries.
+    const eng = sessionFromDto(session('team-eng', 'Acme / Engineering'))
+
+    expect(eng.channel).toBe('Acme / Engineering')
+    expect(eng.channel.startsWith('#')).toBe(false)
+    expect(eng.channel).not.toContain('ENG')
   })
 })

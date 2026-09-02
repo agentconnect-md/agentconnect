@@ -123,21 +123,29 @@ export function readLinearExt(msg: Pick<NormalizedMessage, 'adapterExt'>): Linea
   return parsed.success ? parsed.data : undefined
 }
 
+/** What a Linear label joins the workspace and the team with — names, in the console's own
+ *  composite-label separator. Mirrored by the CP, which writes the same row, and by the web
+ *  module, which takes the label apart again. */
+const LINEAR_LABEL_SEPARATOR = ' / '
+
 /**
- * §4.5 session `channelName`: the issue's TEAM, `<KEY> · <Team name>` — key first so the label
- * sorts and scans like the identifiers it prefixes.
+ * §4.5 session `channelName`: the issue's TEAM, named the way its members say it —
+ * `<Workspace name> / <Team name>`. The team KEY is an identifier, not a label, so it never
+ * leads here; it reaches the agent on the §8 context block instead.
  *
  * Read from the BAG, never re-derived: the relay already keys `channel` on the team id, so this
- * side only labels a coordinate it is handed. Degrades to the bare team id, and — for the
- * issue-less channel alone, which has no team — to the connected workspace's own label.
+ * side only labels a coordinate it is handed. Degrades one name at a time — no workspace name
+ * leaves the team's own, an unnamed team falls back to its key and then to its id — and, for the
+ * issue-less channel alone, which has no team, to the connected workspace's own label.
  */
 export function linearChannelName(team: LinearTeamRef | undefined, workspace?: LinearWorkspaceRef): string {
-  if (team) {
-    const label = [short(team.key), short(team.name)].filter(Boolean).join(' · ')
-    return label || team.id
-  }
-  if (!workspace) return ''
-  return (workspace.workspaceName ? sanitizeTitle(workspace.workspaceName) : '') || workspace.workspaceId()
+  const space = workspace?.workspaceName ? sanitizeTitle(workspace.workspaceName) : ''
+  if (!team) return workspace ? space || workspace.workspaceId() : ''
+  // A team the workspace named neither way degrades to its bare id — prefixing an id with the
+  // workspace would dress an identifier up as a label rather than replace it.
+  const label = short(team.name) || short(team.key)
+  if (!label) return team.id
+  return space ? `${space}${LINEAR_LABEL_SEPARATOR}${label}` : label
 }
 
 /**
@@ -231,10 +239,15 @@ function linearContextBlock(ext: LinearAdapterExt, facts: LinearIssueFacts | und
   const title = sanitizeTitle(facts.title || ext.issueTitle || '')
   const head = [identifier, facts.id ? `(id ${short(facts.id)})` : ''].filter(Boolean).join(' ')
   const issue = [head, title ? `"${title}"` : '', facts.url ? sanitizeTitle(facts.url) : ''].filter(Boolean).join(' — ')
-  const teamHead = [short(facts.team?.key), short(facts.team?.name)].filter(Boolean).join(' · ')
-  const team = teamHead
-    ? [teamHead, facts.team?.id ? `(id ${short(facts.team.id)})` : ''].filter(Boolean).join(' ')
-    : ''
+  // Name first here too — the key and the id are the machine coordinates the tool family takes,
+  // so they trail in parentheses instead of prefixing the name the member would say out loud.
+  const teamKey = short(facts.team?.key)
+  const teamHead = short(facts.team?.name) || teamKey
+  const teamMeta = [
+    teamKey && teamHead !== teamKey ? `key ${teamKey}` : '',
+    facts.team?.id ? `id ${short(facts.team.id)}` : ''
+  ].filter(Boolean)
+  const team = teamHead ? [teamHead, teamMeta.length ? `(${teamMeta.join(', ')})` : ''].filter(Boolean).join(' ') : ''
   const stateName = short(facts.state?.name)
   const stateType = short(facts.state?.type)
   const state = stateName ? [stateName, stateType ? `(${stateType})` : ''].filter(Boolean).join(' ') : stateType

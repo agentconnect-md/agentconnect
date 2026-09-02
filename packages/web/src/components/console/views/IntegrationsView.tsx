@@ -29,7 +29,7 @@ import {
   type MeDto
 } from '@/lib/api'
 import { agentLabel, isDirectConversation, type IntegrationRow } from '@/lib/data'
-import { rowLabelParts } from '@/components/console/IntegrationChannelList'
+import { roomGlyph, rowLabelParts } from '@/components/console/IntegrationChannelList'
 import {
   botCardCopy,
   botSharingEditable,
@@ -532,6 +532,11 @@ function BotsCard({
                       <div className="overflow-visible rounded-lg border border-(--border-subtle) bg-(--surface-card)">
                         {channels.map((c, index) => {
                           const label = rowLabelParts(c, b.platform)
+                          // The room marker is the platform's own glyph, not the channel convention:
+                          // a Linear team and a Telegram group carry no "#", so they get no icon.
+                          const glyph = roomGlyph(c.kind, b.platform)
+                          const glyphIcon =
+                            glyph === '@@' ? 'users' : glyph === '@' ? 'at-sign' : glyph === '#' ? 'hash' : null
                           return (
                             <Fragment key={c.channelId}>
                               {isDirectConversation(c.kind) && !isDirectConversation(channels[index - 1]?.kind) && (
@@ -543,12 +548,14 @@ function BotsCard({
                                 className={`grid ${chanGrid} items-center gap-[11px] border-b border-(--border-subtle) px-3 py-2 last:border-b-0`}
                               >
                                 <span className="mono flex min-w-0 items-center gap-[7px] text-[12px]">
-                                  <Icon
-                                    name={c.kind === 'mpim' ? 'users' : c.kind === 'im' ? 'at-sign' : 'hash'}
-                                    size={12}
-                                    color="var(--text-tertiary)"
-                                    className="flex-none"
-                                  />
+                                  {glyphIcon && (
+                                    <Icon
+                                      name={glyphIcon}
+                                      size={12}
+                                      color="var(--text-tertiary)"
+                                      className="flex-none"
+                                    />
+                                  )}
                                   {/* The room's noun is the platform's own; the two direct kinds are platform-free. */}
                                   <span className="sr-only">
                                     {c.kind === 'mpim' ? 'Group DM' : c.kind === 'im' ? 'Direct message' : roomLabel}

@@ -587,10 +587,10 @@ export interface WebChannelListSemantics {
    *  Linear's gated member acts in a team only as its default (§4.3). Absent ⇒ the host's. */
   gatedNote?: string
   /**
-   * Splits a stored row label into the name the platform leads with and the dim tail it
-   * prints after it. Linear stores a team as `<KEY> · <Team name>` and its own team picker
-   * reads the name first with the key dimmed behind it, so the module — never the host —
-   * knows how to take that label apart. Absent ⇒ the whole label is the name.
+   * Splits a stored row label into the name the row leads with and an optional dim tail after
+   * it. Linear stores a team as `<Workspace name> / <Team name>` — a session list spanning every
+   * workspace needs both — while these rows always sit under one workspace's own card, so the
+   * module, never the host, knows the prefix is redundant here. Absent ⇒ the label is the name.
    */
   splitRowLabel?(label: string): { name: string; hint?: string }
 }

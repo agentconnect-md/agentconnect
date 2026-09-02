@@ -360,7 +360,12 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
 
   /** `installs` is createdAt-ordered, exactly as `listForBot` answers. `routable` is the set of
    *  agents a daemon is currently serving. */
-  function seedHarness(installs: { id: string; agentId: string }[], agents: AgentRecord[], routable: Set<string>) {
+  function seedHarness(
+    installs: { id: string; agentId: string }[],
+    agents: AgentRecord[],
+    routable: Set<string>,
+    botOverrides: Partial<BotRecord> = {}
+  ) {
     const upsertConversation = vi.fn(async () => ({}) as never)
     const upsertAgent = vi.fn(async () => ({}) as never)
     const teams: LinearCredentialReconcilerDeps['teams'] = {
@@ -374,7 +379,7 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
       routableDaemon: async (a: AgentRecord) => (routable.has(a.id) ? 'daemon-1' : null)
     }
     const secrets = new Map([[String(BOT), stamped(APP)]])
-    const { reconciler } = harness([bot()], secrets, { teams })
+    const { reconciler } = harness([bot(BOT, botOverrides)], secrets, { teams })
     return { reconciler, upsertConversation, upsertAgent } satisfies SeedHarness
   }
 
@@ -421,10 +426,33 @@ describe('LinearCredentialReconciler — the late-team seed (§15)', () => {
 
     expect(h.upsertConversation).toHaveBeenCalledWith(
       'i-alice',
-      { id: TEAM.id, name: 'OPS · Operations', kind: 'channel' },
+      { id: TEAM.id, name: 'Acme / Operations', kind: 'channel' },
       { defaultTrigger: 'mention' }
     )
     expect(h.upsertAgent).not.toHaveBeenCalled()
+  })
+
+  it('labels the seeded row with the workspace and the team NAME, never the issue prefix', async () => {
+    // The bot row IS the workspace, so its stored name is the label's first half — the same
+    // string the daemon's spec carries, which is what keeps the two writers of this row agreeing.
+    const h = seedHarness([{ id: 'i-alice', agentId: ALICE }], [agent(ALICE)], new Set([ALICE]))
+
+    await h.reconciler.tick()
+
+    const [, conversation] = h.upsertConversation.mock.calls[0] as unknown as [string, { name: string }]
+    expect(conversation.name).toBe('Acme / Operations')
+    expect(conversation.name).not.toContain(TEAM.key)
+  })
+
+  it('falls back to the team name alone when the bot carries no workspace name', async () => {
+    const h = seedHarness([{ id: 'i-alice', agentId: ALICE }], [agent(ALICE)], new Set([ALICE]), {
+      workspaceName: null
+    })
+
+    await h.reconciler.tick()
+
+    const [, conversation] = h.upsertConversation.mock.calls[0] as unknown as [string, { name: string }]
+    expect(conversation.name).toBe('Operations')
   })
 
   it('seeds an ALL-GATED bot Off — the §14 arm, asked of the members that could own the row', async () => {

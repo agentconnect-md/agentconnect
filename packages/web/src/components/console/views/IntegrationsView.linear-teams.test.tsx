@@ -85,8 +85,8 @@ const INSTALL: IntegrationRow = {
   daemon: 'edge-1',
   status: 'online',
   channels: [
-    { channelId: 'team-des', name: 'DES · Design', kind: 'channel', trigger: 'off', agentId: 'agent-b' },
-    { channelId: 'team-eng', name: 'ENG · Engineering', kind: 'channel', trigger: 'mention', agentId: 'agent-a' }
+    { channelId: 'team-des', name: 'Acme / Design', kind: 'channel', trigger: 'off', agentId: 'agent-b' },
+    { channelId: 'team-eng', name: 'Acme / Engineering', kind: 'channel', trigger: 'mention', agentId: 'agent-a' }
   ]
 }
 
@@ -137,9 +137,12 @@ describe('the Linear workspace’s Bots row', () => {
   it('expands to the workspace’s team rows, each with its own dispatch selector', async () => {
     const view = await expandWorkspace()
 
-    // Named as Linear names a team: the name, then its key dimmed behind it.
-    expect(view.textContent).toContain('DesignDES')
-    expect(view.textContent).toContain('EngineeringENG')
+    // Named the way an operator says it: the team alone, under the workspace's own row.
+    expect(view.textContent).toContain('Design')
+    expect(view.textContent).toContain('Engineering')
+    // Never the team KEY, and never the "#" of a platform whose rooms are channels.
+    expect(view.textContent).not.toContain('ENG')
+    expect(view.querySelector('.lucide-hash')).toBeNull()
     // Not the retired single line that stood for the whole workspace.
     expect(pickers(view)).toHaveLength(2)
   })
@@ -150,7 +153,7 @@ describe('the Linear workspace’s Bots row', () => {
     mocks.integrations = [{ ...INSTALL, channels: INSTALL.channels.map((c) => ({ ...c, agentId: 'agent-a' })) }]
     const view = await expandWorkspace()
 
-    expect(view.textContent).toContain('EngineeringENG')
+    expect(view.textContent).toContain('Engineering')
     expect(view.textContent).not.toContain('Default dispatch')
     expect(pickers(view)).toHaveLength(0)
   })

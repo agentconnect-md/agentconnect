@@ -304,20 +304,21 @@ describe('§4.5 the teams as the observed conversations', () => {
       expect((daemon as any).channelSnapshots.get(INTEGRATION)).toEqual({
         authoritative: false,
         channels: [
-          { id: TEAM, name: 'ENG · Engineering', isPrivate: false, kind: 'channel' },
-          { id: OTHER_TEAM, name: 'DOCS · Docs', isPrivate: false, kind: 'channel' }
+          { id: TEAM, name: 'Example Workspace / Engineering', isPrivate: false, kind: 'channel' },
+          { id: OTHER_TEAM, name: 'Example Workspace / Docs', isPrivate: false, kind: 'channel' }
         ]
       })
     )
     await daemon.stop()
   })
 
-  it('labels each team id so the console never shows a bare team UUID', async () => {
+  it('labels each team id with the workspace and the team name, never the key', async () => {
     const { daemon, store } = await boot()
     await vi.waitFor(async () => {
       const names = await store.getDisplayNames([TEAM, OTHER_TEAM])
-      expect(names.get(TEAM)).toBe('ENG · Engineering')
-      expect(names.get(OTHER_TEAM)).toBe('DOCS · Docs')
+      expect(names.get(TEAM)).toBe('Example Workspace / Engineering')
+      expect(names.get(OTHER_TEAM)).toBe('Example Workspace / Docs')
+      expect(names.get(TEAM)).not.toContain('ENG')
     })
     await daemon.stop()
   })
@@ -345,7 +346,7 @@ describe('§4.5 the teams as the observed conversations', () => {
     await vi.waitFor(() =>
       expect(reports.at(-1)?.channels).toContainEqual({
         id: fresh.id,
-        name: 'NEW · New Team',
+        name: 'Example Workspace / New Team',
         isPrivate: false,
         kind: 'channel'
       })
@@ -538,7 +539,7 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     // The channel is the team, so the issue lives on `threadUrl` and the §8 header instead.
     const { daemon, store } = await boot()
     await im(daemon, delivery())
-    expect((await store.getDisplayNames([TEAM])).get(TEAM)).toBe('ENG · Engineering')
+    expect((await store.getDisplayNames([TEAM])).get(TEAM)).toBe('Example Workspace / Engineering')
     await daemon.stop()
   })
 
@@ -589,7 +590,7 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     await im(daemon, delivery({}, { issueId: 'issue-uuid' }))
     expect(factsRead).toEqual(['issue-uuid'])
     expect(dispatched[0]!.text).toContain('Linear context (trusted, daemon-resolved):')
-    expect(dispatched[0]!.text).toContain('- Team: TEAM · Engineering')
+    expect(dispatched[0]!.text).toContain('- Team: Engineering (key TEAM')
     // No issue id in the bag ⇒ no read and no block; the header still names the issue.
     await im(daemon, delivery({ msgId: 'linear:activity-2' }))
     expect(factsRead).toEqual(['issue-uuid'])

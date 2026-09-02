@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { larkFeishuBrand } from '@/components/LarkFeishuSwitcher'
 import { PlatformMark } from '@/components/marks'
-import { PLATFORM_LABEL_IDS, platformLabel } from '@/lib/platform-labels'
+import { chatRoomSigil, PLATFORM_LABEL_IDS, platformLabel } from '@/lib/platform-labels'
 import {
   BOT_PLATFORMS,
   BOT_PLATFORM_TABS,
@@ -13,7 +13,7 @@ import {
   platformTiles
 } from './host-projections'
 import { PLATFORM_MARK_IDS, platformMark } from './marks'
-import { botCardCopy, platformRegistry } from './registry'
+import { botCardCopy, channelListSemantics, platformRegistry } from './registry'
 
 /**
  * The registry is the single platform-set authority (§10), but two lookups
@@ -55,12 +55,26 @@ describe('platform set', () => {
   it('keeps the prose name and the picker label distinct only where they must be', () => {
     // One platform id, two clouds: prose picks the international brand, the
     // picker names both so a Feishu user recognizes their own tile.
-    expect(platformLabel('feishu')).toEqual({ name: 'Lark', picker: 'Lark/Feishu' })
+    expect(platformLabel('feishu')).toEqual({ name: 'Lark', picker: 'Lark/Feishu', sigil: '' })
     expect(platformLabel('lark')).toEqual(platformLabel('feishu'))
     for (const id of ['slack', 'telegram', 'discord', 'linear']) {
       const label = platformLabel(id)!
       expect(label.name, id).toBe(label.picker)
     }
+  })
+
+  it('spells the room sigil the same in the label table and the module contract', () => {
+    // The session list writes a channel label without reading the registry (that would drag the
+    // install wizard into every route), so the copy has to be kept honest here: a Linear team and
+    // a Telegram group carry no "#", and only a platform whose rooms ARE channels gets one.
+    for (const id of platformRegistry.ids()) {
+      expect(chatRoomSigil(id), id).toBe(channelListSemantics(id).roomGlyph)
+    }
+    expect(chatRoomSigil('feishu')).toBe(chatRoomSigil('lark'))
+    expect(chatRoomSigil('linear')).toBe('')
+    // An id no chat platform claims keeps the channel convention every non-module row had.
+    expect(chatRoomSigil('teams-x')).toBe('#')
+    expect(chatRoomSigil(undefined)).toBe('#')
   })
 
   it('offers exactly the registered platforms as picker tiles, plus the core triggers', () => {

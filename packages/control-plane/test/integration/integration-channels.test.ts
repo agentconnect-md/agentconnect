@@ -146,7 +146,8 @@ async function installLinear(
     seedConversations: (integration: { id: string }) =>
       seedLinearTeamRows(app.deps.repos.integrationChannel, integration.id as never, LINEAR_TEAMS, {
         trigger: linearTeamSeedTrigger([agent as never]),
-        owner: agentId as never
+        owner: agentId as never,
+        workspaceName: 'Acme'
       })
   } as never)
   return { integrationId: integration.id, botId: integration.botId, agentId }
@@ -420,8 +421,8 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     )
     const sorted = (id: string) => [...byId.get(id)!].sort((a, b) => a.channelId.localeCompare(b.channelId))
     expect(sorted(open)).toEqual([
-      expect.objectContaining({ channelId: 'team_design', name: 'DES · Design', trigger: 'mention' }),
-      expect.objectContaining({ channelId: 'team_eng', name: 'ENG · Engineering', trigger: 'mention' })
+      expect.objectContaining({ channelId: 'team_design', name: 'Acme / Design', trigger: 'mention' }),
+      expect.objectContaining({ channelId: 'team_eng', name: 'Acme / Engineering', trigger: 'mention' })
     ])
     expect(sorted(restricted).map((c) => [c.channelId, c.trigger])).toEqual([
       ['team_design', 'off'],
@@ -437,14 +438,14 @@ describe('integration/channels EVT → integration_channel convergence', () => {
     running = buildHttpApp(prisma, undefined, undefined, spy as unknown as ControlSender)
     const id = (await installLinear(running, { restricted: true })).integrationId
 
-    await report(DAEMON, id, [{ id: 'team_eng', name: 'ENG · Platform' }], undefined, undefined, false)
+    await report(DAEMON, id, [{ id: 'team_eng', name: 'Acme / Platform' }], undefined, undefined, false)
 
     const res = await running.app.inject({ method: 'GET', url: `${ORG}/integrations` })
     const dto = (res.json() as { id: string; channels: { channelId: string; name: string; trigger: string }[] }[]).find(
       (d) => d.id === id
     )
     expect(dto!.channels).toContainEqual(
-      expect.objectContaining({ channelId: 'team_eng', name: 'ENG · Platform', trigger: 'off' })
+      expect.objectContaining({ channelId: 'team_eng', name: 'Acme / Platform', trigger: 'off' })
     )
   })
 

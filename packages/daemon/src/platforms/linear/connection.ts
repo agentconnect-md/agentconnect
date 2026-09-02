@@ -474,8 +474,8 @@ export class LinearConnection implements PlatformConnection {
 
   /**
    * The channel is the issue's TEAM (§4.5), so this names the team behind a channel id —
-   * `<KEY> · <Team name>`, never an issue: the one display slot is shared by every session in
-   * the team.
+   * `<Workspace name> / <Team name>`, never an issue: the one display slot is shared by every
+   * session in the team, and never the team KEY, which is an identifier rather than a label.
    *
    * On the DIRECT read path like `getUserProfile`, and DEADLINE-BOUND end to end: the caller's
    * signal when it has one, else {@link LINEAR_READ_DEADLINE_MS} of its own, because a provider
@@ -491,7 +491,7 @@ export class LinearConnection implements PlatformConnection {
     try {
       const signal = opts.signal ?? AbortSignal.timeout(LINEAR_READ_DEADLINE_MS)
       const data = await this.graphql<{ team?: LinearTeamRef | null }>(TEAM_QUERY, { id: channel }, signal)
-      const name = data.team ? linearChannelName({ ...data.team, id: channel }) : ''
+      const name = data.team ? linearChannelName({ ...data.team, id: channel }, this) : ''
       return { id: channel, ...(name && name !== channel ? { name } : {}), isIm: false }
     } catch (err) {
       this.deps.log?.debug(`linear: team lookup failed (${channel}): ${(err as Error).message}`)
@@ -542,7 +542,7 @@ export class LinearConnection implements PlatformConnection {
       return (data.teams?.nodes ?? [])
         .filter((node) => Boolean(node?.id))
         .map((node) => {
-          const name = linearChannelName(node)
+          const name = linearChannelName(node, this)
           return { id: node.id, ...(name && name !== node.id ? { name } : {}), isPrivate: false }
         })
     } catch (err) {

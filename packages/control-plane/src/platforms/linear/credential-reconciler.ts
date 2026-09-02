@@ -256,7 +256,7 @@ export class LinearCredentialReconciler {
     const rows = await seams.channels.listForBot(bot.id)
     const known = new Set(rows.map((row) => row.channelId))
     for (const team of answer.result.filter((team) => known.has(team.id))) {
-      await this.refreshTeamName(seams, rows, team)
+      await this.refreshTeamName(seams, rows, team, bot.workspaceName)
     }
     const missing = answer.result.filter((team) => !known.has(team.id))
     if (missing.length === 0) return
@@ -279,7 +279,10 @@ export class LinearCredentialReconciler {
     const trigger = linearTeamSeedTrigger([...agentById.values()])
     await seedLinearTeamRows(seams.channels, owner?.integration.id ?? installs[0]!.id, missing, {
       trigger,
-      ...(owner ? { owner: owner.integration.agentId } : {})
+      ...(owner ? { owner: owner.integration.agentId } : {}),
+      // The bot row IS the workspace, so its stored name is the label's first half — the same
+      // string the daemon's spec carries, which is what keeps the two writers from disagreeing.
+      workspaceName: bot.workspaceName
     })
     // A new row changes the routes, so publish it the same way every other row change is.
     this.deps.log?.info(
@@ -294,9 +297,10 @@ export class LinearCredentialReconciler {
   private async refreshTeamName(
     seams: NonNullable<LinearCredentialReconcilerDeps['teams']>,
     rows: readonly { integrationId: IntegrationId; channelId: string; name: string | null }[],
-    team: LinearTeam
+    team: LinearTeam,
+    workspaceName: string | null
   ): Promise<void> {
-    const name = linearTeamChannelName(team)
+    const name = linearTeamChannelName(team, workspaceName)
     for (const row of rows) {
       if (row.channelId !== team.id || row.name === name) continue
       await seams.channels.upsertConversation(row.integrationId, { id: team.id, name, kind: 'channel' })

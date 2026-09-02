@@ -417,9 +417,15 @@ install.
     changes hands — a restricted agent's session whose grant is withdrawn is
     stopped or left alone, never handed on (§6.2) — which is the natural way
     to bring a **different agent** onto the same issue (§4.3).
-  - **`channelName` is the team, full stop** — `ENG · Engineering`, key
-    first so the label sorts and scans like the identifiers it prefixes. It
-    is the display slot of the `channel` coordinate — one label shared by
+  - **`channelName` is the team, full stop** — `<Workspace name> / <Team
+name>`, e.g. `Acme / Engineering`: the two NAMES a member says out loud,
+    the workspace first because a session list spans every connected
+    workspace. The team **key** is an identifier, not a label, so it never
+    leads and never appears here at all; it reaches the agent on the §8
+    context block instead, and reaches an operator through Linear itself. The
+    label degrades one name at a time — an unnamed workspace leaves the
+    team's own name, an unnamed team falls back to its key and then to its
+    bare id. It is the display slot of the `channel` coordinate — one label shared by
     every session in the channel — so an issue-derived name is not merely
     imprecise there, it **relabels the siblings**: each event would rewrite
     the one field and the sessions from other issues would start reading as
@@ -1203,7 +1209,10 @@ tile.
     and before any traffic: the connect tail (§7.1) asks Linear for the
     workspace's teams with the fresh token (`teams { id key name }`, through
     the provider's `api.ts`) and creates `(integrationId, teamId)` for each,
-    named `<KEY> · <Team name>`, with the linking agent as owner; each
+    named `<Workspace name> / <Team name>` — the same string the daemon
+    writes, since both sides write this one `integration_channel.name`, and
+    the workspace half comes from the bot's own stored workspace name — with
+    the linking agent as owner; each
     add-member writes its sibling rows, the shared-bot shape where every
     active integration repeats a conversation's state and exactly one row
     per team carries the owner. The trigger is one per team for the whole bot: born `mention` when the
@@ -1381,7 +1390,7 @@ tile.
     unnecessary — the agent surface is four mutations and three queries); token
     cache + `linearcred` renewal; `PlatformSendQueue`; self-echo guard on
     `appUserId`. The read port answers what Linear affords — `getChannelInfo`
-    names the team behind a channel id (`<KEY> · <Team name>`, §4.5; the
+    names the team behind a channel id (`<Workspace name> / <Team name>`, §4.5; the
     workspace for the issue-less channel), `listChannels` answers the team
     list, `getUserProfile` the Linear user behind a `linear:`-prefixed sender
     id — and returns empty/`null` elsewhere (no `listBotChannels`, no
@@ -1457,7 +1466,7 @@ tile.
   - **The conversation report is a name refresh and a new-team backstop, not
     the seeder.** The connection reports the workspace's teams as its
     conversations — one `integration/channels` row per team, `id` = the team
-    id, `name` = `<KEY> · <Team name>`, `kind: 'channel'`, non-authoritative
+    id, `name` = `<Workspace name> / <Team name>`, `kind: 'channel'`, non-authoritative
     — but the rows it reports already exist for every team the install saw:
     the **CP writes them synchronously in the install paths** (§9.2), so the
     report refreshes names and adds a row for a team created after the
@@ -1498,12 +1507,12 @@ tile.
   design's remaining daemon stage and deliberately **not** a prerequisite
   here.
 - Session metadata — **landed**: `channelName` = the team label
-  (`<KEY> · <Team name>`) on every session, read from the bag's team and never
+  (`<Workspace name> / <Team name>`) on every session, read from the bag's team and never
   re-derived, since the relay already keyed `channel` on the team id; the issue
   identifier and URL reach the **session title** and `threadUrl` and stop there
   (§4.5).
 - Tests: normalize (created/prompted/stop → the issue's team id as `channel`
-  and `<KEY> · <Team name>` as `channelName` — two sessions from different
+  and `<Workspace name> / <Team name>` as `channelName` — two sessions from different
   issues of one team agree on it, two teams differ — mention-comment `text`
   extraction, no-issue created event → the workspace id as channel, no
   issue-derived session title, no `threadUrl`, and a bounded
@@ -1574,10 +1583,12 @@ tile.
     private-agent banner: a gated member acts in a team only as its default,
     so the host's "enable each row below" would promise a per-member switch
     this model has not got. A fifth, `splitRowLabel`, takes the stored
-    `<KEY> · <Team name>` apart so the row reads the way Linear's own team
-    picker does — the team's name, then its key dimmed behind it; the label
-    itself is unchanged, and the host keeps the whole of it as the row's
-    accessible name. The org Bots row expands to the same team rows: the
+    `<Workspace name> / <Team name>` apart: these rows always sit under one
+    workspace's own card, which already names it, so the row keeps the team
+    alone. The label itself is unchanged, and the host keeps the whole of it
+    as the row's accessible name. Linear's `roomGlyph` is empty, and the
+    session list reads the same per-platform sigil, so no Linear conversation
+    is ever written with a channel's `#`. The org Bots row expands to the same team rows: the
     workspace-shaped "Default dispatch" line it used to show is gone with the
     flag, and Reconnect / Disconnect stay row actions. Both surfaces drop the
     per-team dispatch selector while the workspace has a single member — with
@@ -1818,7 +1829,7 @@ none` skips it along with everything else Linear-visible. There is **no
   isolation), truncation budgets, dedup-identity derivation, stop →
   `platform_action`, revoked doorbell, route-mounts row.
 - **Daemon unit:** normalize (created/prompted/stop → the issue's team id as
-  `channel` and `<KEY> · <Team name>` as `channelName` — two sessions from
+  `channel` and `<Workspace name> / <Team name>` as `channelName` — two sessions from
   different issues of one team agree on it, two teams differ, and issue text
   reaches only the session title and `threadUrl` — mention-comment `text`
   extraction, no-issue created event → the workspace id as channel and a
@@ -2067,7 +2078,9 @@ set — the shape a Slack workspace's channel list already has.
 
 **Coordinates.** `channel` = `issue.team.id`, which every `created` and
 `prompted` payload carries; `thread` stays the AgentSession UUID; `channelName`
-= `<KEY> · <Team name>`. An issue-less session (a document mention) has no
+= `<Workspace name> / <Team name>` (the label was corrected to the two names
+in a later pass — the team key never leads). An issue-less session (a document
+mention) has no
 team and keys on the workspace `organizationId` as a channel of its own that
 never earns a row — it is answered without a turn in v1 (§4.5). Dedup keys
 are unchanged.
