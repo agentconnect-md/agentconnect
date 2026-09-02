@@ -233,15 +233,16 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     expect(existsSync(sandboxSettingsDir(agentDir, hostKeyDirName(second)))).toBe(false)
   })
 
-  it('launch preparation writes two concurrent session hosts two policies, each anchored on its session cwd', () => {
+  it('launch preparation writes two concurrent session hosts two policies, each anchored on its own session cwd and HOME', () => {
     const root = mkdtempSync(join(tmpdir(), 'ac-session-hosts-launch-'))
     const scopeDir = join(root, 'agent')
     const hostHome = join(root, 'host-home')
     mkdirSync(hostHome)
     const launches = ['s1', 's2'].map((session) => {
-      const cwd = join(scopeDir, 'sessions', session, 'workspace')
-      mkdirSync(cwd, { recursive: true })
       const key = sessionHostKey('bot-a', `slack:C1:${session}:bot-a`)
+      const sessionDir = join(scopeDir, 'sessions', hostKeyDirName(key))
+      const cwd = join(sessionDir, 'workspace')
+      mkdirSync(cwd, { recursive: true })
       const launch = prepareRuntimeLaunch({
         runtimeId: 'claude',
         runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
@@ -255,11 +256,12 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
         explicitEnv: {},
         hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
       })
-      return { key, cwd: realpathSync(cwd), launch }
+      return { key, cwd: realpathSync(cwd), home: join(realpathSync(sessionDir), 'home'), launch }
     })
     const [one, two] = launches as [(typeof launches)[number], (typeof launches)[number]]
     expect(one.launch.sandbox!.settingsPath).not.toBe(two.launch.sandbox!.settingsPath)
-    for (const { key, cwd, launch } of launches) {
+    expect(one.launch.env.HOME).not.toBe(two.launch.env.HOME)
+    for (const { key, cwd, home, launch } of launches) {
       const sandbox = launch.sandbox!
       expect(sandbox.settingsPath).toBe(
         join(realpathSync(sandboxSettingsDir(scopeDir, hostKeyDirName(key))), 'settings.json')
@@ -271,6 +273,10 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
       const policy = JSON.parse(readFileSync(sandbox.settingsPath, 'utf8'))
       expect(policy.filesystem.allowWrite).toContain(cwd)
       expect(policy.git.safeDirectories).toContain(cwd)
+      // ...and its HOME under the same leaf (§11), an exact write root as the provider requires of HOME.
+      expect(launch.env.HOME).toBe(home)
+      expect(sandbox.writable).toContain(home)
+      expect(policy.filesystem.allowWrite).toContain(home)
     }
     // Neither write clobbered the other: both files still stand once both launches are prepared.
     expect(existsSync(one.launch.sandbox!.settingsPath)).toBe(true)

@@ -14,7 +14,7 @@ import {
 } from '../runtimes/runtime-home.js'
 import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/probe.js'
 import { primaryCheckoutIn, secondaryCheckoutsIn } from '../workspace/secondary-layout.js'
-import { isRealDir, sessionDirIn, sessionGitDirsIn } from '../workspace/session-layout.js'
+import { isRealDir, sessionDirIn, sessionGitDirsIn, sessionHomeIn } from '../workspace/session-layout.js'
 import {
   CLAUDE_PROFILE_ENV,
   claudeProtectedSettings,
@@ -62,6 +62,12 @@ function confinedSessionDirOf(agentRoot: string, hostKey: HostKey | undefined): 
   if (hostKey === undefined || hostKeySessionKey(hostKey) === undefined) return undefined
   const sessionDir = sessionDirIn(agentRoot, hostKeyDirName(hostKey))
   return isRealDir(sessionDir) ? sessionDir : undefined
+}
+
+/** The private HOME a host launches with: a confined session's under its own directory (§11), any other host's under the agent dir. */
+export function privateRuntimeHomeFor(scopeDir: string, hostKey: HostKey | undefined): string {
+  const sessionDir = confinedSessionDirOf(existingRealpath(scopeDir), hostKey)
+  return sessionDir === undefined ? runtimeHomePath(scopeDir) : sessionHomeIn(sessionDir)
 }
 
 /** The same roots with NO outer boundary: one escaping the agent tree is left protected, not refused. */
@@ -272,6 +278,9 @@ export function prepareRuntimeLaunch(opts: {
     throw new Error('OS sandbox requested without the trusted AgentConnect daemon root')
   }
 
+  // A confined session's HOME lives under its own directory and goes with it (§11); every other host keeps the agent's.
+  const sessionDir = confinedSessionDirOf(existingRealpath(opts.scopeDir), opts.hostKey)
+  const sessionHome = sessionDir === undefined ? undefined : sessionHomeIn(sessionDir)
   const stateSourceEnv = opts.stateSourceEnv ?? opts.hostEnv ?? process.env
   const safeRoot = (path: string, label: string): string => {
     if (!isAbsolute(path)) throw new Error(`unsafe ${label} for sandboxing: ${path}`)
@@ -288,7 +297,11 @@ export function prepareRuntimeLaunch(opts: {
   let protectedRuntimeStateRoots: string[] = []
   let denyReadRoots: string[] = []
   if (opts.runInSandbox) {
-    sandboxBoundary({ agentDir: opts.scopeDir, cwd: opts.cwd, runtimeHome: runtimeHomePath(opts.scopeDir) })
+    sandboxBoundary({
+      agentDir: opts.scopeDir,
+      cwd: opts.cwd,
+      runtimeHome: sessionHome ?? runtimeHomePath(opts.scopeDir)
+    })
     const daemonRoot = safeRoot(opts.daemonRoot!, 'AgentConnect daemon root')
     const agentRoot = safeRoot(opts.scopeDir, 'agent root')
     const hostHomeRoots = compactReadRoots(
@@ -344,7 +357,7 @@ export function prepareRuntimeLaunch(opts: {
     opts.runtimeId,
     opts.scopeDir,
     stateSourceEnv,
-    undefined,
+    sessionHome,
     credentials?.seedExclusions
   )
   credentials?.preparePrivateHome(runtimeHome)
@@ -423,7 +436,6 @@ export function prepareRuntimeLaunch(opts: {
     })
   )
   // A confined session's clones own their `.git` (§11), so the primary's is never reopened for it; otherwise an isolated session's worktree keeps its index, refs and objects in the OWNER checkout's `.git`, which no other carve-back covers and which the daemon names (a locally authored agent may keep a path the layout does not).
-  const sessionDir = confinedSessionDirOf(agentRoot, opts.hostKey)
   const primaryCheckout = opts.trustedPrimaryCheckout
     ? safeRoot(opts.trustedPrimaryCheckout, 'trusted primary checkout')
     : primaryCheckoutIn(agentRoot)

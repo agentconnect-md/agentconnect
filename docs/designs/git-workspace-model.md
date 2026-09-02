@@ -330,6 +330,15 @@ the parent of anything.
 - **Sandbox grants** are per session and exact: the clone's `.git` writable,
   its `hooks` and `config` read-only, for both the outer sandbox and a runtime's
   inner one.
+- **HOME is per session.** `home/` is the runtime's private HOME — `HOME`,
+  `TMPDIR`, `XDG_*`, `CODEX_HOME` and the other runtime-state env point there —
+  seeded from the host and protected exactly as the agent's `home/` is, and
+  removed with the leaf. Runtime-native cross-session state (Codex memories,
+  goals and logs; Claude project state) is therefore per session; managed memory
+  lives outside HOME and is unaffected. Package caches (`.npm`, `.cache`,
+  `.local`) live there too, writable per session by construction and gone with
+  it, which is what lets `pnpm` and corepack run inside a confined session — no
+  per-agent cache is opened and no package manager is pre-provisioned.
 
 The unconfined tier is untouched, and so is everything that made the worktree
 tier commit under a boundary in the interim (#1695, #1698, #1703, #1715); those
