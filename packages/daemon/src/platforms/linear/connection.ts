@@ -376,11 +376,16 @@ export class LinearConnection implements PlatformConnection {
   /**
    * §8/§13 layer 3: one bounded read of the issue facts the trusted context block renders.
    *
-   * ONE query on the paced queue, projected into {@link LinearIssueFacts} — the coordinates the
-   * `agent-tools.ts` family takes. Missing fields stay missing rather than becoming defaults, and
-   * an issue Linear cannot resolve answers `undefined`; a refusal is the caller's to handle.
+   * On the DIRECT read path, like `getUserProfile` — deliberately NOT the paced send queue. This
+   * read runs while a delivery is being prepared, so a queue slot would put it ahead of the ≤10 s
+   * pre-spawn acknowledgement (§10.1) in one FIFO and let a stalled provider hold the ack for the
+   * queue's whole task timeout. `startIssue` may queue because it runs only after the ack posts.
+   *
+   * `signal` is the real deadline: it cancels the request rather than abandoning it, and surfaces
+   * as a retryable {@link LinearApiError} the caller degrades on. No retry — the block is optional
+   * chrome, and a second attempt would spend the delivery's budget twice.
    */
-  async issueFacts(issueId: string): Promise<LinearIssueFacts | undefined> {
+  async issueFacts(issueId: string, opts: { signal?: AbortSignal } = {}): Promise<LinearIssueFacts | undefined> {
     type FactsPayload = {
       issue?: {
         id?: string
@@ -400,7 +405,7 @@ export class LinearConnection implements PlatformConnection {
         parent?: { identifier?: string } | null
       } | null
     }
-    const data = await this.enqueueGraphql<FactsPayload>(ISSUE_FACTS_QUERY, { id: issueId })
+    const data = await this.graphql<FactsPayload>(ISSUE_FACTS_QUERY, { id: issueId }, opts.signal)
     const issue = data.issue
     if (!issue) return undefined
     const labels = (issue.labels?.nodes ?? []).map((n) => n.name).filter((n): n is string => Boolean(n))
@@ -626,14 +631,17 @@ export class LinearConnection implements PlatformConnection {
     })
   }
 
-  private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+  private async graphql<T>(query: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
     const token = await this.token()
+    // The deadline covers the token wait too, so an abort during renewal never becomes a live fetch.
+    if (signal?.aborted) throw new LinearApiError('linear read aborted before it was sent', true)
     let res: Response
     try {
       res = await this.fetchImpl(this.endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ query, variables })
+        body: JSON.stringify({ query, variables }),
+        ...(signal ? { signal } : {})
       })
     } catch (err) {
       throw new LinearApiError(`linear request failed: ${(err as Error).message}`, true)

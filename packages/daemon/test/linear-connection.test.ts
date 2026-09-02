@@ -73,6 +73,7 @@ interface RecordedCall {
   query: string
   variables: Record<string, unknown>
   at: number
+  signal?: AbortSignal
 }
 
 const jsonResponse = (body: unknown, status = 200, headers: Record<string, string> = {}): Response =>
@@ -115,14 +116,15 @@ function harness(
   const timers: { fn: () => void; delay: number; cleared: boolean }[] = []
   const warnings: string[] = []
   const fetchImpl = (async (url: unknown, init: unknown) => {
-    const request = init as { headers: Record<string, string>; body: string }
+    const request = init as { headers: Record<string, string>; body: string; signal?: AbortSignal }
     const parsed = JSON.parse(request.body) as { query: string; variables: Record<string, unknown> }
     const call: RecordedCall = {
       url: String(url),
       authorization: request.headers.authorization ?? '',
       query: parsed.query,
       variables: parsed.variables,
-      at: clock.now()
+      at: clock.now(),
+      ...(request.signal ? { signal: request.signal } : {})
     }
     calls.push(call)
     return opts.respond ? opts.respond(call) : jsonResponse({ data: { ok: true } })
@@ -908,11 +910,53 @@ describe('linear issue facts (§8 context block)', () => {
     expect(await conn.issueFacts(ISSUE_ID)).toBeUndefined()
   })
 
-  it('surfaces a refused read as the API error it is', async () => {
-    const { conn } = harness({
-      respond: () => jsonResponse({ errors: [{ message: 'no', extensions: { code: 'FORBIDDEN' } }] })
+  it('surfaces a refused read as the API error it is, without retrying it', async () => {
+    const { conn, calls } = harness({
+      respond: () => jsonResponse({ errors: [{ message: 'slow down', extensions: { code: 'RATELIMITED' } }] })
     })
+    // RATELIMITED is retryable on the paced write path; the block is optional chrome, so this
+    // read spends the delivery's budget exactly once.
     await expect(conn.issueFacts(ISSUE_ID)).rejects.toBeInstanceOf(LinearApiError)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('runs OFF the paced send queue, so a facts read can never sit ahead of the ack', async () => {
+    // The ack is an activity post: were this read a queue slot, a stalled provider would hold the
+    // FIFO in front of it. Queued posts space by the interval; the read ignores it entirely.
+    const { conn, calls } = harness({
+      sendIntervalMs: 1_000,
+      respond: (call) =>
+        call.query.includes('IssueFacts')
+          ? jsonResponse({ data: { issue: { identifier: 'TEAM-42' } } })
+          : jsonResponse({ data: { agentActivityCreate: { success: true, agentActivity: { id: 'act' } } } })
+    })
+    const posts = [
+      conn.createActivity(SESSION, { type: 'thought', body: 'first' }),
+      conn.createActivity(SESSION, { type: 'thought', body: 'second' })
+    ]
+    const facts = conn.issueFacts(ISSUE_ID)
+    await Promise.all([...posts, facts])
+    const read = calls.find((c) => c.query.includes('IssueFacts'))!
+    const queued = calls.filter((c) => c.query.includes('agentActivityCreate'))
+    expect(queued[1]!.at - queued[0]!.at).toBeGreaterThanOrEqual(1_000)
+    // Not spaced behind either post: the read went out at the very start.
+    expect(read.at).toBe(queued[0]!.at)
+  })
+
+  it('carries the caller’s deadline into the request, so a stall is cancelled not abandoned', async () => {
+    const { conn, calls } = harness({ respond: () => jsonResponse({ data: { issue: { identifier: 'TEAM-42' } } }) })
+    const signal = AbortSignal.timeout(10_000)
+    await conn.issueFacts(ISSUE_ID, { signal })
+    expect(calls[0]!.signal).toBe(signal)
+    // Without one the request is unsignalled — the read port's other calls stay as they were.
+    await conn.issueFacts(ISSUE_ID)
+    expect(calls[1]!.signal).toBeUndefined()
+  })
+
+  it('surfaces a blown deadline as the bounded API error, sending nothing', async () => {
+    const { conn, calls } = harness({ respond: () => jsonResponse({ data: { issue: { identifier: 'TEAM-42' } } }) })
+    await expect(conn.issueFacts(ISSUE_ID, { signal: AbortSignal.abort() })).rejects.toBeInstanceOf(LinearApiError)
+    expect(calls).toHaveLength(0)
   })
 })
 

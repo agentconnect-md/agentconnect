@@ -1038,9 +1038,10 @@ dispatch prompt (its per-platform strategy seat, fed by the round-tripped
 - **Trusted header** (daemon-authored): `Linear TEAM-123 "title" — delegated
 by <actor>` + issue URL, with `sanitizeTitle` flattening.
 - **Linear context block** (daemon-authored, under the header — §13 P2
-  layer 3). One bounded `issueFacts` read on the connection's paced
-  `request()` path fills four lines with the coordinates the `agent-tools.ts`
-  family takes — issue identifier and UUID, title, URL; team key, name and
+  layer 3). One `issueFacts` read on the connection's direct read path —
+  never the paced send queue, so it can never sit ahead of the §10.1 ack —
+  deadline-bounded and unretried, fills four lines with the coordinates the
+  `agent-tools.ts` family takes — issue identifier and UUID, title, URL; team key, name and
   id; state and its type, priority, estimate, due date; assignee, labels,
   project, cycle, parent — followed by the working convention: the issue is
   the record, so the plan and the outcome go into its description or a
@@ -1049,8 +1050,9 @@ by <actor>` + issue URL, with `sanitizeTitle` flattening.
   clarifying response before work; `updateIssue` takes `state` by workflow
   state NAME (`listIssueStatuses`). Absent facts are omitted rather than
   rendered as placeholders, and the read is failure-tolerant: a refusal or a
-  slow provider logs at debug and drops the block, never the turn — the
-  header already names the issue from the bag. Being daemon-authored is a
+  slow provider (whose request the deadline cancels outright) logs at debug
+  and drops the block, never the turn — the header already names the issue
+  from the bag. Being daemon-authored is a
   claim the block has to earn, so every provider string on it (title, team
   and project names, labels, state, assignee) is flattened to one capped,
   fence-inert line first: an attacker-influenced value may not open a line of
@@ -1333,8 +1335,14 @@ tile.
   - message strategy — `adapterExt.linear` → prompt assembly and fencing
     (§8), including the daemon-authored context block rendered from the
     optional `LinearIssueFacts` the delivery path resolves through
-    `LinearConnection.issueFacts` (one bounded query on the paced queue,
-    failure-tolerant); no-issue unsupported-surface response (§4.5); stop
+    `LinearConnection.issueFacts` — one query on the **direct read path, not
+    the paced send queue**, bounded by an `AbortSignal` deadline that cancels
+    the request rather than abandoning it, not retried, and failure-tolerant.
+    Off the queue is the point: the read happens while the delivery is being
+    prepared, so a queue slot would put it **ahead of the ≤10 s ack** (§10.1)
+    in one FIFO and let a stalled provider hold the ack for the queue's whole
+    task timeout — unlike `startIssue`, which may queue because it runs only
+    after the ack posts. No-issue unsupported-surface response (§4.5); stop
     decoder for the `platform_action` payload → `interruptTurn` + settling
     response.
   - The ≤10 s ack at `rd/msg` admission, after inbox dedup (§10.1), and from
@@ -1661,8 +1669,10 @@ none` skips it along with everything else Linear-visible. There is **no
   than placeheld, an attacker-authored title, label or team name unable to
   open a line or a fence, position between header and instruction, absent
   without facts) and `issueFacts` (the documented query, the projection, a
-  refusal surfacing as `LinearApiError`, and a refused read still
-  dispatching the turn without the block).
+  refusal surfacing as `LinearApiError` and not retried, the read bypassing
+  the paced queue while activity posts space by the interval, the caller's
+  deadline reaching the request, and a refused read still dispatching the
+  turn without the block).
 - **CP unit:** provider schema guards; token service rotate-and-retry with a
   failing-then-succeeding fake token endpoint; single-flight refresh;
   projector output shapes.

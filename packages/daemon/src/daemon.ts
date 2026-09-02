@@ -614,7 +614,8 @@ type AgentListSnapshot = { agents: LoadedAgent[]; activeFleet: LoadedAgent[] }
 /** How long a Linear delivery waits for the delegator's name before dispatching with the id. */
 const LINEAR_ACTOR_LOOKUP_MS = 1500
 
-/** How long that delivery waits for the §8 context block's one issue read — the ≤10 s ack (§10.1) is downstream. */
+/** Deadline on the §8 context block's one issue read — it ABORTS the request, and the ≤10 s ack
+ *  (§10.1) is downstream of the delivery this read is part of. */
 const LINEAR_ISSUE_FACTS_MS = 2500
 
 export class Daemon {
@@ -6688,9 +6689,9 @@ export class Daemon {
         if (name) normalized.sender = { ...normalized.sender, name }
       }
     }
-    // §13 layer 3: one bounded read fills the trusted context block with the coordinates the
-    // Linear tool family takes. A miss loses the block, never the turn — the header still names
-    // the issue from the bag.
+    // §13 layer 3: one deadline-bounded read, off the send queue so it can never sit ahead of the
+    // ack, fills the trusted context block with the coordinates the Linear tool family takes. A
+    // miss loses the block, never the turn — the header still names the issue from the bag.
     const facts = conn && ext.issueId ? await this.linearIssueFacts(conn, ext.issueId) : undefined
     applyLinearMessageStrategy(normalized, facts)
     // No per-event channel name: the channel is the WORKSPACE, so its label is install-scoped and
@@ -6718,18 +6719,16 @@ export class Daemon {
     return await Promise.race([lookup, deadline])
   }
 
-  /** The §8 context block's facts: one paced read, bounded by {@link LINEAR_ISSUE_FACTS_MS} and
-   *  failure-tolerant — a refusal or a slow provider leaves the block off, at debug. */
+  /** The §8 context block's facts: one direct read off the paced send queue, cancelled at
+   *  {@link LINEAR_ISSUE_FACTS_MS} — a refusal, an abort or an unreadable issue leaves the block
+   *  off, at debug, and the turn dispatches on the header alone. */
   private async linearIssueFacts(conn: LinearConnection, issueId: string): Promise<LinearIssueFacts | undefined> {
-    const lookup = conn.issueFacts(issueId).catch((err: unknown) => {
+    try {
+      return await conn.issueFacts(issueId, { signal: AbortSignal.timeout(LINEAR_ISSUE_FACTS_MS) })
+    } catch (err) {
       this.log.debug(`linear: issue facts lookup failed (${issueId}): ${formatErr(err)}`)
       return undefined
-    })
-    const deadline = new Promise<undefined>((resolve) => {
-      const timer = setTimeout(() => resolve(undefined), LINEAR_ISSUE_FACTS_MS)
-      timer.unref?.()
-    })
-    return await Promise.race([lookup, deadline])
+    }
   }
 
   /** Has this daemon already served this exact Linear delivery? A read failure answers NO:
