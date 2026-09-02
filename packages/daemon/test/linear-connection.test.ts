@@ -850,6 +850,72 @@ describe('linear read port (§9.4 — what Linear affords)', () => {
   })
 })
 
+describe('linear issue facts (§8 context block)', () => {
+  const ISSUE_ID = 'issue-uuid-1'
+  const full = {
+    id: ISSUE_ID,
+    identifier: 'TEAM-42',
+    title: 'Ship the thing',
+    url: 'https://linear.example.test/example/issue/TEAM-42/ship-the-thing',
+    team: { id: 'team-uuid-1', key: 'TEAM', name: 'Engineering' },
+    state: { name: 'In Progress', type: 'started' },
+    assignee: { name: 'Dana Scully', displayName: 'dana' },
+    labels: { nodes: [{ name: 'Bug' }, { name: 'Backend' }] },
+    priority: 2,
+    priorityLabel: 'High',
+    estimate: 3,
+    dueDate: '2026-09-30',
+    project: { name: 'OSS' },
+    cycle: { number: 7, name: 'Sprint 7' },
+    parent: { identifier: 'TEAM-40' }
+  }
+
+  it('sends ONE documented query and projects the answer into the context block’s facts', async () => {
+    const { conn, calls } = harness({ respond: () => jsonResponse({ data: { issue: full } }) })
+    expect(await conn.issueFacts(ISSUE_ID)).toEqual({
+      id: ISSUE_ID,
+      identifier: 'TEAM-42',
+      title: 'Ship the thing',
+      url: full.url,
+      team: { id: 'team-uuid-1', key: 'TEAM', name: 'Engineering' },
+      state: { name: 'In Progress', type: 'started' },
+      assignee: { name: 'Dana Scully', displayName: 'dana' },
+      labels: ['Bug', 'Backend'],
+      priority: 2,
+      priorityLabel: 'High',
+      estimate: 3,
+      dueDate: '2026-09-30',
+      project: { name: 'OSS' },
+      cycle: { number: 7, name: 'Sprint 7' },
+      parent: { identifier: 'TEAM-40' }
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.variables).toEqual({ id: ISSUE_ID })
+    for (const field of ['identifier', 'url', 'team { id key name }', 'state { name type }', 'labels(first: 20)'])
+      expect(calls[0]!.query).toContain(field)
+  })
+
+  it('omits what the provider did not answer, and keeps a `0` it did', async () => {
+    const { conn } = harness({
+      respond: () =>
+        jsonResponse({ data: { issue: { identifier: 'TEAM-42', priority: 0, assignee: null, labels: { nodes: [] } } } })
+    })
+    expect(await conn.issueFacts(ISSUE_ID)).toEqual({ identifier: 'TEAM-42', priority: 0 })
+  })
+
+  it('answers undefined for an issue Linear cannot resolve', async () => {
+    const { conn } = harness({ respond: () => jsonResponse({ data: { issue: null } }) })
+    expect(await conn.issueFacts(ISSUE_ID)).toBeUndefined()
+  })
+
+  it('surfaces a refused read as the API error it is', async () => {
+    const { conn } = harness({
+      respond: () => jsonResponse({ errors: [{ message: 'no', extensions: { code: 'FORBIDDEN' } }] })
+    })
+    await expect(conn.issueFacts(ISSUE_ID)).rejects.toBeInstanceOf(LinearApiError)
+  })
+})
+
 describe('linear auto-start (§10.2)', () => {
   const ISSUE = 'issue-uuid-1'
   const states = [

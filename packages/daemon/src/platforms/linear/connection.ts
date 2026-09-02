@@ -20,6 +20,7 @@
  * enumeration, no leave affordance, and attachment download is deferred.
  */
 import { randomUUID } from 'node:crypto'
+import type { LinearIssueFacts } from './message-strategy.js'
 import type { LinearAttachmentInput, LinearActivityInput } from './turn-output.js'
 import type { IntegrationLinearConfig, LinearCredGrant } from '@agentconnect.md/protocol'
 import type { Agent } from '../../agents/agent-schema.js'
@@ -373,6 +374,56 @@ export class LinearConnection implements PlatformConnection {
   }
 
   /**
+   * §8/§13 layer 3: one bounded read of the issue facts the trusted context block renders.
+   *
+   * ONE query on the paced queue, projected into {@link LinearIssueFacts} — the coordinates the
+   * `agent-tools.ts` family takes. Missing fields stay missing rather than becoming defaults, and
+   * an issue Linear cannot resolve answers `undefined`; a refusal is the caller's to handle.
+   */
+  async issueFacts(issueId: string): Promise<LinearIssueFacts | undefined> {
+    type FactsPayload = {
+      issue?: {
+        id?: string
+        identifier?: string
+        title?: string
+        url?: string
+        team?: { id?: string; key?: string; name?: string } | null
+        state?: { name?: string; type?: string } | null
+        assignee?: { name?: string; displayName?: string } | null
+        labels?: { nodes?: { name?: string }[] } | null
+        priority?: number
+        priorityLabel?: string
+        estimate?: number
+        dueDate?: string
+        project?: { name?: string } | null
+        cycle?: { number?: number; name?: string } | null
+        parent?: { identifier?: string } | null
+      } | null
+    }
+    const data = await this.enqueueGraphql<FactsPayload>(ISSUE_FACTS_QUERY, { id: issueId })
+    const issue = data.issue
+    if (!issue) return undefined
+    const labels = (issue.labels?.nodes ?? []).map((n) => n.name).filter((n): n is string => Boolean(n))
+    return {
+      ...(issue.id ? { id: issue.id } : {}),
+      ...(issue.identifier ? { identifier: issue.identifier } : {}),
+      ...(issue.title ? { title: issue.title } : {}),
+      ...(issue.url ? { url: issue.url } : {}),
+      ...(issue.team ? { team: issue.team } : {}),
+      ...(issue.state ? { state: issue.state } : {}),
+      ...(issue.assignee ? { assignee: issue.assignee } : {}),
+      ...(labels.length ? { labels } : {}),
+      ...(typeof issue.priority === 'number' ? { priority: issue.priority } : {}),
+      ...(issue.priorityLabel ? { priorityLabel: issue.priorityLabel } : {}),
+      ...(typeof issue.estimate === 'number' ? { estimate: issue.estimate } : {}),
+      ...(issue.dueDate ? { dueDate: issue.dueDate } : {}),
+      ...(issue.project ? { project: issue.project } : {}),
+      ...(issue.cycle ? { cycle: issue.cycle } : {}),
+      ...(issue.parent ? { parent: issue.parent } : {})
+    }
+  }
+
+  /**
    * §10.2 auto-start: move a freshly delegated issue into its team's first `started` state.
    *
    * Reads the issue's current state and the team's workflow, then writes at most once. An issue
@@ -636,7 +687,7 @@ function retryAfterMs(res: Response): number | undefined {
   return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now())
 }
 
-// The four documents this connection sends. Shapes follow Linear's published agent API
+// The documents this connection sends. Shapes follow Linear's published agent API
 // (linear-integration.md §2); anything beyond them is a Layer-2 or later concern.
 const AGENT_ACTIVITY_CREATE = `mutation AgentActivityCreate($input: AgentActivityCreateInput!) {
   agentActivityCreate(input: $input) { success agentActivity { id } }
@@ -648,6 +699,26 @@ const AGENT_SESSION_UPDATE = `mutation AgentSessionUpdate($id: String!, $input: 
 
 const ATTACHMENT_CREATE = `mutation AttachmentCreate($input: AttachmentCreateInput!) {
   attachmentCreate(input: $input) { success }
+}`
+
+const ISSUE_FACTS_QUERY = `query IssueFacts($id: String!) {
+  issue(id: $id) {
+    id
+    identifier
+    title
+    url
+    team { id key name }
+    state { name type }
+    assignee { name displayName }
+    labels(first: 20) { nodes { name } }
+    priority
+    priorityLabel
+    estimate
+    dueDate
+    project { name }
+    cycle { number name }
+    parent { identifier }
+  }
 }`
 
 const ISSUE_STATE_QUERY = `query IssueState($id: String!) {

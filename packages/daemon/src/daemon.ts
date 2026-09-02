@@ -424,6 +424,7 @@ import {
   linearFailureBody,
   readLinearExt,
   LinearStopActionSchema,
+  type LinearIssueFacts,
   type LinearStopAction,
   LINEAR_STOP_RESPONSE_BODY,
   LINEAR_UNSUPPORTED_SURFACE_BODY
@@ -612,6 +613,9 @@ type AgentListSnapshot = { agents: LoadedAgent[]; activeFleet: LoadedAgent[] }
 
 /** How long a Linear delivery waits for the delegator's name before dispatching with the id. */
 const LINEAR_ACTOR_LOOKUP_MS = 1500
+
+/** How long that delivery waits for the §8 context block's one issue read — the ≤10 s ack (§10.1) is downstream. */
+const LINEAR_ISSUE_FACTS_MS = 2500
 
 export class Daemon {
   // This daemon's workspace execution plane. Owned per instance, so two daemons in one process
@@ -6684,7 +6688,11 @@ export class Daemon {
         if (name) normalized.sender = { ...normalized.sender, name }
       }
     }
-    applyLinearMessageStrategy(normalized)
+    // §13 layer 3: one bounded read fills the trusted context block with the coordinates the
+    // Linear tool family takes. A miss loses the block, never the turn — the header still names
+    // the issue from the bag.
+    const facts = conn && ext.issueId ? await this.linearIssueFacts(conn, ext.issueId) : undefined
+    applyLinearMessageStrategy(normalized, facts)
     // No per-event channel name: the channel is the WORKSPACE, so its label is install-scoped and
     // already written when the connection reported the workspace (§4.5). Writing the issue here
     // would thrash the one display slot and relabel every sibling session in the workspace; the
@@ -6705,6 +6713,20 @@ export class Daemon {
       .catch(() => undefined)
     const deadline = new Promise<undefined>((resolve) => {
       const timer = setTimeout(() => resolve(undefined), LINEAR_ACTOR_LOOKUP_MS)
+      timer.unref?.()
+    })
+    return await Promise.race([lookup, deadline])
+  }
+
+  /** The §8 context block's facts: one paced read, bounded by {@link LINEAR_ISSUE_FACTS_MS} and
+   *  failure-tolerant — a refusal or a slow provider leaves the block off, at debug. */
+  private async linearIssueFacts(conn: LinearConnection, issueId: string): Promise<LinearIssueFacts | undefined> {
+    const lookup = conn.issueFacts(issueId).catch((err: unknown) => {
+      this.log.debug(`linear: issue facts lookup failed (${issueId}): ${formatErr(err)}`)
+      return undefined
+    })
+    const deadline = new Promise<undefined>((resolve) => {
+      const timer = setTimeout(() => resolve(undefined), LINEAR_ISSUE_FACTS_MS)
       timer.unref?.()
     })
     return await Promise.race([lookup, deadline])

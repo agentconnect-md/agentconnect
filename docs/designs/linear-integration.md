@@ -1037,6 +1037,24 @@ dispatch prompt (its per-platform strategy seat, fed by the round-tripped
   session has a live reply surface — the activity feed).
 - **Trusted header** (daemon-authored): `Linear TEAM-123 "title" — delegated
 by <actor>` + issue URL, with `sanitizeTitle` flattening.
+- **Linear context block** (daemon-authored, under the header — §13 P2
+  layer 3). One bounded `issueFacts` read on the connection's paced
+  `request()` path fills four lines with the coordinates the `agent-tools.ts`
+  family takes — issue identifier and UUID, title, URL; team key, name and
+  id; state and its type, priority, estimate, due date; assignee, labels,
+  project, cycle, parent — followed by the working convention: the issue is
+  the record, so the plan and the outcome go into its description or a
+  comment (`updateIssue` / `createIssueComment`); the branch and the PR carry
+  the identifier so Linear links them; an empty or ambiguous ticket earns a
+  clarifying response before work; `updateIssue` takes `state` by workflow
+  state NAME (`listIssueStatuses`). Absent facts are omitted rather than
+  rendered as placeholders, and the read is failure-tolerant: a refusal or a
+  slow provider logs at debug and drops the block, never the turn — the
+  header already names the issue from the bag. Being daemon-authored is a
+  claim the block has to earn, so every provider string on it (title, team
+  and project names, labels, state, assignee) is flattened to one capped,
+  fence-inert line first: an attacker-influenced value may not open a line of
+  its own, and may not open or close the untrusted fence below.
 - **Instruction text**: `msg.text` (§6.3) — the follow-up body verbatim for
   `prompted` (workspace members are the same trust class as Slack users, and
   their messages are instructions), or the delegation line plus the
@@ -1302,7 +1320,7 @@ tile.
   - `connection.ts` — the per-integration egress client, a **minimal
     Layer 1**: `start()` warms the token (no socket to open), `stop()` clears
     timers; GraphQL over plain `fetch` (the `@linear/sdk` dependency is
-    unnecessary — the agent surface is four mutations and two queries); token
+    unnecessary — the agent surface is four mutations and three queries); token
     cache + `linearcred` renewal; `PlatformSendQueue`; self-echo guard on
     `appUserId`. The read port answers what Linear affords — `getChannelInfo`
     names the team behind a channel id (`<KEY> · <Team name>`, §4.5; the
@@ -1313,8 +1331,12 @@ tile.
   - `turn-output.ts` — the streaming Layer-2 surface + `LinearConverger` +
     `LinearAction` (§5).
   - message strategy — `adapterExt.linear` → prompt assembly and fencing
-    (§8); no-issue unsupported-surface response (§4.5); stop decoder for the
-    `platform_action` payload → `interruptTurn` + settling response.
+    (§8), including the daemon-authored context block rendered from the
+    optional `LinearIssueFacts` the delivery path resolves through
+    `LinearConnection.issueFacts` (one bounded query on the paced queue,
+    failure-tolerant); no-issue unsupported-surface response (§4.5); stop
+    decoder for the `platform_action` payload → `interruptTurn` + settling
+    response.
   - The ≤10 s ack at `rd/msg` admission, after inbox dedup (§10.1), and from
     the same hook the §10.2 auto-start (`LinearConnection.startIssue`, one
     state read + at most one `issueUpdate`, both on the paced queue) when the
@@ -1586,16 +1608,16 @@ none` skips it along with everything else Linear-visible. There is **no
      initiatives, project updates, milestone writes, Linear's own
      documentation search, image loading (attachment download stays
      deferred, §9.4).
-  3. **A daemon-authored Linear context block** in the §8 trusted header:
-     the issue's UUID, identifier, team, current state, assignee and labels
-     (the coordinates the tools take), plus a few lines of working convention
-     — the issue is the record, so plans and outcomes go into its description
-     or a comment; branch and PR names carry the identifier so Linear's own
-     GitHub integration links them; an empty ticket earns a clarifying
-     `response` before work. **Not a skill**: the tools only exist in Linear
-     turns, so a per-turn prompt block is the deterministic seat, and the
-     customer-side customization seat is Linear's own admin `guidance`,
-     which §8 already passes through.
+  3. **A daemon-authored Linear context block** in the §8 trusted header
+     (**landed**): the issue's UUID, identifier, team, current state,
+     assignee and labels (the coordinates the tools take), plus a few lines
+     of working convention — the issue is the record, so plans and outcomes
+     go into its description or a comment; branch and PR names carry the
+     identifier so Linear's own GitHub integration links them; an empty
+     ticket earns a clarifying `response` before work. **Not a skill**: the
+     tools only exist in Linear turns, so a per-turn prompt block is the
+     deterministic seat, and the customer-side customization seat is
+     Linear's own admin `guidance`, which §8 already passes through.
      Still in P2: the elicitation deep-link card.
 - **P2.5 — the team is the channel** (decided 2026-09-02, §15): one
   conversation row per Linear team instead of one per workspace, each with
@@ -1634,7 +1656,13 @@ none` skips it along with everything else Linear-visible. There is **no
   (nothing posted after the pre-spawn ack; `none` mode remains
   zero-activity since it never acks), dedup-key derivation,
   **dedup-before-ack ordering including concurrent same-`msgId` deliveries
-  collapsing to one ack** (fake clock), config-schema fail-closed reads.
+  collapsing to one ack** (fake clock), config-schema fail-closed reads; the
+  §8 context block (every coordinate rendered, absent facts omitted rather
+  than placeheld, an attacker-authored title, label or team name unable to
+  open a line or a fence, position between header and instruction, absent
+  without facts) and `issueFacts` (the documented query, the projection, a
+  refusal surfacing as `LinearApiError`, and a refused read still
+  dispatching the turn without the block).
 - **CP unit:** provider schema guards; token service rotate-and-retry with a
   failing-then-succeeding fake token endpoint; single-flight refresh;
   projector output shapes.
