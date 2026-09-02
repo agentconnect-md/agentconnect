@@ -9,7 +9,7 @@ import {
 } from '../runtimes/codex-config.js'
 import { AcpStreamPayloadSchema, type AcpOpen } from './acp-stream.js'
 import { seedDshPreset } from './dsh-preset.js'
-import { SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
+import { SANDBOX_BROWSER_EXECUTABLE_ENV, SANDBOX_GH_WRAPPER_DIR } from './sandbox-paths.js'
 import type { ShimEvent } from './protocol.js'
 
 /** How the runner reports back: many events per opened stream, not one response. */
@@ -182,6 +182,10 @@ export class AcpRunner {
     for (const [name, value] of Object.entries(sandboxProviderEnv(payload.command, podEnv))) {
       if (!env[name]) env[name] = value
     }
+    // The baked browser, decided by the IMAGE like the gh wrapper dir above: the pod env is where a machine
+    // the daemon is not on names its own path, and a child without it downloads a Chrome the pod already has.
+    const bakedBrowser = podEnv[SANDBOX_BROWSER_EXECUTABLE_ENV]
+    if (bakedBrowser && !env[SANDBOX_BROWSER_EXECUTABLE_ENV]) env[SANDBOX_BROWSER_EXECUTABLE_ENV] = bakedBrowser
     if (sandboxProfile(payload.command) === 'codex') {
       // Floor before URL: the daemon-sent config wins either way, and a floor that carries no
       // aim never blocks the base-url fill-in below.

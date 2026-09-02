@@ -23,10 +23,14 @@ export const SANDBOX_AUTO_MERGE_ENTRY = '/opt/agentconnect/shim/auto-merge.js'
  *  Reported to the daemon by the probe rather than assumed: an image built before it ships none. */
 export const SANDBOX_MCP_BRIDGE_ENTRY = '/opt/agentconnect/shim/mcp-bridge.js'
 
-/** The ONLY image directory prepended to the runtime's PATH: the gh wrapper and nothing else. */
+/** The ONLY image directory prepended to the runtime's PATH: the gh and agent-browser wrappers. */
 // Its own dir rather than reusing bin/ or shim/: those hold the credential helper and the runtime-table
 // generator, and neither should become a command an agent can run by name.
 export const SANDBOX_GH_WRAPPER_DIR = '/opt/agentconnect/pathbin'
+
+/** Pod env naming the Chrome the image bakes — agent-browser's only browser-location hook, so an ACP child
+ *  without it downloads one of its own. Set by the image, projected onto the child by acp-runner. */
+export const SANDBOX_BROWSER_EXECUTABLE_ENV = 'AGENT_BROWSER_EXECUTABLE_PATH'
 
 /** Where daemon-written, per-agent git configuration is materialized in the pod. Under /run rather
  *  than the workspace volume: it is regenerated per launch and belongs to the POD, so a resumed
