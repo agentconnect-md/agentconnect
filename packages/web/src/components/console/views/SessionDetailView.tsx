@@ -1606,6 +1606,7 @@ export default function SessionDetailView() {
     crons,
     daemons,
     memberSets,
+    orgSetIds,
     members,
     sessionActivityVersionById,
     sessionStreamGeneration,
@@ -2735,7 +2736,8 @@ export default function SessionDetailView() {
   const focusedAgentLabel = focusedAgent ? agentLabel(focusedAgent) : (headerFocusOption?.label ?? 'agent')
   // Named by the focused agent's effective boundary, so a confined session is not offered a "worktree" it does not get (git-workspace-model.md §11).
   const focusedIsolation = agentSessionIsolationLabel(
-    focusedAgent ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false }
+    focusedAgent ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false },
+    orgSetIds
   )
   const workspaceTitle = hasSessionWorktree
     ? `Open ${focusedAgentLabel}’s ${focusedIsolation.checkout}`
@@ -2849,7 +2851,8 @@ export default function SessionDetailView() {
     (!!owner?.workspace && isGitWorkspace(owner.workspace) && owner.workspace.worktree === true)
   // The chip names the isolation by the owner's EFFECTIVE boundary (git-workspace-model.md §11), never by its stored sandbox flag.
   const isolationLabel = agentSessionIsolationLabel(
-    owner ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false }
+    owner ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false },
+    orgSetIds
   )
   const canChooseWorktree =
     isPg &&

@@ -1,5 +1,5 @@
 // How the console NAMES `workspaceIsolation: 'session'` — git-workspace-model.md §11.
-import { isPoolPlacementKind, type Agent, type PlacementKindValue } from '@/lib/data'
+import { isPoolPlacementKind, type Agent } from '@/lib/data'
 
 /** What decides whether an OS boundary encloses the runtime a session will use. */
 export interface RuntimeBoundary {
@@ -41,11 +41,13 @@ export function sessionIsolationLabel(boundary: RuntimeBoundary): SessionIsolati
 }
 
 /** The same label for an agent the console already holds, whose sandbox triple the CP projected against the daemon it is placed on. */
+// `orgSetIds` is REQUIRED, like `agentDaemonLabel`'s `groups` and for the same reason: the pool is the set that is NOT the org's, so a caller that omits the list reads every group placement as Cloud and labels an unsandboxed group agent — which gets a plain worktree — "Session isolation".
 export function agentSessionIsolationLabel(
-  agent: Pick<Agent, 'runInSandbox' | 'sandboxSupported' | 'sandboxRequired'> & { placementKind?: PlacementKindValue }
+  agent: Pick<Agent, 'placementKind' | 'setId' | 'runInSandbox' | 'sandboxSupported' | 'sandboxRequired'>,
+  orgSetIds: ReadonlySet<string>
 ): SessionIsolationLabel {
   return sessionIsolationLabel({
-    pool: isPoolPlacementKind(agent.placementKind),
+    pool: isPoolPlacementKind(agent.placementKind, agent.setId, orgSetIds),
     runInSandbox: agent.runInSandbox,
     sandboxSupported: agent.sandboxSupported,
     sandboxRequired: agent.sandboxRequired

@@ -37,17 +37,28 @@ describe('sessionIsolationLabel', () => {
 
 describe('agentSessionIsolationLabel', () => {
   const agent = { runInSandbox: false, sandboxSupported: false, sandboxRequired: false }
+  // The org's own groups. The pool is org-less, so its set id is never in this list — that is the whole test.
+  const orgSetIds = new Set(['set_group_a'])
 
   it('reads a pool placement as enclosed even though the pool advertises no sandbox capability', () => {
-    expect(agentSessionIsolationLabel({ ...agent, placementKind: 'pool' }).mode).toBe('Session isolation')
+    expect(agentSessionIsolationLabel({ ...agent, placementKind: 'pool' }, orgSetIds).mode).toBe('Session isolation')
     // What the CP actually stores for the pool is `set` (daemon-groups.md §2); both spellings are the pool here.
-    expect(agentSessionIsolationLabel({ ...agent, placementKind: 'set' }).mode).toBe('Session isolation')
+    expect(agentSessionIsolationLabel({ ...agent, placementKind: 'set', setId: 'set_pool' }, orgSetIds).mode).toBe(
+      'Session isolation'
+    )
+  })
+
+  it('reads an ORG-OWNED set through the sandbox triple, because a group is machines and not the pool', () => {
+    const group = { ...agent, placementKind: 'set' as const, setId: 'set_group_a' }
+    // Nothing encloses an unsandboxed group member, so §11 gives it a plain linked worktree.
+    expect(agentSessionIsolationLabel(group, orgSetIds).mode).toBe('Worktree')
+    expect(agentSessionIsolationLabel({ ...group, sandboxRequired: true }, orgSetIds).mode).toBe('Session isolation')
   })
 
   it('reads a machine placement through its projected sandbox triple', () => {
-    expect(agentSessionIsolationLabel({ ...agent, placementKind: 'daemon' }).mode).toBe('Worktree')
-    expect(agentSessionIsolationLabel({ ...agent, placementKind: 'daemon', sandboxRequired: true }).mode).toBe(
-      'Session isolation'
-    )
+    expect(agentSessionIsolationLabel({ ...agent, placementKind: 'daemon' }, orgSetIds).mode).toBe('Worktree')
+    expect(
+      agentSessionIsolationLabel({ ...agent, placementKind: 'daemon', sandboxRequired: true }, orgSetIds).mode
+    ).toBe('Session isolation')
   })
 })

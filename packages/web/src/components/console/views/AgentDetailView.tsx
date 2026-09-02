@@ -2125,7 +2125,7 @@ export default function AgentDetailView() {
                 isGitWorkspace(da.workspace) ? (
                   <WorkspaceScopePicker
                     primaryBranch={primaryBranch ?? da.workspace.branch}
-                    isolationLabel={agentSessionIsolationLabel(da)}
+                    isolationLabel={agentSessionIsolationLabel(da, orgSetIds)}
                     sessions={workspaceSessions}
                     selectedSessionId={selectedWorktreeSessionId}
                     selectedSession={selectedWorktreeSession}
@@ -2157,7 +2157,7 @@ export default function AgentDetailView() {
                   <div className="flex w-1/4 min-w-0 flex-none items-center gap-2 max-desktop:w-[min(210px,56vw)]">
                     <WorkspaceScopePicker
                       primaryBranch={ws.branch}
-                      isolationLabel={agentSessionIsolationLabel(da)}
+                      isolationLabel={agentSessionIsolationLabel(da, orgSetIds)}
                       sessions={[]}
                       selectedSessionId={null}
                       loading={false}

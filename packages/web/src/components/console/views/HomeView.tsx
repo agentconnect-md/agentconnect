@@ -120,7 +120,7 @@ export default function HomeView() {
   const { user } = useProfile()
   const firstName = user.name.trim().split(/\s+/)[0] ?? ''
   const { orgPath } = useOrgs()
-  const { agents, daemons, crons, allSessions, usage24h, getAgent, loading, memberSets } = useConsoleData()
+  const { agents, daemons, crons, allSessions, usage24h, getAgent, loading, memberSets, orgSetIds } = useConsoleData()
   const { openPlayground, pgSend, pgSetModel, pgSetEffort, pgSetPermissionPreset } = usePlayground()
   // Home is the default landing, so it owns the fresh-org bounce to /onboarding.
   const holdForOnboarding = useOnboardingRedirect()
@@ -225,7 +225,8 @@ export default function HomeView() {
   const worktree = worktreeOverride ?? defaultWorktree
   // What that toggle is CALLED follows the agent's effective boundary, not its stored sandbox flag (git-workspace-model.md §11).
   const isolationLabel = agentSessionIsolationLabel(
-    agent ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false }
+    agent ?? { runInSandbox: false, sandboxSupported: false, sandboxRequired: false },
+    orgSetIds
   )
 
   // Overrides are per-agent; drop them when the agent changes so the new agent's
