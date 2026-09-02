@@ -314,7 +314,10 @@ issue's team (§4.5):
   rule per placed non-gated member (§6.2) — and outranking the team row's
   owner, which sits below on the per-conversation default rung (§6.2).
 - **One AgentSession binds to one agent at creation** and never changes
-  hands: follow-ups and stop go to that agent. Addressing a _different_
+  hands: follow-ups and stop go to that agent — and when that agent is a
+  restricted member whose team default has since moved, stop still reaches
+  it while follow-ups are refused rather than handed to anyone else (§6.2).
+  Addressing a _different_
   agent is a new mention on the issue → a new session → another thread in
   the team channel. Naming several agents in one mention selects the
   **first**, silently and on purpose: member names are ordinary words in
@@ -409,8 +412,9 @@ install.
     in that channel, matching Slack's thread model: two delegations on the
     same issue and a mention on a different issue of the same team are three
     threads side by side. Each is bound to one agent at creation and never
-    changes hands, which is the natural way to bring a **different agent**
-    onto the same issue (§4.3).
+    changes hands — a restricted agent's session whose grant is withdrawn is
+    stopped or left alone, never handed on (§6.2) — which is the natural way
+    to bring a **different agent** onto the same issue (§4.3).
   - **`channelName` is the team, full stop** — `ENG · Engineering`, key
     first so the label sorts and scans like the identifiers it prefixes. It
     is the display slot of the `channel` coordinate — one label shared by
@@ -1594,8 +1598,10 @@ none` skips it along with everything else Linear-visible. There is **no
   gated) and copied onto each later member's sibling row, owner on the
   linking agent, no daemon involved — and the compile projects each
   row's owner into `conversationDefaults` while emitting **no channel-scoped
-  route**, so a named mention still reaches the named member and a bound
-  session survives an owner change; a team with no row falls to the
+  route**, so a named mention still reaches the named member and an
+  unrestricted member's bound session survives an owner change, while a
+  gated member's bound session, once the default moves off it, refuses a
+  follow-up and still takes a stop; a team with no row falls to the
   earliest-non-gated `defaultAgentId`; the reconciler tick upserts a row for
   a team the stub starts reporting later, and refreshes a renamed one; a
   **gated** member may be set as a team's default and then appears in
