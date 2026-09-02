@@ -35,7 +35,13 @@ import type {
 } from '@agentconnect.md/protocol'
 import type { Clock } from '@agentconnect.md/connection'
 import type { Logger } from './log.js'
-import { BotArbitrationRouter, sessionKeyOf, type BotAssignment, type RouteTarget } from './bot-arbitration.js'
+import {
+  BotArbitrationRouter,
+  sessionKeyOf,
+  type BotAssignment,
+  type RouteTarget,
+  type RoutesPatch
+} from './bot-arbitration.js'
 import { DemuxIndex, IngressPool, relayIngressPlugins } from './platforms/registry.js'
 import type {
   HandledDelivery,
@@ -449,22 +455,7 @@ export class RelayIngressManager {
   }
 
   /** `rc/routes` — hot-update routes/members/default WITHOUT re-opening the ingest. */
-  updateRoutes(
-    botId: string,
-    patch: Pick<
-      BotAssignment,
-      | 'members'
-      | 'agents'
-      | 'routes'
-      | 'defaultAgentId'
-      | 'defaultDaemonId'
-      | 'gatedAgentIds'
-      | 'mutedChannels'
-      | 'gatedOffChannels'
-      | 'noticeAuthority'
-      | 'noticedDmConversations'
-    >
-  ): void {
+  updateRoutes(botId: string, patch: RoutesPatch): void {
     // A changed install set needs a fresh fan-out so every member gets the row.
     const prev = (this.router.get(botId)?.agents ?? []).map((agent) => agent.integrationId ?? agent.agentId).sort()
     const next = (patch.agents ?? []).map((agent) => agent.integrationId ?? agent.agentId).sort()

@@ -26,6 +26,7 @@ import type {
   RcAgentDirEntry,
   RcBotAssign,
   RcConversationDefault,
+  RcRoutes,
   WireNormalizedMessage
 } from '@agentconnect.md/protocol'
 import { isThreadRootMessage } from '@agentconnect.md/message'
@@ -95,6 +96,43 @@ export interface BotAssignment {
   /** True where that projection is what the platform does with a row's owner. On such
    *  an assignment the affinity gate's rejection of a gated binding is TERMINAL. */
   ownerAsDefault?: boolean
+}
+
+/** The routing state an `rc/routes` hot update replaces — everything a re-assign would
+ *  carry except secrets, demux identity, and `botUserId`. One exported shape because the
+ *  CP frame, the ingress manager, and the router all have to agree on it: a field added to
+ *  the frame but forgotten in one of the hand-offs silently pins relays to the old value. */
+export type RoutesPatch = Pick<
+  BotAssignment,
+  | 'members'
+  | 'agents'
+  | 'routes'
+  | 'defaultAgentId'
+  | 'defaultDaemonId'
+  | 'gatedAgentIds'
+  | 'mutedChannels'
+  | 'gatedOffChannels'
+  | 'noticeAuthority'
+  | 'noticedDmConversations'
+  | 'conversationDefaults'
+>
+
+/** Map the CP's `rc/routes` frame to the hot-update patch (the `toBotAssignment` of the
+ *  routes-only leg). Sole assembler of the patch — see {@link RoutesPatch}. */
+export function toRoutesPatch(r: RcRoutes): RoutesPatch {
+  return {
+    members: r.members,
+    agents: mapAgentDirectory(r.agents),
+    routes: r.routes,
+    ...(r.defaultAgentId ? { defaultAgentId: r.defaultAgentId } : {}),
+    ...(r.defaultDaemonId ? { defaultDaemonId: r.defaultDaemonId } : {}),
+    gatedAgentIds: r.gatedAgentIds,
+    mutedChannels: r.mutedChannels,
+    gatedOffChannels: r.gatedOffChannels,
+    ...(r.noticeAuthority ? { noticeAuthority: r.noticeAuthority } : {}),
+    noticedDmConversations: r.noticedDmConversations,
+    conversationDefaults: r.conversationDefaults
+  }
 }
 
 /** Keep the directory shape identical on full assignments and `rc/routes` updates. */
@@ -182,23 +220,7 @@ export class BotArbitrationRouter {
   }
 
   /** Replace routes/members/agents/default WITHOUT touching secrets or botUserId (rc/routes). */
-  updateRoutes(
-    botId: string,
-    patch: Pick<
-      BotAssignment,
-      | 'members'
-      | 'agents'
-      | 'routes'
-      | 'defaultAgentId'
-      | 'defaultDaemonId'
-      | 'gatedAgentIds'
-      | 'mutedChannels'
-      | 'gatedOffChannels'
-      | 'noticeAuthority'
-      | 'noticedDmConversations'
-      | 'conversationDefaults'
-    >
-  ): void {
+  updateRoutes(botId: string, patch: RoutesPatch): void {
     const a = this.bots.get(botId)
     if (!a) return
     a.members = patch.members
