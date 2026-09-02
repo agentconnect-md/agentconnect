@@ -1105,6 +1105,9 @@ tile.
     agent on such a platform, §6.2) and `ownerAsDefault: boolean` (the axis
     itself, projected so the relay can pick the terminal affinity refusal
     over Slack's fall-through without a platform name, §9.3).
+    `conversationDefaults` is **also** a field of `RcRoutes`, the hot-update
+    frame `syncRoutes` sends after an owner edit, so a connected relay
+    converges on the new default without a re-assign (§9.3).
   - **Retired with the axis** (`soleConversation`'s three other reads, kept
     here so an implementer does not rebuild them):
     1. ~~**Route projection** — the conversation row's owner maps to the group's
@@ -1237,14 +1240,32 @@ tile.
   empty behaves exactly as today.
 - **Two directory seams the gated policy of §6.2 needs**, both keyed off the
   assignment's `ownerAsDefault` flag so Slack keeps its shape:
-  - `directory.resolveBoundTarget(sessionKey)` — the **Stop-only lookup**:
-    the stored affinity target, validated against current membership and
-    placement (the agent is still a member of the bot and its daemon is
-    connected) but **not** against the grant. `forwardLinearStop` calls this
-    instead of `resolveTarget`, so a stop reaches the runtime that holds the
-    session or nobody — never the new default. A stop for a session the
-    directory no longer knows falls back to `resolveTarget` as today (the
-    daemon's stop decoder is idempotent on an unknown session).
+  - `directory.resolveBoundTarget(botId, sessionKey)` — the **Stop-only
+    lookup**, bot-scoped like every directory lookup because affinity is
+    stored `botId → sessionKey → target` and a session key carries only
+    channel/thread coordinates: the stored affinity target, validated against
+    current membership and placement (the agent is still a member of the bot
+    and its daemon is connected) but **not** against the grant.
+    `forwardLinearStop` calls this instead of `resolveTarget`, so a stop
+    reaches the runtime that holds the session or nobody — **never** the new
+    default, which is why a miss must not fall through to ordinary
+    arbitration. On a miss (the relay pod holds no affinity for the key —
+    a restart, or the session's first event landed on another pod) the
+    plugin **fans the stop out to every member daemon of the bot**
+    (`host.forwardToMembers(botId, action)`, over the assignment's
+    `members`): a stop can only end work, the daemon's stop decoder is a
+    no-op for a session it does not hold, and only the holder acts — so the
+    fan-out is safe where re-arbitration is not, and it survives affinity
+    loss where "drop" would leave the runtime running.
+  - `conversationDefaults` rides the **routes hot-update too**: an owner
+    edit persists through `HttpBot.updateConversation` and converges through
+    `syncRoutes` → `rc/routes` → `BotArbitrationRouter.updateRoutes`, which
+    replaces routing state without a fresh `rc/bot-assign`. So `RcRoutes`
+    carries `conversationDefaults` alongside `routes`, `syncRoutes` emits it,
+    and `updateRoutes` applies it — otherwise every already-connected relay
+    keeps the old team default (and the old grant fact) after exactly the
+    edit this design introduces. The immutable `ownerAsDefault` axis stays
+    assignment-scoped.
   - A **terminal affinity refusal**: when the affinity gate rejects a gated
     agent's binding on an `ownerAsDefault` assignment, `resolveTarget`
     returns a distinguishable `{ kind: 'refused', reason: 'grant-withdrawn' }`
@@ -1901,14 +1922,20 @@ threads.
 **Change inventory**, in merge order:
 
 1. `packages/protocol` — `conversationDefaults` and `ownerAsDefault` on
-   `RcBotAssign`; the `soleConversation` axis renamed `ownerAsDefault` (one
-   read). `packages/relay` — the per-conversation default rung in
-   `bot-arbitration.ts`, between keyword and `defaultAgentId`; the affinity
+   `RcBotAssign`, and `conversationDefaults` on `RcRoutes`; the
+   `soleConversation` axis renamed `ownerAsDefault` (one read).
+   `packages/relay` — the per-conversation default rung in
+   `bot-arbitration.ts`, between keyword and `defaultAgentId`, fed by both
+   frames (`updateRoutes` applies the hot-updated defaults); the affinity
    gate widened to a channel's default; the terminal `grant-withdrawn`
-   refusal on `ownerAsDefault` assignments; `directory.resolveBoundTarget`
-   (Stop-only, membership- and placement-validated, grant-blind) on the
-   `RelayIngressHost` contract, used by `forwardLinearStop`; the Linear
-   plugin keys `channel` on the team and drops a refused delivery.
+   refusal on `ownerAsDefault` assignments;
+   `directory.resolveBoundTarget(botId, sessionKey)` (Stop-only, bot-scoped,
+   membership- and placement-validated, grant-blind, no arbitration
+   fallback) and `host.forwardToMembers(botId, action)` (the stop fan-out on
+   a miss) on the `RelayIngressHost` contract, used by `forwardLinearStop`;
+   the Linear plugin keys `channel` on the team and drops a refused delivery.
+   `packages/control-plane` (same PR, the emitting side of the frame change)
+   — `syncRoutes` emits `conversationDefaults`.
 2. `packages/control-plane` — team rows from the provider create tail and
    the member-add path (Linear API `teams`), plus the team upsert on the
    `LinearCredentialReconciler` tick; `soleConversation.ts`,
