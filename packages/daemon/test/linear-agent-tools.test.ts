@@ -91,7 +91,7 @@ const teamStates = {
 }
 
 describe('Linear session tools — descriptors', () => {
-  it('advertise the fifteen tools under the official MCP vocabulary', () => {
+  it('advertise the eighteen tools under the official MCP vocabulary', () => {
     expect(LINEAR_TOOLS.map((t) => t.name)).toEqual([
       'getIssue',
       'listIssues',
@@ -107,7 +107,10 @@ describe('Linear session tools — descriptors', () => {
       'getProject',
       'listCycles',
       'listDocuments',
-      'getDocument'
+      'getDocument',
+      'listInitiatives',
+      'getInitiative',
+      'updateInitiative'
     ])
     for (const tool of LINEAR_TOOLS) expect(LINEAR_SESSION_TOOLS.argSchemas.has(tool.name), tool.name).toBe(true)
   })
@@ -697,5 +700,161 @@ describe('projects, cycles and documents', () => {
       updatedAt: 't',
       content: '# Plan'
     })
+  })
+})
+
+describe('initiatives', () => {
+  const INITIATIVE_ID = '44444444-4444-4444-8444-444444444444'
+  const initiativeNode = {
+    id: INITIATIVE_ID,
+    name: 'Open the core',
+    description: 'Ship the OSS story',
+    url: 'https://linear.example.test/initiative/open-the-core',
+    status: 'Active',
+    health: 'onTrack',
+    targetDate: '2026-12-31',
+    startedAt: '2026-09-01T00:00:00.000Z',
+    completedAt: null,
+    updatedAt: 't',
+    owner: { id: USER_ID, name: 'Dana Example', displayName: 'dana' },
+    creator: { id: 'u-2', name: 'Lee', displayName: 'lee' }
+  }
+  const projected = {
+    id: INITIATIVE_ID,
+    name: 'Open the core',
+    url: 'https://linear.example.test/initiative/open-the-core',
+    status: 'Active',
+    health: 'onTrack',
+    owner: { id: USER_ID, name: 'dana' },
+    targetDate: '2026-12-31',
+    startedAt: '2026-09-01T00:00:00.000Z',
+    completedAt: null,
+    updatedAt: 't',
+    description: 'Ship the OSS story'
+  }
+
+  it('lists initiatives filtered by status and name, newest-updated first', async () => {
+    const c = client({
+      ListInitiatives: { initiatives: { nodes: [initiativeNode], pageInfo: { hasNextPage: true, endCursor: 'c1' } } }
+    })
+    // The status is matched case-insensitively and sent back in Linear's own capitalization.
+    const res = await run('listInitiatives', { status: 'active', query: 'core' }, c.impl)
+    expect(c.calls[0]!.variables).toEqual({
+      filter: { status: { eq: 'Active' }, name: { containsIgnoreCase: 'core' } },
+      first: 25,
+      after: null
+    })
+    expect(res).toEqual({ initiatives: [projected], nextCursor: 'c1' })
+  })
+
+  it('sends no filter when nothing narrows the list, and refuses a status Linear has no name for', async () => {
+    const c = client({ ListInitiatives: { initiatives: { nodes: [], pageInfo: { hasNextPage: false } } } })
+    expect(await run('listInitiatives', { limit: 5 }, c.impl)).toEqual({ initiatives: [] })
+    expect(c.calls[0]!.variables).toEqual({ filter: null, first: 5, after: null })
+    await expect(run('listInitiatives', { status: 'shipped' }, c.impl)).rejects.toThrow(
+      /no initiative status "shipped" — valid: Planned, Proposed, Active, Completed, Canceled/
+    )
+    // The vocabulary is checked before anything is sent.
+    expect(c.calls).toHaveLength(1)
+  })
+
+  it('reads an initiative by name — resolving it first — with its write-up and projects', async () => {
+    const c = client({
+      InitiativesByName: { initiatives: { nodes: [{ id: INITIATIVE_ID, name: 'Open the core' }] } },
+      GetInitiative: {
+        initiative: {
+          ...initiativeNode,
+          content: 'The plan',
+          projects: { nodes: [{ id: 'p-1', name: 'OSS', state: 'started' }] }
+        }
+      }
+    })
+    const res = await run('getInitiative', { initiative: 'Open the core' }, c.impl)
+    expect(c.calls.map((x) => x.op)).toEqual(['InitiativesByName', 'GetInitiative'])
+    expect(c.calls[0]!.variables).toEqual({ name: 'Open the core' })
+    expect(c.calls[1]!.variables).toEqual({ id: INITIATIVE_ID })
+    expect(res).toEqual({ ...projected, content: 'The plan', projects: [{ id: 'p-1', name: 'OSS', state: 'started' }] })
+    // A UUID skips the name lookup and goes straight to the read.
+    const gone = client({ GetInitiative: { initiative: null } })
+    await expect(run('getInitiative', { initiative: INITIATIVE_ID }, gone.impl)).rejects.toThrow(/no initiative/)
+    expect(gone.calls.map((x) => x.op)).toEqual(['GetInitiative'])
+  })
+
+  it('names the initiatives when one name matches several, and says when none does', async () => {
+    const many = client({
+      InitiativesByName: {
+        initiatives: {
+          nodes: [
+            { id: 'i-1', name: 'Core' },
+            { id: 'i-2', name: 'Core' }
+          ]
+        }
+      }
+    })
+    await expect(run('getInitiative', { initiative: 'Core' }, many.impl)).rejects.toThrow(/more than one initiative/)
+    const none = client({ InitiativesByName: { initiatives: { nodes: [] } } })
+    await expect(run('getInitiative', { initiative: 'Core' }, none.impl)).rejects.toThrow(
+      /no initiative named "Core" — see listInitiatives/
+    )
+  })
+
+  it('updates only the fields named, resolving the status and the owner to Linear’s own values', async () => {
+    const c = client({
+      UsersByRef: { users: { nodes: [{ id: USER_ID, displayName: 'dana', email: 'dana@example.test' }] } },
+      InitiativeUpdate: { initiativeUpdate: { success: true, initiative: { ...initiativeNode, status: 'Completed' } } }
+    })
+    const res = await run(
+      'updateInitiative',
+      { initiative: INITIATIVE_ID, status: 'completed', targetDate: '2026-11-30', owner: 'dana', content: '# Plan' },
+      c.impl
+    )
+    expect(c.calls.map((x) => x.op)).toEqual(['UsersByRef', 'InitiativeUpdate'])
+    expect(c.calls[1]!.variables).toEqual({
+      id: INITIATIVE_ID,
+      input: { content: '# Plan', status: 'Completed', targetDate: '2026-11-30', ownerId: USER_ID }
+    })
+    expect(res).toEqual({
+      updated: ['content', 'status', 'targetDate', 'ownerId'],
+      initiative: { ...projected, status: 'Completed' }
+    })
+  })
+
+  it('refuses an update that changes nothing, and surfaces a refused write as Linear reported it', async () => {
+    const idle = client({})
+    await expect(run('updateInitiative', { initiative: INITIATIVE_ID }, idle.impl)).rejects.toThrow(
+      /pass at least one field to change/
+    )
+    expect(idle.calls).toHaveLength(0)
+    const refused = client({ InitiativeUpdate: { initiativeUpdate: { success: false, initiative: null } } })
+    await expect(run('updateInitiative', { initiative: INITIATIVE_ID, name: 'New' }, refused.impl)).rejects.toThrow(
+      /Linear did not update initiative/
+    )
+  })
+
+  it('answers a grant without the initiative scope with the reconnect instruction', async () => {
+    const denied = client({
+      ListInitiatives: () => {
+        throw new Error('linear rejected the request: Access denied')
+      }
+    })
+    await expect(run('listInitiatives', {}, denied.impl)).rejects.toThrow(
+      /reconnect the Linear workspace to grant initiatives access. Linear said: linear rejected the request: Access denied/
+    )
+    // The name resolution a write starts with is refused the same way.
+    const deniedName = client({
+      InitiativesByName: () => {
+        throw new Error('linear responded 401')
+      }
+    })
+    await expect(run('updateInitiative', { initiative: 'Core', name: 'New' }, deniedName.impl)).rejects.toThrow(
+      /reconnect the Linear workspace to grant initiatives access/
+    )
+    // Anything that is not a permission refusal is passed through untouched.
+    const broke = client({
+      ListInitiatives: () => {
+        throw new Error('linear responded 500')
+      }
+    })
+    await expect(run('listInitiatives', {}, broke.impl)).rejects.toThrow(/^linear responded 500$/)
   })
 })

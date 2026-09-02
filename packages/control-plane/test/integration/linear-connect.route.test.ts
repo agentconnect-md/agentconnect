@@ -223,7 +223,7 @@ describe('the connect funnel — nothing exists before the callback (§7.1)', ()
     expect(url.searchParams.get('client_id')).toBe(APP.clientId)
     expect(url.searchParams.get('state')).toBe(id)
     expect(url.searchParams.get('actor')).toBe('app')
-    expect(url.searchParams.get('scope')).toBe('read,write,app:assignable,app:mentionable')
+    expect(url.searchParams.get('scope')).toBe('read,write,app:assignable,app:mentionable,initiative:write')
     expect(url.searchParams.get('redirect_uri')).toBe('https://cp.example.test/v1/integrations/linear/oauth/callback')
 
     // NO Bot and NO Integration until the callback — `IntegrationStatus` has no pending value, and
