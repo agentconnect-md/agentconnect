@@ -624,6 +624,13 @@ const LINEAR_ACTOR_LOOKUP_MS = 1500
  *  (§10.1) is downstream of the delivery this read is part of. */
 const LINEAR_ISSUE_FACTS_MS = 2500
 
+/** The relay retries a delivery every 5 s, five times, then drops it: an ack slower than one
+ *  try is logged with the stage it sat in, so a silent stall names its step. */
+const RELAY_ACK_SLOW_MS = 4000
+
+/** The step a relay delivery is in, read by the slow-ack watchdog when it fires. */
+type RelayAckTrace = { stage: string }
+
 export class Daemon {
   // This daemon's workspace execution plane. Owned per instance, so two daemons in one process
   // (the test suite, and a k8s daemon beside a local one) cannot inherit each other's git runner,
@@ -956,7 +963,11 @@ export class Daemon {
           ...initialLinearTurnState(),
           ...(ctx.egress ? { conn: ctx.egress as LinearEgressPort } : {})
         }),
-        apply: (p, action) => applyLinearAction({ plan: p.plan }, turnState<LinearTurnState>(p), action as LinearAction)
+        apply: (p, action) =>
+          applyLinearAction({ plan: p.plan }, turnState<LinearTurnState>(p), action as LinearAction, {
+            appendTranscript: async (row) => await this.store.appendTranscript(row),
+            monotonicTs: () => monotonicTs()
+          })
       })
       return registry
     })()
@@ -6299,7 +6310,12 @@ export class Daemon {
    * replay the original ack (so the relay settles) without re-dispatching. For hooks
    * the same replay absorbs a GitHub/manual REDELIVERY of the same deliveryKey.
    */
-  private handleRelayMsg(msg: RdMsg, chat: (event: RdChatEvent) => void): RdAck | Promise<RdAck> {
+  private handleRelayMsg(
+    msg: RdMsg,
+    chat: (event: RdChatEvent) => void,
+    // A re-entry after a won duty claim carries the delivery's one trace; only the first entry watches.
+    inherited?: RelayAckTrace
+  ): RdAck | Promise<RdAck> {
     const dedupKey = `${msg.source === 'im' ? `${msg.botId}:` : ''}${msg.sessionKey}:${msg.msgId}`
     const prior = this.relayMsgAcks.get(dedupKey)
     if (prior) {
@@ -6315,10 +6331,14 @@ export class Daemon {
     // this member does not hold is claimed on receipt — winning serves it here,
     // losing answers `not_holder` so the router re-routes. The verdict is NOT
     // cached in relayMsgAcks: a later grant must not keep replaying a refusal.
+    const trace: RelayAckTrace = inherited ?? { stage: 'received' }
+    const watch = (task: Promise<RdAck>): Promise<RdAck> =>
+      inherited ? task : this.watchRelayAck(dedupKey, msg, trace, task)
     if (this.dutyCoordinator.dutyEnforced() && !this.duties.holdsAgent(msg.agentId)) {
+      trace.stage = 'duty-claim'
       const task = this.dutyCoordinator.claimDutyForTrigger(msg.agentId).then((claimed) => {
         this.pendingRelayMsgAcks.delete(dedupKey)
-        if (claimed.granted) return this.handleRelayMsg(msg, chat)
+        if (claimed.granted) return this.handleRelayMsg(msg, chat, trace)
         return {
           msgId: msg.msgId,
           accepted: false,
@@ -6326,8 +6346,9 @@ export class Daemon {
           ...(claimed.holder ? { holderDaemonId: claimed.holder } : {})
         }
       })
-      this.pendingRelayMsgAcks.set(dedupKey, task)
-      return task
+      const watched = watch(task)
+      this.pendingRelayMsgAcks.set(dedupKey, watched)
+      return watched
     }
 
     const ack =
@@ -6335,7 +6356,7 @@ export class Daemon {
         ? this.dispatchRelayOp(msg, chat)
         : msg.source === 'platform_action'
           ? this.handleRelayPlatformAction(msg)
-          : this.handleRelayIm(msg)
+          : this.handleRelayIm(msg, trace)
     // Every relay ack now settles async; park it like a hook admission so a retransmit
     // joins the same in-flight ack instead of re-dispatching.
     const task = ack
@@ -6349,8 +6370,31 @@ export class Daemon {
         this.relayMsgAcks.set(dedupKey, settled)
         return settled
       })
-    this.pendingRelayMsgAcks.set(dedupKey, task)
-    return task
+    const watched = watch(task)
+    this.pendingRelayMsgAcks.set(dedupKey, watched)
+    return watched
+  }
+
+  // Test seam for the slow-ack threshold; production keeps the constant.
+  private relayAckSlowMs = RELAY_ACK_SLOW_MS
+
+  /** Log a relay ack that outlives one relay try, naming the stage it sat in — once when the
+   *  threshold passes and once when the ack finally lands. */
+  private watchRelayAck(dedupKey: string, msg: RdMsg, trace: RelayAckTrace, task: Promise<RdAck>): Promise<RdAck> {
+    const startedAt = Date.now()
+    const what = `rd/msg ${dedupKey} (${msg.source === 'im' ? msg.payload.platform : msg.source})`
+    const timer = setTimeout(
+      () => this.log.warn(`relay: ${what} unacknowledged after ${Date.now() - startedAt}ms — stage ${trace.stage}`),
+      this.relayAckSlowMs
+    )
+    timer.unref?.()
+    return task.finally(() => {
+      clearTimeout(timer)
+      const elapsed = Date.now() - startedAt
+      if (elapsed >= this.relayAckSlowMs) {
+        this.log.warn(`relay: ${what} acknowledged after ${elapsed}ms — last stage ${trace.stage}`)
+      }
+    })
   }
 
   /**
@@ -6481,11 +6525,12 @@ export class Daemon {
     return true
   }
 
-  private async handleRelayIm(msg: RdMsgIm): Promise<RdAck> {
+  private async handleRelayIm(msg: RdMsgIm, trace: RelayAckTrace = { stage: 'received' }): Promise<RdAck> {
     if (!this.agents.get(msg.agentId)) {
       this.log.warn(`relay: rd/msg(im) for unknown agent ${msg.agentId} — dropping`)
       return { msgId: msg.msgId, accepted: false, reason: 'no_agent' }
     }
+    trace.stage = 'normalize'
     const normalized = fromPlatformMessage(msg.payload, this.transportScopeForIntegrationIds([msg.integrationId]))
     // Direct ingress resolves provider ids before onInbound(); HTTP ingress
     // bypasses that callback, but its send-only connection exposes the same API.
@@ -6530,7 +6575,9 @@ export class Daemon {
     // Off-conversation event so provider egress remains daemon-owned. Discover it
     // before the last-hop gate drops it; the notice below then uses the send-only
     // Feishu connection without ever exposing the app secret to the relay.
+    trace.stage = 'discover-conversations'
     await this.discoverConversations(normalized, [msg.integrationId])
+    trace.stage = 'gate'
     // Conversation gating (§14) last-hop backstop: the relay arbitrates HTTP-bot
     // routing, but a stale relay route snapshot must not activate a private agent in
     // an Off conversation. Admission = a bindRule scoped to this conversation (the
@@ -6568,6 +6615,7 @@ export class Daemon {
       msg.agentId,
       normalized.transportScope
     )
+    trace.stage = 'mute'
     if (await this.commands.isSessionMuted(muteKey)) {
       if (normalized.trigger !== 'mention') {
         await this.recordUnrouted(normalized)
@@ -6580,7 +6628,9 @@ export class Daemon {
     // §7.4 ingress strategy: the platform's own module shapes the prompt, records its session
     // metadata, and may settle the delivery itself. Absent ⇒ the shared path, byte for byte.
     const ingress = this.relayIngressStrategies.get(normalized.platform)
-    const prepared = ingress ? await ingress.prepare(msg, normalized) : 'dispatch'
+    trace.stage = `prepare:${normalized.platform}`
+    const prepared = ingress ? await ingress.prepare(msg, normalized, trace) : 'dispatch'
+    trace.stage = 'dispatch'
     // `settled` ⇒ the platform answered it itself. `refused` ⇒ it could not record the
     // delivery, so nothing ran and the provider must send it again.
     if (prepared === 'settled') return { msgId: msg.msgId, accepted: true }
@@ -6607,6 +6657,7 @@ export class Daemon {
       ...(ingress?.requireDurable ? { requireDurable: true } : {}),
       ...(ingress?.receiptId ? { receiptId: ingress.receiptId(normalized) } : {}),
       onAdmission: async (result) => {
+        trace.stage = 'admitted'
         if (result.accepted && !result.duplicate) await onAdmitted(msg, normalized, busy)
         // A durability refusal is the ONE outcome the provider must send again: nothing was
         // recorded, so nothing will replay it either. Every other non-acceptance is a
@@ -6644,7 +6695,11 @@ export class Daemon {
     {
       /** Shape the delivery. `settled` ⇒ the platform answered it and no ACP turn follows;
        *  `refused` ⇒ it could not be recorded, so the provider must deliver it again. */
-      prepare(msg: RdMsgIm, normalized: NormalizedMessage): Promise<'dispatch' | 'settled' | 'refused'>
+      prepare(
+        msg: RdMsgIm,
+        normalized: NormalizedMessage,
+        trace: RelayAckTrace
+      ): Promise<'dispatch' | 'settled' | 'refused'>
       /** Run once, INSIDE dispatch's durable admission fence, the first time this delivery is
        *  admitted. Rejecting refuses the delivery — nothing runs that could not be recorded. */
       onAdmitted?(msg: RdMsgIm, normalized: NormalizedMessage, busy: boolean): Promise<void>
@@ -6659,7 +6714,7 @@ export class Daemon {
     [
       'linear',
       {
-        prepare: async (msg, normalized) => await this.prepareLinearDelivery(msg, normalized),
+        prepare: async (msg, normalized, trace) => await this.prepareLinearDelivery(msg, normalized, trace),
         onAdmitted: async (msg, normalized, busy) => this.onLinearAdmitted(msg, normalized, busy),
         requireDurable: true,
         receiptId: (normalized) => linearDeliveryReceiptId(stableMessageId(normalized))
@@ -6676,13 +6731,15 @@ export class Daemon {
    */
   private async prepareLinearDelivery(
     msg: RdMsgIm,
-    normalized: NormalizedMessage
+    normalized: NormalizedMessage,
+    trace: RelayAckTrace = { stage: 'received' }
   ): Promise<'dispatch' | 'settled' | 'refused'> {
     const ext = readLinearExt(normalized)
     if (!ext) {
       this.log.warn(`linear: delivery ${msg.msgId} carries no adapter bag — dispatching the raw text`)
       return 'dispatch'
     }
+    trace.stage = 'linear:receipt'
     // §4.5's "the daemon's durable inbox absorbs the rest": a delivery this daemon already
     // served is dropped here, before anything reaches the feed. The ordinary dispatch row
     // cannot answer that question — core deletes it the moment the turn settles, while
@@ -6722,6 +6779,7 @@ export class Daemon {
       // The §8 header names the delegator, and a `created` event carries only `creatorId`: a
       // bounded lookup fills the name the relay could not, the cache first. A miss keeps the id.
       if (!normalized.sender.name) {
+        trace.stage = 'linear:actor-name'
         const name = await this.linearActorName(conn, normalized.sender.id)
         if (name) normalized.sender = { ...normalized.sender, name }
       }
@@ -6729,6 +6787,7 @@ export class Daemon {
     // §13 layer 3: one deadline-bounded read, off the send queue so it can never sit ahead of the
     // ack, fills the trusted context block with the coordinates the Linear tool family takes. A
     // miss loses the block, never the turn — the header still names the issue from the bag.
+    trace.stage = 'linear:issue-facts'
     const facts = conn && ext.issueId ? await this.linearIssueFacts(conn, ext.issueId) : undefined
     applyLinearMessageStrategy(normalized, facts)
     // §9.2's fast path for a team created after the install: the label is the TEAM's, so it comes

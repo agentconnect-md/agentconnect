@@ -143,7 +143,10 @@ describe('LinearConverger — §5.1 event translation', () => {
   it('settles the turn with one response carrying the final answer', () => {
     const c = conv('low')
     c.onUpdate(chunk('The fix is in place.'))
-    expect(c.onFinal()).toEqual([{ kind: 'activity', type: 'response', body: 'The fix is in place.' }])
+    expect(c.onFinal()).toEqual([
+      { kind: 'activity', type: 'response', body: 'The fix is in place.' },
+      { kind: 'transcript', text: 'The fix is in place.' }
+    ])
   })
 
   it('settles a silent turn with a bounded response — a response is what completes the session', () => {
@@ -231,20 +234,20 @@ describe('LinearConverger — §5.2 output modes', () => {
     return out
   }
 
-  it('none is truly silent — no activity of any kind, not even the settling response', () => {
-    expect(script(conv('none'))).toEqual([])
+  it('none is truly silent on the feed — the answer still reaches the transcript, nothing else does', () => {
+    expect(script(conv('none'))).toEqual([{ kind: 'transcript', text: 'Fixed the flake.' }])
   })
 
   it('minimal posts the response only', () => {
-    expect(types(script(conv('minimal')))).toEqual(['response'])
+    expect(types(script(conv('minimal')))).toEqual(['response', 'transcript'])
   })
 
   it('low — the default — already includes progress thoughts, actions and plan', () => {
-    expect(types(script(conv('low')))).toEqual(['thought', 'action', 'plan', 'response'])
+    expect(types(script(conv('low')))).toEqual(['thought', 'action', 'plan', 'response', 'transcript'])
   })
 
   it('medium adds the ephemeral reasoning thought', () => {
-    expect(types(script(conv('medium')))).toEqual(['thought', 'action', 'thought', 'plan', 'response'])
+    expect(types(script(conv('medium')))).toEqual(['thought', 'action', 'thought', 'plan', 'response', 'transcript'])
   })
 
   it('high adds tool results to the action row', () => {
@@ -465,7 +468,7 @@ describe('LinearConverger — final answer, footer, failure ordering', () => {
   it('settles once: nothing follows the response or the error', () => {
     const settled = conv('low')
     settled.onUpdate(chunk('done'))
-    expect(settled.onFinal()).toHaveLength(1)
+    expect(types(settled.onFinal())).toEqual(['response', 'transcript'])
     expect(settled.onFinal()).toEqual([])
     expect(settled.onUpdate(chunk('late'))).toEqual([])
     expect(settled.flushBuffered()).toEqual([])
@@ -663,6 +666,60 @@ describe('applyLinearAction', () => {
     expect(port.activities).toEqual([])
     expect(state.activityBudget).toBe(initialLinearTurnState().activityBudget)
   })
+
+  it('records the transcript action under the session coordinates, posting nothing to the feed', async () => {
+    const port = new FakePort()
+    const rows: { channel: string; thread: string; ts: string; sender: string; kind: string; text: string }[] = []
+    const host = { appendTranscript: async (row: (typeof rows)[number]) => void rows.push(row), monotonicTs: () => '7' }
+    const turn = {
+      conn: port,
+      plan: {
+        thread: 'agent-session-uuid',
+        platform: 'linear',
+        agentId: 'a1',
+        sessionKey: 'k1',
+        transcriptChannel: 'team-1scope',
+        statusThread: 'agent-session-uuid'
+      }
+    }
+    const state = initialLinearTurnState()
+    // The footer chrome rides the response `body`; the transcript row is the answer alone.
+    await applyLinearAction(turn, state, { kind: 'activity', type: 'response', body: 'done\n\nsent by agent' }, host)
+    await applyLinearAction(turn, state, { kind: 'transcript', text: 'done' }, host)
+    expect(rows).toEqual([
+      { channel: 'team-1scope', thread: 'agent-session-uuid', ts: '7', sender: 'a1', kind: 'text', text: 'done' }
+    ])
+    expect(port.activities.map((a) => a.activity)).toEqual([{ type: 'response', body: 'done\n\nsent by agent' }])
+    expect(state.activityBudget).toBe(initialLinearTurnState().activityBudget)
+  })
+
+  it('records the transcript with no Linear port at all — the transcript is core’s, not the feed’s', async () => {
+    const rows: unknown[] = []
+    const host = { appendTranscript: async (row: unknown) => void rows.push(row), monotonicTs: () => '7' }
+    const turn = {
+      plan: {
+        platform: 'linear',
+        agentId: 'a1',
+        sessionKey: 'k1',
+        transcriptChannel: 'team-1scope',
+        statusThread: 'agent-session-uuid'
+      }
+    }
+    await applyLinearAction(turn, initialLinearTurnState(), { kind: 'transcript', text: 'done' }, host)
+    expect(rows).toEqual([
+      { channel: 'team-1scope', thread: 'agent-session-uuid', ts: '7', sender: 'a1', kind: 'text', text: 'done' }
+    ])
+  })
+
+  it('records nothing when the turn carries no transcript coordinates or no host', async () => {
+    const port = new FakePort()
+    const rows: unknown[] = []
+    const host = { appendTranscript: async (row: unknown) => void rows.push(row), monotonicTs: () => '7' }
+    await applyLinearAction(linearTurn(port), initialLinearTurnState(), { kind: 'transcript', text: 'done' }, host)
+    await applyLinearAction(linearTurn(port), initialLinearTurnState(), { kind: 'transcript', text: 'done' })
+    expect(rows).toEqual([])
+    expect(port.activities).toEqual([])
+  })
 })
 
 describe('LinearConverger — §10.3 code-host links', () => {
@@ -686,7 +743,7 @@ describe('LinearConverger — §10.3 code-host links', () => {
     c.onUpdate(toolDone({ toolCallId: 't1' }))
     c.onUpdate(chunk('Done: https://github.com/example-org/example-repo/pull/7'))
     const actions = c.onFinal()
-    expect(types(actions)).toEqual(['action', 'external-urls', 'response'])
+    expect(types(actions)).toEqual(['action', 'external-urls', 'response', 'transcript'])
     const links = actions.find((a) => a.kind === 'external-urls')
     expect(links).toEqual({
       kind: 'external-urls',
@@ -697,9 +754,9 @@ describe('LinearConverger — §10.3 code-host links', () => {
   it('emits no link update when the turn named none, and none at all in minimal mode', () => {
     const quiet = conv('low')
     quiet.onUpdate(chunk('nothing to link here'))
-    expect(types(quiet.onFinal())).toEqual(['response'])
+    expect(types(quiet.onFinal())).toEqual(['response', 'transcript'])
     const minimal = conv('minimal')
     minimal.onUpdate(chunk('see https://github.com/example-org/example-repo/pull/7'))
-    expect(types(minimal.onFinal())).toEqual(['response'])
+    expect(types(minimal.onFinal())).toEqual(['response', 'transcript'])
   })
 })

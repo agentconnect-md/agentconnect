@@ -551,6 +551,17 @@ the invariant-preserving behavior, not a bug; the console flags
 `output.mode: none` on an agent with a Linear integration as a
 misconfiguration warning.
 
+The answer also reaches the **console transcript**, as every platform's reply
+does: beside the footer-bearing `response`, the converger emits a
+`transcript` action carrying the bare final text, and the applier appends it
+under the session's transcript coordinates. It is independent of the feed —
+`none` emits the transcript action and nothing else (that is what "transcript
+only" means), a turn with no Linear port still records it, and a genuinely
+empty final records nothing (the bounded placeholder is Linear chrome, not
+something the agent said). Thoughts, actions, the plan and the footer stay
+Linear's own — the console already shows the reasoning and tool rows from the
+ACP stream.
+
 ### 5.3 Rate limiting
 
 Linear allows 5 000 requests/hour per OAuth app per workspace (per its
@@ -1569,6 +1580,15 @@ none` skips it along with everything else Linear-visible. There is **no
    toggle**: the earlier "integration-level toggle (default on)" was dropped
    for the smaller surface — an integration that must not move issues has no
    such case today, and one can be added when it does.
+   The relay retries an unacknowledged forward every 5 s, five times, then
+   drops it — silently from the daemon's point of view. So the daemon's relay
+   path carries a **slow-ack watchdog**: a delivery whose ack outlives one
+   relay try is logged with the stage it sat in (`normalize`,
+   `discover-conversations`, `gate`, `mute`, `prepare:linear` →
+   `linear:receipt` / `linear:actor-name` / `linear:issue-facts`, `dispatch`,
+   `admitted`, or `duty-claim`), and again with the elapsed time when the ack
+   finally lands, so a stall names its step instead of surfacing only as the
+   relay's "no ack after 5 tries" drop.
 3. **PR links.** The converger collects pull/merge-request URLs from the
    agent's own message text over the turn (`codeHostLinks`: `PR #123` for a
    GitHub pull, `MR !45` for a GitLab merge request, each URL once) and

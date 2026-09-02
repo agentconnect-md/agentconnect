@@ -42,6 +42,8 @@ export type LinearAction =
   | { kind: 'plan'; entries: LinearPlanEntry[] }
   | { kind: 'external-urls'; add: LinearExternalUrl[] }
   | { kind: 'attachment'; input: LinearAttachmentInput }
+  // The bare answer for the console transcript, emitted whether or not a `response` posts.
+  | { kind: 'transcript'; text: string }
 
 /** One `attachmentCreate` input — the issue's Resources entry. Linear keys it on `(issueId, url)`,
  *  so re-sending the same URL updates the entry rather than adding a second one. */
@@ -93,7 +95,23 @@ export interface LinearTurn {
     platform: string
     agentId: string
     sessionKey: string
+    /** The console transcript coordinates the settling answer is recorded under. */
+    transcriptChannel?: string
+    statusThread?: string
   }
+}
+
+/** What the applier needs from core: the transcript, which is not platform-shaped. */
+export interface LinearTurnHost {
+  appendTranscript(row: {
+    channel: string
+    thread: string
+    ts: string
+    sender: string
+    kind: 'text'
+    text: string
+  }): Promise<void>
+  monotonicTs(): string
 }
 
 /** Linear's opaque per-turn state (§5): the hard chrome budget and the last plan
@@ -490,8 +508,12 @@ export class LinearConverger {
     if (this.settled) return []
     this.settled = true
     if (isNoResponseBody(this.sentinelTail.trim())) return this.discard()
-    if (!this.policy.response) return this.discard()
     const final = this.collector.finalText(true)?.trim() ?? ''
+    // `none` is transcript-only (§5.2): the answer is still recorded, the feed still sees nothing.
+    if (!this.policy.response) {
+      this.discard()
+      return final ? [{ kind: 'transcript', text: final }] : []
+    }
     // The residual narration IS the final answer on an append-only feed, so it is never
     // re-posted as a thought here; the trailing ephemeral reasoning would be replaced by the
     // response on arrival, so it is dropped rather than paying an API call.
@@ -505,6 +527,8 @@ export class LinearConverger {
       out.push({ kind: 'activity', type: 'thought', body: `… and ${this.droppedActions} more tool calls` })
     }
     out.push({ kind: 'activity', type: 'response', body: this.responseBody(final, attribution) })
+    // A silent turn's bounded placeholder is Linear chrome, not something the agent said.
+    if (final) out.push({ kind: 'transcript', text: final })
     return out
   }
 
@@ -716,8 +740,24 @@ function isSettlingActivity(action: Extract<LinearAction, { kind: 'activity' }>)
 export async function applyLinearAction<TTurn extends LinearTurn>(
   turn: TTurn,
   state: LinearTurnState,
-  action: LinearAction
+  action: LinearAction,
+  host?: LinearTurnHost
 ): Promise<void> {
+  // The transcript is core's, not Linear's: the answer is recorded under the session's
+  // coordinates whether or not a Linear port exists — the feed chrome stays Linear's own.
+  if (action.kind === 'transcript') {
+    const { transcriptChannel, statusThread } = turn.plan
+    if (!host || !transcriptChannel || !statusThread) return
+    await host.appendTranscript({
+      channel: transcriptChannel,
+      thread: statusThread,
+      ts: host.monotonicTs(),
+      sender: turn.plan.agentId,
+      kind: 'text',
+      text: action.text
+    })
+    return
+  }
   const port = state.conn ?? (turn.conn as LinearEgressPort | undefined)
   const sessionId = turn.plan.thread
   if (!port || !sessionId) return

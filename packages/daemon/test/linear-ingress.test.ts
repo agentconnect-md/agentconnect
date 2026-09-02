@@ -1075,3 +1075,45 @@ describe('§5.1 the permission gate reaches the feed', () => {
     await booted.daemon.stop()
   })
 })
+
+describe('§10.1 a follow-up and the acknowledgement watchdog', () => {
+  it('acks a prompted follow-up after the first turn settled and runs a second turn', async () => {
+    const { daemon, posted, turnSettled } = await boot()
+    expect(await im(daemon, delivery({}, { event: 'created', issueId: 'issue-1' }))).toEqual({
+      msgId: `linear:${SESSION}:created`,
+      accepted: true
+    })
+    await vi.waitFor(() => expect(acks(posted).length).toBe(1))
+    await turnSettled()
+    // The relay keys a follow-up on the activity id, on the same session thread.
+    const followUp = delivery(
+      { msgId: 'linear:activity-1', traceId: 'linear:activity-1', text: 'and the second half?' },
+      { event: 'prompted', issueId: 'issue-1' }
+    )
+    followUp.msgId = 'linear:activity-1'
+    expect(await im(daemon, followUp)).toEqual({ msgId: 'linear:activity-1', accepted: true })
+    await vi.waitFor(() => expect(acks(posted).length).toBe(2))
+    await turnSettled()
+    // The follow-up neither reopens the issue state nor re-attaches the session resource.
+    expect(acks(posted)[1]!.sessionId).toBe(SESSION)
+    await daemon.stop()
+  })
+
+  it('names the stage an acknowledgement is stuck in once it outlives one relay try', async () => {
+    const { daemon, turnSettled } = await boot()
+    ;(daemon as any).relayAckSlowMs = 20
+    const warn = vi.spyOn((daemon as any).log, 'warn')
+    const served = (daemon as any).linearDeliveryServed.bind(daemon)
+    ;(daemon as any).linearDeliveryServed = async (normalized: unknown) => {
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      return served(normalized)
+    }
+    const ack = await (daemon as any).handleRelayMsg(delivery({}, { event: 'created', issueId: 'issue-1' }), () => {})
+    expect(ack).toEqual({ msgId: `linear:${SESSION}:created`, accepted: true })
+    const lines = warn.mock.calls.map((c) => String(c[0]))
+    expect(lines.some((l) => /unacknowledged after \d+ms — stage linear:receipt/.test(l))).toBe(true)
+    expect(lines.some((l) => /acknowledged after \d+ms — last stage admitted/.test(l))).toBe(true)
+    await turnSettled()
+    await daemon.stop()
+  })
+})
