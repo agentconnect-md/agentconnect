@@ -6795,8 +6795,6 @@ export class Daemon {
     }
     const conn = this.lnConnByIntegration.get(msg.integrationId)
     if (conn) {
-      // §12: the one association a comment can be checked against — the issue this session sits on.
-      if (ext.issueId) conn.noteSessionIssue(ext.agentSessionId, ext.issueId)
       // Sender and mentions resolve off the hot path, as on every platform whose messages carry
       // ids alone — the session list and its avatars read the cache this fills.
       this.channelNameResolver?.noteMessage(conn, normalized)

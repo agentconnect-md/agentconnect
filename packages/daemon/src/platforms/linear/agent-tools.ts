@@ -867,9 +867,9 @@ async function createIssueComment(client: LinearToolClient, args: Record<string,
   const a = parseArgs(CREATE_ISSUE_COMMENT_ARGS, args)
   const target = await resolveIssue(client, a.issue)
   const id = randomUUID()
-  // On the session's own issue the Resources entry already links this session (§12), so the comment
-  // reads as the app's post; anywhere else — another issue, or a session whose issue this connection
-  // never saw — the footer is the only association a reader gets, every agent posting as one app.
+  // Once the issue's Resources link this session (§12) a comment there reads as the app's post;
+  // anywhere else — another issue, or a session whose Resources write never landed — the footer
+  // is the only association a reader gets, every agent posting as one app.
   const own = call.sessionThread ? client.issueOfSession?.(call.sessionThread) : undefined
   const info = own === target.id ? undefined : await call.attribution?.()
   const body = appendGithubMarkdownChrome(

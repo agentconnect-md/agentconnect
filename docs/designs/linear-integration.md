@@ -1778,14 +1778,22 @@ none` skips it along with everything else Linear-visible. There is **no
   issue has no such entry — nor does a session whose issue this daemon never
   saw delivered — so there the tool appends the same muted footer the settling
   `response` carries (`linearAttributionFooter`, built from the turn's own
-  attribution record and honouring `showFooter`). The association is learned
-  off every delivery: `prepareLinearDelivery` notes the bag's `issueId`
-  against its `agentSessionId` on the connection (`noteSessionIssue`), and
-  the tool compares the resolved target with `issueOfSession(thread)`. In
-  both cases a trailing signature line naming the acting agent is stripped
-  first (agents that had seen the response footer copied it by hand), and the
-  §8 convention tells the model not to sign. Descriptions are untouched: an
-  issue's description is the ticket's own text.
+  attribution record and honouring `showFooter`). The association is a
+  confirmed one, not an inferred one: the applier calls the connection's
+  `noteSessionIssue(thread, issueId)` only after the `attachment` action's
+  `attachmentCreate` returned, so a Resources write that failed (the apply
+  chain logs and swallows it) leaves the session unlinked and its comments
+  footered; the tool compares the resolved target with
+  `issueOfSession(thread)`. Several sessions on one issue — different agents
+  delegated in turn — each add their own Resources entry, titled with the
+  agent, runtime and model, and a comment there is not pinned to one of them
+  by its body; that is accepted as the same reading Linear's own agent
+  integrations give (the session feeds show which one posted it), and it is
+  the trade the no-footer decision makes on purpose. In both cases a
+  trailing signature line naming the acting agent is stripped first (agents
+  that had seen the response footer copied it by hand), and the §8 convention
+  tells the model not to sign. Descriptions are untouched: an issue's
+  description is the ticket's own text.
 
 - Signing secret: relay-only, via the `rc/bot-assign` secrets bag — never in
   daemon specs, logs, or DTOs. Client secret: CP-only. Refresh token:

@@ -615,8 +615,6 @@ describe('§10.1 the pre-spawn acknowledgement', () => {
     expect(dispatched[0]!.standingContext).toContain('- Issue: TEAM-123 (id issue-uuid)')
     expect(dispatched[0]!.standingContext).toContain('- Team: Engineering (key ENG')
     expect(dispatched[0]!.standingContext).toContain('Work the ticket as written')
-    // §12: the connection learned which issue this session sits on, for the comment tool's footer rule.
-    expect([...(daemon as any).lnConnByIntegration.get(INTEGRATION).sessionIssues.values()]).toContain('issue-uuid')
     // Per turn: what the console transcript shows is the header, the URL and the member's words.
     expect(dispatched[0]!.text).not.toContain('issue-uuid')
     expect(dispatched[0]!.text).not.toContain('Work the ticket as written')
