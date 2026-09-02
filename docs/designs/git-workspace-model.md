@@ -291,10 +291,14 @@ primary today. It checks out the tip and carries the **whole** commit history
 `show` or `diff` of a past revision, which needs the session's read-tier fetch
 credential. Measured on a ~1,500-commit repository: ~4 s and 17 MB against 12 MB
 for a depth-1 clone and 30 MB for a full one; `--filter=tree:0` is rejected
-(a path-scoped `git log` fetches trees one round trip at a time). A hardlink
-clone from a primary checkout on the same disk is an optional acceleration when
-one exists, never a dependency; alternates (`--shared`) are never used, because
-a prune in the source breaks every clone that borrows from it.
+(a path-scoped `git log` fetches trees one round trip at a time). The confined tier never clones by hardlink from a primary checkout on the same
+disk: a hardlinked object file is the primary's own inode, and a session granted
+write on its clone's `.git` could reach through it — `chmod`, truncate,
+overwrite — to mutate the primary and every other clone sharing that inode,
+which is exactly the cross-session channel this section removes. A copy or a
+filesystem reflink is an acceptable local acceleration; alternates (`--shared`)
+are never used, because a prune in the source breaks every clone that borrows
+from it.
 
 Layout, one directory per session, removed whole at retirement:
 
