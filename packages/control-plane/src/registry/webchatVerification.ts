@@ -95,6 +95,7 @@ export function createWebchatTokenVerifier(deps: WebchatVerificationDeps): (toke
       ok: true,
       userId: claims.userId,
       user: claims.user,
+      ...(claims.userPicture ? { userPicture: claims.userPicture } : {}),
       agentId: claims.agentId,
       daemonId: agentDaemonId,
       orgId: claims.orgId,

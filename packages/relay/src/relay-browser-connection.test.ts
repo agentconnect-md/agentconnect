@@ -9,6 +9,7 @@ const CHAT = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const AGENT = '11111111-1111-4111-8111-111111111111'
 const DAEMON = '99999999-9999-4999-8999-999999999999'
 const USER = 'ada@example.com'
+const PICTURE = 'https://cdn.example.test/avatars/user-1.png'
 const ENTITLEMENT: WebchatRemoteMcpEntitlement = {
   authorityId: '33333333-3333-4333-8333-333333333333',
   authorityGeneration: 7,
@@ -130,6 +131,10 @@ describe('parseBrowserFrame', () => {
     expect(parseBrowserFrame({ text: 'hi', userId: 'spoofed' }, USER, 'user-1')).toEqual({
       op: { op: 'turn', text: 'hi', user: USER, userId: 'user-1' }
     })
+    // The avatar rides the same verdict, so a browser cannot pick the identity a mirror posts under.
+    expect(
+      parseBrowserFrame({ text: 'hi', userPicture: 'https://evil.example.test/x.png' }, USER, 'user-1', PICTURE)
+    ).toEqual({ op: { op: 'turn', text: 'hi', user: USER, userId: 'user-1', userPicture: PICTURE } })
     // A CP that returns no principal leaves the claim off entirely, rather than
     // inventing one from the handle — the daemon owns that fallback.
     expect(parseBrowserFrame({ text: 'hi' }, USER)).toEqual({ op: { op: 'turn', text: 'hi', user: USER } })

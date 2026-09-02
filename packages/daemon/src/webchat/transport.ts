@@ -50,14 +50,16 @@ import {
 export interface WebchatAuthor {
   id: string
   name: string
+  /** Public avatar URL from the verified verdict — the identity a Slack mirror posts under. */
+  pictureUrl?: string
 }
 
 /** The author a webchat `turn` op names. A relay older than the stable-principal claim sends
  *  only the display handle; falling back to it keeps that relay working, at the cost of the
  *  handle-shaped sender this pairing exists to remove. */
-export function webchatAuthorOf(op: { user?: string; userId?: string }): WebchatAuthor {
+export function webchatAuthorOf(op: { user?: string; userId?: string; userPicture?: string }): WebchatAuthor {
   const name = op.user ?? 'webchat'
-  return { id: op.userId ?? name, name }
+  return { id: op.userId ?? name, name, ...(op.userPicture ? { pictureUrl: op.userPicture } : {}) }
 }
 
 /** Any platform connection a continuation mirror can post through. */
@@ -418,7 +420,15 @@ export class WebchatTransport {
       return { accepted: false, turnId, reason: admission.reason === 'draining' ? 'draining' : 'busy' }
     }
     // Admission owns a serial-queue slot before mirroring and waits for its result before execution.
-    const mirrorText = `[${author.name} via console] ${text}`
+    // Slack renders the mirror under the author's own name and avatar (`chat:write.customize`),
+    // so the body carries no attribution; once the connection has proven that scope missing, and
+    // on every other platform, the `[<user> via console]` prefix keeps the human's words theirs.
+    const slackConn = local.platform === 'slack' ? (conn as SlackConnection) : undefined
+    // Duck-typed: adaptor/test connections implement only the subset they need.
+    const asAuthor =
+      !!slackConn &&
+      !(typeof slackConn.identityCustomizationSuppressed === 'function' && slackConn.identityCustomizationSuppressed())
+    const mirrorText = asAuthor ? text : `[${author.name} via console] ${text}`
     // The mirror takes the SAME two-step shape an ordinary agent reply does:
     // an attributed body post, then a finalizing chat.update stamping the
     // trusted routing claim (author = the target agent, root depth, unaddressed
@@ -436,7 +446,10 @@ export class WebchatTransport {
       // proves the mirror is visible, so undefined takes the failure path too.
       const mirrorId =
         local.platform === 'slack'
-          ? await (conn as SlackConnection).postMessage(local.channel, mirrorText, local.thread || undefined, {
+          ? await slackConn!.postMessage(local.channel, mirrorText, local.thread || undefined, {
+              ...(asAuthor
+                ? { username: author.name, ...(author.pictureUrl ? { icon_url: author.pictureUrl } : {}) }
+                : {}),
               agentAuthorId: agentId
             } satisfies SlackPostOptions)
           : await conn.postMessage(local.channel, mirrorText, local.thread || undefined)

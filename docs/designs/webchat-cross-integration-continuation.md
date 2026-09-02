@@ -218,10 +218,15 @@ session-global stop capability.
 **Mirror human input to the platform before dispatch; project the reply under
 the existing output rules.**
 
-- The **human turn** is posted to the origin thread by the bot, attributed:
-  `[<user> via console] <text>` (exact rendering per-platform via the existing
-  turn-output renderers). This uses the same integration client the session's
-  replies use.
+- The **human turn** is posted to the origin thread by the bot under the console
+  user's identity. On Slack that is the user's own display name and avatar as the
+  per-message `username` / `icon_url` (the same `chat:write.customize` path agent
+  replies use), with the body left as typed; the avatar is the profile picture the
+  Control Plane already knows and travels inside the verified token, never as
+  browser input. Where the platform cannot render a per-message identity — every
+  other platform, and a Slack workspace that has proven the scope missing — the
+  body is attributed instead: `[<user> via console] <text>`. This uses the same
+  integration client the session's replies use.
 - The mirror is an ordinary authenticated platform message, and delivery must
   be PROVEN: only a returned provider message id counts — an undefined result
   (a provider that swallows send failures) takes the same refusal path as an
@@ -565,9 +570,10 @@ session and keeps the read-only view otherwise.
 
 ## 9. Open questions
 
-1. **Mirror rendering** — the exact per-platform rendering of the attributed
-   human turn (`[<user> via console]`) belongs to each platform module's
-   renderer; needs per-platform review (Slack blocks vs Telegram plain text).
+1. **Mirror rendering** — Slack now renders the human turn under the author's
+   own identity (§5.2); the attributed fallback (`[<user> via console]`) remains
+   the rendering everywhere else and still needs per-platform review (Telegram
+   plain text, Discord, Feishu).
 2. **DM-origin sessions** — when the console user is provably the same human
    as the platform DM peer, is the mirror redundant? v1 keeps it (simple,
    honest); a per-turn "don't post to platform" option is future work.

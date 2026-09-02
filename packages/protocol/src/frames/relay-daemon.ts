@@ -148,6 +148,8 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
     // transcript sender so a display-name change never re-identifies past rows.
     // Absent on frames from an older relay; the daemon then falls back to `user`.
     userId: z.string().optional(),
+    // The author's public avatar URL from the verified CP verdict; a Slack mirror posts under it.
+    userPicture: z.string().url().max(2_048).optional(),
     // New browsers allocate this before sending so a pre-ack reconnect can name
     // the exact turn. Optional for older clients; the daemon allocates a fallback.
     turnId: z.string().uuid().optional(),

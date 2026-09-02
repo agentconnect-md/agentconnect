@@ -164,7 +164,7 @@ export interface ConsolidatedGroup {
  *  authorship travels separately in message metadata. */
 export interface SlackPostOptions {
   username?: string
-  /** Public https image URL for the message avatar (the agent's icon). */
+  /** Public https image URL for the message avatar (the agent's icon, or a console author's). */
   icon_url?: string
   /** Stable AgentConnect author identity for first-class agent thread events.
    *  Slack's bot_id identifies the shared app, not the individual agent, so this
@@ -1264,6 +1264,11 @@ export class SlackConnection implements PlatformConnection {
       }
     }
     return this.app.client.chat.postMessage(payload)
+  }
+
+  /** True while Slack has proven this installation lacks `chat:write.customize` — a per-message identity would be dropped. */
+  identityCustomizationSuppressed(): boolean {
+    return Date.now() < this.customUsernameRetryAt
   }
 
   /** Shared chat.postMessage boundary with optional per-message identity. */

@@ -23,6 +23,8 @@ export interface WebchatTokenClaims {
   userId: string
   /** Display handle for the transcript author line. */
   user: string
+  /** Public avatar URL, when the profile has one — the identity a platform mirror posts under. */
+  userPicture?: string
   agentId: string
   orgId: string
   conversationId: string
@@ -51,6 +53,7 @@ export class WebchatTokenService {
   async mint(claims: WebchatTokenClaims): Promise<string> {
     return new SignJWT({
       user: claims.user,
+      ...(claims.userPicture ? { userPicture: claims.userPicture } : {}),
       agentId: claims.agentId,
       orgId: claims.orgId,
       conversationId: claims.conversationId,
@@ -67,7 +70,7 @@ export class WebchatTokenService {
   async verify(token: string): Promise<WebchatTokenClaims | null> {
     try {
       const { payload } = await jwtVerify(token, this.key, { algorithms: ['HS256'] })
-      const { sub, user, agentId, orgId, conversationId, privateSessionOwnerIdentity } = payload as Record<
+      const { sub, user, userPicture, agentId, orgId, conversationId, privateSessionOwnerIdentity } = payload as Record<
         string,
         unknown
       >
@@ -83,6 +86,7 @@ export class WebchatTokenService {
       return {
         userId: sub,
         user: typeof user === 'string' ? user : sub,
+        ...(typeof userPicture === 'string' ? { userPicture } : {}),
         agentId,
         orgId,
         conversationId: conversationId.toLowerCase(),

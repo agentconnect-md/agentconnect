@@ -90,6 +90,8 @@ export interface RelayBrowserConnDeps {
   /** The author's stable CP principal (from the same verdict). Recipients record it as
    *  the transcript sender, so `user` staying mutable costs nothing. */
   userId?: string
+  /** The author's public avatar URL (from the same verdict); a Slack mirror posts under it. */
+  userPicture?: string
   /** Session-targeted continuation: the CP-verified target ACP session id from
    *  the verdict, stamped verbatim onto every rd/msg. Never browser input. */
   targetSessionId?: string
@@ -125,7 +127,12 @@ function uuidArray(value: unknown, max: number): string[] | undefined {
 }
 
 /** Parse a browser envelope into a webchat op (+ targeting), or null if unrecognized. */
-export function parseBrowserFrame(msg: unknown, user: string, userId?: string): ParsedBrowserOp | null {
+export function parseBrowserFrame(
+  msg: unknown,
+  user: string,
+  userId?: string,
+  userPicture?: string
+): ParsedBrowserOp | null {
   if (typeof msg !== 'object' || msg === null) return null
   const m = msg as Record<string, unknown>
   // A bare message envelope (no type) or {type:'message', ...} is a turn.
@@ -136,6 +143,7 @@ export function parseBrowserFrame(msg: unknown, user: string, userId?: string): 
       text: typeof m.text === 'string' ? m.text : '',
       user,
       ...(userId ? { userId } : {}),
+      ...(userPicture ? { userPicture } : {}),
       ...(m.turnId !== undefined ? { turnId: m.turnId } : {}),
       ...(mentions ? { mentions } : {}),
       ...(m.attachments !== undefined ? { attachments: m.attachments } : {}),
@@ -277,7 +285,7 @@ export class RelayBrowserConnection implements ChatSink {
       this.send({ type: 'error', message: 'invalid frame' })
       return
     }
-    const op = parseBrowserFrame(parsed, this.deps.user, this.deps.userId)
+    const op = parseBrowserFrame(parsed, this.deps.user, this.deps.userId, this.deps.userPicture)
     if (!op) {
       this.send({ type: 'error', message: 'unrecognized frame' })
       return

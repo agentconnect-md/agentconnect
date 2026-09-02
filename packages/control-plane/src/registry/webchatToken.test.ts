@@ -19,6 +19,12 @@ describe('WebchatTokenService', () => {
     expect(await svc.verify(token)).toEqual(CLAIMS)
   })
 
+  it("round-trips the author's avatar URL when the profile has one", async () => {
+    const svc = new WebchatTokenService(PEPPER)
+    const claims = { ...CLAIMS, userPicture: 'https://cdn.example.test/avatars/user-1.png' }
+    expect(await svc.verify(await svc.mint(claims))).toEqual(claims)
+  })
+
   it('round-trips an exact private-session owner proof', async () => {
     const svc = new WebchatTokenService(PEPPER)
     const claims = { ...CLAIMS, privateSessionOwnerIdentity: 'slack:T1:U1' }
