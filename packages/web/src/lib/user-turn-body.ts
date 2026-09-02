@@ -1,9 +1,11 @@
 import type { UserTurnBody } from '@agentconnect.md/protocol'
+import { CodehostTurnFacts, LinearTurnFacts } from '@agentconnect.md/protocol/user-turn-body'
 
 /**
- * The `UserTurnBody` behind a text row (transcript-full-tool-body.md §9), decoded fail-closed:
- * a row from before the body existed, a tool body, or a corrupt string yields nothing rather
- * than a fold with nothing sensible in it. The console never reads `prompt`; only the facts.
+ * The `UserTurnBody` behind a text row (transcript-full-tool-body.md §9), decoded fail-closed
+ * against the protocol's own schemas: a row from before the body existed, a tool body, a corrupt
+ * string, or a fact of the wrong shape yields no fold rather than one that throws when opened.
+ * The console never reads `prompt`; only the facts, each validated whole.
  */
 export function parseUserTurnBody(body: string | undefined): UserTurnBody | undefined {
   if (!body) return undefined
@@ -16,12 +18,10 @@ export function parseUserTurnBody(body: string | undefined): UserTurnBody | unde
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
   const { linear, codehost } = parsed as { linear?: unknown; codehost?: unknown }
   const facts: UserTurnBody = {}
-  if (linear && typeof linear === 'object' && typeof (linear as { issue?: unknown }).issue === 'object') {
-    facts.linear = linear as UserTurnBody['linear']
-  }
-  if (codehost && typeof codehost === 'object' && typeof (codehost as { provider?: unknown }).provider === 'string') {
-    facts.codehost = codehost as UserTurnBody['codehost']
-  }
+  const linearFacts = LinearTurnFacts.safeParse(linear)
+  if (linearFacts.success) facts.linear = linearFacts.data
+  const codehostFacts = CodehostTurnFacts.safeParse(codehost)
+  if (codehostFacts.success) facts.codehost = codehostFacts.data
   return facts.linear || facts.codehost ? facts : undefined
 }
 

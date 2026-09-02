@@ -23,9 +23,22 @@ describe('parseUserTurnBody', () => {
     // A tool body on a text row, or a prompt with no facts: nothing to fold.
     expect(parseUserTurnBody(JSON.stringify({ toolCallId: 'tc-1', status: 'completed' }))).toBeUndefined()
     expect(parseUserTurnBody(JSON.stringify({ prompt: 'only a prompt' }))).toBeUndefined()
-    // Facts of the wrong shape are dropped rather than rendered.
+    // Facts of the wrong shape are dropped rather than rendered — validated whole, so a fold
+    // can never open onto a formatter that dereferences what is not there.
     expect(parseUserTurnBody(JSON.stringify({ linear: 'ENG-3' }))).toBeUndefined()
+    expect(parseUserTurnBody(JSON.stringify({ linear: { issue: null } }))).toBeUndefined()
+    expect(parseUserTurnBody(JSON.stringify({ linear: { issue: { identifier: 7 } } }))).toBeUndefined()
     expect(parseUserTurnBody(JSON.stringify({ codehost: { subject: {} } }))).toBeUndefined()
+    expect(parseUserTurnBody(JSON.stringify({ codehost: { provider: 'github' } }))).toBeUndefined()
+    expect(
+      parseUserTurnBody(JSON.stringify({ codehost: { provider: 'github', event: 'x', subject: null } }))
+    ).toBeUndefined()
+    // One bad fact does not take the other down with it.
+    expect(
+      parseUserTurnBody(
+        JSON.stringify({ linear: { issue: null }, codehost: { provider: 'gitlab', event: 'note', subject: {} } })
+      )
+    ).toEqual({ codehost: { provider: 'gitlab', event: 'note', subject: {} } })
   })
 })
 

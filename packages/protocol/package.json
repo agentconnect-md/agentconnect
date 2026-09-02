@@ -35,6 +35,12 @@
       "types": "./dist/frames/runtime-command.d.ts",
       "import": "./dist/frames/runtime-command.js",
       "default": "./dist/frames/runtime-command.js"
+    },
+    "./user-turn-body": {
+      "development": "./src/user-turn-body.ts",
+      "types": "./dist/user-turn-body.d.ts",
+      "import": "./dist/user-turn-body.js",
+      "default": "./dist/user-turn-body.js"
     }
   },
   "main": "dist/index.js",
