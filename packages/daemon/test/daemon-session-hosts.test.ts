@@ -277,6 +277,50 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     expect(existsSync(two.launch.sandbox!.settingsPath)).toBe(true)
   })
 
+  // git-workspace-model §11: the same predicate that gives the session its own host gives it its own clones.
+  it('asks the session workspace for its own clone directory only under a confined launch', async () => {
+    const confined = await startDaemon(scaffold())
+    const confinedPrepare = vi.spyOn((confined.daemon as any).workspaces, 'prepareSessionWorkspace')
+    await (confined.daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    expect(confinedPrepare).toHaveBeenCalled()
+    expect(confinedPrepare.mock.calls.at(-1)![1]).toMatchObject({ sessionKey: KEY('T1'), confined: true })
+    await confined.daemon.stop()
+
+    // A shared host's cold gate prepares no session workspace for a scratch agent, so ask the funnel directly.
+    const open = await startDaemon(scaffold({ runInSandbox: false }))
+    const openPrepare = vi.spyOn((open.daemon as any).workspaces, 'prepareSessionWorkspace')
+    const request = { sessionKey: KEY('T1'), isolation: 'session' as const }
+    await (open.daemon as any).runAgentWorkspacePreparation((open.daemon as any).agents.get('bot-a'), request)
+    expect(openPrepare).toHaveBeenCalledTimes(1)
+    expect(openPrepare.mock.calls[0]![1]).toEqual(request)
+    await open.daemon.stop()
+  })
+
+  // A canonical rename keeps warm hosts only where the clone followed: the session whose clone kept its old origin loses its host, the others keep theirs.
+  it('evicts only the session hosts whose clone would not follow a canonical rename', async () => {
+    const { daemon, hosts } = await startDaemon(scaffold())
+    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+    const first = sessionHostKey('bot-a', KEY('T1'))
+    const second = sessionHostKey('bot-a', KEY('T2'))
+    const agent = (daemon as any).agents.get('bot-a')
+    const converge = vi
+      .spyOn((daemon as any).workspaces, 'convergeGithubAppWorkspaceRename')
+      .mockResolvedValue({ unconvergedSessions: [hostKeyDirName(first)] })
+
+    expect(await (daemon as any).convergeWorkspaceRename(agent)).toBe(true)
+
+    expect(converge).toHaveBeenCalledTimes(1)
+    expect(hosts[0]!.stop).toHaveBeenCalledTimes(1)
+    expect(hosts[1]!.stop).not.toHaveBeenCalled()
+    expect([...(daemon as any).hosts.keys()]).toEqual([second])
+    // A primary that will not follow means the ordinary cold workspace path for the whole agent.
+    converge.mockRejectedValue(new Error('config locked'))
+    expect(await (daemon as any).convergeWorkspaceRename(agent)).toBe(false)
+    expect(hosts[1]!.stop).not.toHaveBeenCalled()
+    await daemon.stop()
+  })
+
   it('gives a resumed session its own host again after a daemon restart', async () => {
     const root = scaffold()
     const first = await startDaemon(root)

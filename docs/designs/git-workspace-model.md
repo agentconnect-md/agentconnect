@@ -321,9 +321,11 @@ the parent of anything.
   exist only in the clone.
 - **Review sessions** fetch `refs/pull/<n>/merge` into the clone and verify the
   checked-out HEAD exactly as today.
-- **Retirement** applies the same dirty and unique-commit rules in the clone and
-  then removes the directory; there is no worktree registry to prune and no
-  branch to delete in the primary.
+- **Retirement** applies the same dirty and unique-commit rules in the clone —
+  every local ref counts, not only HEAD, because the directory is the object
+  store and a side branch or a stash is work the checked-out branch cannot speak
+  for — and then removes the directory; there is no worktree registry to prune
+  and no branch to delete in the primary.
 - **Console push and Git reads** resolve the session root as today.
 - **Sandbox grants** are per session and exact: the clone's `.git` writable,
   its `hooks` and `config` read-only, for both the outer sandbox and a runtime's

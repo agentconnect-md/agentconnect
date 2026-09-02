@@ -17,6 +17,7 @@ import { delimiter, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { effectiveRunInSandbox, prepareRuntimeLaunch } from '../src/launch/prepare.js'
 import { composeRuntimeLaunch, runtimeSandboxReadRoots } from '../src/launch/compose.js'
+import { agentHostKey, hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV } from '../src/acp/codex-permission-profiles.js'
 import { runtimeMemoryCapabilities } from '../src/memory/runtime/capabilities.js'
 import { MemoryProviderUnavailableError } from '../src/memory/provider.js'
@@ -417,6 +418,140 @@ describe('prepareRuntimeLaunch', () => {
     const profile = JSON.parse(launch.env[CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV]!) as { configOverrides: string[] }
     const writes = profile.configOverrides.filter((value) => value.includes('filesystem='))
     expect(writes.some((value) => value.includes(`"${realpathSync(primaryGit)}" = "write"`))).toBe(true)
+  })
+
+  /** A confined session's directory (§11) with a primary and a secondary clone, beside a primary checkout that also holds a `.git` — the grant must reach the former and never the latter. */
+  function sessionCloneFixture(sessionKey = 'slack:C1:s1') {
+    const { scopeDir, hostHome } = fixture()
+    const primaryGit = join(scopeDir, 'workspace', '.git')
+    mkdirSync(primaryGit, { recursive: true })
+    const key = sessionHostKey('bot-a', sessionKey)
+    const sessionDir = join(scopeDir, 'sessions', hostKeyDirName(key))
+    const cloneGit = join(sessionDir, 'workspace', '.git')
+    const secondaryGit = join(sessionDir, 'repos', 'acme', 'infra', '.git')
+    mkdirSync(cloneGit, { recursive: true })
+    mkdirSync(secondaryGit, { recursive: true })
+    return {
+      scopeDir,
+      hostHome,
+      key,
+      sessionDir,
+      cwd: join(sessionDir, 'workspace'),
+      primaryGit,
+      cloneGit,
+      secondaryGit
+    }
+  }
+
+  it('grants a confined session its own clones exactly, and never the primary checkout .git', () => {
+    const { scopeDir, hostHome, key, sessionDir, cwd, primaryGit, cloneGit, secondaryGit } = sessionCloneFixture()
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: key,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      // What the daemon hands a session host: the session directory alone (workspace-manager.ts).
+      trustedWorkspaceWriteRoots: [sessionDir],
+      trustedPrimaryCheckout: join(scopeDir, 'workspace'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const clones = [realpathSync(cloneGit), realpathSync(secondaryGit)]
+    expect([...launch.gitMetadataWriteRoots].sort()).toEqual([...clones].sort())
+    const policy = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
+    // Outer sandbox: the session directory is writable, the primary checkout is not.
+    expect(coveredBy(policy.filesystem.allowWrite, realpathSync(sessionDir))).toBe(true)
+    expect(coveredBy(policy.filesystem.allowWrite, realpathSync(primaryGit))).toBe(false)
+    expect(coveredBy(policy.filesystem.allowWrite, realpathSync(join(scopeDir, 'workspace')))).toBe(false)
+    for (const gitDir of clones) {
+      expect(policy.filesystem.denyWrite).toContain(join(gitDir, 'hooks'))
+      expect(policy.filesystem.denyWrite).toContain(join(gitDir, 'config'))
+    }
+    // Inner Codex profile: the exact per-clone entries, `read` on hooks/config, no worktrees subtree.
+    const table = agentFilesystem(launch.env)
+    for (const gitDir of clones) {
+      expect(table).toContain(`"${gitDir}" = "write"`)
+      expect(table).toContain(`"${join(gitDir, 'hooks')}" = "read"`)
+      expect(table).toContain(`"${join(gitDir, 'config')}" = "read"`)
+    }
+    expect(table).not.toContain('worktrees')
+    expect(table).not.toContain(realpathSync(primaryGit))
+  })
+
+  // The unconfined tier keeps its linked worktrees and their grants: a session directory on disk and a session-bound host key must change nothing about its policy.
+  it('leaves the unconfined policy byte-identical whether or not a session directory exists', () => {
+    const { scopeDir, hostHome } = fixture()
+    const primaryGit = join(scopeDir, 'workspace', '.git')
+    const cwd = join(scopeDir, 'worktrees', 'session-1')
+    mkdirSync(join(primaryGit, 'worktrees', 'session-1'), { recursive: true })
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(cwd, '.git'), `gitdir: ${join(primaryGit, 'worktrees', 'session-1')}\n`)
+    const base = {
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: false,
+      trustedPrimaryCheckout: join(scopeDir, 'workspace'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    }
+    const key = sessionHostKey('bot-a', 'slack:C1:s1')
+    const before = prepareRuntimeLaunch({ ...base, hostKey: key })
+
+    mkdirSync(join(scopeDir, 'sessions', hostKeyDirName(key), 'workspace', '.git'), { recursive: true })
+
+    expect(JSON.stringify(prepareRuntimeLaunch({ ...base, hostKey: key }))).toBe(JSON.stringify(before))
+    expect(JSON.stringify(prepareRuntimeLaunch({ ...base, hostKey: agentHostKey('bot-a') }))).toBe(
+      JSON.stringify(before)
+    )
+    expect(JSON.stringify(prepareRuntimeLaunch(base))).toBe(JSON.stringify(before))
+    // ...and that unchanged policy is still the owner checkout's grant, worktrees subtree included.
+    const owner = realpathSync(primaryGit)
+    expect(agentFilesystem(before.env)).toContain(`"${owner}" = "write"`)
+    expect(agentFilesystem(before.env)).toContain(`"${join(owner, 'worktrees', '**')}" = "write"`)
+    expect(before.gitMetadataWriteRoots).toEqual([owner])
+  })
+
+  // The agent's shared host is not a session's: a session directory another session owns must not reach into its worktree-tier policy.
+  it('keeps the shared host sandbox policy identical when another session has its own directory', () => {
+    const { scopeDir, hostHome } = fixture()
+    const primaryGit = join(scopeDir, 'workspace', '.git')
+    const worktrees = join(scopeDir, 'worktrees')
+    const cwd = join(worktrees, 'session-1')
+    mkdirSync(join(primaryGit, 'worktrees', 'session-1'), { recursive: true })
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(cwd, '.git'), `gitdir: ${join(primaryGit, 'worktrees', 'session-1')}\n`)
+    const base = {
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: agentHostKey('bot-a'),
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap' as const,
+      credentialPlatform: 'linux' as const,
+      trustedWorkspaceWriteRoots: [worktrees, join(scopeDir, 'repos')],
+      trustedPrimaryCheckout: join(scopeDir, 'workspace'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    }
+    const first = prepareRuntimeLaunch(base)
+    const policyBefore = readFileSync(first.sandbox!.settingsPath, 'utf8')
+    const envBefore = JSON.stringify(first.env)
+
+    const other = sessionHostKey('bot-a', 'slack:C1:s2')
+    mkdirSync(join(scopeDir, 'sessions', hostKeyDirName(other), 'workspace', '.git'), { recursive: true })
+
+    const second = prepareRuntimeLaunch(base)
+    expect(readFileSync(second.sandbox!.settingsPath, 'utf8')).toBe(policyBefore)
+    expect(JSON.stringify(second.env)).toBe(envBefore)
+    expect(second.gitMetadataWriteRoots).toEqual([realpathSync(primaryGit)])
   })
 
   // A locally authored agent may keep a checkout path the default layout does not name, and its
