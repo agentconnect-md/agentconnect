@@ -1010,6 +1010,7 @@ export interface RuntimeModelCatalogDto {
   models: Array<{
     id: string
     name?: string
+    description?: string
     efforts?: Array<{ value: string; name?: string; description?: string }>
     defaultEffort?: string
     fastMode?: boolean
