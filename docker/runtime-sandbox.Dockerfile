@@ -112,7 +112,7 @@ FROM node:24-bookworm-slim AS runtime-sandbox
 # Exact pins keep the published runtime table truthful.
 ARG CLAUDE_ACP_VERSION=0.70.0
 ARG CODEX_ACP_VERSION=1.8.0-agentconnect.1
-ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.16
+ARG DEEPSEEK_HARNESS_ACP_VERSION=0.4.27
 ARG AGENT_BROWSER_VERSION=0.36.0
 
 # git and ca-certificates are load-bearing — the workspace surface runs git IN here over the
