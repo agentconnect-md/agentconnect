@@ -9,8 +9,7 @@ import {
   loginRequiredRuntimeIds,
   fastModeAvailableFor,
   modelCapability,
-  modelLabel,
-  modelTooltip,
+  modelOptionsFor,
   displayedEffort,
   preferredModelFor,
   resolveEffortForModel,
@@ -40,6 +39,7 @@ import { Spinner } from '@/components/marks'
 import { Button, Icon, Toggle } from '@/components/ui'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
 import { useModal } from '@/components/console/ModalProvider'
+import { ModelSelect } from '@/components/console/ModelSelect'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
 import { editAgentCapabilitySource, editAgentDaemonChoices, preselectPlacementReset } from './edit-agent-daemon-choice'
 import { VisibilityField, sameSharing, type SharingValue } from '@/components/console/VisibilityField'
@@ -811,44 +811,19 @@ export default function EditAgentModal({
                     <span className="fldlbl">Model</span>
                     {/* No advertised models ⇒ nothing to choose: an inert em-dash field
                         rather than a fabricated "Default" entry the runtime never offered. */}
-                    <div
-                      className={modelSelectable ? 'inp relative' : 'inp cursor-not-allowed'}
-                      title={
-                        modelSelectable
-                          ? modelTooltip(daemon, runtime, selectedModel)
-                          : 'This runtime reports no selectable models'
-                      }
-                    >
-                      <span className={`truncate ${modelSelectable ? '' : 'text-(--text-tertiary)'}`}>
-                        {modelSelectable ? modelLabel(selectedModel) : '—'}
-                      </span>
-                      {modelSelectable && (
-                        <>
-                          <Icon name="chevron-down" size={15} color="var(--text-tertiary)" className="flex-none" />
-                          <select
-                            value={selectedModel}
-                            onChange={(e) => {
-                              const next = e.target.value
-                              setModel(next)
-                              // Picking a model resolves an effort the new model doesn't offer:
-                              // its default level, else the nearest available tier.
-                              setEffort((cur) =>
-                                resolveEffortForModel(runtime, modelCapability(daemon, runtime, next), cur)
-                              )
-                            }}
-                            className="absolute inset-0 cursor-pointer opacity-0"
-                            aria-label="Model"
-                          >
-                            {modelOptions.map((m) => (
-                              <option key={m} value={m} title={modelTooltip(daemon, runtime, m)}>
-                                {modelLabel(m)}
-                                {!reportedModels.includes(m) ? ' (unavailable)' : ''}
-                              </option>
-                            ))}
-                          </select>
-                        </>
+                    <ModelSelect
+                      value={selectedModel}
+                      options={modelOptionsFor(daemon, runtime, modelOptions).map((option) =>
+                        reportedModels.includes(option.value) ? option : { ...option, unavailable: true }
                       )}
-                    </div>
+                      disabledHint="This runtime reports no selectable models"
+                      onChange={(next) => {
+                        setModel(next)
+                        // Picking a model resolves an effort the new model doesn't offer:
+                        // its default level, else the nearest available tier.
+                        setEffort((cur) => resolveEffortForModel(runtime, modelCapability(daemon, runtime, next), cur))
+                      }}
+                    />
                   </div>
                   {/* Wide prose — it spans the row under the three pickers. */}
                   {sourceDaemon && sourceUnavailable && (

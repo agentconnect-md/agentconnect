@@ -20,8 +20,7 @@ import {
   effortLabel,
   fastModeAvailableFor,
   modelCapability,
-  modelLabel,
-  modelTooltip,
+  modelOptionsFor,
   displayedEffort,
   preferredModelFor,
   resolvedPermissionMode,
@@ -48,6 +47,7 @@ import {
 import { GithubMark, LoadingState } from '@/components/marks'
 import { AgentIconPicker } from '@/components/console/AgentIconPicker'
 import { DaemonSelect, type DaemonSelectOption } from '@/components/console/DaemonSelect'
+import { ModelSelect } from '@/components/console/ModelSelect'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
 import { randomGlyphIcon, type AgentIcon } from '@/lib/agent-icon'
 import { DEFAULT_AGENT_OUTPUT_MODE, type OutputMode } from '@/lib/output-mode'
@@ -921,47 +921,19 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   <span className="fldlbl">Model</span>
                   {/* No advertised models ⇒ nothing to choose: an inert em-dash field
                   rather than a fabricated "Default" entry the runtime never offered. */}
-                  <div
-                    className={models.length ? 'inp relative' : 'inp cursor-not-allowed'}
-                    title={
-                      models.length
-                        ? modelTooltip(daemon, effectiveRuntime, selectedModel)
-                        : 'This runtime reports no selectable models'
-                    }
-                  >
-                    <span className={`truncate ${models.length ? '' : 'text-(--text-tertiary)'}`}>
-                      {models.length ? modelLabel(selectedModel) : '—'}
-                    </span>
-                    {models.length > 0 && (
-                      <>
-                        <Icon name="chevron-down" size={15} color="var(--text-tertiary)" className="flex-none" />
-                        <select
-                          value={selectedModel}
-                          onChange={(e) => {
-                            const next = e.target.value
-                            setModel(next)
-                            // Picking a model resolves an effort the new model doesn't offer:
-                            // its default level, else the nearest available tier.
-                            setEffort((cur) =>
-                              resolveEffortForModel(
-                                effectiveRuntime,
-                                modelCapability(daemon, effectiveRuntime, next),
-                                cur
-                              )
-                            )
-                          }}
-                          className="absolute inset-0 cursor-pointer opacity-0"
-                          aria-label="Model"
-                        >
-                          {models.map((m) => (
-                            <option key={m} value={m} title={modelTooltip(daemon, effectiveRuntime, m)}>
-                              {modelLabel(m)}
-                            </option>
-                          ))}
-                        </select>
-                      </>
-                    )}
-                  </div>
+                  <ModelSelect
+                    value={selectedModel}
+                    options={modelOptionsFor(daemon, effectiveRuntime, models)}
+                    disabledHint="This runtime reports no selectable models"
+                    onChange={(next) => {
+                      setModel(next)
+                      // Picking a model resolves an effort the new model doesn't offer:
+                      // its default level, else the nearest available tier.
+                      setEffort((cur) =>
+                        resolveEffortForModel(effectiveRuntime, modelCapability(daemon, effectiveRuntime, next), cur)
+                      )
+                    }}
+                  />
                 </div>
               </div>
             </div>

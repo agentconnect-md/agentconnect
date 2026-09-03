@@ -816,6 +816,24 @@ export function modelTooltip(
   return capability?.description ?? capability?.name
 }
 
+/** Picker rows for a runtime's advertised models: each advertised id plus whatever the
+ *  catalog knows about it. The id stays the row's label — this only carries the name and
+ *  blurb the runtime published beside it (runtime-model-catalog.md §7). */
+export function modelOptionsFor(
+  daemon: Pick<DaemonRow, 'runtimeModels'> | undefined,
+  runtime: string,
+  models: readonly string[]
+): Array<{ value: string; name?: string; description?: string }> {
+  return models.map((value) => {
+    const capability = modelCapability(daemon, runtime, value)
+    return {
+      value,
+      ...(capability?.name ? { name: capability.name } : {}),
+      ...(capability?.description ? { description: capability.description } : {})
+    }
+  })
+}
+
 /** The model the picker preselects when no explicit choice is stored: the
  *  catalog's resolved default when it is in the advertised list, else the FIRST
  *  advertised model. '' only when nothing is advertised at all — there is then no
