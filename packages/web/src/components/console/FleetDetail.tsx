@@ -44,7 +44,25 @@ export interface FleetRuntime {
   /** Members disagree on the version, so there is no single one to quote. */
   versionsDiffer?: boolean
   models: string[]
+  /** What the members' catalogs say about those models, by id. A claude runtime advertises
+   *  ALIASES (`opus[1m]` is whichever Opus it resolves today), so the name is what says which
+   *  concrete model that is; absent for a member that reported no catalog. */
+  modelInfo?: Record<string, { name?: string; description?: string }>
   authRequired: boolean
+}
+
+/** The display half of a member's catalog, by model id — empty when it reported none. */
+function modelInfoOf(rt: DaemonRow['runtimeModels'][number]): Record<string, { name?: string; description?: string }> {
+  const info: Record<string, { name?: string; description?: string }> = {}
+  for (const model of rt.modelCatalog?.models ?? []) {
+    if (model.name || model.description) {
+      info[model.id] = {
+        ...(model.name ? { name: model.name } : {}),
+        ...(model.description ? { description: model.description } : {})
+      }
+    }
+  }
+  return info
 }
 
 // The runtimes a set offers, unioned over the members given (pass the serving ones). Version is
@@ -60,12 +78,16 @@ export function unionRuntimes(members: readonly DaemonRow[]): FleetRuntime[] {
           runtime: rt.runtime,
           version: rt.version,
           models: [...rt.models],
+          modelInfo: modelInfoOf(rt),
           authRequired: rt.authRequired === true
         })
         continue
       }
       if (!prev.version) prev.version = rt.version
       for (const model of rt.models) if (!prev.models.includes(model)) prev.models.push(model)
+      // First member to describe a model wins: replicas agree, and a member with no catalog
+      // must not blank out what a peer already knows.
+      prev.modelInfo = { ...modelInfoOf(rt), ...prev.modelInfo }
       prev.authRequired ||= rt.authRequired === true
     }
   }
@@ -98,6 +120,8 @@ export function intersectRuntimes(members: readonly DaemonRow[]): FleetRuntime[]
       version: versions.size === 1 ? [...versions][0]! : '',
       versionsDiffer: versions.size > 1,
       models: rt.models.filter((model) => all.every((peer) => peer.models.includes(model))),
+      // Same rule as the union: the first member that describes a model answers for the set.
+      modelInfo: all.reduce((info, peer) => ({ ...modelInfoOf(peer), ...info }), {}),
       // Sticky, as in the union: one member needing a login qualifies the set's promise, so the
       // row is MARKED. Not withdrawn — placement is deliberately independent of login readiness
       // (preset-agents.md §3.2), which is why this does not exclude the runtime.
@@ -411,11 +435,19 @@ export function FleetRuntimesCard({
                     <div className="pb-1 font-sans text-[10px] font-semibold leading-normal tracking-[.05em] uppercase text-(--text-tertiary)">
                       Models
                     </div>
-                    {rt.models.map((m) => (
-                      <div key={m} className="mono truncate py-[3px] text-[11.5px]">
-                        {m}
-                      </div>
-                    ))}
+                    {rt.models.map((m) => {
+                      const info = rt.modelInfo?.[m]
+                      return (
+                        <div key={m} className="flex items-baseline gap-2 py-[3px]" title={info?.description}>
+                          <span className="mono truncate text-[11.5px]">{m}</span>
+                          {info?.name && (
+                            <span className="min-w-0 truncate font-sans text-[11px] font-normal leading-normal text-(--text-tertiary)">
+                              {info.name}
+                            </span>
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
               </div>

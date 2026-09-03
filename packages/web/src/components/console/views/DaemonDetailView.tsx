@@ -15,7 +15,6 @@ import {
   effectiveAgentStatus,
   platName,
   presentedDaemonStatus,
-  modelCapability,
   runtimeLabel,
   status
 } from '@/lib/data'
@@ -340,20 +339,20 @@ export default function DaemonDetailView() {
                               names whichever Opus the runtime resolves it to today. The runtime's
                               own name is what says which one that is, so it rides alongside. */}
                           {rt.models.map((m) => {
-                            const capability = modelCapability(daemon, rt.runtime, m)
+                            const info = rt.modelInfo?.[m]
                             return (
                               <span
                                 key={m}
                                 className="inline-flex min-w-0 items-center gap-2"
-                                title={capability?.description}
+                                title={info?.description}
                               >
                                 <span className="h-[5px] w-[5px] flex-none rounded-full bg-(--border-strong)" />
                                 <span className="font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
                                   {m}
                                 </span>
-                                {capability?.name && (
+                                {info?.name && (
                                   <span className="min-w-0 truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
-                                    {capability.name}
+                                    {info.name}
                                   </span>
                                 )}
                               </span>
