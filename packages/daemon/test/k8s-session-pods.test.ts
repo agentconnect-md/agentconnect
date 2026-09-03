@@ -9,6 +9,7 @@ import {
   AC_LABEL_SESSION,
   sandboxClaimName,
   sandboxSubjectFor,
+  sandboxSubjectForPath,
   sessionSandboxSubject
 } from '../src/k8s/sandbox-identity.js'
 import type { Sandbox, SandboxClaim } from '../src/k8s/sandbox-api.js'
@@ -303,6 +304,72 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(claims.has(sandboxClaimName(sandboxSubjectFor(T2)))).toBe(true)
     expect(claims.has(`agent-${AGENT}`)).toBe(true)
     expect(driver.sessionSubjectsOf(AGENT)).toEqual([sandboxSubjectFor(T2)])
+  })
+
+  it('releases a companion that bound after the session bind had already failed', async () => {
+    // The two binds are settled TOGETHER. With the session's rejection propagating on its own, the
+    // launch's catch drains its holds while the companion is still binding, and the retain it then
+    // takes belongs to no runtime and no `onExit`: the agent pod stays busy until this process
+    // restarts, and the idle sweep can never reclaim it.
+    const { api } = cluster()
+    const pod = podSide()
+    const session = sandboxSubjectFor(T1)
+    let releaseCompanion: () => void = () => {}
+    const companionBound = new Promise<void>((resolve) => (releaseCompanion = resolve))
+    const { driver } = member(api, async (record) => {
+      // The session's pod refuses at once; the agent's comes up only after that rejection is out.
+      if (record.subject === session) throw new Error('session pod refused the channel')
+      await companionBound
+      return await pod.connect(record)
+    })
+
+    const launching = driver.launch(request(T1))
+    releaseCompanion()
+    await expect(launching).rejects.toThrow(/session pod refused the channel/)
+
+    // The companion bound, so it is held — and released, because the failure that dropped the launch
+    // waited for it. Suspending it is the observable form of "nothing still retains this Sandbox".
+    expect(driver.currentLaunch(AGENT)).toBeDefined()
+    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
+    // The session's own Sandbox — claimed before its channel refused — is released by the same drain.
+    expect(await driver.suspendIfIdle(session)).toBe('suspended')
+  })
+
+  it('still degrades rather than failing the launch when only the companion cannot come up', async () => {
+    // The companion is a reachability convenience for the agent-scoped seams, never a precondition:
+    // settling it beside the session bind must not turn its failure into the session's.
+    const { api } = cluster()
+    const pod = podSide()
+    const { driver } = member(api, async (record) => {
+      if (record.subject === AGENT) throw new Error('agent pod refused the channel')
+      return await pod.connect(record)
+    })
+
+    await expect(driver.launch(request(T1))).resolves.toBeDefined()
+    expect(await driver.suspendIfIdle(sandboxSubjectFor(T1))).toBe('busy')
+    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
+  })
+
+  it('reads the pod a path lives on off the PATH, so a suspended pod stays addressable', () => {
+    // The launch registry cannot answer this: an idle-suspended session pod is gone from it while its
+    // claim and volume survive, and routing off it would send the session's own directory to the agent
+    // pod, where it does not exist. Only `<mount>/sessions/<leaf>` names a session pod — nothing else.
+    const leaf = hostKeyDirName(T1)
+    const at = (path?: string, mount = '/agent'): string => sandboxSubjectForPath(AGENT, path, mount)
+    expect(at(`/agent/sessions/${leaf}`)).toBe(sandboxSubjectFor(T1))
+    expect(at(`/agent/sessions/${leaf}/workspace/src`)).toBe(sandboxSubjectFor(T1))
+    // Everything else is the agent's own pod, including the neighbours a prefix match would swallow.
+    expect(at('/agent/checkout')).toBe(AGENT)
+    expect(at('/agent/sessions')).toBe(AGENT)
+    expect(at('/agent/sessions-other/x')).toBe(AGENT)
+    expect(at('/agent/worktrees/abc')).toBe(AGENT)
+    expect(at('/agent/.agentconnect/memory')).toBe(AGENT)
+    expect(at(undefined)).toBe(AGENT)
+    // A leaf that is not a session host's is not a session pod either — a directory, not a subject.
+    expect(at(`/agent/sessions/agent/workspace`)).toBe(AGENT)
+    // And the mount is the pod's, not a fixed string: a path outside it belongs to no session pod.
+    expect(at(`/mnt/vol/sessions/${leaf}/workspace`, '/mnt/vol/')).toBe(sandboxSubjectFor(T1))
+    expect(at(`/agent/sessions/${leaf}/workspace`, '/mnt/vol')).toBe(AGENT)
   })
 
   it('keeps the agent pod path byte-identical: no host key means the agent claim, as before', async () => {

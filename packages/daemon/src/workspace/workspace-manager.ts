@@ -219,8 +219,8 @@ export class WorkspaceManager {
   private gitRunnerResolver: WorkspaceGitRunnerResolver | undefined
   private fsResolver: WorkspaceFsResolver | undefined
   private pathClearer: WorkspacePathClearer | undefined
-  /** Pool only: retire every session pod of an agent whose workspace is being replaced — the clones they hold describe the old repository (§11). */
-  private sessionsDiscarder: ((agentId: string) => Promise<void>) | undefined
+  /** Pool only: retire the session pods of an agent whose workspace was replaced — their clones describe the old repository (§11) — sparing the one leaf named. */
+  private sessionsDiscarder: ((agentId: string, exceptLeaf?: string) => Promise<void>) | undefined
   private workspacesLiveInSandboxes = false
 
   setGitRunnerResolver(resolver: WorkspaceGitRunnerResolver | undefined): void {
@@ -235,7 +235,7 @@ export class WorkspaceManager {
     this.pathClearer = clearer
   }
 
-  setSessionsDiscarder(discarder: ((agentId: string) => Promise<void>) | undefined): void {
+  setSessionsDiscarder(discarder: ((agentId: string, exceptLeaf?: string) => Promise<void>) | undefined): void {
     this.sessionsDiscarder = discarder
   }
 
@@ -2071,9 +2071,20 @@ export class WorkspaceManager {
   ): Promise<string> {
     const root = runtimeRoot ?? DEFAULT_SHIM_WORKSPACE_ROOT
     // A pool member is always the confined tier (§11): an isolated session prepares on its own pod, whether or not the request says so.
-    if (request?.confined || request?.isolation === 'session') {
-      return await this.prepareClusterConfinedSession(agent, root, { ...request, confined: true })
-    }
+    const confined =
+      request?.confined || request?.isolation === 'session' ? { ...request!, confined: true as const } : undefined
+    // The agent pod's half runs first, because a due conversion belongs to whichever preparation lands first after the edit — which is the ONLY thing a confined one goes there for.
+    await this.prepareClusterCheckout(agent, root, confined)
+    if (confined) return await this.prepareClusterConfinedSession(agent, root, confined)
+    return await this.prepareClusterSessionCwd(agent, root, request)
+  }
+
+  // The agent pod's half: run a due conversion, clone or converge the primary checkout, and prove the marker; the cwd is the caller's.
+  private async prepareClusterCheckout(
+    agent: Agent,
+    root: string,
+    confined: PrepareSessionWorkspaceRequest | undefined
+  ): Promise<void> {
     const checkout = join(root, SANDBOX_CHECKOUT_DIR)
     const targetMarker = this.materializationKey(agent)
     const stored = this.readMaterialization(agent)
@@ -2088,16 +2099,19 @@ export class WorkspaceManager {
     // would repoint the rejected tree and ACK an agent running the wrong repository. Unproven instead:
     // whichever definition arrives next re-materializes the volume before anything runs on it.
     const conversionDue = this.clusterConversionDue(agent, stored, targetMarker)
+    // An isolated session's own preparation comes here for the conversion and nothing else (§11): its clones are taken from the remotes, so cloning the primary for it would be a repository no session reads.
+    if (confined && !conversionDue) return
     if (conversionDue) {
       this.forgetWorkspaceMaterialization(agent)
       await this.requireEmptiedSandboxPath(agent.id, checkout)
+      await this.retireClusterSessionDirectories(agent, confined)
     }
 
     if (agent.workspace.mode === 'from-scratch') {
       // Provable by construction: the checkout is gone, so the volume holds exactly the scratch
       // workspace the configuration asks for. Recording it is what ends the conversion.
       if (conversionDue) this.recordMaterializationBestEffort(agent)
-      return await this.prepareClusterSessionCwd(agent, root, request)
+      return
     }
     // Validated at the execution boundary, exactly as the local path does: a hand-edited agent.json
     // must not turn daemon-managed git into a local-path or remote-helper launcher.
@@ -2179,7 +2193,17 @@ export class WorkspaceManager {
           `${agent.workspace.gitBranch} — leaving its materialization marker unchanged`
       )
     }
-    return await this.prepareClusterSessionCwd(agent, root, request)
+  }
+
+  // The pool's `clearSessionWorktrees`, run where the conversion runs: every OTHER session pod is retired, its clone being of the old repository, and the session being prepared keeps its pod and has its directory emptied so it clones afresh.
+  // Fail-closed like the checkout beside it: a retirement that raised leaves the marker unproven, so the next preparation retries it instead of running on stale clones.
+  private async retireClusterSessionDirectories(
+    agent: Agent,
+    confined: PrepareSessionWorkspaceRequest | undefined
+  ): Promise<void> {
+    const ownLeaf = confined ? hostKeyDirName(sessionHostKey(agent.id, confined.sessionKey)) : undefined
+    await this.sessionsDiscarder?.(agent.id, ownLeaf)
+    if (confined) await this.requireEmptiedSandboxPath(agent.id, this.sessionDir(agent, confined.sessionKey))
   }
 
   // §11 on a pool: the session's clones live on ITS pod under `<mount>/sessions/<leaf>`, cloned from the remotes exactly as a confined self-hosted session's are; the agent pod's checkout is not consulted, and its secondary roots are materialized only for the attestation a reviewed root records there.
@@ -2509,12 +2533,7 @@ export class WorkspaceManager {
       if (reconcileMaterialization && replace && previousMaterialization !== undefined) {
         this.writePendingConversion(agent, targetMaterialization)
       }
-      // What `clearSessionWorktrees` does locally: every session pod's clone is of the repository being replaced.
-      if (replace) {
-        await this.sessionsDiscarder?.(agent.id).catch((err: unknown) => {
-          workspaceLog.warn(`workspace: could not retire the session sandboxes of "${agent.id}" (${formatErr(err)})`)
-        })
-      }
+      // The session pods are NOT retired here: this runs before the edit is acknowledged and a volume deletion has no rollback, so `prepareClusterWorkspace` retires them when the conversion runs — after the definition is authoritative, and only when the marker no longer proves it.
       return () => {}
     }
     mkdirSync(cwd, { recursive: true })

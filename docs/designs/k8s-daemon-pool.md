@@ -291,12 +291,18 @@ sessions. The session's clones and HOME live on that pod's volume under
 `<mount>/sessions/<leaf>/`; the agent pod keeps the primary checkout, the
 secondary roots and managed memory, and a session runtime binds and holds it as
 its companion for the runtime's life, so a running runtime still implies a
-reachable agent pod. Every workspace path is routed to the pod that owns it.
+reachable agent pod. Every workspace path is routed to the pod that owns it,
+read off the **path** rather than off the live-launch registry, so a suspended
+session pod stays addressable; a read that names one wakes it, but only beside a
+bound agent pod and only onto a claim the cluster already holds.
 Sleep is per pod — a quiet session pod suspends on its own session's activity
 while its siblings and the agent pod stay — and the claim goes with the
 session's row: retention deletes it (volume and all) once the clone has passed
 the dirty and unique-commit rules, a replaced workspace retires every session
-pod of the agent, and agent removal deletes them all. Shared-isolation sessions
+pod of the agent **when its conversion runs on the volume** — not when the edit
+is activated, which precedes the acknowledgement and has no rollback that
+reaches a pod's volume — sparing the leaf then being prepared, whose own
+directory is emptied so it clones afresh, and agent removal deletes them all. Shared-isolation sessions
 are unchanged: one pod per agent, in the primary checkout. Admission still
 counts agents (`maxAgents`); session pods are bounded by session admission and
 the idle sweep.

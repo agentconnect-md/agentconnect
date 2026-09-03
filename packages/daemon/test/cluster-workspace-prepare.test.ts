@@ -78,6 +78,10 @@ let headRev: string | undefined
 let remoteDefaultBranch: Record<string, string> = {}
 /** Clone URLs the remote refuses, so one root can fail while the others materialize. */
 let cloneRefusals = new Set<string>()
+/** The pool's session-pod retirements, as `(agentId, exceptLeaf)` — a claim deletion is observable here without a cluster. */
+let discarded: Array<{ agentId: string; exceptLeaf: string | undefined }> = []
+/** The retirement failing on the cluster side, which must leave the conversion unproven rather than proceed. */
+let discardFails = false
 
 /** A ref name as a commit id, the way `worktree add`/`reset` move HEAD onto their start point. */
 function resolve(ref: string): string {
@@ -221,6 +225,8 @@ beforeEach(() => {
   headRev = undefined
   remoteDefaultBranch = {}
   cloneRefusals = new Set()
+  discarded = []
+  discardFails = false
   // Every agent here runs in a pod, so all three seams resolve to the sandbox.
   workspaces.setGitRunnerResolver((_agentId, cwd) => recordingRunner(cwd))
   workspaces.setFsResolver(() => ({ fs: pod, mount: POD_ROOT }))
@@ -232,6 +238,11 @@ beforeEach(() => {
     return undefined
   })
   workspaces.setSandboxMode(true)
+  // The pool's `clearSessionWorktrees`: the daemon deletes the claim and its volume, so the seam is what a test can watch.
+  workspaces.setSessionsDiscarder(async (agentId, exceptLeaf) => {
+    discarded.push({ agentId, exceptLeaf })
+    if (discardFails) throw new Error('session claim delete refused')
+  })
   initGitInjection({
     targetFor: (agentId) =>
       agentId.startsWith('local-')
@@ -246,6 +257,7 @@ afterEach(() => {
   workspaces.setGitRunnerResolver(undefined)
   workspaces.setFsResolver(undefined)
   workspaces.setPathClearer(undefined)
+  workspaces.setSessionsDiscarder(undefined)
   workspaces.setSandboxMode(false)
 })
 
@@ -699,6 +711,88 @@ describe('replacing a cluster workspace in place', () => {
     // And the marker now says scratch, so the next session does not empty it again.
     await workspaces.prepareClusterWorkspace(scratch, POD_ROOT)
     expect(cleared).toEqual([CHECKOUT])
+  })
+
+  it('leaves every session pod alive when the activation is rejected before its preparation ran', async () => {
+    // The retirement deletes claims, and a claim takes its volume — the session's clone AND its runtime
+    // HOME — with it, which no rollback restores. Activation runs before the CP has acknowledged the
+    // edit and its sandbox-mode rollback is empty, so a retirement here would be irreversible loss for
+    // an edit that is then rejected. It records the intent; the conversion carries it out.
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    const rollback = await workspaces.prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    rollback()
+    expect(discarded).toEqual([])
+    expect(cleared).toEqual([])
+
+    // And the restored definition still proves the volume, so its next turns retire nothing either.
+    checkoutExists = true
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT, {
+      sessionKey: 'sess-1',
+      isolation: 'session',
+      initiatedBy: 'alice'
+    })
+    expect(discarded).toEqual([])
+  })
+
+  it('retires the session pods when the conversion runs, sparing the session it is preparing', async () => {
+    // Their clones are of the repository being replaced, so they go with the checkout — but the leaf
+    // being prepared keeps its pod and has its own directory emptied instead, or the preparation would
+    // be deleting the volume it is about to clone into.
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await workspaces.prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    checkoutExists = true
+    const leaf = hostKeyDirName(sessionHostKey(agent.id, 'sess-1'))
+    const cwd = await workspaces.prepareClusterWorkspace(moved, POD_ROOT, {
+      sessionKey: 'sess-1',
+      isolation: 'session',
+      initiatedBy: 'alice'
+    })
+    expect(discarded).toEqual([{ agentId: agent.id, exceptLeaf: leaf }])
+    expect(cleared).toEqual([CHECKOUT, `${POD_ROOT}/sessions/${leaf}`])
+    // Re-cloned from the NEW repository, into the directory the conversion just emptied.
+    expect(cwd).toBe(`${POD_ROOT}/sessions/${leaf}/workspace`)
+    expect(calls.find((call) => call.args[0] === 'clone')?.args).toContain('https://github.com/acme/other.git')
+
+    // Proven now, so the sibling session that prepares next retires nobody — least of all this one.
+    discarded.length = 0
+    await workspaces.prepareClusterWorkspace(moved, POD_ROOT, {
+      sessionKey: 'sess-2',
+      isolation: 'session',
+      initiatedBy: 'alice'
+    })
+    expect(discarded).toEqual([])
+  })
+
+  it('retires every session pod for a shared session, which names no leaf to spare', async () => {
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await workspaces.prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    checkoutExists = true
+    await workspaces.prepareClusterWorkspace(moved, POD_ROOT)
+    expect(discarded).toEqual([{ agentId: agent.id, exceptLeaf: undefined }])
+    expect(cleared).toEqual([CHECKOUT])
+  })
+
+  it('fails closed when a session pod will not retire, and retries on the next preparation', async () => {
+    // Fail-closed like the checkout beside it: a retirement nothing proved happened leaves the marker
+    // unproven, so the next preparation runs the conversion again instead of cloning over stale pods.
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await workspaces.prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    checkoutExists = true
+    discardFails = true
+    await expect(workspaces.prepareClusterWorkspace(moved, POD_ROOT)).rejects.toThrow(/session claim delete refused/)
+    expect(calls.some((call) => call.args[0] === 'clone')).toBe(false)
+
+    discardFails = false
+    checkoutExists = true
+    await workspaces.prepareClusterWorkspace(moved, POD_ROOT)
+    expect(discarded).toHaveLength(2)
+    expect(cleared).toEqual([CHECKOUT, CHECKOUT])
+    expect(calls.find((call) => call.args[0] === 'clone')?.args).toContain('https://github.com/acme/other.git')
   })
 
   it('leaves a from-scratch cluster workspace alone, whose activation touches only bookkeeping', async () => {

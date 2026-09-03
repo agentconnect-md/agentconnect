@@ -1922,8 +1922,8 @@ export class Daemon {
       // And the one destructive operation a cluster workspace needs, for the same reason: a
       // partial clone sits on a volume no `rmSync` here can reach.
       this.workspaces.setPathClearer((agentId, root) => this.k8sPlane!.clearPath(agentId, root))
-      // And the pool's form of `clearSessionWorktrees`: a replaced workspace retires every session pod (§11).
-      this.workspaces.setSessionsDiscarder((agentId) => this.discardSessionSandboxes(agentId))
+      // And the pool's form of `clearSessionWorktrees`: a replaced workspace retires every session pod (§11), when its conversion runs.
+      this.workspaces.setSessionsDiscarder((agentId, exceptLeaf) => this.discardSessionSandboxes(agentId, exceptLeaf))
       // And the mode itself, which decides what workspace operations are available at all: an
       // in-place conversion has no pod-side implementation of its rollback contract.
       this.workspaces.setSandboxMode(true)
@@ -16339,12 +16339,13 @@ export class Daemon {
     }
   }
 
-  /** Cluster only: retire every session pod of the agent — a replaced workspace leaves them holding the old repository (§11). */
-  private async discardSessionSandboxes(agentId: string): Promise<void> {
+  /** Cluster only: retire every session pod of the agent but the leaf named — a replaced workspace leaves them holding the old repository (§11). */
+  private async discardSessionSandboxes(agentId: string, exceptLeaf?: string): Promise<void> {
     const plane = this.k8sPlane
     if (!plane) return
     for (const subject of await plane.driver.sessionClaimSubjects(agentId)) {
-      await plane.discardSession(agentId, sandboxSubjectSessionLeaf(subject)!)
+      const leaf = sandboxSubjectSessionLeaf(subject)!
+      if (leaf !== exceptLeaf) await plane.discardSession(agentId, leaf)
     }
   }
 

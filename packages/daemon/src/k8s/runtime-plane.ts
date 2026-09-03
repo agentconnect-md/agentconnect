@@ -6,7 +6,9 @@ import {
   RUNTIME_GRANTS,
   agentSandboxSubject,
   poolRuntimeImage,
+  sandboxSubjectAgentId,
   sandboxSubjectForPath,
+  sandboxSubjectSessionLeaf,
   sessionSandboxSubject,
   type SandboxSubject
 } from './sandbox-identity.js'
@@ -33,6 +35,7 @@ import { DEFAULT_SHIM_LISTEN_PORT, DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/p
 import type { TunnelName } from '../shim/tunnel.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import type { GitRunner } from '../workspace/git-runner.js'
+import { deferredGitRunner } from '../workspace/git-runner.js'
 
 const SILENT = { info: () => {}, warn: () => {} }
 
@@ -152,7 +155,8 @@ export interface K8sRuntimePlane {
    *  already in flight awaits ITS table and its own sweep is skipped — the pod is gone by then. */
   probeRuntimes: (sweep?: ProbeSandboxSweep) => Promise<K8sRuntimeTable>
   /** A git runner for an agent's workspace path, on the pod that owns it, or undefined when this
-   *  daemon has no channel to that pod — the caller then keeps its local behaviour. */
+   *  daemon has no channel to that pod — the caller then keeps its local behaviour. A session pod that
+   *  is asleep is brought up on first use while the agent's own pod is bound (see `sessionForPath`). */
   gitRunnerFor: (agentId: string, cwd?: string, abort?: AbortSignal) => GitRunner | undefined
   /** The console's file operations for the agent's workspaces, each root on the pod that owns it. Separate
    *  from the git runner because they are separate capabilities (`read` vs `exec`) and a channel is not a
@@ -268,23 +272,28 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   const mountOf = (subject: string): string => driver.workspaceRootFor(subject) ?? DEFAULT_SHIM_WORKSPACE_ROOT
   const sessionDirFor = (agentId: string, leaf: string): string =>
     sessionDirIn(mountOf(sessionSandboxSubject(agentId, leaf)), leaf)
-  // The pod a path lives on: a session pod owns `<its mount>/sessions/<leaf>` (git-workspace-model §11), the agent pod everything else.
+  // The pod a path lives on, read off the path (git-workspace-model §11): a suspended session pod is still addressable, its launch forgotten or not.
   const subjectForPath = (agentId: string, path: string | undefined): SandboxSubject =>
-    sandboxSubjectForPath(
-      agentId,
-      path,
-      driver.sessionSubjectsOf(agentId).map((subject) => ({ subject, mount: mountOf(subject) }))
-    )
+    sandboxSubjectForPath(agentId, path, mountOf(agentSandboxSubject(agentId)))
   /** Every pod of the agent that is bound right now: its own first, then its sessions'. */
   const boundSubjectsOf = (agentId: string): SandboxSubject[] =>
     [agentSandboxSubject(agentId), ...driver.sessionSubjectsOf(agentId)].filter((subject) => boundSession(subject))
   // The one condition that means "this agent's work happens in a pod" — ANY of its pods. Defined once
   // because two callers must agree on it: the git runner, and the credential pointers that git will read.
   const runsInSandbox = (agentId: string): boolean => boundSubjectsOf(agentId).length > 0
-  /** The session that owns `path`, or the reason none does. */
-  const sessionForPath = (agentId: string, path: string): ShimSession => {
+  // Whether a session pod named by a path may be brought up for it: only beside a bound agent pod. The console's wake is agent-scoped, so the agent pod being up IS the press; a read with everything asleep still refuses, and a session pod never claims what the cluster does not already hold.
+  const wakeableSessionPod = async (subject: SandboxSubject): Promise<boolean> =>
+    sandboxSubjectSessionLeaf(subject) !== undefined &&
+    boundSession(agentSandboxSubject(sandboxSubjectAgentId(subject))) !== undefined &&
+    (await driver.hasClaim(subject))
+  /** The session that owns `path`, bringing a sleeping session pod up beside a bound agent pod, or the reason none does. */
+  const sessionForPath = async (agentId: string, path: string): Promise<ShimSession> => {
     const subject = subjectForPath(agentId, path)
-    const session = boundSession(subject)
+    let session = boundSession(subject)
+    if (!session && (await wakeableSessionPod(subject))) {
+      await driver.ensureBoundChannel(subject)
+      session = boundSession(subject)
+    }
     if (!session) throw new Error(`sandbox ${subject} that owns ${path} has no bound channel`)
     return session
   }
@@ -383,22 +392,31 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       // No channel means this path has no bound sandbox to run git in. Returning undefined keeps the
       // caller on its local runner rather than failing the operation — which is what a
       // self-hosted agent beside a cluster-backed one needs anyway.
-      const session = boundSession(subjectForPath(agentId, cwd))
-      if (!session) return undefined
-      return new ShimGitRunner(session, cwd, undefined, abort)
+      const subject = subjectForPath(agentId, cwd)
+      const session = boundSession(subject)
+      if (session) return new ShimGitRunner(session, cwd, undefined, abort)
+      // A session directory whose pod is asleep, beside a bound agent pod: the runner brings it up on first use.
+      if (
+        cwd === undefined ||
+        sandboxSubjectSessionLeaf(subject) === undefined ||
+        !boundSession(agentSandboxSubject(agentId))
+      ) {
+        return undefined
+      }
+      return deferredGitRunner(async () => new ShimGitRunner(await sessionForPath(agentId, cwd), cwd, undefined, abort))
     },
     workspaceFilesFor: (agentId) => {
       if (!runsInSandbox(agentId)) return undefined
-      return new RoutedWorkspaceFiles((root) => new ShimWorkspaceFiles(sessionForPath(agentId, root)))
+      return new RoutedWorkspaceFiles(async (root) => new ShimWorkspaceFiles(await sessionForPath(agentId, root)))
     },
     workspaceFsFor: (agentId) => {
       // Paths are composed on the mount the agent's own pod reported; a session pod's is asked for its own paths.
       const [first] = boundSubjectsOf(agentId)
       if (first === undefined) return undefined
       const mount = mountOf(first)
-      const fs = new RoutedWorkspaceFs((path) => {
+      const fs = new RoutedWorkspaceFs(async (path) => {
         const subject = subjectForPath(agentId, path)
-        return new ShimWorkspaceFs(sessionForPath(agentId, path), mountOf(subject))
+        return new ShimWorkspaceFs(await sessionForPath(agentId, path), mountOf(subject))
       })
       return { fs, mount }
     },
@@ -414,7 +432,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     runsInSandbox,
     sandboxBound: (subject) => boundSession(subject) !== undefined,
     clearPath: async (agentId, root) => {
-      const session = boundSession(subjectForPath(agentId, root))
+      const session = await sessionForPath(agentId, root).catch(() => undefined)
       if (!session) return `agent ${agentId} has no bound sandbox channel for ${root}`
       return await new ShimFileSink(session).clear(root)
     },
@@ -471,55 +489,55 @@ export function shimEndpoint(podIp: string, port: number): string {
 
 // A `WorkspaceFs` over several pods: every operation names a path, and the path names the pod (§11); `rename` must stay within one.
 export class RoutedWorkspaceFs implements WorkspaceFs {
-  constructor(private readonly route: (path: string) => WorkspaceFs) {}
+  constructor(private readonly route: (path: string) => Promise<WorkspaceFs>) {}
 
   async stat(path: string): ReturnType<WorkspaceFs['stat']> {
-    return await this.route(path).stat(path)
+    return await (await this.route(path)).stat(path)
   }
 
   async readdir(path: string): Promise<string[]> {
-    return await this.route(path).readdir(path)
+    return await (await this.route(path)).readdir(path)
   }
 
   async mkdir(path: string, mode?: number): Promise<void> {
-    return await this.route(path).mkdir(path, mode)
+    return await (await this.route(path)).mkdir(path, mode)
   }
 
   async readFile(path: string): Promise<string | undefined> {
-    return await this.route(path).readFile(path)
+    return await (await this.route(path)).readFile(path)
   }
 
   async readFileBytes(path: string, maxBytes: number): ReturnType<WorkspaceFs['readFileBytes']> {
-    return await this.route(path).readFileBytes(path, maxBytes)
+    return await (await this.route(path)).readFileBytes(path, maxBytes)
   }
 
   async writeFile(path: string, content: string, options?: { mode?: number }): Promise<void> {
-    return await this.route(path).writeFile(path, content, options)
+    return await (await this.route(path)).writeFile(path, content, options)
   }
 
   async rename(from: string, to: string): Promise<void> {
-    return await this.route(from).rename(from, to)
+    return await (await this.route(from)).rename(from, to)
   }
 
   async rmdir(path: string): Promise<boolean> {
-    return await this.route(path).rmdir(path)
+    return await (await this.route(path)).rmdir(path)
   }
 
   async rmTree(path: string): Promise<void> {
-    return await this.route(path).rmTree(path)
+    return await (await this.route(path)).rmTree(path)
   }
 }
 
 // The console's file port over several pods: each call names its root, and the root names the pod (§11).
 export class RoutedWorkspaceFiles implements WorkspaceFiles {
-  constructor(private readonly route: (root: string) => WorkspaceFiles) {}
+  constructor(private readonly route: (root: string) => Promise<WorkspaceFiles>) {}
 
   async list(root: string, req: Parameters<WorkspaceFiles['list']>[1]): ReturnType<WorkspaceFiles['list']> {
-    return await this.route(root).list(root, req)
+    return await (await this.route(root)).list(root, req)
   }
 
   async read(root: string, req: Parameters<WorkspaceFiles['read']>[1]): ReturnType<WorkspaceFiles['read']> {
-    return await this.route(root).read(root, req)
+    return await (await this.route(root)).read(root, req)
   }
 
   async write(
@@ -527,7 +545,7 @@ export class RoutedWorkspaceFiles implements WorkspaceFiles {
     scratch: boolean,
     req: Parameters<WorkspaceFiles['write']>[2]
   ): ReturnType<WorkspaceFiles['write']> {
-    return await this.route(root).write(root, scratch, req)
+    return await (await this.route(root)).write(root, scratch, req)
   }
 
   async delete(
@@ -535,6 +553,6 @@ export class RoutedWorkspaceFiles implements WorkspaceFiles {
     scratch: boolean,
     req: Parameters<WorkspaceFiles['delete']>[2]
   ): ReturnType<WorkspaceFiles['delete']> {
-    return await this.route(root).delete(root, scratch, req)
+    return await (await this.route(root)).delete(root, scratch, req)
   }
 }

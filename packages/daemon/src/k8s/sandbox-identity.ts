@@ -1,7 +1,7 @@
 import type { ShimCapability } from '../shim/protocol.js'
 import type { Sandbox } from './sandbox-api.js'
 import { hostKeyAgentId, hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
-import { sessionDirIn } from '../workspace/session-layout.js'
+import { SESSIONS_DIR } from '../workspace/session-layout.js'
 
 /** Label domain the claim controller must be configured to allow. */
 export const AC_LABEL_ORG = 'agentconnect.md/org'
@@ -51,19 +51,12 @@ export function sandboxClaimName(subject: string): string {
   return leaf === undefined ? base : `${base}-${leaf.replace(/^session-/, '').slice(0, 16)}`
 }
 
-/** The pod a workspace path lives on: the session pod whose `<mount>/sessions/<leaf>` holds it, else the agent's own (§11). */
-export function sandboxSubjectForPath(
-  agentId: string,
-  path: string | undefined,
-  sessionPods: ReadonlyArray<{ subject: SandboxSubject; mount: string }>
-): SandboxSubject {
-  if (path !== undefined) {
-    for (const pod of sessionPods) {
-      const leaf = sandboxSubjectSessionLeaf(pod.subject)
-      if (leaf === undefined) continue
-      const dir = sessionDirIn(pod.mount, leaf)
-      if (path === dir || path.startsWith(`${dir}/`)) return pod.subject
-    }
+// The pod a workspace path lives on, read off the PATH: `<mount>/sessions/<leaf>` names the session pod whether or not this member holds its launch, everything else is the agent's own (§11).
+export function sandboxSubjectForPath(agentId: string, path: string | undefined, mount: string): SandboxSubject {
+  const base = mount.replace(/\/+$/, '')
+  if (path !== undefined && path.startsWith(`${base}/`)) {
+    const [dir, leaf] = path.slice(base.length + 1).split('/')
+    if (dir === SESSIONS_DIR && leaf?.startsWith('session-')) return sessionSandboxSubject(agentId, leaf)
   }
   return agentSandboxSubject(agentId)
 }

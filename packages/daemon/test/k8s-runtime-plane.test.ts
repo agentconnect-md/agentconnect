@@ -84,7 +84,7 @@ function fakeApi(options: { podName?: string; adopt?: boolean } = {}) {
 }
 
 /** Start a plane whose Kubernetes surface is the fake above, on an ephemeral port. */
-async function planeUnderTest(api: ReturnType<typeof fakeApi>): Promise<K8sRuntimePlane> {
+async function planeUnderTest(api: ReturnType<typeof fakeApi>, readyTimeoutMs = 15_000): Promise<K8sRuntimePlane> {
   const server = new ShimServer()
   const port = await server.start(0, '127.0.0.1')
   servers.push(server)
@@ -96,7 +96,7 @@ async function planeUnderTest(api: ReturnType<typeof fakeApi>): Promise<K8sRunti
     sandboxNamespace: 'agent-sandboxes',
     memberId: 'member-a',
     shimPort: port,
-    readyTimeoutMs: 15_000,
+    readyTimeoutMs,
     api: api.api as never,
     log: { info: () => {}, warn: () => {}, debug: () => {} }
   })
@@ -498,5 +498,88 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     expect(plane.workspaceIncarnationFor?.(session)).toBe(
       cluster.claims.get(plane.driver.claimName(session))!.metadata!.uid
     )
+  })
+
+  it('routes a read of a suspended session directory to that session pod, waking it, not to the agent pod', async () => {
+    // `suspendIfIdle` forgets the launch while the claim and its volume survive on purpose, so the
+    // live-launch registry cannot be what tells a path its pod. The console's `agent/wake` binds the
+    // AGENT subject; a session workspace routed off that registry would be read on the agent pod,
+    // where the directory does not exist — and reported as an empty workspace rather than a refusal.
+    const cluster = fakeCluster()
+    // Short, because what this asserts about the woken pod is that the read waited for IT: the one
+    // listener the harness has is the agent's, so the session pod's channel never arrives.
+    const plane = await planeUnderTest(cluster as never, 250)
+    const port = shimPort(plane)
+    const T1 = sessionHostKey('agent-a', 'slack:C1:T1:agent-a')
+    const leaf = hostKeyDirName(T1)
+    const session = sandboxSubjectFor(T1)
+    const sessionPath = `/agent/sessions/${leaf}/workspace`
+    const served: string[] = []
+
+    // The agent's own pod is up — the console's wake is agent-scoped, so this is the press a read has.
+    const agentBinding = plane.driver.ensureBoundChannel('agent-a')
+    shimAgainst(port, {
+      workspaceRoot: '/agent',
+      token: 'pod-agent',
+      handle: async (capability, payload) => {
+        served.push((payload as { rel: string }).rel)
+        if (capability === 'read') return { ok: true, value: 'dir' }
+        throw new Error(`unexpected capability ${capability}`)
+      }
+    })
+    await agentBinding
+
+    // The session pod was claimed and then swept as idle: its claim stands, its launch is forgotten.
+    await plane.driver.ensureSandbox(session)
+    expect(await plane.suspendIdle(session)).toBe('suspended')
+    expect(plane.launched().map((launch) => launch.subject)).toEqual(['agent-a'])
+    expect(cluster.claims.has(plane.driver.claimName(session))).toBe(true)
+    served.length = 0
+
+    // The read names the session's directory, so it waits for the SESSION pod's channel and refuses
+    // when none arrives — it is never answered by the agent pod, which is the whole bug.
+    const placement = plane.workspaceFsFor('agent-a')!
+    await expect(placement.fs.stat(sessionPath)).rejects.toThrow(`no shim channel bound for ${session} in time`)
+    expect(served).toEqual([])
+    // Waking it is a resume of the claim the cluster already holds, never a new one.
+    expect([...cluster.claims.keys()].sort()).toEqual(['agent-agent-a', plane.driver.claimName(session)].sort())
+    // The agent pod still answers for its own paths, on the same routed port.
+    expect(await placement.fs.stat('/agent/checkout')).toBe('dir')
+    expect(served).toEqual(['checkout'])
+    // And the git runner for a sleeping session directory is deferred rather than withheld, so the
+    // caller does not silently fall back to a local runner for a path that lives on a pod.
+    expect(plane.gitRunnerFor('agent-a', sessionPath)).toBeDefined()
+    expect(plane.gitRunnerFor('agent-a', '/agent/checkout')).toBeDefined()
+  })
+
+  it('refuses a suspended session path rather than waking its pod with the agent pod down', async () => {
+    // The console's wake is agent-scoped, so a bound agent pod IS the press that admits a session pod.
+    // With nothing bound there is no press, and a read must refuse instead of claiming a pod of its own.
+    const cluster = fakeCluster()
+    const plane = await planeUnderTest(cluster as never)
+    const port = shimPort(plane)
+    const T1 = sessionHostKey('agent-a', 'slack:C1:T1:agent-a')
+    const leaf = hostKeyDirName(T1)
+    const session = sandboxSubjectFor(T1)
+    const sessionPath = `/agent/sessions/${leaf}/workspace`
+
+    const binding = plane.driver.ensureBoundChannel(session)
+    shimAgainst(port, {
+      workspaceRoot: '/agent',
+      token: 'pod-session',
+      handle: async () => ({ ok: true, value: 'dir' })
+    })
+    await binding
+    expect(await plane.suspendIdle(session)).toBe('suspended')
+
+    // No pod of this agent is bound, so the workspace seams hand the caller nothing at all.
+    expect(plane.runsInSandbox('agent-a')).toBe(false)
+    expect(plane.workspaceFsFor('agent-a')).toBeUndefined()
+    expect(plane.workspaceFilesFor('agent-a')).toBeUndefined()
+    expect(plane.gitRunnerFor('agent-a', sessionPath)).toBeUndefined()
+    expect(await plane.clearPath('agent-a', sessionPath)).toMatch(/no bound sandbox channel/)
+    // And nothing was woken behind the refusal: the claim is untouched and no launch was recorded.
+    expect(plane.launched()).toEqual([])
+    expect(cluster.claims.has(plane.driver.claimName(session))).toBe(true)
   })
 })

@@ -370,10 +370,12 @@ export class K8sDriver implements SpawnDriver {
       held.push(bound.sandboxName)
       // A session runtime keeps its agent's pod reachable for the agent-scoped seams (managed memory, merge-when-ready, the console's primary checkout): bound and held for the runtime's life, so "a runtime is running" still implies "the agent's pod is up"; a companion that will not come up degrades those seams, never the launch.
       const companion = sandboxSubjectSessionLeaf(subject) === undefined ? undefined : agentSandboxSubject(agentId)
-      await Promise.all([
+      // Settled TOGETHER: a companion still binding when the session bind fails would retain its Sandbox after the catch below drained `held`, and nothing would ever release it.
+      const [channel] = await Promise.allSettled([
         this.ensureBoundChannel(subject, timer),
         companion === undefined ? Promise.resolve() : this.holdCompanion(companion, held)
       ])
+      if (channel.status === 'rejected') throw channel.reason
       this.metrics.channel('bound')
       const session = this.binder.sessionFor(subject)
       if (!session) throw new Error(`no shim session for ${subject} after binding its channel`)

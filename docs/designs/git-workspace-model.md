@@ -357,8 +357,10 @@ reachability they have today. Console and Git reads route each path to the pod
 that owns it. The claim lives as long as the session's row: idle suspension keeps
 the volume, retention judges the dirty and unique-commit rules in the clone on its
 own pod before the row goes, and the claim — volume and all — goes with the row,
-with a replaced workspace, or with a removed agent. HOME is per pod by
-construction.
+with a removed agent, or with a replaced workspace once its conversion runs on
+the volume, which is the same fail-closed gate that empties the primary checkout
+and the first point after the edit at which anything is authoritative. HOME is
+per pod by construction.
 
 ### Non-goals here
 
