@@ -40,6 +40,21 @@ describe('runtime aggregation carries model display metadata', () => {
     expect(flipped!.modelInfo?.['opus[1m]']?.name).toBe('Opus (1M context)')
   })
 
+  it('drops a name the members disagree on — one alias, two concrete models', () => {
+    const other = member({
+      modelCatalog: {
+        models: [
+          { id: 'opus[1m]', name: 'Opus 4.8 (1M context)', description: 'Opus 4.8 with 1M context' },
+          { id: 'haiku' }
+        ],
+        source: 'acp',
+        observedAt: '2026-09-03T00:00:00.000Z'
+      }
+    } as never)
+    expect(unionRuntimes([member(), other])[0]!.modelInfo).toEqual({})
+    expect(intersectRuntimes([member(), other])[0]!.modelInfo).toEqual({})
+  })
+
   it('carries them through the intersection too', () => {
     const [rt] = intersectRuntimes([member(), member()])
     expect(rt!.modelInfo?.['opus[1m]']?.description).toBe('Opus 5 with 1M context')

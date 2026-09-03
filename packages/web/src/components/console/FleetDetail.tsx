@@ -46,9 +46,30 @@ export interface FleetRuntime {
   models: string[]
   /** What the members' catalogs say about those models, by id. A claude runtime advertises
    *  ALIASES (`opus[1m]` is whichever Opus it resolves today), so the name is what says which
-   *  concrete model that is; absent for a member that reported no catalog. */
+   *  concrete model that is. An id is here only when every member that describes it agrees —
+   *  a set whose members resolve one alias differently has no single answer to quote. */
   modelInfo?: Record<string, { name?: string; description?: string }>
   authRequired: boolean
+}
+
+/** Merge two members' answers: an id only one of them describes is carried, and one they
+ *  DISAGREE on is dropped. A group's members are machines an operator enrolled by hand, so
+ *  they can resolve the same alias to different models — `opus[1m]` is Opus 5 on one and Opus
+ *  4.8 on another — and quoting the first would promise a concrete model the next turn might
+ *  not run. Silence is the honest answer there; the id alone is what the card falls back to.
+ *  A member that describes nothing does not vote, or one member yet to report a catalog would
+ *  blank the whole set. */
+function agreedModelInfo(
+  a: Record<string, { name?: string; description?: string }>,
+  b: Record<string, { name?: string; description?: string }>
+): Record<string, { name?: string; description?: string }> {
+  const merged: Record<string, { name?: string; description?: string }> = { ...a }
+  for (const [id, info] of Object.entries(b)) {
+    const prior = merged[id]
+    if (!prior) merged[id] = info
+    else if (prior.name !== info.name || prior.description !== info.description) delete merged[id]
+  }
+  return merged
 }
 
 /** The display half of a member's catalog, by model id — empty when it reported none. */
@@ -85,9 +106,7 @@ export function unionRuntimes(members: readonly DaemonRow[]): FleetRuntime[] {
       }
       if (!prev.version) prev.version = rt.version
       for (const model of rt.models) if (!prev.models.includes(model)) prev.models.push(model)
-      // First member to describe a model wins: replicas agree, and a member with no catalog
-      // must not blank out what a peer already knows.
-      prev.modelInfo = { ...modelInfoOf(rt), ...prev.modelInfo }
+      prev.modelInfo = agreedModelInfo(prev.modelInfo ?? {}, modelInfoOf(rt))
       prev.authRequired ||= rt.authRequired === true
     }
   }
@@ -120,8 +139,8 @@ export function intersectRuntimes(members: readonly DaemonRow[]): FleetRuntime[]
       version: versions.size === 1 ? [...versions][0]! : '',
       versionsDiffer: versions.size > 1,
       models: rt.models.filter((model) => all.every((peer) => peer.models.includes(model))),
-      // Same rule as the union: the first member that describes a model answers for the set.
-      modelInfo: all.reduce((info, peer) => ({ ...modelInfoOf(peer), ...info }), {}),
+      // Same rule as the union — and it bites here: a group's members really do differ.
+      modelInfo: all.reduce((info, peer) => agreedModelInfo(info, modelInfoOf(peer)), {}),
       // Sticky, as in the union: one member needing a login qualifies the set's promise, so the
       // row is MARKED. Not withdrawn — placement is deliberately independent of login readiness
       // (preset-agents.md §3.2), which is why this does not exclude the runtime.
