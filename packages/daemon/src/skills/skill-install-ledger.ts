@@ -513,7 +513,8 @@ async function reconcileSkillBundlesLocked(
       runtime: options.runtime,
       cliVersion: options.cliVersion,
       ...(options.publicationOperationId ? { publicationOperationId: options.publicationOperationId } : {}),
-      ...(ledger?.fingerprint ? { priorFingerprint: ledger.fingerprint } : {}),
+      // A pruned set is no longer what that fingerprint described, and recovery cannot see the prune: leaving it would let the next plan skip the reinstall.
+      ...(ledger?.fingerprint && prior.length === recorded.length ? { priorFingerprint: ledger.fingerprint } : {}),
       priorGitResolutions: ledger?.gitResolutions ?? [],
       prior,
       pending: candidates.map(stripCandidate),

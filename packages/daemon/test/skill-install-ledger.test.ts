@@ -382,6 +382,37 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     expect(entries).toEqual(['fixture'])
   })
 
+  // Recovery reads the pruned journal and cannot tell a bundle was dropped, so the fingerprint must
+  // not survive the prune: an interrupted reinstall would otherwise commit "unchanged" over a short set.
+  it('reinstalls after a reinstall over a vanished record is interrupted', async () => {
+    await reconcile('v1')
+    await rm(join(cwd, '.claude'), { recursive: true, force: true })
+
+    await expect(
+      reconcileSkillBundles({
+        cwd,
+        stateDir,
+        agentId: 'a1',
+        runtime: 'claude',
+        cliVersion: '1.5.21',
+        fingerprint: 'v1',
+        candidates: [{ ...oneFileReceipt(BUNDLE, 'fixture'), sourceDir }],
+        assertMutationAuthority: () => {
+          throw new Error('mutation authority lost')
+        }
+      })
+    ).rejects.toThrow()
+
+    const interrupted = await readSkillLedger(await skillLedgerLocation(cwd, stateDir))
+    expect(interrupted?.phase).toBe('ready')
+
+    const retry = await reconcile('v1')
+
+    expect(retry.skipped).toBeNull()
+    expect(retry.installed).toEqual([BUNDLE])
+    expect(existsSync(join(cwd, ...BUNDLE.split('/'), 'SKILL.md'))).toBe(true)
+  })
+
   it('still refuses a recorded path that now holds content it does not own', async () => {
     await reconcile('v1')
     const target = join(cwd, ...BUNDLE.split('/'))
