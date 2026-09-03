@@ -504,6 +504,11 @@ node <bundled skills@1.5.21 bin> add <absoluteSnapshot> \
   fsynced first; the runtime-discovery `SKILL.md` is written and fsynced last.
   The final receipt is verified before `ready` commits, after which exact
   quarantine/tombstone cleanup continues forward.
+- A recorded inode identity is one half of the ownership proof, never the whole of
+  it: inode numbers are recycled, so a re-checked-out directory can be seated on the
+  recorded one and only the receipt walk separates it from the tree the daemon
+  installed. A quarantine is therefore refused as unowned when either half
+  disagrees.
 - Recovery with persisted inode authority may touch only the exact reservation
   or receipt-bound tree. Before that authority exists it may remove only
   content-free crash shapes: an empty target directory, or an empty target that

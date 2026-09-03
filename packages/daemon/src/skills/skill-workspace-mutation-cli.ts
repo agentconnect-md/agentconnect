@@ -343,6 +343,18 @@ async function inspectBundle(
   return identity(rootAfter)
 }
 
+// An inode number outlives the directory that held it wherever the filesystem recycles them, so a
+// recorded identity alone cannot prove ownership: the receipt walk is the other half of that proof.
+async function inspectOwnedBundle(root: string, expected: BundleReceipt): Promise<PathIdentity> {
+  try {
+    return await inspectBundle(root, expected)
+  } catch (error) {
+    // Only the walk's own verdicts are re-read as ownership; a filesystem error stays what it is.
+    if ((error as NodeJS.ErrnoException).code) throw error
+    fail(`refusing to replace unowned skill: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 async function ensureDirectoryPath(root: string, path: string): Promise<void> {
   let current = root
   for (const part of path.split('/').slice(0, -1)) {
@@ -375,7 +387,7 @@ async function reserve(spec: ReserveSpec): Promise<ReservationAuthority> {
   try {
     const current = await fsp.lstat(target, { bigint: true })
     if (!spec.prior || !sameIdentity(identity(current), spec.prior.identity)) fail('refusing to replace unowned skill')
-    await inspectBundle(target, spec.prior)
+    await inspectOwnedBundle(target, spec.prior)
     await fsp.rename(target, quarantine)
     await syncParent(quarantine)
     const quarantined = await inspectBundle(quarantine, spec.prior)
@@ -549,7 +561,7 @@ async function apply(spec: ApplySpec): Promise<Record<string, PathIdentity | und
       const current = await fsp.lstat(target, { bigint: true })
       if (!spec.prior || !sameIdentity(identity(current), spec.prior.identity))
         fail('refusing to replace unowned skill')
-      await inspectBundle(target, spec.prior)
+      await inspectOwnedBundle(target, spec.prior)
       await fsp.rename(target, quarantine)
       await syncParent(quarantine)
       quarantineIdentity = await inspectBundle(quarantine, spec.prior)

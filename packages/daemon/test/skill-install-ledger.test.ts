@@ -424,6 +424,19 @@ describe.skipIf(process.platform === 'win32')('skill install ledger over a re-ch
     expect(await readFile(join(target, 'manual'), 'utf8')).toBe('do not delete')
   })
 
+  // The recorded inode is not proof on its own: a filesystem that recycles inode numbers can seat a
+  // re-checked-out directory on the recorded one, and then only the receipt walk tells the two apart.
+  it('refuses a recorded path whose identity still matches but whose content no longer does', async () => {
+    await reconcile('v1')
+    const target = join(cwd, ...BUNDLE.split('/'))
+    const recorded = await pathIdentity(target)
+    await writeFile(join(target, 'manual'), 'do not delete')
+    expect(await pathIdentity(target)).toEqual(recorded)
+
+    await expect(reconcile('v1')).rejects.toThrow(/installation failure: .*refusing to replace unowned skill/)
+    expect(await readFile(join(target, 'manual'), 'utf8')).toBe('do not delete')
+  })
+
   it('names the installation failure alongside the recovery failure', async () => {
     await reconcile('v1')
     const target = join(cwd, ...BUNDLE.split('/'))
