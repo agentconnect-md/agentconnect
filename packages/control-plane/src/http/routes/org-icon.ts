@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import type { ZodTypeProvider } from '../plugins/zod.js'
 import type { HttpDeps } from '../deps.js'
-import { buildAgentIconSvg } from '../../agents/agent-icon-render.js'
+import { buildAgentIconSvg, ICON_RENDER_FONT } from '../../agents/agent-icon-render.js'
 import { defaultOrgGlyphIcon } from '../../agents/agent-icon.js'
 import { orgIconKey, joinPublicUrl } from '../../icons/icon-store.js'
 
@@ -39,7 +39,7 @@ export function orgIconRoutes(deps: HttpDeps) {
         let png: Buffer
         try {
           const { Resvg } = await import('@resvg/resvg-js')
-          png = new Resvg(svg, { fitTo: { mode: 'width', value: 128 } }).render().asPng()
+          png = new Resvg(svg, { fitTo: { mode: 'width', value: 128 }, font: ICON_RENDER_FONT }).render().asPng()
         } catch (err) {
           req.log.error({ err }, 'org icon render failed')
           return reply.code(500).send()

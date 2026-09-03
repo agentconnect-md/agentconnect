@@ -106,6 +106,9 @@ export function buildAgentIconSvg(icon: AgentIcon | null, runtime: string | null
   return `${open}<rect width="64" height="64" fill="${DARK_PLATE}"/>${centered(runtimeMarkInner(runtime ?? ''), 0.62)}</svg>`
 }
 
+/** Composed icon SVGs are shapes only, never `<text>`, so skip resvg's system-font scan — it costs ~180ms of every render. */
+export const ICON_RENDER_FONT = { loadSystemFonts: false }
+
 /** Rasterize the console descriptor for consumers that require uploaded image
  * bytes rather than an SVG or public URL (the icon endpoint and bot profile setup).
  * Keep the native module lazy so a load failure degrades only the calling feature,
@@ -113,5 +116,7 @@ export function buildAgentIconSvg(icon: AgentIcon | null, runtime: string | null
 export async function renderAgentIconPng(icon: AgentIcon | null, runtime: string | null, width = 128): Promise<Buffer> {
   const { Resvg } = await import('@resvg/resvg-js')
   const svg = buildAgentIconSvg(icon, runtime)
-  return Buffer.from(new Resvg(svg, { fitTo: { mode: 'width', value: width } }).render().asPng())
+  return Buffer.from(
+    new Resvg(svg, { fitTo: { mode: 'width', value: width }, font: ICON_RENDER_FONT }).render().asPng()
+  )
 }
