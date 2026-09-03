@@ -7,7 +7,9 @@ export interface ModelSelectOption {
    *  the row's label verbatim (runtime-model-catalog.md §7). */
   value: string
   /** The runtime's own display name, when it differs from the id. Right-aligned meta, never
-   *  the label: "Opus (1M context)" tells you what `opus[1m]` is without replacing it. */
+   *  the label: "Opus (1M context)" tells you what `opus[1m]` is without replacing it. It is
+   *  the part that gives way when the row is tight — a shrinkable name is what lets the menu
+   *  narrow to its cap instead of forcing its own min-content width on the dialog. */
   name?: string
   /** The runtime's model blurb — the row's hover text. */
   description?: string
@@ -143,9 +145,12 @@ export function ModelSelect({
             tabIndex={-1}
             aria-label={ariaLabel}
             aria-activedescendant={activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined}
-            // Sized to the widest row, trigger width as the floor: a model id and its display
-            // name are longer than this 1/3 column, and neither reads well truncated.
-            className="fmenu left-0 z-40 max-w-[420px] min-w-full rounded-lg p-2 shadow-(--shadow-xl) outline-none"
+            // Anchored to the field's RIGHT edge (`.fmenu` itself sets `left: 0`, hence the
+            // explicit `left-auto`). Model is the last field of its row, so a menu wider than
+            // the trigger has to grow INWARD: left-anchored it pushed past the dialog, widening
+            // the form's scroll area and putting a horizontal scrollbar under it. Width is the
+            // widest row, floored at the trigger and capped so it cannot outgrow the viewport.
+            className="fmenu right-0 left-auto z-40 w-max max-w-[min(420px,calc(100vw-32px))] min-w-full rounded-lg p-2 shadow-(--shadow-xl) outline-none"
             onKeyDown={onListKeyDown}
           >
             {options.map((option, index) => {
@@ -170,7 +175,7 @@ export function ModelSelect({
                   onMouseEnter={() => setActiveIndex(index)}
                   onClick={() => pick(option)}
                 >
-                  <span className="flex-1 truncate">{modelLabel(option.value)}</span>
+                  <span className="min-w-0 flex-1 truncate">{modelLabel(option.value)}</span>
                   {option.unavailable ? (
                     <span className="flex-none font-sans text-[11px] font-medium leading-normal text-(--status-paused)">
                       unavailable
@@ -178,7 +183,7 @@ export function ModelSelect({
                   ) : (
                     option.name && (
                       <span
-                        className={`flex-none truncate font-sans text-[11.5px] font-normal leading-normal ${
+                        className={`min-w-0 truncate font-sans text-[11.5px] font-normal leading-normal ${
                           isSelected ? 'text-(--brand-soft-text) opacity-80' : 'text-(--text-tertiary)'
                         }`}
                       >
