@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { SandboxManager, SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime'
+import { SANDBOX_TEMP_DIR_ENV } from './sandbox-temp.js'
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`
@@ -30,6 +31,31 @@ function isAncestorProcess(ownerPid: number): boolean {
   }
 
   return false
+}
+
+/** The child's temp root: the daemon composes an ACP host's own `<agentDir>/t/<8 hex>` and passes it here, since SRT's multiplexer socket sits directly under TMPDIR and AF_UNIX truncates a path built from a per-session runtime HOME. It stays subject to the same guard the private HOME has — an explicit SRT write root. Without one (the audited offline helpers, and a launch in a sandbox pod) the private HOME keeps its own. */
+function childTempDir(writeRoots: string[], privateHome: string): string {
+  const requested = process.env[SANDBOX_TEMP_DIR_ENV]
+  // Never travels on to the sandboxed child: it is the daemon's instruction to this process.
+  delete process.env[SANDBOX_TEMP_DIR_ENV]
+  if (requested === undefined) {
+    const homeTmp = join(resolve(privateHome), '.tmp')
+    if (existsSync(homeTmp)) {
+      const stat = lstatSync(homeTmp)
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new Error('private SRT temp path must be a real directory')
+      }
+    }
+    mkdirSync(homeTmp, { recursive: true, mode: 0o700 })
+    chmodSync(homeTmp, 0o700)
+    return homeTmp
+  }
+  if (!isAbsolute(requested)) throw new Error('the SRT temp root must be an absolute path')
+  const tempDir = realpathSync(requested)
+  if (!writeRoots.includes(resolve(tempDir))) {
+    throw new Error('the SRT temp root must be an explicit SRT write root')
+  }
+  return tempDir
 }
 
 /**
@@ -84,17 +110,8 @@ export async function runSandboxRuntimeProvider(argv: string[], opts: { offline?
     if (!privateHome || !writeRoots.includes(resolve(privateHome))) {
       throw new Error('private HOME must be an explicit SRT write root')
     }
-    const privateTmp = join(resolve(privateHome), '.tmp')
-    if (existsSync(privateTmp)) {
-      const stat = lstatSync(privateTmp)
-      if (stat.isSymbolicLink() || !stat.isDirectory()) {
-        throw new Error('private SRT temp path must be a real directory')
-      }
-    }
-    mkdirSync(privateTmp, { recursive: true, mode: 0o700 })
-    chmodSync(privateTmp, 0o700)
-    // SRT otherwise defaults TMPDIR to the shared host /tmp/claude path. Keep
-    // temporary state inside this agent's private HOME instead.
+    const privateTmp = childTempDir(writeRoots, privateHome)
+    // SRT otherwise defaults TMPDIR to the shared host /tmp/claude path.
     process.env.HOME = privateHome
     process.env.TMPDIR = privateTmp
     process.env.CLAUDE_CODE_TMPDIR = privateTmp

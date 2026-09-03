@@ -29,11 +29,12 @@ import {
 import { AcpHost, turnFailureCode, turnFailureReason } from './acp/acp-host.js'
 import {
   probeSandboxHost,
-  removeSandboxSettings,
+  removeHostSandboxState,
   SandboxError,
   type SandboxMechanism,
   type SandboxProbe
 } from './acp/sandbox.js'
+import { reclaimStaleHostTempDirs } from './acp/sandbox-temp.js'
 import {
   agentHostKey,
   hostKeyAgentId,
@@ -2157,6 +2158,12 @@ export class Daemon {
           // workspace. A later restart can retry the best-effort cleanup.
           this.log.warn(`workspace: stale conversion clone cleanup failed for agent "${agent.id}" (${formatErr(err)})`)
         }
+      }
+      // Same reasoning for a confined host's temp tree: stopHost drops it, so a leaf
+      // still under the agent's own temp root at boot is a crash's leftovers.
+      const reclaimedTempDirs = reclaimStaleHostTempDirs(agent.dir)
+      if (reclaimedTempDirs.length > 0) {
+        this.log.info(`sandbox: reclaimed ${reclaimedTempDirs.length} stale temp director(ies) for agent "${agent.id}"`)
       }
       // No host is running at boot, so no materialized config-file secret should
       // exist. A clean shutdown removed them in stopHost; sweep what a
@@ -4633,7 +4640,7 @@ export class Daemon {
   private releaseHostLaunch(key: HostKey): void {
     const launch = this.hostLaunch.get(key)
     this.hostLaunch.delete(key)
-    if (launch) removeSandboxSettings(launch.agentDir, hostKeyDirName(key))
+    if (launch) removeHostSandboxState(launch.agentDir, key)
   }
 
   /** Drop an agent's config-file secrets once the pool's last host for it is gone. */
@@ -5176,7 +5183,7 @@ export class Daemon {
     try {
       host = await this.buildDreamHost(agent, context.inputDir, dreamHostKey, issued)
     } catch (error) {
-      removeSandboxSettings(agent.dir, hostKeyDirName(dreamHostKey))
+      removeHostSandboxState(agent.dir, dreamHostKey)
       if (issued) await this.modelSessions.revokeKeyQuietly(issued.grant.keyId)
       throw error
     }
@@ -5188,7 +5195,7 @@ export class Daemon {
       // attacker-influenced context never lingers (dreams are rare). Stopping the
       // child also kills a runtime that ignored `session/cancel`.
       await host.stop().catch(() => {})
-      removeSandboxSettings(agent.dir, hostKeyDirName(dreamHostKey))
+      removeHostSandboxState(agent.dir, dreamHostKey)
       if (issued) {
         await this.modelSessions.revokeKey(issued.grant.keyId)
       }
@@ -14036,7 +14043,7 @@ export class Daemon {
         await host.stop().catch(() => {})
         const failedLaunch = this.hostLaunch.get(key)
         this.hostLaunch.delete(key)
-        if (failedLaunch) removeSandboxSettings(failedLaunch.agentDir, hostKeyDirName(key))
+        if (failedLaunch) removeHostSandboxState(failedLaunch.agentDir, key)
         if (this.hostStartGeneration.get(key) !== generation) throw err
         // Remove the failed attempt's materialized config-file secrets unless another host of the agent still reads them.
         if (!this.agentHasOtherHosts(agentId, key)) {
@@ -15023,8 +15030,8 @@ export class Daemon {
       clearDeliveryBindings()
       clearMemoryExtractionQuarantines()
       removeConfigFiles()
-      // The policy the provider read for this child is daemon-owned per host; it goes with the child.
-      if (launch) removeSandboxSettings(launch.agentDir, hostKeyDirName(key))
+      // The policy the provider read for this child and the temp directory it opened are daemon-owned per host; both go with the child.
+      if (launch) removeHostSandboxState(launch.agentDir, key)
     }
   }
 

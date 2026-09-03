@@ -192,6 +192,40 @@ describe('Daemon session lifecycle (#118)', () => {
     await daemon.stop()
   })
 
+  // Boot is the one moment every host of the agent is provably stopped, so it is where a crash's
+  // leftover host temp directories are reclaimed. Only leaves of a temp root the daemon proved it
+  // owns go: an operator's data at the same short name, marker-less, is left untouched.
+  it("reclaims an agent's stale host temp directories at boot", async () => {
+    const root = scaffold()
+    const tempRoot = join(root, 'agents', 'bot-a', 't')
+    const orphaned = join(tempRoot, 'deadbeef')
+    const stranger = join(tempRoot, 'operator-notes')
+    mkdirSync(orphaned, { recursive: true })
+    mkdirSync(stranger, { recursive: true })
+    writeFileSync(join(tempRoot, '.agentconnect-runtime-temp'), '')
+
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => quietHost() as any })
+    await daemon.start()
+
+    expect(existsSync(orphaned)).toBe(false)
+    expect(existsSync(stranger)).toBe(true)
+    await daemon.stop()
+  })
+
+  // An agent whose `workspace.path` resolves to that same name keeps every byte of it.
+  it('never reclaims a temp-root name the daemon did not create', async () => {
+    const root = scaffold()
+    const workspace = join(root, 'agents', 'bot-a', 't')
+    const precious = join(workspace, 'deadbeef')
+    mkdirSync(precious, { recursive: true })
+
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: () => quietHost() as any })
+    await daemon.start()
+
+    expect(existsSync(precious)).toBe(true)
+    await daemon.stop()
+  })
+
   it('does not construct or start a cold host when workspace preparation fails', async () => {
     const root = scaffold()
     const workspace = join(root, 'agents', 'bot-a', 'workspace')

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, join, relative, resolve, sep } from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import { createRequire } from 'node:module'
@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -23,8 +24,16 @@ import {
   SandboxError,
   detectSandbox,
   probeSandboxHost,
+  removeHostSandboxState,
   writeSandboxSettings
 } from '../src/acp/sandbox.js'
+import {
+  AF_UNIX_PATH_MAX,
+  prepareSandboxTempDir,
+  reclaimStaleHostTempDirs,
+  sandboxTempDirFor
+} from '../src/acp/sandbox-temp.js'
+import { agentHostKey, hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { claudeInnerSandboxSettings } from '../src/runtime-defs/claude-runtime.js'
 import { clearConfigFiles, configFilesDir, materializeConfigFiles } from '../src/shim/config-file-env.js'
 
@@ -486,6 +495,153 @@ describe('Claude credential environment isolation', () => {
         else process.env[name] = value
       }
       rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+// #1763 made a confined session's runtime HOME a per-session directory, which pushed SRT's
+// multiplexer socket past the AF_UNIX cap and left every confined session-isolated agent unable
+// to start ("listen EINVAL"). A host's temp dir is a short leaf of the agent dir now, and a launch
+// whose socket would still not fit is refused where the path is visible.
+describe('sandbox temp directories', () => {
+  // SRT confines a host on Linux alone, so its 107 usable sun_path bytes are the budget. The socket
+  // name SRT composes is `srt-mux-<pid>-<n>.sock`, so a pid at the 22-bit ceiling is the widest one.
+  const SOCKET_NAME = 'srt-mux-4194304-0.sock'
+
+  const typicalAgentDir = '/home/ubuntu/.agentconnect/agents/review-bot'
+  const hostKey = sessionHostKey('review-bot', 'slack:C0123456789:1730000000.123456')
+
+  it("keeps a typical install's SRT socket inside the AF_UNIX limit, where the shape it replaced overflowed", () => {
+    const socket = join(sandboxTempDirFor(typicalAgentDir, hostKey), SOCKET_NAME)
+    expect(Buffer.byteLength(socket)).toBeLessThanOrEqual(AF_UNIX_PATH_MAX)
+    // The shape this replaced, on the SAME input: a temp dir under the session's own HOME overflows.
+    const underSessionHome = join(typicalAgentDir, 'sessions', hostKeyDirName(hostKey), 'home', '.tmp', SOCKET_NAME)
+    expect(Buffer.byteLength(underSessionHome)).toBeGreaterThan(AF_UNIX_PATH_MAX)
+  })
+
+  it('gives the agent host and each session host of one agent their own directory', () => {
+    const shared = sandboxTempDirFor(typicalAgentDir, agentHostKey('review-bot'))
+    const first = sandboxTempDirFor(typicalAgentDir, sessionHostKey('review-bot', 'session-a'))
+    const second = sandboxTempDirFor(typicalAgentDir, sessionHostKey('review-bot', 'session-b'))
+    expect(new Set([shared, first, second]).size).toBe(3)
+    // Each is a two-segment leaf of the agent's own dir, so the agent-dir rule covers it with no exemption.
+    for (const dir of [shared, first, second]) {
+      expect(relative(resolve(typicalAgentDir), dir).split(sep)).toEqual(['t', expect.stringMatching(/^[0-9a-f]{8}$/)])
+    }
+  })
+
+  it('creates the directory 0700 under the agent dir and reuses it', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'ac-temp-ok-'))
+    try {
+      const created = prepareSandboxTempDir(agentDir, hostKey)
+      expect(created).toBe(realpathSync(sandboxTempDirFor(agentDir, hostKey)))
+      expect(existsSync(created)).toBe(true)
+      expect(prepareSandboxTempDir(agentDir, hostKey)).toBe(created)
+      if (process.platform !== 'win32') {
+        expect(statSync(created).mode & 0o7777).toBe(0o700)
+        expect(statSync(join(realpathSync(agentDir), 't')).mode & 0o7777).toBe(0o700)
+      }
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true })
+    }
+  })
+
+  // The honest cost of living in the agent dir: this is short, not bounded. A deep enough daemon
+  // root plus a long agent name still overflows, and the launch has to say so — the alternative is
+  // the opaque `listen EINVAL` three ACP start attempts deep that #1763 shipped.
+  it('refuses a launch whose SRT socket would not fit, naming the limit and the path', () => {
+    // The system temp dir is deep on macOS; this case needs room for a FITTING path beside the overflowing one.
+    const root = realpathSync(mkdtempSync(join(process.platform === 'win32' ? tmpdir() : '/tmp', 'ac-t-')))
+    const budget = AF_UNIX_PATH_MAX - Buffer.byteLength(join(sandboxTempDirFor(root, hostKey), SOCKET_NAME))
+    try {
+      const tooDeep = join(root, 'a'.repeat(budget))
+      mkdirSync(tooDeep, { recursive: true })
+      expect(() => prepareSandboxTempDir(tooDeep, hostKey, 'linux')).toThrow(
+        new RegExp(`${SOCKET_NAME}" is \\d+ bytes and the limit is ${AF_UNIX_PATH_MAX}`)
+      )
+      // Refused before the leaf exists, so a retry on a shorter root is not left a stale directory.
+      expect(existsSync(sandboxTempDirFor(tooDeep, hostKey))).toBe(false)
+      // One byte shorter fits, so what the refusal measures is the budget and not the fixture.
+      const fits = join(root, 'a'.repeat(budget - 1))
+      mkdirSync(fits, { recursive: true })
+      expect(existsSync(prepareSandboxTempDir(fits, hostKey, 'linux'))).toBe(true)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses a symlink standing in for the temp parent', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'ac-temp-link-'))
+    try {
+      const elsewhere = join(agentDir, 'elsewhere')
+      mkdirSync(elsewhere)
+      symlinkSync(elsewhere, join(agentDir, 't'))
+      expect(() => prepareSandboxTempDir(agentDir, hostKey)).toThrow(/not a real directory inside the agent dir/)
+      // And nothing was written through the link.
+      expect(existsSync(join(elsewhere, basename(sandboxTempDirFor(agentDir, hostKey))))).toBe(false)
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true })
+    }
+  })
+
+  // `t` is a short name, not a reserved one: an agent's `workspace.path` resolves under the agent dir
+  // too, so an operator may already have data — a whole workspace — at exactly that path. Ownership is
+  // proven by the marker this daemon writes when it creates the parent, never assumed from the name.
+  it('refuses a temp root this daemon did not create, and never reclaims anything under it', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'ac-temp-own-'))
+    try {
+      // A workspace that happens to live at `<agentDir>/t`, holding a name that looks like a leaf.
+      const workspace = join(agentDir, 't')
+      const precious = join(workspace, 'deadbeef')
+      mkdirSync(precious, { recursive: true })
+      writeFileSync(join(workspace, 'README.md'), 'operator data')
+
+      expect(() => prepareSandboxTempDir(agentDir, hostKey)).toThrow(/this daemon did not create it/)
+      expect(reclaimStaleHostTempDirs(agentDir)).toEqual([])
+      expect(existsSync(precious)).toBe(true)
+      expect(existsSync(join(workspace, 'README.md'))).toBe(true)
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true })
+    }
+  })
+
+  it('reclaims only the leaves of a temp root it owns', () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'ac-temp-sweep-'))
+    try {
+      const live = prepareSandboxTempDir(agentDir, hostKey)
+      const parent = join(realpathSync(agentDir), 't')
+      const stranger = join(parent, 'not-a-leaf')
+      mkdirSync(stranger)
+
+      expect(reclaimStaleHostTempDirs(agentDir)).toEqual([basename(live)])
+
+      expect(existsSync(live)).toBe(false)
+      // The parent, its ownership marker and anything that is not a leaf survive.
+      expect(existsSync(parent)).toBe(true)
+      expect(existsSync(stranger)).toBe(true)
+      expect(readdirSync(parent).sort()).toEqual(['.agentconnect-runtime-temp', 'not-a-leaf'])
+      // Idempotent: a second boot finds nothing left to reclaim.
+      expect(reclaimStaleHostTempDirs(agentDir)).toEqual([])
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true })
+    }
+  })
+
+  it("retires a stopped host's policy directory and its temp directory together", () => {
+    const agentDir = mkdtempSync(join(tmpdir(), 'ac-agent-teardown-'))
+    const stoppedHost = sessionHostKey('agent-1', 'session-a')
+    try {
+      const settingsPath = writeSandboxSettings(agentDir, hostKeyDirName(stoppedHost), {
+        writable: [join(agentDir, 'workspace')],
+        denyRead: [agentDir],
+        allowRead: [join(agentDir, 'workspace')]
+      })
+      const tempDir = prepareSandboxTempDir(agentDir, stoppedHost)
+      removeHostSandboxState(agentDir, stoppedHost)
+      expect(existsSync(settingsPath)).toBe(false)
+      expect(existsSync(tempDir)).toBe(false)
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true })
     }
   })
 })

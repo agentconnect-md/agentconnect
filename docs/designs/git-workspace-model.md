@@ -306,7 +306,7 @@ Layout, one directory per session, removed whole at retirement:
 <agentDir>/sessions/<sid>/
 ├── workspace/            # primary clone — the session cwd
 ├── repos/<owner>/<repo>/ # one clone per secondary root (multi-repository-workspaces.md decision 4)
-└── home/                 # private HOME, TMPDIR, XDG_RUNTIME_DIR, runtime state
+└── home/                 # private HOME, XDG_RUNTIME_DIR, runtime state
 ```
 
 The primary checkout keeps its roles for `shared` isolation, the console's
@@ -331,9 +331,15 @@ the parent of anything.
   its `hooks` and `config` read-only, for both the outer sandbox and a runtime's
   inner one.
 - **HOME is per session.** `home/` is the runtime's private HOME — `HOME`,
-  `TMPDIR`, `XDG_*`, `CODEX_HOME` and the other runtime-state env point there —
-  seeded from the host and protected exactly as the agent's `home/` is, and
-  removed with the leaf. Runtime-native cross-session state (Codex memories,
+  `XDG_*`, `CODEX_HOME` and the other runtime-state env point there — seeded
+  from the host and protected exactly as the agent's `home/` is, and removed
+  with the leaf. `TMPDIR` is the exception: a confined host's temp directory is
+  `<agentDir>/t/<8 hex of the host key>`, granted read+write by the sandbox
+  policy and removed with the host, because SRT opens its multiplexer socket
+  directly under `TMPDIR` and AF_UNIX caps that path at 107 bytes, which a HOME
+  below the daemon root, the agent name and this leaf overflows. That shape is
+  short rather than bounded — a launch whose socket would still not fit is
+  refused by name at preparation. Runtime-native cross-session state (Codex memories,
   goals and logs; Claude project state) is therefore per session; managed memory
   lives outside HOME and is unaffected. Package caches (`.npm`, `.cache`,
   `.local`) live there too, writable per session by construction and gone with

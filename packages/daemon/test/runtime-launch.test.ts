@@ -19,6 +19,7 @@ import { parse as parseYaml } from 'yaml'
 import { effectiveRunInSandbox, prepareRuntimeLaunch, privateRuntimeHomeFor } from '../src/launch/prepare.js'
 import { composeRuntimeLaunch, runtimeSandboxReadRoots } from '../src/launch/compose.js'
 import { agentHostKey, hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
+import { sandboxTempDirFor, SANDBOX_TEMP_DIR_ENV } from '../src/acp/sandbox-temp.js'
 import { CODEX_ACP_PERMISSION_PROFILE_CONFIG_ENV } from '../src/acp/codex-permission-profiles.js'
 import { runtimeMemoryCapabilities } from '../src/memory/runtime/capabilities.js'
 import { MemoryProviderUnavailableError } from '../src/memory/provider.js'
@@ -40,6 +41,16 @@ function agentFilesystem(env: Record<string, string>): string {
   return profile.configOverrides.find((value) =>
     value.startsWith('permissions.agentconnect-protected-workspace.filesystem=')
   )!
+}
+
+/** One launch's env or write roots without the per-host temp directory, so two hosts stay comparable. */
+function withoutTempDir(env: Record<string, string>): Record<string, string>
+function withoutTempDir(roots: string[]): string[]
+function withoutTempDir(value: Record<string, string> | string[]): Record<string, string> | string[] {
+  if (Array.isArray(value)) return value.filter((path) => !/[\\/]t[\\/][0-9a-f]{8}$/.test(path))
+  const rest = { ...value }
+  for (const name of ['TMPDIR', 'CLAUDE_TMPDIR', 'CLAUDE_CODE_TMPDIR', SANDBOX_TEMP_DIR_ENV]) delete rest[name]
+  return rest
 }
 
 function coveredBy(paths: string[], target: string): boolean {
@@ -600,9 +611,13 @@ describe('prepareRuntimeLaunch', () => {
 
     expect(shared.env.HOME).toBe(join(scopeDir, 'home'))
     expect(dream.env.HOME).toBe(join(scopeDir, 'home'))
-    expect(JSON.stringify(dream.env)).toBe(JSON.stringify(shared.env))
-    expect(dream.sandbox!.writable).toEqual(shared.sandbox!.writable)
-    expect(readFileSync(dream.sandbox!.settingsPath, 'utf8')).toBe(readFileSync(shared.sandbox!.settingsPath, 'utf8'))
+    // Its own temp directory is the ONE thing a session-keyed host does not share, by construction (#1763).
+    expect(dream.env.TMPDIR).not.toBe(shared.env.TMPDIR)
+    expect(withoutTempDir(dream.env)).toEqual(withoutTempDir(shared.env))
+    expect(withoutTempDir(dream.sandbox!.writable)).toEqual(withoutTempDir(shared.sandbox!.writable))
+    expect(readFileSync(dream.sandbox!.settingsPath, 'utf8').replaceAll(dream.env.TMPDIR!, '<temp>')).toBe(
+      readFileSync(shared.sandbox!.settingsPath, 'utf8').replaceAll(shared.env.TMPDIR!, '<temp>')
+    )
   })
 
   // The daemon redirects native memory under this HOME before the launch exists, so the two derivations must agree.
@@ -847,6 +862,81 @@ describe('prepareRuntimeLaunch', () => {
         hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
       })
     ).toThrow(/unsafe AgentConnect daemon root/)
+  })
+
+  // #1763: SRT opens its multiplexer directly under TMPDIR, so a temp dir below a per-session private
+  // HOME made that socket path a function of the session leaf too and blew past the AF_UNIX cap. It is
+  // a short leaf of the agent dir now — inside the agent dir, so the policy carves it back like any other.
+  it("puts the confined child's temp dir in the agent dir and carves exactly it back", () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const hostKey = sessionHostKey('agent-1', 'slack:C0123456789:1730000000.123456')
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin', TMPDIR: '/tmp' }
+    })
+    const tempDir = realpathSync(sandboxTempDirFor(scopeDir, hostKey))
+    expect(launch.env.TMPDIR).toBe(tempDir)
+    expect(launch.env.CLAUDE_TMPDIR).toBe(tempDir)
+    expect(launch.env.CLAUDE_CODE_TMPDIR).toBe(tempDir)
+    // The provider reads this one rather than recomputing the path from HOME.
+    expect(launch.env[SANDBOX_TEMP_DIR_ENV]).toBe(tempDir)
+    // Strictly inside the agent dir, which is what lets the boundary keep its rule unbroken.
+    expect(coveredBy([realpathSync(scopeDir)], tempDir)).toBe(true)
+    expect(tempDir).not.toBe(realpathSync(scopeDir))
+    if (process.platform !== 'win32') expect(statSync(tempDir).mode & 0o7777).toBe(0o700)
+    // An explicit SRT write root, which is what the provider requires of it.
+    expect(launch.sandbox!.writable).toContain(tempDir)
+    const settings = JSON.parse(readFileSync(launch.sandbox!.settingsPath, 'utf8'))
+    expect(settings.filesystem.allowWrite).toContain(tempDir)
+    expect(settings.filesystem.allowRead).toContain(tempDir)
+    // The shared temp roots stay denied — nothing about this change reopens them.
+    expect(coveredBy(settings.filesystem.denyRead, realpathSync('/tmp'))).toBe(true)
+    expect(settings.filesystem.allowRead).not.toContain(realpathSync('/tmp'))
+    // Every host of the agent gets its own, so one session's temp state is not another's.
+    expect(sandboxTempDirFor(scopeDir, agentHostKey('agent-1'))).not.toBe(sandboxTempDirFor(scopeDir, hostKey))
+  })
+
+  // A probe and a model enumerator launch against a disposable scope dir, so their temp directory is
+  // a child of the tree they already delete — nothing extra to release when the host stops.
+  it("keeps a disposable host's temp dir inside the scope its caller throws away", () => {
+    const scopeDir = mkdtempSync(join(tmpdir(), 'ac-probe-scope-'))
+    const cwd = join(scopeDir, 'workspace')
+    mkdirSync(cwd, { recursive: true })
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'claude-acp',
+      runtime: { command: 'npx', args: ['claude-agent-acp'], env: [] },
+      scopeDir,
+      cwd,
+      runInSandbox: true,
+      isolateHome: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      hostEnv: { HOME: scopeDir, PATH: '/usr/bin' }
+    })
+    expect(coveredBy([realpathSync(scopeDir)], launch.env.TMPDIR!)).toBe(true)
+    rmSync(scopeDir, { recursive: true, force: true })
+    expect(existsSync(launch.env.TMPDIR!)).toBe(false)
+  })
+
+  it('leaves an unconfined launch on the host temp dir', () => {
+    const { scopeDir, cwd, hostHome } = fixture()
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'maki',
+      scopeDir,
+      cwd,
+      runInSandbox: false,
+      isolateHome: true,
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin', TMPDIR: '/tmp' }
+    })
+    expect(launch.env.TMPDIR).toBe('/tmp')
+    expect(launch.env[SANDBOX_TEMP_DIR_ENV]).toBeUndefined()
   })
 
   it('fails before creating a private HOME when sandboxing is required but unavailable', () => {
