@@ -774,6 +774,8 @@ async function restore(spec: RestoreSpec): Promise<PathIdentity> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
+  // A mutation that failed before quarantining leaves nothing here; say so rather than surfacing a bare ENOENT on a name only this journal knows.
+  if (!(await pathExists(quarantine))) fail('no quarantined prior skill to restore')
   const found = await inspectBundle(quarantine, spec.prior)
   if (!sameIdentity(found, spec.prior.identity)) fail('restore source was replaced')
   try {

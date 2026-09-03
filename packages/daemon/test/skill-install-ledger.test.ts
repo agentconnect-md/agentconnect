@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -11,9 +11,11 @@ import {
   reconcileSkillBundles,
   recoverSkillLedger,
   skillLedgerLocation,
+  SkillLedgerSafetyError,
   treeDigest,
   withSkillWorkspaceLock,
   type CandidateSkillBundle,
+  type OwnedSkillBundle,
   type PathIdentity,
   type SkillFileReceipt
 } from '../src/skills/skill-install-ledger.js'
@@ -286,6 +288,187 @@ describe.skipIf(!hasBwrap)('skill install ledger crash recovery', () => {
     if (!parsed || parsed.phase !== 'applying') throw new Error('expected applying ledger')
     expect(parsed.prior).toHaveLength(64)
     expect(parsed.pending).toHaveLength(64)
+  })
+})
+
+// A confined session's clone is re-checked out under a ledger that outlives it (git-workspace-model.md
+// §11), so the recorded set can be absent while the ledger naming it is intact.
+describe.skipIf(process.platform === 'win32')('skill install ledger over a re-checked-out workspace', () => {
+  const BUNDLE = '.claude/skills/fixture'
+  const BODY = '---\nname: fixture\ndescription: fixture\n---\n'
+  let root: string
+  let cwd: string
+  let stateDir: string
+  let sourceDir: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'ac-skill-recheckout-'))
+    cwd = join(root, 'workspace')
+    stateDir = join(root, 'state')
+    sourceDir = join(root, 'source')
+    await mkdir(cwd)
+    await mkdir(sourceDir)
+    await writeFile(join(sourceDir, 'SKILL.md'), BODY)
+  })
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  const reconcile = (fingerprint: string) =>
+    reconcileSkillBundles({
+      cwd,
+      stateDir,
+      agentId: 'a1',
+      runtime: 'claude',
+      cliVersion: '1.5.21',
+      fingerprint,
+      candidates: [{ ...oneFileReceipt(BUNDLE, 'fixture'), sourceDir }]
+    })
+
+  async function writeApplyingOver(
+    prior: OwnedSkillBundle[],
+    operations: ReturnType<typeof operation>[]
+  ): Promise<Awaited<ReturnType<typeof skillLedgerLocation>>> {
+    const location = await skillLedgerLocation(cwd, stateDir)
+    await writeFile(
+      location.file,
+      `${JSON.stringify({
+        version: 3,
+        phase: 'applying',
+        workspaceRealpath: location.workspaceRealpath,
+        workspaceIdentity: location.workspaceIdentity,
+        agentId: 'a1',
+        runtime: 'claude',
+        cliVersion: '1.5.21',
+        priorFingerprint: 'v1',
+        priorGitResolutions: [],
+        prior,
+        pending: [],
+        operations
+      })}\n`,
+      { mode: 0o600 }
+    )
+    return location
+  }
+
+  const recover = (
+    location: Awaited<ReturnType<typeof skillLedgerLocation>>,
+    ledger: NonNullable<Awaited<ReturnType<typeof readSkillLedger>>>
+  ) => withSkillWorkspaceLock(cwd, () => recoverSkillLedger(cwd, location, ledger), stateDir)
+
+  it('reinstalls a recorded bundle the checkout no longer holds', async () => {
+    const first = await reconcile('v1')
+    expect(first.installed).toEqual([BUNDLE])
+
+    // What `git clean -ffdx` does to a resumed session clone: the bundles go, the ledger naming them stays.
+    await rm(join(cwd, '.claude'), { recursive: true, force: true })
+    const second = await reconcile('v1')
+
+    expect(second.installed).toEqual([BUNDLE])
+    expect(second.conflicts).toEqual([])
+    expect(second.owned.map((entry) => entry.relativeRoot)).toEqual([BUNDLE])
+    expect(existsSync(join(cwd, ...BUNDLE.split('/'), 'SKILL.md'))).toBe(true)
+    const ledger = await readSkillLedger(await skillLedgerLocation(cwd, stateDir))
+    expect(ledger?.phase).toBe('ready')
+  })
+
+  it('leaves no journal artifact behind after reinstalling over a vanished record', async () => {
+    await reconcile('v1')
+    await rm(join(cwd, '.claude'), { recursive: true, force: true })
+    await reconcile('v1')
+
+    const entries = await readdir(join(cwd, '.claude/skills'))
+    expect(entries).toEqual(['fixture'])
+  })
+
+  it('still refuses a recorded path that now holds content it does not own', async () => {
+    await reconcile('v1')
+    const target = join(cwd, ...BUNDLE.split('/'))
+    await rm(target, { recursive: true, force: true })
+    await mkdir(target, { recursive: true })
+    await writeFile(join(target, 'manual'), 'do not delete')
+
+    await expect(reconcile('v1')).rejects.toThrow(SkillLedgerSafetyError)
+    expect(await readFile(join(target, 'manual'), 'utf8')).toBe('do not delete')
+  })
+
+  it('names the installation failure alongside the recovery failure', async () => {
+    await reconcile('v1')
+    const target = join(cwd, ...BUNDLE.split('/'))
+    await rm(target, { recursive: true, force: true })
+    await mkdir(target, { recursive: true })
+    await writeFile(join(target, 'manual'), 'do not delete')
+
+    await expect(reconcile('v1')).rejects.toThrow(/installation failure: .*refusing to replace unowned skill/)
+  })
+
+  it('recovers an interrupted journal by restoring the prior it quarantined', async () => {
+    await reconcile('v1')
+    const location = await skillLedgerLocation(cwd, stateDir)
+    const ready = await readSkillLedger(location)
+    if (!ready || ready.phase !== 'ready') throw new Error('expected ready ledger')
+    const old = ready.owned[0]!
+    const target = join(cwd, ...old.relativeRoot.split('/'))
+    const interrupted = operation(old.relativeRoot)
+    await rename(target, join(dirname(target), interrupted.quarantineName))
+    await writeApplyingOver([old], [interrupted])
+
+    const applying = await readSkillLedger(location)
+    const recovered = await recover(location, applying!)
+
+    expect(recovered.owned.map((entry) => entry.relativeRoot)).toEqual([old.relativeRoot])
+    expect(recovered.fingerprint).toBe('v1')
+    expect(existsSync(join(target, 'SKILL.md'))).toBe(true)
+  })
+
+  it('fails closed when a quarantined prior cannot be put back', async () => {
+    await reconcile('v1')
+    const location = await skillLedgerLocation(cwd, stateDir)
+    const ready = await readSkillLedger(location)
+    if (!ready || ready.phase !== 'ready') throw new Error('expected ready ledger')
+    const old = ready.owned[0]!
+    const target = join(cwd, ...old.relativeRoot.split('/'))
+    const interrupted = operation(old.relativeRoot)
+    const quarantine = join(dirname(target), interrupted.quarantineName)
+    await rename(target, quarantine)
+    // The quarantined bundle is still there, and is no longer the set the receipt describes.
+    await writeFile(join(quarantine, 'extra'), 'tampered')
+    await writeApplyingOver([old], [interrupted])
+
+    const applying = await readSkillLedger(location)
+    await expect(recover(location, applying!)).rejects.toThrow(SkillLedgerSafetyError)
+    expect(existsSync(join(quarantine, 'extra'))).toBe(true)
+  })
+
+  it('drops a prior that is at neither address from the recovered set', async () => {
+    const interrupted = operation(BUNDLE)
+    const location = await writeApplyingOver(
+      [{ ...oneFileReceipt(BUNDLE, 'fixture'), identity: { dev: '1', ino: '2' } }],
+      [interrupted]
+    )
+
+    const applying = await readSkillLedger(location)
+    const recovered = await recover(location, applying!)
+
+    expect(recovered.phase).toBe('ready')
+    expect(recovered.owned).toEqual([])
+    // The fingerprint described a set that lost a member, so it must not let the next plan skip the reinstall.
+    expect(recovered.fingerprint).toBeUndefined()
+  })
+
+  it('reinstalls after recovering a journal whose prior was at neither address', async () => {
+    const location = await writeApplyingOver(
+      [{ ...oneFileReceipt(BUNDLE, 'fixture'), identity: { dev: '1', ino: '2' } }],
+      [operation(BUNDLE)]
+    )
+    const applying = await readSkillLedger(location)
+    await recover(location, applying!)
+
+    const installed = await reconcile('v1')
+
+    expect(installed.installed).toEqual([BUNDLE])
+    expect(existsSync(join(cwd, ...BUNDLE.split('/'), 'SKILL.md'))).toBe(true)
   })
 })
 
