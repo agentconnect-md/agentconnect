@@ -191,6 +191,7 @@ import { ChannelNameResolver } from './messages/channel-name-resolver.js'
 import { mentionedUserIds, substituteUserMentions } from './slack/mentions.js'
 import {
   WorkspaceManager,
+  effectiveSessionIsolation,
   foldSessionRemovals,
   type PrepareSessionWorkspaceRequest,
   type RetiredRootRemoval,
@@ -3627,13 +3628,15 @@ export class Daemon {
    *
    * It has to be that value and no other, because the console's workspace routing, retention and
    * preparation all read it: a tier chosen from anything else would put the runtime in a directory
-   * they do not address. Every workspace request reaching this daemon reports it; a session none has
-   * described yet takes what `SessionManager` will compute for it.
+   * they do not address. Every workspace request reaching this daemon reports it, and the turn path
+   * reports it from the session's row before anything keys a host on it.
    */
   private sessionIsolated(agent: Agent, sessionKey?: string): boolean {
     const reported = sessionKey === undefined ? undefined : this.sessionIsolation.get(sessionKey)
     if (reported !== undefined) return reported === 'session'
-    return agent.workspace.mode === 'git-repo' && agent.workspace.isolation === 'session'
+    // An unreported tier never costs a POD: a session that runs one turn in the agent pod and gets its own on the next is cheaper than a running pod nobody asked for. Self-hosted, where it costs a directory, keeps the agent default.
+    if (this.k8s) return false
+    return effectiveSessionIsolation(agent) === 'session'
   }
 
   /** The host that serves `sessionKey` of this agent: its own when the session is confined, else the shared one. */
@@ -10893,6 +10896,9 @@ export class Daemon {
   > {
     const { entry, key, plan, agent, replyConn, evaluation } = run
     const { agentId, msg, integrationId, webchat, callMeta, hookContext } = entry
+    // The per-conversation Worktree choice this turn carries, in the isolation vocabulary the row, the host key and the pod claim all speak.
+    const webchatIsolation =
+      webchat?.worktree === undefined ? undefined : webchat.worktree ? ('session' as const) : ('shared' as const)
     // Install the exact route before session/new|load: adapters may emit metadata
     // (including a restored title) while SessionManager is still initializing.
     const previousDeliveryBinding = this.sessionDeliveryBindings.get(key)
@@ -10905,7 +10911,10 @@ export class Daemon {
       else this.sessionDeliveryBindings.delete(key)
     }
     let handled: HandledTurnSession
-    const persistedSessionId = (await this.store.getSession(key))?.acpSessionId
+    const persisted = await this.store.getSession(key)
+    const persistedSessionId = persisted?.acpSessionId
+    // §11: this session's OWN isolation, learned here because the model-session host below claims its pod before `sessions.handle` records the row — its row, else this turn's explicit choice, else the agent's default, which is the order SessionManager decides it in.
+    this.sessionIsolation.set(key, persisted?.workspaceIsolation ?? effectiveSessionIsolation(agent, webchatIsolation))
     let remoteMcpServer: import('@agentclientprotocol/sdk').McpServer | undefined
     try {
       const reviewWorkspace = await this.githubReviews.prepareGithubReviewWorkspace(entry, key, agent)
@@ -10969,9 +10978,7 @@ export class Daemon {
           // isCaptureExcluded at recordTurnForBinding).
           ...(remoteMcpServer ? { additionalMcpServers: [remoteMcpServer] } : {}),
           ...(entry.selectedHost ? { host: entry.selectedHost.host } : {}),
-          ...(webchat?.worktree !== undefined
-            ? { workspaceIsolation: webchat.worktree ? ('session' as const) : ('shared' as const) }
-            : {}),
+          ...(webchatIsolation ? { workspaceIsolation: webchatIsolation } : {}),
           ...reviewWorkspace
         }
       )

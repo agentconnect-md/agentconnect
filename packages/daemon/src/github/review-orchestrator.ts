@@ -52,7 +52,7 @@ import {
 import type { CallMeta, QueueEntry } from '../daemon/turn-types.js'
 import type { WebchatTurnContext } from '../webchat/types.js'
 import { initiatorLabel } from '../workspace/session-branch.js'
-import type { PrepareSessionWorkspaceRequest } from '../workspace/workspace-manager.js'
+import { effectiveSessionIsolation, type PrepareSessionWorkspaceRequest } from '../workspace/workspace-manager.js'
 import { GithubFinalPoster, GithubReplyCollector, type GithubCommentAttribution } from './poster.js'
 import { GitlabFinalPoster } from '../gitlab/poster.js'
 import { GITLAB_HOST_MISMATCH_REASON } from '../gitlab/host-fence.js'
@@ -531,7 +531,7 @@ export class GithubReviewOrchestrator {
   private async sessionIsolationFor(key: string, agent: Agent): Promise<'shared' | 'session'> {
     const recorded = (await this.host.getSession(key))?.workspaceIsolation
     if (recorded) return recorded
-    return agent.workspace.mode === 'git-repo' && agent.workspace.isolation === 'session' ? 'session' : 'shared'
+    return effectiveSessionIsolation(agent)
   }
 
   /** Prepare an exact, isolated checkout before a formal review generation. A

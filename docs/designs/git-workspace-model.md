@@ -405,6 +405,20 @@ agent.workspace.isolation`, and always `shared` for a from-scratch agent, whose 
    no boundary means a worktree. A pool member has no local disk to ask, so its session pod
    holds that record.
 
+**And a tier nothing has answered yet is not isolated.** Value 1 has to be in hand before
+anything keys a host on the session, because on the pool the pod is claimed when that host
+starts — which is _before_ workspace preparation, the step that used to be where the daemon
+learned a session's isolation at all (preparation runs second because the sandbox has to exist
+for the channel to report where its volume mounts). Every turn therefore reads the session's own
+isolation from its row — else this turn's explicit choice, else the agent's default, the same
+order `SessionManager` records it in — before the host starts. Where an answer is still missing,
+the pool must not fall back to the agent's default: a wrong `shared` costs one turn in the agent
+pod and its own pod on the next, while a wrong `session` claims a pod and a volume that live as
+long as the session's row. The fallback is therefore _not isolated_, which also makes every path
+nobody wired (a dream host, a session key seen before its row) safe by construction. A
+self-hosted daemon keeps the agent's default there: a wrong answer costs a directory rather than
+a pod, and the disk still records which tier a live session was born in.
+
 An empty `worktrees/<sid>` directory is **absent**, never a worktree: it is what a failed or
 degraded preparation leaves, it has no `.git` for anything to read, and counting it would pin
 a session to a tier nothing on disk serves. That is not hypothetical — a session whose stub

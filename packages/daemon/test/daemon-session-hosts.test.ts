@@ -213,6 +213,20 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
+  // Self-hosted keeps the agent default for a tier nothing has reported: there an over-eager answer costs
+  // a directory, not a pod that lives as long as the session's row, and the disk still says what a session
+  // already standing somewhere was born in.
+  it('takes the agent default for a session nothing has reported yet', async () => {
+    const isolated = await startDaemon(scaffold())
+    const shared = await startDaemon(scaffold({}, 'shared'))
+    expect((isolated.daemon as any).confinedSession((isolated.daemon as any).agents.get('bot-a'), KEY('T9'))).toBe(true)
+    expect((isolated.daemon as any).hostKeyFor('bot-a', KEY('T9'))).toBe(sessionHostKey('bot-a', KEY('T9')))
+    expect((shared.daemon as any).confinedSession((shared.daemon as any).agents.get('bot-a'), KEY('T9'))).toBe(false)
+    expect((shared.daemon as any).hostKeyFor('bot-a', KEY('T9'))).toBe(agentHostKey('bot-a'))
+    await isolated.daemon.stop()
+    await shared.daemon.stop()
+  })
+
   it('keeps one host per agent when the launch is not confined', async () => {
     const { daemon, hosts, factory } = await startDaemon(scaffold({ runInSandbox: false }))
     await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
