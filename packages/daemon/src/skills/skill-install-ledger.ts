@@ -278,6 +278,7 @@ export async function recoverSkillLedger(
     }
 
     const priorByPath = new Map(ledger.prior.map((entry) => [entry.relativeRoot, entry]))
+    const vanished = new Set<string>()
     for (const operation of [...ledger.operations].reverse()) {
       const prior = priorByPath.get(operation.relativeRoot)
       await mutate(
@@ -302,6 +303,11 @@ export async function recoverSkillLedger(
         []
       )
       if (prior) {
+        // The discard above has settled this path, so neither address holding anything proves the prior is simply gone, not un-restorable.
+        if (await priorHasNoAddress(cwd, operation)) {
+          vanished.add(prior.relativeRoot)
+          continue
+        }
         await mutate(
           {
             action: 'restore',
@@ -325,8 +331,9 @@ export async function recoverSkillLedger(
       runtime: ledger.runtime,
       cliVersion: ledger.cliVersion,
       ...(ledger.publicationOperationId ? { publicationOperationId: ledger.publicationOperationId } : {}),
-      ...(ledger.priorFingerprint ? { fingerprint: ledger.priorFingerprint } : {}),
-      owned: ledger.prior,
+      // A set that lost a member no longer answers to the fingerprint that described it, or the next plan would skip reinstalling what vanished.
+      ...(ledger.priorFingerprint && vanished.size === 0 ? { fingerprint: ledger.priorFingerprint } : {}),
+      owned: ledger.prior.filter((entry) => !vanished.has(entry.relativeRoot)),
       gitResolutions: ledger.priorGitResolutions
     }
     if (!(await installedBundlesIntact(cwd, ready.owned, location.workspaceIdentity))) {
@@ -380,6 +387,13 @@ async function destinationOccupied(cwd: string, relativeRoot: string): Promise<b
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
     throw error
   }
+}
+
+/** Whether an operation's prior bundle is at neither of the two addresses recovery can find it at: its own path, or the quarantine a mutation moves it to. */
+async function priorHasNoAddress(cwd: string, operation: JournalOperation): Promise<boolean> {
+  const parent = operation.relativeRoot.split('/').slice(0, -1).join('/')
+  if (await destinationOccupied(cwd, operation.relativeRoot)) return false
+  return !(await destinationOccupied(cwd, `${parent}/${operation.quarantineName}`))
 }
 
 export async function reconcileSkillBundles(
@@ -442,7 +456,13 @@ async function reconcileSkillBundlesLocked(
     }
 
     // Canonicalize the recorded set too: a ledger written under another harness names the same directory by its other root.
-    const prior = await canonicalizeOwned(options.cwd, ledger?.owned ?? [])
+    const recorded = await canonicalizeOwned(options.cwd, ledger?.owned ?? [])
+    // An absent recorded bundle is not stale executable content — nothing to quarantine, nothing foreign to protect — so plan its path as a first install.
+    const prior: OwnedSkillBundle[] = []
+    for (const entry of recorded) {
+      if (await destinationOccupied(options.cwd, entry.relativeRoot)) prior.push(entry)
+      else options.warn?.(`skills: recorded bundle ${entry.relativeRoot} is gone from the workspace; reinstalling`)
+    }
     const priorByPath = new Map(prior.map((entry) => [entry.relativeRoot, entry]))
     const legacyHints = new Set<string>()
     for (const hint of options.legacyOwned ?? []) {
@@ -493,7 +513,8 @@ async function reconcileSkillBundlesLocked(
       runtime: options.runtime,
       cliVersion: options.cliVersion,
       ...(options.publicationOperationId ? { publicationOperationId: options.publicationOperationId } : {}),
-      ...(ledger?.fingerprint ? { priorFingerprint: ledger.fingerprint } : {}),
+      // A pruned set is no longer what that fingerprint described, and recovery cannot see the prune: leaving it would let the next plan skip the reinstall.
+      ...(ledger?.fingerprint && prior.length === recorded.length ? { priorFingerprint: ledger.fingerprint } : {}),
       priorGitResolutions: ledger?.gitResolutions ?? [],
       prior,
       pending: candidates.map(stripCandidate),
@@ -606,7 +627,8 @@ async function reconcileSkillBundlesLocked(
     }
     return {
       installed: candidates.map((entry) => entry.relativeRoot),
-      removed: prior.map((entry) => entry.relativeRoot),
+      // The whole previously-owned set, the paths that had already vanished included: none of it is owned once this returns.
+      removed: recorded.map((entry) => entry.relativeRoot),
       skipped: null,
       conflicts,
       owned
@@ -616,7 +638,11 @@ async function reconcileSkillBundlesLocked(
       try {
         await recoverSkillLedger(options.cwd, location, recoveryLedger, options.publicationKey)
       } catch (recoveryError) {
-        throw safety('skill installation failed and the prior executable set could not be restored', recoveryError)
+        // Name the failure that started this too: recovery's own error alone has sent readers hunting the wrong defect.
+        throw safety(
+          `skill installation failed and the prior executable set could not be restored (installation failure: ${messageChain(error)})`,
+          recoveryError
+        )
       }
     }
     if (error instanceof SkillLedgerSafetyError) throw error
@@ -1341,4 +1367,17 @@ async function assertWorkspaceIdentity(
 
 function safety(message: string, cause?: unknown): SkillLedgerSafetyError {
   return new SkillLedgerSafetyError(message, cause === undefined ? undefined : { cause })
+}
+
+/** Every message down a cause chain, so quoting one error never hides the one a reader needs. */
+function messageChain(error: unknown): string {
+  const parts: string[] = []
+  const seen = new Set<unknown>()
+  let current: unknown = error
+  while (current instanceof Error && !seen.has(current) && parts.length < 6) {
+    seen.add(current)
+    parts.push(current.message)
+    current = (current as { cause?: unknown }).cause
+  }
+  return parts.join(': ') || String(error)
 }

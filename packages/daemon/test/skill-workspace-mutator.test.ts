@@ -1,10 +1,11 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { lstat, mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { canonicalSkillMutationRoot, runSkillWorkspaceMutation } from '../src/skills/skill-workspace-mutator.js'
 import { withSkillMutationHelperLease } from '../src/skills/skill-workspace-lock-lease.js'
+import { treeDigest } from '../src/skills/skill-install-ledger.js'
 
 // The start gate only exists inside the sandbox wrapper; pin the ungated launch so every host runs the race.
 vi.mock('../src/skills/offline-sandbox.js', async (importOriginal) => ({
@@ -92,4 +93,37 @@ describe('runSkillWorkspaceMutation', () => {
       await expect(lstat(join(canonical, '.claude/skills/audit'))).resolves.toBeTruthy()
     }
   )
+
+  // A mutation that failed before quarantining leaves the journal's `.agentconnect-skill-old-<uuid>`
+  // unwritten, and a bare ENOENT on a name only the journal knows reads as a stuck file, not as a state.
+  it.skipIf(process.platform === 'win32')('names a restore that has nothing quarantined to put back', async () => {
+    const { cwd } = await workspace()
+    await mkdir(join(cwd, '.claude/skills'), { recursive: true })
+    const canonical = await realpath(cwd)
+    const stat = await lstat(canonical, { bigint: true })
+    const body = '---\nname: fixture\ndescription: fixture\n---\n'
+    const files = [
+      {
+        path: 'SKILL.md',
+        mode: 0o600,
+        size: Buffer.byteLength(body),
+        sha256: createHash('sha256').update(body).digest('hex')
+      }
+    ]
+    const operationId = randomUUID()
+
+    const restore = withSkillMutationHelperLease({ registerHelper: async () => {}, clearHelper: async () => {} }, () =>
+      runSkillWorkspaceMutation({
+        action: 'restore',
+        cwd: canonical,
+        workspaceIdentity: { dev: stat.dev.toString(), ino: stat.ino.toString() },
+        relativeRoot: '.claude/skills/fixture',
+        operationId,
+        quarantineName: `.agentconnect-skill-old-${operationId}`,
+        prior: { files, treeDigest: treeDigest(files), identity: { dev: stat.dev.toString(), ino: '999999999' } }
+      })
+    )
+
+    await expect(restore).rejects.toThrow(/no quarantined prior skill to restore/)
+  })
 })
