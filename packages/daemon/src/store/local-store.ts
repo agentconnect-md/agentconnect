@@ -868,6 +868,7 @@ export interface RuntimeModelCapRecord {
   fingerprint: string
   caps: {
     name?: string
+    description?: string
     efforts?: Array<{ value: string; name?: string; description?: string }>
     defaultEffort?: string
     fastMode?: boolean
@@ -1588,7 +1589,7 @@ export class LocalStore {
         runtimeId TEXT NOT NULL,
         modelId TEXT NOT NULL,
         fingerprint TEXT NOT NULL,
-        capsJson TEXT NOT NULL,           -- JSON {name?, efforts?: [{value,name?,description?}], defaultEffort?, fastMode?}
+        capsJson TEXT NOT NULL,           -- JSON {name?, description?, efforts?: [{value,name?,description?}], defaultEffort?, fastMode?}
         observedAt INTEGER NOT NULL,
         PRIMARY KEY (ownerId, runtimeId, modelId)
       );

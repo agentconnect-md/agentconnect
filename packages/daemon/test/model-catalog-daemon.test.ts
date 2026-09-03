@@ -353,7 +353,7 @@ describe('daemon sweep phase-1 catalog seeding', () => {
       type: 'select',
       currentValue: 'a',
       options: [
-        { value: 'a', name: 'Model A' },
+        { value: 'a', name: 'Model A', description: 'Model A · the everyday one' },
         { value: 'b', name: 'Model B' }
       ]
     },
@@ -434,11 +434,20 @@ describe('daemon sweep phase-1 catalog seeding', () => {
           complete: false,
           observedAt: 10_000
         })
-        // ...and ONE model row for the default model, storing RAW advertised
-        // efforts — augmentation is report-time only, never persisted.
+        // ...a full row for the default model, storing RAW advertised efforts
+        // (augmentation is report-time only, never persisted), plus a
+        // display-only row for every other advertised model — the whole
+        // picker's names/descriptions come from this one response.
         const caps = await store.listRuntimeModelCaps('probed')
-        expect(caps.map((r) => r.modelId)).toEqual(['a'])
-        expect(caps[0]!.caps).toEqual({ efforts: rawEfforts, defaultEffort: 'high', fastMode: true })
+        expect(caps.map((r) => r.modelId)).toEqual(['a', 'b'])
+        expect(caps[0]!.caps).toEqual({
+          name: 'Model A',
+          description: 'Model A · the everyday one',
+          efforts: rawEfforts,
+          defaultEffort: 'high',
+          fastMode: true
+        })
+        expect(caps[1]!.caps).toEqual({ name: 'Model B' })
 
         // Wire: the emitted catalog entry augments claude runtimes with the
         // synthetic tiers; non-claude runtimes report the raw levels as-is.
@@ -449,10 +458,15 @@ describe('daemon sweep phase-1 catalog seeding', () => {
           models: [
             {
               id: 'a',
+              name: 'Model A',
+              description: 'Model A · the everyday one',
               efforts: claude ? [...rawEfforts, { value: 'max' }, { value: 'ultracode' }] : rawEfforts,
               defaultEffort: 'high',
               fastMode: true
-            }
+            },
+            // Advertised but not yet enumerated: display metadata only, so the
+            // picker can label and hover it while `efforts` stays undiscovered.
+            { id: 'b', name: 'Model B' }
           ],
           defaultModel: 'a',
           permissionModes: [
@@ -471,6 +485,38 @@ describe('daemon sweep phase-1 catalog seeding', () => {
       }
     }
   )
+
+  it('a re-probe refreshes display metadata without wiping a same-fingerprint enumerated matrix', async () => {
+    const rt: RuntimeDef = { command: 'fake-agent', args: ['--acp'], env: [] }
+    const clock = new FakeClock()
+    clock.advance(10_000)
+    const probe = vi.fn(async (): Promise<RuntimeProbeResult[]> => [
+      { runtime: 'probed', ok: true, models: ['a', 'b'], currentModel: 'a', probedVersion: '1.0', configOptions }
+    ])
+    const daemon = daemonWith({ root: root(), catalog: catalogOf({ probed: rt }), clock, probe })
+    try {
+      await daemon.start()
+      stubCatalogSvc(daemon)
+      const store = (daemon as any).store as LocalStore
+      // What phase 2 left behind for the model the probe session never sits on.
+      await store.upsertRuntimeModelCap({
+        runtimeId: 'probed',
+        modelId: 'b',
+        fingerprint: catalogFingerprint('probed', '1.0', rt),
+        caps: { efforts: [{ value: 'low' }], fastMode: false },
+        observedAt: 5_000
+      })
+      await (daemon as any).runtimeFacts.probeAndEmit(true)
+      const caps = await store.listRuntimeModelCaps('probed')
+      expect(caps.find((r) => r.modelId === 'b')!.caps).toEqual({
+        name: 'Model B',
+        efforts: [{ value: 'low' }],
+        fastMode: false
+      })
+    } finally {
+      await daemon.stop()
+    }
+  })
 
   it('seeds caps under a runtime-advertised literal "default" model; meta.defaultModel stays unset', async () => {
     const rt: RuntimeDef = { command: 'fake-agent', args: ['--acp'], env: [] }
@@ -500,7 +546,7 @@ describe('daemon sweep phase-1 catalog seeding', () => {
       // preselection/hint) — but the caps row IS seeded under "default" so
       // selecting it surfaces the runtime's own effort/fast.
       expect(await store.getRuntimeCatalogMeta('probed')).not.toHaveProperty('defaultModel')
-      expect((await store.listRuntimeModelCaps('probed')).map((r) => r.modelId)).toEqual(['default'])
+      expect((await store.listRuntimeModelCaps('probed')).map((r) => r.modelId)).toEqual(['a', 'b', 'default'])
     } finally {
       await daemon.stop()
     }

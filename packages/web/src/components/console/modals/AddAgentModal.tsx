@@ -21,6 +21,7 @@ import {
   fastModeAvailableFor,
   modelCapability,
   modelLabel,
+  modelTooltip,
   displayedEffort,
   preferredModelFor,
   resolvedPermissionMode,
@@ -922,7 +923,11 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                   rather than a fabricated "Default" entry the runtime never offered. */}
                   <div
                     className={models.length ? 'inp relative' : 'inp cursor-not-allowed'}
-                    title={models.length ? undefined : 'This runtime reports no selectable models'}
+                    title={
+                      models.length
+                        ? modelTooltip(daemon, effectiveRuntime, selectedModel)
+                        : 'This runtime reports no selectable models'
+                    }
                   >
                     <span className={`truncate ${models.length ? '' : 'text-(--text-tertiary)'}`}>
                       {models.length ? modelLabel(selectedModel) : '—'}
@@ -949,7 +954,7 @@ export default function AddAgentModal({ onClose }: { onClose: () => void }) {
                           aria-label="Model"
                         >
                           {models.map((m) => (
-                            <option key={m} value={m}>
+                            <option key={m} value={m} title={modelTooltip(daemon, effectiveRuntime, m)}>
                               {modelLabel(m)}
                             </option>
                           ))}

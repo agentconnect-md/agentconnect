@@ -53,8 +53,9 @@ export function ComposerMenu({
   /** Icon-only trigger (e.g. the Home composer's "+ add agents" chip): render only
    *  `leading` — no selected-value label, no chevron. */
   iconOnly?: boolean
-  /** Hover-tooltip the trigger + options (via the console Tooltip layer). Turn off
-   *  for self-explanatory menus (model / effort / permission) where the popover is noise. */
+  /** Hover-tooltip the trigger + options with the generic "<title>: <label>" text. Turn
+   *  off for self-explanatory menus (model / effort / permission) where that reads as
+   *  noise; a choice's own `description` is shown either way. */
   tooltips?: boolean
   onOpenChange: (open: boolean) => void
   onChange: (value: string) => void
@@ -63,8 +64,10 @@ export function ComposerMenu({
   const menuId = useId()
   const headingId = useId()
   const selected = options.find((choice) => choice.value === value) ?? options[0]
+  // A choice's own description always shows: `tooltips` only governs the generic
+  // "<title>: <label>" fallback, which is the part that reads as noise.
   const tooltipFor = (choice: ComposerMenuChoice | undefined) =>
-    tooltips ? (choice?.description ?? (choice ? `${title}: ${choice.label}` : title)) : undefined
+    choice?.description ?? (tooltips ? (choice ? `${title}: ${choice.label}` : title) : undefined)
 
   const closeAndFocus = () => {
     onOpenChange(false)

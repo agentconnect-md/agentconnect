@@ -41,6 +41,7 @@ export interface CatalogStorePort {
 /** One model's RAW advertised capabilities (cache shape — no daemon-synthesized tiers). */
 export interface ModelCaps {
   name?: string
+  description?: string
   efforts?: EffortOption[]
   defaultEffort?: string
   fastMode?: boolean
@@ -477,6 +478,7 @@ export function codexModelsFromListResult(result: unknown): DriverCatalog {
     // from models[] the same way) — it is not a catalog entry.
     if (typeof id !== 'string' || id === '' || id === 'default') continue
     const name = pickString(rec, 'displayName', 'display_name')
+    const modelDescription = typeof rec.description === 'string' && rec.description !== '' ? rec.description : undefined
     const efforts: EffortOption[] = (
       pickArray(rec, 'supportedReasoningEfforts', 'supported_reasoning_efforts') ?? []
     ).flatMap((e): EffortOption[] => {
@@ -503,6 +505,7 @@ export function codexModelsFromListResult(result: unknown): DriverCatalog {
     models.push({
       id,
       ...(name && name !== id ? { name } : {}),
+      ...(modelDescription ? { description: modelDescription } : {}),
       efforts,
       ...(defaultEffort ? { defaultEffort } : {}),
       fastMode

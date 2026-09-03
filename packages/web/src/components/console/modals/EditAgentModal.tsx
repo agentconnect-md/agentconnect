@@ -10,6 +10,7 @@ import {
   fastModeAvailableFor,
   modelCapability,
   modelLabel,
+  modelTooltip,
   displayedEffort,
   preferredModelFor,
   resolveEffortForModel,
@@ -812,7 +813,11 @@ export default function EditAgentModal({
                         rather than a fabricated "Default" entry the runtime never offered. */}
                     <div
                       className={modelSelectable ? 'inp relative' : 'inp cursor-not-allowed'}
-                      title={modelSelectable ? undefined : 'This runtime reports no selectable models'}
+                      title={
+                        modelSelectable
+                          ? modelTooltip(daemon, runtime, selectedModel)
+                          : 'This runtime reports no selectable models'
+                      }
                     >
                       <span className={`truncate ${modelSelectable ? '' : 'text-(--text-tertiary)'}`}>
                         {modelSelectable ? modelLabel(selectedModel) : '—'}
@@ -835,7 +840,7 @@ export default function EditAgentModal({
                             aria-label="Model"
                           >
                             {modelOptions.map((m) => (
-                              <option key={m} value={m}>
+                              <option key={m} value={m} title={modelTooltip(daemon, runtime, m)}>
                                 {modelLabel(m)}
                                 {!reportedModels.includes(m) ? ' (unavailable)' : ''}
                               </option>

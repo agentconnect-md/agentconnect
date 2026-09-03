@@ -2,12 +2,19 @@ import type { SessionConfigOption } from '@agentclientprotocol/sdk'
 import type { EffortOption, PermissionModeOption } from '@agentconnect.md/protocol'
 import { augmentClaudeEfforts } from '../runtime-defs/claude-runtime.js'
 
+/** One model select option: the picker's value plus the runtime's own display metadata. */
+export interface ModelChoice {
+  value: string
+  name?: string
+  description?: string
+}
+
 /**
  * Distill a session's RAW ACP config options into the capability shape the
  * model-catalog cache stores (design doc runtime-model-catalog.md §4/§5).
- * Everything here describes the CURRENTLY SELECTED model — the enumerator calls
- * this once per set_config_option response to build the per-model matrix, and
- * the probe sweep calls it once to seed the default model's entry.
+ * Everything but `modelChoices` describes the CURRENTLY SELECTED model — the enumerator
+ * calls this once per set_config_option response to build the per-model matrix, and the
+ * probe sweep calls it once to seed the default model's entry plus the whole picker's names.
  *
  * Values are stored raw: daemon-side synthetic effort levels (Claude
  * max/ultracode) are appended at REPORT time, never here.
@@ -17,6 +24,8 @@ export interface ConfigCaps {
   currentModel?: string
   /** Display name of the current model, only when it differs from the value. */
   modelName?: string
+  /** Display metadata for EVERY model the selector offers, not just the current one. */
+  modelChoices?: ModelChoice[]
   /** thought_level choices offered for the current model; [] = no effort selector. */
   efforts: EffortOption[]
   /** The effort the runtime defaulted the current model to. */
@@ -68,7 +77,8 @@ export function augmentEffortOptions(efforts: EffortOption[]): EffortOption[] {
 export function capsFromConfigOptions(options: SessionConfigOption[]): ConfigCaps {
   const model = selectFor(options, 'model')
   const currentModel = model?.currentValue
-  const modelName = model ? (flatValues(model).find((v) => v.value === currentModel)?.name ?? undefined) : undefined
+  const modelChoices = model ? flatValues(model).map(configChoice) : undefined
+  const modelName = modelChoices?.find((v) => v.value === currentModel)?.name
 
   const effort = selectFor(options, 'thought_level')
   const efforts = effort ? flatValues(effort).map(configChoice) : []
@@ -86,6 +96,7 @@ export function capsFromConfigOptions(options: SessionConfigOption[]): ConfigCap
   return {
     ...(currentModel ? { currentModel } : {}),
     ...(modelName && modelName !== currentModel ? { modelName } : {}),
+    ...(modelChoices ? { modelChoices } : {}),
     efforts,
     ...(defaultEffort ? { defaultEffort } : {}),
     fastMode,

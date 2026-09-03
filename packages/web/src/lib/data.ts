@@ -771,6 +771,7 @@ export interface EffortOption {
 export interface RuntimeModelCapability {
   id: string
   name?: string
+  description?: string
   efforts?: EffortOption[]
   defaultEffort?: string
   fastMode?: boolean
@@ -801,6 +802,18 @@ export function modelCapability(
   const id = modelId || catalog.defaultModel
   if (!id) return undefined
   return catalog.models.find((m) => m.id === id)
+}
+
+/** Hover text for one model option: the runtime's own blurb, else its display name.
+ *  The id stays the LABEL — it is what the agent stores and the runtime answers to —
+ *  so the runtime's prose lives here instead (runtime-model-catalog.md §7). */
+export function modelTooltip(
+  daemon: Pick<DaemonRow, 'runtimeModels'> | undefined,
+  runtime: string,
+  modelId: string
+): string | undefined {
+  const capability = modelCapability(daemon, runtime, modelId)
+  return capability?.description ?? capability?.name
 }
 
 /** The model the picker preselects when no explicit choice is stored: the

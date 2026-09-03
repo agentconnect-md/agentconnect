@@ -23,6 +23,7 @@ import {
   lane,
   modelCapability,
   modelLabel,
+  modelTooltip,
   MOCK_MODE,
   MOCK_PREFIX,
   permissionModeLabel,
@@ -4617,7 +4618,14 @@ export default function SessionDetailView() {
                                 <ComposerMenu
                                   title="Model"
                                   value={pgModel}
-                                  options={pgModelOptions.map((model) => ({ value: model, label: modelLabel(model) }))}
+                                  options={pgModelOptions.map((model) => {
+                                    const description = modelTooltip(owningDaemon, agentRuntime, model)
+                                    return {
+                                      value: model,
+                                      label: modelLabel(model),
+                                      ...(description ? { description } : {})
+                                    }
+                                  })}
                                   open={composerMenuOpen === 'model'}
                                   align="left"
                                   triggerClassName={COMPOSER_PILL}
