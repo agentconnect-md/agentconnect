@@ -16259,10 +16259,9 @@ export class Daemon {
       // A console page is watching work a suspend would throw away — uncommitted edits on the pod's
       // volume, or an armed in-pod merge watcher. The lease is renewed by that page and lapses on
       // its own within one TTL once it closes, so this defers the suspend rather than cancelling it.
-      if (this.sandboxHolds.holds(agentId)) {
-        this.log.debug?.(
-          `idle: holding the sandbox for agent "${agentId}" — ${this.sandboxHolds.reasons(agentId).join(', ')}`
-        )
+      // Asked of THIS pod: a dirty session's lease is about its own pod's volume and must not pin the agent's or a sibling session's (§11).
+      if (this.sandboxHolds.holds(subject)) {
+        this.log.debug?.(`idle: holding the sandbox "${subject}" — ${this.sandboxHolds.reasons(subject).join(', ')}`)
         continue
       }
       void plane

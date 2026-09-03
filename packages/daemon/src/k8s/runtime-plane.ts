@@ -179,8 +179,12 @@ export interface K8sRuntimePlane {
    *  re-deriving it, so an environment can never describe one filesystem while the execution
    *  happens in another. */
   runsInSandbox: (agentId: string) => boolean
+  /** The pod that owns a workspace path (§11) — the routing every read uses, exposed so a caller can hold and judge the same pod. */
+  subjectForPath: (agentId: string, path?: string) => SandboxSubject
   /** Whether one subject's pod is bound right now — the agent's own for the agent id. */
   sandboxBound: (subject: string) => boolean
+  /** Hold a pod that is ALREADY bound against the idle sweep, or undefined when it is asleep — the non-claiming, non-waking half of `withSandbox`, for a read that may never resurrect a pod. */
+  holdIfBound: (subject: string) => (() => void) | undefined
   /** Empty a directory on the pod volume that owns it, reporting why not rather than throwing. The one
    *  destructive operation a cluster workspace needs — a partial clone — and it cannot be an
    *  `rmSync`, because the directory is on a filesystem the daemon cannot see. */
@@ -281,18 +285,23 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
   // The one condition that means "this agent's work happens in a pod" — ANY of its pods. Defined once
   // because two callers must agree on it: the git runner, and the credential pointers that git will read.
   const runsInSandbox = (agentId: string): boolean => boundSubjectsOf(agentId).length > 0
-  // Whether a session pod named by a path may be brought up for it: only beside a bound agent pod. The console's wake is agent-scoped, so the agent pod being up IS the press; a read with everything asleep still refuses, and a session pod never claims what the cluster does not already hold.
-  const wakeableSessionPod = async (subject: SandboxSubject): Promise<boolean> =>
-    sandboxSubjectSessionLeaf(subject) !== undefined &&
-    boundSession(agentSandboxSubject(sandboxSubjectAgentId(subject))) !== undefined &&
-    (await driver.hasClaim(subject))
-  /** The session that owns `path`, bringing a sleeping session pod up beside a bound agent pod, or the reason none does. */
+  // The claim a sleeping session pod may be resumed on, or undefined when it may not be woken: only beside a bound agent pod, since the console's wake is agent-scoped and that is the press a read has, and only onto a claim the cluster already holds — whose UID travels to the resume as its fence.
+  const wakeableSessionClaim = async (subject: SandboxSubject): Promise<string | undefined> => {
+    if (sandboxSubjectSessionLeaf(subject) === undefined) return undefined
+    if (!boundSession(agentSandboxSubject(sandboxSubjectAgentId(subject)))) return undefined
+    return await driver.claimUidFor(subject)
+  }
+  /** The session that owns `path`, resuming a sleeping session pod beside a bound agent pod, or the reason none does. */
   const sessionForPath = async (agentId: string, path: string): Promise<ShimSession> => {
     const subject = subjectForPath(agentId, path)
     let session = boundSession(subject)
-    if (!session && (await wakeableSessionPod(subject))) {
-      await driver.ensureBoundChannel(subject)
-      session = boundSession(subject)
+    if (!session) {
+      // Resume-only, fenced on the claim just observed: the two reads are not atomic, so a retirement landing between them refuses rather than creating a fresh claim and an empty volume.
+      const claimUid = await wakeableSessionClaim(subject)
+      if (claimUid !== undefined) {
+        await driver.resumeBoundChannel(subject, claimUid)
+        session = boundSession(subject)
+      }
     }
     if (!session) throw new Error(`sandbox ${subject} that owns ${path} has no bound channel`)
     return session
@@ -430,7 +439,10 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
       return session ? new ShimMemoryFs(session, sandboxMemoryRoot(driver.workspaceRootFor(subject))) : undefined
     },
     runsInSandbox,
+    subjectForPath,
     sandboxBound: (subject) => boundSession(subject) !== undefined,
+    // Bound-then-retain in one synchronous step, as the sweep's own gate reads it: a caller that checked and then awaited would have its pod suspended underneath it.
+    holdIfBound: (subject) => (boundSession(subject) ? driver.retainLaunched(subject) : undefined),
     clearPath: async (agentId, root) => {
       const session = await sessionForPath(agentId, root).catch(() => undefined)
       if (!session) return `agent ${agentId} has no bound sandbox channel for ${root}`

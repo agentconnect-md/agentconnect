@@ -412,6 +412,38 @@ describe('daemon --k8s mode', () => {
     }
   })
 
+  it('judges the hold per POD, so one dirty session page cannot pin its agent or its siblings (§11)', async () => {
+    // The lease is keyed by sandbox subject, not by agent: an agent-keyed one let a page watching one
+    // dirty session worktree keep every running session pod of that agent out of the sweep.
+    const suspended: string[] = []
+    const dirty = 'watched/session-dirty'
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        launched: () => [
+          { subject: dirty, agentId: 'watched', since: 0 },
+          { subject: 'watched/session-clean', agentId: 'watched', since: 0 },
+          { subject: 'watched', agentId: 'watched', since: 0 }
+        ],
+        suspendIdle: async (subject: string) => {
+          suspended.push(subject)
+          return 'suspended'
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      ;(k8sDaemon as any).sandboxHolds.renew(dirty, 'session-dirty', ['uncommitted-files'])
+      ;(k8sDaemon as any).sweepIdle()
+      // The agent's own pod and the sibling session's are judged on their own keys, and suspend.
+      await vi.waitFor(() => expect([...suspended].sort()).toEqual(['watched', 'watched/session-clean']))
+      expect(suspended).not.toContain(dirty)
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
   it('counts idleness from when the launch was taken over when no activity is recorded', async () => {
     const suspended: string[] = []
     const k8sDaemon = daemon({

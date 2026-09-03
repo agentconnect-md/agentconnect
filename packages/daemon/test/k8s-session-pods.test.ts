@@ -372,6 +372,79 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(at(`/agent/sessions/${leaf}/workspace`, '/mnt/vol')).toBe(AGENT)
   })
 
+  it('resumes a sleeping session pod onto the claim that was observed, and creates nothing when it is gone', async () => {
+    // The observation and the wake are two round trips. Retention, a workspace conversion or an agent
+    // removal can delete the claim in between, and `ensureSandbox` would then make a fresh empty one —
+    // a console read resurrecting a session sandbox whose row and volume are already retired.
+    const { api, claims, modeWrites } = cluster()
+    const { driver } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    const name = driver.claimName(session)
+
+    await driver.ensureSandbox(session)
+    const claimUid = (await driver.claimUidFor(session))!
+    expect(claimUid).toBe(claims.get(name)!.metadata!.uid)
+    // The idle sweep: the launch is forgotten, the claim and its volume stay.
+    expect(await driver.suspendIfIdle(session)).toBe('suspended')
+    const claimedSoFar = api.ensureClaim.mock.calls.length
+
+    // The happy path first — a resume is "patch Running, then bind", against the claim just observed.
+    await driver.resumeBoundChannel(session, claimUid)
+    expect(api.ensureClaim.mock.calls.length).toBe(claimedSoFar)
+    expect(modeWrites.at(-1)).toEqual({ sandbox: claims.get(name)!.status!.sandbox!.name, desired: 'Running' })
+    expect(driver.currentLaunch(session)?.claimUid).toBe(claimUid)
+
+    // And now retention lands in the gap: the resume refuses instead of claiming a replacement.
+    expect(await driver.suspendIfIdle(session)).toBe('suspended')
+    claims.delete(name)
+    await expect(driver.resumeBoundChannel(session, claimUid)).rejects.toThrow(/no longer holds claim/)
+    expect(api.ensureClaim.mock.calls.length).toBe(claimedSoFar)
+    expect(claims.has(name)).toBe(false)
+    expect(driver.currentLaunch(session)).toBeUndefined()
+  })
+
+  it('refuses to resume a claim of the same NAME that is a different object', async () => {
+    // A leaked claim collected and re-delivered under the deterministic name is a different volume;
+    // the name converging is exactly why the fence has to be the object's uid rather than its name.
+    const { api, claims } = cluster()
+    const { driver } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    const name = driver.claimName(session)
+
+    await driver.ensureSandbox(session)
+    const retired = (await driver.claimUidFor(session))!
+    expect(await driver.suspendIfIdle(session)).toBe('suspended')
+    const successor = { ...claims.get(name)!, metadata: { ...claims.get(name)!.metadata, uid: 'claim-successor' } }
+    claims.set(name, successor)
+
+    await expect(driver.resumeBoundChannel(session, retired)).rejects.toThrow(/no longer holds claim/)
+    expect(claims.get(name)!.metadata!.uid).toBe('claim-successor')
+    expect(driver.currentLaunch(session)).toBeUndefined()
+  })
+
+  it('retains a pod this member already launched, claiming and waking nothing', async () => {
+    // What a console read that may not resurrect a pod holds it with: the idle gate reads `busy`
+    // synchronously, so this excludes the sweep instead of checking "is it up" and then awaiting.
+    const { api } = cluster()
+    const { driver } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    await driver.ensureSandbox(session)
+    await driver.ensureSandbox(AGENT)
+
+    const release = driver.retainLaunched(session)!
+    expect(await driver.suspendIfIdle(session)).toBe('busy')
+    // Only that pod: a read of one session's directory must not pin the agent's pod or a sibling's.
+    expect(await driver.suspendIfIdle(AGENT)).toBe('suspended')
+    release()
+    release() // idempotent, so a double release cannot make the pod suspendable under its own holder
+    expect(await driver.suspendIfIdle(session)).toBe('suspended')
+
+    // A pod this member holds no launch for retains nothing — and claims nothing to make one.
+    const claimedSoFar = api.ensureClaim.mock.calls.length
+    expect(driver.retainLaunched(session)).toBeUndefined()
+    expect(api.ensureClaim.mock.calls.length).toBe(claimedSoFar)
+  })
+
   it('keeps the agent pod path byte-identical: no host key means the agent claim, as before', async () => {
     const { api, claims } = cluster()
     const { driver, records } = member(api, podSide().connect)

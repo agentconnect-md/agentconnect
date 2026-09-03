@@ -206,7 +206,42 @@ export class K8sDriver implements SpawnDriver {
 
   /** Whether the cluster holds a claim for the subject at all — asked before waking a pod only to find it empty. */
   async hasClaim(subject: SandboxSubject): Promise<boolean> {
-    return (await readIfPresent(() => this.deps.api.getClaim(this.claimName(subject)))) !== undefined
+    return (await this.claimUidFor(subject)) !== undefined
+  }
+
+  /** The UID of the claim the cluster holds for this subject, or undefined when it holds none — what a resume is fenced on. */
+  async claimUidFor(subject: SandboxSubject): Promise<string | undefined> {
+    return (await readIfPresent(() => this.deps.api.getClaim(this.claimName(subject))))?.metadata?.uid
+  }
+
+  // Bind the channel of a pod the caller ALREADY observed a claim for, creating nothing: a read that wakes a sleeping session pod may never claim one, since retention, a conversion or an agent removal can delete the claim between the observation and the wake and `ensureClaim` would then make a fresh empty one — a live agent's orphan.
+  async resumeBoundChannel(subject: SandboxSubject, claimUid: string): Promise<ShimConnection> {
+    const launch = await this.resumeSandbox(subject, claimUid)
+    return await this.binder.bindChannel(subject, launch, undefined, this.grantsFor(subject))
+  }
+
+  // `ensureSandbox` without the ensure: the same suspension, takeover and release fences, then a READ of the claim the caller named — re-judged against the object AFTER that gap, so a claim that is gone or replaced refuses.
+  private async resumeSandbox(subject: SandboxSubject, claimUid: string): Promise<Launch> {
+    const suspending = this.lease.suspensionOf(subject)
+    if (suspending) await suspending
+    const adopting = this.registry.adoptInFlight(subject)
+    if (adopting) await adopting
+    const existing = this.registry.currentLaunch(subject)
+    if (existing) return existing
+    const releasedAt = this.registry.releaseFence(subject)
+    const name = this.claimName(subject)
+    const claim = await readIfPresent(() => this.deps.api.getClaim(name))
+    if (claim?.metadata?.uid !== claimUid) {
+      throw new Error(`sandbox ${subject} no longer holds claim ${claimUid} — nothing to resume`)
+    }
+    // The Sandbox as the claim names it, never polled for: waiting for one would be waiting on a creation nobody asked for.
+    const sandboxName = claim.status?.sandbox?.name
+    if (!sandboxName) throw new Error(`sandbox ${subject} claim ${name} names no sandbox to resume`)
+    const sandbox = await readIfPresent(() => this.deps.api.getSandbox(sandboxName))
+    const sandboxUid = sandbox?.metadata?.uid
+    if (!sandboxUid) throw new Error(`sandbox ${sandboxName} is gone — nothing to resume`)
+    this.registry.assertStillServed(subject, releasedAt)
+    return await this.registry.recordLaunch(subject, sandboxName, sandboxUid, claimUid)
   }
 
   // Whether the pod that should hold this subject's channel is up — what tells an unbound channel apart
@@ -261,6 +296,19 @@ export class K8sDriver implements SpawnDriver {
     const launch = this.registry.currentLaunch(subject)
     if (!launch) return Promise.reject(new Error(`no sandbox launch recorded for ${subject}`))
     return this.lease.queueMode(launch.sandboxName, desired)
+  }
+
+  // `withSandbox` without the ensure: retain a Sandbox this member ALREADY launched, or answer that it holds none. For a caller that may neither claim nor wake a pod but must not have one suspended underneath it either — the idle gate reads `busy` synchronously, so the retain excludes the sweep rather than racing it.
+  retainLaunched(subject: string): (() => void) | undefined {
+    const launch = this.registry.currentLaunch(subject)
+    if (!launch) return undefined
+    this.lease.retain(launch.sandboxName)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.lease.release(launch.sandboxName)
+    }
   }
 
   /** Hold the subject's Sandbox for `work`, including workspace preparation before launch. */

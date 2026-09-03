@@ -1,7 +1,12 @@
 import type { SandboxHoldReason } from '@agentconnect.md/protocol'
 
 /**
- * Leases that keep a cluster agent's pod out of the idle sweep while a console page is watching it.
+ * Leases that keep one cluster POD out of the idle sweep while a console page is watching it.
+ *
+ * Keyed by sandbox SUBJECT, not by agent: an isolated session's work lives on its own pod (§11), so a
+ * lease taken on a dirty session tree must hold that pod and no other — keyed by agent, one dirty page
+ * pinned every sibling session pod of the agent, and the sweep judged them all on it. The agent's own
+ * pod IS the agent id as a subject, so nothing about the agent-pod path changed.
  *
  * In memory and nowhere else, like every other keep-alive in this daemon: a lease that outlived the
  * process holding it would pin a pod for a page nobody has open. Each renewal is a fresh deadline,
@@ -35,53 +40,53 @@ export class SandboxHolds {
 
   constructor(private readonly deps: SandboxHoldDeps) {}
 
-  /** Extend (or start) this HOLDER's lease on the agent. Reasons are replaced, not merged: they
+  /** Extend (or start) this HOLDER's lease on one pod. Reasons are replaced, not merged: they
    *  describe the state the LAST poll observed, and one that has since gone away must stop being
    *  reported. Other holders are untouched — this page speaks only for itself. */
-  renew(agentId: string, holder: string, reasons: SandboxHoldReason[]): number {
+  renew(subject: string, holder: string, reasons: SandboxHoldReason[]): number {
     const ttlMs = this.deps.ttlMs ?? SANDBOX_HOLD_TTL_MS
-    const byHolder = this.held.get(agentId) ?? new Map()
+    const byHolder = this.held.get(subject) ?? new Map()
     byHolder.set(holder, { until: this.deps.now() + ttlMs, reasons: [...reasons] })
-    this.held.set(agentId, byHolder)
+    this.held.set(subject, byHolder)
     return ttlMs
   }
 
   /** Drop this HOLDER's lease — its poll found nothing worth holding for. Not the same as letting it
    *  lapse: a tree that just went clean should be suspendable on the sweep's own schedule, not one TTL
    *  later. Any other page's live lease survives, which is the whole point of keying by holder. */
-  release(agentId: string, holder: string): void {
-    const byHolder = this.held.get(agentId)
+  release(subject: string, holder: string): void {
+    const byHolder = this.held.get(subject)
     if (!byHolder) return
     byHolder.delete(holder)
-    if (byHolder.size === 0) this.held.delete(agentId)
+    if (byHolder.size === 0) this.held.delete(subject)
   }
 
-  /** Drop EVERY lease on this agent — the pod is gone or asleep, so no page's facts survive it. */
-  releaseAll(agentId: string): void {
-    this.held.delete(agentId)
+  /** Drop EVERY lease on this pod — it is gone or asleep, so no page's facts about it survive. */
+  releaseAll(subject: string): void {
+    this.held.delete(subject)
   }
 
-  /** Whether the sweep must leave this agent's pod alone: true while ANY holder's lease is live.
+  /** Whether the sweep must leave this pod alone: true while ANY holder's lease on it is live.
    *  Expiry is evaluated on read rather than on a timer of its own — the sweep is the only caller
    *  that cares, and it already runs on a tick. */
-  holds(agentId: string): boolean {
-    return this.live(agentId).length > 0
+  holds(subject: string): boolean {
+    return this.live(subject).length > 0
   }
 
   /** What the live leases are for, for the sweep's log line — the union across holders, deduped, so
    *  two dirty pages read as one `uncommitted-files` rather than two. Empty when nothing holds. */
-  reasons(agentId: string): SandboxHoldReason[] {
-    return [...new Set(this.live(agentId).flatMap((entry) => entry.reasons))]
+  reasons(subject: string): SandboxHoldReason[] {
+    return [...new Set(this.live(subject).flatMap((entry) => entry.reasons))]
   }
 
   /** The unexpired leases, pruning the rest on the way past. */
-  private live(agentId: string): Array<{ until: number; reasons: SandboxHoldReason[] }> {
-    const byHolder = this.held.get(agentId)
+  private live(subject: string): Array<{ until: number; reasons: SandboxHoldReason[] }> {
+    const byHolder = this.held.get(subject)
     if (!byHolder) return []
     const now = this.deps.now()
     for (const [holder, entry] of byHolder) if (entry.until <= now) byHolder.delete(holder)
     if (byHolder.size === 0) {
-      this.held.delete(agentId)
+      this.held.delete(subject)
       return []
     }
     return [...byHolder.values()]

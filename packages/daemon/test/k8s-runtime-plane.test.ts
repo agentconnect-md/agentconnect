@@ -552,6 +552,43 @@ describe('one pod per session on the plane (git-workspace-model §11)', () => {
     expect(plane.gitRunnerFor('agent-a', '/agent/checkout')).toBeDefined()
   })
 
+  it('refuses a read whose session claim was retired between the observation and the wake', async () => {
+    // `hasClaim` and the wake are two round trips, and retention, a workspace conversion or an agent
+    // removal can land between them. Going on to `ensureSandbox` there would create a fresh empty
+    // claim and PVC — a console read resurrecting a session sandbox whose row and volume are gone,
+    // as a live agent's orphan. The wake is therefore a RESUME fenced on the uid just observed.
+    const cluster = fakeCluster()
+    const plane = await planeUnderTest(cluster as never)
+    const port = shimPort(plane)
+    const T1 = sessionHostKey('agent-a', 'slack:C1:T1:agent-a')
+    const leaf = hostKeyDirName(T1)
+    const session = sandboxSubjectFor(T1)
+    const sessionPath = `/agent/sessions/${leaf}/workspace`
+
+    const agentBinding = plane.driver.ensureBoundChannel('agent-a')
+    shimAgainst(port, { workspaceRoot: '/agent', token: 'pod-agent', handle: async () => ({ ok: true, value: 'dir' }) })
+    await agentBinding
+    await plane.driver.ensureSandbox(session)
+    expect(await plane.suspendIdle(session)).toBe('suspended')
+
+    // Retention deletes the claim after the router read its uid and before the resume re-reads it.
+    const sessionClaim = plane.driver.claimName(session)
+    const read = cluster.api.getClaim
+    let observed = 0
+    cluster.api.getClaim = async (name: string) => {
+      const claim = await read(name)
+      if (name === sessionClaim && ++observed === 1) cluster.claims.delete(name)
+      return claim
+    }
+
+    const placement = plane.workspaceFsFor('agent-a')!
+    await expect(placement.fs.stat(sessionPath)).rejects.toThrow(/no longer holds claim/)
+    // Nothing was created behind the refusal, and the agent's own pod is untouched by it.
+    expect([...cluster.claims.keys()]).toEqual(['agent-agent-a'])
+    expect(plane.launched().map((launch) => launch.subject)).toEqual(['agent-a'])
+    expect(await placement.fs.stat('/agent/checkout')).toBe('dir')
+  })
+
   it('refuses a suspended session path rather than waking its pod with the agent pod down', async () => {
     // The console's wake is agent-scoped, so a bound agent pod IS the press that admits a session pod.
     // With nothing bound there is no press, and a read must refuse instead of claiming a pod of its own.

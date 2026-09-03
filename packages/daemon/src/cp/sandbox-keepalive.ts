@@ -15,16 +15,24 @@ import { AGENT_WIDE_HOLDER, type SandboxHolds } from '../k8s/sandbox-hold.js'
  *  - an armed merge-when-ready watcher — for a cluster agent it is a process IN that pod, so
  *    suspending would silently disarm the box the operator ticked.
  *
- * A SUSPENDED pod holds nothing and is not woken. Resurrecting a sandbox from a keep-alive poll
- * would invert the rule this exists to serve, and there is nothing to read in a pod that is down.
+ * A SUSPENDED pod holds nothing and is not woken. The pod judged is THIS page's — the one that owns
+ * the worktree it is watching (§11) — because "any pod of the agent is up" would let a bound agent
+ * pod send the status read at a suspended session pod, which the routed runner would then wake: a
+ * visible clean page undoing the idle sweep every minute. And it is HELD across that read rather than
+ * only checked before it, so a sweep landing in between cannot leave the read waking it after all.
  *
- * The lease is taken per SESSION, because the dirty-tree fact is: two console pages on one agent read
- * two different worktrees, and an agent-wide lease let the page polling a clean session release the
- * one a page watching a dirty session was keeping alive.
+ * The lease is taken per SESSION on the POD the fact is about, because both axes are real: two console
+ * pages on one agent read two different worktrees, so an agent-wide holder let a page polling a clean
+ * session release the one a page watching a dirty session was keeping alive; and those worktrees now
+ * live on different pods, so an agent-keyed lease let one dirty session pin every sibling session pod.
  */
 export interface SandboxKeepAliveDepsInternal {
-  /** Whether this agent's work runs in a pod right now; false ⇒ asleep or never placed there. */
-  runsInSandbox: (agentId: string) => boolean
+  /** The pod this page's worktree lives on, by the SAME routing the status read uses, so the lease, the judgement and the read can never name different pods. */
+  podFor: (agentId: string, sessionId?: string) => Promise<string>
+  /** The agent's own pod — where an armed merge watcher runs, whatever worktree this page is watching. */
+  agentPod: (agentId: string) => string
+  /** Hold one pod against the idle sweep while it is bound, or undefined when it is asleep or was never placed there. */
+  holdIfBound: (subject: string) => (() => void) | undefined
   /** Whether this daemon holds the agent at all — an unknown id holds nothing. */
   knownAgent: (agentId: string) => boolean
   /** Whether ANY pull request is armed for this agent, wherever its watcher lives. */
@@ -43,36 +51,47 @@ export function createSandboxKeepAlive(
     // This page's own lease. A poll that names no session speaks for the agent, not for a worktree.
     const holder = req.sessionId ?? AGENT_WIDE_HOLDER
     if (!deps.knownAgent(agentId)) return { agentId, held: false, reasons: [] }
-    if (!deps.runsInSandbox(agentId)) {
-      // An asleep pod invalidates EVERY page's lease, not just this one's: the volume it held is gone.
-      deps.holds.releaseAll(agentId)
+    const agentPod = deps.agentPod(agentId)
+    // A routing this daemon cannot answer names the agent's own pod, which is where an unrouted path lives anyway.
+    const pod = await deps.podFor(agentId, req.sessionId).catch(() => agentPod)
+    const release = deps.holdIfBound(pod)
+    if (!release) {
+      // An asleep pod invalidates EVERY page's lease ON IT, not just this one's: the volume they were taken on is gone.
+      deps.holds.releaseAll(pod)
+      if (pod !== agentPod) deps.holds.release(agentPod, holder)
       return { agentId, held: false, reasons: [], placement: 'sandbox', asleep: true }
     }
-    const reasons: SandboxHoldReason[] = []
-    // A registry read that fails is not evidence of an armed watcher, so it costs this reason only.
-    if (await deps.armedFor(agentId).catch(() => false)) reasons.push('auto-merge-armed')
+    // Each reason holds the pod it is ABOUT — one entry when this page's worktree is on the agent's own pod.
+    const byPod = new Map<string, SandboxHoldReason[]>([
+      [agentPod, []],
+      [pod, []]
+    ])
     try {
-      const status = await deps.gitStatus(agentId, req.sessionId)
-      // `isRepo:false` is a workspace with no checkout — nothing to be dirty about, not a failure.
-      if (status.isRepo !== false && status.clean === false) reasons.push('uncommitted-files')
-    } catch (err) {
-      deps.log?.debug?.(`keepalive: git status for "${agentId}" failed: ${(err as Error)?.message}`)
+      // A registry read that fails is not evidence of an armed watcher, so it costs this reason only.
+      // The watcher is a process in the AGENT's pod, so its reason holds that one wherever this page looks.
+      if (await deps.armedFor(agentId).catch(() => false)) byPod.get(agentPod)!.push('auto-merge-armed')
+      try {
+        const status = await deps.gitStatus(agentId, req.sessionId)
+        // `isRepo:false` is a workspace with no checkout — nothing to be dirty about, not a failure.
+        if (status.isRepo !== false && status.clean === false) byPod.get(pod)!.push('uncommitted-files')
+      } catch (err) {
+        deps.log?.debug?.(`keepalive: git status for "${agentId}" failed: ${(err as Error)?.message}`)
+      }
+    } finally {
+      release()
     }
-    if (reasons.length === 0) {
+    let ttlMs: number | undefined
+    for (const [subject, held] of byPod) {
       // RELEASE rather than lapse: a tree that just went clean should be suspendable on the sweep's
       // own schedule, not a TTL later because of a hold the previous poll took. Only THIS page's
-      // lease goes — another session's dirty worktree is still a reason to keep the pod.
-      deps.holds.release(agentId, holder)
-      // `held:false` is this page's answer about its own session, so it is reported even while a
-      // sibling page holds the pod: what it must not do is claim a lease it did not take.
-      return { agentId, held: false, reasons: [], placement: 'sandbox' }
+      // lease goes — another session's dirty worktree is still a reason to keep its pod.
+      if (held.length === 0) deps.holds.release(subject, holder)
+      else ttlMs = deps.holds.renew(subject, holder, held)
     }
-    return {
-      agentId,
-      held: true,
-      reasons,
-      ttlMs: deps.holds.renew(agentId, holder, reasons),
-      placement: 'sandbox'
-    }
+    const reasons = [...new Set([...byPod.values()].flat())]
+    // `held:false` is this page's answer about its own session, so it is reported even while a
+    // sibling page holds the pod: what it must not do is claim a lease it did not take.
+    if (reasons.length === 0) return { agentId, held: false, reasons: [], placement: 'sandbox' }
+    return { agentId, held: true, reasons, ...(ttlMs === undefined ? {} : { ttlMs }), placement: 'sandbox' }
   }
 }
