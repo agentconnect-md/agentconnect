@@ -2,6 +2,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync 
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { sandboxBoundary, writeSandboxSettings, type SandboxMechanism } from '../acp/sandbox.js'
+import { prepareSandboxTempDir, SANDBOX_TEMP_DIR_ENV } from '../acp/sandbox-temp.js'
 import { hostKeyDirName, hostKeySessionKey, type HostKey } from '../acp/host-key.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { compactReadRoots } from '../runtimes/read-roots.js'
@@ -158,6 +159,17 @@ function isolateHostSocketEnvironment(env: Record<string, string>, runtimeHome: 
     if (env[name] && isLocalSocketEndpoint(env[name])) delete env[name]
   }
   env.XDG_RUNTIME_DIR = realpathSync(runtimeDir)
+}
+
+/** Point the confined child's temp state at this host's own `<agentDir>/t/<8 hex>` and return it. The private HOME is the wrong home for it: SRT's multiplexer socket lives directly under TMPDIR, and a per-session HOME made that socket path overflow `sun_path` (#1763). */
+function isolateSandboxTempEnvironment(env: Record<string, string>, scopeDir: string, hostKey: HostKey | undefined) {
+  const tempDir = prepareSandboxTempDir(scopeDir, hostKey)
+  env.TMPDIR = tempDir
+  env.CLAUDE_CODE_TMPDIR = tempDir
+  env.CLAUDE_TMPDIR = tempDir
+  // The provider reads this one and drops it before wrapping, so the daemon decides the path instead of recomputing it from HOME.
+  env[SANDBOX_TEMP_DIR_ENV] = tempDir
+  return tempDir
 }
 
 export interface PreparedRuntimeLaunch {
@@ -368,7 +380,12 @@ export function prepareRuntimeLaunch(opts: {
     ...credentials?.env
   }
 
-  if (opts.runInSandbox) isolateHostSocketEnvironment(env, runtimeHome)
+  let sandboxTempDir: string | undefined
+  if (opts.runInSandbox) {
+    isolateHostSocketEnvironment(env, runtimeHome)
+    // NOT in k8s: a sandbox pod supplies its own temp dir, and this daemon must not name a path on a machine it is not on.
+    if (opts.k8s !== true) sandboxTempDir = isolateSandboxTempEnvironment(env, opts.scopeDir, opts.hostKey)
+  }
 
   if (!opts.runInSandbox) {
     const gitMetadataWriteRoots =
@@ -494,7 +511,9 @@ export function prepareRuntimeLaunch(opts: {
       ...credentialWritableRoots,
       ...trustedWorkspaceWriteRoots,
       ...packageCacheWriteRoots,
-      ...gitMetadataWriteRoots
+      ...gitMetadataWriteRoots,
+      // Inside the agent dir like every other writable root, so the agent-dir rule needs no exemption for it.
+      ...(sandboxTempDir === undefined ? [] : [sandboxTempDir])
     ]
   })
   // SRT write roots must exist before spawn.

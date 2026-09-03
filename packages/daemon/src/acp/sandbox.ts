@@ -18,6 +18,8 @@ import { spawnSync } from 'node:child_process'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime'
+import { hostKeyDirName, type HostKey } from './host-key.js'
+import { removeSandboxTempDir, sandboxTempDirFor } from './sandbox-temp.js'
 
 /**
  * OS-level process sandbox for agent runtimes (issue #312).
@@ -263,6 +265,12 @@ export function removeSandboxSettings(agentDir: string, hostDir: string): void {
   rmSync(sandboxSettingsDir(agentDir, hostDir), { recursive: true, force: true })
 }
 
+/** Drop everything daemon-owned a stopped host had: its policy directory and its temp directory. */
+export function removeHostSandboxState(agentDir: string, hostKey: HostKey | undefined): void {
+  removeSandboxSettings(agentDir, hostKeyDirName(hostKey))
+  removeSandboxTempDir(sandboxTempDirFor(agentDir, hostKey))
+}
+
 // Atomically publish the trusted SRT policy outside every agent-writable path, one directory per host.
 export function writeSandboxSettings(agentDir: string, hostDir: string, policy: SrtSandboxPolicy): string {
   const root = canonicalTarget(agentDir)
@@ -309,9 +317,7 @@ export function writeSandboxSettings(agentDir: string, hostDir: string, policy: 
       allowAllUnixSockets: policy.offline !== true
     },
     filesystem: {
-      // SRT's shared default temp path is not part of AgentConnect's per-agent
-      // storage. The provider redirects TMPDIR into the private HOME; hide the
-      // shared fallback so agents cannot exchange data through it.
+      // SRT's shared default temp path is not per-agent storage: TMPDIR points at this host's own directory, so hide the shared fallback and let no agent exchange data through it.
       denyRead,
       allowRead: canonical(policy.allowRead),
       allowWrite: canonical(policy.writable),
