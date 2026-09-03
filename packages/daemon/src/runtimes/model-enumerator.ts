@@ -99,7 +99,11 @@ export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
       if (!initial) return { models: [], aborted: 'runtime advertises no session config options' }
       const setSessionModel = activeHost.setSessionModel?.bind(activeHost)
       if (!setSessionModel) return { models: [], aborted: 'runtime cannot switch the session model' }
-      const initialModel = capsFromConfigOptions(initial).currentModel
+      const initialCaps = capsFromConfigOptions(initial)
+      const initialModel = initialCaps.currentModel
+      // The selector named and described every model up front; a set_config_option response
+      // only ever describes the one now selected, so carry that metadata across the loop.
+      const display = new Map((initialCaps.modelChoices ?? []).map((c) => [c.value, c] as const))
 
       const collected: Awaited<ReturnType<EnumerateFn>> & object = { models: [] }
       for (const id of modelIds) {
@@ -128,9 +132,11 @@ export function makeModelEnumerator(deps: ModelEnumeratorDeps): EnumerateFn {
         // survives the switch; verified against claude-agent-acp 0.59.0), not
         // the model's own default. Only phase 1 (fresh-session initial state)
         // and native drivers may claim a default.
+        const described = display.get(id)
         collected.models.push({
           id,
-          ...(caps.modelName ? { name: caps.modelName } : {}),
+          ...(caps.modelName ? { name: caps.modelName } : described?.name ? { name: described.name } : {}),
+          ...(described?.description ? { description: described.description } : {}),
           efforts: caps.efforts,
           fastMode: caps.fastMode
         })

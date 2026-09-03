@@ -16,6 +16,7 @@ import {
   isPoolPlacementKind,
   localDaemons,
   modelLabel,
+  modelTooltip,
   poolLabel,
   preferredModelFor,
   loginRequiredRuntimeIds
@@ -495,7 +496,8 @@ function useRuntimeModel(daemon?: DaemonRow, initial?: { runtime?: string; model
   const models = daemon?.runtimeModels.find((r) => r.runtime === effectiveRuntime)?.models ?? []
   const [model, setModel] = useState(initial?.model ?? '')
   const selectedModel = models.includes(model) ? model : daemon ? preferredModelFor(daemon, effectiveRuntime) : ''
-  return { runtimeIds, runtimesNeedingLogin, effectiveRuntime, models, selectedModel, setRuntime, setModel }
+  const tooltip = (m: string) => modelTooltip(daemon, effectiveRuntime, m)
+  return { runtimeIds, runtimesNeedingLogin, effectiveRuntime, models, selectedModel, tooltip, setRuntime, setModel }
 }
 
 function RuntimeModelFields({ rm }: { rm: ReturnType<typeof useRuntimeModel> }) {
@@ -517,7 +519,7 @@ function RuntimeModelFields({ rm }: { rm: ReturnType<typeof useRuntimeModel> }) 
         <span className="fldlbl">Model</span>
         <div
           className={rm.models.length ? 'inp relative' : 'inp cursor-not-allowed'}
-          title={rm.models.length ? undefined : 'This runtime reports no selectable models'}
+          title={rm.models.length ? rm.tooltip(rm.selectedModel) : 'This runtime reports no selectable models'}
         >
           <span className={`truncate ${rm.models.length ? '' : 'text-(--text-tertiary)'}`}>
             {rm.models.length ? modelLabel(rm.selectedModel) : '—'}
@@ -532,7 +534,7 @@ function RuntimeModelFields({ rm }: { rm: ReturnType<typeof useRuntimeModel> }) 
                 aria-label="Model"
               >
                 {rm.models.map((m) => (
-                  <option key={m} value={m}>
+                  <option key={m} value={m} title={rm.tooltip(m)}>
                     {modelLabel(m)}
                   </option>
                 ))}

@@ -36,6 +36,7 @@ import {
   agentLabel,
   agentPlacementKind,
   modelLabel,
+  modelTooltip,
   agentModelDisplay,
   runtimeLabel,
   effectiveAgentStatus,
@@ -270,7 +271,10 @@ export default function HomeView() {
       ? agent.model
       : preferredModelFor(owningDaemon, agent?.runtime ?? '') || agent?.model || ''
   const model = runtime.model ?? defaultModel
-  const modelChoices = (models.length ? models : model ? [model] : []).map((m) => ({ value: m, label: modelLabel(m) }))
+  const modelChoices = (models.length ? models : model ? [model] : []).map((m) => {
+    const description = agent ? modelTooltip(owningDaemon, agent.runtime, m) : undefined
+    return { value: m, label: modelLabel(m), ...(description ? { description } : {}) }
+  })
 
   // Effort + permission come from the SELECTED model's discovered capability / the
   // runtime catalog — the same catalog-aware helpers the session and add/edit controls

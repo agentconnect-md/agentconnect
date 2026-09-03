@@ -459,6 +459,7 @@ const EffortOption = z.object({
 const RuntimeModelCapability = z.object({
   id: z.string(), // model selector value
   name: z.string().optional(), // Send only when display name differs from value
+  description: z.string().optional(), // The runtime's own model blurb; the picker's tooltip
   efforts: z.array(EffortOption).optional(), // Levels for this model, including daemon augmentation
   // [] = no effort selector for this model; absent = not discovered
   defaultEffort: z.string().optional(),
@@ -615,6 +616,14 @@ discovery:
    "Extra High," then capitalized value. Use `description` as a tooltip when
    present. Control titles such as "Reasoning" vs "Effort" remain static by
    runtime and do not enter the wire.
+   4a. **The model picker labels a model by its advertised id and hovers its prose.**
+   The id is what the agent stores and the runtime answers to, so it stays the
+   label; `RuntimeModelCapability.description` (else `name`) becomes the option's
+   tooltip, which is how an id like `opus[1m]` or `claude-fable-5-1[1m]` gets
+   read as "Opus 5 with 1M context ·…" without the console re-wording anything.
+   Phase 1 already knows both for EVERY advertised model — one probe response
+   carries the whole select — so the tooltip does not wait on enumeration, which
+   a `--k8s` member never runs.
 5. When present, `permissionModes` replaces the static permission table using
    the same label fallback, with runtime `description` as an option tooltip.
    When `defaultModel` is present, the model picker's "Default" option may show

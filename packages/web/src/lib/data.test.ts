@@ -15,6 +15,7 @@ import {
   rosterParticipantName,
   modelCapability,
   modelLabel,
+  modelTooltip,
   permissionModeChoicesFor,
   preferredModelFor,
   PLAYGROUND_CHANNEL_FILTER,
@@ -253,6 +254,27 @@ describe('modelCapability', () => {
     expect(modelCapability(undefined, 'claude', 'opus')).toBeUndefined()
     expect(modelCapability(daemonWith(catalog()), 'claude', 'haiku')).toBeUndefined()
     expect(modelCapability(daemonWith(catalog()), 'codex', 'opus')).toBeUndefined()
+  })
+})
+
+describe('modelTooltip', () => {
+  const described = catalog({
+    models: [
+      { id: 'opus', name: 'Opus (1M context)', description: 'Opus 5 with 1M context', efforts: [] },
+      { id: 'sonnet', name: 'Sonnet' },
+      { id: 'haiku' }
+    ]
+  })
+
+  it('prefers the runtime blurb, falls back to the display name', () => {
+    expect(modelTooltip(daemonWith(described), 'claude', 'opus')).toBe('Opus 5 with 1M context')
+    expect(modelTooltip(daemonWith(described), 'claude', 'sonnet')).toBe('Sonnet')
+  })
+
+  it('is undefined for an undescribed model, an unknown one, or a daemon with no catalog', () => {
+    expect(modelTooltip(daemonWith(described), 'claude', 'haiku')).toBeUndefined()
+    expect(modelTooltip(daemonWith(described), 'claude', 'nope')).toBeUndefined()
+    expect(modelTooltip(daemonWith(null), 'claude', 'opus')).toBeUndefined()
   })
 })
 

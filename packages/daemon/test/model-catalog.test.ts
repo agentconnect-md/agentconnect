@@ -13,6 +13,7 @@ import {
   type EnumerateResult,
   type ModelCatalogDriver
 } from '../src/runtimes/model-catalog.js'
+import { capsFromConfigOptions } from '../src/runtimes/config-caps.js'
 
 const rt: RuntimeDef = { command: 'fake-agent', args: ['--acp'], env: [] }
 
@@ -393,6 +394,32 @@ describe('ModelCatalogService enumeration fallback', () => {
   })
 })
 
+describe('capsFromConfigOptions', () => {
+  const select = (options: unknown[]) =>
+    [{ id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'a', options }] as never
+
+  it('carries every model option\u2019s display metadata, not just the current one', () => {
+    const caps = capsFromConfigOptions(
+      select([
+        { value: 'a', name: 'Model A', description: 'The everyday one' },
+        { group: 'More', options: [{ value: 'b', name: 'Model B' }, { value: 'c' }] }
+      ])
+    )
+    expect(caps.currentModel).toBe('a')
+    expect(caps.modelName).toBe('Model A')
+    expect(caps.modelChoices).toEqual([
+      { value: 'a', name: 'Model A', description: 'The everyday one' },
+      { value: 'b', name: 'Model B' },
+      { value: 'c' }
+    ])
+  })
+
+  it('drops a display name that only repeats the value, and reports no choices without a model select', () => {
+    expect(capsFromConfigOptions(select([{ value: 'a', name: 'a' }])).modelChoices).toEqual([{ value: 'a' }])
+    expect(capsFromConfigOptions([]).modelChoices).toBeUndefined()
+  })
+})
+
 describe('codexModelsFromListResult', () => {
   it('maps camelCase RPC entries and skips the literal "default"', () => {
     const catalog = codexModelsFromListResult({
@@ -400,6 +427,7 @@ describe('codexModelsFromListResult', () => {
         {
           id: 'gpt-5.2-codex',
           displayName: 'GPT-5.2 Codex',
+          description: 'Reliable agentic workhorse for everyday tasks.',
           supportedReasoningEfforts: [
             { reasoningEffort: 'low', description: 'Fastest' },
             { reasoningEffort: 'high', description: 'Deepest' }
@@ -416,6 +444,7 @@ describe('codexModelsFromListResult', () => {
         {
           id: 'gpt-5.2-codex',
           name: 'GPT-5.2 Codex',
+          description: 'Reliable agentic workhorse for everyday tasks.',
           efforts: [
             { value: 'low', description: 'Fastest' },
             { value: 'high', description: 'Deepest' }

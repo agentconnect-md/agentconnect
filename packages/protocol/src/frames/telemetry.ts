@@ -279,6 +279,7 @@ export type PermissionModeOption = z.infer<typeof PermissionModeOption>
 export const RuntimeModelCapability = z.object({
   id: z.string(), // model-selector value
   name: z.string().optional(), // display name (sent only when it differs from id)
+  description: z.string().optional(), // the runtime's own one-line model blurb — the picker's tooltip
   efforts: z.array(EffortOption).optional(),
   defaultEffort: z.string().optional(),
   fastMode: z.boolean().optional()

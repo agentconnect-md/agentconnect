@@ -111,6 +111,7 @@ export const PermissionModeOptionDto = z.object({
 export const RuntimeModelCapabilityDto = z.object({
   id: z.string(), // model-selector value
   name: z.string().optional(), // display name (sent only when it differs from id)
+  description: z.string().optional(), // the runtime's own model blurb — the picker's tooltip
   efforts: z.array(EffortOptionDto).optional(),
   defaultEffort: z.string().optional(),
   fastMode: z.boolean().optional()

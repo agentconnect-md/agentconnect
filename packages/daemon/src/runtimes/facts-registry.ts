@@ -8,7 +8,7 @@ import type {
 import type { Logger } from '../log.js'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { SandboxMechanism } from '../acp/sandbox.js'
-import type { LocalStore } from '../store/local-store.js'
+import type { LocalStore, RuntimeModelCapRecord } from '../store/local-store.js'
 import type { ResolvedRuntimeCatalog } from './registry.js'
 import type { CuratedRuntimeAdmission } from './curated-admission.js'
 import type { K8sRuntimeAcpSnapshot } from './k8s-runtimes.js'
@@ -274,6 +274,7 @@ export class RuntimeFactsRegistry {
     const models = (await this.host.store().listRuntimeModelCaps(id)).map((r) => ({
       id: r.modelId,
       ...(r.caps.name ? { name: r.caps.name } : {}),
+      ...(r.caps.description ? { description: r.caps.description } : {}),
       ...(r.caps.efforts !== undefined
         ? { efforts: claude ? augmentEffortOptions(r.caps.efforts) : r.caps.efforts }
         : {}),
@@ -544,7 +545,8 @@ export class RuntimeFactsRegistry {
 
   /** Phase 1 of catalog discovery (design runtime-model-catalog.md §3.3): the probe
    *  session's config options are already in hand — seed the cache with the default
-   *  model's caps + runtime-level permission modes, then let the discovery gate decide
+   *  model's caps, every advertised model's display metadata, and the runtime-level
+   *  permission modes, then let the discovery gate decide
    *  whether a full phase-2 discovery is due. A failed probe deliberately skips this:
    *  the last-good catalog is never cleared. */
   private async seedCatalogFromProbe(r: RuntimeProbeResult): Promise<void> {
@@ -576,17 +578,43 @@ export class RuntimeFactsRegistry {
           ...(caps.currentPermissionMode ? { defaultPermissionMode: caps.currentPermissionMode } : {}),
           observedAt: this.host.clock().now()
         })
+        // Display metadata for EVERY advertised model is already in this one response, and a
+        // --k8s member never runs the enumeration that would otherwise learn it — so seed the
+        // whole picker's names/descriptions here, over a same-fingerprint row so an enumerated
+        // matrix keeps its efforts.
+        const known = new Map(
+          (await store.listRuntimeModelCaps(r.runtime))
+            .filter((row) => row.fingerprint === fp)
+            .map((row) => [row.modelId, row.caps] as const)
+        )
+        const displayOf = (choice: { name?: string; description?: string }) => ({
+          ...(choice.name ? { name: choice.name } : {}),
+          ...(choice.description ? { description: choice.description } : {})
+        })
+        const rows = new Map<string, RuntimeModelCapRecord['caps']>()
+        for (const choice of caps.modelChoices ?? []) {
+          const display = displayOf(choice)
+          if (Object.keys(display).length > 0) rows.set(choice.value, { ...known.get(choice.value), ...display })
+        }
+        // The seed model's own caps are authoritative for this fingerprint: merge only display
+        // metadata under them, never a previous round's efforts.
         if (seedModel) {
+          rows.set(seedModel, {
+            ...displayOf(known.get(seedModel) ?? {}),
+            ...displayOf(caps.modelChoices?.find((c) => c.value === seedModel) ?? {}),
+            efforts: caps.efforts,
+            ...(caps.defaultEffort ? { defaultEffort: caps.defaultEffort } : {}),
+            fastMode: caps.fastMode
+          })
+        }
+        const observedAt = this.host.clock().now()
+        for (const [modelId, modelCaps] of rows) {
           await store.upsertRuntimeModelCap({
             runtimeId: r.runtime,
-            modelId: seedModel,
+            modelId,
             fingerprint: fp,
-            caps: {
-              efforts: caps.efforts,
-              ...(caps.defaultEffort ? { defaultEffort: caps.defaultEffort } : {}),
-              fastMode: caps.fastMode
-            },
-            observedAt: this.host.clock().now()
+            caps: modelCaps,
+            observedAt
           })
         }
         await this.rebuildCatalog(r.runtime)
