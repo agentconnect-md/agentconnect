@@ -55,6 +55,7 @@ import {
   secondarySubtreesUnder,
   sessionCwdMarkerIn,
   SECONDARY_MATERIALIZATION_FILE,
+  WORKTREES_DIR,
   type SecondarySubtree
 } from './secondary-layout.js'
 import { authorizeWorkspaceGitUrl } from './git-origin-policy.js'
@@ -62,6 +63,7 @@ import { isSessionBranch, sessionBranchName } from './session-branch.js'
 import {
   confinedSessionDirIn,
   hasSessionsDirIn,
+  hasSessionWorktreeIn,
   isRealDir,
   sessionClonesUnder,
   sessionDirIn,
@@ -1144,12 +1146,12 @@ export class WorkspaceManager {
   /** The same parent in one mount's coordinates: beside the pod's checkout, or under the agent
    *  directory when there is no mount. */
   worktreesPathAt(agent: Agent, mount: string | undefined): string {
-    return mount === undefined ? this.localWorktreesPathFor(agent) : join(mount, 'worktrees')
+    return mount === undefined ? this.localWorktreesPathFor(agent) : join(mount, WORKTREES_DIR)
   }
 
   /** THIS daemon's disk, always — for the callers whose subject is this host's own filesystem. */
   localWorktreesPathFor(agent: Agent): string {
-    return join(this.agentRootFor(agent), 'worktrees')
+    return join(this.agentRootFor(agent), WORKTREES_DIR)
   }
 
   /** The same disk's primary checkout — the one whose `.git` owns every session worktree's index,
@@ -1244,17 +1246,29 @@ export class WorkspaceManager {
   }
 
   /**
+   * The tier this session was BORN in, read off the disk — undefined while it stands nowhere yet.
+   *
+   * Its clones or its worktree are the artifact of that decision, not an inference about it, and an
+   * empty `worktrees/<id>` stub counts as neither (see {@link hasSessionWorktreeIn}).
+   */
+  sessionTierOnDisk(agent: Agent, sessionKey: string): 'confined' | 'worktree' | undefined {
+    if (this.sandboxMode) return undefined
+    if (this.confinedSessionDir(agent, sessionKey) !== undefined) return 'confined'
+    return hasSessionWorktreeIn(this.agentRootFor(agent), this.sessionWorktreeId(sessionKey)) ? 'worktree' : undefined
+  }
+
+  /**
    * THE tier rule of §11, asked by every call site: the host key, preparation, the launch and cleanup.
    *
-   * A session that already has its own directory on this disk keeps the confined tier for the rest of
-   * its life — the disk is the record, so turning the agent's sandbox or isolation off never leaves
-   * half of the daemon serving a session out of clones the other half does not believe in. A session
-   * that stands nowhere yet takes `wanted`: what a session created now would get. On a pool member
-   * only `wanted` answers, because the session's pod holds the directory and no disk here can be asked.
+   * A session is served in the tier it was born in for its whole life, so changing the agent's sandbox
+   * or isolation moves no live session and cannot leave half of the daemon serving one out of clones
+   * the other half does not believe in. A session that stands nowhere yet takes `wanted`: what a
+   * session created now would get. On a pool member only `wanted` answers — its session pod holds the
+   * directory and no disk here can be asked.
    */
   confinedSessionTier(agent: Agent, sessionKey: string, wanted = false): boolean {
-    if (this.sandboxMode) return wanted
-    return this.confinedSessionDir(agent, sessionKey) !== undefined || wanted
+    const born = this.sessionTierOnDisk(agent, sessionKey)
+    return born === undefined ? wanted : born === 'confined'
   }
 
   /** One root's per-session directory: its clone in the session's own directory when the session has one, else its worktree at the session's id — derived, never stored. */
@@ -1599,11 +1613,13 @@ export class WorkspaceManager {
     ).trim()
   }
 
+  /** `blobless` names the one class that needs it: Git the daemon runs to MATERIALIZE objects into a session's partial clone (§11), where resolving a fetched pack against objects the clone filtered out is a promisor fetch. The clone, the branch checkout and a review reset take it from {@link sessionCloneGitEnv}; this fetch is the fourth. Retirement never does — it reads a clone it must judge without a network target. */
   async fetchReviewRevisionIn(
     agentId: string,
     root: WorkspaceRoot,
     worktreeId: string,
-    review: GithubReviewWorkspaceRevision
+    review: GithubReviewWorkspaceRevision,
+    blobless = false
   ): Promise<{ base: string; head: string; checkout: string }> {
     const base = this.exactObjectId(review.baseSha, 'base SHA')
     const head = this.exactObjectId(review.headSha, 'head SHA')
@@ -1620,7 +1636,10 @@ export class WorkspaceManager {
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), REVIEW_FETCH_TIMEOUT_MS)
     try {
-      const git = this.runnerFor(agentId, root.path, abort.signal).withEnv(pullTarget.env)
+      // Without this a blobless clone's review fetch dies in `unpack-objects` ("could not fetch <oid>
+      // from promisor remote"), and every review in a confined session degrades to revision-only.
+      const fetchEnv = blobless ? { ...pullTarget.env, GIT_NO_LAZY_FETCH: '0' } : pullTarget.env
+      const git = this.runnerFor(agentId, root.path, abort.signal).withEnv(fetchEnv)
       await git.raw([
         'fetch',
         '--force',
@@ -1995,7 +2014,7 @@ export class WorkspaceManager {
     }
     // Into the clone, never the primary: the refs, and the exact-HEAD proof, are this session's alone.
     const review = request.review
-      ? await this.fetchReviewRevisionIn(agent.id, { ...root, path: cwd, worktreesPath: '' }, id, request.review)
+      ? await this.fetchReviewRevisionIn(agent.id, { ...root, path: cwd, worktreesPath: '' }, id, request.review, true)
       : undefined
     const target = review?.checkout ?? `refs/remotes/origin/${root.branch}`
     // Unsafe executable config gates the checkout itself, as it gates a worktree's creation.

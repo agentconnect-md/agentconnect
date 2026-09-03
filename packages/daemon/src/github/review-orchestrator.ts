@@ -527,6 +527,13 @@ export class GithubReviewOrchestrator {
     return initiatorLabel(initiator, (await this.host.displayNames([initiator])).get(initiator), msg.sender)
   }
 
+  /** The isolation this session ALREADY has, or the one it will be created with — never one a review picks for it. A formal review may ASK for isolation (an exact checkout has to be its own); a degraded one may not take it away. */
+  private async sessionIsolationFor(key: string, agent: Agent): Promise<'shared' | 'session'> {
+    const recorded = (await this.host.getSession(key))?.workspaceIsolation
+    if (recorded) return recorded
+    return agent.workspace.mode === 'git-repo' && agent.workspace.isolation === 'session' ? 'session' : 'shared'
+  }
+
   /** Prepare an exact, isolated checkout before a formal review generation. A
    * formal review may use GitHub read-only inspection when its configured local
    * repo differs, but it must never silently fall back to a stale checkout.
@@ -549,12 +556,18 @@ export class GithubReviewOrchestrator {
 
     const revisionLine = `Base SHA: ${github.baseSha}\nHead SHA: ${github.headSha}`
     const warmHost = this.host.warmHostFor(agent.id)
+    // Degrading is a statement about WHAT this review checks out, never about which tier the session
+    // lives in (git-workspace-model §11): moving the tier under a live session leaves preparation and
+    // the launch addressing different directories, and every later turn failing its cwd containment.
     const useRevisionOnlyWorkspace = async () => {
       appendTurnPrompt(
         entry.msg,
         `\n\nTrusted review revision:\n${revisionLine}\n` +
           'No trusted local pull-request checkout is available for this review. Do not trust local files or repository traces; inspect the exact base and head through GitHub read-only tools. Local execution may be skipped.'
       )
+      // A session with no per-session directory has nowhere to stage the empty stand-in; the prompt
+      // above already removes the ordinary cwd's evidentiary authority, which is the same degradation.
+      if ((await this.sessionIsolationFor(key, agent)) === 'shared') return {}
       try {
         const preparedWorkspaceCwd = await this.host.prepareAgentWorkspace(agent, warmHost, {
           sessionKey: key,
@@ -562,7 +575,7 @@ export class GithubReviewOrchestrator {
           initiatedBy: await this.sessionInitiatorLabel(entry.msg),
           githubReviewRevisionOnly: true
         })
-        return { workspaceIsolation: 'session' as const, forceWorkspaceIsolation: true as const, preparedWorkspaceCwd }
+        return { preparedWorkspaceCwd }
       } catch (fallbackErr) {
         // A filesystem-level failure can still leave the ordinary workspace as
         // the runtime cwd. The prompt above explicitly removes its evidentiary
@@ -571,7 +584,7 @@ export class GithubReviewOrchestrator {
         this.log.warn(
           `github review: revision-only workspace unavailable; using the ordinary cwd as untrusted context (${formatErrWithCauses(fallbackErr)})`
         )
-        return { workspaceIsolation: 'shared' as const, forceWorkspaceIsolation: true as const }
+        return {}
       }
     }
     // A secondary root reviews exactly like the primary, with the root swapped (decision 6); no root

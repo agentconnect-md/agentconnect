@@ -320,7 +320,14 @@ the parent of anything.
   and the session fetches for itself when it wants newer state. Session branches
   exist only in the clone.
 - **Review sessions** fetch `refs/pull/<n>/merge` into the clone and verify the
-  checked-out HEAD exactly as today.
+  checked-out HEAD exactly as today. That fetch joins the class of daemon-run Git
+  that must MATERIALIZE objects into a partial clone — with the clone itself, the
+  branch checkout and a review reset — and so runs with lazy fetching permitted:
+  resolving a fetched pack against objects the clone filtered out is a promisor
+  fetch, and under the daemon's usual `GIT_NO_LAZY_FETCH=1` it dies in
+  `unpack-objects`, which degraded every review in a confined session to
+  revision-only. Retirement is deliberately not in that class: it judges a clone
+  with no network target at all.
 - **Retirement** applies the same dirty and unique-commit rules in the clone —
   every local ref counts, not only HEAD, because the directory is the object
   store and a side branch or a stash is work the checked-out branch cannot speak
@@ -368,58 +375,47 @@ the volume, which is the same fail-closed gate that empties the primary checkout
 and the first point after the edit at which anything is authoritative. HOME is
 per pod by construction.
 
-### Changing the tier (decided 2026-09-03)
+### The tier a session is born in (decided 2026-09-03)
 
-A tier is a property of **one session**, not of the settings that created it, and the
-session's own directory is the record of it. Every side asks one question — the ACP host
-key, the pod a host launches into, workspace preparation, the launch's HOME and sandbox
-grants, the console reads, and retirement — so the answer cannot differ between them for
-the life of a session.
+A tier is a property of **one session**, decided when it is created and kept for its whole
+life. Changing an agent's `runInSandbox` or `workspaceIsolation` therefore reaches only
+sessions created afterwards. Every side asks one question — the ACP host key, the pod a host
+launches into, workspace preparation, the launch's HOME and sandbox grants, the console
+reads, and retirement — so no half of the daemon can start serving a live session somewhere
+the others do not address.
 
-The rule, in full:
+Two recorded values answer it, in order:
 
-1. The session already has its own directory on this daemon's disk ⇒ **confined**,
-   whatever the agent now says.
-2. Otherwise ⇒ what a session created now would get: the session is isolated and a
-   boundary encloses the runtime — its own pod on a pool member, the effective OS sandbox
-   on a self-hosted daemon.
+1. **Is this session isolated at all?** Its own `workspaceIsolation`, persisted on the
+   session row. `SessionManager` decides it once at creation (`rec?.workspaceIsolation ??
+agent.workspace.isolation`, and always `shared` for a from-scratch agent, whose primary is
+   not a repository to clone) and keeps it. A shared session gets no host, pod, HOME or
+   directory of its own. This is the value the console's workspace routing, retention and
+   preparation already read, so the tier must come from it and nothing else.
+2. **Which tier, then?** The clones or the worktree the session already stands in — the
+   artifact of the original decision, not an inference about it. A session that stands
+   nowhere yet takes what one created now would get: a boundary around the runtime (its own
+   pod on a pool member, the effective OS sandbox on a self-hosted daemon) means clones, and
+   no boundary means a worktree. A pool member has no local disk to ask, so its session pod
+   holds that record.
 
-A session is isolated when **either** the agent or the session says so, and isolation only
-ever escalates. The agent's `workspaceIsolation` is the operator's standing choice, and the
-only one a from-scratch agent can express — its rows always report `shared`, because its
-primary is not a repository to clone. The session's own isolation is the per-session
-escalation: a formal review forces `session` on an agent that defaults to shared, and every
-workspace request reaching the daemon reports which. Erring towards isolation is the safe
-direction, since a shared session under a boundary is one writing the owner checkout's
-`.git`. A pool member has no local disk to ask, so rule 2 alone answers there — its session
-pod holds the directory.
+An empty `worktrees/<sid>` directory is **absent**, never a worktree: it is what a failed or
+degraded preparation leaves, it has no `.git` for anything to read, and counting it would pin
+a session to a tier nothing on disk serves. That is not hypothetical — a session whose stub
+was mistaken for its worktree ran with a cwd no checkout root contained and failed every turn
+with `prepared workspace cwd … resolves outside its checkout root`, with no way to recover on
+its own. Such a stub is reclaimed (by a single `rmdir`, which refuses anything not provably
+empty) rather than counted, and a review with no trusted checkout stages its empty stand-in on
+the session's **own** tier for the same reason.
 
-The transition is **sticky one way**:
-
-- **Boundary removed** (`runInSandbox` off, or the session's isolation set to `shared`):
-  a session that already has clones **keeps them** until it retires. Its work lives there,
-  and unconfined the shared `.git` adds nothing, so there is nothing to gain by moving it
-  — while moving only half of the daemon is how a session ends up prepared in one
-  directory and launched in another. An unconfined launch of such a session therefore
-  still runs against its own clones: its Git grants name the clone's `.git`, not the
-  primary's.
-- **Boundary added**: a session still standing in a linked worktree **does move** to
-  clones on its next preparation. Leaving it would keep it writing the owner checkout's
-  `.git` — the cross-session channel this section exists to close — and that boundary is
-  the whole reason for the tier. Nothing is destroyed: the worktree and its work stay on
-  disk, and retirement judges them under the same dirty and unique-commit rules.
-
-Two consequences worth stating:
-
-- A shared session gets **no** host, pod, HOME or directory of its own. The confined tier
-  serves `isolation: 'session'`; a sandboxed agent set to `shared` runs every session on
-  its one host, with the agent's private HOME.
-- An empty `worktrees/<sid>` directory is **absent**, never a worktree: it is what a
-  failed or degraded preparation leaves, it has no `.git` for anything to read, and it is
-  reclaimed (by a single `rmdir`, which refuses anything not provably empty) rather than
-  counted. A review with no trusted checkout stages its empty stand-in on the session's
-  **own** tier for the same reason — in the other tier's parent it is a working directory
-  outside the checkout root the session actually stands in, which refuses every later turn.
+The one deliberate exception is `forceWorkspaceIsolation`, which a formal review and the
+webchat per-conversation choice use to re-pin a session's isolation mid-life. It is not a
+silent overwrite: the same write retires the runtime session (`acpSessionId` cleared, state
+and delivery cursor reset), so the next turn re-prepares from the new value. Which is also why
+the row's upsert lets the incoming `workspaceIsolation` win over the stored one — that
+precedence exists for this path alone, and every other writer either carries the stored value
+or omits it. A session re-pinned to `shared` simply stops standing in its clones; they are
+left on disk and judged by retirement under the usual dirty and unique-commit rules.
 
 ### Non-goals here
 

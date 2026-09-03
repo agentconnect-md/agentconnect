@@ -41,11 +41,14 @@ initGitInjection({
 const KEY = 'slack:C1:1700000000.000100'
 const PRIMARY_URL = 'https://github.com/acme/primary-service.git'
 const roots: string[] = []
+/** Every daemon-run Git invocation, with the env it ran under — what proves which ones may fetch lazily. */
+const gitRuns: { args: string[]; env: Record<string, string> }[] = []
 /** Authorized clone URL (minus any `.git`) → the `file://` bare repository standing in for it. */
 const remotes = new Map<string, string>()
 
 afterAll(() => rmSync(join(SHIM, '..'), { recursive: true, force: true }))
 afterEach(() => {
+  gitRuns.length = 0
   workspaces.setGitRunnerResolver(undefined)
   remotes.clear()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -156,10 +159,12 @@ class SeamRunner implements GitRunner {
   }
 
   raw(args: string[]): Promise<string> {
+    gitRuns.push({ args, env: this.env })
     return this.delegate().raw(args[0] === 'ls-remote' ? args.map(substitute) : args)
   }
 
   clone(repo: string, target: string, options?: string[]): Promise<void> {
+    gitRuns.push({ args: ['clone', repo, target, ...(options ?? [])], env: this.env })
     return this.delegate().clone(substitute(repo), target, options)
   }
 
@@ -355,6 +360,31 @@ describe('a confined session gets its own clone of every root (git-workspace-mod
     expect(git(cwd, ['status', '--porcelain'])).toBe('')
   })
 
+  // A blobless clone has to resolve a fetched pack against objects it filtered out, which is a promisor
+  // fetch: under the daemon's usual `GIT_NO_LAZY_FETCH=1` the review fetch dies in `unpack-objects`
+  // ("could not fetch <oid> from promisor remote") and EVERY review in a confined session degrades.
+  it('lets the review fetch into a session clone fetch lazily, as its clone and checkout may', async () => {
+    const agent = agentFixture()
+    const { primary } = serveAll(agent)
+    const pr = publishPullRequest(primary!.seed, 'pr\n')
+
+    const cwd = await workspaces.prepareSessionWorkspace(
+      agent,
+      confined({ review: { pullNumber: 7, baseSha: pr.base, headSha: pr.head } })
+    )
+
+    expect(git(cwd, ['rev-parse', 'HEAD'])).toBe(pr.head)
+    const inClone = gitRuns.filter(
+      (run) => run.args[0] === 'fetch' && run.args.some((arg) => arg.includes('refs/pull/7/head'))
+    )
+    expect(inClone.length).toBeGreaterThan(0)
+    for (const run of inClone) expect(run.env.GIT_NO_LAZY_FETCH).toBe('0')
+    // Retirement is the other side of the rule: it judges the clone with no network target at all.
+    gitRuns.length = 0
+    await workspaces.removeSessionWorktree(agent, KEY)
+    for (const run of gitRuns) expect(run.env.GIT_NO_LAZY_FETCH).not.toBe('0')
+  })
+
   it('fails the session when the clone fails, leaving no worktree behind', async () => {
     const agent = agentFixture()
     serveAll(agent)
@@ -475,10 +505,13 @@ describe('retiring a confined session', () => {
   it('sweeps a legacy worktree of the same session along with its directory', async () => {
     const agent = agentFixture()
     serveAll(agent)
-    const worktree = await workspaces.prepareSessionWorkspace(agent, { sessionKey: KEY, isolation: 'session' })
-    expect(statSync(join(worktree, '.git')).isFile()).toBe(true)
     const clone = await workspaces.prepareSessionWorkspace(agent, confined())
     expect(clone).toBe(realpathSync(join(leafOf(agent), 'workspace')))
+    // A session cannot reach both tiers any more; this is what one migrated under the older rule left.
+    const root = workspaces.primaryRoot(agent)
+    const worktree = join(await workspaces.prepareSessionWorktreeRoot(agent), idOf())
+    await workspaces.addRootSessionWorktree(agent.id, root, worktree, `refs/remotes/origin/${root.branch}`)
+    expect(statSync(join(worktree, '.git')).isFile()).toBe(true)
 
     expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({ outcome: 'removed' })
 
@@ -514,42 +547,42 @@ describe('changing the agent tier never strands a session', () => {
     await expect(workspaces.additionalWorkspaceDirectories(open, again, unconfined())).resolves.toEqual([])
   })
 
-  it('moves a session that stands on a worktree onto the confined tier when the agent gains a boundary', async () => {
+  // The transition that was failing in the field: a session born on the worktree tier whose agent
+  // later gained a boundary. It stays where it was born, so no half of the daemon moves without the
+  // others — the launch keeps the agent's HOME and the owner checkout's `.git`, as its cwd needs.
+  it('keeps a session born on the worktree tier there when the agent gains a boundary', async () => {
     const agent = agentFixture()
     serveAll(agent)
-    const legacy = await workspaces.prepareSessionWorkspace(agent, unconfined())
-    expect(statSync(join(legacy, '.git')).isFile()).toBe(true)
-    writeFileSync(join(legacy, 'earlier.md'), 'kept\n')
+    const worktree = await workspaces.prepareSessionWorkspace(agent, unconfined())
+    expect(statSync(join(worktree, '.git')).isFile()).toBe(true)
+    writeFileSync(join(worktree, 'earlier.md'), 'kept\n')
 
-    const clone = await workspaces.prepareSessionWorkspace(agent, confined())
+    const again = await workspaces.prepareSessionWorkspace(agent, confined())
 
-    // Under a boundary the linked checkout would go on writing the owner's `.git`, so this one does move.
-    expect(clone).toBe(realpathSync(join(leafOf(agent), 'workspace')))
-    expect(statSync(join(clone, '.git')).isDirectory()).toBe(true)
-    expect(workspaces.confinedSessionTier(agent, KEY)).toBe(true)
-    expect(launchHomeFor(agent)).toBe(sessionHomeIn(realpathSync(leafOf(agent))))
-    await expect(workspaces.additionalWorkspaceDirectories(agent, clone, confined())).resolves.toEqual([])
-    // Nothing was destroyed: the older directory and its work are still there for retirement to judge.
-    expect(readFileSync(join(legacy, 'earlier.md'), 'utf8')).toBe('kept\n')
-    expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({
-      outcome: 'retained',
-      reason: 'dirty',
-      partial: true
-    })
-    expect(readFileSync(join(legacy, 'earlier.md'), 'utf8')).toBe('kept\n')
+    expect(again).toBe(worktree)
+    expect(readFileSync(join(worktree, 'earlier.md'), 'utf8')).toBe('kept\n')
+    expect(workspaces.sessionTierOnDisk(agent, KEY)).toBe('worktree')
+    expect(workspaces.confinedSessionTier(agent, KEY, true)).toBe(false)
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'sessions'))).toBe(false)
+    expect(launchHomeFor(agent)).toBe(join(workspaces.agentRootFor(agent), 'home'))
+    await expect(workspaces.additionalWorkspaceDirectories(agent, again, confined())).resolves.toEqual([])
   })
 
-  it('treats an empty stub in the worktrees parent as absent, prepares the clone, and reclaims it', async () => {
+  // The same session with an EMPTY stub where its worktree should be: that is no record at all, so it
+  // takes the tier it would get now and can recover on its own instead of dying on every turn.
+  it('treats an empty stub as absent, so a session whose worktree is gone takes the tier it would get now', async () => {
     const agent = agentFixture()
     serveAll(agent)
     await workspaces.prepareWorkspace(agent)
     const stub = join(workspaces.agentRootFor(agent), 'worktrees', idOf())
     mkdirSync(stub, { recursive: true })
+    expect(workspaces.sessionTierOnDisk(agent, KEY)).toBeUndefined()
 
     const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
 
     expect(cwd).toBe(realpathSync(join(leafOf(agent), 'workspace')))
     expect(existsSync(stub)).toBe(false)
+    expect(launchHomeFor(agent)).toBe(sessionHomeIn(realpathSync(leafOf(agent))))
     await expect(workspaces.additionalWorkspaceDirectories(agent, cwd, confined())).resolves.toEqual([])
   })
 

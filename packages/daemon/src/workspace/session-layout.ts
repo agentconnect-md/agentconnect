@@ -1,7 +1,13 @@
 import { existsSync, lstatSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { sessionKeyDirName } from '../acp/host-key.js'
-import { isRepoSegment, PRIMARY_CHECKOUT_DIR, SECONDARY_ROOTS_DIR } from './secondary-layout.js'
+import {
+  isRepoSegment,
+  PRIMARY_CHECKOUT_DIR,
+  SECONDARY_ROOTS_DIR,
+  secondarySubtreesIn,
+  WORKTREES_DIR
+} from './secondary-layout.js'
 import type { WorkspaceFs } from './workspace-fs.js'
 
 // The on-disk shape of one confined session's directory, `<agentDir>/sessions/<leaf>/{workspace,repos/<owner>/<repo>,home}` (git-workspace-model.md §11) — separate from the manager, like secondary-layout.ts, so the launch path derives a session host's grants without the whole workspace module.
@@ -28,6 +34,23 @@ export function sessionDirIn(agentRoot: string, leaf: string): string {
 export function confinedSessionDirIn(agentRoot: string, sessionKey: string): string | undefined {
   const dir = sessionDirIn(agentRoot, sessionKeyDirName(sessionKey))
   return isRealDir(dir) ? dir : undefined
+}
+
+/**
+ * The other half of that record: whether the session already stands in a per-session WORKTREE of any
+ * root — the primary's or a secondary's.
+ *
+ * The `.git` marker is the proof, exactly as {@link sessionGitDirsIn} takes it for a clone. An empty
+ * `worktrees/<id>` stub is therefore absent, not a worktree: it is what a failed or degraded
+ * preparation leaves behind, and counting it would pin the session to a tier nothing on disk serves —
+ * a cwd no checkout root contains, which is how such a session stopped being able to recover at all.
+ */
+export function hasSessionWorktreeIn(agentRoot: string, sessionWorktreeId: string): boolean {
+  const parents = [
+    join(agentRoot, WORKTREES_DIR),
+    ...secondarySubtreesIn(agentRoot).map((entry) => entry.worktreesPath)
+  ]
+  return parents.some((parent) => existsSync(join(parent, sessionWorktreeId, '.git')))
 }
 
 /** One root's clone inside a session directory: the primary's `workspace`, a secondary's `repos/<owner>/<repo>`. */

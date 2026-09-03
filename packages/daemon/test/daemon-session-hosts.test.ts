@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
@@ -37,7 +37,13 @@ function scaffold(agent: Record<string, unknown> = {}, isolation: 'shared' | 'se
       status: 'active',
       runtime: 'claude',
       runInSandbox: true,
-      workspace: { mode: 'from-scratch', path: join(adir, 'workspace'), isolation },
+      workspace: {
+        mode: 'git-repo',
+        path: join(adir, 'workspace'),
+        gitRepo: 'https://github.com/acme/primary-service.git',
+        gitBranch: 'main',
+        isolation
+      },
       integrations: [],
       output: { mode: 'medium' },
       ...agent
@@ -124,7 +130,28 @@ async function startDaemon(root: string, opts: { sandboxMechanism?: 'bwrap' | nu
   })
   await daemon.start()
   makeRoutable(daemon)
+  stubWorkspacePreparation(daemon)
   return { daemon, hosts, factory }
+}
+
+/** No git here: preparation materializes the directory the request's tier names and nothing else. */
+function stubWorkspacePreparation(daemon: Daemon): void {
+  const workspaces = (daemon as any).workspaces
+  vi.spyOn(workspaces, 'prepareWorkspace').mockImplementation(async (...args: unknown[]) => {
+    const agent = args[0] as { workspace: { path: string } }
+    mkdirSync(agent.workspace.path, { recursive: true })
+    return agent.workspace.path
+  })
+  vi.spyOn(workspaces, 'prepareSessionWorkspace').mockImplementation(async (...args: unknown[]) => {
+    const agent = args[0] as { workspace: { path: string } }
+    const request = args[1] as { sessionKey: string; isolation: string; confined?: boolean }
+    if (request.isolation !== 'session') return agent.workspace.path
+    const cwd = request.confined
+      ? join(workspaces.sessionDir(agent, request.sessionKey), 'workspace')
+      : join(workspaces.localWorktreesPathFor(agent), workspaces.sessionWorktreeId(request.sessionKey))
+    mkdirSync(cwd, { recursive: true })
+    return cwd
+  })
 }
 
 describe('one ACP host per session under a confined self-hosted launch', () => {
@@ -164,25 +191,25 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
-  it('keys every session of an isolated self-hosted agent by session, whatever isolation its row reports', async () => {
-    // Isolation only escalates: the agent's own setting is the operator's standing choice, and a
-    // from-scratch agent's rows report `shared` whatever it says, because its primary is not a clone.
+  it('keys a session by the isolation ITS row reports, not the agent default it may differ from', async () => {
+    // The console's workspace routing, retention and preparation all read that row: a tier chosen from
+    // anything else would put the runtime in a directory none of them addresses.
     const { daemon } = await startDaemon(scaffold())
     const agent = (daemon as any).agents.get('bot-a')
     expect((daemon as any).confinedSession(agent, KEY('T1'))).toBe(true)
     expect((daemon as any).hostKeyForRequest('bot-a', { sessionKey: KEY('T1'), isolation: 'shared' })).toBe(
-      sessionHostKey('bot-a', KEY('T1'))
+      agentHostKey('bot-a')
     )
     expect((daemon as any).hostKeyForRequest('bot-a', { sessionKey: KEY('T2'), isolation: 'session' })).toBe(
       sessionHostKey('bot-a', KEY('T2'))
     )
     // No pod is involved in a self-hosted launch, and the directory the policy names stays under the agent dir.
     expect((daemon as any).k8sPlane).toBeUndefined()
-    expect((daemon as any).workspaces.sessionDir(agent, KEY('T1'))).toBe(
-      join(agent.dir, 'sessions', hostKeyDirName(sessionHostKey('bot-a', KEY('T1'))))
+    expect((daemon as any).workspaces.sessionDir(agent, KEY('T2'))).toBe(
+      join(agent.dir, 'sessions', hostKeyDirName(sessionHostKey('bot-a', KEY('T2'))))
     )
     // Not on disk yet ⇒ not confined yet: the disk decides the tier locally, never a policy.
-    expect((daemon as any).workspaces.confinedSessionDir(agent, KEY('T1'))).toBeUndefined()
+    expect((daemon as any).workspaces.confinedSessionDir(agent, KEY('T2'))).toBeUndefined()
     await daemon.stop()
   })
 
@@ -214,13 +241,15 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
-  // The tier is the SESSION's and the disk is its record (§11): a session with clones keeps its own host after the agent stops being sandboxed, so the host key cannot disagree with what preparation prepared.
-  it('keeps a session-bound host for a session that already has its own directory, sandbox off or shared', async () => {
+  // A session is served in the tier it was BORN in (§11): its clones record that, so losing the
+  // boundary cannot leave the host key disagreeing with what preparation already prepared.
+  it('keeps a session-bound host for a session born confined, after the agent loses its sandbox', async () => {
     const root = scaffold()
     const { daemon } = await startDaemon(root)
     const agent = (daemon as any).agents.get('bot-a')
     const key = KEY('T1')
-    expect((daemon as any).hostKeyFor('bot-a', key)).toBe(sessionHostKey('bot-a', key))
+    const request = { sessionKey: key, isolation: 'session' as const }
+    expect((daemon as any).hostKeyForRequest('bot-a', request)).toBe(sessionHostKey('bot-a', key))
 
     mkdirSync(join(root, 'agents', 'bot-a', 'sessions', hostKeyDirName(sessionHostKey('bot-a', key)), 'workspace'), {
       recursive: true
@@ -228,9 +257,33 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     agent.runInSandbox = false
     agent.workspace.isolation = 'shared'
 
-    expect((daemon as any).hostKeyFor('bot-a', key)).toBe(sessionHostKey('bot-a', key))
+    expect((daemon as any).hostKeyForRequest('bot-a', request)).toBe(sessionHostKey('bot-a', key))
     // ...while a session that stands nowhere yet follows the agent's current settings onto the shared host.
     expect((daemon as any).hostKeyFor('bot-a', KEY('T2'))).toBe(agentHostKey('bot-a'))
+    await daemon.stop()
+  })
+
+  // The other half of the same rule, and the one that was failing in the field: a session born on the
+  // worktree tier stays there when its agent later gains isolation or a boundary.
+  it('keeps a session born on the worktree tier on the agent host after the agent gains a boundary', async () => {
+    const root = scaffold({ runInSandbox: false })
+    const { daemon } = await startDaemon(root)
+    const agent = (daemon as any).agents.get('bot-a')
+    const key = KEY('T1')
+    const request = { sessionKey: key, isolation: 'session' as const }
+    expect((daemon as any).hostKeyForRequest('bot-a', request)).toBe(agentHostKey('bot-a'))
+
+    // What its preparation left: a real worktree of the primary, its `.git` link file and all.
+    const worktree = join(root, 'agents', 'bot-a', 'worktrees', (daemon as any).workspaces.sessionWorktreeId(key))
+    mkdirSync(worktree, { recursive: true })
+    writeFileSync(join(worktree, '.git'), 'gitdir: /nowhere\n')
+    agent.runInSandbox = true
+
+    expect((daemon as any).hostKeyForRequest('bot-a', request)).toBe(agentHostKey('bot-a'))
+    // An EMPTY stub is not that record: it is what a degraded preparation leaves, and a session whose
+    // stub was all that stood between it and a tier is free to take the one it would get now.
+    rmSync(join(worktree, '.git'))
+    expect((daemon as any).hostKeyForRequest('bot-a', request)).toBe(sessionHostKey('bot-a', key))
     await daemon.stop()
   })
 
@@ -251,6 +304,21 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     // Preparation was told the same thing the host key was, and every later read of the key agrees.
     expect(prepare.mock.calls[0]![1]).toMatchObject({ sessionKey: key, confined: true })
     expect((daemon as any).hostKeyFor('bot-a', key)).toBe(sessionHostKey('bot-a', key))
+    await daemon.stop()
+  })
+
+  it('keeps a session forced to shared isolation on the agent host, whatever the agent defaults to', async () => {
+    const { daemon } = await startDaemon(scaffold())
+    const agent = (daemon as any).agents.get('bot-a')
+    const key = KEY('T1')
+    const request = { sessionKey: key, isolation: 'shared' as const }
+    const prepare = vi.spyOn((daemon as any).workspaces, 'prepareSessionWorkspace')
+
+    expect((daemon as any).hostKeyForRequest('bot-a', request)).toBe(agentHostKey('bot-a'))
+    await (daemon as any).runAgentWorkspacePreparation(agent, request)
+
+    expect(prepare.mock.calls[0]![1]).toEqual(request)
+    expect((daemon as any).hostKeyFor('bot-a', key)).toBe(agentHostKey('bot-a'))
     await daemon.stop()
   })
 
@@ -372,7 +440,7 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     expect(confinedPrepare.mock.calls.at(-1)![1]).toMatchObject({ sessionKey: KEY('T1'), confined: true })
     await confined.daemon.stop()
 
-    // A shared host's cold gate prepares no session workspace for a scratch agent, so ask the funnel directly.
+    // Without a boundary the same isolated session goes to the funnel unchanged: no `confined` is added.
     const open = await startDaemon(scaffold({ runInSandbox: false }))
     const openPrepare = vi.spyOn((open.daemon as any).workspaces, 'prepareSessionWorkspace')
     const request = { sessionKey: KEY('T1'), isolation: 'session' as const }
@@ -460,6 +528,7 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     })
     await daemon.start()
     makeRoutable(daemon)
+    stubWorkspacePreparation(daemon)
     const one = (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
     const two = (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
     await vi.waitFor(() => expect((daemon as any).pending.size).toBe(2), WAIT)
@@ -625,6 +694,7 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     })
     await daemon.start()
     makeRoutable(daemon)
+    stubWorkspacePreparation(daemon)
     await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
     const key = sessionHostKey('bot-a', KEY('T1'))
     const store = (daemon as any).store

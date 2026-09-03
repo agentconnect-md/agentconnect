@@ -1311,6 +1311,7 @@ describe('Daemon rd/msg hook fires', () => {
         gitRepo: 'https://github.com/acme/primary-service',
         gitBranch: 'main',
         gitCredential: 'github-app',
+        isolation: 'session',
         pullOnNewSession: true,
         additionalRepos: [{ repoFullName: 'acme/infra', repoId: '123' }]
       }
@@ -1356,11 +1357,7 @@ describe('Daemon rd/msg hook fires', () => {
         'hook:example-co/elsewhere#461',
         (daemon as any).agents.get(AGENT_ID)
       )
-    ).resolves.toEqual({
-      workspaceIsolation: 'session',
-      forceWorkspaceIsolation: true,
-      preparedWorkspaceCwd: '/agent/worktrees/revision-only'
-    })
+    ).resolves.toEqual({ preparedWorkspaceCwd: '/agent/worktrees/revision-only' })
     // No exact checkout is attempted at all: the only preparation is the empty revision-only cwd.
     expect(prepare).toHaveBeenCalledTimes(1)
     expect(prepare).toHaveBeenCalledWith(
@@ -1381,6 +1378,7 @@ describe('Daemon rd/msg hook fires', () => {
         gitRepo: 'https://github.com/acme/infra',
         gitBranch: 'main',
         gitCredential: 'github-app',
+        isolation: 'session',
         pullOnNewSession: true
       }
     })
@@ -1430,11 +1428,7 @@ describe('Daemon rd/msg hook fires', () => {
         'hook:acme/infra#461',
         (daemon as any).agents.get(AGENT_ID)
       )
-    ).resolves.toEqual({
-      workspaceIsolation: 'session',
-      forceWorkspaceIsolation: true,
-      preparedWorkspaceCwd: '/agent/worktrees/revision-only'
-    })
+    ).resolves.toEqual({ preparedWorkspaceCwd: '/agent/worktrees/revision-only' })
     expect(prepare).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ id: AGENT_ID }),
@@ -1448,6 +1442,74 @@ describe('Daemon rd/msg hook fires', () => {
     expect(entry.msg.text).toContain('Trusted review revision')
     expect(entry.msg.text).toContain('Do not trust local files')
     expect(entry.msg.text).toContain('Local execution may be skipped')
+    await daemon.stop()
+  })
+
+  // git-workspace-model §11: degrading is a statement about what the review checks out, never about
+  // which tier the session lives in — moving it left preparation and the launch on different directories.
+  it('leaves a shared session in its own tier when a formal review degrades to revision-only', async () => {
+    const root = scaffold({
+      workspace: {
+        mode: 'git-repo',
+        path: join(tmpdir(), 'agentconnect-review-shared-tier-workspace'),
+        gitRepo: 'https://github.com/acme/infra',
+        gitBranch: 'main',
+        gitCredential: 'github-app',
+        isolation: 'shared',
+        pullOnNewSession: true
+      }
+    })
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, hostFactory: streamingHost().factory })
+    await daemon.start()
+    const dispatchDaemonId = (daemon as any).cfg.daemonId as string
+    const prepare = vi
+      .spyOn(daemon as any, 'prepareAgentWorkspace')
+      .mockRejectedValue(new Error('workspace Git configuration contains a disallowed network override'))
+    const headSha = 'a'.repeat(40)
+    const baseSha = 'b'.repeat(40)
+    const entry = {
+      msg: { text: 'Review this pull request.' },
+      hookContext: {
+        hookId: HOOK_ID,
+        agentId: AGENT_ID,
+        deliveryKey: 'shared-tier-review',
+        firedAt: new Date().toISOString(),
+        event: 'pull_request:synchronize',
+        snapshot: {
+          configRevision: '1',
+          dispatchRevision: '1',
+          dispatchDaemonId,
+          reviewPolicy: 'full',
+          reportingMode: 'check',
+          gateMode: 'informational'
+        },
+        github: {
+          repoId: '123',
+          repoFullName: 'acme/infra',
+          sourceInstallationId: '456',
+          subjectKind: 'pull_request',
+          pullNumber: 461,
+          headSha,
+          baseSha,
+          reportSha: headSha
+        }
+      }
+    }
+
+    await expect(
+      (daemon as any).githubReviews.prepareGithubReviewWorkspace(
+        entry,
+        'hook:acme/infra#461',
+        (daemon as any).agents.get(AGENT_ID)
+      )
+    ).resolves.toEqual({})
+
+    // The exact checkout was attempted; the revision-only stand-in, which would need a per-session
+    // directory this session does not have, was not — and no isolation was re-pinned on the session.
+    expect(prepare).toHaveBeenCalledTimes(1)
+    expect(prepare.mock.calls[0]![2]).not.toMatchObject({ githubReviewRevisionOnly: true })
+    expect(entry.msg.text).toContain('Trusted review revision')
+    expect(entry.msg.text).toContain('Do not trust local files')
     await daemon.stop()
   })
 

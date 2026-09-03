@@ -3607,33 +3607,33 @@ export class Daemon {
    * clones, its own ACP host (its own pod on a pool member), its own private HOME. The single rule
    * the host key, preparation, the launch and cleanup all ask.
    *
-   * Sticky one way, because the disk is the record: once a session has its own directory it keeps the
-   * confined tier until it retires, so turning `runInSandbox` or `workspaceIsolation` off never leaves
-   * preparation and launch serving different directories. A session that stands nowhere yet — and one
-   * still on a linked worktree, which under a boundary would go on writing the owner checkout's `.git`
-   * — takes the tier a session created now would get.
+   * A session is served in the tier it was BORN in, for its whole life: its recorded isolation says
+   * whether it has a tier of its own at all, and the clones or worktree it already stands in say
+   * which. Changing the agent's `runInSandbox` or `workspaceIsolation` therefore reaches only
+   * sessions created afterwards, and no half of the daemon can start serving a live one somewhere
+   * the others do not address.
    */
   private confinedSession(agent: Agent, sessionKey?: string): boolean {
     if (sessionKey === undefined) return false
-    return this.workspaces.confinedSessionTier(agent, sessionKey, this.confinedTierFor(agent, sessionKey))
-  }
-
-  /** The tier a session created NOW would get (§11): session isolation with a boundary around the runtime — its own pod on a pool member, the effective OS sandbox on a self-hosted daemon. A shared session gets no host, pod, HOME or directory of its own. */
-  private confinedTierFor(agent: Agent, sessionKey?: string): boolean {
-    return this.sessionIsolated(agent, sessionKey) && (this.k8s || this.agentRunsInSandbox(agent))
+    // A shared session has no tier of its own at all: no host, no pod, no HOME, no directory.
+    if (!this.sessionIsolated(agent, sessionKey)) return false
+    return this.workspaces.confinedSessionTier(agent, sessionKey, this.k8s || this.agentRunsInSandbox(agent))
   }
 
   /**
-   * Whether THIS session is isolated — either half may say so, and isolation only ever escalates.
+   * Whether THIS session is isolated — its own persisted isolation, never the agent's default where
+   * they differ: `SessionManager` keeps the isolation a session was opened with, a formal review
+   * forces `session`, and a webchat choice can force either.
    *
-   * The agent's setting is the operator's standing choice, and the only one a from-scratch agent can
-   * express: its rows always report `shared`, because its primary is not a repository to clone.
-   * The session's own isolation is the per-session escalation — a formal review forces `session` on an
-   * agent that defaults to shared — and every workspace request reaching this daemon reports it.
+   * It has to be that value and no other, because the console's workspace routing, retention and
+   * preparation all read it: a tier chosen from anything else would put the runtime in a directory
+   * they do not address. Every workspace request reaching this daemon reports it; a session none has
+   * described yet takes what `SessionManager` will compute for it.
    */
   private sessionIsolated(agent: Agent, sessionKey?: string): boolean {
-    if (agent.workspace.isolation === 'session') return true
-    return sessionKey !== undefined && this.sessionIsolation.get(sessionKey) === 'session'
+    const reported = sessionKey === undefined ? undefined : this.sessionIsolation.get(sessionKey)
+    if (reported !== undefined) return reported === 'session'
+    return agent.workspace.mode === 'git-repo' && agent.workspace.isolation === 'session'
   }
 
   /** The host that serves `sessionKey` of this agent: its own when the session is confined, else the shared one. */
