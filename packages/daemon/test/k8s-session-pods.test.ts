@@ -146,6 +146,7 @@ function podSide() {
 
 function member(api: ReturnType<typeof cluster>['api'], connect: ReturnType<typeof podSide>['connect']) {
   const records: SpawnRecord[] = []
+  const warnings: string[] = []
   const generations = fakeGenerations()
   const clock = new FakeClock()
   const driver = new K8sDriver({
@@ -158,9 +159,9 @@ function member(api: ReturnType<typeof cluster>['api'], connect: ReturnType<type
       records.push(record)
       return await connect(record)
     },
-    log: { info: () => {}, warn: () => {}, debug: () => {} }
+    log: { info: () => {}, warn: (m) => warnings.push(m), debug: () => {} }
   })
-  return { driver, records, generations, clock }
+  return { driver, records, generations, clock, warnings }
 }
 
 const request = (hostKey?: typeof T1) =>
@@ -486,6 +487,34 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(second.metadata?.uid).toBe(first.metadata?.uid)
     expect(second.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(new Date(clock.now()).toISOString())
     expect(second.metadata?.resourceVersion).not.toBe(first.metadata?.resourceVersion)
+  })
+
+  it('still admits — and launches — when the API server refuses the stamp, saying so once', async () => {
+    // A Role without `patch` on claims costs the orphan sweep its fence, and nothing else. Failing the
+    // admission instead would turn a permission gap into an outage on every resume of an existing
+    // claim, which is strictly worse than the race the stamp closes.
+    const { api, claims } = cluster()
+    const admit = api.ensureClaim
+    api.ensureClaim = vi.fn(async (claim: SandboxClaim & { metadata: { name: string } }) => {
+      const ensured = await admit(claim)
+      // The refusal writes nothing, so the claim keeps the annotations and version it already had.
+      return ensured.created ? ensured : { ...ensured, stampRefused: true }
+    }) as never
+    const { driver, warnings } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+
+    await driver.ensureSandbox(session)
+    driver.release(session)
+    await expect(driver.ensureSandbox(session)).resolves.toBeDefined()
+    driver.release(session)
+    await driver.ensureSandbox(session)
+
+    // The pod is claimed and usable throughout; only the fence is gone.
+    expect(claims.has(sandboxClaimName(session))).toBe(true)
+    expect(driver.currentLaunch(session)).toBeDefined()
+    // Once per process, not once per admission: a degraded Role would otherwise fill the log.
+    expect(warnings.filter((line) => line.includes('refused the admission stamp'))).toHaveLength(1)
+    expect(warnings[0]).toMatch(/patch on sandboxclaims/)
   })
 
   it('keeps the agent pod path byte-identical: no host key means the agent claim, as before', async () => {

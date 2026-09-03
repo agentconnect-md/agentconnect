@@ -75,6 +75,8 @@ export class K8sDriver implements SpawnDriver {
   private readonly lease: SandboxLease
   private readonly binder: ChannelBinder
   private readonly clock: Clock
+  /** So a Role without `patch` on claims says so once, not on every admission it degrades. */
+  private stampRefusalReported = false
 
   constructor(private readonly deps: K8sDriverDeps) {
     this.clock = deps.clock ?? systemClock
@@ -151,6 +153,7 @@ export class K8sDriver implements SpawnDriver {
         additionalPodMetadata: { labels }
       }
     })
+    if (ensured.stampRefused) this.reportStampRefused(name)
     // Bound, NOT ready: waiting for Ready here would block the only call that revives a suspended
     // claim, whose Sandbox it still names. Resume is "patch Running, then wait", in that order.
     const sandboxName = await awaitBoundSandbox(name, this.waits)
@@ -165,6 +168,17 @@ export class K8sDriver implements SpawnDriver {
     const claimUid = ensured.claim.metadata?.uid ?? sandboxUid
     this.registry.assertStillServed(subject, releasedAt)
     return this.registry.recordLaunch(subject, sandboxName, sandboxUid, claimUid)
+  }
+
+  // Said once per process: the launch is unaffected, but the orphan sweep loses the stamp that tells a
+  // re-admitted claim from a leaked one and falls back to the object's own age for it.
+  private reportStampRefused(name: string): void {
+    if (this.stampRefusalReported) return
+    this.stampRefusalReported = true
+    this.deps.log.warn(
+      `cluster: the API server refused the admission stamp on claim ${name} — sandboxes still launch, but the orphan sweep ` +
+        `judges this claim by age alone until the pool member's Role is granted patch on sandboxclaims`
+    )
   }
 
   /** Takeover: re-derive the launch from the cluster (claim → bound Sandbox → mode), creating nothing. */

@@ -138,7 +138,7 @@ find.call('ServiceAccount', 'ac-cloud-daemon')
 runtime_role = find.call('Role', 'example-agentconnect-daemon-pool-runtime')
 abort('runtime Role must live with the sandboxes') unless runtime_role.dig('metadata', 'namespace') == 'agentconnect-example-agents'
 runtime_rules = runtime_role.fetch('rules')
-abort('daemon pool cannot manage SandboxClaims') unless runtime_rules.any? { |r| r['resources'] == ['sandboxclaims'] && r['verbs'].sort == %w[create delete get list watch] }
+abort('daemon pool cannot manage SandboxClaims') unless runtime_rules.any? { |r| r['resources'] == ['sandboxclaims'] && r['verbs'].sort == %w[create delete get list patch watch] }
 abort('daemon pool cannot read warm pools and sandbox templates') unless runtime_rules.any? do |r|
   r['apiGroups'] == ['extensions.agents.x-k8s.io'] &&
     r['resources'].sort == %w[sandboxtemplates sandboxwarmpools] &&

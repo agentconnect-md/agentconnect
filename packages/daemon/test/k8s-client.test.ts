@@ -81,6 +81,54 @@ describe('SandboxApi', () => {
     expect(Object.keys((requests[1]!.body as { metadata: object }).metadata)).toEqual(['annotations'])
   })
 
+  it('still admits an existing claim when the API server refuses the stamp, and says the fence is off', async () => {
+    // The stamp is a fence for the orphan sweep, not a precondition for running: a Role without
+    // `patch` on claims must cost the fence, never every resume of an existing claim. Anything but a
+    // permission refusal is this call failing and stays fatal.
+    const methods: string[] = []
+    const { config } = await fakeApiServer(({ method }) => {
+      methods.push(method)
+      if (method === 'POST')
+        return { status: 409, json: { kind: 'Status', reason: 'AlreadyExists', message: 'exists' } }
+      if (method === 'PATCH')
+        return { status: 403, json: { kind: 'Status', reason: 'Forbidden', message: 'cannot patch sandboxclaims' } }
+      return { json: { metadata: { name: 'agent-a', uid: 'claim-uid', resourceVersion: 'rv-1' } } }
+    })
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    const ensured = await api.ensureClaim({
+      metadata: { name: 'agent-a', annotations: { 'agentconnect.md/last-admitted-at': '2026-08-14T10:00:00.000Z' } },
+      spec: { warmPoolRef: { name: 'pool' } }
+    })
+
+    expect(ensured.created).toBe(false)
+    expect(ensured.stampRefused).toBe(true)
+    // The claim the caller gets is the one the cluster holds, read back after the refusal.
+    expect(ensured.claim.metadata?.uid).toBe('claim-uid')
+    expect(methods).toEqual(['POST', 'PATCH', 'GET'])
+  })
+
+  it('fails the admission when the stamp is rejected for any reason but permission', async () => {
+    // The GET deliberately SUCCEEDS here: if the fallback read failed too, a degrade-on-everything
+    // bug would still surface as a rejection and this case would pass without testing anything.
+    const methods: string[] = []
+    const { config } = await fakeApiServer(({ method }) => {
+      methods.push(method)
+      if (method === 'POST')
+        return { status: 409, json: { kind: 'Status', reason: 'AlreadyExists', message: 'exists' } }
+      if (method === 'PATCH') return { status: 422, json: { kind: 'Status', reason: 'Invalid', message: 'bad patch' } }
+      return { json: { metadata: { name: 'agent-a', uid: 'claim-uid' } } }
+    })
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    await expect(
+      api.ensureClaim({
+        metadata: { name: 'agent-a', annotations: { 'agentconnect.md/last-admitted-at': '2026-08-14T10:00:00.000Z' } },
+        spec: { warmPoolRef: { name: 'pool' } }
+      })
+    ).rejects.toBeInstanceOf(K8sApiError)
+    // It never reached the fallback read: only a permission refusal takes that path.
+    expect(methods).toEqual(['POST', 'PATCH'])
+  })
+
   it('reports a first claim as CREATED, which is the cold-start signal', async () => {
     // The cold/resume split has to come from a fact, not from elapsed time — a latency metric
     // whose own bucketing is inferred from latency cannot settle a latency target.

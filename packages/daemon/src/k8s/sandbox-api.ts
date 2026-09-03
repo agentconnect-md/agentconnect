@@ -54,6 +54,8 @@ export interface TokenReviewResult {
 export interface EnsuredClaim {
   claim: SandboxClaim
   created: boolean
+  /** The API server refused the admission stamp: the claim is admitted, the orphan sweep's fence on it is not. */
+  stampRefused?: boolean
 }
 
 const POD_NAME_EXTRA = 'authentication.kubernetes.io/pod-name'
@@ -140,7 +142,7 @@ export class SandboxApi {
     } catch (err) {
       if (err instanceof K8sApiError && err.isAlreadyExists) {
         return {
-          claim: await this.mergeClaimAnnotations(claim.metadata.name, claim.metadata.annotations),
+          ...(await this.mergeClaimAnnotations(claim.metadata.name, claim.metadata.annotations)),
           created: false
         }
       }
@@ -149,12 +151,24 @@ export class SandboxApi {
   }
 
   /** Merge annotations onto an existing claim and return it; with none to merge it is a plain read. */
+  // A Role without `patch` on claims DEGRADES here rather than failing: the stamp is a fence for the
+  // orphan sweep, and refusing every resume of an existing claim over it would trade a race for an outage.
   private async mergeClaimAnnotations(
     name: string,
     annotations: Record<string, string> | undefined
-  ): Promise<SandboxClaim> {
-    if (!annotations || Object.keys(annotations).length === 0) return await this.getClaim(name)
-    return await this.http.json<SandboxClaim>({
+  ): Promise<{ claim: SandboxClaim; stampRefused?: boolean }> {
+    if (!annotations || Object.keys(annotations).length === 0) return { claim: await this.getClaim(name) }
+    try {
+      return { claim: await this.patchClaimAnnotations(name, annotations) }
+    } catch (err) {
+      // Only a permission refusal degrades; every other rejection is this call failing and stays fatal.
+      if (!(err instanceof K8sApiError) || err.status !== 403) throw err
+      return { claim: await this.getClaim(name), stampRefused: true }
+    }
+  }
+
+  private patchClaimAnnotations(name: string, annotations: Record<string, string>): Promise<SandboxClaim> {
+    return this.http.json<SandboxClaim>({
       method: 'PATCH',
       path: `${this.claims()}/${name}`,
       contentType: 'application/merge-patch+json',
