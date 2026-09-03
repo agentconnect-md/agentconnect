@@ -4079,7 +4079,7 @@ export interface HookDto {
   agentId: string | null // null ⇒ orphaned by agent delete (inert)
   kind: HookKind
   name: string
-  sessionMode: 'perDelivery' | 'perThread' | 'shared'
+  sessionMode: 'perDelivery' | 'perThread' | 'perSubject' | 'shared'
   enabled: boolean
   url: string | null
   hmacConfigured: boolean
@@ -4122,6 +4122,8 @@ export interface HookRunDto {
 export interface CreateHookInput {
   agentId: string
   name: string
+  /** Session continuity: per delivery (default), caller-keyed via X-AC-Session-Key, or one shared session. */
+  sessionMode?: 'perDelivery' | 'perSubject' | 'shared'
   /** Add X-AC-Signature verification on top of the capability URL. */
   hmac?: boolean
 }

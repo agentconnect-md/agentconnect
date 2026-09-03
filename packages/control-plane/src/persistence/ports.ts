@@ -2183,7 +2183,7 @@ export interface CronRepo {
 
 /** Re-exported so the repository layer keeps one hook-kind vocabulary with the wire contract. */
 export type { HookKind }
-export type HookSessionMode = 'perDelivery' | 'perThread' | 'shared'
+export type HookSessionMode = 'perDelivery' | 'perThread' | 'perSubject' | 'shared'
 export type GithubCommentFamily = 'issues' | 'pull_request'
 /** The stored comment-family vocabulary across code hosts; rows carry one host's subset. */
 export type HookCommentFamily = GithubCommentFamily | 'merge_request'

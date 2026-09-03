@@ -1726,6 +1726,7 @@ enum HookSessionMode {
   perDelivery // new ACP session per delivery (webhook-kind default)
   perThread // source-thread affinity: github = repo#number (github-kind default & only)
   shared // the whole hook shares one session (webhook-kind opt-in)
+  perSubject // caller-keyed affinity: deliveries sharing X-AC-Session-Key reuse one session (webhook-kind opt-in)
 }
 
 enum HookReviewPolicy {

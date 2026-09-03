@@ -128,7 +128,8 @@ The endpoint is:
 ```text
 POST /webhooks/in/:token
 Content-Type: application/json
-X-AC-Delivery-Key: <caller-stable-id>        # optional
+X-AC-Delivery-Key: <caller-stable-id>        # optional (idempotency)
+X-AC-Session-Key: <caller-subject-id>        # optional (session affinity, perSubject mode)
 X-AC-Signature: sha256=<hex>                 # required when HMAC is enabled
 ```
 
@@ -138,9 +139,11 @@ The relay:
 2. verifies `X-AC-Signature` over the raw body when configured;
 3. applies a per-hook token-bucket rate limit;
 4. uses a valid caller delivery key or creates a UUID;
-5. truncates the model-visible body to the protocol limit;
-6. dispatches an `rd/msg` hook frame; and
-7. returns `202` with the delivery key.
+5. computes session affinity from `sessionMode` — reading `X-AC-Session-Key` in
+   `perSubject` mode — while `msgId` keeps the delivery key;
+6. truncates the model-visible body to the protocol limit;
+7. dispatches an `rd/msg` hook frame; and
+8. returns `202` with the delivery key.
 
 An unknown token and an invalid HMAC both return `404`, avoiding a token
 existence oracle. The route accepts JSON with a 128 KiB request limit. Payload
@@ -159,6 +162,13 @@ standing context.
 `sessionMode` controls continuity:
 
 - `perDelivery`: every delivery uses a distinct session;
+- `perSubject`: deliveries sharing an `X-AC-Session-Key` header value reuse one
+  session (`<hookId>:subject:<key>`), so an external subject — a ticket, an
+  order, a conversation — accumulates context across events; a delivery without
+  the header falls back to per-delivery. Continuity and idempotency stay
+  separate axes: the delivery key remains the dedup identity, so a retried
+  delivery is still absorbed while distinct deliveries of one subject append
+  turns to one session.
 - `shared`: all deliveries for the hook reuse one session.
 
 An optional target integration and channel can anchor output using the same

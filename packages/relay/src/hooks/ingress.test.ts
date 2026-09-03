@@ -200,6 +200,39 @@ describe('hook ingress', () => {
     expect(msg.msgId).toBe(`${HOOK}:k1`)
   })
 
+  it('perSubject keys deliveries sharing X-AC-Session-Key to one session, msgId stays per delivery', async () => {
+    h.table.upsert(rule({ sessionMode: 'perSubject' }))
+    await post('wh_tok1', { headers: { 'x-ac-delivery-key': 'd1', 'x-ac-session-key': 'ticket-42' } })
+    await post('wh_tok1', { headers: { 'x-ac-delivery-key': 'd2', 'x-ac-session-key': 'ticket-42' } })
+    await flush()
+    expect(h.sent).toHaveLength(2)
+    expect(h.sent[0]!.sessionKey).toBe(`${HOOK}:subject:ticket-42`)
+    expect(h.sent[1]!.sessionKey).toBe(`${HOOK}:subject:ticket-42`)
+    expect(h.sent[0]!.msgId).toBe(`${HOOK}:d1`)
+    expect(h.sent[1]!.msgId).toBe(`${HOOK}:d2`)
+  })
+
+  it('perSubject without the header falls back to per-delivery affinity', async () => {
+    h.table.upsert(rule({ sessionMode: 'perSubject' }))
+    await post('wh_tok1', { headers: { 'x-ac-delivery-key': 'd3' } })
+    await flush()
+    expect(h.sent[0]!.sessionKey).toBe(`${HOOK}:d3`)
+  })
+
+  it('perSubject ignores an oversized session key like an absent one', async () => {
+    h.table.upsert(rule({ sessionMode: 'perSubject' }))
+    await post('wh_tok1', { headers: { 'x-ac-delivery-key': 'd4', 'x-ac-session-key': 'x'.repeat(201) } })
+    await flush()
+    expect(h.sent[0]!.sessionKey).toBe(`${HOOK}:d4`)
+  })
+
+  it('the session-key header changes nothing outside perSubject mode', async () => {
+    h.table.upsert(rule())
+    await post('wh_tok1', { headers: { 'x-ac-delivery-key': 'd5', 'x-ac-session-key': 'ticket-42' } })
+    await flush()
+    expect(h.sent[0]!.sessionKey).toBe(`${HOOK}:d5`)
+  })
+
   it('mints a uuid deliveryKey when the header is absent', async () => {
     h.table.upsert(rule())
     const res = await post('wh_tok1')

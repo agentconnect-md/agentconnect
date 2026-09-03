@@ -74,8 +74,12 @@ function requiresGithubThreadWorktreeCleanup(msg: RdMsgHook): boolean {
 }
 
 /** The relay-computed session-affinity key (design decision 7; webhook kind). */
-function sessionKeyFor(rule: RcHookAssign, deliveryKey: string): string {
-  return rule.sessionMode === 'shared' ? rule.hookId : `${rule.hookId}:${deliveryKey}`
+function sessionKeyFor(rule: RcHookAssign, deliveryKey: string, subjectKey?: string): string {
+  if (rule.sessionMode === 'shared') return rule.hookId
+  // perSubject: the caller names the subject; the `subject:` segment keeps the space disjoint
+  // from per-delivery keys, and a delivery without the header degrades to per-delivery.
+  if (rule.sessionMode === 'perSubject' && subjectKey) return `${rule.hookId}:subject:${subjectKey}`
+  return `${rule.hookId}:${deliveryKey}`
 }
 
 function notFound(reply: FastifyReply): FastifyReply {
@@ -284,13 +288,20 @@ export function registerHookIngress(app: FastifyInstance, deps: HookIngressDeps)
         const headerKey = req.headers['x-ac-delivery-key']
         const deliveryKey =
           typeof headerKey === 'string' && headerKey.length > 0 && headerKey.length <= 200 ? headerKey : randomUUID()
+        // Session affinity (perSubject mode), NOT idempotency: msgId keeps the delivery key, so a
+        // retried delivery still dedups while distinct deliveries of one subject share a session.
+        const headerSubject = req.headers['x-ac-session-key']
+        const subjectKey =
+          typeof headerSubject === 'string' && headerSubject.length > 0 && headerSubject.length <= 200
+            ? headerSubject
+            : undefined
 
         const text = raw.toString('utf8')
         const truncated = text.length > HOOK_BODY_EXCERPT_MAX
         const msg: RdMsgHook = {
           source: 'hook',
           agentId: rule.agentId,
-          sessionKey: sessionKeyFor(rule, deliveryKey),
+          sessionKey: sessionKeyFor(rule, deliveryKey, subjectKey),
           msgId: `${rule.hookId}:${deliveryKey}`,
           hookId: rule.hookId,
           deliveryKey,
