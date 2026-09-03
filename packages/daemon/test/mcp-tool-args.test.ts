@@ -35,7 +35,6 @@ const ALL_CAPABILITIES = new Set(['recall', 'create', 'get', 'update', 'delete']
 
 const advertised: ToolDescriptor[] = [
   ...toolsForIntegrations([slackInt, telegramInt], {
-    sessionTitle: true,
     organizationKnowledge: true,
     currentPlatform: 'slack'
   }),

@@ -228,9 +228,8 @@ export interface SessionRecord {
   // NULL on legacy rows / non-platform sessions). Display-name resolution is a
   // separate `display_names` lookup keyed by this id.
   triggeredBy?: string | null
-  // Human-facing session title supplied by an ingress when the session is
-  // created, by the runtime (ACP `session_info_update`), or by AgentConnect's
-  // `setSessionTitle` tool. Later runtime/tool updates win.
+  // Human-facing session title: the ingress title (or the first-message fallback) the
+  // session is born with, then whatever the runtime pushes (ACP `session_info_update`).
   title?: string | null
   // Platform-native link to the source message/thread. First non-null wins so
   // later messages in the same logical session cannot move the title link.

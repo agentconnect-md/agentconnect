@@ -226,9 +226,6 @@ export class SessionManager {
        *  cannot tell that a multi-mention message addresses it — the
        *  response-choice rule then misfires into AC_NO_RESPONSE. */
       slackBotUserIdFor?: (integrationId: string) => string | undefined
-      /** Whether this runtime needs AgentConnect's model-authored title fallback.
-       *  Native-title runtimes (for example Claude) leave this false. */
-      usesSessionTitleTool?: (agent: Agent) => boolean
       /** The runtime-definition env (daemon config `runtimes[].env`) for an agent's
        *  runtime. The spawn path detects config-file pointer-var conflicts over
        *  `{...runtimeEnv, ...agentEnv}` — supply the same base here so the
@@ -376,7 +373,6 @@ export class SessionManager {
   }> {
     const agent = this.deps.agentById(agentId)
     if (!agent) throw new Error(`unknown agent ${agentId}`)
-    const usesSessionTitleTool = this.deps.usesSessionTitleTool?.(agent) ?? false
     const memoryEnabled = this.deps.memoryEnabled !== false
     const currentMemoryProvider = memoryEnabled ? memoryKindOf(agent) : 'none'
     // The memory scope for this turn — the per-channel folder for a channel-scoped
@@ -591,7 +587,6 @@ export class SessionManager {
           // The same list `additionalWorkspaceDirectories` hands the runtime, read from the same
           // accessor, so the prompt names exactly the directories the session got.
           workspaceRoots: await this.workspaces.sessionAdditionalRoots(agent, workspaceRequest),
-          usesSessionTitleTool,
           needsReplyToParent,
           memoryIndex,
           usesMeta,

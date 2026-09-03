@@ -66,7 +66,6 @@ export type StandingContextInput = {
   fileSecrets: readonly StandingContextFileSecret[]
   /** The workspace roots this session is handed as additional directories, beside its own cwd. */
   workspaceRoots?: readonly { path: string; repoFullName: string; branch: string }[]
-  usesSessionTitleTool: boolean
   needsReplyToParent: boolean
   /** The agent memory INDEX, already read and trimmed; '' for native/absent memory. */
   memoryIndex: string
@@ -192,15 +191,6 @@ function buildAgentMeta(input: StandingContextInput): string {
                   `report only whether the file exists, never what it contains.`
               ]
             : [])
-        ]
-      : []),
-    ...(input.usesSessionTitleTool
-      ? [
-          '',
-          '# Session naming',
-          'Before sending your first substantive answer, after you understand the first meaningful user request ' +
-            '(not a greeting or acknowledgement), call `setSessionTitle` with a concise, specific title. Call it ' +
-            'again only if the task focus materially changes. Do not mention this housekeeping action.'
         ]
       : [])
   ].join('\n')

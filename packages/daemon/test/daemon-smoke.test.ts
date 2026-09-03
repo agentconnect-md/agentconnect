@@ -821,7 +821,7 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     await daemon.stop()
   })
 
-  it('fans out a model-authored title to the UI and Slack during the turn', async () => {
+  it('fans out a runtime title to the UI and Slack during the turn', async () => {
     const root = scaffold()
     let onUpdate!: (sid: string, update: unknown) => void
     const fakeHost = {
@@ -835,17 +835,9 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       }),
       hasSession: (id: string) => id === 'acp-tool-title',
       prompt: vi.fn(async () => {
-        await (daemon as any).setSessionTitleFromTool({
-          agentId: 'bot-a',
-          platform: 'slack',
-          // Simulate a session-static MCP token created before the integration
-          // rotated from A to the current dispatch route B.
-          integrationId: 'int-a',
-          isDm: true,
-          channel: 'D1',
-          thread: '205.1',
-          title: 'Fix session titles'
-        })
+        // The rename a runtime publishes mid-turn (codex-acp's generated title): it must
+        // reach the CURRENT dispatch route, not an integration the session once used.
+        onUpdate('acp-tool-title', { sessionUpdate: 'session_info_update', title: 'Fix session titles' })
         return { stopReason: 'end_turn' }
       }),
       cancel: vi.fn(),

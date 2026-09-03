@@ -565,10 +565,6 @@ export interface Pending {
   /** Tool-call ids structurally identified as this daemon's own MCP tools. Approval
    *  requests may carry only this opaque id, regardless of which ACP path is used. */
   builtinSystemToolCallIds: Set<string>
-  /** Tool-call ids for the internal Codex title fallback. Its MCP call updates the
-   *  session metadata, but housekeeping must not appear in platform/webchat output
-   *  or the persisted user-visible activity log. */
-  hiddenSessionTitleToolCallIds: Set<string>
   /** Bounded fingerprint of the prompt text this turn sent, for recognizing a runtime
    *  fallback title that is only that prompt read back (session/derive-title.ts). */
   promptEchoPrefix?: string

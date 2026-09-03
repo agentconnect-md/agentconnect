@@ -1,6 +1,5 @@
 import type { Integration } from '../agents/agent-schema.js'
 import { obj, unionOf, type JsonValue, type ToolDescriptor } from '../tool-schema/descriptor.js'
-import { SESSION_TITLE_TOOL_NAME } from './session-title-tool.js'
 import {
   allAttachmentReadTools,
   allPortPlatforms,
@@ -12,37 +11,6 @@ import {
 } from '../platforms/read-ports.js'
 import { EXTERNAL_MEMORY_TOOL_NAMES, MEMORY_TOOLS } from '../memory/tools.js'
 import { BROKER_PIPELINE_STATUSES } from '../gitlab/broker.js'
-
-/**
- * Session metadata fallback tools. Opt-in via `toolsForIntegrations`'s
- * `sessionTitle` option; no production runtime opts in anymore — Codex was the
- * last, until codex-acp >= 1.1.3 started emitting native session_info_update
- * titles itself (issue #659). The descriptor and its MCP handler stay so warm
- * ACP sessions created under the old Codex whitelist keep working until they
- * cycle out.
- */
-export const SESSION_TOOLS: ToolDescriptor[] = [
-  {
-    name: SESSION_TITLE_TOOL_NAME,
-    description:
-      'Set the user-facing title for this AgentConnect session. Before your first substantive answer, after you ' +
-      'understand the first meaningful request (ignore greetings and acknowledgements), call this once with a ' +
-      'concise, specific title of about 3-8 words or a similarly short phrase. Call it again only if the task focus ' +
-      'materially changes. If the user asks what the title is, set the exact title you give them. Do not mention this ' +
-      'housekeeping call in your response.',
-    inputSchema: obj(
-      {
-        title: {
-          type: 'string',
-          minLength: 1,
-          maxLength: 80,
-          description: 'A concise, specific session title (maximum 80 characters).'
-        }
-      },
-      ['title']
-    )
-  }
-]
 
 /**
  * The single unified send tool (session-concept §3). It merges the former
@@ -1292,7 +1260,6 @@ export const CODE_HOST_EFFECT_TOOLS: ToolDescriptor[] = [
 export const ALL_TOOL_NAMES = [
   ...new Set(
     [
-      ...SESSION_TOOLS,
       // platform-neutral tools — descriptors are built per-agent, but the names
       // are stable and belong in the permission auto-allow set.
       buildSendMessageTool([]),
@@ -1327,15 +1294,14 @@ export const ALL_TOOL_NAMES = [
 
 /**
  * The default MCP tool set for an agent. Memory and collaboration tools are
- * always present; the session-title fallback is opt-in for whitelisted runtimes,
- * and platform tools are gated by the agent's integrations. The channel/user
+ * always present; platform tools are gated by the agent's integrations. The channel/user
  * read helpers are platform-neutral (one set, routed by a `platform` argument);
  * only the per-platform file-read tools are gated per platform — and that gate
  * is a declared Layer-1 read port, not a platform name.
  */
 export function toolsForIntegrations(
   integrations: Integration[],
-  options: { sessionTitle?: boolean; organizationKnowledge?: boolean; currentPlatform?: string } = {}
+  options: { organizationKnowledge?: boolean; currentPlatform?: string } = {}
 ): ToolDescriptor[] {
   const tools: ToolDescriptor[] = []
   const seen = new Set<string>()
@@ -1346,7 +1312,6 @@ export function toolsForIntegrations(
       tools.push(t)
     }
   }
-  if (options.sessionTitle) add(SESSION_TOOLS)
   add(MEMORY_TOOLS)
   if (options.organizationKnowledge) add(KNOWLEDGE_TOOLS)
   add(COLLABORATION_TOOLS)

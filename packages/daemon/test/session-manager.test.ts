@@ -774,8 +774,8 @@ describe('SessionManager', () => {
   })
 
   it('bounds a runtime-pushed title to one line of at most 80 characters', async () => {
-    // Every other title source is capped (ingress clamp, first-message fallback, the
-    // setSessionTitle tool). A title should never be a multi-paragraph prompt.
+    // Every other title source is capped (ingress clamp, first-message fallback), so a
+    // title should never be a multi-paragraph prompt.
     const long = `GitHub pull_request:synchronize — acme/infra#1729\n\n${'context '.repeat(40)}`
     const clamped = clampRuntimeTitle(long)!
     expect([...clamped].length).toBeLessThanOrEqual(80)
@@ -786,7 +786,7 @@ describe('SessionManager', () => {
     expect(clampRuntimeTitle('   \n  ')).toBeUndefined()
   })
 
-  it('injects session naming guidance for a whitelisted runtime and passes the exact delivery route to MCP setup', async () => {
+  it('passes the exact delivery route to MCP setup', async () => {
     const store = await newStore()
     const host = { newSession: vi.fn(async () => 'acp-title-1') } as any
     const mcpServersFor = vi.fn(() => [])
@@ -796,19 +796,11 @@ describe('SessionManager', () => {
       hostFor: async () => host,
       agentById: () => codexAgent,
       memory,
-      usesSessionTitleTool: (candidate) => candidate.runtime === 'codex-acp',
       mcpServersFor
     })
 
-    const { blocks } = await sm.handle(
-      'bot-a',
-      msg({ ts: '100.1', text: 'fix titles', isDm: true }),
-      undefined,
-      'int-b'
-    )
+    await sm.handle('bot-a', msg({ ts: '100.1', text: 'fix titles', isDm: true }), undefined, 'int-b')
 
-    expect((blocks[0] as any).text).toContain('# Session naming')
-    expect((blocks[0] as any).text).toContain('`setSessionTitle`')
     expect(mcpServersFor).toHaveBeenCalledWith(
       expect.objectContaining({
         agent: codexAgent,
@@ -819,25 +811,6 @@ describe('SessionManager', () => {
         isDm: true
       })
     )
-    await (await store).close()
-  })
-
-  it('omits session naming guidance for a native-title runtime', async () => {
-    const store = await newStore()
-    const host = { newSession: vi.fn(async () => 'acp-title-native') } as any
-    const sm = new SessionManager({
-      store,
-      hostFor: async () => host,
-      agentById: () => agent,
-      memory,
-      usesSessionTitleTool: (candidate) => candidate.runtime === 'codex-acp',
-      mcpServersFor: () => []
-    })
-
-    const { blocks } = await sm.handle('bot-a', msg({ ts: '100.1', text: 'fix titles' }))
-
-    expect((blocks[0] as any).text).not.toContain('# Session naming')
-    expect((blocks[0] as any).text).not.toContain('`setSessionTitle`')
     await (await store).close()
   })
 

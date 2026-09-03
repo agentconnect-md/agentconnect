@@ -132,19 +132,6 @@ const toolUpdate = (toolCallId: string, status: string) => ({
   toolCallId,
   status
 })
-const sessionTitleToolCall = (toolCallId: string, status = 'in_progress') => ({
-  sessionUpdate: 'tool_call',
-  toolCallId,
-  kind: 'execute',
-  title: 'mcp.agentconnect.setSessionTitle',
-  status,
-  rawInput: {
-    server: 'agentconnect',
-    tool: 'setSessionTitle',
-    arguments: { title: 'Fix session title visibility' }
-  },
-  _meta: { is_mcp_tool_call: true }
-})
 const sessionInfo = (title: string | null) => ({ sessionUpdate: 'session_info_update', title })
 
 /** The slice of `K8sRuntimePlane` a webchat turn touches, with the one fact under test:
@@ -494,44 +481,6 @@ describe('Daemon webchat: SessionUpdate → webchat/output mapping', () => {
       { kind: 'session_info', title: 'Inspect startup state' },
       { kind: 'message', text: 'done' }
     ])
-    await daemon.stop()
-  })
-
-  it('hides the internal session-title tool burst from live and persisted message streams', async () => {
-    const { factory } = streamingHost([
-      sessionTitleToolCall('title-tool'),
-      toolUpdate('title-tool', 'completed'),
-      toolCall('visible-tool', 'Read file.ts', 'completed'),
-      text('done')
-    ])
-    const daemon = new Daemon({ root: scaffold(undefined, { runtime: 'test-runtime' }), hostFactory: factory })
-    await daemon.start()
-    const cp = fakeCpClient()
-    ;(daemon as any).cpClient = cp
-
-    const turnId = '12121212-1212-4212-8212-121212121212'
-    const msg = {
-      msgId: `webchat:${CONV}`,
-      traceId: turnId,
-      source: 'user' as const,
-      platform: 'webchat' as const,
-      channel: CONV,
-      sender: { id: 'alice', isBot: false },
-      text: 'go',
-      mentionedBots: [] as string[],
-      isDm: true,
-      trigger: 'dm' as const
-    }
-    await (daemon as any).dispatch(AGENT_ID, msg, undefined, { conversationId: CONV, turnId, sink: cp.sink })
-
-    expect(cp.outputs.filter((o) => o.event).map((o) => o.event)).toEqual([
-      { kind: 'tool_call', toolCallId: 'visible-tool', title: 'Read file.ts', status: 'completed' },
-      { kind: 'message', text: 'done' }
-    ])
-    const toolRows = (await (daemon as any).store.threadTranscript(CONV, `webchat:${CONV}`))
-      .filter((row: { kind: string }) => row.kind === 'tool')
-      .map((row: { text: string }) => row.text)
-    expect(toolRows).toEqual(['Read file.ts'])
     await daemon.stop()
   })
 
