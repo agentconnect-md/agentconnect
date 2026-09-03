@@ -349,7 +349,8 @@ describe('Claude credential environment isolation', () => {
       HOME: privateHome,
       TMPDIR: privateTmp,
       CLAUDE_CODE_TMPDIR: privateTmp,
-      CLAUDE_TMPDIR: privateTmp
+      CLAUDE_TMPDIR: privateTmp,
+      NODE_USE_ENV_PROXY: '1'
     }
     mkdirSync(workspace)
     mkdirSync(privateClaudeConfig, { recursive: true })
@@ -408,6 +409,8 @@ describe('Claude credential environment isolation', () => {
       )
       for (const name of names) expect(visible).not.toContain(name)
       for (const value of Object.values(seededCredentialEnvironment)) expect(output).not.toContain(value)
+      // SRT must not strip the switch that makes Node's fetch/http honour its proxy variables.
+      expect(output).toContain('NODE_USE_ENV_PROXY=1')
 
       for (const credentialFile of [identityTokenFile, awsWebIdentityTokenFile, privateClaudeSettings]) {
         const fileRead = await SandboxManager.wrapWithSandboxArgv(
