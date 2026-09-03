@@ -269,6 +269,7 @@ import {
   K8S_PROBE_POLL_MS,
   K8S_PROBE_WAIT_MS,
   parseK8sProbePayload,
+  poolProbeKey,
   probeClusterRuntimes,
   type K8sProbePayload
 } from './runtimes/cluster-probe.js'
@@ -288,8 +289,10 @@ import { planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runti
 import { RuntimeStore, parseNpxLaunch, storedRuntimeDef } from './runtimes/runtime-store.js'
 import {
   applyCodexSessionFloor,
+  applyClaudeModelAliases,
   applyModelCredential,
   applyStaticModelConfig,
+  configuredClaudeModelAliases,
   configuredCodexSessionFloor,
   configuredModelCredentials,
   modelProviderTarget,
@@ -1121,6 +1124,7 @@ export class Daemon {
   /** Deployment codex session-config floor, daemon-applied at spawn so it also reaches agents
    *  whose sandbox pod spec predates the value (the pod-env copy is a frozen snapshot). */
   private readonly codexSessionFloor?: string
+  private readonly claudeModelAliases?: Record<string, string>
   /** Reads this pod's projected CP-audience token; undefined unless the daemon runs
    *  in-cluster AND the volume is actually mounted (decided once, at boot). */
   private readonly clusterIdentityToken?: () => string | undefined
@@ -1385,6 +1389,8 @@ export class Daemon {
     // supplies the key alone.
     this.modelSessions.staticModelCredentials = this.k8s ? configuredModelCredentials(process.env) : undefined
     this.codexSessionFloor = this.k8s ? configuredCodexSessionFloor(process.env) : undefined
+    // Self-hosted launches inherit the host environment already; only a pod launch needs these carried.
+    this.claudeModelAliases = this.k8s ? configuredClaudeModelAliases(process.env) : undefined
     this.evalHooks = new DaemonEvaluationHooks(this.evaluationHost(), opts.evaluation)
     this.sessionMetadataOutbox = new SessionMetadataOutbox(this.sessionMetadataHost())
     this.observedChannelsSync = new ObservedChannelsSync(this.observedChannelsSyncHost())
@@ -4352,6 +4358,7 @@ export class Daemon {
           }
           // Last, so every key the daemon authored above stays authoritative over the floor.
           if (this.codexSessionFloor) applyCodexSessionFloor(target, launchEnv, this.codexSessionFloor)
+          if (this.claudeModelAliases) applyClaudeModelAliases(target, launchEnv, this.claudeModelAliases)
         },
         runtimeReadRoots: runInSandbox
           ? (launchEnv) =>
@@ -17777,8 +17784,9 @@ export class Daemon {
     if (!plane || !resolved) return
     let claimed: string | undefined
     try {
-      // Who probes: one member per runtime image, not one per replica.
-      const imageRef = await this.poolRuntimeImageRef(plane)
+      // Who probes: one member per runtime image, not one per replica — and per the declarations
+      // this daemon hands that image, which a rollout can change without moving the tag.
+      const imageRef = this.poolProbeKeyFor(await this.poolRuntimeImageRef(plane))
       if (imageRef && (await this.adoptPublishedK8sProbe(imageRef, resolved))) return
       if (imageRef) {
         if (await this.claimK8sProbe(imageRef, plane.memberId)) claimed = imageRef
@@ -17838,6 +17846,13 @@ export class Daemon {
       this.log.warn(`runtimes: could not resolve the pool's runtime image — probing alone (${formatErr(err)})`)
       return undefined
     }
+  }
+
+  /** The pool-probe key for this member: the image plus its own deployment declarations. */
+  private poolProbeKeyFor(imageRef: string | undefined): string | undefined {
+    return imageRef === undefined
+      ? undefined
+      : poolProbeKey(imageRef, { ...this.claudeModelAliases, AC_CODEX_CONFIG: this.codexSessionFloor })
   }
 
   /** Adopt an answer another member already published for this image, if there is one. */
@@ -17991,6 +18006,7 @@ export class Daemon {
         }),
       staticCredential: (kind) => this.modelSessions.staticCredential(kind),
       ...(this.codexSessionFloor ? { codexSessionFloor: this.codexSessionFloor } : {}),
+      ...(this.claudeModelAliases ? { claudeModelAliases: this.claudeModelAliases } : {}),
       log: this.log,
       onResult: (result) => this.runtimeFacts.applySandboxProbe(result)
     })

@@ -23,6 +23,7 @@ import type { SandboxMechanism } from '../acp/sandbox.js'
 import { effectiveRunInSandbox, type PreparedRuntimeLaunch } from '../launch/prepare.js'
 import { composeRuntimeLaunch } from '../launch/compose.js'
 import { PACKAGE_LAUNCHERS } from './probe.js'
+import { CLAUDE_MODEL_ALIAS_ENV } from './model-provider-config.js'
 
 const PROCESS_ENV_KEYS = new Map([
   ['PATH', 'PATH'],
@@ -52,7 +53,10 @@ const PROVIDER_ENV_KEYS = new Set([
   // host configured via env instead of ~/.openclaw/openclaw.json.
   'OPENCLAW_GATEWAY_URL',
   'OPENCLAW_GATEWAY_TOKEN',
-  'OPENCLAW_GATEWAY_PASSWORD'
+  'OPENCLAW_GATEWAY_PASSWORD',
+  // Claude's alias→model declarations. A real launch inherits these from the host environment;
+  // without them here the probe would read a picker the sessions do not have.
+  ...CLAUDE_MODEL_ALIAS_ENV
 ])
 
 /** Minimal ambient environment for an untrusted disposable compatibility probe. */

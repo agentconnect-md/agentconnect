@@ -35,6 +35,24 @@ rejects); the shim merges it under any daemon-sent `CODEX_CONFIG`, one level dee
 both carry (the daemon always sends `features`), so every leaf the daemon decided stays
 authoritative.
 
+The daemon carries one more deployment assertion of the same kind for Claude: the
+`ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` variables and their `_NAME`,
+`_DESCRIPTION` and `_SUPPORTED_CAPABILITIES` suffixes, which say which concrete model each
+Claude alias resolves to behind this deployment's endpoint. Claude Code offers an alias it
+was told nothing about only when the signed-in account's own rollout list names it, and a
+gateway-backed pool has no such list — so without a declaration its model picker is the
+built-in aliases and nothing else, which is why a pool that serves Fable never offered it.
+The daemon reads them at boot (`--k8s` only; a self-hosted launch inherits the host
+environment already) and writes them onto BOTH the spawn env and the cluster probe's, so the
+picker the console shows is the one a session can actually run — the probe env allowlist
+carries the same names for the same reason. Written like the codex floor: last, and never
+over a key the daemon itself authored. A sandbox minted before the value changed still gets
+it, because the daemon writes it rather than the frozen pod spec. The pool's shared probe
+answer is keyed on the image PLUS a digest of these declarations (and the codex floor), since
+changing one is a rollout that replaces env and not the image tag: keyed on the image alone, a
+member the rollout started would inherit an answer produced without the new declaration and
+advertise it until its next restart while its sessions ran with it.
+
 ## 1. Why a seam at all
 
 `AcpHost` used to own two unrelated jobs: the ACP protocol, and the mechanics of a child
