@@ -24,6 +24,9 @@ import {
   workspaceGitLocalEnv
 } from '../src/workspace/git-injection.js'
 import { LocalGitRunner, type GitRunner, type GitLogEntry, type GitPullSummary } from '../src/workspace/git-runner.js'
+import { ALLOWED_GIT_SUBCOMMANDS, createExecHandler } from '../src/shim/exec-handler.js'
+import { ShimGitRunner, type GitExecPayload } from '../src/shim/git-exec.js'
+import type { ShimRequester } from '../src/shim/channels.js'
 import { sessionHomeIn } from '../src/workspace/session-layout.js'
 import { WorkspaceManager, type PrepareSessionWorkspaceRequest } from '../src/workspace/workspace-manager.js'
 
@@ -54,8 +57,9 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
+/** Canonical, because the sandbox handler decides containment on canonical paths and macOS hands out a `/var` alias for `/private/var`. */
 function tempRoot(prefix: string): string {
-  const root = mkdtempSync(join(tmpdir(), prefix))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)))
   roots.push(root)
   return root
 }
@@ -185,6 +189,35 @@ class SeamRunner implements GitRunner {
   }
 }
 
+/** The one substitution the wire makes: a fixture repository's authorized URL becomes its `file://` bare, and `file:` joins the protocol allowlist. */
+function wireEnv(env: Record<string, string>): Record<string, string> {
+  const next: Record<string, string> = { ...env, GIT_ALLOW_PROTOCOL: 'file:https:ssh' }
+  for (let index = 0; index < Number(next.GIT_CONFIG_COUNT ?? 0); index += 1) {
+    if (/^remote\..*\.url$/i.test(next[`GIT_CONFIG_KEY_${index}`] ?? '')) {
+      next[`GIT_CONFIG_VALUE_${index}`] = substitute(next[`GIT_CONFIG_VALUE_${index}`] ?? '')
+    }
+  }
+  return next
+}
+
+/** The pool's own runner against the pod's own handler, so the daemon's argv crosses the real exec channel and meets the real inventory — the enforcement a permissive stand-in hides, which is how `checkout` reached the field. */
+function shimRunner(workspaceRoot: string, cwd: string | undefined, abort: AbortSignal | undefined): GitRunner {
+  const handle = createExecHandler({ workspaceRoot, log: { info: () => {}, warn: () => {} } })
+  const requester: ShimRequester = {
+    request: async (capability, payload, options) => {
+      const sent = payload as GitExecPayload
+      gitRuns.push({ args: sent.args, env: sent.env ?? {} })
+      const wire: GitExecPayload = {
+        ...sent,
+        args: sent.args.map(substitute),
+        ...(sent.env ? { env: wireEnv(sent.env) } : {})
+      }
+      return await handle(capability, wire, options?.abort)
+    }
+  }
+  return new ShimGitRunner(requester, cwd, undefined, abort)
+}
+
 /** Serve the primary (when there is one) and every secondary root from fresh bare repositories. */
 function serveAll(agent: Agent, branches: Record<string, string> = {}): Record<string, ReturnType<typeof bareRepo>> {
   workspaces.setGitRunnerResolver((_agentId, cwd, abort) => new SeamRunner(cwd, abort))
@@ -197,6 +230,14 @@ function serveAll(agent: Agent, branches: Record<string, string> = {}): Record<s
     served[root.repoFullName] = bareRepo(branches[root.repoFullName] ?? 'main')
     serve(root.cloneUrl, served[root.repoFullName]!.url)
   }
+  return served
+}
+
+/** The same fixtures on the pool's shape: every daemon-run Git for this agent goes through the sandbox handler rooted at its directory. */
+function serveAllThroughShim(agent: Agent): Record<string, ReturnType<typeof bareRepo>> {
+  const served = serveAll(agent)
+  const root = workspaces.agentRootFor(agent)
+  workspaces.setGitRunnerResolver((_agentId, cwd, abort) => shimRunner(root, cwd, abort))
   return served
 }
 
@@ -669,5 +710,52 @@ describe('a confined session across workspace changes', () => {
     })
     expect(git(first, ['remote', 'get-url', 'origin'])).toBe('https://other-host.example/acme/elsewhere.git')
     expect(git(second, ['remote', 'get-url', 'origin'])).toBe(PRIMARY_URL)
+  })
+})
+
+// On a pool member every workspace Git call is routed through the shim into the session's pod, where a
+// closed inventory (shim/exec-handler.ts) decides what may run. Self-hosted runs git locally and never
+// meets it, so a subcommand the daemon issues and the sandbox refuses is a regression only the pool
+// sees — which is how `checkout -b` reached a live pool as "git checkout is not in the permitted
+// inventory" once this tier replaced the worktree one. These run the REAL handler, not a stand-in.
+describe('the confined tier issues only Git the sandbox admits (k8s-daemon-pool.md §4)', () => {
+  it('draws the session branch and materializes its tree across the exec channel', async () => {
+    const agent = agentFixture()
+    const { primary } = serveAllThroughShim(agent)
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+
+    expect(cwd).toBe(realpathSync(join(leafOf(agent), 'workspace')))
+    expect(git(cwd, ['symbolic-ref', '--short', 'HEAD'])).toMatch(/^dev\/ada-lovelace\/[a-z]+-[a-z]+$/)
+    expect(git(cwd, ['rev-parse', 'HEAD'])).toBe(git(primary!.seed, ['rev-parse', 'origin/main']))
+    // Materialized, not merely pointed at: the tree is the half `checkout` was doing.
+    expect(readFileSync(join(cwd, 'README.md'), 'utf8')).toBe('seed\n')
+    expect(git(cwd, ['status', '--porcelain'])).toBe('')
+    // `--no-track` survives the replacement, or the console's push button becomes a remote-branch creator.
+    expect(() => git(cwd, ['rev-parse', '--abbrev-ref', '@{upstream}'])).toThrow()
+    // So does the lazy fetch the materialization needs, which a blobless clone dies without.
+    const materialized = gitRuns.filter((run) => run.args[0] === 'reset' && run.args[1] === '--hard')
+    expect(materialized.length).toBeGreaterThan(0)
+    for (const run of materialized) expect(run.env.GIT_NO_LAZY_FETCH).toBe('0')
+  })
+
+  it('issues nothing outside the inventory across a whole confined life — prepare, review, retire', async () => {
+    const agent = agentFixture({ additionalRepos: [{ repoFullName: 'acme/infra', repoId: '42' }] })
+    const { primary } = serveAllThroughShim(agent)
+    const pr = publishPullRequest(primary!.seed, 'pr\n')
+
+    await workspaces.prepareSessionWorkspace(agent, confined())
+    const cwd = await workspaces.prepareSessionWorkspace(
+      agent,
+      confined({ review: { pullNumber: 7, baseSha: pr.base, headSha: pr.head } })
+    )
+    writeFileSync(join(cwd, 'wip.md'), 'disposable\n')
+    // A dirty review snapshot, so retirement has to run the probe that used to ask `for-each-ref`.
+    expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({ outcome: 'removed' })
+
+    const issued = [...new Set(gitRuns.map((run) => run.args[0]!))].sort()
+    // The assertion is only worth as much as the run behind it, so pin that the interesting ones ran.
+    expect(issued).toEqual(expect.arrayContaining(['branch', 'clone', 'fetch', 'reset', 'show-ref', 'symbolic-ref']))
+    expect(issued.filter((subcommand) => !ALLOWED_GIT_SUBCOMMANDS.has(subcommand))).toEqual([])
   })
 })

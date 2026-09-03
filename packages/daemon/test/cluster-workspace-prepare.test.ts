@@ -137,11 +137,12 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
       return ''
     }
     if (args[0] === 'reset' && args[1] === '--hard') {
-      headRev = resolve(args[2]!)
+      // Bare `reset --hard` materializes the tree at the HEAD `symbolic-ref` has already moved.
+      if (args[2] !== undefined) headRev = resolve(args[2])
       return ''
     }
-    // A session clone's branch checkout moves HEAD onto its start point, as `worktree add` does.
-    if (args[0] === 'checkout' && args.includes('-b')) {
+    // A session clone's branch is drawn at its start point and HEAD is pointed at it, moving HEAD as `worktree add` does.
+    if (args[0] === 'branch' && args[1] === '--no-track') {
       headRev = resolve(args.at(-1)!)
       return ''
     }
@@ -829,11 +830,15 @@ describe('per-session clones on the session pod (git-workspace-model §11)', () 
     expect(clone).toMatchObject({ cwd: sessionDirOf('sess-1') })
     expect(clone!.args[2]).toMatch(new RegExp(`^${cwd}\\.clone-`))
     expect(clone!.args).toEqual(expect.arrayContaining(['--filter=blob:none', '--branch', 'main', '--single-branch']))
-    // Checked out on its own branch at the remote's tip, in the clone; the checkout is the parent of nothing.
-    const checkout = calls.find((call) => call.args[0] === 'checkout')
-    expect(checkout).toMatchObject({ cwd })
-    expect(checkout!.args.slice(0, 3)).toEqual(['checkout', '--no-track', '-b'])
-    expect(checkout!.args.at(-1)).toBe('refs/remotes/origin/main')
+    // Put on its own branch at the remote's tip, in the clone, out of subcommands the sandbox admits; the checkout is the parent of nothing.
+    const draw = calls.find((call) => call.args[0] === 'branch')
+    expect(draw).toMatchObject({ cwd })
+    expect(draw!.args.slice(0, 2)).toEqual(['branch', '--no-track'])
+    expect(draw!.args.at(-1)).toBe('refs/remotes/origin/main')
+    expect(calls.some((call) => call.cwd === cwd && call.args[0] === 'symbolic-ref' && call.args[1] === 'HEAD')).toBe(
+      true
+    )
+    expect(calls.some((call) => call.cwd === cwd && call.args[0] === 'reset' && call.args[1] === '--hard')).toBe(true)
     expect(calls.some((call) => call.args[0] === 'worktree')).toBe(false)
     expect(await pod.stat(WORKTREES)).toBe('missing')
     // Nothing about it names the daemon's own bookkeeping directory, and nothing landed on this disk.
@@ -881,8 +886,8 @@ describe('per-session clones on the session pod (git-workspace-model §11)', () 
     const fetch = calls.find((call) => call.args[0] === 'fetch')
     expect(fetch).toMatchObject({ cwd })
     expect(fetch!.args).toContain(`+refs/pull/7/head:refs/agentconnect/reviews/${id}/head`)
-    // The exact head is the start point, and HEAD is re-verified against it after the checkout.
-    expect(calls.find((call) => call.args[0] === 'checkout')!.args.at(-1)).toBe(head)
+    // The exact head is the start point, and HEAD is re-verified against it once the branch is drawn there.
+    expect(calls.find((call) => call.args[0] === 'branch')!.args.at(-1)).toBe(head)
   })
 
   it('refuses a review clone whose head ref is not the verified revision', async () => {
@@ -1112,7 +1117,7 @@ describe('secondary roots on the pod volume', () => {
     const fetch = calls.find((call) => call.args[0] === 'fetch')
     expect(fetch).toMatchObject({ cwd })
     expect(fetch!.args).toContain(`+refs/pull/9/head:refs/agentconnect/reviews/${id}/head`)
-    expect(calls.find((call) => call.args[0] === 'checkout' && call.cwd === cwd)!.args.at(-1)).toBe(head)
+    expect(calls.find((call) => call.args[0] === 'branch' && call.cwd === cwd)!.args.at(-1)).toBe(head)
     // The primary rides along at its default branch, and the attestation holds the cwd across a
     // restart — a later hand-out that carries no review resolves the same working directory.
     expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
