@@ -411,6 +411,15 @@ export const RdMsgPlatformAction = z.object({
 })
 export type RdMsgPlatformAction = z.infer<typeof RdMsgPlatformAction>
 
+/** The `perSubject` namespace inside a webhook affinity key — minted by the relay, read back by the
+ *  daemon's normalizer, so the one grammar both sides depend on lives in one place. */
+export const HOOK_SUBJECT_SEGMENT = 'subject'
+
+/** The `perSubject` affinity key for one caller-named subject. */
+export function hookSubjectSessionKey(hookId: string, subjectKey: string): string {
+  return `${hookId}:${HOOK_SUBJECT_SEGMENT}:${subjectKey}`
+}
+
 // R→D REQ → rd/ack. One already-adjudicated trigger delivery: the relay matched
 // the hook rule and names the target agent (explicit-agent short-circuit, same
 // as webchat — no local trigger arbitration). The daemon synthesizes a
@@ -423,8 +432,8 @@ export const RdMsgHook = z.object({
   // (sessionKey, msgId) is the daemon's dedup key. msgId folds in the hookId:
   // one GitHub delivery fanning out to two hooks on the same agent+repo must
   // not swallow each other.
-  sessionKey: z.string().min(1), // relay-computed: github perThread '<stable-prefix>#42';
-  // webhook perDelivery '<hookId>:<deliveryKey>' / shared '<hookId>'
+  sessionKey: z.string().min(1), // relay-computed: github perThread '<stable-prefix>#42'; webhook
+  // perDelivery '<hookId>:<deliveryKey>' / perSubject '<hookId>:subject:<key>' / shared '<hookId>'
   msgId: z.string().min(1), // `${hookId}:${deliveryKey}`
   hookId: z.string().uuid(),
   deliveryKey: z.string().min(1),

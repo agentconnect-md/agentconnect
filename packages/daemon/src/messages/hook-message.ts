@@ -5,8 +5,9 @@
  *
  *  - `channel`/`thread` derive from the relay-computed session-affinity key
  *    (decision 7), so `SessionManager` continuity works unchanged: perDelivery
- *    keys a fresh session per delivery, `shared` keys the whole hook to one
- *    session, github perThread (P2) keys `<stable-repo-prefix>#N`.
+ *    keys a fresh session per delivery, perSubject keys one per caller-named
+ *    subject, `shared` keys the whole hook to one session, github perThread
+ *    (P2) keys `<stable-repo-prefix>#N`.
  *  - **The payload IS the message.** The generic webhook's URL is a capability
  *    credential: whoever holds it is a trusted caller, exactly like a user
  *    DMing the bot — so their payload carries the instructions. A JSON object
@@ -21,6 +22,7 @@
  *    repo-scoped tokens, permission mode), never content filtering.
  */
 import {
+  HOOK_SUBJECT_SEGMENT,
   isGithubPullRequestRevisionEvent,
   type CodehostTurnFacts,
   type GithubHookMetadata,
@@ -61,6 +63,11 @@ function splitSessionKey(msg: RdMsgHook): { channel: string; thread?: string } {
   // stable synthetic thread so every delivery really shares one logical key.
   if (msg.sessionKey === msg.hookId) return { channel: msg.hookId, thread: msg.hookId } // shared
   if (msg.sessionKey === `${msg.hookId}:${msg.deliveryKey}`) return { channel: msg.hookId, thread: msg.deliveryKey } // perDelivery
+  // perSubject: '<hookId>:subject:<caller key>'. The mode-namespaced suffix IS the thread, so every
+  // delivery naming one subject shares a session and a '#' in the caller's key is not read as perThread.
+  if (msg.sessionKey.startsWith(`${msg.hookId}:${HOOK_SUBJECT_SEGMENT}:`)) {
+    return { channel: msg.hookId, thread: msg.sessionKey.slice(msg.hookId.length + 1) }
+  }
   // perThread (github, P2): '<stable-repo-prefix>#42'.
   const hash = msg.sessionKey.lastIndexOf('#')
   if (hash > 0) return { channel: msg.sessionKey.slice(0, hash), thread: msg.sessionKey.slice(hash + 1) }

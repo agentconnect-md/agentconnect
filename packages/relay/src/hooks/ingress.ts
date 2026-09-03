@@ -28,6 +28,7 @@ import {
   isSelfManagedGitlabHost,
   HOOK_DELIVERY_REASON_DISPATCH_TIMEOUT,
   HOOK_DELIVERY_REASON_DAEMON_OFFLINE,
+  hookSubjectSessionKey,
   RD_GITHUB_THREAD_WORKTREE_CLEANUP_V2,
   type RcHookAssign,
   type RcRunReport,
@@ -78,7 +79,7 @@ function sessionKeyFor(rule: RcHookAssign, deliveryKey: string, subjectKey?: str
   if (rule.sessionMode === 'shared') return rule.hookId
   // perSubject: the caller names the subject; the `subject:` segment keeps the space disjoint
   // from per-delivery keys, and a delivery without the header degrades to per-delivery.
-  if (rule.sessionMode === 'perSubject' && subjectKey) return `${rule.hookId}:subject:${subjectKey}`
+  if (rule.sessionMode === 'perSubject' && subjectKey) return hookSubjectSessionKey(rule.hookId, subjectKey)
   return `${rule.hookId}:${deliveryKey}`
 }
 
