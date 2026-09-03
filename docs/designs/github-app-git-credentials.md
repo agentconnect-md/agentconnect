@@ -836,12 +836,21 @@ Injection uses **two channels**:
      automatically uses its own App bot. Git always reads global config;
      children inherit the path, and no indexed-count conflict exists. Reserve
      indexed `GIT_CONFIG_*` variables for **short-lived subprocesses directly
-     controlled by the daemon, such as clone**, and for non-credential ambient
-     policy. In particular, configured Git workspaces inject
-     `core.hooksPath=/dev/null` (or `NUL`) and `core.fsmonitor=false` at command
-     scope for the Agent process. If a nested tool deliberately replaces that
-     indexed channel it can opt out of the ambient hook policy, but it cannot
-     remove or replace the global-file credential reset.
+     controlled by the daemon, such as clone**.
+   - **The ambient hook policy rides the same file, not the indexed channel.**
+     The generated gitconfig sets `core.hooksPath=/dev/null` (or `NUL`) and
+     `core.fsmonitor=false` after the host `[include]`, for every configured Git
+     workspace — including one the daemon issues no managed credential to, which
+     gets the file for the policy alone. The indexed channel was tried first and
+     is unusable for anything the model's git must read: it does not merge across
+     processes, and a child that inherits `GIT_CONFIG_COUNT` without the indexed
+     pairs makes **every** git invocation fail to parse its command-line config.
+     The cost is precedence — `GIT_CONFIG_GLOBAL` is global
+     scope, which repository-local config outranks, where command scope outranked
+     everything. Daemon-run Git keeps its command-scope pins
+     (`workspaceGitConfigPairs`) and a confined runtime cannot write
+     `.git/config` or `.git/hooks`, so the exposed case is an unconfined agent's
+     own git in a checkout that sets `core.hooksPath` locally.
    - This injection must be spread **last, at the highest precedence** in the
      spawn-environment merge: after
      `{ ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }` in `ensureHost` at

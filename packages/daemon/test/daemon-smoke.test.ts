@@ -258,13 +258,15 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       expect(dreamEnv.API_KEY).toBeUndefined()
       expect(dreamEnv[GITCRED_AGENT_ENV]).toBeUndefined()
       expect(dreamEnv[GITCRED_CAPABILITY_ENV]).toBeUndefined()
-      expect([
-        [dreamEnv.GIT_CONFIG_KEY_0, dreamEnv.GIT_CONFIG_VALUE_0],
-        [dreamEnv.GIT_CONFIG_KEY_1, dreamEnv.GIT_CONFIG_VALUE_1]
-      ]).toEqual([
-        ['core.hooksPath', process.platform === 'win32' ? 'NUL' : '/dev/null'],
-        ['core.fsmonitor', 'false']
-      ])
+      // The policy rides the per-agent gitconfig, which the whole process tree inherits; the
+      // indexed channel is gone, because a child that keeps COUNT without the pairs breaks git.
+      expect(dreamEnv.GIT_CONFIG_COUNT).toBeUndefined()
+      expect(Object.keys(dreamEnv).filter((key) => key.startsWith('GIT_CONFIG_KEY_'))).toEqual([])
+      const dreamConfig = readFileSync(dreamEnv.GIT_CONFIG_GLOBAL, 'utf8')
+      expect(dreamConfig).toContain(`hooksPath = ${process.platform === 'win32' ? 'NUL' : '/dev/null'}`)
+      expect(dreamConfig).toContain('fsmonitor = false')
+      // A dream gets NO tool credentials, so its file must carry no helper pointer either.
+      expect(dreamConfig).not.toContain('[credential')
     } finally {
       await daemon.stop().catch(() => undefined)
       rmSync(root, { recursive: true, force: true })

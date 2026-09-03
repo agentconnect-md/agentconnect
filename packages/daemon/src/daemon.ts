@@ -100,8 +100,7 @@ import {
   probeGitVersion,
   sandboxGitCredentialTarget,
   sessionGitConfig,
-  sessionGitEnv,
-  sessionGitPolicyEnv
+  sessionGitEnv
 } from './workspace/git-injection.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
@@ -4274,9 +4273,9 @@ export class Daemon {
       agent.gitlabHost,
       !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
     )
-    // The Git session policy runs for every configured repository, not only
-    // GitHub review: repository hooks/fsmonitor stay disabled without rewriting
-    // checkout config. sessionGitEnv additionally supplies GitHub App identity.
+    // The Git session policy runs for every configured repository, not only GitHub review:
+    // repository hooks/fsmonitor stay disabled through the per-agent gitconfig the whole agent
+    // process tree inherits. sessionGitEnv additionally supplies GitHub App identity.
     // Keep this channel LAST so runtimeOverrides cannot replace either policy.
     const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
     const runInSandbox = opts.runInSandbox
@@ -4297,9 +4296,13 @@ export class Daemon {
     // pod coordinates and WRITTEN there: the file travels with the launch (SpawnRequest.files) and
     // is re-materialized on every spawn, because a resumed Sandbox is a new pod with an empty tmpfs.
     // The daemon-local write (sessionGitEnv) would land the file on this daemon's disk instead.
+    // A git-repo workspace with no managed credential still gets the file, for its policy alone.
+    const sessionGitScope = managedCredentials ? managedScope : null
+    const sessionGitIdentity = managedCredentials ? this.gitCommitIdentity : undefined
+    const needsSessionGit = managedCredentials || agent.workspace.mode === 'git-repo'
     const sandboxSessionGit =
-      this.k8sPlane && managedCredentials
-        ? sessionGitConfig(agent.id, this.gitCommitIdentity, sandboxGitCredentialTarget(), managedScope)
+      this.k8sPlane && needsSessionGit
+        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitCredentialTarget(), sessionGitScope)
         : undefined
     const env: Record<string, string> = {
       ...baseEnv,
@@ -4310,11 +4313,9 @@ export class Daemon {
       ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission(agent.id)).runtimeEnv(),
       // App identity rides with the CREDENTIAL mode, not the workspace mode: a scratch workspace with
       // authorized repositories needs the capability for its git and gh exactly like a clone does.
-      ...(managedCredentials
-        ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, this.gitCommitIdentity, managedScope))
-        : agent.workspace.mode === 'git-repo'
-          ? sessionGitPolicyEnv()
-          : {})
+      ...(needsSessionGit
+        ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope))
+        : {})
     }
     // Config-file secrets are materialized by assembleRuntimeLaunch below; the pre-strip merged env
     // is snapshotted so the idle sweep can delete the files and rematerializeConfigFiles() can

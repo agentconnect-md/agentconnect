@@ -14,9 +14,12 @@
  *     pinned separately). Inherited by the WHOLE agent process tree —
  *     submodules and nested clones hit OUR
  *     helper (and get a clean denial) instead of leaking to a machine-global
- *     osxkeychain credential. NOT GIT_CONFIG_COUNT: the indexed env vars don't
+ *     osxkeychain credential. It carries the model-facing hooks/fsmonitor
+ *     policy too. NOT GIT_CONFIG_COUNT: the indexed env vars don't
  *     merge across processes, so any child that sets its own COUNT would
- *     silently drop the reset and reopen the leak.
+ *     silently drop the reset and reopen the leak — and a child that inherits
+ *     COUNT without the indexed pairs makes every git invocation fail with
+ *     "unable to parse command-line config", measured per process in a pod.
  *
  * All config values single-quote the shim path (git runs `!`-helpers via
  * `sh -c` — a space in $HOME must not word-split), reset the helper list first
@@ -305,7 +308,8 @@ export function workspaceGitLocalEnv(): Record<string, string> {
  * before daemon-run network or checkout operations. Unconditional includes are
  * expanded and their actual keys are audited instead of rejecting include.path
  * itself: a repository may legitimately include a shared hooksPath, and daemon
- * Git pins hooksPath/fsmonitor at command scope so neither can run. Conditional
+ * Git pins hooksPath/fsmonitor at command scope so neither can run — the model's
+ * own git gets the same pins at global scope, which repo-local config outranks. Conditional
  * includes remain disallowed because their activation can change between the
  * primary checkout used for this audit and a later linked worktree. The
  * separate worktree config scope is also disallowed because `--local` cannot
@@ -320,17 +324,6 @@ export async function assertSafeWorkspaceGitConfig(git: GitRunner): Promise<void
   if (names.split('\0').some((name) => UNSAFE_LOCAL_WORKSPACE_GIT_CONFIG.test(name))) {
     throw new Error('workspace Git configuration contains a disallowed network override or executable setting')
   }
-}
-
-/** Ambient Git policy inherited by every configured repository session. The
- * command-scope config outranks repo-local and included hooksPath/fsmonitor
- * values without rewriting the checkout's own config. A tool may still opt in
- * explicitly with a later `git -c` override when running a hook is the task. */
-export function sessionGitPolicyEnv(): Record<string, string> {
-  return gitConfigEnv([
-    ['core.hooksPath', EMPTY_GIT_CONFIG],
-    ['core.fsmonitor', 'false']
-  ])
 }
 
 /**
@@ -582,14 +575,20 @@ export function sessionGitConfig(
   // Explicit for a spawn that KNOWS where the runtime will run (a --k8s launch always lands in the
   // pod), so the env cannot depend on whether the shim channel happens to be attached right now.
   target: GitCredentialTarget = targetOf(agentId),
-  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
+  // `null` is an agent the daemon issues NO managed credential to: it still gets the file for the
+  // ambient policy, and nothing that would hand it a credential pointer or a socket capability.
+  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE
 ): { path: string; content: string; env: Record<string, string> } {
   const file = join(target.configDir, `${agentId}.gitconfig`)
-  const bases = sessionCredentialBases(scope)
+  const bases = scope ? sessionCredentialBases(scope) : []
   const lines = [
     '# agentconnect session git config — regenerated on agent start; NO secrets.',
-    `# Keeps non-identity host config, then pins ${bases.join(' + ')} credentials to the daemon helper.`,
+    `# Keeps non-identity host config and disables repository hooks${bases.length ? `, then pins ${bases.join(' + ')} credentials to the daemon helper` : ''}.`,
     ...(target.hostConfig ? ['[include]', `\tpath = ${target.hostConfig}`] : []),
+    // AFTER the include, or a host ~/.gitconfig hooksPath would be the last writer and win.
+    '[core]',
+    `\thooksPath = ${EMPTY_GIT_CONFIG}`,
+    '\tfsmonitor = false',
     ...bases.flatMap((base) => [
       `[credential "${base}"]`,
       '\thelper = ', // reset the accumulated helper list for this host
@@ -602,10 +601,8 @@ export function sessionGitConfig(
     path: file,
     content: lines.join('\n'),
     env: {
-      ...gitCredentialEnv(agentId, target, scope),
-      ...sessionGitPolicyEnv(),
+      ...(scope ? { ...gitCredentialEnv(agentId, target, scope), GIT_TERMINAL_PROMPT: '0' } : {}),
       GIT_CONFIG_GLOBAL: file,
-      GIT_TERMINAL_PROMPT: '0',
       ...(commitIdentity ? gitCommitIdentityEnv(commitIdentity) : {})
     }
   }
@@ -622,7 +619,7 @@ export function sessionGitConfig(
 export function sessionGitEnv(
   agentId: string,
   commitIdentity?: GitCommitIdentity,
-  scope: ManagedCredentialScope = GITHUB_CREDENTIAL_SCOPE
+  scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE
 ): Record<string, string> {
   if (targetOf(agentId).kind !== 'daemon') {
     throw new Error(`agent ${agentId} runs its git in a sandbox — materialize its gitconfig instead of writing it`)
