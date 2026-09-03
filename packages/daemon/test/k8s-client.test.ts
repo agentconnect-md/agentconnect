@@ -49,6 +49,38 @@ describe('SandboxApi', () => {
     expect(ensured.created).toBe(false)
   })
 
+  it('WRITES the annotations onto a claim that already exists, so its version moves', async () => {
+    // The reuse path is what an orphan sweep races: it lists a claim, proves the session gone, and
+    // deletes on the version it listed. A reuse that only READ would leave that version standing and
+    // let the delete take a live pod — the merge patch here is what makes the admission win instead.
+    const requests: Array<{ method: string; contentType?: string; body?: unknown }> = []
+    const { config } = await fakeApiServer(({ method, headers, body }) => {
+      const contentType = headers['content-type']
+      requests.push({
+        method,
+        ...(typeof contentType === 'string' ? { contentType } : {}),
+        ...(body ? { body: JSON.parse(body) } : {})
+      })
+      if (method === 'POST')
+        return { status: 409, json: { kind: 'Status', reason: 'AlreadyExists', message: 'exists' } }
+      return { json: { metadata: { name: 'agent-a', resourceVersion: 'rv-2' } } }
+    })
+    const api = new SandboxApi(new K8sHttp(config), 'org-test')
+    const ensured = await api.ensureClaim({
+      metadata: { name: 'agent-a', annotations: { 'agentconnect.md/last-admitted-at': '2026-08-14T10:00:00.000Z' } },
+      spec: { warmPoolRef: { name: 'pool' } }
+    })
+    expect(ensured.created).toBe(false)
+    expect(ensured.claim.metadata?.resourceVersion).toBe('rv-2')
+    expect(requests.map((request) => request.method)).toEqual(['POST', 'PATCH'])
+    // A merge patch of the annotations alone: labels, spec and status are the caller's to leave alone.
+    expect(requests[1]).toMatchObject({
+      contentType: 'application/merge-patch+json',
+      body: { metadata: { annotations: { 'agentconnect.md/last-admitted-at': '2026-08-14T10:00:00.000Z' } } }
+    })
+    expect(Object.keys((requests[1]!.body as { metadata: object }).metadata)).toEqual(['annotations'])
+  })
+
   it('reports a first claim as CREATED, which is the cold-start signal', async () => {
     // The cold/resume split has to come from a fact, not from elapsed time — a latency metric
     // whose own bucketing is inferred from latency cannot settle a latency target.

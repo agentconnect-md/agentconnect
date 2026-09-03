@@ -11,6 +11,7 @@ import {
   type OrphanReconcilerDeps
 } from '../src/k8s/orphan-reconciler.js'
 import {
+  AC_ANNOTATION_ADMITTED,
   AC_LABEL_AGENT,
   AC_LABEL_ORG,
   AC_LABEL_SESSION,
@@ -64,7 +65,7 @@ function claim(
 function sessionClaim(
   agentId: string,
   leaf: string,
-  opts: { createdAt?: number; sandbox?: string } = {}
+  opts: { createdAt?: number; sandbox?: string; admittedAt?: number } = {}
 ): SandboxClaim {
   const name = sandboxClaimName(sessionSandboxSubject(agentId, leaf))
   return {
@@ -73,6 +74,9 @@ function sessionClaim(
       uid: `uid-${name}`,
       resourceVersion: `rv-${name}`,
       creationTimestamp: new Date(opts.createdAt ?? T0 - HOUR).toISOString(),
+      ...(opts.admittedAt === undefined
+        ? {}
+        : { annotations: { [AC_ANNOTATION_ADMITTED]: new Date(opts.admittedAt).toISOString() } }),
       labels: { [AC_LABEL_ORG]: 'org-1', [AC_LABEL_AGENT]: agentId, [AC_LABEL_SESSION]: leaf }
     },
     spec: {
@@ -101,11 +105,17 @@ function sandbox(name: string, agentId?: string, createdAt = T0 - HOUR): Sandbox
 }
 
 /** A cluster holding `claims` and `sandboxes`, recording every delete with its preconditions. */
-async function cluster(claims: SandboxClaim[], sandboxes: Sandbox[], opts: { sandboxList?: number } = {}) {
+async function cluster(
+  claims: SandboxClaim[],
+  sandboxes: Sandbox[],
+  opts: { sandboxList?: number; deleteConflict?: boolean } = {}
+) {
   const deletes: Array<{ path: string; preconditions: unknown }> = []
   const { config } = await fakeApiServer(({ method, url, body }) => {
     if (method === 'DELETE') {
       deletes.push({ path: url.pathname, preconditions: JSON.parse(body).preconditions })
+      // What the API server answers when the object's version moved since it was listed.
+      if (opts.deleteConflict) return { status: 409, json: { kind: 'Status', reason: 'Conflict' } }
       return { json: {} }
     }
     if (url.pathname.endsWith('/sandboxclaims')) return { json: { items: claims } }
@@ -333,6 +343,44 @@ describe('orphan reconciler and session pods (git-workspace-model §11)', () => 
     expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 1, deleted: 1 })
     expect(deletes.map((entry) => entry.path)).toEqual([claimPath(GONE, KEPT)])
     expect(askedSessions).toEqual([])
+  })
+
+  it('runs the grace from the admission stamp, so a re-admitted leaked claim is young again', async () => {
+    // The object's own age cannot fence this: the claim IS old — it leaked — and the session that came
+    // back reuses it rather than creating one. Admission stamping it is what makes the age honest.
+    const { api, deletes } = await cluster(
+      [sessionClaim(LIVE, GONE_LEAF, { createdAt: T0 - HOUR, admittedAt: T0 - GRACE + 1 })],
+      []
+    )
+    const r = reconciler({ api, liveSessionLeaves: async () => new Set() })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 0, deleted: 0, skippedGrace: 1 })
+    expect(deletes).toEqual([])
+
+    // And once nothing has admitted it for a whole grace, it is collectable again.
+    r.clock.advance(1)
+    expect(await r.it.sweep()).toMatchObject({ orphaned: 1, deleted: 1 })
+  })
+
+  it('loses the delete to an admission that landed after the listing, rather than taking a live pod', async () => {
+    // The absence proof is a snapshot: the row can come back, and `ensureClaim` reuse it, between the
+    // list above and the delete below. The admission's own write moves the claim's resourceVersion, so
+    // the preconditioned delete is refused — the pod and its volume stay, and the next run re-decides.
+    const { api, deletes } = await cluster([sessionClaim(LIVE, GONE_LEAF, { sandbox: 'sb-gone' })], [], {
+      deleteConflict: true
+    })
+    const r = reconciler({ api, liveSessionLeaves: async () => new Set() })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 1, deleted: 0, failed: 0 })
+    // Fenced on the version it listed, which is the only reason the admission can win.
+    expect(deletes).toEqual([
+      {
+        path: claimPath(LIVE, GONE_LEAF),
+        preconditions: {
+          uid: `uid-${sandboxClaimName(sessionSandboxSubject(LIVE, GONE_LEAF))}`,
+          resourceVersion: `rv-${sandboxClaimName(sessionSandboxSubject(LIVE, GONE_LEAF))}`
+        }
+      }
+    ])
+    expect(r.infos.some((line) => line.includes('was replaced since it was listed'))).toBe(true)
   })
 
   it("leaves a live agent's young session pod alone even when its row is gone", async () => {

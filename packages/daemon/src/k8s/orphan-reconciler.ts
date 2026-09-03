@@ -1,6 +1,6 @@
 import { systemClock, type Clock } from '@agentconnect.md/connection'
 import { K8sApiError } from '@agentconnect.md/k8s-client'
-import { AC_LABEL_AGENT, AC_LABEL_SESSION, sessionSandboxSubject } from './sandbox-identity.js'
+import { AC_LABEL_AGENT, AC_LABEL_SESSION, claimAdmittedAt, sessionSandboxSubject } from './sandbox-identity.js'
 import { probeClaimExpiry } from './probe-claim.js'
 import type { Sandbox, SandboxApi, SandboxClaim } from './sandbox-api.js'
 
@@ -20,6 +20,14 @@ import type { Sandbox, SandboxApi, SandboxClaim } from './sandbox-api.js'
  * (git-workspace-model.md §11) while its agent lives. An object of a live agent is never touched —
  * not even a claimless Sandbox — an unreadable answer fails the sweep, and a session nobody can
  * answer for reads as live. Ships dry-run: it logs and counts until the deployment enables deletion.
+ *
+ * The absence proof is a SNAPSHOT, so it is fenced by the claim's own version rather than trusted on
+ * its own. Admission stamps every claim it takes (`agentconnect.md/last-admitted-at`, written even
+ * when it only reuses an existing object), which does two things here: the grace runs from that stamp
+ * as much as from creation, so a leaked claim a new session re-admitted is young again and no
+ * candidate at all; and the stamp's write moves the claim's resourceVersion, so an admission that
+ * landed after this sweep listed the object makes the preconditioned delete below fail rather than
+ * take a live session's pod and volume. Admission and collection share one object version.
  */
 
 /** Deployment-owned settings, env like the rest of the plane's; absent ⇒ the default below. */
@@ -78,6 +86,8 @@ interface Candidate {
   sessionLeaf?: string
   /** Epoch ms, NaN when the object did not say — an age nobody knows never passes the grace. */
   createdAt: number
+  /** Epoch ms of the claim's last admission stamp, absent when it carries none — a Sandbox never does. */
+  admittedAt?: number
   /** A probe claim's own window, stamped by the probe that made it. */
   probeExpiresAt?: number
 }
@@ -162,7 +172,11 @@ export class OrphanReconciler {
       }
       // The object's own age IS the grace: a one-shot run has no memory of an earlier sweep, and this
       // is the clock that matters anyway — no in-flight creation can still be racing the CP's write.
-      if (!(Number.isFinite(candidate.createdAt) && now - candidate.createdAt >= settings.graceMs)) {
+      // Age runs from the LATER of creation and last admission, because a leaked claim that a new
+      // session re-admitted is young again — its object is old, and only the stamp says so.
+      const since =
+        candidate.admittedAt === undefined ? candidate.createdAt : Math.max(candidate.createdAt, candidate.admittedAt)
+      if (!(Number.isFinite(since) && now - since >= settings.graceMs)) {
         summary.skippedGrace += 1
         continue
       }
@@ -255,6 +269,8 @@ function candidateOf(object: SandboxClaim | Sandbox, kind: 'claim' | 'sandbox'):
   const sessionLeaf = labels?.[AC_LABEL_SESSION]
   const resourceVersion = object.metadata?.resourceVersion
   const probeExpiresAt = kind === 'claim' ? probeClaimExpiry(object as SandboxClaim) : undefined
+  // Only a claim is admitted; a Sandbox is the controller's object and nothing stamps it.
+  const admittedAt = kind === 'claim' ? claimAdmittedAt(object.metadata?.annotations) : Number.NaN
   return {
     kind: probeExpiresAt === undefined ? kind : 'probe-claim',
     name,
@@ -262,6 +278,7 @@ function candidateOf(object: SandboxClaim | Sandbox, kind: 'claim' | 'sandbox'):
     ...(resourceVersion ? { resourceVersion } : {}),
     agentId,
     ...(sessionLeaf ? { sessionLeaf } : {}),
+    ...(Number.isFinite(admittedAt) ? { admittedAt } : {}),
     createdAt: Date.parse(object.metadata?.creationTimestamp ?? ''),
     ...(probeExpiresAt === undefined ? {} : { probeExpiresAt })
   }

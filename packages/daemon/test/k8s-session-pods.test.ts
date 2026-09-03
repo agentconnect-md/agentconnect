@@ -7,6 +7,7 @@ import {
   AC_LABEL_AGENT,
   AC_LABEL_ORG,
   AC_LABEL_SESSION,
+  AC_ANNOTATION_ADMITTED,
   sandboxClaimName,
   sandboxSubjectFor,
   sandboxSubjectForPath,
@@ -44,10 +45,23 @@ function cluster() {
   const modeWrites: Array<{ sandbox: string; desired: string }> = []
   const deleted: string[] = []
   let minted = 0
+  let versions = 0
   const api = {
     ensureClaim: vi.fn(async (claim: SandboxClaim & { metadata: { name: string } }) => {
       const existing = claims.get(claim.metadata.name)
-      if (existing) return { claim: existing, created: false }
+      if (existing) {
+        // Reuse WRITES: the real client merge-patches the caller's annotations onto the claim it found.
+        const merged: SandboxClaim = {
+          ...existing,
+          metadata: {
+            ...existing.metadata,
+            annotations: { ...existing.metadata?.annotations, ...claim.metadata.annotations },
+            resourceVersion: `rv-${++versions}`
+          }
+        }
+        claims.set(claim.metadata.name, merged)
+        return { claim: merged, created: false }
+      }
       const name = `sb-${++minted}`
       sandboxes.set(name, {
         metadata: { name, uid: `uid-${name}` },
@@ -59,7 +73,7 @@ function cluster() {
       })
       const stored: SandboxClaim = {
         ...claim,
-        metadata: { ...claim.metadata, uid: `claim-${name}` },
+        metadata: { ...claim.metadata, uid: `claim-${name}`, resourceVersion: `rv-${++versions}` },
         status: { sandbox: { name } }
       }
       claims.set(claim.metadata.name, stored)
@@ -133,19 +147,20 @@ function podSide() {
 function member(api: ReturnType<typeof cluster>['api'], connect: ReturnType<typeof podSide>['connect']) {
   const records: SpawnRecord[] = []
   const generations = fakeGenerations()
+  const clock = new FakeClock()
   const driver = new K8sDriver({
     api: api as never,
     orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
     generations,
-    clock: new FakeClock(),
+    clock,
     connectChannel: async (record) => {
       records.push(record)
       return await connect(record)
     },
     log: { info: () => {}, warn: () => {}, debug: () => {} }
   })
-  return { driver, records, generations }
+  return { driver, records, generations, clock }
 }
 
 const request = (hostKey?: typeof T1) =>
@@ -250,7 +265,9 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     // The successor knows only the host key — the store, not this process, remembers the session.
     const second = member(api, pod.connect)
     const launch = await second.driver.ensureSandbox(sandboxSubjectFor(T1))
-    expect(claims.get(name)).toBe(before)
+    // The same claim object, restamped rather than replaced: same uid, same bound Sandbox, no create.
+    expect(claims.get(name)?.metadata?.uid).toBe(before!.metadata!.uid)
+    expect(claims.get(name)?.status?.sandbox?.name).toBe(before!.status!.sandbox!.name)
     expect(launch.sandboxName).toBe(before!.status!.sandbox!.name)
     expect(launch.claimUid).toBe(before!.metadata!.uid)
     expect(api.ensureClaim.mock.calls.filter((call) => call[0].metadata.name === name)).toHaveLength(2)
@@ -443,6 +460,32 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     const claimedSoFar = api.ensureClaim.mock.calls.length
     expect(driver.retainLaunched(session)).toBeUndefined()
     expect(api.ensureClaim.mock.calls.length).toBe(claimedSoFar)
+  })
+
+  it('stamps every admission on the claim, so a reused one is a new incarnation to a reader', async () => {
+    // The orphan sweep proves a session gone from a snapshot and then deletes on the version it
+    // listed. A session that comes back reuses this claim rather than making one, so without a write
+    // here the sweep's preconditions would still hold and it would take a live pod and its volume.
+    const { api, claims } = cluster()
+    const { driver, clock } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    const name = sandboxClaimName(session)
+
+    await driver.ensureSandbox(session)
+    const first = claims.get(name)!
+    expect(first.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(new Date(clock.now()).toISOString())
+    // Never in the spec or on the pod: warm-pool adoption reads the spec, and this is not the pod's business.
+    expect(Object.keys(first.spec ?? {}).sort()).toEqual(['additionalPodMetadata', 'warmPoolRef'])
+    expect(first.spec?.additionalPodMetadata?.labels?.[AC_ANNOTATION_ADMITTED]).toBeUndefined()
+
+    // A second admission of the SAME claim — a resume after an idle suspension — restamps and re-versions it.
+    driver.release(session)
+    clock.advance(60_000)
+    await driver.ensureSandbox(session)
+    const second = claims.get(name)!
+    expect(second.metadata?.uid).toBe(first.metadata?.uid)
+    expect(second.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(new Date(clock.now()).toISOString())
+    expect(second.metadata?.resourceVersion).not.toBe(first.metadata?.resourceVersion)
   })
 
   it('keeps the agent pod path byte-identical: no host key means the agent claim, as before', async () => {

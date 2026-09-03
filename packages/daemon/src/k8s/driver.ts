@@ -13,6 +13,7 @@ import { LaunchRegistry, type Launch, type LaunchGenerations } from './launch-re
 import { ChannelBinder } from './channel-binder.js'
 import { awaitBoundSandbox, awaitReady, readIfPresent, type SandboxWaitDeps } from './sandbox-waits.js'
 import {
+  AC_ANNOTATION_ADMITTED,
   AC_LABEL_AGENT,
   AC_LABEL_SESSION,
   LaunchTimeoutError,
@@ -133,10 +134,16 @@ export class K8sDriver implements SpawnDriver {
     if (!orgId) throw new Error(`cannot resolve sandbox organization for agent ${agentId}`)
     const claimMetadata = this.deps.claimMetadataForAgent?.(agentId)
     const labels = sandboxPodLabels(orgId, subject)
+    // Every admission STAMPS the claim, including one that only reuses an existing object: the write
+    // gives a re-admitted claim a new resourceVersion, so the orphan sweep's preconditioned delete —
+    // fenced on the version it listed — loses to a session that came back after that snapshot (§4).
     const ensured = await this.deps.api.ensureClaim({
       metadata: {
         name,
-        ...(claimMetadata?.annotations ? { annotations: claimMetadata.annotations } : {}),
+        annotations: {
+          ...claimMetadata?.annotations,
+          [AC_ANNOTATION_ADMITTED]: new Date(this.clock.now()).toISOString()
+        },
         labels: { ...labels, ...claimMetadata?.labels }
       },
       spec: {
