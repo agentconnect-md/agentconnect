@@ -267,6 +267,11 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       expect(dreamConfig).toContain('fsmonitor = false')
       // A dream gets NO tool credentials, so its file must carry no helper pointer either.
       expect(dreamConfig).not.toContain('[credential')
+      // …and the confined launch must still be able to READ it. A hidden global config is read by
+      // git as no config at all, so an uncarved path loses the hook pins silently rather than loudly.
+      const runtimeDef = (daemon as any).runtimes[agent.runtime]
+      const roots = (daemon as any).sandboxRuntimeReadRoots(agent, runtimeDef, dreamEnv, false, false)
+      expect(roots).toContain(realpathSync(dreamEnv.GIT_CONFIG_GLOBAL))
     } finally {
       await daemon.stop().catch(() => undefined)
       rmSync(root, { recursive: true, force: true })

@@ -3549,10 +3549,12 @@ export class Daemon {
     const cliEntry = daemonEntryForShims(this.root)
     const paths = [mcpSocketPath(this.root)]
     const executableCommands = [process.execPath]
+    // Whatever the launch names, credentials or not: it carries the hook policy, and a hidden
+    // global config is read by git as no config at all — a silent loss of the pins, not an error.
+    if (launchEnv.GIT_CONFIG_GLOBAL) paths.push(launchEnv.GIT_CONFIG_GLOBAL)
     if (githubAppCredentials) {
       paths.push(gitcredSocketPath(this.root), gitcredShimPath(this.root))
       if (this.ghBinDir) paths.push(this.ghBinDir)
-      if (launchEnv.GIT_CONFIG_GLOBAL) paths.push(launchEnv.GIT_CONFIG_GLOBAL)
       const gh = resolveCommandPath('gh', process.env)
       if (gh) executableCommands.push(gh)
     }
@@ -3561,7 +3563,6 @@ export class Daemon {
       // real glab binary for the OS sandbox's read allowlist (§13.3).
       paths.push(gitcredSocketPath(this.root), gitcredShimPath(this.root))
       if (this.glabBinDir) paths.push(this.glabBinDir)
-      if (launchEnv.GIT_CONFIG_GLOBAL) paths.push(launchEnv.GIT_CONFIG_GLOBAL)
       const glab = resolveCommandPath('glab', process.env)
       if (glab) executableCommands.push(glab)
     }
