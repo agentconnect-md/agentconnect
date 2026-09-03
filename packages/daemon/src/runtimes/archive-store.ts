@@ -70,6 +70,10 @@ export function parseArchiveLaunch(
   }
   // No plaintext and no `file:`: the store's install is the runtime's parent process.
   if (url.protocol !== 'https:') return undefined
+  // ZIP is the only format this store inflates, and the registry publishes plenty of `.tar.gz`,
+  // `.tar.bz2`, and bare binaries. Leaving those unclassified is what keeps them on the command
+  // probe they already pass — claiming them here would drop an install that launches from `$PATH`.
+  if (!url.pathname.toLowerCase().endsWith('.zip')) return undefined
   // The registry writes the member as `./name` or `name`; anything with real path structure is not
   // a member of this archive, and taking its basename would launch something else under that name.
   const bin = entry.runtime.command.replace(/^\.[/\\]/, '')

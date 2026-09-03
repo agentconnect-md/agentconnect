@@ -3,6 +3,7 @@ import { basename, delimiter, join } from 'node:path'
 import { homedir } from 'node:os'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { CURATED_RUNTIME_CATALOG } from './curated.js'
+import { parseArchiveLaunch } from './archive-store.js'
 import type { ResolvedRuntimeCatalog } from './registry.js'
 
 /**
@@ -447,9 +448,11 @@ export function installedRuntimeCatalog(
   const runtimes: Record<string, RuntimeDef> = {}
   const entries: ResolvedRuntimeCatalog['entries'] = {}
   for (const [id, entry] of Object.entries(catalog.entries)) {
-    const available = entry.archive
-      ? // The runtime store fetches this binary, so the command cannot be on `$PATH` yet — the
-        // host signal is the product's own state, exactly as it is for an `npx` adapter.
+    // Ask the store itself whether it can install this entry: an archive format it does not
+    // inflate stays on the command probe below, which is what the host already passes.
+    const available = parseArchiveLaunch(id, entry)
+      ? // The store fetches this binary, so the command cannot be on `$PATH` yet — the host signal
+        // is the product's own state, exactly as it is for an `npx` adapter.
         (CUSTOM_PROBES[id]?.(env) ?? false)
       : entry.source === 'curated' || !CURATED_RUNTIME_IDS.has(id)
         ? isRuntimeAvailable(id, entry.runtime, env)

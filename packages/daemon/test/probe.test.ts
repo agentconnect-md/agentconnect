@@ -322,6 +322,30 @@ describe('installedRuntimes', () => {
     expect(isRuntimeAvailable('gemini', gemini, env())).toBe(true)
   })
 
+  it('keeps the command probe for an archive format the store cannot install', () => {
+    // opencode/amp/kimi ship `.tar.gz` on Linux with a flat `./cmd`. The store inflates ZIP only,
+    // so these must stay on the probe they already pass rather than be admitted and then dropped.
+    makeExecutable(binDir, 'amp-acp')
+    const runtime: RuntimeDef = { command: './amp-acp', args: [], env: [] }
+    const catalog = (): ResolvedRuntimeCatalog => ({
+      entries: {
+        'amp-acp': {
+          runtime,
+          source: 'registry',
+          name: 'Amp',
+          version: '0.1.0',
+          skillsAgentId: null,
+          archive: 'https://packages.example.test/amp-acp-linux-x86_64.tar.gz'
+        }
+      },
+      runtimes: { 'amp-acp': runtime }
+    })
+
+    // On PATH and initialized → kept, exactly as before archives were classified at all.
+    mkdirSync(join(home, '.config', 'amp'), { recursive: true })
+    expect(Object.keys(installedRuntimeCatalog(catalog(), env()).runtimes)).toEqual(['amp-acp'])
+  })
+
   it('gates an archive-distributed runtime on its own state, not on the command the store fetches', () => {
     // `./agy_acp_server.par` cannot be on PATH before the runtime store extracts it, so the host
     // signal is ~/.gemini/antigravity-* — the product itself being installed and initialized here.

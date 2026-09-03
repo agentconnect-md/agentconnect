@@ -69,6 +69,19 @@ describe('parseArchiveLaunch', () => {
     expect(moved?.version).not.toEqual(launch?.version)
   })
 
+  it('leaves a non-ZIP archive unclassified, so its command probe still applies', () => {
+    // The registry publishes plenty of these; the store inflates ZIP only, and claiming a `.tar.gz`
+    // entry here would drop an install that launches from `$PATH` (amp-acp, opencode, kimi, goose…).
+    const amp = { command: './amp-acp', args: [], env: [] }
+    const tar = 'https://packages.example.test/amp-acp-linux-x86_64.tar.gz'
+    expect(parseArchiveLaunch('amp-acp', entry({ runtime: amp, archive: tar }))).toBeUndefined()
+    expect(parseArchiveLaunch('goose', entry({ archive: 'https://x.example.test/goose.tar.bz2' }))).toBeUndefined()
+    // A bare binary with no archive extension at all (sigit publishes these).
+    expect(parseArchiveLaunch('sigit', entry({ archive: 'https://x.example.test/sigit-linux-amd64' }))).toBeUndefined()
+    // A query string must not defeat the check either way round.
+    expect(parseArchiveLaunch('antigravity-acp', entry({ archive: `${URL_A}?v=2` }))?.bin).toBe('agy_acp_server.par')
+  })
+
   it('refuses an entry that is not an https archive of one flat binary', () => {
     expect(parseArchiveLaunch('antigravity-acp', entry({ archive: undefined }))).toBeUndefined()
     expect(parseArchiveLaunch('antigravity-acp', entry({ archive: 'http://dl.example.test/a.zip' }))).toBeUndefined()
