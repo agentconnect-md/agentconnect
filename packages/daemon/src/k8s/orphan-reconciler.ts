@@ -22,10 +22,13 @@ import type { Sandbox, SandboxApi, SandboxClaim } from './sandbox-api.js'
  * answer for reads as live. Ships dry-run: it logs and counts until the deployment enables deletion.
  *
  * The absence proof is a SNAPSHOT, so it is fenced by the claim's own version rather than trusted on
- * its own. Admission stamps every claim it takes (`agentconnect.md/last-admitted-at`, written even
- * when it only reuses an existing object), which does two things here: the grace runs from that stamp
- * as much as from creation, so a leaked claim a new session re-admitted is young again and no
- * candidate at all; and the stamp's write moves the claim's resourceVersion, so an admission that
+ * its own. A member stamps every claim it admits AND every claim it currently holds a launch for
+ * (`agentconnect.md/last-admitted-at`, refreshed on a tick well inside the grace), so the stamp reads
+ * "last seen in use by a member" rather than "last admitted" — a launch served from a member's registry
+ * touches no API, so an admission-only marker would have left a claim in use looking untouched. That
+ * does two things here: the grace runs from that stamp as much as from creation, so a claim a member is
+ * using, or one a new session re-admitted, is young again and no candidate at all; and the stamp's write
+ * moves the claim's resourceVersion, so a use that
  * landed after this sweep listed the object makes the preconditioned delete below fail rather than
  * take a live session's pod and volume. Admission and collection share one object version.
  */
@@ -172,8 +175,8 @@ export class OrphanReconciler {
       }
       // The object's own age IS the grace: a one-shot run has no memory of an earlier sweep, and this
       // is the clock that matters anyway — no in-flight creation can still be racing the CP's write.
-      // Age runs from the LATER of creation and last admission, because a leaked claim that a new
-      // session re-admitted is young again — its object is old, and only the stamp says so.
+      // Age runs from the LATER of creation and the last time a member admitted or refreshed this claim,
+      // because one in use — or one a returning session re-admitted — is young again, and only the stamp says so.
       const since =
         candidate.admittedAt === undefined ? candidate.createdAt : Math.max(candidate.createdAt, candidate.admittedAt)
       if (!(Number.isFinite(since) && now - since >= settings.graceMs)) {

@@ -79,6 +79,20 @@ function cluster() {
       claims.set(claim.metadata.name, stored)
       return { claim: stored, created: true }
     }),
+    stampClaim: async (name: string, annotations: Record<string, string>) => {
+      const existing = claims.get(name)
+      if (!existing) throw new K8sApiError(404, 'NotFound', 'no claim')
+      const claim = {
+        ...existing,
+        metadata: {
+          ...existing.metadata,
+          annotations: { ...existing.metadata?.annotations, ...annotations },
+          resourceVersion: `rv-${++versions}`
+        }
+      }
+      claims.set(name, claim)
+      return { claim }
+    },
     getClaim: async (name: string) => {
       const claim = claims.get(name)
       if (!claim) throw new K8sApiError(404, 'NotFound', 'no claim')
@@ -515,6 +529,62 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     // Once per process, not once per admission: a degraded Role would otherwise fill the log.
     expect(warnings.filter((line) => line.includes('refused the admission stamp'))).toHaveLength(1)
     expect(warnings[0]).toMatch(/patch on sandboxclaims/)
+  })
+
+  it('refreshes the stamp on every claim it HOLDS, so one in use never reads as a leak', async () => {
+    // `ensureSandbox` returns from the launch registry without touching the API, and `adoptSessions`
+    // caches a Running claim this member never admitted — so a member can serve a session for hours
+    // without writing to its claim. A sweep that snapshotted the row as absent would then still match
+    // on resourceVersion when the row came back, and take a live pod's volume.
+    const { api, claims } = cluster()
+    const { driver, clock } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    await driver.ensureSandbox(session)
+    await driver.ensureSandbox(AGENT)
+    const before = [...claims.values()].map((claim) => claim.metadata?.resourceVersion)
+
+    clock.advance(180_000)
+    await driver.refreshAdmissionStamps()
+
+    // Every held claim is young again, and its version moved — both halves of the fence, without an admission.
+    for (const claim of claims.values()) {
+      expect(claim.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(new Date(clock.now()).toISOString())
+    }
+    expect([...claims.values()].map((claim) => claim.metadata?.resourceVersion)).not.toEqual(before)
+    // A pod this member no longer holds is nobody's to keep alive: releasing it stops the refresh.
+    driver.release(session)
+    clock.advance(180_000)
+    await driver.refreshAdmissionStamps()
+    expect(claims.get(sandboxClaimName(session))!.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).not.toBe(
+      new Date(clock.now()).toISOString()
+    )
+    expect(claims.get(`agent-${AGENT}`)!.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(
+      new Date(clock.now()).toISOString()
+    )
+  })
+
+  it('keeps refreshing the rest when one claim is gone or its stamp is refused', async () => {
+    // Best effort by construction: this runs on a tick, off every turn's path, so one claim's failure
+    // must not cost the others their freshness — and a Role without `patch` says so once, as admission does.
+    const { api, claims } = cluster()
+    const { driver, clock, warnings } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    await driver.ensureSandbox(session)
+    await driver.ensureSandbox(AGENT)
+    // The session's claim is retired underneath the member; the agent's refuses the write.
+    claims.delete(sandboxClaimName(session))
+    const stamp = api.stampClaim
+    api.stampClaim = (async (name: string, annotations: Record<string, string>) => {
+      const stamped = await stamp(name, annotations)
+      return { claim: stamped.claim, stampRefused: true }
+    }) as never
+
+    clock.advance(180_000)
+    await expect(driver.refreshAdmissionStamps()).resolves.toBeUndefined()
+    await driver.refreshAdmissionStamps()
+
+    expect(claims.get(`agent-${AGENT}`)!.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBeDefined()
+    expect(warnings.filter((line) => line.includes('refused the admission stamp'))).toHaveLength(1)
   })
 
   it('keeps the agent pod path byte-identical: no host key means the agent claim, as before', async () => {

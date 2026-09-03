@@ -55,6 +55,9 @@ const PROBE_TIMEOUT_MS = 180_000
  * (git-workspace-model §11). Agent-keyed seams below route each path to the pod that owns it — a
  * session pod owns `<mount>/sessions/<leaf>`, the agent pod everything else.
  */
+/** Stamp refresh cadence: a third of the orphan sweep's default grace, so two misses still leave a claim young. */
+export const STAMP_REFRESH_MS = 3 * 60_000
+
 export interface K8sRuntimePlaneOptions {
   /** Durable, install-shared allocator for launch generations — in production the daemon store,
    *  which every pool member shares, so an agent that moves between members keeps counting up. */
@@ -72,6 +75,8 @@ export interface K8sRuntimePlaneOptions {
   /** Environment the deployment settings come from; `process.env` unless a test names another. */
   env?: NodeJS.ProcessEnv
   readyTimeoutMs?: number
+  /** How often held claims are re-stamped as in use; omit for {@link STAMP_REFRESH_MS}, 0 to run no timer. */
+  stampRefreshMs?: number
   /** Kubernetes surface. Built from the pod's own in-cluster config when omitted; supplied by
    *  tests so the assembly can be exercised without a cluster. */
   api?: SandboxApi
@@ -387,6 +392,20 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     releaseSubject(agentSandboxSubject(agentId), reason)
   }
 
+  // A claim this member is USING must not look like a leak to the orphan sweep, and a launch served
+  // from the registry never touches the API — so the stamp is refreshed on a tick well inside that
+  // sweep's grace. Unref'd: it is bookkeeping, never a reason for the process to stay up.
+  const stampRefreshMs = options.stampRefreshMs ?? STAMP_REFRESH_MS
+  const stampRefresh =
+    stampRefreshMs > 0
+      ? setInterval(() => {
+          void driver.refreshAdmissionStamps().catch((err: unknown) => {
+            options.log?.warn(`k8s: refreshing the sandbox admission stamps failed: ${(err as Error).message}`)
+          })
+        }, stampRefreshMs)
+      : undefined
+  stampRefresh?.unref?.()
+
   return {
     driver,
     dialer,
@@ -481,6 +500,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     },
     hasSandbox: (subject) => driver.hasClaim(subject as SandboxSubject),
     stop: async () => {
+      if (stampRefresh) clearInterval(stampRefresh)
       lossWatcher.cancelAll()
       tunnels.releaseAll('daemon is shutting down')
       dialer.stop()

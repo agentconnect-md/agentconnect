@@ -1,5 +1,6 @@
 import { LaunchTimer, noopClusterMetrics, type ClusterMetrics } from '../metrics/cluster-metrics.js'
 import { systemClock, type Clock } from '@agentconnect.md/connection'
+import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/connection.js'
@@ -170,8 +171,36 @@ export class K8sDriver implements SpawnDriver {
     return this.registry.recordLaunch(subject, sandboxName, sandboxUid, claimUid)
   }
 
+  /**
+   * Re-stamp every claim this member holds a launch for, so a claim in USE never looks like a leak.
+   *
+   * The stamp cannot be an admission marker alone. `ensureSandbox` returns from the launch registry
+   * without touching the API, and `adoptSessions` caches a Running claim this member never admitted,
+   * so a member can serve a session indefinitely without writing to its claim. A sweep that snapshotted
+   * the session's row as absent would then still match on `resourceVersion` when the row came back, and
+   * take a live pod's volume. Refreshed well inside the sweep's grace, the stamp means "last seen in
+   * use by a member", which is the fact the sweep actually needs.
+   *
+   * Best effort by construction: one claim's failure never stops the rest, and nothing here is on a
+   * turn's path — a refresh that does not land costs freshness, and the next tick tries again.
+   */
+  async refreshAdmissionStamps(): Promise<void> {
+    const at = new Date(this.clock.now()).toISOString()
+    for (const { subject } of this.registry.launched()) {
+      const name = this.claimName(subject)
+      // A claim retired under this member is not an error to report: its launch is simply on its way out.
+      const stamped = await this.deps.api.stampClaim(name, { [AC_ANNOTATION_ADMITTED]: at }).catch((err: unknown) => {
+        if (!(err instanceof K8sApiError) || !err.isNotFound) {
+          this.deps.log.debug?.(`cluster: could not refresh the stamp on claim ${name} — ${(err as Error).message}`)
+        }
+        return undefined
+      })
+      if (stamped?.stampRefused) this.reportStampRefused(name)
+    }
+  }
+
   // Said once per process: the launch is unaffected, but the orphan sweep loses the stamp that tells a
-  // re-admitted claim from a leaked one and falls back to the object's own age for it.
+  // claim in use from a leaked one and falls back to the object's own age for it.
   private reportStampRefused(name: string): void {
     if (this.stampRefusalReported) return
     this.stampRefusalReported = true

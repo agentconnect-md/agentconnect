@@ -167,6 +167,14 @@ export class SandboxApi {
     }
   }
 
+  /** Merge annotations onto a claim that is known to exist, degrading on a refused permission like an admission does. */
+  async stampClaim(
+    name: string,
+    annotations: Record<string, string>
+  ): Promise<{ claim: SandboxClaim; stampRefused?: boolean }> {
+    return await this.mergeClaimAnnotations(name, annotations)
+  }
+
   private patchClaimAnnotations(name: string, annotations: Record<string, string>): Promise<SandboxClaim> {
     return this.http.json<SandboxClaim>({
       method: 'PATCH',
