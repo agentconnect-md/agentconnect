@@ -258,13 +258,68 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       expect(dreamEnv.API_KEY).toBeUndefined()
       expect(dreamEnv[GITCRED_AGENT_ENV]).toBeUndefined()
       expect(dreamEnv[GITCRED_CAPABILITY_ENV]).toBeUndefined()
-      expect([
-        [dreamEnv.GIT_CONFIG_KEY_0, dreamEnv.GIT_CONFIG_VALUE_0],
-        [dreamEnv.GIT_CONFIG_KEY_1, dreamEnv.GIT_CONFIG_VALUE_1]
-      ]).toEqual([
-        ['core.hooksPath', process.platform === 'win32' ? 'NUL' : '/dev/null'],
-        ['core.fsmonitor', 'false']
-      ])
+      // The policy rides the per-agent gitconfig, which the whole process tree inherits; the
+      // indexed channel is gone, because a child that keeps COUNT without the pairs breaks git.
+      expect(dreamEnv.GIT_CONFIG_COUNT).toBeUndefined()
+      expect(Object.keys(dreamEnv).filter((key) => key.startsWith('GIT_CONFIG_KEY_'))).toEqual([])
+      const dreamConfig = readFileSync(dreamEnv.GIT_CONFIG_GLOBAL, 'utf8')
+      expect(dreamConfig).toContain(`hooksPath = ${process.platform === 'win32' ? 'NUL' : '/dev/null'}`)
+      expect(dreamConfig).toContain('fsmonitor = false')
+      // A dream gets NO tool credentials, so its file must carry no helper pointer either.
+      expect(dreamConfig).not.toContain('[credential')
+      // …and the confined launch must still be able to READ it. A hidden global config is read by
+      // git as no config at all, so an uncarved path loses the hook pins silently rather than loudly.
+      const runtimeDef = (daemon as any).runtimes[agent.runtime]
+      const carve = (path: string | undefined) =>
+        (daemon as any).sandboxRuntimeReadRoots(agent, runtimeDef, path, false, false)
+      expect(carve(dreamEnv.GIT_CONFIG_GLOBAL)).toContain(realpathSync(dreamEnv.GIT_CONFIG_GLOBAL))
+      // The grant takes the DAEMON-authored path as an argument, never the merged child env: a
+      // launch the daemon issues no session gitconfig for must carve nothing, whatever env says.
+      expect(carve(undefined)).not.toContain(realpathSync(dreamEnv.GIT_CONFIG_GLOBAL))
+      // A dream COEXISTS with the warm host, so it must not write over the file that host is still
+      // pointing at: doing so would strip the live runtime's credential helper until it rebuilds.
+      const normalEnv = (normal as any).opts.env
+      expect(dreamEnv.GIT_CONFIG_GLOBAL).not.toBe(normalEnv.GIT_CONFIG_GLOBAL)
+      expect(readFileSync(normalEnv.GIT_CONFIG_GLOBAL, 'utf8')).toContain('[credential')
+    } finally {
+      await daemon.stop().catch(() => undefined)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('never carves an operator-configured GIT_CONFIG_GLOBAL into the sandbox read roots', async () => {
+    const root = scaffold()
+    const daemon = new Daemon({
+      slackAppFactory: fakeSlackAppFactory(),
+      root,
+      sandboxMechanism: 'bwrap',
+      probeRuntimes: async () => []
+    })
+    try {
+      await daemon.start()
+      const agent = (daemon as any).agents.get('bot-a')
+      // A from-scratch workspace with no managed credential: the daemon issues no session
+      // gitconfig, so the only GIT_CONFIG_GLOBAL in the merged env is the operator's own. Carving
+      // that back would name any host file the model could then read straight out of the sandbox.
+      const planted = join(root, 'planted-host-file')
+      writeFileSync(planted, 'host-only')
+      agent.runtimeOverrides = { env: [{ name: 'GIT_CONFIG_GLOBAL', value: planted }] }
+      const granted: string[][] = []
+      const real = (daemon as any).sandboxRuntimeReadRoots.bind(daemon)
+      ;(daemon as any).sandboxRuntimeReadRoots = (...args: any[]) => {
+        const roots = real(...args)
+        granted.push(roots)
+        return roots
+      }
+      const host = (daemon as any).buildAcpHost(agent, (daemon as any).cfg, {
+        hostKey: agentHostKey(agent.id),
+        runInSandbox: true,
+        cwd: agent.workspace.path
+      }).host
+      // The value does reach the child env — it is the read GRANT that must not be derived from it.
+      expect((host as any).opts.env.GIT_CONFIG_GLOBAL).toBe(planted)
+      expect(granted.length).toBeGreaterThan(0)
+      for (const roots of granted) expect(roots).not.toContain(realpathSync(planted))
     } finally {
       await daemon.stop().catch(() => undefined)
       rmSync(root, { recursive: true, force: true })

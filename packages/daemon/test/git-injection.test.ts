@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { simpleGit } from 'simple-git'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../src/cp/gitcred-server.js'
@@ -19,7 +19,6 @@ import {
   sandboxGitCredentialTarget,
   sessionGitConfig,
   sessionGitEnv,
-  sessionGitPolicyEnv,
   workspaceGitEnvBase,
   workspaceGitLocalEnv,
   workspaceGitRemoteTarget,
@@ -702,13 +701,109 @@ describe('workspaceGitRemoteTarget', () => {
 })
 
 describe('sessionGitEnv', () => {
-  it('disables repository hooks and fsmonitor for every configured Git workspace session', () => {
-    expect(configPairs(sessionGitPolicyEnv())).toEqual([
-      ['core.hooksPath', process.platform === 'win32' ? 'NUL' : '/dev/null'],
-      ['core.fsmonitor', 'false']
-    ])
-    expect(configPairs(sessionGitEnv('agent-1'))).toEqual(configPairs(sessionGitPolicyEnv()))
+  // The policy lives in the FILE, not in indexed env pairs. Read per process inside a runtime pod:
+  // the ACP runtime had GIT_CONFIG_COUNT plus both KEY/VALUE pairs, while its own child had COUNT
+  // alone — enough for git to refuse EVERY invocation with "unable to parse command-line config".
+  const HOOKS_PATH = process.platform === 'win32' ? 'NUL' : '/dev/null'
+
+  it('carries the hooks and fsmonitor policy in the file, for a pod launch and a daemon launch alike', () => {
+    const daemonLaunch = readFileSync(sessionGitEnv('agent-1').GIT_CONFIG_GLOBAL!, 'utf8')
+    expect(daemonLaunch).toContain(`hooksPath = ${HOOKS_PATH}`)
+    expect(daemonLaunch).toContain('fsmonitor = false')
+    // A --k8s launch never writes here, so its content is asserted where the pod would read it.
+    const podLaunch = sessionGitConfig('agent-1', undefined, sandboxGitCredentialTarget()).content
+    expect(podLaunch).toContain(`hooksPath = ${HOOKS_PATH}`)
+    expect(podLaunch).toContain('fsmonitor = false')
   })
+
+  it('leaves no indexed command-scope config in any session launch env', () => {
+    const launches = [
+      sessionGitEnv('agent-1'),
+      sessionGitEnv('agent-2', undefined, null),
+      sessionGitConfig('agent-1', undefined, sandboxGitCredentialTarget()).env,
+      sessionGitConfig('agent-2', undefined, sandboxGitCredentialTarget(), null).env
+    ]
+    for (const env of launches) {
+      expect(env).not.toHaveProperty('GIT_CONFIG_COUNT')
+      expect(Object.keys(env).filter((key) => key.startsWith('GIT_CONFIG_KEY_'))).toEqual([])
+      expect(env.GIT_CONFIG_GLOBAL).toBeDefined()
+    }
+  })
+
+  it('gives a credential-free git workspace the policy and no credential pointer at all', () => {
+    const env = sessionGitEnv('agent-2', undefined, null)
+    const content = readFileSync(env.GIT_CONFIG_GLOBAL!, 'utf8')
+    expect(content).toContain(`hooksPath = ${HOOKS_PATH}`)
+    expect(content).not.toContain('[credential')
+    expect(env[GITCRED_CAPABILITY_ENV]).toBeUndefined()
+    expect(env[GITCRED_AGENT_ENV]).toBeUndefined()
+  })
+
+  // A credential-stripped host (a dream) coexists with the warm credentialed one and shares its pod
+  // on the pool, so the two must never name the same file: policy-only content landing on the
+  // credentialed path would cut the live runtime's helper and reset until that host is rebuilt.
+  it('keys the file by what it contains, so a credential-stripped host cannot overwrite the other', () => {
+    const podCredentialed = sessionGitConfig('agent-1', undefined, sandboxGitCredentialTarget())
+    const podPolicyOnly = sessionGitConfig('agent-1', undefined, sandboxGitCredentialTarget(), null)
+    expect(podPolicyOnly.path).not.toBe(podCredentialed.path)
+    // Both are materialized into the one pod, so they have to coexist in the same directory.
+    expect(dirname(podPolicyOnly.path)).toBe(dirname(podCredentialed.path))
+    expect(podCredentialed.content).toContain('[credential')
+    expect(podPolicyOnly.content).not.toContain('[credential')
+
+    // On this daemon's disk the same holds, and it holds AFTER the policy-only write, not just in
+    // the returned paths — the warm host is still pointing at the credentialed file.
+    const credentialed = sessionGitEnv('agent-1')
+    const policyOnly = sessionGitEnv('agent-1', undefined, null)
+    expect(policyOnly.GIT_CONFIG_GLOBAL).not.toBe(credentialed.GIT_CONFIG_GLOBAL)
+    expect(readFileSync(credentialed.GIT_CONFIG_GLOBAL!, 'utf8')).toContain('[credential')
+    expect(readFileSync(policyOnly.GIT_CONFIG_GLOBAL!, 'utf8')).not.toContain('[credential')
+  })
+
+  // Real git resolves these, because the whole defect was a channel that looked right and was not.
+  it.skipIf(process.platform === 'win32')('outranks a host gitconfig hooksPath by sitting AFTER the include', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gitcred-host-'))
+    try {
+      const hostConfig = join(dir, 'host.gitconfig')
+      writeFileSync(hostConfig, '[core]\n\thooksPath = /host/hooks\n')
+      const cfg = sessionGitConfig('agent-1', undefined, {
+        kind: 'daemon',
+        helper: join(tmpRun, 'helper.sh'),
+        configDir: dir,
+        hostConfig
+      })
+      writeFileSync(cfg.path, cfg.content)
+      expect(cfg.content.indexOf('[include]')).toBeLessThan(cfg.content.indexOf('hooksPath = /dev/null'))
+      const env = { ...gitEnvBase(), ...cfg.env }
+      expect(
+        execFileSync('git', ['config', '--get', 'core.hooksPath'], { cwd: dir, encoding: 'utf8', env }).trim()
+      ).toBe('/dev/null')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // The KNOWN cost of moving off the indexed channel: GIT_CONFIG_GLOBAL is global scope, which
+  // repository-local config outranks, where command scope outranked everything. Daemon-run git is
+  // unaffected (workspaceGitConfigPairs still pins both at command scope) and a confined runtime
+  // cannot write .git/config, but an unconfined agent's own git can now opt back into its hooks.
+  it.skipIf(process.platform === 'win32')(
+    'lets a repository-local hooksPath win, which the indexed channel refused',
+    () => {
+      const repo = mkdtempSync(join(tmpdir(), 'gitcred-repo-'))
+      try {
+        const env = { ...gitEnvBase(), ...sessionGitEnv('agent-1') }
+        execFileSync('git', ['init', '-q'], { cwd: repo, env })
+        const read = () =>
+          execFileSync('git', ['config', '--get', 'core.hooksPath'], { cwd: repo, encoding: 'utf8', env }).trim()
+        expect(read()).toBe('/dev/null')
+        execFileSync('git', ['config', '--local', 'core.hooksPath', join(repo, 'hooks')], { cwd: repo, env })
+        expect(read()).toBe(join(repo, 'hooks'))
+      } finally {
+        rmSync(repo, { recursive: true, force: true })
+      }
+    }
+  )
 
   // The runner shells out to `git var GIT_AUTHOR_IDENT`, which the runner image cannot answer here.
   it.skipIf(process.platform === 'win32')('pins the CP-provided bot as both author and committer', () => {

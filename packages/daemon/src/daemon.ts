@@ -100,8 +100,7 @@ import {
   probeGitVersion,
   sandboxGitCredentialTarget,
   sessionGitConfig,
-  sessionGitEnv,
-  sessionGitPolicyEnv
+  sessionGitEnv
 } from './workspace/git-injection.js'
 import { configureWorkspaceGitOrigins, permitsNoHttpsOrigin } from './workspace/git-origin-policy.js'
 import { buildMcpServers, buildSandboxMcpServers, type McpStdioServer } from './mcp/inject.js'
@@ -3539,7 +3538,9 @@ export class Daemon {
   private sandboxRuntimeReadRoots(
     agent: LoadedAgent,
     runtime: RuntimeDef,
-    launchEnv: Record<string, string>,
+    // The daemon-authored session gitconfig, passed rather than read back from the merged child
+    // env: runtimeOverrides.env could otherwise name any host file and have it carved in here.
+    sessionGitConfigPath: string | undefined,
     githubAppCredentials: boolean,
     gitlabCredentials: boolean
   ): string[] {
@@ -3550,10 +3551,12 @@ export class Daemon {
     const cliEntry = daemonEntryForShims(this.root)
     const paths = [mcpSocketPath(this.root)]
     const executableCommands = [process.execPath]
+    // Carved with or without credentials: the file carries the hook policy, and a hidden global
+    // config is read by git as no config at all — a silent loss of the pins, not an error.
+    if (sessionGitConfigPath) paths.push(sessionGitConfigPath)
     if (githubAppCredentials) {
       paths.push(gitcredSocketPath(this.root), gitcredShimPath(this.root))
       if (this.ghBinDir) paths.push(this.ghBinDir)
-      if (launchEnv.GIT_CONFIG_GLOBAL) paths.push(launchEnv.GIT_CONFIG_GLOBAL)
       const gh = resolveCommandPath('gh', process.env)
       if (gh) executableCommands.push(gh)
     }
@@ -3562,7 +3565,6 @@ export class Daemon {
       // real glab binary for the OS sandbox's read allowlist (§13.3).
       paths.push(gitcredSocketPath(this.root), gitcredShimPath(this.root))
       if (this.glabBinDir) paths.push(this.glabBinDir)
-      if (launchEnv.GIT_CONFIG_GLOBAL) paths.push(launchEnv.GIT_CONFIG_GLOBAL)
       const glab = resolveCommandPath('glab', process.env)
       if (glab) executableCommands.push(glab)
     }
@@ -4274,9 +4276,9 @@ export class Daemon {
       agent.gitlabHost,
       !excludeAgentToolCredentials && this.workspaces.gitlabRepoBearing(agent)
     )
-    // The Git session policy runs for every configured repository, not only
-    // GitHub review: repository hooks/fsmonitor stay disabled without rewriting
-    // checkout config. sessionGitEnv additionally supplies GitHub App identity.
+    // The Git session policy runs for every configured repository, not only GitHub review:
+    // repository hooks/fsmonitor stay disabled through the per-agent gitconfig the whole agent
+    // process tree inherits. sessionGitEnv additionally supplies GitHub App identity.
     // Keep this channel LAST so runtimeOverrides cannot replace either policy.
     const baseEnv: Record<string, string> = { ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }
     const runInSandbox = opts.runInSandbox
@@ -4297,10 +4299,19 @@ export class Daemon {
     // pod coordinates and WRITTEN there: the file travels with the launch (SpawnRequest.files) and
     // is re-materialized on every spawn, because a resumed Sandbox is a new pod with an empty tmpfs.
     // The daemon-local write (sessionGitEnv) would land the file on this daemon's disk instead.
+    // A git-repo workspace with no managed credential still gets the file, for its policy alone.
+    const sessionGitScope = managedCredentials ? managedScope : null
+    const sessionGitIdentity = managedCredentials ? this.gitCommitIdentity : undefined
+    const needsSessionGit = managedCredentials || agent.workspace.mode === 'git-repo'
     const sandboxSessionGit =
-      this.k8sPlane && managedCredentials
-        ? sessionGitConfig(agent.id, this.gitCommitIdentity, sandboxGitCredentialTarget(), managedScope)
+      this.k8sPlane && needsSessionGit
+        ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitCredentialTarget(), sessionGitScope)
         : undefined
+    // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
+    // never read back out of the merged child env, where runtimeOverrides.env could name any file.
+    const sessionGitInjection = needsSessionGit
+      ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope))
+      : undefined
     const env: Record<string, string> = {
       ...baseEnv,
       // Memory backend env: managed disables the runtime's own memory; native
@@ -4310,11 +4321,7 @@ export class Daemon {
       ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission(agent.id)).runtimeEnv(),
       // App identity rides with the CREDENTIAL mode, not the workspace mode: a scratch workspace with
       // authorized repositories needs the capability for its git and gh exactly like a clone does.
-      ...(managedCredentials
-        ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, this.gitCommitIdentity, managedScope))
-        : agent.workspace.mode === 'git-repo'
-          ? sessionGitPolicyEnv()
-          : {})
+      ...(sessionGitInjection ?? {})
     }
     // Config-file secrets are materialized by assembleRuntimeLaunch below; the pre-strip merged env
     // is snapshotted so the idle sweep can delete the files and rematerializeConfigFiles() can
@@ -4404,8 +4411,14 @@ export class Daemon {
           if (this.claudeModelAliases) applyClaudeModelAliases(target, launchEnv, this.claudeModelAliases)
         },
         runtimeReadRoots: runInSandbox
-          ? (launchEnv) =>
-              this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials, gitlabCredentials)
+          ? () =>
+              this.sandboxRuntimeReadRoots(
+                agent,
+                runtime,
+                sessionGitInjection?.GIT_CONFIG_GLOBAL,
+                githubAppCredentials,
+                gitlabCredentials
+              )
           : undefined,
         // A session host with its own clones (§11) writes its session directory alone; the launch derives its Git grants from it.
         trustedWorkspaceWriteRoots: runInSandbox
