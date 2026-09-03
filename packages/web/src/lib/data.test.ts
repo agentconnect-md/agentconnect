@@ -324,7 +324,7 @@ describe('permissionModeChoicesFor', () => {
       )
     ).toEqual([
       { v: 'plan', l: 'Plan first', description: 'Inspect the workspace without making changes.' },
-      { v: 'acceptEdits', l: 'Accept Edits' },
+      { v: 'acceptEdits', l: 'Accept edits' },
       { v: 'yolo', l: 'Yolo' }
     ])
   })
