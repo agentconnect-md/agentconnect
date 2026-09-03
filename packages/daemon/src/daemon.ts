@@ -797,7 +797,7 @@ export class Daemon {
   // mirrors only the loaded local files and is rebuilt each reconcile.
   private agents = new Map<string, LoadedAgent>()
   private fileAgents = new Map<string, LoadedAgent>()
-  // Every live ACP host by HostKey (agent id, or agent id + session key under perSessionHost); every per-host map below is keyed alike.
+  // Every live ACP host by HostKey (agent id, or agent id + session key for a confined session); every per-host map below is keyed alike.
   private hosts = new Map<HostKey, AcpHost>()
   // Per-host launch facts: the agent dir (the roster entry is gone when a removed agent's host stops) and the launch cwd.
   private hostLaunch = new Map<HostKey, { agentDir: string; cwd: string }>()
@@ -3599,19 +3599,47 @@ export class Daemon {
     )
   }
 
-  // What each session's row says its isolation is, as the requests that reached this member reported it — the one fact a pool member's host keying needs without a store round trip.
+  // What each session's row says its isolation is, as the requests that reached this member reported it — the one fact host keying needs without a store round trip.
   private readonly sessionIsolation = new Map<string, 'shared' | 'session'>()
 
-  // git-workspace-model §11: a confined self-hosted launch gives every session its own host; a pool member gives an isolated session its own host AND pod, while a shared one keeps the agent's host in the agent's pod.
-  private perSessionHost(agent: Agent, sessionKey?: string): boolean {
-    if (this.k8s) return sessionKey !== undefined && this.sessionIsolation.get(sessionKey) === 'session'
-    return this.agentRunsInSandbox(agent)
+  /**
+   * git-workspace-model §11: whether one logical session is served on the CONFINED tier — its own
+   * clones, its own ACP host (its own pod on a pool member), its own private HOME. The single rule
+   * the host key, preparation, the launch and cleanup all ask.
+   *
+   * A session is served in the tier it was BORN in, for its whole life: its recorded isolation says
+   * whether it has a tier of its own at all, and the clones or worktree it already stands in say
+   * which. Changing the agent's `runInSandbox` or `workspaceIsolation` therefore reaches only
+   * sessions created afterwards, and no half of the daemon can start serving a live one somewhere
+   * the others do not address.
+   */
+  private confinedSession(agent: Agent, sessionKey?: string): boolean {
+    if (sessionKey === undefined) return false
+    // A shared session has no tier of its own at all: no host, no pod, no HOME, no directory.
+    if (!this.sessionIsolated(agent, sessionKey)) return false
+    return this.workspaces.confinedSessionTier(agent, sessionKey, this.k8s || this.agentRunsInSandbox(agent))
   }
 
-  /** The host that serves `sessionKey` of this agent: its own under perSessionHost, else the shared one. */
+  /**
+   * Whether THIS session is isolated — its own persisted isolation, never the agent's default where
+   * they differ: `SessionManager` keeps the isolation a session was opened with, a formal review
+   * forces `session`, and a webchat choice can force either.
+   *
+   * It has to be that value and no other, because the console's workspace routing, retention and
+   * preparation all read it: a tier chosen from anything else would put the runtime in a directory
+   * they do not address. Every workspace request reaching this daemon reports it; a session none has
+   * described yet takes what `SessionManager` will compute for it.
+   */
+  private sessionIsolated(agent: Agent, sessionKey?: string): boolean {
+    const reported = sessionKey === undefined ? undefined : this.sessionIsolation.get(sessionKey)
+    if (reported !== undefined) return reported === 'session'
+    return agent.workspace.mode === 'git-repo' && agent.workspace.isolation === 'session'
+  }
+
+  /** The host that serves `sessionKey` of this agent: its own when the session is confined, else the shared one. */
   private hostKeyFor(agentId: string, sessionKey?: string): HostKey {
     const agent = this.agents.get(agentId)
-    return sessionKey !== undefined && agent && this.perSessionHost(agent, sessionKey)
+    return sessionKey !== undefined && agent && this.confinedSession(agent, sessionKey)
       ? sessionHostKey(agentId, sessionKey)
       : agentHostKey(agentId)
   }
@@ -3627,7 +3655,7 @@ export class Daemon {
 
   /** The pod a session-bound host launches into, or undefined for one that shares the agent's (a dream, a model-session host). */
   private podSubjectFor(agent: Agent, hostKey: HostKey): SandboxSubject | undefined {
-    return this.perSessionHost(agent, hostKeySessionKey(hostKey)) ? sandboxSubjectFor(hostKey) : undefined
+    return this.confinedSession(agent, hostKeySessionKey(hostKey)) ? sandboxSubjectFor(hostKey) : undefined
   }
 
   /** Every host key the agent has live, starting or stopping, plus its shared one (its start fence). */
@@ -3752,6 +3780,9 @@ export class Daemon {
   }
 
   private async runAgentWorkspacePreparation(agent: Agent, request?: PrepareSessionWorkspaceRequest): Promise<string> {
+    // The session's OWN isolation, learned here as at every other request seam, so the tier rule below
+    // and the host key this preparation was gated by cannot be reading two different answers.
+    if (request) this.sessionIsolation.set(request.sessionKey, request.isolation)
     // In --k8s the workspace lives on the sandbox pod's volume, in the POD's coordinates: the
     // sandbox has to exist before anything else (the channel reports where the volume mounts),
     // and none of the local preparation below may run — its mkdir/existsSync/skills work would
@@ -3762,11 +3793,10 @@ export class Daemon {
       // The pod's own preparation: clone and pull happen on its volume through the runner, and
       // none of the local work below runs — its mkdir, `existsSync(.git)` and skills installation
       // all land on this daemon's disk, describing a filesystem the runtime never reads.
-      if (request) this.sessionIsolation.set(request.sessionKey, request.isolation)
       const agentPod = agentSandboxSubject(agent.id)
       // §11: an isolated session prepares on ITS pod (its clones, its skills); the agent pod is held beside it for the secondary-root attestation and the reads that follow.
       const pod =
-        request && this.perSessionHost(agent, request.sessionKey)
+        request && this.confinedSession(agent, request.sessionKey)
           ? sandboxSubjectFor(sessionHostKey(agent.id, request.sessionKey))
           : agentPod
       const prepare = async (): Promise<string> => {
@@ -3792,7 +3822,7 @@ export class Daemon {
     return request
       ? this.workspaces.prepareSessionWorkspace(
           agent,
-          this.perSessionHost(agent) ? { ...request, confined: true } : request,
+          this.confinedSession(agent, request.sessionKey) ? { ...request, confined: true } : request,
           opts
         )
       : this.workspaces.prepareWorkspace(agent, opts)

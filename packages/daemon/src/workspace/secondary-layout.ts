@@ -10,6 +10,8 @@ import type { WorkspaceFs } from './workspace-fs.js'
 export const PRIMARY_CHECKOUT_DIR = 'workspace'
 /** Secondary roots live under one agent-owned parent, one subtree per authorized repository. */
 export const SECONDARY_ROOTS_DIR = 'repos'
+/** Every root's per-session worktrees hang off this leaf of it — the agent root for the primary, the subtree for a secondary. */
+export const WORKTREES_DIR = 'worktrees'
 /** What a secondary root's subtree records about the checkout beside it. */
 export const SECONDARY_MATERIALIZATION_FILE = '.materialization.json'
 
@@ -64,7 +66,7 @@ export function secondarySubtreesIn(agentRoot: string): SecondarySubtree[] {
         repoFullName: `${owner}/${repo}`,
         subtree,
         path: join(subtree, 'checkout'),
-        worktreesPath: join(subtree, 'worktrees')
+        worktreesPath: join(subtree, WORKTREES_DIR)
       })
     }
   }
@@ -90,7 +92,7 @@ export async function secondarySubtreesUnder(fs: WorkspaceFs, parent: string): P
         repoFullName: `${owner}/${repo}`,
         subtree,
         path: join(subtree, 'checkout'),
-        worktreesPath: join(subtree, 'worktrees')
+        worktreesPath: join(subtree, WORKTREES_DIR)
       })
     }
   }
