@@ -632,6 +632,57 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(resumed.metadata?.uid).toBe(claimUid)
   })
 
+  it('publishes no launch when the fence write fails for any reason but permission', async () => {
+    // The fence is what a published launch RESTS on, so swallowing a timeout or a 500 here would be the
+    // same as never stamping: the sweep still holds the version it listed, and its delete still takes a
+    // live volume. A takeover that cannot fence adopts nothing; a resume refuses the read.
+    const { api, claims } = cluster()
+    const { driver, clock, warnings } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    const name = sandboxClaimName(session)
+    await driver.ensureSandbox(session)
+    const claimUid = (await driver.claimUidFor(session))!
+    expect(await driver.suspendIfIdle(session)).toBe('suspended')
+    const fenced = claims.get(name)!.metadata!.resourceVersion
+
+    api.stampClaim = (async () => {
+      throw new Error('the API server is having a moment')
+    }) as never
+    clock.advance(600_000)
+
+    // A resume refuses rather than serving a pod the sweep could collect underneath it.
+    await expect(driver.resumeBoundChannel(session, claimUid)).rejects.toThrow(/could not be marked in use/)
+    expect(driver.currentLaunch(session)).toBeUndefined()
+    // And a takeover adopts nothing, leaving the next duty tick to try again.
+    expect(await driver.adopt(session)).toBeUndefined()
+    expect(driver.currentLaunch(session)).toBeUndefined()
+    // Nothing was written, so the claim the sweep listed is untouched — and it says why, out loud.
+    expect(claims.get(name)!.metadata?.resourceVersion).toBe(fenced)
+    expect(warnings.some((line) => line.includes('could not be marked in use'))).toBe(true)
+  })
+
+  it('still publishes when the fence is refused by permission alone, reporting it once', async () => {
+    // The legacy-Role degradation stays exactly as agreed: failing every takeover over a missing verb
+    // would be worse than the race, and it is already reported once per process.
+    const { api } = cluster()
+    const { driver, warnings } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    await driver.ensureSandbox(session)
+    const claimUid = (await driver.claimUidFor(session))!
+    expect(await driver.suspendIfIdle(session)).toBe('suspended')
+
+    const stamp = api.stampClaim
+    api.stampClaim = (async (name: string, annotations: Record<string, string>) => {
+      const stamped = await stamp(name, annotations)
+      return { claim: stamped.claim, stampRefused: true }
+    }) as never
+
+    await driver.resumeBoundChannel(session, claimUid)
+    expect(driver.currentLaunch(session)).toBeDefined()
+    expect(warnings.filter((line) => line.includes('refused the admission stamp'))).toHaveLength(1)
+    expect(warnings.some((line) => line.includes('could not be marked in use'))).toBe(false)
+  })
+
   it('keeps the agent pod path byte-identical: no host key means the agent claim, as before', async () => {
     const { api, claims } = cluster()
     const { driver, records } = member(api, podSide().connect)

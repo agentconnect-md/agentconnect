@@ -1,6 +1,5 @@
 import { LaunchTimer, noopClusterMetrics, type ClusterMetrics } from '../metrics/cluster-metrics.js'
 import { systemClock, type Clock } from '@agentconnect.md/connection'
-import { K8sApiError } from '@agentconnect.md/k8s-client'
 import type { SpawnDriver, SpawnRequest, SpawnedRuntime } from '../acp/spawn-driver.js'
 import type { ShimCapability } from '../shim/protocol.js'
 import type { ShimConnection } from '../shim/connection.js'
@@ -185,21 +184,47 @@ export class K8sDriver implements SpawnDriver {
    * turn's path — a refresh that does not land costs freshness, and the next tick tries again.
    */
   async refreshAdmissionStamps(): Promise<void> {
-    for (const { subject } of this.registry.launched()) await this.stampHeldClaim(subject)
+    // Best effort, unlike a publication fence: a claim retired under this member is on its way out, and
+    // a write that does not land costs freshness the next tick restores, never a launch.
+    for (const { subject } of this.registry.launched()) {
+      const outcome = await this.writeStamp(subject)
+      if (outcome === 'failed') {
+        this.deps.log.debug?.(`cluster: could not refresh the stamp on claim ${this.claimName(subject)}`)
+      }
+    }
   }
 
-  // Mark one claim as in use NOW. Best effort: a claim retired under this member is not an error to
-  // report — its launch is simply on its way out — and a Role without `patch` degrades as admission does.
-  private async stampHeldClaim(subject: SandboxSubject): Promise<void> {
+  /**
+   * Mark a claim as in use, as the fence a launch about to be PUBLISHED depends on.
+   *
+   * Only two outcomes may publish: the write landed, or the API server refused the permission — the
+   * mixed-Role degradation this daemon already reports once and accepts, because failing every takeover
+   * over a missing verb would be worse than the race. A transient rejection is neither, and swallowing
+   * it would publish a launch the sweep cannot see: it would still hold the resourceVersion it listed
+   * while the session's row was absent, and its delete would take a live pod's volume.
+   */
+  private async fenceLaunch(subject: SandboxSubject): Promise<boolean> {
+    const outcome = await this.writeStamp(subject)
+    if (outcome === 'failed') {
+      this.deps.log.warn(
+        `cluster: not publishing the launch of sandbox ${subject} — its claim ${this.claimName(subject)} could not be ` +
+          `marked in use, and an unmarked claim can be collected while this member serves it`
+      )
+    }
+    return outcome !== 'failed'
+  }
+
+  // The stamp write itself: `refused` is the permission gap, reported once; `failed` is everything else.
+  private async writeStamp(subject: SandboxSubject): Promise<'stamped' | 'refused' | 'failed'> {
     const name = this.claimName(subject)
     const at = new Date(this.clock.now()).toISOString()
-    const stamped = await this.deps.api.stampClaim(name, { [AC_ANNOTATION_ADMITTED]: at }).catch((err: unknown) => {
-      if (!(err instanceof K8sApiError) || !err.isNotFound) {
-        this.deps.log.debug?.(`cluster: could not refresh the stamp on claim ${name} — ${(err as Error).message}`)
-      }
-      return undefined
-    })
-    if (stamped?.stampRefused) this.reportStampRefused(name)
+    const stamped = await this.deps.api.stampClaim(name, { [AC_ANNOTATION_ADMITTED]: at }).catch(() => undefined)
+    if (!stamped) return 'failed'
+    if (stamped.stampRefused) {
+      this.reportStampRefused(name)
+      return 'refused'
+    }
+    return 'stamped'
   }
 
   // Said once per process: the launch is unaffected, but the orphan sweep loses the stamp that tells a
@@ -232,8 +257,9 @@ export class K8sDriver implements SpawnDriver {
       // Stamped BEFORE the launch is published, not at the next tick: a takeover writes nothing to the
       // claim otherwise, and the launch it publishes is then served from the registry — so a sweep that
       // listed this claim while the session's row was absent would still match its version when the row
-      // came back, and delete a pod this member is serving.
-      await this.stampHeldClaim(subject)
+      // came back, and delete a pod this member is serving. A fence that does not land adopts nothing;
+      // the next duty tick or the next turn tries again.
+      if (!(await this.fenceLaunch(subject))) return undefined
       this.deps.log.info(`cluster: sandbox ${subject} taken over with sandbox ${sandboxName} running`)
       return this.registry.recordLaunch(subject, sandboxName, sandboxUid, claimUid)
     })
@@ -299,8 +325,11 @@ export class K8sDriver implements SpawnDriver {
     const sandboxUid = sandbox?.metadata?.uid
     if (!sandboxUid) throw new Error(`sandbox ${sandboxName} is gone — nothing to resume`)
     this.registry.assertStillServed(subject, releasedAt)
-    // A resume publishes a launch without admitting one, exactly as a takeover does, so it stamps too.
-    await this.stampHeldClaim(subject)
+    // A resume publishes a launch without admitting one, exactly as a takeover does, so it stamps too —
+    // and refuses the read rather than serving a pod the sweep could collect underneath it.
+    if (!(await this.fenceLaunch(subject))) {
+      throw new Error(`sandbox ${subject} claim ${name} could not be marked in use — not resuming onto it`)
+    }
     return await this.registry.recordLaunch(subject, sandboxName, sandboxUid, claimUid)
   }
 
