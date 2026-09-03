@@ -851,6 +851,16 @@ Injection uses **two channels**:
      (`workspaceGitConfigPairs`) and a confined runtime cannot write
      `.git/config` or `.git/hooks`, so the exposed case is an unconfined agent's
      own git in a checkout that sets `core.hooksPath` locally.
+   - **The file is keyed by what it contains, not by the host that asked for
+     it.** A credential-stripped host (a dream) coexists with the warm host and
+     shares its pod on the pool, so it writes a separate policy-only name rather
+     than the credentialed one: landing policy-only content on the credentialed
+     path would strip the live runtime's helper and reset until it rebuilt.
+     Content is a pure function of (agent, class) — scope comes from the agent
+     spec and commit identity is daemon-global — so every writer of a path
+     writes identical bytes, and an agent never owns more than these two files.
+     Per-host names were rejected for the opposite reason: nothing reaps these
+     files, so they would accumulate one per host indefinitely.
    - This injection must be spread **last, at the highest precedence** in the
      spawn-environment merge: after
      `{ ...agentChildEnv(agent), ...cpRuntimeEnv(agent) }` in `ensureHost` at

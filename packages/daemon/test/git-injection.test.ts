@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { simpleGit } from 'simple-git'
 import { GITCRED_AGENT_ENV, GITCRED_CAPABILITY_ENV, GITCRED_SOCKET_ENV } from '../src/cp/gitcred-server.js'
@@ -737,6 +737,27 @@ describe('sessionGitEnv', () => {
     expect(content).not.toContain('[credential')
     expect(env[GITCRED_CAPABILITY_ENV]).toBeUndefined()
     expect(env[GITCRED_AGENT_ENV]).toBeUndefined()
+  })
+
+  // A credential-stripped host (a dream) coexists with the warm credentialed one and shares its pod
+  // on the pool, so the two must never name the same file: policy-only content landing on the
+  // credentialed path would cut the live runtime's helper and reset until that host is rebuilt.
+  it('keys the file by what it contains, so a credential-stripped host cannot overwrite the other', () => {
+    const podCredentialed = sessionGitConfig('agent-1', undefined, sandboxGitCredentialTarget())
+    const podPolicyOnly = sessionGitConfig('agent-1', undefined, sandboxGitCredentialTarget(), null)
+    expect(podPolicyOnly.path).not.toBe(podCredentialed.path)
+    // Both are materialized into the one pod, so they have to coexist in the same directory.
+    expect(dirname(podPolicyOnly.path)).toBe(dirname(podCredentialed.path))
+    expect(podCredentialed.content).toContain('[credential')
+    expect(podPolicyOnly.content).not.toContain('[credential')
+
+    // On this daemon's disk the same holds, and it holds AFTER the policy-only write, not just in
+    // the returned paths — the warm host is still pointing at the credentialed file.
+    const credentialed = sessionGitEnv('agent-1')
+    const policyOnly = sessionGitEnv('agent-1', undefined, null)
+    expect(policyOnly.GIT_CONFIG_GLOBAL).not.toBe(credentialed.GIT_CONFIG_GLOBAL)
+    expect(readFileSync(credentialed.GIT_CONFIG_GLOBAL!, 'utf8')).toContain('[credential')
+    expect(readFileSync(policyOnly.GIT_CONFIG_GLOBAL!, 'utf8')).not.toContain('[credential')
   })
 
   // Real git resolves these, because the whole defect was a channel that looked right and was not.

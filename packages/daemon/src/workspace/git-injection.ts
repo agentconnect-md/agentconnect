@@ -579,7 +579,12 @@ export function sessionGitConfig(
   // ambient policy, and nothing that would hand it a credential pointer or a socket capability.
   scope: ManagedCredentialScope | null = GITHUB_CREDENTIAL_SCOPE
 ): { path: string; content: string; env: Record<string, string> } {
-  const file = join(target.configDir, `${agentId}.gitconfig`)
+  // Keyed by what the file CONTAINS, not by the host that asked for it. A dream host is stripped of
+  // tool credentials and coexists with the warm host (sharing its pod on the pool), so writing the
+  // credentialed name with policy-only content would cut the live host's helper until it rebuilds.
+  // Content is a pure function of (agent, class) — scope and identity are agent- and daemon-global —
+  // so every writer of a path writes identical bytes, and an agent can never own more than these two.
+  const file = join(target.configDir, `${agentId}${scope ? '' : '.policy'}.gitconfig`)
   const bases = scope ? sessionCredentialBases(scope) : []
   const lines = [
     '# agentconnect session git config — regenerated on agent start; NO secrets.',

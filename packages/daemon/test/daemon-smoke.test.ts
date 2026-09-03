@@ -272,6 +272,11 @@ describe('Daemon (no Slack, injected ACP host)', () => {
       const runtimeDef = (daemon as any).runtimes[agent.runtime]
       const roots = (daemon as any).sandboxRuntimeReadRoots(agent, runtimeDef, dreamEnv, false, false)
       expect(roots).toContain(realpathSync(dreamEnv.GIT_CONFIG_GLOBAL))
+      // A dream COEXISTS with the warm host, so it must not write over the file that host is still
+      // pointing at: doing so would strip the live runtime's credential helper until it rebuilds.
+      const normalEnv = (normal as any).opts.env
+      expect(dreamEnv.GIT_CONFIG_GLOBAL).not.toBe(normalEnv.GIT_CONFIG_GLOBAL)
+      expect(readFileSync(normalEnv.GIT_CONFIG_GLOBAL, 'utf8')).toContain('[credential')
     } finally {
       await daemon.stop().catch(() => undefined)
       rmSync(root, { recursive: true, force: true })
