@@ -116,11 +116,9 @@ export async function runSandboxRuntimeProvider(argv: string[], opts: { offline?
     process.env.TMPDIR = privateTmp
     process.env.CLAUDE_CODE_TMPDIR = privateTmp
     process.env.CLAUDE_TMPDIR = privateTmp
-    // Network policy is intentionally not part of this filesystem-sandbox
-    // rollout. SRT requires an allow-only network config, so approve every
-    // domain through its callback. This preserves proxy-aware web egress; SRT's
-    // network namespace still has documented local-port/client compatibility
-    // gaps tracked in issue #312.
+    // Node's fetch/http ignore HTTP(S)_PROXY unless told to (v22.21+/v24+); otherwise corepack has no route out of SRT's netns.
+    process.env.NODE_USE_ENV_PROXY = '1'
+    // Network policy is out of scope for this rollout: approve every domain; local-port/client gaps stay in issue #312.
     await SandboxManager.initialize(config, async () => opts.offline !== true)
 
     const command = argv

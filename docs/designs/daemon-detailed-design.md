@@ -382,9 +382,11 @@ the workspace, private HOME, managed memory, SRT temporary storage, and that
 credential path. Outbound
 domains are approved by a provider callback and Unix sockets remain
 compatibility-open during this rollout. Proxy-aware HTTP(S) clients retain web
-egress, but SRT's isolated Linux network namespace means host access to an
-agent-started local server and clients that ignore the proxy environment are not
-yet compatibility guarantees; issue #312 tracks those boundaries. SRT's
+egress, and the provider sets `NODE_USE_ENV_PROXY=1` so Node's built-in `fetch`
+and `http` clients (corepack downloading a pinned package manager, for one) join
+them. SRT's isolated Linux network namespace still means host access to an
+agent-started local server and other clients that ignore the proxy environment
+are not yet compatibility guarantees; issue #312 tracks those boundaries. SRT's
 temporary directory is redirected below the private HOME and its shared
 `/tmp/claude` fallback is hidden.
 
