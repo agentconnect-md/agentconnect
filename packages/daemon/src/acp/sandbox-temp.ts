@@ -37,31 +37,33 @@ export const AF_UNIX_PATH_MAX = 107
 /** The widest socket SRT composes under TMPDIR — a Linux pid at its 22-bit ceiling. */
 const WIDEST_SRT_SOCKET = 'srt-mux-4194304-0.sock'
 
-// `mkdir` is the only no-clobber claim on a directory name — `rename` REPLACES an empty destination, which would let this adopt a foreign `t`. So the winner creates the name and marks it; a loser waits briefly for that mark rather than assuming the directory is unowned, because the two are not published together and a first-launch race would otherwise refuse a path that is ours.
-const MARKER_WAIT_MS = 2_000
-const MARKER_POLL_MS = 20
-
+// `mkdir` is the only no-clobber claim on a directory name — `rename` REPLACES an empty destination, which would let this adopt a foreign `t`. A loser of that race finds the name taken before the winner's marker exists, so emptiness decides instead of a wait: an operator's workspace has files, a sibling's half-made claim has none, and marking an empty directory can destroy nothing.
 function createOwnedTempParent(agentDir: string): void {
   const parent = sandboxTempParent(agentDir)
   try {
     mkdirSync(parent, { mode: 0o700 })
   } catch (err) {
-    // Anything but "the name is taken" is the caller's to report; a taken name may be ours, mid-creation, or foreign.
+    // Anything but "the name is taken" is the caller's to report; a taken name may be ours, mid-claim, or foreign.
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-    waitForOwnerMarker(parent)
-    return
+    if (daemonOwnsTempParent(parent) || !isEmptyDir(parent)) return
   }
-  writeFileSync(join(parent, OWNER_MARKER), '', { mode: 0o600 })
+  markTempParent(parent)
 }
 
-/** Bounded: a contender that created the name writes its marker microseconds later, so an absent one past this wait means the directory is not ours and the ownership check below refuses it. */
-function waitForOwnerMarker(parent: string): void {
-  const deadline = Date.now() + MARKER_WAIT_MS
-  while (!daemonOwnsTempParent(parent) && Date.now() < deadline) {
-    const until = Date.now() + MARKER_POLL_MS
-    while (Date.now() < until) {
-      /* a spin is enough for a window this short, and keeps preparation synchronous */
-    }
+/** `wx` so the winner of a first-launch race writes it and the loser is content that it exists. */
+function markTempParent(parent: string): void {
+  try {
+    writeFileSync(join(parent, OWNER_MARKER), '', { mode: 0o600, flag: 'wx' })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+  }
+}
+
+function isEmptyDir(path: string): boolean {
+  try {
+    return readdirSync(path).length === 0
+  } catch {
+    return false
   }
 }
 
