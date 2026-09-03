@@ -41,6 +41,35 @@ describe('trusted runtime read roots', () => {
     expect(resolveTrustedExecutable('runtime', { PATH: bin })).toBe(realpathSync(cli))
   })
 
+  it('carves daemon-wide security.sandboxReadRoots into every runtime, expanding ~ against the host HOME', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-daemon-roots-'))
+    temporaryRoots.push(root)
+    const home = join(root, 'host-home')
+    const toolchain = join(home, '.rustup', 'toolchains', 'stable', 'bin')
+    const nodeInstall = join(root, 'opt', 'node-24')
+    mkdirSync(toolchain, { recursive: true })
+    mkdirSync(nodeInstall, { recursive: true })
+
+    const roots = trustedRuntimeReadRoots({
+      runtime: { command: process.execPath, args: [], env: [] },
+      hostEnv: { PATH: dirname(process.execPath), HOME: home },
+      readRoots: ['~/.rustup/toolchains/stable/bin', nodeInstall]
+    })
+
+    expect(roots).toContain(realpathSync(toolchain))
+    expect(roots).toContain(realpathSync(nodeInstall))
+  })
+
+  it('rejects a daemon-wide read root that does not exist', () => {
+    expect(() =>
+      trustedRuntimeReadRoots({
+        runtime: { command: process.execPath, args: [], env: [] },
+        hostEnv: { PATH: dirname(process.execPath) },
+        readRoots: [join(tmpdir(), 'ac-missing-daemon-root-does-not-exist')]
+      })
+    ).toThrow(/does not exist/)
+  })
+
   it('rejects relative operator read roots', () => {
     expect(() =>
       trustedRuntimeReadRoots({

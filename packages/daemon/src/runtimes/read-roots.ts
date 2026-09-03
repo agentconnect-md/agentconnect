@@ -23,6 +23,8 @@ export interface TrustedRuntimeReadRootsOptions {
   moduleEntries?: readonly string[]
   /** Exact daemon-owned files, sockets, or already-reviewed directories. */
   paths?: readonly string[]
+  /** Operator-owned daemon-wide read-only host dirs (`security.sandboxReadRoots`), shared by every runtime. */
+  readRoots?: readonly string[]
 }
 
 function envWith(base: NodeJS.ProcessEnv, entries: readonly { name: string; value: string }[]): NodeJS.ProcessEnv {
@@ -238,6 +240,7 @@ export function trustedRuntimeReadRoots(opts: TrustedRuntimeReadRootsOptions): s
 
   addExecutable(opts.runtime.command, runtimeEnv, out, executables)
   for (const path of opts.runtime.readRoots ?? []) out.add(existingRoot(path, runtimeEnv))
+  for (const path of opts.readRoots ?? []) out.add(existingRoot(path, hostEnv))
 
   for (const server of opts.mcpServers ?? []) {
     if (server.transport !== 'stdio' || !server.command) continue

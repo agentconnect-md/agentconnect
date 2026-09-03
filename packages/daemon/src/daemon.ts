@@ -3570,7 +3570,8 @@ export class Daemon {
       mcpServers: configuredMcp,
       executableCommands,
       moduleEntries: [cliEntry, ...nodeExecArgvModuleEntries()],
-      paths
+      paths,
+      readRoots: this.cfg.security.sandboxReadRoots
     })
   }
 
