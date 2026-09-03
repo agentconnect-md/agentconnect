@@ -310,6 +310,29 @@ describe('installedRuntimes', () => {
     expect(Object.keys(installedRuntimes(all, env())).sort()).toEqual(['binary-agent', 'claude-acp'])
   })
 
+  it('gates an archive-distributed runtime on its own state, not on the command the store fetches', () => {
+    // `./agy_acp_server.par` cannot be on PATH before the runtime store extracts it, so the host
+    // signal is ~/.gemini/antigravity-* — the product itself being installed and initialized here.
+    const runtime: RuntimeDef = { command: './agy_acp_server.par', args: ['--uid='], env: [] }
+    const catalog = (): ResolvedRuntimeCatalog => ({
+      entries: {
+        'antigravity-acp': {
+          runtime,
+          source: 'registry',
+          name: 'Google Antigravity',
+          version: '1.0.0',
+          skillsAgentId: null,
+          archive: 'https://dl.example.test/agy-acp-server.zip'
+        }
+      },
+      runtimes: { 'antigravity-acp': runtime }
+    })
+
+    expect(Object.keys(installedRuntimeCatalog(catalog(), env()).runtimes)).toEqual([])
+    mkdirSync(join(home, '.gemini', 'antigravity-cli'), { recursive: true })
+    expect(Object.keys(installedRuntimeCatalog(catalog(), env()).runtimes)).toEqual(['antigravity-acp'])
+  })
+
   it('applies curated state gates only when the curated source wins', () => {
     makeExecutable(binDir, 'hermes')
     makeExecutable(binDir, 'custom-hermes')

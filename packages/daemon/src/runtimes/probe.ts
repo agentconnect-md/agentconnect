@@ -176,6 +176,8 @@ const QODER_SEED = (brand: string): readonly string[] => [
 const CLAUDE_MODEL_CACHE_KEYS = ['additionalModelOptionsCache'] as const
 /** DeepSeek Harness auth: the managed 0600 credential store plus its .env fallback. */
 const DSH_SEED = ['.credentials.yaml', '.env'] as const
+/** Antigravity login inputs: the ACP server's auth.type selection, the CLI's OAuth token, and the install identity. */
+const ANTIGRAVITY_SEED = ['settings.json', 'antigravity-oauth-token', 'installation_id'] as const
 /** OpenClaw acp bridge inputs: gateway address + token config and its .env fallback. */
 const OPENCLAW_SEED = ['openclaw.json', '.env'] as const
 
@@ -361,6 +363,14 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
     ...state(join(home(env), '.openclaw'), '.openclaw', OPENCLAW_SEED)
   ],
 
+  // Google Antigravity — the ACP server is a separate vendor archive the runtime store installs, so
+  // presence is the product's own state under ~/.gemini: the agy CLI's dir, and the ACP server's own
+  // dir beside it (where it reads auth.type). Conversations, caches, and logs stay agent-private.
+  'antigravity-acp': (env) => [
+    ...state(join(home(env), '.gemini', 'antigravity-acp'), join('.gemini', 'antigravity-acp'), ANTIGRAVITY_SEED),
+    ...state(join(home(env), '.gemini', 'antigravity-cli'), join('.gemini', 'antigravity-cli'), ANTIGRAVITY_SEED)
+  ],
+
   // Cognition Devin (for Terminal) — XDG config + data dirs.
   devin: (env) => [
     ...state(join(xdgConfigHome(env), 'devin'), join('.config', 'devin')),
@@ -429,8 +439,11 @@ export function installedRuntimeCatalog(
   const runtimes: Record<string, RuntimeDef> = {}
   const entries: ResolvedRuntimeCatalog['entries'] = {}
   for (const [id, entry] of Object.entries(catalog.entries)) {
-    const available =
-      entry.source === 'curated' || !CURATED_RUNTIME_IDS.has(id)
+    const available = entry.archive
+      ? // The runtime store fetches this binary, so the command cannot be on `$PATH` yet — the
+        // host signal is the product's own state, exactly as it is for an `npx` adapter.
+        (CUSTOM_PROBES[id]?.(env) ?? false)
+      : entry.source === 'curated' || !CURATED_RUNTIME_IDS.has(id)
         ? isRuntimeAvailable(id, entry.runtime, env)
         : isCommandAvailable(entry.runtime.command, env) && !PACKAGE_LAUNCHERS.has(entry.runtime.command)
     if (!available) continue
