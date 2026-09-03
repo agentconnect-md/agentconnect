@@ -1,5 +1,6 @@
 import { existsSync, lstatSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { sessionKeyDirName } from '../acp/host-key.js'
 import { isRepoSegment, PRIMARY_CHECKOUT_DIR, SECONDARY_ROOTS_DIR } from './secondary-layout.js'
 import type { WorkspaceFs } from './workspace-fs.js'
 
@@ -16,6 +17,17 @@ export function sessionsDirIn(agentRoot: string): string {
 /** `<agentRoot>/sessions/<leaf>` — one session's own directory. */
 export function sessionDirIn(agentRoot: string, leaf: string): string {
   return join(sessionsDirIn(agentRoot), leaf)
+}
+
+/**
+ * THE record of a session's tier (§11): its own directory when this disk holds one, else undefined.
+ *
+ * One function, so preparation, launch, the console reads and retirement cannot answer differently.
+ * The leaf is the session key's, never a host key's — a session is one tier whichever host serves it.
+ */
+export function confinedSessionDirIn(agentRoot: string, sessionKey: string): string | undefined {
+  const dir = sessionDirIn(agentRoot, sessionKeyDirName(sessionKey))
+  return isRealDir(dir) ? dir : undefined
 }
 
 /** One root's clone inside a session directory: the primary's `workspace`, a secondary's `repos/<owner>/<repo>`. */

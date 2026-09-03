@@ -1,11 +1,22 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import type { Agent } from '../src/agents/agent-schema.js'
 import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { createWorkspaceScope } from '../src/cp/workspace-scope.js'
+import { privateRuntimeHomeFor } from '../src/launch/prepare.js'
 import {
   daemonGitCredentialTarget,
   gitFor,
@@ -194,6 +205,18 @@ const confined = (extra: Partial<PrepareSessionWorkspaceRequest> = {}): PrepareS
 
 const leafOf = (agent: Agent) => workspaces.sessionDir(agent, KEY)
 const idOf = () => workspaces.sessionWorktreeId(KEY)
+
+/** The same session, requested with no boundary around it — what a turn asks for once the agent's sandbox is off. */
+const unconfined = (extra: Partial<PrepareSessionWorkspaceRequest> = {}): PrepareSessionWorkspaceRequest => ({
+  sessionKey: KEY,
+  isolation: 'session',
+  initiatedBy: 'Ada Lovelace',
+  ...extra
+})
+
+/** The directory the LAUNCH resolves for this session's host — the same record preparation reads. */
+const launchHomeFor = (agent: Agent) =>
+  privateRuntimeHomeFor(workspaces.agentRootFor(agent), sessionHostKey(agent.id, KEY))
 
 /** One pull request on the served primary: a commit on top of `main`, published as `refs/pull/7/head`. */
 function publishPullRequest(seed: string, content: string): { base: string; head: string } {
@@ -463,6 +486,100 @@ describe('retiring a confined session', () => {
     expect(existsSync(leafOf(agent))).toBe(false)
     expect(git(agent.workspace.path, ['worktree', 'list']).split('\n')).toHaveLength(1)
     expect(git(agent.workspace.path, ['branch', '--list', 'dev/*'])).toBe('')
+  })
+})
+
+// git-workspace-model §11 "Changing the tier": the disk is the record, and every side reads it — so an
+// agent's `runInSandbox` or `workspaceIsolation` changing under a live session cannot leave preparation,
+// the launch and the reads serving three different directories.
+describe('changing the agent tier never strands a session', () => {
+  it('keeps a session in its clones once the agent stops being sandboxed, preparation and launch on one directory', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    writeFileSync(join(cwd, 'wip.md'), 'in progress\n')
+
+    // The next turn arrives with the boundary gone: nothing asks for confinement any more.
+    const open = { ...agent, runInSandbox: false, workspace: { ...agent.workspace, isolation: 'shared' } } as Agent
+    const again = await workspaces.prepareSessionWorkspace(open, unconfined())
+
+    expect(again).toBe(cwd)
+    expect(readFileSync(join(cwd, 'wip.md'), 'utf8')).toBe('in progress\n')
+    expect(workspaces.confinedSessionTier(open, KEY)).toBe(true)
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'worktrees'))).toBe(false)
+    // The launch derives the SAME directory from the same record — its HOME and its write root are the session's.
+    expect(launchHomeFor(open)).toBe(sessionHomeIn(realpathSync(leafOf(agent))))
+    expect(workspaces.trustedWorkspaceWriteRoots(open, KEY)).toEqual([leafOf(agent)])
+    // ...and the cwd containment check, which is what refused every turn on the live host, agrees with both.
+    await expect(workspaces.additionalWorkspaceDirectories(open, again, unconfined())).resolves.toEqual([])
+  })
+
+  it('moves a session that stands on a worktree onto the confined tier when the agent gains a boundary', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const legacy = await workspaces.prepareSessionWorkspace(agent, unconfined())
+    expect(statSync(join(legacy, '.git')).isFile()).toBe(true)
+    writeFileSync(join(legacy, 'earlier.md'), 'kept\n')
+
+    const clone = await workspaces.prepareSessionWorkspace(agent, confined())
+
+    // Under a boundary the linked checkout would go on writing the owner's `.git`, so this one does move.
+    expect(clone).toBe(realpathSync(join(leafOf(agent), 'workspace')))
+    expect(statSync(join(clone, '.git')).isDirectory()).toBe(true)
+    expect(workspaces.confinedSessionTier(agent, KEY)).toBe(true)
+    expect(launchHomeFor(agent)).toBe(sessionHomeIn(realpathSync(leafOf(agent))))
+    await expect(workspaces.additionalWorkspaceDirectories(agent, clone, confined())).resolves.toEqual([])
+    // Nothing was destroyed: the older directory and its work are still there for retirement to judge.
+    expect(readFileSync(join(legacy, 'earlier.md'), 'utf8')).toBe('kept\n')
+    expect(await workspaces.removeSessionWorktree(agent, KEY)).toEqual({
+      outcome: 'retained',
+      reason: 'dirty',
+      partial: true
+    })
+    expect(readFileSync(join(legacy, 'earlier.md'), 'utf8')).toBe('kept\n')
+  })
+
+  it('treats an empty stub in the worktrees parent as absent, prepares the clone, and reclaims it', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    await workspaces.prepareWorkspace(agent)
+    const stub = join(workspaces.agentRootFor(agent), 'worktrees', idOf())
+    mkdirSync(stub, { recursive: true })
+
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+
+    expect(cwd).toBe(realpathSync(join(leafOf(agent), 'workspace')))
+    expect(existsSync(stub)).toBe(false)
+    await expect(workspaces.additionalWorkspaceDirectories(agent, cwd, confined())).resolves.toEqual([])
+  })
+
+  // The stub's own source: a review with no trusted checkout stages an empty stand-in, and it belongs on
+  // THIS session's tier — in the worktrees parent it was a cwd outside the checkout root every later turn.
+  it('stages a revision-only review inside the session directory, leaving no stub beside the primary', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    const cwd = await workspaces.prepareSessionWorkspace(agent, confined())
+    writeFileSync(join(cwd, 'stale.md'), 'from the previous turn\n')
+
+    const revisionOnly = await workspaces.prepareSessionWorkspace(agent, confined({ githubReviewRevisionOnly: true }))
+
+    expect(revisionOnly).toBe(cwd)
+    expect(readdirSync(revisionOnly)).toEqual([])
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'worktrees'))).toBe(false)
+    await expect(workspaces.additionalWorkspaceDirectories(agent, revisionOnly, confined())).resolves.toEqual([])
+  })
+
+  it('stages that same review beside the primary for a session with no directory of its own', async () => {
+    const agent = agentFixture()
+    serveAll(agent)
+    await workspaces.prepareWorkspace(agent)
+
+    const revisionOnly = await workspaces.prepareSessionWorkspace(agent, unconfined({ githubReviewRevisionOnly: true }))
+
+    expect(revisionOnly).toBe(realpathSync(join(workspaces.agentRootFor(agent), 'worktrees', idOf())))
+    expect(readdirSync(revisionOnly)).toEqual([])
+    expect(existsSync(join(workspaces.agentRootFor(agent), 'sessions'))).toBe(false)
+    await expect(workspaces.additionalWorkspaceDirectories(agent, revisionOnly, unconfined())).resolves.toEqual([])
   })
 })
 

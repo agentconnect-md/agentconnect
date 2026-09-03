@@ -15,7 +15,7 @@ import {
 } from '../runtimes/runtime-home.js'
 import { RUNTIME_STATE_LOCATIONS, runtimeStateLocations } from '../runtimes/probe.js'
 import { primaryCheckoutIn, secondaryCheckoutsIn } from '../workspace/secondary-layout.js'
-import { isRealDir, sessionDirIn, sessionGitDirsIn, sessionHomeIn } from '../workspace/session-layout.js'
+import { confinedSessionDirIn, sessionGitDirsIn, sessionHomeIn } from '../workspace/session-layout.js'
 import {
   CLAUDE_PROFILE_ENV,
   claudeProtectedSettings,
@@ -58,11 +58,10 @@ function gitMetadataDirsIn(agentRoot: string, primaryCheckout: string): string[]
     .filter((gitDir) => existsSync(gitDir) && lstatSync(gitDir).isDirectory())
 }
 
-/** The session directory a confined session host launches for (git-workspace-model §11); undefined for the shared host, and for a session host with no clones (a dream, a model session). */
+/** The session directory a confined session host launches for (git-workspace-model §11) — the SAME record preparation reads, so the two tiers cannot disagree; undefined for the shared host, and for a session host with no clones (a dream, a model session). */
 function confinedSessionDirOf(agentRoot: string, hostKey: HostKey | undefined): string | undefined {
-  if (hostKey === undefined || hostKeySessionKey(hostKey) === undefined) return undefined
-  const sessionDir = sessionDirIn(agentRoot, hostKeyDirName(hostKey))
-  return isRealDir(sessionDir) ? sessionDir : undefined
+  const sessionKey = hostKey === undefined ? undefined : hostKeySessionKey(hostKey)
+  return sessionKey === undefined ? undefined : confinedSessionDirIn(agentRoot, sessionKey)
 }
 
 /** The private HOME a host launches with: a confined session's under its own directory (§11), any other host's under the agent dir. */
@@ -71,14 +70,14 @@ export function privateRuntimeHomeFor(scopeDir: string, hostKey: HostKey | undef
   return sessionDir === undefined ? runtimeHomePath(scopeDir) : sessionHomeIn(sessionDir)
 }
 
-/** The same roots with NO outer boundary: one escaping the agent tree is left protected, not refused. */
-function unsandboxedGitMetadataRoots(scopeDir: string, trustedPrimaryCheckout?: string): string[] {
+/** The same roots with NO outer boundary: a confined session's clones own theirs (§11) and the agent's checkouts are not its, while one escaping the agent tree is left protected, not refused. */
+function unsandboxedGitMetadataRoots(scopeDir: string, trustedPrimaryCheckout?: string, sessionDir?: string): string[] {
   const agentRoot = existingRealpath(scopeDir)
   const primaryCheckout = existingRealpath(trustedPrimaryCheckout ?? primaryCheckoutIn(agentRoot))
+  const gitDirs =
+    sessionDir === undefined ? gitMetadataDirsIn(agentRoot, primaryCheckout) : sessionGitDirsIn(sessionDir)
   return compactReadRoots(
-    gitMetadataDirsIn(agentRoot, primaryCheckout)
-      .map((gitDir) => realpathSync(gitDir))
-      .filter((gitDir) => gitDir !== agentRoot && inside(agentRoot, gitDir))
+    gitDirs.map((gitDir) => realpathSync(gitDir)).filter((gitDir) => gitDir !== agentRoot && inside(agentRoot, gitDir))
   )
 }
 
@@ -257,17 +256,26 @@ export function prepareRuntimeLaunch(opts: {
   hostPackageCache?: boolean
 }): PreparedRuntimeLaunch {
   const credentialProfile = sharedCredentialProfile(opts.runtimeId, opts.runtime)
+  // A confined session's own directory (§11), read before anything branches: the tier is the session's and
+  // does not follow the boundary, so an unsandboxed launch of one still runs against its clones, not the agent's.
+  const sessionDir = confinedSessionDirOf(existingRealpath(opts.scopeDir), opts.hostKey)
+  const sessionHome = sessionDir === undefined ? undefined : sessionHomeIn(sessionDir)
   if (!opts.runInSandbox && !opts.isolateHome) {
     const env = { ...(opts.explicitEnv ?? {}) }
     // No outer boundary here: the Codex profile must both reopen the Git metadata and close hooks/config.
     const gitMetadataWriteRoots =
-      credentialProfile === 'codex' ? unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout) : []
+      credentialProfile === 'codex'
+        ? unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout, sessionDir)
+        : []
     if (credentialProfile === 'codex') {
       applyCodexPermissionProfile(
         env,
         {
           protectedRoots: [],
-          writableGitMetadataRoots: gitMetadataWriteRoots,
+          // A session's clones take the exact per-clone entries; an owner checkout's `.git` takes the worktree ones.
+          ...(sessionDir === undefined
+            ? { writableGitMetadataRoots: gitMetadataWriteRoots }
+            : { sessionGitMetadataRoots: gitMetadataWriteRoots }),
           allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true
         },
         (opts.hostEnv ?? process.env).CODEX_CONFIG
@@ -290,9 +298,6 @@ export function prepareRuntimeLaunch(opts: {
     throw new Error('OS sandbox requested without the trusted AgentConnect daemon root')
   }
 
-  // A confined session's HOME lives under its own directory and goes with it (§11); every other host keeps the agent's.
-  const sessionDir = confinedSessionDirOf(existingRealpath(opts.scopeDir), opts.hostKey)
-  const sessionHome = sessionDir === undefined ? undefined : sessionHomeIn(sessionDir)
   const stateSourceEnv = opts.stateSourceEnv ?? opts.hostEnv ?? process.env
   const safeRoot = (path: string, label: string): string => {
     if (!isAbsolute(path)) throw new Error(`unsafe ${label} for sandboxing: ${path}`)
@@ -389,12 +394,16 @@ export function prepareRuntimeLaunch(opts: {
 
   if (!opts.runInSandbox) {
     const gitMetadataWriteRoots =
-      credentialProfile === 'codex' ? unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout) : []
+      credentialProfile === 'codex'
+        ? unsandboxedGitMetadataRoots(opts.scopeDir, opts.trustedPrimaryCheckout, sessionDir)
+        : []
     if (credentialProfile === 'codex') {
       const privateCodex = join(runtimeHome, '.codex')
       applyCodexPermissionProfile(env, {
         protectedRoots: existsSync(privateCodex) ? [realpathSync(privateCodex)] : [],
-        writableGitMetadataRoots: gitMetadataWriteRoots,
+        ...(sessionDir === undefined
+          ? { writableGitMetadataRoots: gitMetadataWriteRoots }
+          : { sessionGitMetadataRoots: gitMetadataWriteRoots }),
         allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true
       })
     }

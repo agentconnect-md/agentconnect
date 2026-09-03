@@ -6,18 +6,18 @@ import { dirname, join } from 'node:path'
 import { Daemon } from '../src/daemon.js'
 import { agentHostKey, hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { sandboxSettingsDir } from '../src/acp/sandbox.js'
-import { prepareRuntimeLaunch } from '../src/launch/prepare.js'
+import { prepareRuntimeLaunch, privateRuntimeHomeFor } from '../src/launch/prepare.js'
 import { sessionKey } from '../src/store/local-store.js'
 import { pendingTurnKey, sdkLeaseKey } from '../src/daemon/turn-types.js'
 import { fakeSlackAppFactory } from './fakes/slack-app.js'
 import { WAIT } from './wait-support.js'
 
-/** git-workspace-model §11: a confined self-hosted session gets its own ACP host; nothing else does. */
+/** git-workspace-model §11: a confined self-hosted session gets its own ACP host; nothing else does, and the tier a session is served on is its own for life. */
 
 const TRANSPORT_SCOPE = `slack:${createHash('sha256').update('slack\0p').digest('hex').slice(0, 24)}`
 const KEY = (thread: string) => sessionKey('slack', 'C1', thread, 'bot-a', TRANSPORT_SCOPE)
 
-function scaffold(agent: Record<string, unknown> = {}): string {
+function scaffold(agent: Record<string, unknown> = {}, isolation: 'shared' | 'session' = 'session'): string {
   const root = mkdtempSync(join(tmpdir(), 'ac-session-hosts-'))
   writeFileSync(
     join(root, 'config.json'),
@@ -37,7 +37,7 @@ function scaffold(agent: Record<string, unknown> = {}): string {
       status: 'active',
       runtime: 'claude',
       runInSandbox: true,
-      workspace: { mode: 'from-scratch', path: join(adir, 'workspace') },
+      workspace: { mode: 'from-scratch', path: join(adir, 'workspace'), isolation },
       integrations: [],
       output: { mode: 'medium' },
       ...agent
@@ -164,12 +164,12 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
-  it('keys every session of a confined self-hosted agent by session, whatever isolation its row reports', async () => {
-    // The pool's isolation rule (daemon-k8s-mode.test.ts) is the pool's alone: off it, the mechanism decides and
-    // a shared-isolation session still gets its own host and its own directory on this disk.
+  it('keys every session of an isolated self-hosted agent by session, whatever isolation its row reports', async () => {
+    // Isolation only escalates: the agent's own setting is the operator's standing choice, and a
+    // from-scratch agent's rows report `shared` whatever it says, because its primary is not a clone.
     const { daemon } = await startDaemon(scaffold())
     const agent = (daemon as any).agents.get('bot-a')
-    expect((daemon as any).perSessionHost(agent, KEY('T1'))).toBe(true)
+    expect((daemon as any).confinedSession(agent, KEY('T1'))).toBe(true)
     expect((daemon as any).hostKeyForRequest('bot-a', { sessionKey: KEY('T1'), isolation: 'shared' })).toBe(
       sessionHostKey('bot-a', KEY('T1'))
     )
@@ -193,6 +193,64 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     expect(factory).toHaveBeenCalledTimes(1)
     expect([...(daemon as any).hosts.keys()]).toEqual([agentHostKey('bot-a')])
     expect(hosts[0]!.newSession).toHaveBeenCalledTimes(2)
+    await daemon.stop()
+  })
+
+  // §11: the confined tier serves `isolation: 'session'`. A sandboxed agent whose sessions are shared gets one host, one private HOME and no session directory — its boundary is the agent's, not each session's.
+  it('keeps one host, one private HOME and no session directory when the agent is shared', async () => {
+    const root = scaffold({}, 'shared')
+    const { daemon, hosts, factory } = await startDaemon(root)
+    await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')
+    await (daemon as any).dispatch('bot-a', dm('200', 'two', 'T2'), 'int-a')
+
+    const agentDir = join(root, 'agents', 'bot-a')
+    expect(factory).toHaveBeenCalledTimes(1)
+    expect([...(daemon as any).hosts.keys()]).toEqual([agentHostKey('bot-a')])
+    expect(hosts[0]!.newSession).toHaveBeenCalledTimes(2)
+    // The HOME the launch would give that host is the agent's, and no session owns a directory here.
+    expect(privateRuntimeHomeFor(agentDir, agentHostKey('bot-a'))).toBe(join(agentDir, 'home'))
+    expect(privateRuntimeHomeFor(agentDir, sessionHostKey('bot-a', KEY('T1')))).toBe(join(agentDir, 'home'))
+    expect(existsSync(join(agentDir, 'sessions'))).toBe(false)
+    await daemon.stop()
+  })
+
+  // The tier is the SESSION's and the disk is its record (§11): a session with clones keeps its own host after the agent stops being sandboxed, so the host key cannot disagree with what preparation prepared.
+  it('keeps a session-bound host for a session that already has its own directory, sandbox off or shared', async () => {
+    const root = scaffold()
+    const { daemon } = await startDaemon(root)
+    const agent = (daemon as any).agents.get('bot-a')
+    const key = KEY('T1')
+    expect((daemon as any).hostKeyFor('bot-a', key)).toBe(sessionHostKey('bot-a', key))
+
+    mkdirSync(join(root, 'agents', 'bot-a', 'sessions', hostKeyDirName(sessionHostKey('bot-a', key)), 'workspace'), {
+      recursive: true
+    })
+    agent.runInSandbox = false
+    agent.workspace.isolation = 'shared'
+
+    expect((daemon as any).hostKeyFor('bot-a', key)).toBe(sessionHostKey('bot-a', key))
+    // ...while a session that stands nowhere yet follows the agent's current settings onto the shared host.
+    expect((daemon as any).hostKeyFor('bot-a', KEY('T2'))).toBe(agentHostKey('bot-a'))
+    await daemon.stop()
+  })
+
+  // The tier follows THIS session's isolation, not the agent's default: a formal review forces `session`
+  // on a shared agent, and that session must still get its own host, clones and HOME.
+  it('gives a session forced to session isolation its own host on a shared agent', async () => {
+    const { daemon } = await startDaemon(scaffold({}, 'shared'))
+    const agent = (daemon as any).agents.get('bot-a')
+    const key = KEY('T1')
+    expect((daemon as any).hostKeyFor('bot-a', key)).toBe(agentHostKey('bot-a'))
+
+    const request = { sessionKey: key, isolation: 'session' as const }
+    const prepare = vi.spyOn((daemon as any).workspaces, 'prepareSessionWorkspace')
+
+    expect((daemon as any).hostKeyForRequest('bot-a', request)).toBe(sessionHostKey('bot-a', key))
+    await (daemon as any).runAgentWorkspacePreparation(agent, request)
+
+    // Preparation was told the same thing the host key was, and every later read of the key agrees.
+    expect(prepare.mock.calls[0]![1]).toMatchObject({ sessionKey: key, confined: true })
+    expect((daemon as any).hostKeyFor('bot-a', key)).toBe(sessionHostKey('bot-a', key))
     await daemon.stop()
   })
 

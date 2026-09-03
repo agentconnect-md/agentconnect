@@ -28,11 +28,15 @@ export function hostKeySessionKey(key: HostKey): string | undefined {
   return at < 0 ? undefined : key.slice(at + 1)
 }
 
+/** The leaf one logical session's daemon-owned state takes, named by the session key alone — the agent owns the parent, so its id adds nothing. */
+export function sessionKeyDirName(sessionKey: string): string {
+  return `session-${createHash('sha256').update(sessionKey).digest('hex').slice(0, 24)}`
+}
+
 /** Leaf directory for daemon-owned per-host state under the agent dir; absent ⇒ the shared host. */
 export function hostKeyDirName(key: HostKey | undefined): string {
   const sessionKey = key === undefined ? undefined : hostKeySessionKey(key)
-  if (sessionKey === undefined) return 'agent'
-  return `session-${createHash('sha256').update(sessionKey).digest('hex').slice(0, 24)}`
+  return sessionKey === undefined ? 'agent' : sessionKeyDirName(sessionKey)
 }
 
 /** Printable form for logs: the agent id, plus the session leaf for a session-bound host. */

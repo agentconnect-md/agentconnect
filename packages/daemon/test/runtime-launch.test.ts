@@ -644,8 +644,8 @@ describe('prepareRuntimeLaunch', () => {
     expect(launch.env.HOME).toBe(privateRuntimeHomeFor(scopeDir, key))
   })
 
-  // The unconfined tier keeps its linked worktrees and their grants: a session directory on disk and a session-bound host key must change nothing about its policy.
-  it('leaves the unconfined policy byte-identical whether or not a session directory exists', () => {
+  // A session with NO directory of its own is on the worktree tier however it is addressed: the same policy for its host key, the agent's, and none at all.
+  it('leaves the unconfined policy byte-identical for a session that has no directory of its own', () => {
     const { scopeDir, hostHome } = fixture()
     const primaryGit = join(scopeDir, 'workspace', '.git')
     const cwd = join(scopeDir, 'worktrees', 'session-1')
@@ -664,7 +664,10 @@ describe('prepareRuntimeLaunch', () => {
     const key = sessionHostKey('bot-a', 'slack:C1:s1')
     const before = prepareRuntimeLaunch({ ...base, hostKey: key })
 
-    mkdirSync(join(scopeDir, 'sessions', hostKeyDirName(key), 'workspace', '.git'), { recursive: true })
+    // Another session's directory is not this one's record and must not reach into its policy.
+    mkdirSync(join(scopeDir, 'sessions', hostKeyDirName(sessionHostKey('bot-a', 'slack:C1:s2')), 'workspace', '.git'), {
+      recursive: true
+    })
 
     expect(JSON.stringify(prepareRuntimeLaunch({ ...base, hostKey: key }))).toBe(JSON.stringify(before))
     expect(JSON.stringify(prepareRuntimeLaunch({ ...base, hostKey: agentHostKey('bot-a') }))).toBe(
@@ -676,6 +679,30 @@ describe('prepareRuntimeLaunch', () => {
     expect(agentFilesystem(before.env)).toContain(`"${owner}" = "write"`)
     expect(agentFilesystem(before.env)).toContain(`"${join(owner, 'worktrees', '**')}" = "write"`)
     expect(before.gitMetadataWriteRoots).toEqual([owner])
+  })
+
+  // The tier is the SESSION's, not the boundary's (§11): a confined session whose agent lost its sandbox still runs against its own clones, so an unconfined Codex can write the `.git` it actually stands in.
+  it('opens a confined session its own clones, not the primary, when the sandbox is off', () => {
+    const { scopeDir, hostHome, key, cwd, primaryGit, cloneGit, secondaryGit } = sessionCloneFixture()
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: key,
+      runInSandbox: false,
+      trustedPrimaryCheckout: join(scopeDir, 'workspace'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    expect(launch.gitMetadataWriteRoots).toEqual([realpathSync(cloneGit), realpathSync(secondaryGit)])
+    expect(agentFilesystem(launch.env)).toContain(`"${realpathSync(cloneGit)}" = "write"`)
+    expect(agentFilesystem(launch.env)).toContain(`"${realpathSync(secondaryGit)}" = "write"`)
+    expect(agentFilesystem(launch.env)).toContain(`"${join(realpathSync(cloneGit), 'hooks')}" = "read"`)
+    expect(agentFilesystem(launch.env)).not.toContain(realpathSync(primaryGit))
+    // Exact entries, never an owner checkout's `worktrees/**`: a clone hangs no worktree off its `.git`.
+    expect(agentFilesystem(launch.env)).not.toContain('worktrees/**')
   })
 
   // The agent's shared host is not a session's: a session directory another session owns must not reach into its worktree-tier policy.
