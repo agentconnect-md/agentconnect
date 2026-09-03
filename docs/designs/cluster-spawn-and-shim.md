@@ -47,7 +47,11 @@ environment already) and writes them onto BOTH the spawn env and the cluster pro
 picker the console shows is the one a session can actually run — the probe env allowlist
 carries the same names for the same reason. Written like the codex floor: last, and never
 over a key the daemon itself authored. A sandbox minted before the value changed still gets
-it, because the daemon writes it rather than the frozen pod spec.
+it, because the daemon writes it rather than the frozen pod spec. The pool's shared probe
+answer is keyed on the image PLUS a digest of these declarations (and the codex floor), since
+changing one is a rollout that replaces env and not the image tag: keyed on the image alone, a
+member the rollout started would inherit an answer produced without the new declaration and
+advertise it until its next restart while its sessions ran with it.
 
 ## 1. Why a seam at all
 

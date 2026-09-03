@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
@@ -178,6 +179,28 @@ export const K8S_PROBE_POLL_MS = 5_000
  * short window costs at most one probe pod per hour per pool and self-heals both.
  */
 export const K8S_PROBE_FRESH_MS = 60 * 60_000
+
+/**
+ * What one published answer is keyed on: the pod's image, plus what the DAEMON asserted to the
+ * probe it ran.
+ *
+ * The image reference alone is the pod's identity, but the picker a probe reads also depends on
+ * the deployment's own declarations — the Claude alias→model variables and the codex session
+ * floor — and changing one is a rollout that replaces env, not the image tag. Keyed on the image
+ * alone, a member started by that rollout would inherit an answer produced WITHOUT the new
+ * declaration and keep advertising it until its next restart, while its sessions ran with it.
+ *
+ * A digest, not the values: this key lands in the pool's shared store and in log lines. Provider
+ * credentials stay out of it deliberately — they also shape the answer, and K8S_PROBE_FRESH_MS is
+ * the documented treatment for that, which no key should have to carry a secret to improve on.
+ */
+export function poolProbeKey(imageRef: string, declared: Record<string, string | undefined>): string {
+  const entries = Object.entries(declared)
+    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b))
+  if (entries.length === 0) return imageRef
+  return `${imageRef}#${createHash('sha256').update(JSON.stringify(entries)).digest('hex').slice(0, 12)}`
+}
 
 // Every field of RuntimeProbeResult, deliberately: a field added to the interface and not here is
 // dropped for ADOPTERS only, which reads as "the pool disagrees with itself" rather than as a bug.

@@ -3,6 +3,7 @@ import {
   PROBE_PLACEHOLDER_KEY,
   clusterProbeEnv,
   parseK8sProbePayload,
+  poolProbeKey,
   probeClusterRuntimes
 } from '../src/runtimes/cluster-probe.js'
 import type { RuntimeDef } from '../src/config/config-schema.js'
@@ -150,5 +151,31 @@ describe('published probe payload', () => {
     expect(parseK8sProbePayload('not json')).toBeUndefined()
     expect(parseK8sProbePayload('{"table":{"runtimes":[]},"results":[]}')).toBeUndefined()
     expect(parseK8sProbePayload('{"results":[]}')).toBeUndefined()
+  })
+})
+
+describe('pool probe key', () => {
+  const image = 'ghcr.io/agentconnect-md/runtime-sandbox:latest'
+
+  it('is the bare image when the deployment declares nothing', () => {
+    expect(poolProbeKey(image, {})).toBe(image)
+    expect(poolProbeKey(image, { AC_CODEX_CONFIG: undefined })).toBe(image)
+  })
+
+  it('changes with the declarations, so a rollout that moves env and not the tag re-probes', () => {
+    const before = poolProbeKey(image, { ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5' })
+    const after = poolProbeKey(image, { ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5-1' })
+    expect(before).not.toBe(after)
+    expect(before).not.toBe(image)
+    // The declaration is hashed, never spelled out: this key lands in the shared store and the logs.
+    expect(before).toMatch(new RegExp(`^${image}#[0-9a-f]{12}$`))
+    expect(before).not.toContain('claude-fable-5')
+  })
+
+  it('is stable across key order and distinguishes one declaration from two', () => {
+    const a = { ANTHROPIC_DEFAULT_FABLE_MODEL: 'm', AC_CODEX_CONFIG: '{}' }
+    const b = { AC_CODEX_CONFIG: '{}', ANTHROPIC_DEFAULT_FABLE_MODEL: 'm' }
+    expect(poolProbeKey(image, a)).toBe(poolProbeKey(image, b))
+    expect(poolProbeKey(image, a)).not.toBe(poolProbeKey(image, { ANTHROPIC_DEFAULT_FABLE_MODEL: 'm' }))
   })
 })

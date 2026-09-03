@@ -261,6 +261,7 @@ import {
   K8S_PROBE_POLL_MS,
   K8S_PROBE_WAIT_MS,
   parseK8sProbePayload,
+  poolProbeKey,
   probeClusterRuntimes,
   type K8sProbePayload
 } from './runtimes/cluster-probe.js'
@@ -17677,8 +17678,9 @@ export class Daemon {
     if (!plane || !resolved) return
     let claimed: string | undefined
     try {
-      // Who probes: one member per runtime image, not one per replica.
-      const imageRef = await this.poolRuntimeImageRef(plane)
+      // Who probes: one member per runtime image, not one per replica — and per the declarations
+      // this daemon hands that image, which a rollout can change without moving the tag.
+      const imageRef = this.poolProbeKeyFor(await this.poolRuntimeImageRef(plane))
       if (imageRef && (await this.adoptPublishedK8sProbe(imageRef, resolved))) return
       if (imageRef) {
         if (await this.claimK8sProbe(imageRef, plane.memberId)) claimed = imageRef
@@ -17738,6 +17740,13 @@ export class Daemon {
       this.log.warn(`runtimes: could not resolve the pool's runtime image — probing alone (${formatErr(err)})`)
       return undefined
     }
+  }
+
+  /** The pool-probe key for this member: the image plus its own deployment declarations. */
+  private poolProbeKeyFor(imageRef: string | undefined): string | undefined {
+    return imageRef === undefined
+      ? undefined
+      : poolProbeKey(imageRef, { ...this.claudeModelAliases, AC_CODEX_CONFIG: this.codexSessionFloor })
   }
 
   /** Adopt an answer another member already published for this image, if there is one. */
