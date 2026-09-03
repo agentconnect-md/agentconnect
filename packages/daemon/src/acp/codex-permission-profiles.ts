@@ -19,6 +19,8 @@ export interface CodexPermissionProfileOptions {
   writableGitMetadataRoots?: readonly string[]
   /** A session's own clones' `.git` (git-workspace-model §11): exact entries, nothing hangs off them. */
   sessionGitMetadataRoots?: readonly string[]
+  /** A confined session's private HOME (§11) — a SIBLING of the cwd, so `:workspace` never reaches it. */
+  sessionHomeRoot?: string
   allowModelToolUnixSockets?: boolean
   disableUnifiedExec?: boolean
 }
@@ -59,7 +61,13 @@ export function codexPermissionProfileConfig(
   const protectedRoots = [...new Set(opts.protectedRoots.map((root) => normalize(root)))]
   const writableGitMetadataRoots = [...new Set((opts.writableGitMetadataRoots ?? []).map((root) => normalize(root)))]
   const sessionGitMetadataRoots = [...new Set((opts.sessionGitMetadataRoots ?? []).map((root) => normalize(root)))]
-  const policyRoots = [...protectedRoots, ...writableGitMetadataRoots, ...sessionGitMetadataRoots]
+  const sessionHomeRoot = opts.sessionHomeRoot === undefined ? undefined : normalize(opts.sessionHomeRoot)
+  const policyRoots = [
+    ...protectedRoots,
+    ...writableGitMetadataRoots,
+    ...sessionGitMetadataRoots,
+    ...(sessionHomeRoot === undefined ? [] : [sessionHomeRoot])
+  ]
   if (policyRoots.length === 0 && !opts.allowModelToolUnixSockets && !opts.disableUnifiedExec) return undefined
   if (policyRoots.some((root) => !isAbsolute(root))) {
     throw new Error('Codex permission roots must be absolute paths')
@@ -86,6 +94,13 @@ export function codexPermissionProfileConfig(
       [join(root, 'hooks'), 'read'],
       [join(root, 'config'), 'read']
     ]),
+    // §11's per-session HOME holds the package caches and runtime state; `.codex` is carved back whole because its `auth.json` LINKS to the shared host credential and the rest is the ACP parent's state, written outside this sandbox.
+    ...(sessionHomeRoot === undefined
+      ? []
+      : ([
+          [sessionHomeRoot, 'write'],
+          [join(sessionHomeRoot, '.codex'), 'deny']
+        ] as Array<[string, string]>)),
     ...protectedRoots.map((root): [string, string] => [root, 'deny'])
   ]
   const agentFilesystem =

@@ -401,9 +401,10 @@ export function prepareRuntimeLaunch(opts: {
       const privateCodex = join(runtimeHome, '.codex')
       applyCodexPermissionProfile(env, {
         protectedRoots: existsSync(privateCodex) ? [realpathSync(privateCodex)] : [],
+        // A session's clones take the exact per-clone entries and its own HOME (§11); an owner checkout's `.git` takes the worktree ones.
         ...(sessionDir === undefined
           ? { writableGitMetadataRoots: gitMetadataWriteRoots }
-          : { sessionGitMetadataRoots: gitMetadataWriteRoots }),
+          : { sessionGitMetadataRoots: gitMetadataWriteRoots, sessionHomeRoot: existingRealpath(runtimeHome) }),
         allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true
       })
     }
@@ -557,16 +558,18 @@ export function prepareRuntimeLaunch(opts: {
     ...privateCodexStateRoots
   ])
   if (credentialProfile === 'codex') {
-    // Codex's :workspace protects `.git`: re-open what the outer sandbox made writable, hooks/config excepted.
-    const writableGitMetadataRoots = gitMetadataWriteRoots.filter((gitDir) =>
-      boundary.writable.some((root) => inside(root, gitDir))
-    )
+    // Codex's :workspace protects `.git` and pins writes to the cwd: re-open only what the outer sandbox already made writable.
+    const outerWritable = (path: string): boolean => boundary.writable.some((root) => inside(root, path))
+    const writableGitMetadataRoots = gitMetadataWriteRoots.filter(outerWritable)
+    // A confined session's HOME is a SIBLING of the cwd (§11), so `:workspace` leaves it unwritable and no package manager can reach its own cache.
+    const sessionHomeRoot = sessionDir === undefined ? undefined : existingRealpath(runtimeHome)
     applyCodexPermissionProfile(env, {
       protectedRoots: protectedCredentialRoots,
       // A session's clones take the exact per-clone entries; an owner checkout's `.git` takes the worktree ones.
       ...(sessionDir === undefined
         ? { writableGitMetadataRoots }
         : { sessionGitMetadataRoots: writableGitMetadataRoots }),
+      ...(sessionHomeRoot !== undefined && outerWritable(sessionHomeRoot) ? { sessionHomeRoot } : {}),
       allowModelToolUnixSockets: opts.allowModelToolUnixSockets === true,
       disableUnifiedExec: true
     })
