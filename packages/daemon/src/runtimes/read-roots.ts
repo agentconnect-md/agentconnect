@@ -23,6 +23,8 @@ export interface TrustedRuntimeReadRootsOptions {
   moduleEntries?: readonly string[]
   /** Exact daemon-owned files, sockets, or already-reviewed directories. */
   paths?: readonly string[]
+  /** Operator-owned daemon-wide read-only host dirs (`security.sandboxReadRoots`), shared by every runtime. */
+  readRoots?: readonly string[]
 }
 
 function envWith(base: NodeJS.ProcessEnv, entries: readonly { name: string; value: string }[]): NodeJS.ProcessEnv {
@@ -39,10 +41,15 @@ function expandedAbsolute(path: string, env: NodeJS.ProcessEnv, label: string): 
   return resolve(expanded)
 }
 
-function existingRoot(path: string, env: NodeJS.ProcessEnv): string {
-  const expanded = expandedAbsolute(path, env, 'trusted runtime read root')
-  if (!existsSync(expanded)) throw new Error(`trusted runtime read root does not exist: ${expanded}`)
+function existingRoot(path: string, env: NodeJS.ProcessEnv, label = 'trusted runtime read root'): string {
+  const expanded = expandedAbsolute(path, env, label)
+  if (!existsSync(expanded)) throw new Error(`${label} does not exist: ${expanded}`)
   return realpathSync(expanded)
+}
+
+/** Normalize `security.sandboxReadRoots` (`~/` against the host HOME, must exist, realpath'd); throws so a boot fails fast. */
+export function sandboxReadRoots(paths: readonly string[], env: NodeJS.ProcessEnv = process.env): string[] {
+  return paths.map((path) => existingRoot(path, env, 'security.sandboxReadRoots entry'))
 }
 
 /** Resolve the existing prefix too, so a missing socket/file below a symlink is
@@ -238,6 +245,7 @@ export function trustedRuntimeReadRoots(opts: TrustedRuntimeReadRootsOptions): s
 
   addExecutable(opts.runtime.command, runtimeEnv, out, executables)
   for (const path of opts.runtime.readRoots ?? []) out.add(existingRoot(path, runtimeEnv))
+  for (const path of sandboxReadRoots(opts.readRoots ?? [], hostEnv)) out.add(path)
 
   for (const server of opts.mcpServers ?? []) {
     if (server.transport !== 'stdio' || !server.command) continue

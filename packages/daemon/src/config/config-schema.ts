@@ -169,6 +169,8 @@ export const ConfigSchema = z.object({
       // Linux SRT/bwrap is available and every agent runs sandboxed; the
       // console locks the per-agent option on. false leaves it agent-selectable.
       requireSandbox: z.boolean().default(false),
+      // Operator-owned host dirs (toolchains such as nvm's node or a rustup toolchain) carved read-only into every sandbox.
+      sandboxReadRoots: z.array(z.string()).default([]),
       // Operator-owned remote-origin policy for daemon-managed workspace clone/pull. Default
       // ['*'] admits any https/ssh origin; exact scheme+host+port entries tighten it, and []
       // disables remote Git workspaces entirely.
@@ -177,6 +179,7 @@ export const ConfigSchema = z.object({
     .default({
       isolateAccountApps: true,
       requireSandbox: false,
+      sandboxReadRoots: [],
       workspaceGitAllowedOrigins: [...DEFAULT_WORKSPACE_GIT_ALLOWED_ORIGINS]
     }),
   // Relay roster the CP last published (shared-bot-relay.md §5). Persisted whole so

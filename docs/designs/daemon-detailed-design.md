@@ -135,6 +135,7 @@ The daemon does not implement these, but interacts with them through the section
 | `--agent <name>`                 | Selector                       | Select by `agent.id`: single-agent `run` ignoring status, or disambiguate `chat`.                                                                  |
 | `--max-agents <n>`               | `limits.maxAgents`             | Capacity reported to CP + local hard limit.                                                                                                        |
 | `--require-sandbox`              | `security.requireSandbox=true` | Require every agent to run in the Linux SRT sandbox; refuse daemon startup on unsupported or failed hosts.                                         |
+| n/a (config only)                | `security.sandboxReadRoots`    | Host toolchain dirs carved read-only into every sandbox; see the config example below.                                                             |
 | `--k8s`                          | n/a (mode switch)              | Run runtimes in cluster sandbox pods instead of on this host; see section 2.6 for what that changes.                                               |
 | `--key-server <url>`             | `KEY_SERVER`                   | Cloud-only service for session-scoped model credentials, http or https as the deployment chooses; see [key-server.md](key-server.md).              |
 | `--key-server-token-path <path>` | `KEY_SERVER_TOKEN_PATH`        | File re-read as the key-server bearer token on every request.                                                                                      |
@@ -320,6 +321,14 @@ The layout keeps machine configuration, per-agent desired state, durable runtime
     // Linux SRT/bwrap sandbox. macOS and Windows are not supported in this rollout.
     "requireSandbox": false,
 
+    // Host directories carved read-only into EVERY sandbox, for toolchains the
+    // agent needs but the runtime-scoped read set would otherwise hide (nvm's
+    // node, a rustup toolchain, ...). `~/` expands against the daemon's HOME;
+    // each entry must exist or startup fails. Caches still land in the
+    // per-session private HOME. Name the toolchain dir itself, never a parent
+    // that also holds credentials (~/.cargo/credentials.toml, ~/.npmrc).
+    "sandboxReadRoots": [],
+
     // Origins that daemon-managed workspace clone/pull may target. Default ["*"]
     // admits any valid https/ssh origin; exact entries (scheme and non-default
     // port are part of the match, no partial wildcards or paths) tighten it, and
@@ -377,7 +386,9 @@ An enabled sandbox gives the runtime a private HOME, hides daemon-owned agent
 metadata and the host source from which that runtime state was seeded, and
 re-allows reads only for the workspace, private HOME, managed memory,
 `run/config-files`, `.agentconnect/runtime-policy`, trusted runtime installation
-roots, and the runtime's selected host credential path. Writes are limited to
+roots, any operator-declared `security.sandboxReadRoots` (host toolchains such as
+nvm's node or a rustup toolchain, carved read-only into every sandbox regardless
+of runtime), and the runtime's selected host credential path. Writes are limited to
 the workspace, private HOME, managed memory, SRT temporary storage, and that
 credential path. Outbound
 domains are approved by a provider callback and Unix sockets remain

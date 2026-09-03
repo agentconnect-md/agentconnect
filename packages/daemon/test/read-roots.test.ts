@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { resolveTrustedExecutable, trustedRuntimeReadRoots } from '../src/runtimes/read-roots.js'
+import { resolveTrustedExecutable, sandboxReadRoots, trustedRuntimeReadRoots } from '../src/runtimes/read-roots.js'
 
 const temporaryRoots: string[] = []
 
@@ -39,6 +39,38 @@ describe('trusted runtime read roots', () => {
     expect(roots.some((path) => path.includes('runtime@1.0.0'))).toBe(false)
     expect(roots.length).toBeLessThanOrEqual(5)
     expect(resolveTrustedExecutable('runtime', { PATH: bin })).toBe(realpathSync(cli))
+  })
+
+  it('carves daemon-wide security.sandboxReadRoots into every runtime, expanding ~ against the host HOME', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ac-daemon-roots-'))
+    temporaryRoots.push(root)
+    const home = join(root, 'host-home')
+    const toolchain = join(home, '.rustup', 'toolchains', 'stable', 'bin')
+    const nodeInstall = join(root, 'opt', 'node-24')
+    mkdirSync(toolchain, { recursive: true })
+    mkdirSync(nodeInstall, { recursive: true })
+
+    const roots = trustedRuntimeReadRoots({
+      runtime: { command: process.execPath, args: [], env: [] },
+      hostEnv: { PATH: dirname(process.execPath), HOME: home },
+      readRoots: ['~/.rustup/toolchains/stable/bin', nodeInstall]
+    })
+
+    expect(roots).toContain(realpathSync(toolchain))
+    expect(roots).toContain(realpathSync(nodeInstall))
+  })
+
+  it('rejects a daemon-wide read root that does not exist', () => {
+    expect(() =>
+      trustedRuntimeReadRoots({
+        runtime: { command: process.execPath, args: [], env: [] },
+        hostEnv: { PATH: dirname(process.execPath) },
+        readRoots: [join(tmpdir(), 'ac-missing-daemon-root-does-not-exist')]
+      })
+    ).toThrow(/security\.sandboxReadRoots entry does not exist/)
+    expect(() => sandboxReadRoots(['relative/toolchain'], { HOME: tmpdir() })).toThrow(
+      /security\.sandboxReadRoots entry must be absolute/
+    )
   })
 
   it('rejects relative operator read roots', () => {
