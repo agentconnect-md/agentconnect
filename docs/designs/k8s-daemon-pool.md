@@ -263,12 +263,15 @@ Three properties make that safe to hand a browser:
   sweep's own schedule.
 - **A suspended pod is held, never woken.** Keep-alive reads nothing from a pod
   that is down and answers `asleep`. Resurrecting a sandbox from a keep-alive
-  poll would invert the rule the sweep exists to serve. The pod judged is THIS
-  page's — the one that owns the worktree it is watching — because "any pod of
-  the agent is up" would let a bound agent pod carry the poll into a status read
-  that the routed runner then serves by waking a suspended session pod. And it is
-  HELD across that read rather than only checked before it: the idle gate reads
-  its holds synchronously, so the hold excludes the sweep instead of racing it.
+  poll would invert the rule the sweep exists to serve. The pod judged for the
+  tree is THIS page's — the one that owns the worktree it is watching — because
+  "any pod of the agent is up" would let a bound agent pod carry the poll into a
+  status read that the routed runner then serves by waking a suspended session
+  pod. And it is HELD across that read rather than only checked before it: the
+  idle gate reads its holds synchronously, so the hold excludes the sweep instead
+  of racing it. The two facts are judged **independently**, one pod each, so a
+  page whose session pod went to sleep still holds the agent's pod for a watcher
+  armed in it — otherwise a visible page would silently disarm its own box.
 
 Nothing about this is persisted anywhere — not in the CP, which only relays the
 frame, and not on the pod's volume. A daemon restart forgets every lease, and

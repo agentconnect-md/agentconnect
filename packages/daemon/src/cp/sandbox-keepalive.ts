@@ -15,11 +15,15 @@ import { AGENT_WIDE_HOLDER, type SandboxHolds } from '../k8s/sandbox-hold.js'
  *  - an armed merge-when-ready watcher — for a cluster agent it is a process IN that pod, so
  *    suspending would silently disarm the box the operator ticked.
  *
- * A SUSPENDED pod holds nothing and is not woken. The pod judged is THIS page's — the one that owns
- * the worktree it is watching (§11) — because "any pod of the agent is up" would let a bound agent
- * pod send the status read at a suspended session pod, which the routed runner would then wake: a
- * visible clean page undoing the idle sweep every minute. And it is HELD across that read rather than
- * only checked before it, so a sweep landing in between cannot leave the read waking it after all.
+ * A SUSPENDED pod holds nothing and is not read from. The pod judged for the tree is THIS page's — the
+ * one that owns the worktree it is watching (§11) — because "any pod of the agent is up" would let a
+ * bound agent pod send the status read at a suspended session pod, which the routed runner would then
+ * wake: a visible clean page undoing the idle sweep every minute. And it is HELD across that read
+ * rather than only checked before it, so a sweep landing in between cannot leave the read waking it.
+ *
+ * The two facts are judged INDEPENDENTLY, one pod each: a page whose session pod went to sleep must
+ * still hold the agent's pod for a watcher armed in it, or a visible page would silently disarm the
+ * box the operator ticked.
  *
  * The lease is taken per SESSION on the POD the fact is about, because both axes are real: two console
  * pages on one agent read two different worktrees, so an agent-wide holder let a page polling a clean
@@ -54,22 +58,32 @@ export function createSandboxKeepAlive(
     const agentPod = deps.agentPod(agentId)
     // A routing this daemon cannot answer names the agent's own pod, which is where an unrouted path lives anyway.
     const pod = await deps.podFor(agentId, req.sessionId).catch(() => agentPod)
-    const release = deps.holdIfBound(pod)
-    if (!release) {
-      // An asleep pod invalidates EVERY page's lease ON IT, not just this one's: the volume they were taken on is gone.
-      deps.holds.releaseAll(pod)
-      if (pod !== agentPod) deps.holds.release(agentPod, holder)
-      return { agentId, held: false, reasons: [], placement: 'sandbox', asleep: true }
-    }
     // Each reason holds the pod it is ABOUT — one entry when this page's worktree is on the agent's own pod.
     const byPod = new Map<string, SandboxHoldReason[]>([
       [agentPod, []],
       [pod, []]
     ])
-    try {
-      // A registry read that fails is not evidence of an armed watcher, so it costs this reason only.
-      // The watcher is a process in the AGENT's pod, so its reason holds that one wherever this page looks.
+    // One pod's read, under a hold taken ACROSS it rather than a check made before it: a sweep landing
+    // in between would otherwise leave the routed runner waking the pod to answer. Reports bound-ness.
+    const onPod = async (subject: string, read: () => Promise<void>): Promise<boolean> => {
+      const release = deps.holdIfBound(subject)
+      if (!release) {
+        // An asleep pod invalidates EVERY page's lease ON IT, not just this one's: the volume they were taken on is gone.
+        deps.holds.releaseAll(subject)
+        return false
+      }
+      try {
+        await read()
+      } finally {
+        release()
+      }
+      return true
+    }
+    // A registry read that fails is not evidence of an armed watcher, so it costs this reason only.
+    const readWatcher = async (): Promise<void> => {
       if (await deps.armedFor(agentId).catch(() => false)) byPod.get(agentPod)!.push('auto-merge-armed')
+    }
+    const readTree = async (): Promise<void> => {
       try {
         const status = await deps.gitStatus(agentId, req.sessionId)
         // `isRepo:false` is a workspace with no checkout — nothing to be dirty about, not a failure.
@@ -77,8 +91,19 @@ export function createSandboxKeepAlive(
       } catch (err) {
         deps.log?.debug?.(`keepalive: git status for "${agentId}" failed: ${(err as Error)?.message}`)
       }
-    } finally {
-      release()
+    }
+    // The two facts are judged INDEPENDENTLY, because they are about two pods: a page whose session pod
+    // went to sleep must keep holding the agent's for a watcher still armed in it, while reading nothing
+    // from the sleeping one. One pod, one hold and one read when this page's worktree is the agent's own.
+    let bound: boolean
+    if (pod === agentPod) {
+      bound = await onPod(pod, async () => {
+        await readWatcher()
+        await readTree()
+      })
+    } else {
+      await onPod(agentPod, readWatcher)
+      bound = await onPod(pod, readTree)
     }
     let ttlMs: number | undefined
     for (const [subject, held] of byPod) {
@@ -88,10 +113,19 @@ export function createSandboxKeepAlive(
       if (held.length === 0) deps.holds.release(subject, holder)
       else ttlMs = deps.holds.renew(subject, holder, held)
     }
+    // `asleep` is this page's answer about the pod its OWN worktree lives on, whatever it still holds elsewhere.
+    const sleeping = bound ? {} : { asleep: true }
     const reasons = [...new Set([...byPod.values()].flat())]
     // `held:false` is this page's answer about its own session, so it is reported even while a
     // sibling page holds the pod: what it must not do is claim a lease it did not take.
-    if (reasons.length === 0) return { agentId, held: false, reasons: [], placement: 'sandbox' }
-    return { agentId, held: true, reasons, ...(ttlMs === undefined ? {} : { ttlMs }), placement: 'sandbox' }
+    if (reasons.length === 0) return { agentId, held: false, reasons: [], placement: 'sandbox', ...sleeping }
+    return {
+      agentId,
+      held: true,
+      reasons,
+      ...(ttlMs === undefined ? {} : { ttlMs }),
+      placement: 'sandbox',
+      ...sleeping
+    }
   }
 }

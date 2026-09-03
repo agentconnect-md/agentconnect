@@ -205,7 +205,6 @@ describe('sandbox keep-alive', () => {
       const { keepAlive, holds, gitStatus } = build({
         bound: [AGENT_POD],
         podOf: () => SESSION_POD,
-        armed: true,
         status: { isRepo: true, clean: false }
       })
 
@@ -218,8 +217,45 @@ describe('sandbox keep-alive', () => {
       })
       expect(gitStatus).not.toHaveBeenCalled()
       expect(holds.holds(SESSION_POD)).toBe(false)
-      // Nor does the page keep a lease on the agent's pod for a worktree it can no longer see.
+      // Nothing was armed either, so the agent pod is left suspendable too.
       expect(holds.holds(AGENT_POD)).toBe(false)
+    })
+
+    it('keeps the armed watcher’s lease on the AGENT pod while this page’s session pod sleeps', async () => {
+      // The watcher is a process in the agent's pod and has nothing to do with which worktree this page
+      // is watching. Judging the two facts on one pod let the session pod going to sleep release the
+      // watcher's lease, so the sweep could take the agent pod and silently disarm a visible page's box.
+      const { keepAlive, holds, gitStatus } = build({
+        bound: [AGENT_POD],
+        podOf: () => SESSION_POD,
+        armed: true,
+        status: { isRepo: true, clean: false }
+      })
+
+      expect(await keepAlive(REQ)).toEqual({
+        agentId: 'agent-1',
+        held: true,
+        reasons: ['auto-merge-armed'],
+        ttlMs: SANDBOX_HOLD_TTL_MS,
+        placement: 'sandbox',
+        asleep: true
+      })
+      expect(holds.reasons(AGENT_POD)).toEqual(['auto-merge-armed'])
+      // Still without reading the sleeping pod, which is what would have woken it.
+      expect(gitStatus).not.toHaveBeenCalled()
+      expect(holds.holds(SESSION_POD)).toBe(false)
+    })
+
+    it('drops both leases when the agent pod is asleep beside this page’s', async () => {
+      const { keepAlive, holds, gitStatus } = build({ bound: [], podOf: () => SESSION_POD, armed: true })
+      holds.renew(AGENT_POD, 'session-1', ['auto-merge-armed'])
+      holds.renew(SESSION_POD, 'other-session', ['uncommitted-files'])
+
+      expect(await keepAlive(REQ)).toMatchObject({ held: false, reasons: [], asleep: true })
+      expect(gitStatus).not.toHaveBeenCalled()
+      // The volumes those leases were taken on are gone with their pods; none of them survives.
+      expect(holds.holds(AGENT_POD)).toBe(false)
+      expect(holds.holds(SESSION_POD)).toBe(false)
     })
 
     it('holds the pod the dirty tree is ON, never the agent pod or a sibling session pod', async () => {
@@ -264,21 +300,23 @@ describe('sandbox keep-alive', () => {
       // Recorded rather than asserted in place: the keep-alive treats a failing status read as no
       // evidence, so an expectation thrown inside it would be swallowed and the case would pass blind.
       const during: Array<{ held: string[]; released: string[] }> = []
+      const onlyThisPod = (pods: string[]): string[] => pods.filter((subject) => subject === SESSION_POD)
       state.gitStatus.mockImplementation(async () => {
-        during.push({ held: [...state.heldDuring], released: [...state.released] })
+        during.push({ held: onlyThisPod(state.heldDuring), released: onlyThisPod(state.released) })
         return { isRepo: true, clean: true }
       })
 
       await state.keepAlive(REQ)
       expect(during).toEqual([{ held: [SESSION_POD], released: [] }])
       // And handed back once the read is done — a keep-alive defers a suspend, it does not cancel one.
-      expect(state.released).toEqual([SESSION_POD])
+      // The agent pod was held and handed back the same way, around its own read.
+      expect(state.released).toEqual([AGENT_POD, SESSION_POD])
     })
 
     it('releases the pod even when the status read throws', async () => {
       const state = build({ podOf: () => SESSION_POD, status: new Error('channel lost') })
       await state.keepAlive(REQ)
-      expect(state.released).toEqual([SESSION_POD])
+      expect(state.released).toEqual([AGENT_POD, SESSION_POD])
     })
 
     it('a session page whose pod cannot be routed falls back to the agent’s own pod', async () => {
