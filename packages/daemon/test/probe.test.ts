@@ -310,6 +310,18 @@ describe('installedRuntimes', () => {
     expect(Object.keys(installedRuntimes(all, env())).sort()).toEqual(['binary-agent', 'claude-acp'])
   })
 
+  it('does not read an Antigravity install as a Gemini CLI one, though they share ~/.gemini', () => {
+    makeExecutable(binDir, 'npx')
+    const gemini: RuntimeDef = { command: 'npx', args: ['-y', '@google/gemini-cli', '--acp'], env: [] }
+    // What `agy` itself writes: the shared root exists, but no Gemini CLI file in it does.
+    mkdirSync(join(home, '.gemini', 'antigravity-cli'), { recursive: true })
+    mkdirSync(join(home, '.gemini', 'config'), { recursive: true })
+    expect(isRuntimeAvailable('gemini', gemini, env())).toBe(false)
+
+    writeFileSync(join(home, '.gemini', 'settings.json'), '{}')
+    expect(isRuntimeAvailable('gemini', gemini, env())).toBe(true)
+  })
+
   it('gates an archive-distributed runtime on its own state, not on the command the store fetches', () => {
     // `./agy_acp_server.par` cannot be on PATH before the runtime store extracts it, so the host
     // signal is ~/.gemini/antigravity-* — the product itself being installed and initialized here.

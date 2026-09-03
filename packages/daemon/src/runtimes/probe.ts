@@ -199,8 +199,16 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // OpenAI Codex CLI — ~/.codex (honors $CODEX_HOME).
   'codex-acp': (env) => [...state(env.CODEX_HOME, '.codex'), ...state(join(home(env), '.codex'), '.codex')],
 
-  // Google Gemini CLI — ~/.gemini.
-  gemini: (env) => state(join(home(env), '.gemini'), '.gemini'),
+  // Google Gemini CLI — ~/.gemini, which the Antigravity CLI also writes into (its own
+  // `antigravity-cli/`, `antigravity-acp/`, and `config/` subdirs), so the shared root is not a
+  // signal for either: probe this CLI's own top-level files, plus `tmp/` as a ran-here marker that
+  // seeds nothing.
+  gemini: (env) => [
+    ...state(join(home(env), '.gemini', 'settings.json'), join('.gemini', 'settings.json')),
+    ...state(join(home(env), '.gemini', 'oauth_creds.json'), join('.gemini', 'oauth_creds.json')),
+    ...state(join(home(env), '.gemini', 'google_accounts.json'), join('.gemini', 'google_accounts.json')),
+    ...state(join(home(env), '.gemini', 'tmp'), join('.gemini', 'tmp'), [])
+  ],
 
   // Qwen Code (Gemini-CLI fork) — ~/.qwen.
   'qwen-code': (env) => state(join(home(env), '.qwen'), '.qwen'),
