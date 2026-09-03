@@ -186,33 +186,93 @@ infrastructure and no violation of body locality**. It is runtime-independent.
 Claude still receives `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` to avoid duplicate
 native and managed memory. This is the default provider.
 
-#### 3.2.1 Where the managed tree lives (per placement)
+#### 3.2.1 Where the managed tree lives (per binding and placement)
 
 The managed store is a directory abstraction over a small file-system port
-(`memory/fs.ts`, `MemoryFs`) with exactly two implementations,
-`LocalMemoryFs(rootDir)` and `ShimMemoryFs(channel, rootPath)`: `memory.ts`, the
-managed provider, the distiller, the dream runner, and the CP memory reader take
-the port and never touch `node:fs`, and one daemon factory (`resolveMemoryFs`)
-picks the implementation from the agent's placement, so the tree's home is a
-single decision:
+(`memory/fs.ts`, `MemoryFs`): `memory.ts`, the managed provider, the distiller, the
+dream runner, and the CP memory reader take the port and never touch `node:fs`, and
+one daemon factory (`resolveMemoryFs`) picks the implementation from the agent's
+binding and placement, so the tree's home is a single decision. The binding names it
+as `home` (§6): `daemon` (the default) keeps the tree on the machine that runs the
+agent; `control-plane` keeps it in the Control Plane database, where it follows the
+agent through every move and needs no execution unit to be up for a read or a write.
 
-| Placement                            | Memory root                                                                                                                            | Reachable                                                                                                                                                                                              |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Local daemon (default)               | `<agent-root>` on the daemon's disk (`memory/`, `channels/`, `memory-dreams/`, `memory-backups/` beneath it)                           | Always                                                                                                                                                                                                 |
-| Cluster agent (`--k8s`, daemon pool) | `<workspace mount>/.agentconnect/memory` on the agent's sandbox volume — outside the checkout, on the same PVC, same layout beneath it | Only while the sandbox is bound; otherwise every read and write refuses with `sandbox-unavailable` (one resolution, no fallback to the member's disk), and the console wakes the sandbox first (#1077) |
+| `home` × placement                | Memory root                                                                                                                                                                                                                                                                              | Reachable                                                                                                                                                                                                                  |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daemon` · local daemon (default) | `<agent-root>` on the daemon's disk (`memory/`, `channels/`, `memory-dreams/`, `memory-backups/` beneath it)                                                                                                                                                                             | Always                                                                                                                                                                                                                     |
+| `daemon` · cluster (`--k8s`)      | **Refused.** A `--k8s` daemon fails the activation closed, and the CP rejects the binding for an agent placed on the install-wide pool. The former sandbox-volume home (`<workspace mount>/.agentconnect/memory`, #1078 option A) survives only as the source of the one-time copy below | —                                                                                                                                                                                                                          |
+| `control-plane` · any placement   | The `agent_memory_file` table in the CP database — one row per file keyed `(agentId, path)`, org-fenced, the same layout beneath a virtual root                                                                                                                                          | While the daemon's CP connection is READY; otherwise every read and write refuses with `MemoryHomeUnavailableError` — one resolution, no fallback to the member's disk, the same shape `MemorySandboxUnavailableError` had |
 
-On the pool the member's state root is an `emptyDir` and duty moves between
-members, so a member-local memory dir would be lost with every rollout (#1078).
-The sandbox root follows the agent the way the workspace does and is read and
-written through the shim's `read` capability (`shim/memory-fs-channel.ts`): the
-memory logic stays in the daemon process (locks, history, the write ledger, the
-dream fence) and only the port's primitives cross the wire, sliced and chunked to
-the 256 KiB frame; the pod side works from open descriptors like the workspace
-channel. Post-turn distillation that arrives after the pod was suspended is kept
-in the memory capture outbox and drained once the sandbox is bound again. Native
-(runtime) memory follows the runtime's HOME on the pod and is unaffected; a later
-home (for example the shared data-plane store, option B in #1078) is another
-`MemoryFs` implementation plus a one-directory-per-agent copy.
+**Why the CP is allowed to hold it.** #1078 kept agent memory out of the CP on the
+ground that it only had to survive member replacement. It now also has to survive a
+move between daemons (`agentMove.ts` is a hard cutover and leaves memory in the
+source archive) and it must not be the reason a pod has to stay up. Organization
+knowledge and managed-skill archives are already CP-persisted: the line the CP keeps
+is transcripts, ACP update streams, attachment bytes and workspace content — the
+unbounded, streaming kinds — not curated, size-capped Markdown. `control-plane` is
+opt-in for self-hosted agents and mandatory on the pool, where the member's root is
+an `emptyDir` and the only other durable place was a volume that a pod had to hold.
+
+**The port over the CP.** `CpMemoryFs` is the shim client (`ShimMemoryFs`) over a
+different requester — the daemon's CP connection — so the daemon side is an adapter,
+not a third implementation. The op set a pod already speaks (`memory-read`, `-append`,
+`-commit`, `-stat`, `-readdir`, `-mkdir`, `-rmdir`, `-rename`, `-rm`, `-utimes`,
+sliced and chunked to the 256 KiB frame) moves from `shim/memory-fs-channel.ts` into
+`protocol` as the payload of one new D→C REQ/REP pair, `memory/store` →
+`memory/store/ok`; `root` is relative to the agent's tree rather than pod-absolute.
+The CP runs each op as one SQL transaction against the table: `append` concatenates
+into the temp row, `commit` checks `ifMatchMtime`, deletes the target and renames the
+temp, so the atomic publish and its precondition are one transaction; `rename` of a
+directory rewrites the path prefix. Directories are implicit — a prefix with rows:
+`mkdir` succeeds, `rmdir` answers whether nothing was left, and an empty directory does
+not exist. That is the only observable difference from the two disk ports, and no
+memory code depends on one. Authorization mirrors `knowledge/search`: org from the
+frame or the connection, and the agent must be served by this daemon
+(`placementResolver.mayAct`). That also makes the CP the write fence across daemons
+which the in-process directory lock never was — a member that lost the duty gets
+`SCOPE_DENIED` instead of racing its successor. The pair is gated by the
+`agent-memory-store-v1` server feature in `register/ok`; a daemon whose CP lacks it
+refuses to activate a `control-plane` binding with that reason.
+
+**What stays on the daemon.** Everything above the port: the directory lock,
+`.history`, retention, frontmatter normalization, index generation, the write ledger,
+the dream fence. Console traffic is unchanged in this step — the `memory/*` C→D frames
+still go to the owning daemon, which now answers from the CP-backed port instead of
+waking a pod (#1077's wake stays for `daemon`-home cluster trees only until those are
+gone). Answering list/read/history straight from the table, and so with the daemon
+offline, is a later step. Per-file cap stays `MAX_MEMORY_FILE_BYTES`; `.history` is
+rewritten whole per write and may reach its 2 MiB cap — sixteen frames, accepted for
+now, rows are the follow-up if it hurts. The dream runner is unchanged; on the pool its
+`withMemoryHome` still binds the agent pod, for the extraction host now, not the tree.
+
+**Switching `home` copies; switching provider still does not (§6, §9).** Both homes
+are the same tree, so this is the one binding change that migrates: when the owning
+daemon applies a binding whose `home` differs and the target tree has no `memory/`
+yet, it copies the whole tree once through the two ports (`copyMemoryTree(from, to)`,
+under the directory lock, files overwritten by path so a retried application is
+idempotent) and then rebuilds the session boundary as any memory change does. The
+source is never deleted, and a target that already holds a tree is resumed as it is —
+switching back to a home that was used before shows that home's tree, not a merge; the
+console says so next to the selector. Both directions work.
+
+**Moves.** A `control-plane` agent's memory is not daemon-local any more, so the
+hard-cutover move carries it by doing nothing: the target reads the same rows. A
+`daemon`-home agent moving onto the install-wide pool is rejected until its home is
+switched; between two self-hosted daemons it keeps today's behavior (memory stays in
+the source archive).
+
+**Degradation.** With the CP connection down, a `control-plane` agent starts a new
+session with no standing context and a warning, memory tools answer an unavailable
+error, and a post-turn distillation waits in the memory capture outbox exactly as a
+suspended sandbox's did — the outbox's reachability predicate becomes "the home is
+reachable", not "the pod is bound". Established sessions are unaffected. No local
+cache in this step.
+
+**Rollout.** CP first (table, frames, feature), daemon second (adapter, copy,
+refusal). Existing pool agents are flipped by the CP in the same release — every agent
+placed on the install-wide pool gets `home: control-plane` — and the member holding
+each one copies its tree from the sandbox volume on the next activation. Native
+(runtime) memory follows the runtime's HOME on the pod and is unaffected.
 
 ### 3.3 external — General Memory Plugin
 
@@ -700,7 +760,7 @@ Agent configuration uses a discriminated shape across protocol `AgentSpec`, CP
 type MemoryConfig =
   | { provider: 'none' }
   | { provider: 'native' }
-  | { provider: 'managed'; autoDistill?: boolean }
+  | { provider: 'managed'; autoDistill?: boolean; home?: 'daemon' | 'control-plane' }
   | {
       provider: 'external'
       connectionId: string
@@ -709,6 +769,10 @@ type MemoryConfig =
     }
 ```
 
+- `home` (§3.2.1) defaults to `daemon`. The CP writes the resolved value on create so
+  a later placement change never flips it implicitly; an agent placed on the
+  install-wide pool must carry `control-plane`, and the console fixes the selector
+  there. Changing `home` is the one binding change that copies memory (§3.2.1).
 - `connectionId` must belong to the agent's organization, and the caller must
   be authorized to use it. The CP does not accept per-agent
   `endpoint/apiKey/command`.
@@ -774,19 +838,20 @@ invariant in
 
 ## 8. Implementation Status
 
-| Phase                                                    | Scope                                                                                                                                                                                                                     | Body locality                                                    | New infrastructure           |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------- |
-| **M-1 · MemoryProvider + managed (complete)**            | Wrap directory memory in the provider port.                                                                                                                                                                               | ✅                                                               | None                         |
-| **M-2/M-2.1 · native/none (complete)**                   | Provider selection, runtime-memory capability registry, native redirect/none off switch, and console.                                                                                                                     | ✅                                                               | None                         |
-| **M-3 · managed scope/history (partial/deferred)**       | `.history`; user/session scopes await trusted identity/classification decisions.                                                                                                                                          | ✅                                                               | None                         |
-| **M-4 · managed extract→append (complete, default off)** | Additive distillation + deduplication; current post-turn queue remains gated by managed/autoDistill.                                                                                                                      | ✅                                                               | None (existing LLM)          |
-| **M-5P · plugin profile (complete)**                     | Canonical schema, manifest/version/capability, daemon internal MCP client, fake remote plugin conformance tests; provider port adds per-turn recall + record admin surface, and post-turn queue becomes provider-neutral. | ✅ (fake/local fixture only)                                     | None                         |
-| **M-5A · connection data plane (complete)**              | Installation/connection/binding model, SecretCipher, per-connection relay grant/SSRF, connection snapshot/upsert, probe facts/placement, and egress UX.                                                                   | ⚠️ Probe reaches plugin                                          | Reuse relay/MCP proxy        |
-| **M-5B · Mem0 Cloud plugin (complete)**                  | Agent-only per-turn recall, capture outbox, Cloud V3 event polling, failures/metrics; CRUD console deferred.                                                                                                              | ⚠️ Content leaves daemon for third party by explicit user choice | External plugin + Mem0       |
-| **M-5C · record product surface (complete)**             | Core entry tools + provider-aware record REST/frames/console, with CRUD/history driven by capability.                                                                                                                     | ⚠️ Same as above                                                 | None                         |
-| **M-5D · dialect/runtime expansion (complete)**          | Mem0 OSS adapter; operator-installed stdio host + daemon-private secret lease.                                                                                                                                            | OSS/local depends on deployment                                  | stdio host                   |
-| **M-6 · shared scope (through data plane)**              | Depends on shared-bot relay; `memory-sync` payload; managed shared-scope sync + conflict semantics; external reuses canonical shared policy.                                                                              | ✅ / explicit external egress                                    | Reuse relay                  |
-| **M-7 · optional retrieval upgrade**                     | BM25 over Markdown; leave vector seam.                                                                                                                                                                                    | ✅                                                               | None for BM25; vectors later |
+| Phase                                                    | Scope                                                                                                                                                                                                                     | Body locality                                                              | New infrastructure           |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------- |
+| **M-1 · MemoryProvider + managed (complete)**            | Wrap directory memory in the provider port.                                                                                                                                                                               | ✅                                                                         | None                         |
+| **M-2/M-2.1 · native/none (complete)**                   | Provider selection, runtime-memory capability registry, native redirect/none off switch, and console.                                                                                                                     | ✅                                                                         | None                         |
+| **M-3 · managed scope/history (partial/deferred)**       | `.history`; user/session scopes await trusted identity/classification decisions.                                                                                                                                          | ✅                                                                         | None                         |
+| **M-4 · managed extract→append (complete, default off)** | Additive distillation + deduplication; current post-turn queue remains gated by managed/autoDistill.                                                                                                                      | ✅                                                                         | None (existing LLM)          |
+| **M-5P · plugin profile (complete)**                     | Canonical schema, manifest/version/capability, daemon internal MCP client, fake remote plugin conformance tests; provider port adds per-turn recall + record admin surface, and post-turn queue becomes provider-neutral. | ✅ (fake/local fixture only)                                               | None                         |
+| **M-5A · connection data plane (complete)**              | Installation/connection/binding model, SecretCipher, per-connection relay grant/SSRF, connection snapshot/upsert, probe facts/placement, and egress UX.                                                                   | ⚠️ Probe reaches plugin                                                    | Reuse relay/MCP proxy        |
+| **M-5B · Mem0 Cloud plugin (complete)**                  | Agent-only per-turn recall, capture outbox, Cloud V3 event polling, failures/metrics; CRUD console deferred.                                                                                                              | ⚠️ Content leaves daemon for third party by explicit user choice           | External plugin + Mem0       |
+| **M-5C · record product surface (complete)**             | Core entry tools + provider-aware record REST/frames/console, with CRUD/history driven by capability.                                                                                                                     | ⚠️ Same as above                                                           | None                         |
+| **M-5D · dialect/runtime expansion (complete)**          | Mem0 OSS adapter; operator-installed stdio host + daemon-private secret lease.                                                                                                                                            | OSS/local depends on deployment                                            | stdio host                   |
+| **M-6 · shared scope (through data plane)**              | Depends on shared-bot relay; `memory-sync` payload; managed shared-scope sync + conflict semantics; external reuses canonical shared policy.                                                                              | ✅ / explicit external egress                                              | Reuse relay                  |
+| **M-8 · `home: control-plane` (designed, not built)**    | `agent_memory_file` in the CP, `memory/store` D→C pair over the shim op set, `CpMemoryFs` adapter, home switch copy, pool mandates it (§3.2.1).                                                                           | Curated Markdown in the CP by explicit binding; default stays daemon-local | CP table                     |
+| **M-7 · optional retrieval upgrade**                     | BM25 over Markdown; leave vector seam.                                                                                                                                                                                    | ✅                                                                         | None for BM25; vectors later |
 
 The plugin profile remains backend-agnostic, and the Mem0 implementation stays
 behind that ABI. Automatic recall/capture and the record administration surface
