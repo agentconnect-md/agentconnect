@@ -52,24 +52,33 @@ export interface FleetRuntime {
   authRequired: boolean
 }
 
-/** Merge two members' answers: an id only one of them describes is carried, and one they
- *  DISAGREE on is dropped. A group's members are machines an operator enrolled by hand, so
- *  they can resolve the same alias to different models — `opus[1m]` is Opus 5 on one and Opus
- *  4.8 on another — and quoting the first would promise a concrete model the next turn might
- *  not run. Silence is the honest answer there; the id alone is what the card falls back to.
- *  A member that describes nothing does not vote, or one member yet to report a catalog would
- *  blank the whole set. */
-function agreedModelInfo(
-  a: Record<string, { name?: string; description?: string }>,
-  b: Record<string, { name?: string; description?: string }>
+/** The set's answer for each model id: what every member that describes it agrees on, and
+ *  nothing for one they disagree on. A group is machines an operator enrolled by hand, so two
+ *  members really can resolve the same alias to different models — `opus[1m]` is Opus 5 on one
+ *  and Opus 4.8 on another — and quoting either would promise a concrete model the next turn
+ *  might not run. Silence is the honest answer; the card falls back to the bare id.
+ *
+ *  Decided over the WHOLE list rather than folded pairwise: a fold that drops a disputed id
+ *  cannot tell "never described" from "already disputed", so a third member agreeing with the
+ *  first would put it back. A member that describes nothing does not vote — otherwise one
+ *  member yet to report a catalog would blank the set. */
+function consensusModelInfo(
+  described: ReadonlyArray<Record<string, { name?: string; description?: string }>>
 ): Record<string, { name?: string; description?: string }> {
-  const merged: Record<string, { name?: string; description?: string }> = { ...a }
-  for (const [id, info] of Object.entries(b)) {
-    const prior = merged[id]
-    if (!prior) merged[id] = info
-    else if (prior.name !== info.name || prior.description !== info.description) delete merged[id]
+  const agreed: Record<string, { name?: string; description?: string }> = {}
+  const disputed = new Set<string>()
+  for (const info of described) {
+    for (const [id, entry] of Object.entries(info)) {
+      if (disputed.has(id)) continue
+      const prior = agreed[id]
+      if (!prior) agreed[id] = entry
+      else if (prior.name !== entry.name || prior.description !== entry.description) {
+        disputed.add(id)
+        delete agreed[id]
+      }
+    }
   }
-  return merged
+  return agreed
 }
 
 /** The display half of a member's catalog, by model id — empty when it reported none. */
@@ -91,25 +100,26 @@ function modelInfoOf(rt: DaemonRow['runtimeModels'][number]): Record<string, { n
 // is sticky, because one member whose probe was rejected is a real problem on that member.
 export function unionRuntimes(members: readonly DaemonRow[]): FleetRuntime[] {
   const byId = new Map<string, FleetRuntime>()
+  const described = new Map<string, Array<Record<string, { name?: string; description?: string }>>>()
   for (const m of members) {
     for (const rt of m.runtimeModels) {
+      described.set(rt.runtime, [...(described.get(rt.runtime) ?? []), modelInfoOf(rt)])
       const prev = byId.get(rt.runtime)
       if (!prev) {
         byId.set(rt.runtime, {
           runtime: rt.runtime,
           version: rt.version,
           models: [...rt.models],
-          modelInfo: modelInfoOf(rt),
           authRequired: rt.authRequired === true
         })
         continue
       }
       if (!prev.version) prev.version = rt.version
       for (const model of rt.models) if (!prev.models.includes(model)) prev.models.push(model)
-      prev.modelInfo = agreedModelInfo(prev.modelInfo ?? {}, modelInfoOf(rt))
       prev.authRequired ||= rt.authRequired === true
     }
   }
+  for (const rt of byId.values()) rt.modelInfo = consensusModelInfo(described.get(rt.runtime) ?? [])
   return [...byId.values()]
 }
 
@@ -140,7 +150,7 @@ export function intersectRuntimes(members: readonly DaemonRow[]): FleetRuntime[]
       versionsDiffer: versions.size > 1,
       models: rt.models.filter((model) => all.every((peer) => peer.models.includes(model))),
       // Same rule as the union — and it bites here: a group's members really do differ.
-      modelInfo: all.reduce((info, peer) => agreedModelInfo(info, modelInfoOf(peer)), {}),
+      modelInfo: consensusModelInfo(all.map(modelInfoOf)),
       // Sticky, as in the union: one member needing a login qualifies the set's promise, so the
       // row is MARKED. Not withdrawn — placement is deliberately independent of login readiness
       // (preset-agents.md §3.2), which is why this does not exclude the runtime.

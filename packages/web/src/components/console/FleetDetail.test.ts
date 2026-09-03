@@ -55,6 +55,19 @@ describe('runtime aggregation carries model display metadata', () => {
     expect(intersectRuntimes([member(), other])[0]!.modelInfo).toEqual({})
   })
 
+  it('stays silent once disputed, however many members agree later', () => {
+    const opus48 = member({
+      modelCatalog: {
+        models: [{ id: 'opus[1m]', name: 'Opus 4.8 (1M context)', description: 'Opus 4.8 with 1M context' }],
+        source: 'acp',
+        observedAt: '2026-09-03T00:00:00.000Z'
+      }
+    } as never)
+    // Opus 5, Opus 4.8, Opus 5 — the set still disagrees, so the third must not resurrect it.
+    expect(unionRuntimes([member(), opus48, member()])[0]!.modelInfo).toEqual({})
+    expect(intersectRuntimes([member(), opus48, member()])[0]!.modelInfo).toEqual({})
+  })
+
   it('carries them through the intersection too', () => {
     const [rt] = intersectRuntimes([member(), member()])
     expect(rt!.modelInfo?.['opus[1m]']?.description).toBe('Opus 5 with 1M context')
