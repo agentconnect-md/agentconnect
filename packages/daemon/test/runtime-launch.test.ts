@@ -551,6 +551,73 @@ describe('prepareRuntimeLaunch', () => {
       expect(table).toContain(`"${join(home, '.codex')}" = "deny"`)
       expect(table).not.toContain(agentHome)
     }
+    // The inner sandbox pins writes to the cwd, and HOME is its SIBLING: without this the package caches §11 puts here are unwritable.
+    expect(agentFilesystem(launch.env)).toContain(`"${home}" = "write"`)
+    // Only the inner restriction is lifted — the outer boundary already granted exactly this.
+    expect(coveredBy(launch.sandbox!.writable, home)).toBe(true)
+  })
+
+  // The shared-login credential lives on the HOST and the session `.codex/auth.json` merely LINKS to it, so opening HOME wholesale would write through the link.
+  it('denies the session .codex while its HOME is writable, and the host credential it links to', () => {
+    const { scopeDir, hostHome, key, sessionDir, cwd } = sessionCloneFixture()
+    const hostCodex = join(hostHome, '.codex')
+    mkdirSync(hostCodex, { recursive: true })
+    writeFileSync(join(hostCodex, 'auth.json'), '{"last_refresh":"2026-01-01T00:00:00Z"}\n')
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: key,
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      trustedWorkspaceWriteRoots: [sessionDir],
+      trustedPrimaryCheckout: join(scopeDir, 'workspace'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    const home = join(realpathSync(sessionDir), 'home')
+    const table = agentFilesystem(launch.env)
+    expect(table).toContain(`"${home}" = "write"`)
+    expect(table).toContain(`"${join(home, '.codex')}" = "deny"`)
+    // The link target is the ACP parent's own write capability; the model's tools are denied it directly too.
+    expect(table).toContain(`"${realpathSync(join(hostCodex, 'auth.json'))}" = "deny"`)
+    expect(launch.sandbox!.protectedCredentialRoots).toContain(realpathSync(join(hostCodex, 'auth.json')))
+  })
+
+  // The worktree tier's HOME belongs to the AGENT, not one session: opening it would be a cross-session channel, which is what §11 removes.
+  it('adds no inner HOME grant for a session on the worktree tier', () => {
+    const { scopeDir, hostHome } = fixture()
+    const primaryGit = join(scopeDir, 'workspace', '.git')
+    const worktrees = join(scopeDir, 'worktrees')
+    const cwd = join(worktrees, 'session-1')
+    mkdirSync(join(primaryGit, 'worktrees', 'session-1'), { recursive: true })
+    mkdirSync(cwd, { recursive: true })
+    writeFileSync(join(cwd, '.git'), `gitdir: ${join(primaryGit, 'worktrees', 'session-1')}\n`)
+
+    const launch = prepareRuntimeLaunch({
+      runtimeId: 'codex-acp',
+      runtime: { command: 'npx', args: ['codex-acp'], env: [] },
+      scopeDir,
+      cwd,
+      hostKey: sessionHostKey('bot-a', 'slack:C1:s1'),
+      runInSandbox: true,
+      daemonRoot: dirname(scopeDir),
+      sandboxMechanism: 'bwrap',
+      credentialPlatform: 'linux',
+      trustedWorkspaceWriteRoots: [worktrees],
+      trustedPrimaryCheckout: join(scopeDir, 'workspace'),
+      hostEnv: { HOME: hostHome, PATH: '/usr/bin' }
+    })
+
+    expect(launch.env.HOME).toBe(join(scopeDir, 'home'))
+    const agentHome = realpathSync(join(scopeDir, 'home'))
+    const table = agentFilesystem(launch.env)
+    expect(table).toContain(`"${join(agentHome, '.codex')}" = "deny"`)
+    expect(table).not.toContain(`"${agentHome}" = "write"`)
   })
 
   it('follows the session HOME for the Claude config dir and private state roots', () => {

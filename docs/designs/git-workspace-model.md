@@ -336,7 +336,13 @@ the parent of anything.
 - **Console push and Git reads** resolve the session root as today.
 - **Sandbox grants** are per session and exact: the clone's `.git` writable,
   its `hooks` and `config` read-only, for both the outer sandbox and a runtime's
-  inner one.
+  inner one. The session's `home/` is writable in both layers as well — a
+  runtime's inner policy pins writes to the cwd, and HOME is its _sibling_, so
+  the grant is named there too or no package manager can write the caches below
+  it. `home/.codex` is carved back out of that grant and stays denied: its
+  `auth.json` is a link to the shared host credential the outer layer keeps
+  writable for the ACP parent, and the rest is that parent's own state, written
+  from outside the inner sandbox.
 - **HOME is per session.** `home/` is the runtime's private HOME — `HOME`,
   `XDG_*`, `CODEX_HOME` and the other runtime-state env point there — seeded
   from the host and protected exactly as the agent's `home/` is, and removed
