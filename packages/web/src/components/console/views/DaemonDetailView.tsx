@@ -335,14 +335,29 @@ export default function DaemonDetailView() {
                           <span className="font-sans text-[10px] font-semibold tracking-[.05em] uppercase leading-normal text-(--text-tertiary)">
                             Models
                           </span>
-                          {rt.models.map((m) => (
-                            <span key={m} className="inline-flex items-center gap-2">
-                              <span className="h-[5px] w-[5px] flex-none rounded-full bg-(--border-strong)" />
-                              <span className="font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
-                                {m}
+                          {/* The id is the model, and for claude it is an ALIAS — `opus[1m]`
+                              names whichever Opus the runtime resolves it to today. The runtime's
+                              own name is what says which one that is, so it rides alongside. */}
+                          {rt.models.map((m) => {
+                            const info = rt.modelInfo?.[m]
+                            return (
+                              <span
+                                key={m}
+                                className="inline-flex min-w-0 items-center gap-2"
+                                title={info?.description}
+                              >
+                                <span className="h-[5px] w-[5px] flex-none rounded-full bg-(--border-strong)" />
+                                <span className="font-mono text-[12px] font-medium leading-normal text-(--text-primary)">
+                                  {m}
+                                </span>
+                                {info?.name && (
+                                  <span className="min-w-0 truncate font-sans text-[11.5px] font-normal leading-normal text-(--text-tertiary)">
+                                    {info.name}
+                                  </span>
+                                )}
                               </span>
-                            </span>
-                          ))}
+                            )
+                          })}
                         </div>
                       )}
                     </div>

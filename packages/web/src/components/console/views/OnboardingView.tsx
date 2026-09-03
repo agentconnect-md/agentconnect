@@ -10,13 +10,13 @@ import { isAuthConfigured } from '@/lib/auth'
 import { daemonCompletesOnboarding, firstReconnectableDaemonId, skipOnboarding } from '@/lib/onboarding'
 import { daemonCommands } from '@/lib/daemon-commands'
 import { featureFlagEnabled } from '@/lib/feature-flags'
+import { ModelSelect } from '@/components/console/ModelSelect'
 import { RuntimeSelect } from '@/components/console/RuntimeSelect'
 import {
   FALLBACK_RUNTIME_IDS,
   isPoolPlacementKind,
   localDaemons,
-  modelLabel,
-  modelTooltip,
+  modelOptionsFor,
   poolLabel,
   preferredModelFor,
   loginRequiredRuntimeIds
@@ -496,8 +496,17 @@ function useRuntimeModel(daemon?: DaemonRow, initial?: { runtime?: string; model
   const models = daemon?.runtimeModels.find((r) => r.runtime === effectiveRuntime)?.models ?? []
   const [model, setModel] = useState(initial?.model ?? '')
   const selectedModel = models.includes(model) ? model : daemon ? preferredModelFor(daemon, effectiveRuntime) : ''
-  const tooltip = (m: string) => modelTooltip(daemon, effectiveRuntime, m)
-  return { runtimeIds, runtimesNeedingLogin, effectiveRuntime, models, selectedModel, tooltip, setRuntime, setModel }
+  const modelOptions = modelOptionsFor(daemon, effectiveRuntime, models)
+  return {
+    runtimeIds,
+    runtimesNeedingLogin,
+    effectiveRuntime,
+    models,
+    selectedModel,
+    modelOptions,
+    setRuntime,
+    setModel
+  }
 }
 
 function RuntimeModelFields({ rm }: { rm: ReturnType<typeof useRuntimeModel> }) {
@@ -517,31 +526,12 @@ function RuntimeModelFields({ rm }: { rm: ReturnType<typeof useRuntimeModel> }) 
       </div>
       <div className="fld">
         <span className="fldlbl">Model</span>
-        <div
-          className={rm.models.length ? 'inp relative' : 'inp cursor-not-allowed'}
-          title={rm.models.length ? rm.tooltip(rm.selectedModel) : 'This runtime reports no selectable models'}
-        >
-          <span className={`truncate ${rm.models.length ? '' : 'text-(--text-tertiary)'}`}>
-            {rm.models.length ? modelLabel(rm.selectedModel) : '—'}
-          </span>
-          {rm.models.length > 0 && (
-            <>
-              <Icon name="chevron-down" size={15} color="var(--text-tertiary)" className="flex-none" />
-              <select
-                value={rm.selectedModel}
-                onChange={(e) => rm.setModel(e.target.value)}
-                className="absolute inset-0 cursor-pointer opacity-0"
-                aria-label="Model"
-              >
-                {rm.models.map((m) => (
-                  <option key={m} value={m} title={rm.tooltip(m)}>
-                    {modelLabel(m)}
-                  </option>
-                ))}
-              </select>
-            </>
-          )}
-        </div>
+        <ModelSelect
+          value={rm.selectedModel}
+          options={rm.modelOptions}
+          disabledHint="This runtime reports no selectable models"
+          onChange={rm.setModel}
+        />
       </div>
     </div>
   )
