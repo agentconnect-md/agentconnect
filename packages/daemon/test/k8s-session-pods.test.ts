@@ -7,6 +7,7 @@ import {
   AC_LABEL_AGENT,
   AC_LABEL_ORG,
   AC_LABEL_SESSION,
+  AC_ANNOTATION_ADMITTED,
   sandboxClaimName,
   sandboxSubjectFor,
   sandboxSubjectForPath,
@@ -44,10 +45,23 @@ function cluster() {
   const modeWrites: Array<{ sandbox: string; desired: string }> = []
   const deleted: string[] = []
   let minted = 0
+  let versions = 0
   const api = {
     ensureClaim: vi.fn(async (claim: SandboxClaim & { metadata: { name: string } }) => {
       const existing = claims.get(claim.metadata.name)
-      if (existing) return { claim: existing, created: false }
+      if (existing) {
+        // Reuse WRITES: the real client merge-patches the caller's annotations onto the claim it found.
+        const merged: SandboxClaim = {
+          ...existing,
+          metadata: {
+            ...existing.metadata,
+            annotations: { ...existing.metadata?.annotations, ...claim.metadata.annotations },
+            resourceVersion: `rv-${++versions}`
+          }
+        }
+        claims.set(claim.metadata.name, merged)
+        return { claim: merged, created: false }
+      }
       const name = `sb-${++minted}`
       sandboxes.set(name, {
         metadata: { name, uid: `uid-${name}` },
@@ -59,12 +73,26 @@ function cluster() {
       })
       const stored: SandboxClaim = {
         ...claim,
-        metadata: { ...claim.metadata, uid: `claim-${name}` },
+        metadata: { ...claim.metadata, uid: `claim-${name}`, resourceVersion: `rv-${++versions}` },
         status: { sandbox: { name } }
       }
       claims.set(claim.metadata.name, stored)
       return { claim: stored, created: true }
     }),
+    stampClaim: async (name: string, annotations: Record<string, string>) => {
+      const existing = claims.get(name)
+      if (!existing) throw new K8sApiError(404, 'NotFound', 'no claim')
+      const claim = {
+        ...existing,
+        metadata: {
+          ...existing.metadata,
+          annotations: { ...existing.metadata?.annotations, ...annotations },
+          resourceVersion: `rv-${++versions}`
+        }
+      }
+      claims.set(name, claim)
+      return { claim }
+    },
     getClaim: async (name: string) => {
       const claim = claims.get(name)
       if (!claim) throw new K8sApiError(404, 'NotFound', 'no claim')
@@ -132,20 +160,22 @@ function podSide() {
 
 function member(api: ReturnType<typeof cluster>['api'], connect: ReturnType<typeof podSide>['connect']) {
   const records: SpawnRecord[] = []
+  const warnings: string[] = []
   const generations = fakeGenerations()
+  const clock = new FakeClock()
   const driver = new K8sDriver({
     api: api as never,
     orgForAgent: () => 'org-1',
     warmPoolName: 'pool',
     generations,
-    clock: new FakeClock(),
+    clock,
     connectChannel: async (record) => {
       records.push(record)
       return await connect(record)
     },
-    log: { info: () => {}, warn: () => {}, debug: () => {} }
+    log: { info: () => {}, warn: (m) => warnings.push(m), debug: () => {} }
   })
-  return { driver, records, generations }
+  return { driver, records, generations, clock, warnings }
 }
 
 const request = (hostKey?: typeof T1) =>
@@ -250,7 +280,9 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     // The successor knows only the host key — the store, not this process, remembers the session.
     const second = member(api, pod.connect)
     const launch = await second.driver.ensureSandbox(sandboxSubjectFor(T1))
-    expect(claims.get(name)).toBe(before)
+    // The same claim object, restamped rather than replaced: same uid, same bound Sandbox, no create.
+    expect(claims.get(name)?.metadata?.uid).toBe(before!.metadata!.uid)
+    expect(claims.get(name)?.status?.sandbox?.name).toBe(before!.status!.sandbox!.name)
     expect(launch.sandboxName).toBe(before!.status!.sandbox!.name)
     expect(launch.claimUid).toBe(before!.metadata!.uid)
     expect(api.ensureClaim.mock.calls.filter((call) => call[0].metadata.name === name)).toHaveLength(2)
@@ -443,6 +475,212 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     const claimedSoFar = api.ensureClaim.mock.calls.length
     expect(driver.retainLaunched(session)).toBeUndefined()
     expect(api.ensureClaim.mock.calls.length).toBe(claimedSoFar)
+  })
+
+  it('stamps every admission on the claim, so a reused one is a new incarnation to a reader', async () => {
+    // The orphan sweep proves a session gone from a snapshot and then deletes on the version it
+    // listed. A session that comes back reuses this claim rather than making one, so without a write
+    // here the sweep's preconditions would still hold and it would take a live pod and its volume.
+    const { api, claims } = cluster()
+    const { driver, clock } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    const name = sandboxClaimName(session)
+
+    await driver.ensureSandbox(session)
+    const first = claims.get(name)!
+    expect(first.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(new Date(clock.now()).toISOString())
+    // Never in the spec or on the pod: warm-pool adoption reads the spec, and this is not the pod's business.
+    expect(Object.keys(first.spec ?? {}).sort()).toEqual(['additionalPodMetadata', 'warmPoolRef'])
+    expect(first.spec?.additionalPodMetadata?.labels?.[AC_ANNOTATION_ADMITTED]).toBeUndefined()
+
+    // A second admission of the SAME claim — a resume after an idle suspension — restamps and re-versions it.
+    driver.release(session)
+    clock.advance(60_000)
+    await driver.ensureSandbox(session)
+    const second = claims.get(name)!
+    expect(second.metadata?.uid).toBe(first.metadata?.uid)
+    expect(second.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(new Date(clock.now()).toISOString())
+    expect(second.metadata?.resourceVersion).not.toBe(first.metadata?.resourceVersion)
+  })
+
+  it('still admits — and launches — when the API server refuses the stamp, saying so once', async () => {
+    // A Role without `patch` on claims costs the orphan sweep its fence, and nothing else. Failing the
+    // admission instead would turn a permission gap into an outage on every resume of an existing
+    // claim, which is strictly worse than the race the stamp closes.
+    const { api, claims } = cluster()
+    const admit = api.ensureClaim
+    api.ensureClaim = vi.fn(async (claim: SandboxClaim & { metadata: { name: string } }) => {
+      const ensured = await admit(claim)
+      // The refusal writes nothing, so the claim keeps the annotations and version it already had.
+      return ensured.created ? ensured : { ...ensured, stampRefused: true }
+    }) as never
+    const { driver, warnings } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+
+    await driver.ensureSandbox(session)
+    driver.release(session)
+    await expect(driver.ensureSandbox(session)).resolves.toBeDefined()
+    driver.release(session)
+    await driver.ensureSandbox(session)
+
+    // The pod is claimed and usable throughout; only the fence is gone.
+    expect(claims.has(sandboxClaimName(session))).toBe(true)
+    expect(driver.currentLaunch(session)).toBeDefined()
+    // Once per process, not once per admission: a degraded Role would otherwise fill the log.
+    expect(warnings.filter((line) => line.includes('refused the admission stamp'))).toHaveLength(1)
+    expect(warnings[0]).toMatch(/patch on sandboxclaims/)
+  })
+
+  it('refreshes the stamp on every claim it HOLDS, so one in use never reads as a leak', async () => {
+    // `ensureSandbox` returns from the launch registry without touching the API, and `adoptSessions`
+    // caches a Running claim this member never admitted — so a member can serve a session for hours
+    // without writing to its claim. A sweep that snapshotted the row as absent would then still match
+    // on resourceVersion when the row came back, and take a live pod's volume.
+    const { api, claims } = cluster()
+    const { driver, clock } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    await driver.ensureSandbox(session)
+    await driver.ensureSandbox(AGENT)
+    const before = [...claims.values()].map((claim) => claim.metadata?.resourceVersion)
+
+    clock.advance(180_000)
+    await driver.refreshAdmissionStamps()
+
+    // Every held claim is young again, and its version moved — both halves of the fence, without an admission.
+    for (const claim of claims.values()) {
+      expect(claim.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(new Date(clock.now()).toISOString())
+    }
+    expect([...claims.values()].map((claim) => claim.metadata?.resourceVersion)).not.toEqual(before)
+    // A pod this member no longer holds is nobody's to keep alive: releasing it stops the refresh.
+    driver.release(session)
+    clock.advance(180_000)
+    await driver.refreshAdmissionStamps()
+    expect(claims.get(sandboxClaimName(session))!.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).not.toBe(
+      new Date(clock.now()).toISOString()
+    )
+    expect(claims.get(`agent-${AGENT}`)!.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(
+      new Date(clock.now()).toISOString()
+    )
+  })
+
+  it('keeps refreshing the rest when one claim is gone or its stamp is refused', async () => {
+    // Best effort by construction: this runs on a tick, off every turn's path, so one claim's failure
+    // must not cost the others their freshness — and a Role without `patch` says so once, as admission does.
+    const { api, claims } = cluster()
+    const { driver, clock, warnings } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    await driver.ensureSandbox(session)
+    await driver.ensureSandbox(AGENT)
+    // The session's claim is retired underneath the member; the agent's refuses the write.
+    claims.delete(sandboxClaimName(session))
+    const stamp = api.stampClaim
+    api.stampClaim = (async (name: string, annotations: Record<string, string>) => {
+      const stamped = await stamp(name, annotations)
+      return { claim: stamped.claim, stampRefused: true }
+    }) as never
+
+    clock.advance(180_000)
+    await expect(driver.refreshAdmissionStamps()).resolves.toBeUndefined()
+    await driver.refreshAdmissionStamps()
+
+    expect(claims.get(`agent-${AGENT}`)!.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBeDefined()
+    expect(warnings.filter((line) => line.includes('refused the admission stamp'))).toHaveLength(1)
+  })
+
+  it('stamps a takeover BEFORE it publishes the launch, not at the next tick', async () => {
+    // `setInterval` does not fire for a whole period, and a takeover writes nothing to the claim on its
+    // own — so in that first window an adopted claim looks untouched while a returning delivery is
+    // already being served from the registry. A sweep holding this claim's old version would still
+    // match, and delete a live pod.
+    const { api, claims } = cluster()
+    const first = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    const name = sandboxClaimName(session)
+    await first.driver.ensureSandbox(session)
+    const admitted = claims.get(name)!.metadata!.resourceVersion
+
+    // A second member takes it over, with no timer having run anywhere.
+    const successor = member(api, podSide().connect)
+    successor.clock.advance(600_000)
+    expect(await successor.driver.adopt(session)).toBeDefined()
+
+    const taken = claims.get(name)!
+    expect(taken.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(new Date(successor.clock.now()).toISOString())
+    // The version moved with it, so a delete preconditioned on what the sweep listed no longer matches.
+    expect(taken.metadata?.resourceVersion).not.toBe(admitted)
+  })
+
+  it('stamps a resume onto an observed claim, which publishes a launch without admitting one either', async () => {
+    // The same class as a takeover, and the reviewer named only the takeover: `resumeSandbox` records a
+    // launch straight from the claim it read, so it too would serve a session off an untouched claim.
+    const { api, claims } = cluster()
+    const { driver, clock } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    const name = sandboxClaimName(session)
+    await driver.ensureSandbox(session)
+    const claimUid = (await driver.claimUidFor(session))!
+    expect(await driver.suspendIfIdle(session)).toBe('suspended')
+    const before = claims.get(name)!.metadata!.resourceVersion
+
+    clock.advance(600_000)
+    await driver.resumeBoundChannel(session, claimUid)
+
+    const resumed = claims.get(name)!
+    expect(resumed.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(new Date(clock.now()).toISOString())
+    expect(resumed.metadata?.resourceVersion).not.toBe(before)
+    // Still a resume, not an admission: the claim is the same object, never a replacement.
+    expect(resumed.metadata?.uid).toBe(claimUid)
+  })
+
+  it('publishes no launch when the fence write fails for any reason but permission', async () => {
+    // The fence is what a published launch RESTS on, so swallowing a timeout or a 500 here would be the
+    // same as never stamping: the sweep still holds the version it listed, and its delete still takes a
+    // live volume. A takeover that cannot fence adopts nothing; a resume refuses the read.
+    const { api, claims } = cluster()
+    const { driver, clock, warnings } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    const name = sandboxClaimName(session)
+    await driver.ensureSandbox(session)
+    const claimUid = (await driver.claimUidFor(session))!
+    expect(await driver.suspendIfIdle(session)).toBe('suspended')
+    const fenced = claims.get(name)!.metadata!.resourceVersion
+
+    api.stampClaim = (async () => {
+      throw new Error('the API server is having a moment')
+    }) as never
+    clock.advance(600_000)
+
+    // A resume refuses rather than serving a pod the sweep could collect underneath it.
+    await expect(driver.resumeBoundChannel(session, claimUid)).rejects.toThrow(/could not be marked in use/)
+    expect(driver.currentLaunch(session)).toBeUndefined()
+    // And a takeover adopts nothing, leaving the next duty tick to try again.
+    expect(await driver.adopt(session)).toBeUndefined()
+    expect(driver.currentLaunch(session)).toBeUndefined()
+    // Nothing was written, so the claim the sweep listed is untouched — and it says why, out loud.
+    expect(claims.get(name)!.metadata?.resourceVersion).toBe(fenced)
+    expect(warnings.some((line) => line.includes('could not be marked in use'))).toBe(true)
+  })
+
+  it('still publishes when the fence is refused by permission alone, reporting it once', async () => {
+    // The legacy-Role degradation stays exactly as agreed: failing every takeover over a missing verb
+    // would be worse than the race, and it is already reported once per process.
+    const { api } = cluster()
+    const { driver, warnings } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    await driver.ensureSandbox(session)
+    const claimUid = (await driver.claimUidFor(session))!
+    expect(await driver.suspendIfIdle(session)).toBe('suspended')
+
+    const stamp = api.stampClaim
+    api.stampClaim = (async (name: string, annotations: Record<string, string>) => {
+      const stamped = await stamp(name, annotations)
+      return { claim: stamped.claim, stampRefused: true }
+    }) as never
+
+    await driver.resumeBoundChannel(session, claimUid)
+    expect(driver.currentLaunch(session)).toBeDefined()
+    expect(warnings.filter((line) => line.includes('refused the admission stamp'))).toHaveLength(1)
+    expect(warnings.some((line) => line.includes('could not be marked in use'))).toBe(false)
   })
 
   it('keeps the agent pod path byte-identical: no host key means the agent claim, as before', async () => {

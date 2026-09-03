@@ -54,6 +54,8 @@ export interface TokenReviewResult {
 export interface EnsuredClaim {
   claim: SandboxClaim
   created: boolean
+  /** The API server refused the admission stamp: the claim is admitted, the orphan sweep's fence on it is not. */
+  stampRefused?: boolean
 }
 
 const POD_NAME_EXTRA = 'authentication.kubernetes.io/pod-name'
@@ -124,6 +126,11 @@ export class SandboxApi {
   // Reports whether it CREATED the claim, because that is the only trustworthy cold-start
   // signal: a first claim is the launch that pays PVC provisioning and an image pull, and the
   // AlreadyExists branch is exactly the case that does not.
+  //
+  // That branch WRITES rather than merely reading: the caller's annotations are merged onto the
+  // claim it found, so every admission of an existing claim leaves a new resourceVersion behind.
+  // A reader that fenced a delete on the version it listed then loses to an admission that
+  // followed its snapshot, which is the property the orphan sweep depends on.
   async ensureClaim(claim: SandboxClaim & { metadata: { name: string } }): Promise<EnsuredClaim> {
     try {
       const created = await this.http.json<SandboxClaim>({
@@ -134,10 +141,47 @@ export class SandboxApi {
       return { claim: created, created: true }
     } catch (err) {
       if (err instanceof K8sApiError && err.isAlreadyExists) {
-        return { claim: await this.getClaim(claim.metadata.name), created: false }
+        return {
+          ...(await this.mergeClaimAnnotations(claim.metadata.name, claim.metadata.annotations)),
+          created: false
+        }
       }
       throw err
     }
+  }
+
+  /** Merge annotations onto an existing claim and return it; with none to merge it is a plain read. */
+  // A Role without `patch` on claims DEGRADES here rather than failing: the stamp is a fence for the
+  // orphan sweep, and refusing every resume of an existing claim over it would trade a race for an outage.
+  private async mergeClaimAnnotations(
+    name: string,
+    annotations: Record<string, string> | undefined
+  ): Promise<{ claim: SandboxClaim; stampRefused?: boolean }> {
+    if (!annotations || Object.keys(annotations).length === 0) return { claim: await this.getClaim(name) }
+    try {
+      return { claim: await this.patchClaimAnnotations(name, annotations) }
+    } catch (err) {
+      // Only a permission refusal degrades; every other rejection is this call failing and stays fatal.
+      if (!(err instanceof K8sApiError) || err.status !== 403) throw err
+      return { claim: await this.getClaim(name), stampRefused: true }
+    }
+  }
+
+  /** Merge annotations onto a claim that is known to exist, degrading on a refused permission like an admission does. */
+  async stampClaim(
+    name: string,
+    annotations: Record<string, string>
+  ): Promise<{ claim: SandboxClaim; stampRefused?: boolean }> {
+    return await this.mergeClaimAnnotations(name, annotations)
+  }
+
+  private patchClaimAnnotations(name: string, annotations: Record<string, string>): Promise<SandboxClaim> {
+    return this.http.json<SandboxClaim>({
+      method: 'PATCH',
+      path: `${this.claims()}/${name}`,
+      contentType: 'application/merge-patch+json',
+      body: { metadata: { annotations } }
+    })
   }
 
   getClaim(name: string): Promise<SandboxClaim> {

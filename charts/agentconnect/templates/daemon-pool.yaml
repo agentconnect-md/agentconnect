@@ -26,7 +26,8 @@ metadata:
 rules:
   - apiGroups: ['extensions.agents.x-k8s.io']
     resources: ['sandboxclaims']
-    verbs: ['get', 'list', 'watch', 'create', 'delete']
+    # patch: admitting a claim that already exists stamps it, which is how a reused claim is told from a leaked one.
+    verbs: ['get', 'list', 'watch', 'create', 'patch', 'delete']
   - apiGroups: ['extensions.agents.x-k8s.io']
     resources: ['sandboxwarmpools', 'sandboxtemplates']
     verbs: ['get']

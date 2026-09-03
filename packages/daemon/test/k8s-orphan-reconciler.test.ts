@@ -8,9 +8,17 @@ import {
   ORPHAN_GRACE_ENV,
   OrphanReconciler,
   resolveOrphanReconcilerSettings,
+  stampRefreshMsFor,
   type OrphanReconcilerDeps
 } from '../src/k8s/orphan-reconciler.js'
-import { AC_LABEL_AGENT, AC_LABEL_ORG } from '../src/k8s/sandbox-identity.js'
+import {
+  AC_ANNOTATION_ADMITTED,
+  AC_LABEL_AGENT,
+  AC_LABEL_ORG,
+  AC_LABEL_SESSION,
+  sandboxClaimName,
+  sessionSandboxSubject
+} from '../src/k8s/sandbox-identity.js'
 import { PROBE_CLAIM_EXPIRES_ANNOTATION, PROBE_CLAIM_LABEL, probeAgentId } from '../src/k8s/probe-claim.js'
 import { SandboxApi, type Sandbox, type SandboxClaim } from '../src/k8s/sandbox-api.js'
 
@@ -54,6 +62,34 @@ function claim(
   }
 }
 
+/** A session pod's claim (git-workspace-model §11): the agent's label beside the session's, under the session's name. */
+function sessionClaim(
+  agentId: string,
+  leaf: string,
+  opts: { createdAt?: number; sandbox?: string; admittedAt?: number } = {}
+): SandboxClaim {
+  const name = sandboxClaimName(sessionSandboxSubject(agentId, leaf))
+  return {
+    metadata: {
+      name,
+      uid: `uid-${name}`,
+      resourceVersion: `rv-${name}`,
+      creationTimestamp: new Date(opts.createdAt ?? T0 - HOUR).toISOString(),
+      ...(opts.admittedAt === undefined
+        ? {}
+        : { annotations: { [AC_ANNOTATION_ADMITTED]: new Date(opts.admittedAt).toISOString() } }),
+      labels: { [AC_LABEL_ORG]: 'org-1', [AC_LABEL_AGENT]: agentId, [AC_LABEL_SESSION]: leaf }
+    },
+    spec: {
+      warmPoolRef: { name: 'pool' },
+      additionalPodMetadata: {
+        labels: { [AC_LABEL_ORG]: 'org-1', [AC_LABEL_AGENT]: agentId, [AC_LABEL_SESSION]: leaf }
+      }
+    },
+    ...(opts.sandbox ? { status: { sandbox: { name: opts.sandbox } } } : {})
+  }
+}
+
 function sandbox(name: string, agentId?: string, createdAt = T0 - HOUR): Sandbox {
   return {
     metadata: {
@@ -70,11 +106,17 @@ function sandbox(name: string, agentId?: string, createdAt = T0 - HOUR): Sandbox
 }
 
 /** A cluster holding `claims` and `sandboxes`, recording every delete with its preconditions. */
-async function cluster(claims: SandboxClaim[], sandboxes: Sandbox[], opts: { sandboxList?: number } = {}) {
+async function cluster(
+  claims: SandboxClaim[],
+  sandboxes: Sandbox[],
+  opts: { sandboxList?: number; deleteConflict?: boolean } = {}
+) {
   const deletes: Array<{ path: string; preconditions: unknown }> = []
   const { config } = await fakeApiServer(({ method, url, body }) => {
     if (method === 'DELETE') {
       deletes.push({ path: url.pathname, preconditions: JSON.parse(body).preconditions })
+      // What the API server answers when the object's version moved since it was listed.
+      if (opts.deleteConflict) return { status: 409, json: { kind: 'Status', reason: 'Conflict' } }
       return { json: {} }
     }
     if (url.pathname.endsWith('/sandboxclaims')) return { json: { items: claims } }
@@ -116,6 +158,22 @@ describe('orphan reconciler settings', () => {
       deleteEnabled: true
     })
     expect(() => resolveOrphanReconcilerSettings({ [ORPHAN_GRACE_ENV]: '-1' })).toThrow(ORPHAN_GRACE_ENV)
+  })
+
+  it('derives the members’ stamp cadence from whatever grace the sweep was given', () => {
+    // One safety window: the sweep collects a claim nothing has touched for `graceMs`, so a member using
+    // one has to touch it strictly more often than that. A fixed cadence is silently wrong for every
+    // install that shortens the grace — a held claim would age past it between two ticks and become
+    // deletable while in use — so the cadence tracks the configured value rather than a constant.
+    for (const graceMs of [DEFAULT_ORPHAN_GRACE_MS, 90_000, 30_000, 5_000, 1_000]) {
+      const refreshMs = stampRefreshMsFor(graceMs)
+      expect(refreshMs).toBeGreaterThan(0)
+      // Two missed ticks still leave a held claim inside the window.
+      expect(refreshMs * 3).toBeLessThanOrEqual(graceMs)
+    }
+    expect(stampRefreshMsFor(DEFAULT_ORPHAN_GRACE_MS)).toBe(200_000)
+    // A grace shorter than the cadence it used to be hardcoded at is the case that was broken.
+    expect(stampRefreshMsFor(90_000)).toBe(30_000)
   })
 })
 
@@ -223,3 +281,143 @@ describe('orphan reconciler', () => {
     expect(r.warns.filter((m) => m.includes('not permitted'))).toHaveLength(1)
   })
 })
+
+describe('orphan reconciler and session pods (git-workspace-model §11)', () => {
+  const KEPT = 'session-aaaaaaaaaaaaaaaaaaaaaaaa'
+  const GONE_LEAF = 'session-bbbbbbbbbbbbbbbbbbbbbbbb'
+  const claimPath = (agentId: string, leaf: string) =>
+    `/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/agent-sandboxes/sandboxclaims/${sandboxClaimName(sessionSandboxSubject(agentId, leaf))}`
+
+  it("collects a live agent's session pod whose row is gone, keeps the one whose row remains and the agent's own", async () => {
+    const { api, deletes } = await cluster(
+      [
+        claim(LIVE, { sandbox: 'sb-live' }),
+        sessionClaim(LIVE, KEPT, { sandbox: 'sb-kept' }),
+        sessionClaim(LIVE, GONE_LEAF, { sandbox: 'sb-gone' })
+      ],
+      // A claimless Sandbox with a session label answers to the same rule.
+      [sandbox('sb-stray', LIVE), withSessionLabel(sandbox('sb-stray-session', LIVE), GONE_LEAF)]
+    )
+    const askedSessions: Array<{ agentId: string; leaf: string }>[] = []
+    const r = reconciler({
+      api,
+      liveSessionLeaves: async (sessions) => {
+        askedSessions.push(sessions)
+        return new Set([sessionSandboxSubject(LIVE, KEPT)])
+      }
+    })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 5, orphaned: 2, deleted: 2, skippedLive: 3, failed: 0 })
+    expect(deletes.map((entry) => entry.path)).toEqual([
+      claimPath(LIVE, GONE_LEAF),
+      '/apis/agents.x-k8s.io/v1beta1/namespaces/agent-sandboxes/sandboxes/sb-stray-session'
+    ])
+    // One question per run, about the session pods of live agents only, and never about the agent's own pod.
+    expect(askedSessions).toEqual([
+      [
+        { agentId: LIVE, leaf: KEPT },
+        { agentId: LIVE, leaf: GONE_LEAF },
+        { agentId: LIVE, leaf: GONE_LEAF }
+      ]
+    ])
+    expect(r.infos.some((line) => line.includes(`session ${GONE_LEAF}`))).toBe(true)
+  })
+
+  it('reads a session pod as live when nothing can answer for its session', async () => {
+    const { api, deletes } = await cluster([sessionClaim(LIVE, GONE_LEAF, { sandbox: 'sb-gone' })], [])
+    const r = reconciler({ api })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 0, deleted: 0, skippedLive: 1 })
+    expect(deletes).toEqual([])
+  })
+
+  it('reads every session pod as live when the store will not answer, and still sweeps the rest', async () => {
+    const { api, deletes } = await cluster(
+      [sessionClaim(LIVE, GONE_LEAF, { sandbox: 'sb-gone' }), claim(GONE, { sandbox: 'sb-agent-gone' })],
+      []
+    )
+    const r = reconciler({
+      api,
+      liveSessionLeaves: async () => {
+        throw new Error('store unreachable')
+      }
+    })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 2, orphaned: 1, deleted: 1, skippedLive: 1, failed: 0 })
+    expect(deletes.map((entry) => entry.path)).toEqual([
+      `/apis/extensions.agents.x-k8s.io/v1beta1/namespaces/agent-sandboxes/sandboxclaims/agent-${GONE}`
+    ])
+    expect(r.warns.some((line) => line.includes('keeping every session pod'))).toBe(true)
+  })
+
+  it("collects a gone agent's session pod on the agent rule alone, asking about no sessions", async () => {
+    const { api, deletes } = await cluster([sessionClaim(GONE, KEPT, { sandbox: 'sb-gone' })], [])
+    const askedSessions: unknown[] = []
+    const r = reconciler({
+      api,
+      liveSessionLeaves: async (sessions) => {
+        askedSessions.push(sessions)
+        return new Set()
+      }
+    })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 1, deleted: 1 })
+    expect(deletes.map((entry) => entry.path)).toEqual([claimPath(GONE, KEPT)])
+    expect(askedSessions).toEqual([])
+  })
+
+  it('runs the grace from the admission stamp, so a re-admitted leaked claim is young again', async () => {
+    // The object's own age cannot fence this: the claim IS old — it leaked — and the session that came
+    // back reuses it rather than creating one. Admission stamping it is what makes the age honest.
+    const { api, deletes } = await cluster(
+      [sessionClaim(LIVE, GONE_LEAF, { createdAt: T0 - HOUR, admittedAt: T0 - GRACE + 1 })],
+      []
+    )
+    const r = reconciler({ api, liveSessionLeaves: async () => new Set() })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 0, deleted: 0, skippedGrace: 1 })
+    expect(deletes).toEqual([])
+
+    // And once nothing has admitted it for a whole grace, it is collectable again.
+    r.clock.advance(1)
+    expect(await r.it.sweep()).toMatchObject({ orphaned: 1, deleted: 1 })
+  })
+
+  it('loses the delete to an admission that landed after the listing, rather than taking a live pod', async () => {
+    // The absence proof is a snapshot: the row can come back, and `ensureClaim` reuse it, between the
+    // list above and the delete below. The admission's own write moves the claim's resourceVersion, so
+    // the preconditioned delete is refused — the pod and its volume stay, and the next run re-decides.
+    const { api, deletes } = await cluster([sessionClaim(LIVE, GONE_LEAF, { sandbox: 'sb-gone' })], [], {
+      deleteConflict: true
+    })
+    const r = reconciler({ api, liveSessionLeaves: async () => new Set() })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 1, deleted: 0, failed: 0 })
+    // Fenced on the version it listed, which is the only reason the admission can win.
+    expect(deletes).toEqual([
+      {
+        path: claimPath(LIVE, GONE_LEAF),
+        preconditions: {
+          uid: `uid-${sandboxClaimName(sessionSandboxSubject(LIVE, GONE_LEAF))}`,
+          resourceVersion: `rv-${sandboxClaimName(sessionSandboxSubject(LIVE, GONE_LEAF))}`
+        }
+      }
+    ])
+    expect(r.infos.some((line) => line.includes('was replaced since it was listed'))).toBe(true)
+  })
+
+  it("leaves a live agent's young session pod alone even when its row is gone", async () => {
+    const { api, deletes } = await cluster([sessionClaim(LIVE, GONE_LEAF, { createdAt: T0 - GRACE + 1 })], [])
+    const r = reconciler({ api, liveSessionLeaves: async () => new Set() })
+    expect(await r.it.sweep()).toMatchObject({ candidates: 1, orphaned: 0, skippedGrace: 1 })
+    expect(deletes).toEqual([])
+  })
+})
+
+/** The same Sandbox, carrying a session label on its pod template the way the controller propagates it. */
+function withSessionLabel(object: Sandbox, leaf: string): Sandbox {
+  return {
+    ...object,
+    spec: {
+      ...object.spec,
+      podTemplate: {
+        ...object.spec?.podTemplate,
+        metadata: { labels: { ...object.spec?.podTemplate?.metadata?.labels, [AC_LABEL_SESSION]: leaf } }
+      }
+    }
+  }
+}

@@ -89,13 +89,6 @@ spec:
                 - name: AC_K8S_ORPHAN_DELETE
                   value: 'true'
                 {{- end }}
-                {{- with $reconciler.graceMs }}
-                # How old an object must be before it can be called orphaned — the guard against
-                # collecting a creation still racing the control plane's write. Unset ⇒ the
-                # daemon's own 10-minute default.
-                - name: AC_K8S_ORPHAN_GRACE_MS
-                  value: {{ . | quote }}
-                {{- end }}
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities:

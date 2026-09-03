@@ -354,7 +354,12 @@ exist (`agent/exists` → `agent/exists/ok`, install-wide, advertised as the
   the grace period old (default 10 minutes);
 - a probe claim past the window the probe stamped on it;
 - a Sandbox no claim binds, whose agent the control plane no longer knows,
-  under the same grace.
+  under the same grace;
+- a session pod (`agentconnect.md/session` beside the agent label,
+  [git-workspace-model.md](git-workspace-model.md) §11) whose agent lives but
+  whose session row is gone from the shared store, under the same grace — the
+  job asks the store once per run, and a session nobody can answer for (no
+  store mounted, a read that failed) reads as live.
 
 **Safety rules.** An object of a live agent is never touched, a claimless
 Sandbox included — deleting a claim deletes the workspace volume and is
@@ -368,6 +373,21 @@ carries the UID and resourceVersion from the LIST snapshot, so a same-name
 replacement created after the list is never the object deleted. Each run logs
 one summary line (candidates, orphaned, deleted, skipped-live, skipped-grace,
 failed).
+
+**The admission fence.** A session row's absence is a snapshot, and a session
+can come back between that read and the delete — its admission REUSES the
+leaked claim rather than creating one, so neither the object's age nor a
+same-name replacement check would notice. So admission and collection share the
+claim's own version. `ensureSandbox` stamps every claim it takes with
+`agentconnect.md/last-admitted-at` (on the claim's metadata, never in its spec
+or its pod's, so warm-pool adoption is untouched), and `ensureClaim` WRITES that
+stamp even on the path that only reuses an existing claim. Two things follow: the
+grace runs from the later of creation and last admission, so a re-admitted claim
+is young again and no candidate at all; and the stamp's write moves the claim's
+resourceVersion, so an admission that landed after the sweep listed the object
+makes its preconditioned delete fail — reported as "replaced since it was
+listed", with the pod and its volume left alone and the next run re-deciding.
+A second uncoordinated row read would only have narrowed that window.
 
 **Dry run by default.** The reconciler ships reporting only; deletion is
 enabled per deployment with `AC_K8S_ORPHAN_DELETE=true` after an observation

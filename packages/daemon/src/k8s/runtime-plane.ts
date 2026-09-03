@@ -32,6 +32,7 @@ import type { WorkspaceFs, WorkspacePlacement } from '../workspace/workspace-fs.
 import { sessionDirIn } from '../workspace/session-layout.js'
 import type { MemoryFs } from '../memory/fs.js'
 import { DEFAULT_SHIM_LISTEN_PORT, DEFAULT_SHIM_WORKSPACE_ROOT } from '../shim/protocol.js'
+import { resolveOrphanReconcilerSettings, stampRefreshMsFor } from './orphan-reconciler.js'
 import type { TunnelName } from '../shim/tunnel.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from '../runtimes/k8s-runtimes.js'
 import type { GitRunner } from '../workspace/git-runner.js'
@@ -72,6 +73,8 @@ export interface K8sRuntimePlaneOptions {
   /** Environment the deployment settings come from; `process.env` unless a test names another. */
   env?: NodeJS.ProcessEnv
   readyTimeoutMs?: number
+  /** How often held claims are re-stamped as in use; omit to derive it from the sweep's own grace, 0 to run no timer. */
+  stampRefreshMs?: number
   /** Kubernetes surface. Built from the pod's own in-cluster config when omitted; supplied by
    *  tests so the assembly can be exercised without a cluster. */
   api?: SandboxApi
@@ -387,6 +390,21 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     releaseSubject(agentSandboxSubject(agentId), reason)
   }
 
+  // A claim this member is USING must not look like a leak to the orphan sweep, and a launch served from
+  // the registry never touches the API — so the stamp is refreshed on a tick derived from the SAME grace
+  // the sweep reads, never a constant of its own: an install that shortens the grace would otherwise let a
+  // held claim age past it between two ticks. Unref'd — bookkeeping never holds a process up.
+  const stampRefreshMs = options.stampRefreshMs ?? stampRefreshMsFor(resolveOrphanReconcilerSettings().graceMs)
+  const stampRefresh =
+    stampRefreshMs > 0
+      ? setInterval(() => {
+          void driver.refreshAdmissionStamps().catch((err: unknown) => {
+            options.log?.warn(`k8s: refreshing the sandbox admission stamps failed: ${(err as Error).message}`)
+          })
+        }, stampRefreshMs)
+      : undefined
+  stampRefresh?.unref?.()
+
   return {
     driver,
     dialer,
@@ -481,6 +499,7 @@ export async function startK8sRuntimePlane(options: K8sRuntimePlaneOptions): Pro
     },
     hasSandbox: (subject) => driver.hasClaim(subject as SandboxSubject),
     stop: async () => {
+      if (stampRefresh) clearInterval(stampRefresh)
       lossWatcher.cancelAll()
       tunnels.releaseAll('daemon is shutting down')
       dialer.stop()
