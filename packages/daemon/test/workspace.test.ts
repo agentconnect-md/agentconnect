@@ -579,7 +579,7 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
     const { agent, id } = fixture()
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'status') return ' M src/app.ts\n?? notes.md\n'
-      if (args[0] === 'for-each-ref') return ''
+      if (args[0] === 'show-ref') return ''
       return '0\n'
     })
 
@@ -587,14 +587,14 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
     expect(gitCalls().some((args) => args[0] === 'worktree')).toBe(false)
     // The exemption probe DID run — dirt on an ordinary worktree is kept only after
     // proving the worktree is not a review snapshot.
-    expect(gitCalls()).toContainEqual(['for-each-ref', '--count=1', `refs/agentconnect/reviews/${id}`])
+    expect(gitCalls()).toContainEqual(['show-ref', '--verify', `refs/agentconnect/reviews/${id}/head`])
   })
 
   it('removes a DIRTY review-snapshot worktree — its refs mark it daemon-owned and reset on delivery', async () => {
     const { agent, cwd, id } = fixture()
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'status') return '?? scratch/analysis.md\n M src/app.ts\n'
-      if (args[0] === 'for-each-ref') return `${'c'.repeat(40)} commit\trefs/agentconnect/reviews/${id}/head\n`
+      if (args[0] === 'show-ref') return `${'c'.repeat(40)} refs/agentconnect/reviews/${id}/head\n`
       if (args[0] === 'rev-list') return '0\n'
       return ''
     })
@@ -613,7 +613,7 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
     const { agent, cwd, id } = fixture()
     rawMock.mockImplementation(async (args: string[]) => {
       if (args[0] === 'rev-list') return '3\n'
-      if (args[0] === 'for-each-ref') return `${'c'.repeat(40)} commit\trefs/agentconnect/reviews/${id}/head\n`
+      if (args[0] === 'show-ref') return `${'c'.repeat(40)} refs/agentconnect/reviews/${id}/head\n`
       if (args[0] === 'symbolic-ref') return 'dev/yulong/brave-otter\n'
       return ''
     })
@@ -629,7 +629,7 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
     rawMock.mockImplementation(async (args: string[]) => (args[0] === 'rev-list' ? '0\n' : ''))
 
     expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({ outcome: 'removed' })
-    expect(gitCalls().some((args) => args[0] === 'for-each-ref')).toBe(false)
+    expect(gitCalls().some((args) => args[0] === 'show-ref')).toBe(false)
     // And absent the probe, the removal is not forced.
     expect(gitCalls().some((args) => args[0] === 'worktree' && args[1] === 'remove' && args[2] === '--force')).toBe(
       false
@@ -638,7 +638,7 @@ describe('workspaces.removeSessionWorktree(#485 retention GC)', () => {
 
   it('retains a worktree whose HEAD has commits unreachable from every remote ref', async () => {
     const { agent } = fixture()
-    // '' for for-each-ref: no review refs, so the snapshot exemption must not apply.
+    // '' for show-ref: no review head ref, so the snapshot exemption must not apply.
     rawMock.mockImplementation(async (args: string[]) => (args[0] === 'rev-list' ? '2\n' : ''))
 
     expect(await workspaces.removeSessionWorktree(agent, 'session-a')).toEqual({

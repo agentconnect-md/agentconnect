@@ -381,6 +381,23 @@ the volume, which is the same fail-closed gate that empties the primary checkout
 and the first point after the edit at which anything is authoritative. HOME is
 per pod by construction.
 
+**Every Git of this tier runs inside the pod's closed inventory.** On a pool
+member the daemon does not spawn Git at all: each invocation crosses the shim's
+`exec` channel and is judged there against a deliberately small subcommand list
+(`packages/daemon/src/shim/exec-handler.ts`), because the process that spawns
+Git is the only one whose check is a control. So an operation this tier needs is
+either expressed out of subcommands already admitted or it is a session that
+fails on the pool and works self-hosted — the failure mode is silent everywhere
+except the pool, since self-hosted Git never meets the list. Two operations are
+phrased for that reason rather than for Git's convenience: the session branch is
+made with `branch --no-track` + `symbolic-ref HEAD` + `reset --hard` instead of
+`checkout -b` (same three steps, and the `reset` is the one that materializes,
+so it keeps the lazy fetch a blobless clone needs), and retirement's
+review-snapshot probe reads the head ref with `show-ref --verify` instead of
+listing the ref root with `for-each-ref`. Widening the inventory is the other
+way to close such a gap, and it is the one that costs something permanent:
+`checkout` was left out.
+
 ### The tier a session is born in (decided 2026-09-03)
 
 A tier is a property of **one session**, decided when it is created and kept for its whole

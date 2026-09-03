@@ -71,7 +71,7 @@ describe('sandbox exec handler', () => {
 
   it('refuses a subcommand outside the declared inventory', async () => {
     const root = repository()
-    for (const subcommand of ['push', 'submodule', 'daemon', 'gc', 'apply']) {
+    for (const subcommand of ['push', 'submodule', 'daemon', 'gc', 'apply', 'checkout', 'for-each-ref']) {
       await expect(handler(root)('exec', { tool: 'git', args: [subcommand] })).rejects.toBeInstanceOf(ExecRefusedError)
     }
     // And the inventory is the daemon's declared list, not a superset invented here.
@@ -110,6 +110,33 @@ describe('sandbox exec handler', () => {
     for (const subcommand of ['branch', 'ls-remote', 'show-ref', 'symbolic-ref']) {
       expect(ALLOWED_GIT_SUBCOMMANDS.has(subcommand)).toBe(true)
     }
+  })
+
+  it('serves the branch-and-materialize sequence the confined session tier runs instead of a checkout', async () => {
+    // The clone tier (git-workspace-model.md §11) puts a session clone on its own generated branch.
+    // `checkout` is deliberately outside the inventory, so the daemon expresses that as three
+    // subcommands that are inside it — and here is where that has to hold: a refusal on this side is
+    // a session that fails on a pool member and works self-hosted, which is how it reached the field.
+    const root = repository()
+    for (const args of [
+      ['branch', '--no-track', 'dev/ada-lovelace/quiet-harbor', 'refs/heads/main'],
+      ['symbolic-ref', 'HEAD', 'refs/heads/dev/ada-lovelace/quiet-harbor'],
+      ['reset', '--hard']
+    ]) {
+      const result = (await handler(root)('exec', { tool: 'git', args })) as GitExecResult
+      expect(result.code).toBe(0)
+    }
+    const head = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' })
+    expect(head.trim()).toBe('dev/ada-lovelace/quiet-harbor')
+    // The tree is materialized, not merely pointed at, which is the half `checkout` was doing.
+    expect(readFileSync(join(root, 'file.txt'), 'utf8')).toBe('x\n')
+    expect(ALLOWED_GIT_SUBCOMMANDS.has('checkout')).toBe(false)
+    // And the snapshot probe retirement runs in that clone, which `for-each-ref` used to answer.
+    const probe = (await handler(root)('exec', {
+      tool: 'git',
+      args: ['show-ref', '--verify', 'refs/agentconnect/reviews/session-1/head']
+    })) as GitExecResult
+    expect(probe.code).not.toBe(0)
   })
 
   it('still refuses every execution option on the newly permitted subcommands', async () => {

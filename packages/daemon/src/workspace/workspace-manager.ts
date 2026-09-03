@@ -201,6 +201,8 @@ const CONVERSION_FILE = 'workspace-conversion.json'
 /** Word-pair branch names to try before falling back to a random suffix. */
 const SESSION_BRANCH_DRAWS = 5
 const GIT_OBJECT_ID = /^[0-9a-f]{40,64}$/i
+/** The ref every review fetch writes and verifies, so probing this ONE answers "is this a daemon-owned review snapshot" without listing the ref root. */
+const reviewHeadRefFor = (id: string): string => `refs/agentconnect/reviews/${id}/head`
 
 // The per-daemon execution plane every workspace operation resolves through: where an agent's git
 // runs, how a path this process cannot see gets emptied, whether workspaces live in sandboxes at
@@ -1370,10 +1372,9 @@ export class WorkspaceManager {
         const git = this.runnerFor(agent.id, clone.path).withEnv(workspaceGitLocalEnv())
         // Fetched review refs mark the clone as a daemon-owned review snapshot, reset on every delivery.
         let snapshot: boolean | undefined
+        // `show-ref` on the head ref rather than `for-each-ref` over the root: the sandbox admits the one and not the other, and a review that fetched anything fetched this ref.
         const isReviewSnapshot = async () =>
-          (snapshot ??=
-            (await git.raw(['for-each-ref', '--count=1', `refs/agentconnect/reviews/${id}`]).catch(() => '')).trim() !==
-            '')
+          (snapshot ??= (await git.raw(['show-ref', '--verify', reviewHeadRefFor(id)]).catch(() => '')).trim() !== '')
         if ((await git.raw(['status', '--porcelain'])).trim() !== '' && !(await isReviewSnapshot())) {
           return { outcome: 'retained', reason: 'dirty' }
         }
@@ -1547,11 +1548,12 @@ export class WorkspaceManager {
       // protects nothing. Probed lazily — only when a protection would otherwise keep the worktree —
       // and at most once; a probe failure conservatively reads as "not a snapshot".
       let snapshot: boolean | undefined
+      // `show-ref` on the head ref rather than `for-each-ref` over the root, for the reason {@link removeSessionClones} gives: the sandbox admits the one and not the other.
       const isReviewSnapshot = async () =>
         (snapshot ??=
           (
             await rootGit()
-              .raw(['for-each-ref', '--count=1', `refs/agentconnect/reviews/${id}`])
+              .raw(['show-ref', '--verify', reviewHeadRefFor(id)])
               .catch(() => '')
           ).trim() !== '')
       if ((await worktreeGit.raw(['status', '--porcelain'])).trim() !== '' && !(await isReviewSnapshot())) {
@@ -1628,7 +1630,7 @@ export class WorkspaceManager {
     }
     const refRoot = `refs/agentconnect/reviews/${worktreeId}`
     const baseRef = `${refRoot}/base`
-    const headRef = `${refRoot}/head`
+    const headRef = reviewHeadRefFor(worktreeId)
     const mergeRef = `${refRoot}/merge`
     await assertSafeWorkspaceGitConfig(this.runnerFor(agentId, root.path))
     if (root.githubApp) await preWarmGitCred(agentId, 'pull')
@@ -2052,7 +2054,7 @@ export class WorkspaceManager {
     return { ...base, GIT_NO_LAZY_FETCH: '0' }
   }
 
-  /** Check the clone out on its own generated branch at `target` — the draw {@link addRootSessionWorktree} makes, `--no-track` for the same reason. */
+  /** Put the clone on its own generated branch at `target` — the draw {@link addRootSessionWorktree} makes, `--no-track` for the same reason. */
   private async checkoutSessionBranch(
     agentId: string,
     root: WorkspaceRoot,
@@ -2064,10 +2066,12 @@ export class WorkspaceManager {
       this.runnerFor(agentId, cwd).withEnv(workspaceGitLocalEnv()),
       initiatedBy
     )
-    // The checkout materializes the tree, so it may lazily fetch: the clone env, not the local one.
-    await this.runnerFor(agentId, cwd)
-      .withEnv(this.sessionCloneGitEnv(agentId, root))
-      .raw(['checkout', '--no-track', '-b', branch, target])
+    // Three admitted subcommands rather than `checkout -b`, which the sandbox refuses by design: create the branch, point HEAD at it, then materialize the tree HEAD now names.
+    const git = this.runnerFor(agentId, cwd).withEnv(this.sessionCloneGitEnv(agentId, root))
+    await git.raw(['branch', '--no-track', branch, target])
+    await git.raw(['symbolic-ref', 'HEAD', `refs/heads/${branch}`])
+    // The materialization is what may lazily fetch, so it runs under the clone env like the review reset below.
+    await git.raw(['reset', '--hard'])
   }
 
   clusterWorkspaceCwd(agent: Agent, runtimeRoot: string | undefined, request?: ClusterSessionScope): string {
