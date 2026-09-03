@@ -400,6 +400,7 @@ function fakeCluster() {
   const claims = new Map<string, SandboxClaim>()
   const sandboxes = new Map<string, Sandbox>()
   let minted = 0
+  let stamps = 0
   return {
     podName,
     claims,
@@ -425,6 +426,21 @@ function fakeCluster() {
         const claim = claims.get(name)
         if (!claim) throw new K8sApiError(404, 'NotFound', 'no claim')
         return claim
+      },
+      // A resume publishes a launch without admitting one, so it stamps the claim it resumes onto.
+      stampClaim: async (name: string, annotations: Record<string, string>) => {
+        const existing = claims.get(name)
+        if (!existing) throw new K8sApiError(404, 'NotFound', 'no claim')
+        const claim = {
+          ...existing,
+          metadata: {
+            ...existing.metadata,
+            annotations: { ...existing.metadata?.annotations, ...annotations },
+            resourceVersion: `rv-${++stamps}`
+          }
+        }
+        claims.set(name, claim)
+        return { claim }
       },
       deleteClaim: async (name: string): Promise<void> => void claims.delete(name),
       listClaims: async () => [...claims.values()],

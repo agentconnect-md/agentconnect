@@ -150,6 +150,15 @@ app.kubernetes.io/component: {{ .component }}
   value: {{ .Values.daemonPool.sandboxNamespace | default .Release.Namespace | quote }}
 - name: AGENTCONNECT_SUPERVISOR
   value: k8s
+{{- with .Values.daemonPool.reconciler.graceMs }}
+{{- /* ONE safety window for both surfaces. The sweep calls a claim orphaned once nothing has touched
+       it for this long, and a member re-stamps the claims it holds on a cadence derived from the same
+       number — so a member reading a different grace than the job sweeping after it would let a claim
+       in use age past the window between two of its own ticks. Unset ⇒ the daemon's 10-minute default
+       on both sides. */}}
+- name: AC_K8S_ORPHAN_GRACE_MS
+  value: {{ . | quote }}
+{{- end }}
 {{- end -}}
 
 {{/* One env pair per `modelEgress` client, rendered onto whichever surface asks. Two surfaces

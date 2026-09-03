@@ -501,4 +501,28 @@ relay_paths = relay_route.dig('spec', 'rules').flat_map { |rule| rule['matches']
   abort("relay route must forward #{path}") unless relay_paths.include?(path)
 end
 
+# ONE safety window. The sweep calls a claim orphaned once nothing has touched it for this long, and a
+# member re-stamps the claims it holds on a cadence derived from the same number — so the value has to
+# reach BOTH surfaces from one place. A member reading a different grace than the job sweeping after it
+# would let a claim in use age past the window between two of its own ticks, and the sweep would then
+# delete a live pod's volume.
+grace_rendered, grace_error, grace_status = Open3.capture3(*(command + ['--set', 'daemonPool.reconciler.graceMs=90000']))
+abort("helm template (orphan grace) failed:\n#{grace_error}") unless grace_status.success?
+grace_documents = YAML.load_stream(grace_rendered).compact
+grace_env = lambda do |kind, name, path|
+  doc = grace_documents.find { |item| item['kind'] == kind && item.dig('metadata', 'name') == name } ||
+        abort("missing #{kind}/#{name} in the orphan-grace render")
+  doc.dig(*path).fetch('env').to_h { |item| [item.fetch('name'), item['value']] }
+end
+member_grace = grace_env.call('Deployment', 'example-agentconnect-daemon-pool',
+                              ['spec', 'template', 'spec', 'containers', 0])
+sweep_grace = grace_env.call('CronJob', 'example-agentconnect-daemon-pool-reconciler',
+                             ['spec', 'jobTemplate', 'spec', 'template', 'spec', 'containers', 0])
+abort('pool members must read the same orphan grace the sweep does') unless member_grace['AC_K8S_ORPHAN_GRACE_MS'] == '90000'
+abort('the orphan sweep must read the configured grace') unless sweep_grace['AC_K8S_ORPHAN_GRACE_MS'] == '90000'
+# Unset is the shared default on both, never one side defaulting while the other is configured.
+default_member = find.call('Deployment', 'example-agentconnect-daemon-pool')
+                     .dig('spec', 'template', 'spec', 'containers', 0).fetch('env').map { |item| item.fetch('name') }
+abort('an unset grace must leave both sides on the daemon default') if default_member.include?('AC_K8S_ORPHAN_GRACE_MS')
+
 puts 'chart render contract: ok'

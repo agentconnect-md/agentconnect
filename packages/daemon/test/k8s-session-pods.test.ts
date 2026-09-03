@@ -587,6 +587,51 @@ describe('one sandbox pod per session host (git-workspace-model §11)', () => {
     expect(warnings.filter((line) => line.includes('refused the admission stamp'))).toHaveLength(1)
   })
 
+  it('stamps a takeover BEFORE it publishes the launch, not at the next tick', async () => {
+    // `setInterval` does not fire for a whole period, and a takeover writes nothing to the claim on its
+    // own — so in that first window an adopted claim looks untouched while a returning delivery is
+    // already being served from the registry. A sweep holding this claim's old version would still
+    // match, and delete a live pod.
+    const { api, claims } = cluster()
+    const first = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    const name = sandboxClaimName(session)
+    await first.driver.ensureSandbox(session)
+    const admitted = claims.get(name)!.metadata!.resourceVersion
+
+    // A second member takes it over, with no timer having run anywhere.
+    const successor = member(api, podSide().connect)
+    successor.clock.advance(600_000)
+    expect(await successor.driver.adopt(session)).toBeDefined()
+
+    const taken = claims.get(name)!
+    expect(taken.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(new Date(successor.clock.now()).toISOString())
+    // The version moved with it, so a delete preconditioned on what the sweep listed no longer matches.
+    expect(taken.metadata?.resourceVersion).not.toBe(admitted)
+  })
+
+  it('stamps a resume onto an observed claim, which publishes a launch without admitting one either', async () => {
+    // The same class as a takeover, and the reviewer named only the takeover: `resumeSandbox` records a
+    // launch straight from the claim it read, so it too would serve a session off an untouched claim.
+    const { api, claims } = cluster()
+    const { driver, clock } = member(api, podSide().connect)
+    const session = sandboxSubjectFor(T1)
+    const name = sandboxClaimName(session)
+    await driver.ensureSandbox(session)
+    const claimUid = (await driver.claimUidFor(session))!
+    expect(await driver.suspendIfIdle(session)).toBe('suspended')
+    const before = claims.get(name)!.metadata!.resourceVersion
+
+    clock.advance(600_000)
+    await driver.resumeBoundChannel(session, claimUid)
+
+    const resumed = claims.get(name)!
+    expect(resumed.metadata?.annotations?.[AC_ANNOTATION_ADMITTED]).toBe(new Date(clock.now()).toISOString())
+    expect(resumed.metadata?.resourceVersion).not.toBe(before)
+    // Still a resume, not an admission: the claim is the same object, never a replacement.
+    expect(resumed.metadata?.uid).toBe(claimUid)
+  })
+
   it('keeps the agent pod path byte-identical: no host key means the agent claim, as before', async () => {
     const { api, claims } = cluster()
     const { driver, records } = member(api, podSide().connect)

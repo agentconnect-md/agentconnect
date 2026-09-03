@@ -8,6 +8,7 @@ import {
   ORPHAN_GRACE_ENV,
   OrphanReconciler,
   resolveOrphanReconcilerSettings,
+  stampRefreshMsFor,
   type OrphanReconcilerDeps
 } from '../src/k8s/orphan-reconciler.js'
 import {
@@ -157,6 +158,22 @@ describe('orphan reconciler settings', () => {
       deleteEnabled: true
     })
     expect(() => resolveOrphanReconcilerSettings({ [ORPHAN_GRACE_ENV]: '-1' })).toThrow(ORPHAN_GRACE_ENV)
+  })
+
+  it('derives the members’ stamp cadence from whatever grace the sweep was given', () => {
+    // One safety window: the sweep collects a claim nothing has touched for `graceMs`, so a member using
+    // one has to touch it strictly more often than that. A fixed cadence is silently wrong for every
+    // install that shortens the grace — a held claim would age past it between two ticks and become
+    // deletable while in use — so the cadence tracks the configured value rather than a constant.
+    for (const graceMs of [DEFAULT_ORPHAN_GRACE_MS, 90_000, 30_000, 5_000, 1_000]) {
+      const refreshMs = stampRefreshMsFor(graceMs)
+      expect(refreshMs).toBeGreaterThan(0)
+      // Two missed ticks still leave a held claim inside the window.
+      expect(refreshMs * 3).toBeLessThanOrEqual(graceMs)
+    }
+    expect(stampRefreshMsFor(DEFAULT_ORPHAN_GRACE_MS)).toBe(200_000)
+    // A grace shorter than the cadence it used to be hardcoded at is the case that was broken.
+    expect(stampRefreshMsFor(90_000)).toBe(30_000)
   })
 })
 

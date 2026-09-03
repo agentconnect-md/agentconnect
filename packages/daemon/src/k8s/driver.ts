@@ -185,18 +185,21 @@ export class K8sDriver implements SpawnDriver {
    * turn's path — a refresh that does not land costs freshness, and the next tick tries again.
    */
   async refreshAdmissionStamps(): Promise<void> {
+    for (const { subject } of this.registry.launched()) await this.stampHeldClaim(subject)
+  }
+
+  // Mark one claim as in use NOW. Best effort: a claim retired under this member is not an error to
+  // report — its launch is simply on its way out — and a Role without `patch` degrades as admission does.
+  private async stampHeldClaim(subject: SandboxSubject): Promise<void> {
+    const name = this.claimName(subject)
     const at = new Date(this.clock.now()).toISOString()
-    for (const { subject } of this.registry.launched()) {
-      const name = this.claimName(subject)
-      // A claim retired under this member is not an error to report: its launch is simply on its way out.
-      const stamped = await this.deps.api.stampClaim(name, { [AC_ANNOTATION_ADMITTED]: at }).catch((err: unknown) => {
-        if (!(err instanceof K8sApiError) || !err.isNotFound) {
-          this.deps.log.debug?.(`cluster: could not refresh the stamp on claim ${name} — ${(err as Error).message}`)
-        }
-        return undefined
-      })
-      if (stamped?.stampRefused) this.reportStampRefused(name)
-    }
+    const stamped = await this.deps.api.stampClaim(name, { [AC_ANNOTATION_ADMITTED]: at }).catch((err: unknown) => {
+      if (!(err instanceof K8sApiError) || !err.isNotFound) {
+        this.deps.log.debug?.(`cluster: could not refresh the stamp on claim ${name} — ${(err as Error).message}`)
+      }
+      return undefined
+    })
+    if (stamped?.stampRefused) this.reportStampRefused(name)
   }
 
   // Said once per process: the launch is unaffected, but the orphan sweep loses the stamp that tells a
@@ -226,6 +229,11 @@ export class K8sDriver implements SpawnDriver {
       const current = this.registry.currentLaunch(subject)
       if (current) return current
       if (!this.registry.stillServed(subject, releasedAt)) return undefined
+      // Stamped BEFORE the launch is published, not at the next tick: a takeover writes nothing to the
+      // claim otherwise, and the launch it publishes is then served from the registry — so a sweep that
+      // listed this claim while the session's row was absent would still match its version when the row
+      // came back, and delete a pod this member is serving.
+      await this.stampHeldClaim(subject)
       this.deps.log.info(`cluster: sandbox ${subject} taken over with sandbox ${sandboxName} running`)
       return this.registry.recordLaunch(subject, sandboxName, sandboxUid, claimUid)
     })
@@ -291,6 +299,8 @@ export class K8sDriver implements SpawnDriver {
     const sandboxUid = sandbox?.metadata?.uid
     if (!sandboxUid) throw new Error(`sandbox ${sandboxName} is gone — nothing to resume`)
     this.registry.assertStillServed(subject, releasedAt)
+    // A resume publishes a launch without admitting one, exactly as a takeover does, so it stamps too.
+    await this.stampHeldClaim(subject)
     return await this.registry.recordLaunch(subject, sandboxName, sandboxUid, claimUid)
   }
 

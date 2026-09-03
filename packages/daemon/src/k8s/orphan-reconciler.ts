@@ -38,6 +38,19 @@ export const ORPHAN_GRACE_ENV = 'AC_K8S_ORPHAN_GRACE_MS'
 /** Deletion is opt-in: `1`/`true` collects, anything else only reports. */
 export const ORPHAN_DELETE_ENV = 'AC_K8S_ORPHAN_DELETE'
 export const DEFAULT_ORPHAN_GRACE_MS = 10 * 60_000
+
+/**
+ * How often a member must re-stamp the claims it holds, for a sweep that waits `graceMs`.
+ *
+ * ONE safety window, read from one place: the sweep decides a claim is collectable once nothing has
+ * touched it for `graceMs`, so a member using a claim has to touch it strictly more often than that.
+ * A third of the window leaves two missed ticks of margin. Derived rather than fixed because the grace
+ * is deployment-owned — a hardcoded cadence is silently wrong for every install that shortens it, and
+ * a floor would be the same bug at a different number.
+ */
+export function stampRefreshMsFor(graceMs: number): number {
+  return Math.max(1, Math.floor(graceMs / 3))
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export interface OrphanReconcilerSettings {
