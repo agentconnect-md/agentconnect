@@ -3538,7 +3538,9 @@ export class Daemon {
   private sandboxRuntimeReadRoots(
     agent: LoadedAgent,
     runtime: RuntimeDef,
-    launchEnv: Record<string, string>,
+    // The daemon-authored session gitconfig, passed rather than read back from the merged child
+    // env: runtimeOverrides.env could otherwise name any host file and have it carved in here.
+    sessionGitConfigPath: string | undefined,
     githubAppCredentials: boolean,
     gitlabCredentials: boolean
   ): string[] {
@@ -3549,9 +3551,9 @@ export class Daemon {
     const cliEntry = daemonEntryForShims(this.root)
     const paths = [mcpSocketPath(this.root)]
     const executableCommands = [process.execPath]
-    // Whatever the launch names, credentials or not: it carries the hook policy, and a hidden
-    // global config is read by git as no config at all — a silent loss of the pins, not an error.
-    if (launchEnv.GIT_CONFIG_GLOBAL) paths.push(launchEnv.GIT_CONFIG_GLOBAL)
+    // Carved with or without credentials: the file carries the hook policy, and a hidden global
+    // config is read by git as no config at all — a silent loss of the pins, not an error.
+    if (sessionGitConfigPath) paths.push(sessionGitConfigPath)
     if (githubAppCredentials) {
       paths.push(gitcredSocketPath(this.root), gitcredShimPath(this.root))
       if (this.ghBinDir) paths.push(this.ghBinDir)
@@ -4305,6 +4307,11 @@ export class Daemon {
       this.k8sPlane && needsSessionGit
         ? sessionGitConfig(agent.id, sessionGitIdentity, sandboxGitCredentialTarget(), sessionGitScope)
         : undefined
+    // Held as its own value: the sandbox read grant must come from the path the DAEMON authored,
+    // never read back out of the merged child env, where runtimeOverrides.env could name any file.
+    const sessionGitInjection = needsSessionGit
+      ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope))
+      : undefined
     const env: Record<string, string> = {
       ...baseEnv,
       // Memory backend env: managed disables the runtime's own memory; native
@@ -4314,9 +4321,7 @@ export class Daemon {
       ...memoryProviderFor(memoryAgent, runtime, baseEnv, this.externalMemoryAdmission(agent.id)).runtimeEnv(),
       // App identity rides with the CREDENTIAL mode, not the workspace mode: a scratch workspace with
       // authorized repositories needs the capability for its git and gh exactly like a clone does.
-      ...(needsSessionGit
-        ? (sandboxSessionGit?.env ?? sessionGitEnv(agent.id, sessionGitIdentity, sessionGitScope))
-        : {})
+      ...(sessionGitInjection ?? {})
     }
     // Config-file secrets are materialized by assembleRuntimeLaunch below; the pre-strip merged env
     // is snapshotted so the idle sweep can delete the files and rematerializeConfigFiles() can
@@ -4406,8 +4411,14 @@ export class Daemon {
           if (this.claudeModelAliases) applyClaudeModelAliases(target, launchEnv, this.claudeModelAliases)
         },
         runtimeReadRoots: runInSandbox
-          ? (launchEnv) =>
-              this.sandboxRuntimeReadRoots(agent, runtime, launchEnv, githubAppCredentials, gitlabCredentials)
+          ? () =>
+              this.sandboxRuntimeReadRoots(
+                agent,
+                runtime,
+                sessionGitInjection?.GIT_CONFIG_GLOBAL,
+                githubAppCredentials,
+                gitlabCredentials
+              )
           : undefined,
         // A session host with its own clones (§11) writes its session directory alone; the launch derives its Git grants from it.
         trustedWorkspaceWriteRoots: runInSandbox
