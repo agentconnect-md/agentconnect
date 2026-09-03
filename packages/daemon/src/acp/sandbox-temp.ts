@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import type { HostKey } from './host-key.js'
 
@@ -37,18 +37,31 @@ export const AF_UNIX_PATH_MAX = 107
 /** The widest socket SRT composes under TMPDIR — a Linux pid at its 22-bit ceiling. */
 const WIDEST_SRT_SOCKET = 'srt-mux-4194304-0.sock'
 
-// The marker is published WITH the directory, never after it: two hosts of one agent starting for the first time would otherwise interleave between the mkdir and the write, and the loser would read an unmarked parent and refuse a path that is in fact ours. Build it aside, mark it, then move it into place — the rename is atomic, so `t` never exists unmarked.
+// `mkdir` is the only no-clobber claim on a directory name — `rename` REPLACES an empty destination, which would let this adopt a foreign `t`. So the winner creates the name and marks it; a loser waits briefly for that mark rather than assuming the directory is unowned, because the two are not published together and a first-launch race would otherwise refuse a path that is ours.
+const MARKER_WAIT_MS = 2_000
+const MARKER_POLL_MS = 20
+
 function createOwnedTempParent(agentDir: string): void {
   const parent = sandboxTempParent(agentDir)
-  if (existsSync(parent)) return
-  const staging = `${parent}.${randomUUID()}`
-  mkdirSync(staging, { recursive: true, mode: 0o700 })
-  writeFileSync(join(staging, OWNER_MARKER), '', { mode: 0o600 })
   try {
-    renameSync(staging, parent)
-  } catch {
-    // Another host won the race, or something else holds the name; its own proof decides below.
-    rmSync(staging, { recursive: true, force: true })
+    mkdirSync(parent, { mode: 0o700 })
+  } catch (err) {
+    // Anything but "the name is taken" is the caller's to report; a taken name may be ours, mid-creation, or foreign.
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+    waitForOwnerMarker(parent)
+    return
+  }
+  writeFileSync(join(parent, OWNER_MARKER), '', { mode: 0o600 })
+}
+
+/** Bounded: a contender that created the name writes its marker microseconds later, so an absent one past this wait means the directory is not ours and the ownership check below refuses it. */
+function waitForOwnerMarker(parent: string): void {
+  const deadline = Date.now() + MARKER_WAIT_MS
+  while (!daemonOwnsTempParent(parent) && Date.now() < deadline) {
+    const until = Date.now() + MARKER_POLL_MS
+    while (Date.now() < until) {
+      /* a spin is enough for a window this short, and keeps preparation synchronous */
+    }
   }
 }
 
