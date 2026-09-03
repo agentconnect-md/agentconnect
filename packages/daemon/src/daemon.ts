@@ -288,6 +288,7 @@ import { clusterProbeHostFactory, defaultProbeHostFactory } from './acp/probe-ho
 import { runtimeHomePath } from './runtimes/runtime-home.js'
 import { planRuntimeInstallRepair, repairRuntimeInstall } from './runtimes/runtime-install-repair.js'
 import { RuntimeStore, parseNpxLaunch, storedRuntimeDef } from './runtimes/runtime-store.js'
+import { ArchiveStore, parseArchiveLaunch, storedArchiveRuntimeDef } from './runtimes/archive-store.js'
 import {
   applyCodexSessionFloor,
   applyClaudeModelAliases,
@@ -818,6 +819,7 @@ export class Daemon {
   // Why a daemon-supplied adapter has no install in the runtime store, so a refusal can name its tree.
   private runtimeStoreFailures = new Map<string, string>()
   private runtimeStore?: Pick<RuntimeStore, 'ensure'>
+  private archiveStore?: Pick<ArchiveStore, 'ensure'>
   // Terminal ACP start failure per agent, so a later refusal can say the runtime did not start
   // instead of reporting the agent as absent. Cleared once the agent starts or leaves the roster.
   private lastStartFailure = new Map<string, string>()
@@ -1346,6 +1348,8 @@ export class Daemon {
       installed?: typeof installedRuntimes
       /** Test seam for the daemon-owned adapter store; production builds one over the daemon root. */
       runtimeStore?: Pick<RuntimeStore, 'ensure'>
+      /** Test seam for the daemon-owned vendor-archive store; production builds one over the daemon root. */
+      archiveStore?: Pick<ArchiveStore, 'ensure'>
       /** Test seam: null simulates a host without Linux SRT/bwrap. */
       sandboxMechanism?: SandboxMechanism | null
       /** `--k8s`: runtimes live in sandbox pods, not on this host. Disables runtime
@@ -2255,25 +2259,47 @@ export class Daemon {
     return this.runtimeStore
   }
 
-  /** Install each id's daemon-supplied `npx` adapter into the daemon-owned store and launch it from
-   *  there, so no agent launch resolves a package and none loads adapter code out of a writable HOME.
+  /** The store this daemon extracts vendor agent archives into; a pool launch and an injected host
+   *  factory get none for the same reasons {@link adapterStore} does. */
+  private vendorArchiveStore(root: string): Pick<ArchiveStore, 'ensure'> | undefined {
+    if (this.k8s || this.opts.hostFactory) return undefined
+    this.archiveStore ??= this.opts.archiveStore ?? new ArchiveStore({ root, log: this.log })
+    return this.archiveStore
+  }
+
+  /** Install each id's daemon-supplied adapter — an `npx` package, or a vendor archive the registry
+   *  distributes a binary in — into the daemon-owned store and launch it from there, so no agent
+   *  launch resolves or downloads anything and none loads adapter code out of a writable HOME.
    *  An adapter with no install leaves the catalog: {@link runtimeUnavailableMessage} names its tree. */
   private async installManagedRuntimePackages(
     catalog: ResolvedRuntimeCatalog,
     ids: Iterable<string>
   ): Promise<ResolvedRuntimeCatalog> {
     const store = this.adapterStore(this.root)
+    const archives = this.vendorArchiveStore(this.root)
     if (!store) return catalog
     const entries = { ...catalog.entries }
     for (const id of new Set(ids)) {
       const entry = entries[id]
-      const launch = entry && Daemon.STORE_MANAGED_SOURCES.has(entry.source) ? parseNpxLaunch(entry.runtime) : undefined
-      if (!entry || !launch) continue
+      if (!entry || !Daemon.STORE_MANAGED_SOURCES.has(entry.source)) continue
+      const npx = parseNpxLaunch(entry.runtime)
+      const archive = npx ? undefined : parseArchiveLaunch(id, entry)
+      if (!npx && !archive) continue
       try {
-        const installed = await store.ensure(launch)
-        entries[id] = { ...entry, runtime: storedRuntimeDef(entry.runtime, launch, installed) }
+        let rewritten: RuntimeDef
+        let label: string
+        if (npx) {
+          const installed = await store.ensure(npx)
+          rewritten = storedRuntimeDef(entry.runtime, npx, installed)
+          label = `${npx.name}@${installed.version} from ${installed.tree}`
+        } else if (archive && archives) {
+          const installed = await archives.ensure(archive)
+          rewritten = storedArchiveRuntimeDef(entry.runtime, installed)
+          label = `${archive.bin}@${installed.version} from ${installed.tree}`
+        } else continue
+        entries[id] = { ...entry, runtime: rewritten }
         this.runtimeStoreFailures.delete(id)
-        this.log.info(`runtimes: "${id}" launches ${launch.name}@${installed.version} from ${installed.tree}`)
+        this.log.info(`runtimes: "${id}" launches ${label}`)
       } catch (err) {
         delete entries[id]
         // This detail reaches a console reader through the refusal, so it is the bounded, path-free
@@ -2292,7 +2318,8 @@ export class Daemon {
    *  after boot. The store memoizes, so this resolves once for the runtime and never once per spawn. */
   private async ensureRuntimeInstalled(runtimeId: string): Promise<void> {
     const entry = this.runtimeCatalog.entries[runtimeId]
-    if (!entry || !Daemon.STORE_MANAGED_SOURCES.has(entry.source) || !parseNpxLaunch(entry.runtime)) return
+    if (!entry || !Daemon.STORE_MANAGED_SOURCES.has(entry.source)) return
+    if (!parseNpxLaunch(entry.runtime) && !parseArchiveLaunch(runtimeId, entry)) return
     this.runtimeCatalog = await this.installManagedRuntimePackages(this.runtimeCatalog, [runtimeId])
     this.refreshAdmittedRuntimes()
   }

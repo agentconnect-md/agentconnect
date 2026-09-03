@@ -47,6 +47,8 @@ export interface ResolvedRuntimeEntry {
   /** Audited skills CLI identity; absent means this harness has not passed the
    * skill-discovery compatibility admission. */
   skillsAgentId: string | null
+  /** Vendor ZIP this platform's binary comes from; the store installs it and rewrites the command. */
+  archive?: string
 }
 
 export interface ResolvedRuntimeCatalog {
@@ -66,6 +68,12 @@ export function platformKey(): string | null {
   const arch = process.arch === 'arm64' ? 'aarch64' : process.arch === 'x64' ? 'x86_64' : null
   if (!os || !arch) return null
   return `${os}-${arch}`
+}
+
+/** The archive this platform's binary is distributed in, when the entry names one. */
+export function archiveUrl(entry: RegistryEntry): string | undefined {
+  const key = platformKey()
+  return (key ? entry.distribution.binary?.[key]?.archive : undefined) || undefined
 }
 
 export function toRuntimeDef(entry: RegistryEntry): RuntimeDef | null {
@@ -241,7 +249,7 @@ export async function resolveRuntimeCatalog(
   for (const [id, entry] of Object.entries(registry.agents)) {
     const runtime = toRuntimeDef(entry)
     if (!runtime) continue
-    entries[id] = resolvedRuntimeEntry(id, runtime, 'registry', entry.name || id, entry.version)
+    entries[id] = resolvedRuntimeEntry(id, runtime, 'registry', entry.name || id, entry.version, archiveUrl(entry))
   }
   for (const [id, entry] of Object.entries(MANAGED_RUNTIME_CATALOG)) {
     entries[id] = resolvedRuntimeEntry(id, entry.runtime, 'managed', entry.name, entry.version)
@@ -262,7 +270,8 @@ function resolvedRuntimeEntry(
   runtime: RuntimeDef,
   source: RuntimeSource,
   name: string,
-  version: string
+  version: string,
+  archive?: string
 ): ResolvedRuntimeEntry {
   // A user runtime overrides the command/args as well as the id's semantics.
   // Never inherit an audited built-in capability from the reused id: operators
@@ -271,7 +280,7 @@ function resolvedRuntimeEntry(
     source === 'user' && !Object.prototype.hasOwnProperty.call(runtime, 'skillsAgentId')
       ? undefined
       : skillsAgentIdForRuntime(id, runtime)
-  return { runtime, source, name, version, skillsAgentId: skillsAgentId ?? null }
+  return { runtime, source, name, version, skillsAgentId: skillsAgentId ?? null, ...(archive ? { archive } : {}) }
 }
 
 export async function resolveRuntimes(

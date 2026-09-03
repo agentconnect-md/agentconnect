@@ -17,6 +17,7 @@ import { resolveRoot } from '../paths.js'
 import { runtimeHomePath } from '../runtimes/runtime-home.js'
 import { sandboxReadRoots } from '../runtimes/read-roots.js'
 import { installedRuntimeCatalog } from '../runtimes/probe.js'
+import { ArchiveStore, parseArchiveLaunch, storedArchiveRuntimeDef } from '../runtimes/archive-store.js'
 import { probeAllRuntimes, type ProbeOptions, type RuntimeProbeResult } from '../runtimes/runtime-prober.js'
 import { defaultProbeHostFactory } from '../acp/probe-host-factory.js'
 import { CuratedRuntimeAdmission } from '../runtimes/curated-admission.js'
@@ -71,14 +72,28 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     : await resolveRuntimeCatalog(cfg, root, { neededRuntimes: [agent.runtime], mode: 'cache-first' })
   const runtimes = opts.installed ? opts.installed(catalog.runtimes) : installedRuntimeCatalog(catalog).runtimes
   const entry = catalog.entries[agent.runtime]
-  const runtime = runtimes[agent.runtime]
-  if (!runtime) {
+  const selected = runtimes[agent.runtime]
+  if (!selected) {
     if (entry?.source === 'curated') {
       throw new Error(`curated runtime "${agent.runtime}" is not installed or initialized on this host`)
     }
     const available = Object.keys(runtimes).sort().join(', ') || '(none)'
     throw new Error(`runtime "${agent.runtime}" not found. Available: ${available}`)
   }
+
+  // An archive-distributed runtime was admitted on the product's own state, and its binary lives in
+  // the daemon-owned store rather than on `$PATH` — so this launch path installs it too, or the
+  // spawn below would run the registry's relative `./cmd`. The store reuses what a previous run left.
+  const archiveLaunch = entry ? parseArchiveLaunch(agent.runtime, entry) : undefined
+  const runtime = archiveLaunch
+    ? storedArchiveRuntimeDef(
+        selected,
+        await new ArchiveStore({
+          root,
+          log: { info: (message) => out.write(`${message}\n`), warn: (message) => out.write(`${message}\n`) }
+        }).ensure(archiveLaunch)
+      )
+    : selected
 
   const sandboxMechanism = detectSandbox()
   // Sandbox-optional principle (#36): the single-shot host follows the agent's OWN

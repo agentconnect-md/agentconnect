@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Writable } from 'node:stream'
+import { zipSync } from 'fflate'
 import { runChat } from '../src/cli/chat.js'
 import type { AcpHost } from '../src/acp/acp-host.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
@@ -153,6 +154,48 @@ describe('runChat', () => {
     await expect(runChat({ agentsDir, message: 'hi', configPath, root, out: capture().stream })).rejects.toThrow(
       /runtime "missing".*Available: .*fake/s
     )
+  })
+
+  it('installs an archive-distributed runtime into the store rather than launching the registry ./cmd', async () => {
+    const files = scaffold()
+    const runtime = { command: './agy_acp_server.par', args: ['--uid='], env: [] }
+    const zipped = zipSync({ 'agy_acp_server.par': Buffer.from('#!par\n') })
+    const fetchStub = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(new Uint8Array(zipped), { status: 200 }))
+    let launched: { command: string; args: string[]; readRoots?: string[] } | undefined
+    try {
+      await runChat({
+        ...files,
+        message: 'hi',
+        out: capture().stream,
+        resolveCatalog: async () => ({
+          entries: {
+            fake: {
+              runtime,
+              source: 'registry',
+              name: 'Google Antigravity',
+              version: '1.0.0',
+              skillsAgentId: null,
+              archive: 'https://dl.example.test/agy-acp-server-linux-x86_64.zip'
+            }
+          },
+          runtimes: { fake: runtime }
+        }),
+        installed: (runtimes) => runtimes,
+        hostFactory: (rt) => {
+          launched = rt
+          return quietHost()
+        }
+      })
+    } finally {
+      fetchStub.mockRestore()
+    }
+    // `installedRuntimeCatalog` admits this on the product's state, so the launch path has to
+    // localize it too — otherwise the spawn runs a relative path that resolves to nothing.
+    expect(launched?.command).toMatch(/runtimes[/\\]fake@1\.0\.0[/\\]agy_acp_server\.par$/)
+    expect(launched?.args).toEqual(['--uid='])
+    expect(existsSync(launched!.command)).toBe(true)
   })
 
   it('errors and asks for --agent when several agents are discovered', async () => {

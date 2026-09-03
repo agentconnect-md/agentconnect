@@ -310,6 +310,65 @@ describe('installedRuntimes', () => {
     expect(Object.keys(installedRuntimes(all, env())).sort()).toEqual(['binary-agent', 'claude-acp'])
   })
 
+  it('does not read an Antigravity install as a Gemini CLI one, though they share ~/.gemini', () => {
+    makeExecutable(binDir, 'npx')
+    const gemini: RuntimeDef = { command: 'npx', args: ['-y', '@google/gemini-cli', '--acp'], env: [] }
+    // What `agy` itself writes: the shared root exists, but no Gemini CLI file in it does.
+    mkdirSync(join(home, '.gemini', 'antigravity-cli'), { recursive: true })
+    mkdirSync(join(home, '.gemini', 'config'), { recursive: true })
+    expect(isRuntimeAvailable('gemini', gemini, env())).toBe(false)
+
+    writeFileSync(join(home, '.gemini', 'settings.json'), '{}')
+    expect(isRuntimeAvailable('gemini', gemini, env())).toBe(true)
+  })
+
+  it('keeps the command probe for an archive format the store cannot install', () => {
+    // opencode/amp/kimi ship `.tar.gz` on Linux with a flat `./cmd`. The store inflates ZIP only,
+    // so these must stay on the probe they already pass rather than be admitted and then dropped.
+    makeExecutable(binDir, 'amp-acp')
+    const runtime: RuntimeDef = { command: './amp-acp', args: [], env: [] }
+    const catalog = (): ResolvedRuntimeCatalog => ({
+      entries: {
+        'amp-acp': {
+          runtime,
+          source: 'registry',
+          name: 'Amp',
+          version: '0.1.0',
+          skillsAgentId: null,
+          archive: 'https://packages.example.test/amp-acp-linux-x86_64.tar.gz'
+        }
+      },
+      runtimes: { 'amp-acp': runtime }
+    })
+
+    // On PATH and initialized → kept, exactly as before archives were classified at all.
+    mkdirSync(join(home, '.config', 'amp'), { recursive: true })
+    expect(Object.keys(installedRuntimeCatalog(catalog(), env()).runtimes)).toEqual(['amp-acp'])
+  })
+
+  it('gates an archive-distributed runtime on its own state, not on the command the store fetches', () => {
+    // `./agy_acp_server.par` cannot be on PATH before the runtime store extracts it, so the host
+    // signal is ~/.gemini/antigravity-* — the product itself being installed and initialized here.
+    const runtime: RuntimeDef = { command: './agy_acp_server.par', args: ['--uid='], env: [] }
+    const catalog = (): ResolvedRuntimeCatalog => ({
+      entries: {
+        'antigravity-acp': {
+          runtime,
+          source: 'registry',
+          name: 'Google Antigravity',
+          version: '1.0.0',
+          skillsAgentId: null,
+          archive: 'https://dl.example.test/agy-acp-server.zip'
+        }
+      },
+      runtimes: { 'antigravity-acp': runtime }
+    })
+
+    expect(Object.keys(installedRuntimeCatalog(catalog(), env()).runtimes)).toEqual([])
+    mkdirSync(join(home, '.gemini', 'antigravity-cli'), { recursive: true })
+    expect(Object.keys(installedRuntimeCatalog(catalog(), env()).runtimes)).toEqual(['antigravity-acp'])
+  })
+
   it('applies curated state gates only when the curated source wins', () => {
     makeExecutable(binDir, 'hermes')
     makeExecutable(binDir, 'custom-hermes')

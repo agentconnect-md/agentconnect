@@ -3,6 +3,7 @@ import { basename, delimiter, join } from 'node:path'
 import { homedir } from 'node:os'
 import type { RuntimeDef } from '../config/config-schema.js'
 import { CURATED_RUNTIME_CATALOG } from './curated.js'
+import { parseArchiveLaunch } from './archive-store.js'
 import type { ResolvedRuntimeCatalog } from './registry.js'
 
 /**
@@ -176,6 +177,8 @@ const QODER_SEED = (brand: string): readonly string[] => [
 const CLAUDE_MODEL_CACHE_KEYS = ['additionalModelOptionsCache'] as const
 /** DeepSeek Harness auth: the managed 0600 credential store plus its .env fallback. */
 const DSH_SEED = ['.credentials.yaml', '.env'] as const
+/** Antigravity login inputs: the ACP server's auth.type selection, the CLI's OAuth token, and the install identity. */
+const ANTIGRAVITY_SEED = ['settings.json', 'antigravity-oauth-token', 'installation_id'] as const
 /** OpenClaw acp bridge inputs: gateway address + token config and its .env fallback. */
 const OPENCLAW_SEED = ['openclaw.json', '.env'] as const
 
@@ -197,8 +200,16 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
   // OpenAI Codex CLI — ~/.codex (honors $CODEX_HOME).
   'codex-acp': (env) => [...state(env.CODEX_HOME, '.codex'), ...state(join(home(env), '.codex'), '.codex')],
 
-  // Google Gemini CLI — ~/.gemini.
-  gemini: (env) => state(join(home(env), '.gemini'), '.gemini'),
+  // Google Gemini CLI — ~/.gemini, which the Antigravity CLI also writes into (its own
+  // `antigravity-cli/`, `antigravity-acp/`, and `config/` subdirs), so the shared root is not a
+  // signal for either: probe this CLI's own top-level files, plus `tmp/` as a ran-here marker that
+  // seeds nothing.
+  gemini: (env) => [
+    ...state(join(home(env), '.gemini', 'settings.json'), join('.gemini', 'settings.json')),
+    ...state(join(home(env), '.gemini', 'oauth_creds.json'), join('.gemini', 'oauth_creds.json')),
+    ...state(join(home(env), '.gemini', 'google_accounts.json'), join('.gemini', 'google_accounts.json')),
+    ...state(join(home(env), '.gemini', 'tmp'), join('.gemini', 'tmp'), [])
+  ],
 
   // Qwen Code (Gemini-CLI fork) — ~/.qwen.
   'qwen-code': (env) => state(join(home(env), '.qwen'), '.qwen'),
@@ -361,6 +372,14 @@ export const RUNTIME_STATE_LOCATIONS: Record<string, RuntimeStateLocator> = {
     ...state(join(home(env), '.openclaw'), '.openclaw', OPENCLAW_SEED)
   ],
 
+  // Google Antigravity — the ACP server is a separate vendor archive the runtime store installs, so
+  // presence is the product's own state under ~/.gemini: the agy CLI's dir, and the ACP server's own
+  // dir beside it (where it reads auth.type). Conversations, caches, and logs stay agent-private.
+  'antigravity-acp': (env) => [
+    ...state(join(home(env), '.gemini', 'antigravity-acp'), join('.gemini', 'antigravity-acp'), ANTIGRAVITY_SEED),
+    ...state(join(home(env), '.gemini', 'antigravity-cli'), join('.gemini', 'antigravity-cli'), ANTIGRAVITY_SEED)
+  ],
+
   // Cognition Devin (for Terminal) — XDG config + data dirs.
   devin: (env) => [
     ...state(join(xdgConfigHome(env), 'devin'), join('.config', 'devin')),
@@ -429,8 +448,13 @@ export function installedRuntimeCatalog(
   const runtimes: Record<string, RuntimeDef> = {}
   const entries: ResolvedRuntimeCatalog['entries'] = {}
   for (const [id, entry] of Object.entries(catalog.entries)) {
-    const available =
-      entry.source === 'curated' || !CURATED_RUNTIME_IDS.has(id)
+    // Ask the store itself whether it can install this entry: an archive format it does not
+    // inflate stays on the command probe below, which is what the host already passes.
+    const available = parseArchiveLaunch(id, entry)
+      ? // The store fetches this binary, so the command cannot be on `$PATH` yet — the host signal
+        // is the product's own state, exactly as it is for an `npx` adapter.
+        (CUSTOM_PROBES[id]?.(env) ?? false)
+      : entry.source === 'curated' || !CURATED_RUNTIME_IDS.has(id)
         ? isRuntimeAvailable(id, entry.runtime, env)
         : isCommandAvailable(entry.runtime.command, env) && !PACKAGE_LAUNCHERS.has(entry.runtime.command)
     if (!available) continue
