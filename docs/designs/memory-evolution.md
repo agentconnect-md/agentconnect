@@ -218,8 +218,12 @@ different requester — the daemon's CP connection — so the daemon side is an 
 not a third implementation. The op set a pod already speaks (`memory-read`, `-append`,
 `-commit`, `-stat`, `-readdir`, `-mkdir`, `-rmdir`, `-rename`, `-rm`, `-utimes`,
 sliced and chunked to the 256 KiB frame) moves from `shim/memory-fs-channel.ts` into
-`protocol` as the payload of one new D→C REQ/REP pair, `memory/store` →
-`memory/store/ok`; `root` is relative to the agent's tree rather than pod-absolute.
+`protocol` and rides one new D→C REQ/REP pair, `memory/store` → `memory/store/ok`,
+as `{ agentId, op }`: a shim channel is bound to one agent, the CP connection multiplexes
+many, so the agent is named on every request the way `knowledge/search` names its
+`requesterAgentId`, and the handler picks the `(agentId, path)` partition and the org
+from that agent, never from the payload; `root` is relative to the agent's tree rather
+than pod-absolute.
 The CP runs each op as one SQL transaction against the table: `append` concatenates
 into the temp row, `commit` checks `ifMatchMtime`, deletes the target and renames the
 temp, so the atomic publish and its precondition are one transaction; `rename` of a
@@ -247,10 +251,13 @@ now, rows are the follow-up if it hurts. The dream runner is unchanged; on the p
 
 **Switching `home` copies; switching provider still does not (§6, §9).** Both homes
 are the same tree, so this is the one binding change that migrates: when the owning
-daemon applies a binding whose `home` differs and the target tree has no `memory/`
-yet, it copies the whole tree once through the two ports (`copyMemoryTree(from, to)`,
-under the directory lock, files overwritten by path so a retried application is
-idempotent) and then rebuilds the session boundary as any memory change does. The
+daemon applies a binding whose `home` differs and the target has no `memory/` yet, it
+copies the whole tree once through the two ports (`copyMemoryTree(from, to)`, under
+the directory lock) into a staging prefix `.home-import/` on the target and then
+renames the top-level entries into place, `memory/` last — so `memory/` present means
+the copy completed, and a retry that finds no `memory/` removes any `.home-import/`
+left by an interrupted attempt and starts over instead of resuming a partial tree.
+The daemon then rebuilds the session boundary as any memory change does. The
 source is never deleted, and a target that already holds a tree is resumed as it is —
 switching back to a home that was used before shows that home's tree, not a merge; the
 console says so next to the selector. Both directions work.
