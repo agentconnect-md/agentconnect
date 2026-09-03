@@ -731,15 +731,14 @@ export function permissionModeOptions(runtime: string): { v: string; l: string }
     ]
   }
   // Labels mirror claude-agent-acp's own mode names so the console can't misrepresent
-  // them. In particular `dontAsk` is "don't prompt, DENY anything not pre-approved" — the
-  // opposite of auto-approve — and `acceptEdits` auto-accepts edits rather than asking.
+  // them: `acceptEdits` auto-accepts edits rather than asking, and `auto` approves with a
+  // model classifier. A daemon-reported catalog supersedes this list wherever one exists.
   return [
-    { v: 'default', l: 'Default' },
-    { v: 'acceptEdits', l: 'Accept Edits' },
-    { v: 'auto', l: 'Auto' },
-    { v: 'dontAsk', l: "Don't Ask" },
+    { v: 'default', l: 'Manual' },
+    { v: 'acceptEdits', l: 'Accept edits' },
     { v: 'plan', l: 'Plan' },
-    { v: 'bypassPermissions', l: 'Bypass' }
+    { v: 'auto', l: 'Auto' },
+    { v: 'bypassPermissions', l: 'Bypass permissions' }
   ]
 }
 
