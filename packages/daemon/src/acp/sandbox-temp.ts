@@ -37,36 +37,6 @@ export const AF_UNIX_PATH_MAX = 107
 /** The widest socket SRT composes under TMPDIR — a Linux pid at its 22-bit ceiling. */
 const WIDEST_SRT_SOCKET = 'srt-mux-4194304-0.sock'
 
-// `mkdir` is the only no-clobber claim on a directory name — `rename` REPLACES an empty destination, which would let this adopt a foreign `t`. A loser of that race finds the name taken before the winner's marker exists, so emptiness decides instead of a wait: an operator's workspace has files, a sibling's half-made claim has none, and marking an empty directory can destroy nothing.
-function createOwnedTempParent(agentDir: string): void {
-  const parent = sandboxTempParent(agentDir)
-  try {
-    mkdirSync(parent, { mode: 0o700 })
-  } catch (err) {
-    // Anything but "the name is taken" is the caller's to report; a taken name may be ours, mid-claim, or foreign.
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-    if (daemonOwnsTempParent(parent) || !isEmptyDir(parent)) return
-  }
-  markTempParent(parent)
-}
-
-/** `wx` so the winner of a first-launch race writes it and the loser is content that it exists. */
-function markTempParent(parent: string): void {
-  try {
-    writeFileSync(join(parent, OWNER_MARKER), '', { mode: 0o600, flag: 'wx' })
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-  }
-}
-
-function isEmptyDir(path: string): boolean {
-  try {
-    return readdirSync(path).length === 0
-  } catch {
-    return false
-  }
-}
-
 /** Create one host's temp directory and return its canonical path. Short is not the same as bounded: a deep enough daemon root plus a long agent name still overflows `sun_path`, and it fails HERE naming the path and the limit, rather than as an opaque `listen EINVAL` three ACP start attempts deep. */
 export function prepareSandboxTempDir(
   agentDir: string,
@@ -74,16 +44,17 @@ export function prepareSandboxTempDir(
   /** Test seam: SRT confines a host on Linux alone, so only a Linux launch opens this socket and only it is held to the budget. */
   platform: NodeJS.Platform = process.platform
 ): string {
-  createOwnedTempParent(agentDir)
+  const created = mkdirSync(sandboxTempParent(agentDir), { recursive: true, mode: 0o700 }) !== undefined
   const parent = join(realpathSync(resolve(agentDir)), 't')
   // Trust the resolved directory, not the composed name: a link standing in for it would move the whole temp tree out of the agent dir.
   if (realpathSync(parent) !== parent) {
     throw new Error(`runtime temp parent is not a real directory inside the agent dir: ${parent}`)
   }
-  // Fail closed rather than write into, or later sweep, a directory this daemon did not make.
+  if (created) writeFileSync(join(parent, OWNER_MARKER), '', { mode: 0o600 })
+  // Fail closed rather than write into, or later sweep, a directory this daemon did not make — a first-launch race puts a sibling's half-made claim here too, which the next attempt resolves.
   if (!daemonOwnsTempParent(parent)) {
     throw new Error(
-      `runtime temp root "${parent}" exists but this daemon did not create it — an agent workspace or operator data at that path must move before a confined host can start`
+      `runtime temp root "${parent}" carries no ownership marker, so this daemon did not create it — either an agent workspace or operator data sits at that path and must move, or another host of this agent is creating it right now and the next launch attempt will find it marked`
     )
   }
   const path = join(parent, tempLeaf(hostKey))

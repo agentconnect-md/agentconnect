@@ -570,26 +570,6 @@ describe('sandbox temp directories', () => {
     }
   })
 
-  it('claims an empty unmarked temp parent, and refuses one holding anything', () => {
-    // A first-launch race leaves the loser looking at a directory whose marker the winner has not
-    // written yet. Emptiness tells the two cases apart without waiting: an operator's workspace has
-    // files, a sibling's half-made claim has none, and marking an empty directory destroys nothing.
-    const claimed = mkdtempSync(join(tmpdir(), 'ac-temp-empty-'))
-    const foreign = mkdtempSync(join(tmpdir(), 'ac-temp-foreign-'))
-    try {
-      mkdirSync(join(claimed, 't'))
-      expect(existsSync(prepareSandboxTempDir(claimed, hostKey))).toBe(true)
-
-      mkdirSync(join(foreign, 't'))
-      writeFileSync(join(foreign, 't', 'README.md'), 'an operator workspace')
-      expect(() => prepareSandboxTempDir(foreign, hostKey)).toThrow(/this daemon did not create it/)
-      // Refusing means untouched: no marker written into it, and no host leaf made under it.
-      expect(readdirSync(join(foreign, 't'))).toEqual(['README.md'])
-    } finally {
-      for (const dir of [claimed, foreign]) rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
   it.skipIf(process.platform === 'win32')('refuses a symlink standing in for the temp parent', () => {
     const agentDir = mkdtempSync(join(tmpdir(), 'ac-temp-link-'))
     try {
