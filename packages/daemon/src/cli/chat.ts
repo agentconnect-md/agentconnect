@@ -15,6 +15,7 @@ import { detectSandbox } from '../acp/sandbox.js'
 import { agentHostKey } from '../acp/host-key.js'
 import { resolveRoot } from '../paths.js'
 import { runtimeHomePath } from '../runtimes/runtime-home.js'
+import { sandboxReadRoots } from '../runtimes/read-roots.js'
 import { installedRuntimeCatalog } from '../runtimes/probe.js'
 import { probeAllRuntimes, type ProbeOptions, type RuntimeProbeResult } from '../runtimes/runtime-prober.js'
 import { defaultProbeHostFactory } from '../acp/probe-host-factory.js'
@@ -60,6 +61,8 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     overrides: { agentsDir: opts.agentsDir }
   })
   configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
+  // Same fail-fast the daemon applies at boot: a missing operator read root is a config error, not a turn error.
+  const operatorReadRoots = sandboxReadRoots(cfg.security.sandboxReadRoots)
   const agent = selectAgent(cfg.agentsDir!, opts.agentName)
   await persistSkillSandboxRequirement(root)
 
@@ -145,7 +148,9 @@ export async function runChat(opts: RunChatOpts): Promise<void> {
     trustedWorkspaceWriteRoots: runInSandbox ? workspaces.trustedWorkspaceWriteRoots(agent) : undefined,
     trustedPrimaryCheckout: runInSandbox ? workspaces.localPrimaryCheckoutFor(agent) : undefined,
     // No daemon here, so there is no MCP bridge socket, gh wrapper, or git-credential shim to carve
-    // back: mcpSocketPath / allowModelToolUnixSockets / runtimeReadRoots stay genuinely unused.
+    // back: mcpSocketPath / allowModelToolUnixSockets stay genuinely unused. The operator's
+    // daemon-wide toolchain roots still apply, exactly as they do under the daemon.
+    runtimeReadRoots: runInSandbox ? operatorReadRoots : undefined,
     sandboxMechanism
   })
   for (const notice of assembled.configFiles?.notices ?? []) out.write(`⚠️ ${notice}\n`)

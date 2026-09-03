@@ -306,7 +306,7 @@ import { internalSessionKey, ModelSessionHostPool, type ModelSessionHostPoolHost
 import { CuratedRuntimeAdmission } from './runtimes/curated-admission.js'
 import { RuntimeFactsRegistry, PROBE_TTL_MS, type RuntimeFactsHost } from './runtimes/facts-registry.js'
 import { assembleRuntimeLaunch } from './launch/assemble.js'
-import { resolveTrustedExecutable, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
+import { resolveTrustedExecutable, sandboxReadRoots, trustedRuntimeReadRoots } from './runtimes/read-roots.js'
 import { nodeExecArgvModuleEntries } from './runtimes/node-exec-argv.js'
 import { makeLogger, type Logger } from './log.js'
 import { CpClient } from './cp/client.js'
@@ -1839,6 +1839,8 @@ export class Daemon {
       autoCreate: true
     })
     this.cfg = cfg
+    // Fail the boot, not the first sandboxed turn, on a mistyped or missing operator read root.
+    sandboxReadRoots(cfg.security.sandboxReadRoots)
     configureWorkspaceGitOrigins(cfg.security.workspaceGitAllowedOrigins)
     // §24.4: an excluded origin is named at SPEC admission. All this knows is the operator list —
     // whether a spec names an instance of its own, which stays cloneable either way, is per-agent.

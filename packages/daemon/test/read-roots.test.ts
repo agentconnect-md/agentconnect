@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { resolveTrustedExecutable, trustedRuntimeReadRoots } from '../src/runtimes/read-roots.js'
+import { resolveTrustedExecutable, sandboxReadRoots, trustedRuntimeReadRoots } from '../src/runtimes/read-roots.js'
 
 const temporaryRoots: string[] = []
 
@@ -67,7 +67,10 @@ describe('trusted runtime read roots', () => {
         hostEnv: { PATH: dirname(process.execPath) },
         readRoots: [join(tmpdir(), 'ac-missing-daemon-root-does-not-exist')]
       })
-    ).toThrow(/does not exist/)
+    ).toThrow(/security\.sandboxReadRoots entry does not exist/)
+    expect(() => sandboxReadRoots(['relative/toolchain'], { HOME: tmpdir() })).toThrow(
+      /security\.sandboxReadRoots entry must be absolute/
+    )
   })
 
   it('rejects relative operator read roots', () => {

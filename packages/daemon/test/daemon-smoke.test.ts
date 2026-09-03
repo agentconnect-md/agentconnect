@@ -92,6 +92,22 @@ describe('Daemon (no Slack, injected ACP host)', () => {
     ).rejects.toThrow(/daemon startup refused.*requireSandbox.*no supported Linux SRT\/bwrap/)
   })
 
+  it('refuses daemon startup when security.sandboxReadRoots names a directory that does not exist', async () => {
+    const root = scaffold()
+    writeFileSync(
+      join(root, 'config.json'),
+      JSON.stringify({
+        version: 1,
+        controlPlane: { enabled: false },
+        security: { sandboxReadRoots: [join(root, 'no-such-toolchain')] }
+      })
+    )
+
+    await expect(
+      new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, sandboxMechanism: null }).start()
+    ).rejects.toThrow(/security\.sandboxReadRoots entry does not exist/)
+  })
+
   it('does not force the skill sandbox or fail closed when the host has no sandbox mechanism (#36)', async () => {
     const root = scaffold()
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), root, sandboxMechanism: null })

@@ -224,6 +224,25 @@ describe('runChat', () => {
     expect(hostFactory).not.toHaveBeenCalled()
   })
 
+  it('rejects a missing security.sandboxReadRoots entry before creating any host', async () => {
+    const files = scaffold()
+    writeFileSync(
+      files.configPath,
+      JSON.stringify({
+        version: 1,
+        controlPlane: { enabled: false },
+        runtimes: { fake: { command: process.execPath, args: [fakeAgent], env: [] } },
+        security: { sandboxReadRoots: [join(files.root, 'no-such-toolchain')] }
+      })
+    )
+    const hostFactory = vi.fn()
+
+    await expect(runChat({ ...files, message: 'hi', out: capture().stream, hostFactory })).rejects.toThrow(
+      /security\.sandboxReadRoots entry does not exist/
+    )
+    expect(hostFactory).not.toHaveBeenCalled()
+  })
+
   it('does not create the real host when curated ACP admission fails', async () => {
     const files = curatedScaffold('maki')
     const hostFactory = vi.fn()
