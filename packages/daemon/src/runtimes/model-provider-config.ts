@@ -134,6 +134,41 @@ export function applyCodexSessionFloor(
   if (merged !== undefined) env.CODEX_CONFIG = merged
 }
 
+// Which concrete model each Claude alias resolves to on this deployment, in Claude Code's own
+// model-config variables. Only the deployment knows what its gateway serves, and Claude Code
+// offers an alias it was told nothing about only when the account's own rollout list names it —
+// which a gateway-backed pool has none of, so its picker shows the built-in aliases and stops
+// there. Declaring `ANTHROPIC_DEFAULT_FABLE_MODEL` is what puts Fable in that picker; the three
+// metadata suffixes are how the option is labelled, described, and told what it supports.
+const CLAUDE_MODEL_ALIASES = ['FABLE', 'OPUS', 'SONNET', 'HAIKU'] as const
+const CLAUDE_ALIAS_SUFFIXES = ['', '_NAME', '_DESCRIPTION', '_SUPPORTED_CAPABILITIES'] as const
+
+export const CLAUDE_MODEL_ALIAS_ENV: readonly string[] = CLAUDE_MODEL_ALIASES.flatMap((alias) =>
+  CLAUDE_ALIAS_SUFFIXES.map((suffix) => `ANTHROPIC_DEFAULT_${alias}_MODEL${suffix}`)
+)
+
+/** The deployment's alias declarations, read once at boot like the codex floor. */
+export function configuredClaudeModelAliases(env: NodeJS.ProcessEnv): Record<string, string> | undefined {
+  const declared: Record<string, string> = {}
+  for (const name of CLAUDE_MODEL_ALIAS_ENV) {
+    const value = env[name]?.trim()
+    if (value) declared[name] = value
+  }
+  return Object.keys(declared).length > 0 ? declared : undefined
+}
+
+// Applied by the DAEMON at spawn and at probe, so the picker a console shows and the models a
+// session can run come from the same declaration — and so a sandbox minted before the value
+// changed still gets it. Never overwrites a key the daemon already authored.
+export function applyClaudeModelAliases(
+  target: ModelProviderTarget,
+  env: Record<string, string>,
+  declared: Record<string, string>
+): void {
+  if (target.runtime !== 'claude') return
+  for (const [name, value] of Object.entries(declared)) env[name] ??= value
+}
+
 // Validated at daemon construction so a malformed value fails the member loudly at boot instead
 // of failing every codex spawn one at a time.
 export function configuredCodexSessionFloor(env: NodeJS.ProcessEnv): string | undefined {

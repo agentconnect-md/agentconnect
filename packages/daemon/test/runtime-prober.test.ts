@@ -307,6 +307,8 @@ describe('curatedProbeEnvironment', () => {
       OPENCLAW_GATEWAY_URL: 'ws://127.0.0.1:18789',
       OPENCLAW_GATEWAY_TOKEN: 'gateway-token',
       OPENCLAW_STATE_DIR: '/host/openclaw',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5-1',
+      ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: 'Fable',
       AWS_SHARED_CREDENTIALS_FILE: '/host/aws',
       GOOGLE_APPLICATION_CREDENTIALS: '/host/google.json',
       KUBECONFIG: '/host/kube',
@@ -328,7 +330,11 @@ describe('curatedProbeEnvironment', () => {
       ANTHROPIC_API_KEY: 'anthropic-key',
       KIRO_API_KEY: 'kiro-key',
       OPENCLAW_GATEWAY_URL: 'ws://127.0.0.1:18789',
-      OPENCLAW_GATEWAY_TOKEN: 'gateway-token'
+      OPENCLAW_GATEWAY_TOKEN: 'gateway-token',
+      // A launch inherits these from the host; a probe that read the model picker without them
+      // would advertise a list the sessions do not have.
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5-1',
+      ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: 'Fable'
     })
   })
 })

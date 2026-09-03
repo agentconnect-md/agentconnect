@@ -76,6 +76,23 @@ describe('cluster runtime probe', () => {
     expect(redactValues).toContain(env.DEFAULT_AUTH_REQUEST)
   })
 
+  it('probes claude with the deployment’s alias declarations, so the picker it reads is the one sessions get', () => {
+    const aliases = {
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5-1',
+      ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: 'Fable'
+    }
+    const { env } = clusterProbeEnv('claude-acp', claude, {
+      agentId: 'probe',
+      staticCredential: () => ({ key: 'k', baseUrl: 'https://gw.example' }),
+      claudeModelAliases: aliases
+    })
+    expect(env).toMatchObject(aliases)
+    // A codex probe is told nothing about Claude's aliases.
+    expect(clusterProbeEnv('codex-acp', codex, { agentId: 'probe', claudeModelAliases: aliases }).env).toEqual({
+      AC_AGENT_ID: 'probe'
+    })
+  })
+
   it('reports every runtime as it answers, and one refusal does not end the sweep', async () => {
     const reported: Array<{ runtime: string; ok: boolean; models: string[] }> = []
     const results = await probeClusterRuntimes({

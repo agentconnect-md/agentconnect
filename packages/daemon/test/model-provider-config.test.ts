@@ -5,6 +5,8 @@ import {
   applyCodexSessionFloor,
   applyModelCredential,
   applyStaticModelConfig,
+  applyClaudeModelAliases,
+  configuredClaudeModelAliases,
   configuredCodexSessionFloor,
   configuredModelCredentials,
   modelProviderTarget
@@ -258,5 +260,42 @@ describe('configuredCodexSessionFloor', () => {
 
   it('fails loudly at boot on a malformed value', () => {
     expect(() => configuredCodexSessionFloor({ AC_CODEX_CONFIG: '[1]' })).toThrow('AC_CODEX_CONFIG')
+  })
+})
+
+describe('claude model aliases', () => {
+  it('collects only the declared alias variables, trimmed', () => {
+    expect(
+      configuredClaudeModelAliases({
+        ANTHROPIC_DEFAULT_FABLE_MODEL: ' claude-fable-5-1 ',
+        ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: 'Fable',
+        ANTHROPIC_DEFAULT_SONNET_MODEL: '   ',
+        ANTHROPIC_API_KEY: 'not-an-alias'
+      })
+    ).toEqual({ ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5-1', ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: 'Fable' })
+  })
+
+  it('is undefined when the deployment declares nothing', () => {
+    expect(configuredClaudeModelAliases({})).toBeUndefined()
+  })
+
+  it('writes the declarations onto a claude launch without overwriting a daemon-authored key', () => {
+    const env: Record<string, string> = { ANTHROPIC_DEFAULT_OPUS_MODEL: 'daemon-chose-this' }
+    applyClaudeModelAliases({ provider: 'anthropic', runtime: 'claude' }, env, {
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5-1',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'deployment-default'
+    })
+    expect(env).toEqual({
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'daemon-chose-this',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5-1'
+    })
+  })
+
+  it('touches no runtime but claude', () => {
+    const env: Record<string, string> = {}
+    applyClaudeModelAliases({ provider: 'openai', runtime: 'codex' }, env, {
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5-1'
+    })
+    expect(env).toEqual({})
   })
 })

@@ -1,7 +1,12 @@
 import { z } from 'zod'
 import type { RuntimeDef } from '../config/config-schema.js'
 import type { Logger } from '../log.js'
-import { applyCodexSessionFloor, applyStaticModelConfig, modelProviderTarget } from './model-provider-config.js'
+import {
+  applyClaudeModelAliases,
+  applyCodexSessionFloor,
+  applyStaticModelConfig,
+  modelProviderTarget
+} from './model-provider-config.js'
 import type { ModelCredential, ModelRuntimeKind } from './model-provider-config.js'
 import { probeRuntime, type ProbeHostFactory, type RuntimeProbeResult } from './runtime-prober.js'
 import { K8sRuntimeTableSchema, type K8sRuntimeTable } from './k8s-runtimes.js'
@@ -52,6 +57,9 @@ export interface ClusterProbeOptions {
   staticCredential?: (kind: ModelRuntimeKind) => ModelCredential | undefined
   /** Deployment-asserted codex session config, applied exactly as a real launch applies it. */
   codexSessionFloor?: string
+  /** Deployment-declared Claude alias→model variables, applied exactly as a real launch applies
+   *  them — the probe reads the picker they produce, so it must launch with the same ones. */
+  claudeModelAliases?: Record<string, string>
   log?: Logger
   timeoutMs?: number
   /** Called as each runtime answers, so the console converges per runtime rather than at the end. */
@@ -89,7 +97,7 @@ function probeCredential(configured: ModelCredential | undefined): ModelCredenti
 export function clusterProbeEnv(
   runtimeId: string,
   runtime: RuntimeDef,
-  opts: Pick<ClusterProbeOptions, 'agentId' | 'staticCredential' | 'codexSessionFloor'>
+  opts: Pick<ClusterProbeOptions, 'agentId' | 'staticCredential' | 'codexSessionFloor' | 'claudeModelAliases'>
 ): { env: Record<string, string>; redactValues: string[]; uncredentialed: boolean } {
   const env: Record<string, string> = { AC_AGENT_ID: opts.agentId }
   const target = modelProviderTarget({ runtime: runtimeId }, runtime)
@@ -101,6 +109,7 @@ export function clusterProbeEnv(
   // Last, so every key the daemon authored above stays authoritative over the floor — the same
   // order a real launch uses.
   if (opts.codexSessionFloor) applyCodexSessionFloor(target, env, opts.codexSessionFloor)
+  if (opts.claudeModelAliases) applyClaudeModelAliases(target, env, opts.claudeModelAliases)
   const key = configured?.key
   // The key itself, plus every value it was folded into — matched by content rather than by
   // variable name, so a runtime that gains a new credential-bearing variable is covered already.
