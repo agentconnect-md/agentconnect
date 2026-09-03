@@ -208,13 +208,19 @@ export function createFakeK8sRuntimePlane(workspaceRoot: string): FakeK8sRuntime
     memoryFsFor: () => undefined,
     autoMergeFor: () => undefined,
     runsInSandbox: () => true,
+    subjectForPath: (agentId: string) => agentId,
+    sandboxBound: () => true,
+    holdIfBound: () => () => {},
     clearPath: async () => undefined,
     workspaceRootFor: () => workspaceRoot,
-    launchedAgents: () => [],
+    sessionDirFor: (_agentId: string, leaf: string) => `${workspaceRoot}/sessions/${leaf}`,
+    launched: () => [],
     adoptAgent: async () => {},
     releaseAgent: () => {},
     suspendIdle: async () => 'absent' as const,
     discardAgent: async () => {},
+    discardSession: async () => {},
+    hasSandbox: async () => false,
     stop: async () => {
       stopped = true
     }

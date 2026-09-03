@@ -12,6 +12,7 @@ import {
   sandboxGitCredentialTarget
 } from '../src/workspace/git-injection.js'
 import { SANDBOX_CHECKOUT_DIR } from '../src/shim/sandbox-paths.js'
+import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { PodWorkspaceFs } from './fixtures/pod-workspace-fs.js'
 import type { GitRunner } from '../src/workspace/git-runner.js'
 import type { Agent } from '../src/agents/agent-schema.js'
@@ -32,6 +33,12 @@ import type { Agent } from '../src/agents/agent-schema.js'
 const POD_ROOT = '/agent'
 const CHECKOUT = `${POD_ROOT}/${SANDBOX_CHECKOUT_DIR}`
 const WORKTREES = `${POD_ROOT}/worktrees`
+/** Where an isolated session's own clones live on ITS pod (git-workspace-model §11), by the leaf its host key names. */
+const SESSIONS = `${POD_ROOT}/sessions`
+const sessionDirOf = (key: string, agentId = 'agent-cluster'): string =>
+  `${SESSIONS}/${hostKeyDirName(sessionHostKey(agentId, key))}`
+const sessionCloneOf = (key: string, repo?: string, agentId = 'agent-cluster'): string =>
+  repo === undefined ? `${sessionDirOf(key, agentId)}/workspace` : `${sessionDirOf(key, agentId)}/repos/${repo}`
 
 interface Invocation {
   cwd: string | undefined
@@ -71,6 +78,10 @@ let headRev: string | undefined
 let remoteDefaultBranch: Record<string, string> = {}
 /** Clone URLs the remote refuses, so one root can fail while the others materialize. */
 let cloneRefusals = new Set<string>()
+/** The pool's session-pod retirements, as `(agentId, exceptLeaf)` — a claim deletion is observable here without a cluster. */
+let discarded: Array<{ agentId: string; exceptLeaf: string | undefined }> = []
+/** The retirement failing on the cluster side, which must leave the conversion unproven rather than proceed. */
+let discardFails = false
 
 /** A ref name as a commit id, the way `worktree add`/`reset` move HEAD onto their start point. */
 function resolve(ref: string): string {
@@ -129,6 +140,11 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
       headRev = resolve(args[2]!)
       return ''
     }
+    // A session clone's branch checkout moves HEAD onto its start point, as `worktree add` does.
+    if (args[0] === 'checkout' && args.includes('-b')) {
+      headRev = resolve(args.at(-1)!)
+      return ''
+    }
     if (args[0] === 'fetch' && args.some((arg) => arg.includes('/merge:')) && !mergeRefAvailable) {
       throw new Error('no merge ref for a conflicted pull request')
     }
@@ -147,7 +163,9 @@ function recordingRunner(cwd: string | undefined, env: Record<string, string> = 
       // checkout appear there; the primary's target is relative and is probed through git instead.
       if (target.startsWith('/')) {
         void pod.mkdir(target)
-        void pod.writeFile(`${target}/.git`, 'gitdir: ...')
+        // A session's blobless clone owns a `.git` DIRECTORY; a root checkout is faked as a link file.
+        if (options.includes('--filter=blob:none')) void pod.mkdir(`${target}/.git`)
+        else void pod.writeFile(`${target}/.git`, 'gitdir: ...')
       }
     },
     pull: async (remote, branch, options = []) => {
@@ -207,6 +225,8 @@ beforeEach(() => {
   headRev = undefined
   remoteDefaultBranch = {}
   cloneRefusals = new Set()
+  discarded = []
+  discardFails = false
   // Every agent here runs in a pod, so all three seams resolve to the sandbox.
   workspaces.setGitRunnerResolver((_agentId, cwd) => recordingRunner(cwd))
   workspaces.setFsResolver(() => ({ fs: pod, mount: POD_ROOT }))
@@ -218,6 +238,11 @@ beforeEach(() => {
     return undefined
   })
   workspaces.setSandboxMode(true)
+  // The pool's `clearSessionWorktrees`: the daemon deletes the claim and its volume, so the seam is what a test can watch.
+  workspaces.setSessionsDiscarder(async (agentId, exceptLeaf) => {
+    discarded.push({ agentId, exceptLeaf })
+    if (discardFails) throw new Error('session claim delete refused')
+  })
   initGitInjection({
     targetFor: (agentId) =>
       agentId.startsWith('local-')
@@ -232,6 +257,7 @@ afterEach(() => {
   workspaces.setGitRunnerResolver(undefined)
   workspaces.setFsResolver(undefined)
   workspaces.setPathClearer(undefined)
+  workspaces.setSessionsDiscarder(undefined)
   workspaces.setSandboxMode(false)
 })
 
@@ -263,19 +289,46 @@ describe('clusterWorkspaceCwd', () => {
     expect(await workspaces.additionalWorkspaceDirectories(clusterAgent(), CHECKOUT)).toEqual([])
   })
 
-  it('puts a session-isolated cwd in the worktree that session owns, beside the checkout', async () => {
-    const id = workspaces.sessionWorktreeId('sess-1')
+  it('puts a session-isolated cwd in the clone that session owns, on its own pod (§11)', async () => {
     expect(
       workspaces.clusterWorkspaceCwd(clusterAgent(), POD_ROOT, { isolation: 'session', sessionKey: 'sess-1' })
-    ).toBe(`${WORKTREES}/${id}`)
-    // And the configured working subdirectory still applies, one level inside THAT worktree.
+    ).toBe(sessionCloneOf('sess-1'))
+    // The layout is session-layout.ts's in pod coordinates: `<mount>/sessions/<leaf>/workspace`, never a worktree.
+    expect(sessionCloneOf('sess-1')).toBe(
+      `${POD_ROOT}/sessions/${hostKeyDirName(sessionHostKey('agent-cluster', 'sess-1'))}/workspace`
+    )
+    expect(sessionCloneOf('sess-1')).not.toContain('/worktrees/')
+    // And the configured working subdirectory still applies, one level inside THAT clone.
     const agent = clusterAgent({ agentDir: 'services/api' })
     const scope = { isolation: 'session' as const, sessionKey: 'sess-1' }
     const cwd = workspaces.clusterWorkspaceCwd(agent, POD_ROOT, scope)
-    expect(cwd).toBe(`${WORKTREES}/${id}/services/api`)
-    // The repository root handed alongside it is the WORKTREE, not the shared checkout — widened
+    expect(cwd).toBe(`${sessionCloneOf('sess-1')}/services/api`)
+    // The repository root handed alongside it is the CLONE, not the shared checkout — widened
     // lexically, because the path exists on no filesystem this daemon could resolve it against.
-    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([`${WORKTREES}/${id}`])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, scope)).toEqual([sessionCloneOf('sess-1')])
+  })
+
+  it('resolves the console session root to the same clone the runtime stands in', () => {
+    // The two composers the console's workspace scope chains must agree, or the panel browses one
+    // directory while the runtime writes another.
+    const agent = clusterAgent()
+    const local = workspaces.sessionWorktreePath(agent, 'sess-1')
+    expect(local).toBe(sessionCloneOf('sess-1'))
+    expect(
+      workspaces.consoleWorkspaceRoot(agent, local, POD_ROOT, { isolation: 'session', sessionKey: 'sess-1' })
+    ).toBe(sessionCloneOf('sess-1'))
+    // A secondary root's session copy is its clone inside the same session directory.
+    expect(
+      workspaces.sessionRootDirectory(
+        agent,
+        {
+          path: `${POD_ROOT}/repos/acme/infra/checkout`,
+          worktreesPath: `${POD_ROOT}/repos/acme/infra/worktrees`,
+          repoFullName: 'acme/infra'
+        },
+        'sess-1'
+      )
+    ).toBe(sessionCloneOf('sess-1', 'acme/infra'))
   })
 })
 
@@ -660,6 +713,88 @@ describe('replacing a cluster workspace in place', () => {
     expect(cleared).toEqual([CHECKOUT])
   })
 
+  it('leaves every session pod alive when the activation is rejected before its preparation ran', async () => {
+    // The retirement deletes claims, and a claim takes its volume — the session's clone AND its runtime
+    // HOME — with it, which no rollback restores. Activation runs before the CP has acknowledged the
+    // edit and its sandbox-mode rollback is empty, so a retirement here would be irreversible loss for
+    // an edit that is then rejected. It records the intent; the conversion carries it out.
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    const rollback = await workspaces.prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    rollback()
+    expect(discarded).toEqual([])
+    expect(cleared).toEqual([])
+
+    // And the restored definition still proves the volume, so its next turns retire nothing either.
+    checkoutExists = true
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT)
+    await workspaces.prepareClusterWorkspace(agent, POD_ROOT, {
+      sessionKey: 'sess-1',
+      isolation: 'session',
+      initiatedBy: 'alice'
+    })
+    expect(discarded).toEqual([])
+  })
+
+  it('retires the session pods when the conversion runs, sparing the session it is preparing', async () => {
+    // Their clones are of the repository being replaced, so they go with the checkout — but the leaf
+    // being prepared keeps its pod and has its own directory emptied instead, or the preparation would
+    // be deleting the volume it is about to clone into.
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await workspaces.prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    checkoutExists = true
+    const leaf = hostKeyDirName(sessionHostKey(agent.id, 'sess-1'))
+    const cwd = await workspaces.prepareClusterWorkspace(moved, POD_ROOT, {
+      sessionKey: 'sess-1',
+      isolation: 'session',
+      initiatedBy: 'alice'
+    })
+    expect(discarded).toEqual([{ agentId: agent.id, exceptLeaf: leaf }])
+    expect(cleared).toEqual([CHECKOUT, `${POD_ROOT}/sessions/${leaf}`])
+    // Re-cloned from the NEW repository, into the directory the conversion just emptied.
+    expect(cwd).toBe(`${POD_ROOT}/sessions/${leaf}/workspace`)
+    expect(calls.find((call) => call.args[0] === 'clone')?.args).toContain('https://github.com/acme/other.git')
+
+    // Proven now, so the sibling session that prepares next retires nobody — least of all this one.
+    discarded.length = 0
+    await workspaces.prepareClusterWorkspace(moved, POD_ROOT, {
+      sessionKey: 'sess-2',
+      isolation: 'session',
+      initiatedBy: 'alice'
+    })
+    expect(discarded).toEqual([])
+  })
+
+  it('retires every session pod for a shared session, which names no leaf to spare', async () => {
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await workspaces.prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    checkoutExists = true
+    await workspaces.prepareClusterWorkspace(moved, POD_ROOT)
+    expect(discarded).toEqual([{ agentId: agent.id, exceptLeaf: undefined }])
+    expect(cleared).toEqual([CHECKOUT])
+  })
+
+  it('fails closed when a session pod will not retire, and retries on the next preparation', async () => {
+    // Fail-closed like the checkout beside it: a retirement nothing proved happened leaves the marker
+    // unproven, so the next preparation runs the conversion again instead of cloning over stale pods.
+    const agent = await withProvenMarker()
+    const moved = { ...agent, workspace: { ...agent.workspace, gitRepo: 'https://github.com/acme/other.git' } } as Agent
+    await workspaces.prepareWorkspaceForActivation(moved, { reconcileMaterialization: true })
+    checkoutExists = true
+    discardFails = true
+    await expect(workspaces.prepareClusterWorkspace(moved, POD_ROOT)).rejects.toThrow(/session claim delete refused/)
+    expect(calls.some((call) => call.args[0] === 'clone')).toBe(false)
+
+    discardFails = false
+    checkoutExists = true
+    await workspaces.prepareClusterWorkspace(moved, POD_ROOT)
+    expect(discarded).toHaveLength(2)
+    expect(cleared).toEqual([CHECKOUT, CHECKOUT])
+    expect(calls.find((call) => call.args[0] === 'clone')?.args).toContain('https://github.com/acme/other.git')
+  })
+
   it('leaves a from-scratch cluster workspace alone, whose activation touches only bookkeeping', async () => {
     // It creates and empties the daemon-side directory that IS the bookkeeping identity; the pod's
     // volume is not involved, so refusing here would break the mode that already works. A real path,
@@ -677,55 +812,59 @@ describe('replacing a cluster workspace in place', () => {
  * existed. Everything here is the SAME code the self-hosted path runs — the only difference is which
  * filesystem answers `stat`/`mkdir`/`rmTree` and which coordinates the paths are composed in.
  */
-describe('per-session worktrees on the pod volume', () => {
+describe('per-session clones on the session pod (git-workspace-model §11)', () => {
   const SESSION = { sessionKey: 'sess-1', isolation: 'session' as const, initiatedBy: 'alice' }
+  const PRIMARY = 'https://github.com/acme/private.git'
 
-  function worktreeOf(key: string): string {
-    return `${WORKTREES}/${workspaces.sessionWorktreeId(key)}`
-  }
-
-  it('creates the worktree beside the checkout, through `worktree add` in the pod', async () => {
+  it('clones the primary into the session directory, blobless and from the remote, with no worktree of the checkout', async () => {
     const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
-    expect(cwd).toBe(worktreeOf('sess-1'))
+    expect(cwd).toBe(sessionCloneOf('sess-1'))
 
-    // The parent is the pod's, created through the seam rather than with a daemon-side mkdir.
-    expect(await pod.stat(WORKTREES)).toBe('dir')
-    const add = calls.find((call) => call.args[0] === 'worktree' && call.args[1] === 'add')
-    // Run from the CHECKOUT (the object store the worktree hangs off), targeting the pod path.
-    expect(add).toMatchObject({ cwd: CHECKOUT })
-    expect(add!.args).toContain(worktreeOf('sess-1'))
-    expect(add!.args).toContain('refs/remotes/origin/main')
-    // Nothing about it names the daemon's own bookkeeping directory.
-    expect(JSON.stringify(add!.args)).not.toContain('/daemon/agents')
-    // And nothing was created on this daemon's disk — no `node:fs` ran on either path.
-    expect(existsSync(WORKTREES)).toBe(false)
-    expect(existsSync('/daemon/agents/agent-cluster/worktrees')).toBe(false)
+    // The directory is the pod's, created through the seam rather than with a daemon-side mkdir, and
+    // the clone's `.git` is its own directory — the object store nothing else shares.
+    expect(await pod.stat(sessionDirOf('sess-1'))).toBe('dir')
+    expect(await pod.stat(`${cwd}/.git`)).toBe('dir')
+    const clone = calls.find((call) => call.args[0] === 'clone' && call.args[1] === PRIMARY)
+    // Staged beside its target and run from the session directory — the path that names the session's pod.
+    expect(clone).toMatchObject({ cwd: sessionDirOf('sess-1') })
+    expect(clone!.args[2]).toMatch(new RegExp(`^${cwd}\\.clone-`))
+    expect(clone!.args).toEqual(expect.arrayContaining(['--filter=blob:none', '--branch', 'main', '--single-branch']))
+    // Checked out on its own branch at the remote's tip, in the clone; the checkout is the parent of nothing.
+    const checkout = calls.find((call) => call.args[0] === 'checkout')
+    expect(checkout).toMatchObject({ cwd })
+    expect(checkout!.args.slice(0, 3)).toEqual(['checkout', '--no-track', '-b'])
+    expect(checkout!.args.at(-1)).toBe('refs/remotes/origin/main')
+    expect(calls.some((call) => call.args[0] === 'worktree')).toBe(false)
+    expect(await pod.stat(WORKTREES)).toBe('missing')
+    // Nothing about it names the daemon's own bookkeeping directory, and nothing landed on this disk.
+    expect(JSON.stringify(calls)).not.toContain('/daemon/agents')
+    expect(existsSync(SESSIONS)).toBe(false)
+    expect(existsSync('/daemon/agents/agent-cluster/sessions')).toBe(false)
   })
 
-  it('reuses an attached worktree on the next turn instead of adding a second one', async () => {
+  it('reuses the clone on the next turn instead of cloning again', async () => {
     await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
-    checkoutExists = true
     calls.length = 0
 
     const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
-    expect(cwd).toBe(worktreeOf('sess-1'))
-    expect(calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'add')).toBe(false)
-    // And it was reused because the POD said the `.git` marker is there, not this daemon's disk.
-    expect(pod.files.has(`${worktreeOf('sess-1')}/.git`)).toBe(true)
+    expect(cwd).toBe(sessionCloneOf('sess-1'))
+    expect(calls.some((call) => call.args[0] === 'clone')).toBe(false)
+    // Reused because the POD said the clone's `.git` is there, not this daemon's disk.
+    expect(await pod.stat(`${cwd}/.git`)).toBe('dir')
   })
 
-  it('gives a second session its own worktree', async () => {
+  it('gives a second session its own directory', async () => {
     await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
-    checkoutExists = true
     const other = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, {
       ...SESSION,
       sessionKey: 'sess-2'
     })
-    expect(other).toBe(worktreeOf('sess-2'))
-    expect(other).not.toBe(worktreeOf('sess-1'))
+    expect(other).toBe(sessionCloneOf('sess-2'))
+    expect(sessionDirOf('sess-2')).not.toBe(sessionDirOf('sess-1'))
+    expect(await pod.stat(`${sessionCloneOf('sess-1')}/.git`)).toBe('dir')
   })
 
-  it('fetches the reviewed refs and checks the exact head out, which pool agents never had', async () => {
+  it('fetches the reviewed refs into the clone and checks the exact head out', async () => {
     const base = 'a'.repeat(40)
     const head = 'b'.repeat(40)
     const id = workspaces.sessionWorktreeId('sess-1')
@@ -736,16 +875,17 @@ describe('per-session worktrees on the pod volume', () => {
       ...SESSION,
       review: { pullNumber: 7, baseSha: base, headSha: head }
     })
-    expect(cwd).toBe(worktreeOf('sess-1'))
+    expect(cwd).toBe(sessionCloneOf('sess-1'))
 
+    // Into the clone's own object store, never the checkout's.
     const fetch = calls.find((call) => call.args[0] === 'fetch')
-    expect(fetch).toMatchObject({ cwd: CHECKOUT })
+    expect(fetch).toMatchObject({ cwd })
     expect(fetch!.args).toContain(`+refs/pull/7/head:refs/agentconnect/reviews/${id}/head`)
     // The exact head is the start point, and HEAD is re-verified against it after the checkout.
-    expect(calls.find((call) => call.args[0] === 'worktree' && call.args[1] === 'add')!.args.at(-1)).toBe(head)
+    expect(calls.find((call) => call.args[0] === 'checkout')!.args.at(-1)).toBe(head)
   })
 
-  it('refuses a review worktree whose head ref is not the verified revision', async () => {
+  it('refuses a review clone whose head ref is not the verified revision', async () => {
     const base = 'a'.repeat(40)
     const head = 'b'.repeat(40)
     const id = workspaces.sessionWorktreeId('sess-1')
@@ -760,50 +900,58 @@ describe('per-session worktrees on the pod volume', () => {
     ).rejects.toThrow(/did not resolve to the requested SHA/)
   })
 
-  it('hands a revision-only review an empty pod directory, with no checkout to trust', async () => {
+  it('hands a revision-only review an empty directory inside the session directory', async () => {
     const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, {
       ...SESSION,
       githubReviewRevisionOnly: true
     })
-    expect(cwd).toBe(worktreeOf('sess-1'))
-    // Staged then published by a rename, on the volume — and empty, so no `worktree add` ran.
+    expect(cwd).toBe(sessionCloneOf('sess-1'))
+    // Staged then published by a rename, on the volume — and empty, so nothing was cloned.
     expect(await pod.stat(cwd)).toBe('dir')
     expect(await pod.readdir(cwd)).toEqual([])
-    expect(calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'add')).toBe(false)
+    expect(calls.some((call) => call.args[0] === 'clone')).toBe(false)
   })
 
-  it('removes the worktree through the seam, in the pod coordinates it was created in', async () => {
+  it('removes the session directory through the seam, in the pod coordinates it was created in', async () => {
     await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
-    checkoutExists = true
     calls.length = 0
 
     expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-1')).toEqual({ outcome: 'removed' })
-    const flat = calls.map((call) => call.args.join(' '))
-    expect(flat).toContain(`worktree remove ${worktreeOf('sess-1')}`)
-    expect(flat).toContain('worktree prune')
-    expect(await pod.stat(worktreeOf('sess-1'))).toBe('missing')
+    // Judged in the clone — its status and its unreachable commits — before the whole directory goes.
+    expect(calls.find((call) => call.args[0] === 'status')).toMatchObject({ cwd: sessionCloneOf('sess-1') })
+    expect(pod.removed).toContain(sessionDirOf('sess-1'))
+    expect(await pod.stat(sessionDirOf('sess-1'))).toBe('missing')
   })
 
-  it('keeps a dirty worktree, judged by the POD and not by an empty directory on this disk', async () => {
+  it('judges only the clones when asked for that half, and only the worktrees for the other', async () => {
     await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
-    checkoutExists = true
+    // The pod holds no legacy worktree of this session, so that half has nothing to remove.
+    expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-1', 'worktrees')).toEqual({ outcome: 'absent' })
+    expect(await pod.stat(sessionDirOf('sess-1'))).toBe('dir')
+    expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-1', 'clones')).toEqual({ outcome: 'removed' })
+    expect(await pod.stat(sessionDirOf('sess-1'))).toBe('missing')
+    // A session that never had a directory on this pod reads as absent, never as a failure.
+    expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-9', 'clones')).toEqual({ outcome: 'absent' })
+  })
+
+  it('keeps a dirty clone, judged by the POD and not by an empty directory on this disk', async () => {
+    await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
     worktreeStatus = ' M a.txt\n'
 
     expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-1')).toEqual({
       outcome: 'retained',
       reason: 'dirty'
     })
-    expect(await pod.stat(worktreeOf('sess-1'))).toBe('dir')
+    expect(await pod.stat(sessionCloneOf('sess-1'))).toBe('dir')
   })
 
   it('keeps a leftover the runtime refilled, instead of deleting it recursively', async () => {
-    // The `.git` marker is gone, so this is the reclaim-a-provably-empty-leftover branch. On the pod
+    // The `.git` directory is gone, so this is the reclaim-a-provably-empty-leftover branch. On the pod
     // the runtime is still writing to the volume, so emptiness cannot be proved in one round trip and
     // acted on in another — the removal itself has to refuse a directory that is no longer empty.
     await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
-    checkoutExists = true
-    const cwd = worktreeOf('sess-1')
-    pod.files.delete(`${cwd}/.git`)
+    const cwd = sessionCloneOf('sess-1')
+    pod.dirs.delete(`${cwd}/.git`)
     pod.files.set(`${cwd}/work.txt`, 'untracked work')
 
     expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-1')).toEqual({
@@ -813,9 +961,8 @@ describe('per-session worktrees on the pod volume', () => {
     expect(await pod.stat(`${cwd}/work.txt`)).toBe('file')
   })
 
-  it('keeps a worktree holding commits no remote can reach', async () => {
+  it('keeps a clone holding commits no remote can reach', async () => {
     await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)
-    checkoutExists = true
     uniqueCommits = '2'
 
     expect(await workspaces.removeSessionWorktree(clusterAgent(), 'sess-1')).toEqual({
@@ -824,21 +971,22 @@ describe('per-session worktrees on the pod volume', () => {
     })
   })
 
-  it('refuses a worktrees parent the pod does not report as a directory', async () => {
+  it('refuses a session directory the pod does not report as a directory', async () => {
     // On the pod the fd-anchored descent is the containment; the daemon still refuses what it sees.
-    pod.links.add(WORKTREES)
+    pod.links.add(sessionDirOf('sess-1'))
     await expect(workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, SESSION)).rejects.toThrow(
       /must not be a symlink/
     )
   })
 
-  it('leaves a shared session on the checkout, with no worktree at all', async () => {
+  it('leaves a shared session on the checkout, with no session directory at all', async () => {
     const cwd = await workspaces.prepareClusterWorkspace(clusterAgent(), POD_ROOT, {
       sessionKey: 'sess-1',
       isolation: 'shared'
     })
     expect(cwd).toBe(CHECKOUT)
     expect(await pod.stat(WORKTREES)).toBe('missing')
+    expect(await pod.stat(SESSIONS)).toBe('missing')
   })
 })
 
@@ -857,10 +1005,6 @@ describe('secondary roots on the pod volume', () => {
 
   function agentWithRoots(rows = [{ repoFullName: 'acme/infra', repoId: '42' }]): Agent {
     return clusterAgent({ additionalRepos: rows } as Partial<Agent['workspace']>)
-  }
-
-  function worktreeOf(subtree: string, key: string): string {
-    return `${subtree}/worktrees/${workspaces.sessionWorktreeId(key)}`
   }
 
   beforeEach(() => {
@@ -886,7 +1030,7 @@ describe('secondary roots on the pod volume', () => {
     expect(existsSync('/daemon/agents/agent-cluster/repos')).toBe(false)
   })
 
-  it('hands a shared session the checkouts and an isolated one the worktrees, in pod paths', async () => {
+  it('hands a shared session the checkouts and an isolated one its own clones, in pod paths', async () => {
     const agent = agentWithRoots([
       { repoFullName: 'acme/infra', repoId: '42' },
       { repoFullName: 'example-co/shared-library', repoId: '815' }
@@ -901,15 +1045,19 @@ describe('secondary roots on the pod volume', () => {
     checkoutExists = true
     const isolated = { sessionKey: 'sess-2', isolation: 'session' as const, initiatedBy: 'alice' }
     const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, isolated)
-    expect(cwd).toBe(`${WORKTREES}/${workspaces.sessionWorktreeId('sess-2')}`)
+    expect(cwd).toBe(sessionCloneOf('sess-2'))
     expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, isolated)).toEqual([
-      worktreeOf(INFRA, 'sess-2'),
-      worktreeOf(SHARED, 'sess-2')
+      sessionCloneOf('sess-2', 'acme/infra'),
+      sessionCloneOf('sess-2', 'example-co/shared-library')
     ])
-    // Each root's worktree was added from ITS own checkout, at the branch that root's remote reported.
-    const add = calls.filter((call) => call.args[0] === 'worktree' && call.args[1] === 'add')
-    expect(add.find((call) => call.cwd === `${INFRA}/checkout`)!.args).toContain('refs/remotes/origin/trunk')
-    expect(add.find((call) => call.cwd === `${SHARED}/checkout`)!.args).toContain('refs/remotes/origin/release')
+    // Each root was cloned from ITS remote into the session directory, at the branch that remote reported.
+    const clones = calls.filter((call) => call.args[0] === 'clone' && call.args.includes('--filter=blob:none'))
+    const infra = clones.find((call) => call.args[1] === 'https://github.com/acme/infra')
+    expect(infra!.args[2]).toMatch(new RegExp(`^${sessionCloneOf('sess-2', 'acme/infra')}\\.clone-`))
+    expect(infra!.args).toEqual(expect.arrayContaining(['--branch', 'trunk']))
+    const library = clones.find((call) => call.args[1] === 'https://github.com/example-co/shared-library')
+    expect(library!.args).toEqual(expect.arrayContaining(['--branch', 'release']))
+    expect(calls.some((call) => call.args[0] === 'worktree' && call.args[1] === 'add')).toBe(false)
   })
 
   it('withholds a root the primary already carries as a submodule, read off the volume', async () => {
@@ -936,8 +1084,10 @@ describe('secondary roots on the pod volume', () => {
 
     const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
 
-    expect(cwd).toBe(`${WORKTREES}/${workspaces.sessionWorktreeId('sess-1')}`)
-    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([worktreeOf(INFRA, 'sess-1')])
+    expect(cwd).toBe(sessionCloneOf('sess-1'))
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
+      sessionCloneOf('sess-1', 'acme/infra')
+    ])
     expect(await pod.stat(`${SHARED}/checkout/.git`)).toBe('missing')
   })
 
@@ -957,18 +1107,17 @@ describe('secondary roots on the pod volume', () => {
 
     const cwd = await workspaces.prepareClusterWorkspace(agent, POD_ROOT, request)
 
-    expect(cwd).toBe(worktreeOf(INFRA, 'sess-review'))
-    // The reviewed refs were fetched into the SECONDARY root's own object store, not the primary's.
+    expect(cwd).toBe(sessionCloneOf('sess-review', 'acme/infra'))
+    // The reviewed refs were fetched into the session's OWN clone of the secondary, not the shared checkout.
     const fetch = calls.find((call) => call.args[0] === 'fetch')
-    expect(fetch).toMatchObject({ cwd: `${INFRA}/checkout` })
+    expect(fetch).toMatchObject({ cwd })
     expect(fetch!.args).toContain(`+refs/pull/9/head:refs/agentconnect/reviews/${id}/head`)
-    const reviewAdd = calls.find(
-      (call) => call.args[0] === 'worktree' && call.args[1] === 'add' && call.cwd === `${INFRA}/checkout`
-    )
-    expect(reviewAdd!.args.at(-1)).toBe(head)
+    expect(calls.find((call) => call.args[0] === 'checkout' && call.cwd === cwd)!.args.at(-1)).toBe(head)
     // The primary rides along at its default branch, and the attestation holds the cwd across a
     // restart — a later hand-out that carries no review resolves the same working directory.
-    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([`${WORKTREES}/${id}`])
+    expect(await workspaces.additionalWorkspaceDirectories(agent, cwd, request)).toEqual([
+      sessionCloneOf('sess-review')
+    ])
     expect(JSON.parse((await pod.readFile(`${INFRA}/.session-cwd-${id}.json`))!)).toEqual({
       repoFullName: 'acme/infra'
     })
@@ -977,7 +1126,7 @@ describe('secondary roots on the pod volume', () => {
         sessionKey: 'sess-review',
         isolation: 'session'
       })
-    ).toEqual([`${WORKTREES}/${id}`])
+    ).toEqual([sessionCloneOf('sess-review')])
   })
 
   it('retires a root the rows no longer authorize, and removes it once nothing holds it', async () => {
@@ -990,19 +1139,16 @@ describe('secondary roots on the pod volume', () => {
     const [retired] = await workspaces.retiredSecondaryRoots(retiredAgent)
     expect(retired).toMatchObject({ repoFullName: 'acme/infra', repoId: '42', subtree: INFRA })
 
-    // A worktree of it is a live session's directory, so the whole subtree stays — its clone is the
-    // object store that worktree reads.
-    expect(await workspaces.removeRetiredSecondaryRoot(retiredAgent, retired!)).toEqual({
-      outcome: 'retained',
-      reason: 'worktrees'
-    })
-    expect(await pod.stat(`${INFRA}/checkout/.git`)).toBe('file')
+    // The session's copy is a clone in its own directory (§11), not a worktree reading this checkout's
+    // object store — so nothing holds the retired subtree, and the session keeps its clone.
+    expect(await workspaces.removeRetiredSecondaryRoot(retiredAgent, retired!)).toEqual({ outcome: 'removed' })
+    expect(await pod.stat(INFRA)).toBe('missing')
+    expect(await pod.stat(`${sessionCloneOf('sess-1', 'acme/infra')}/.git`)).toBe('dir')
+    expect(await workspaces.retiredSecondaryRoots(retiredAgent)).toEqual([])
 
     checkoutExists = true
     expect(await workspaces.removeSessionWorktree(agent, 'sess-1')).toEqual({ outcome: 'removed' })
-    expect(await workspaces.removeRetiredSecondaryRoot(retiredAgent, retired!)).toEqual({ outcome: 'removed' })
-    expect(await pod.stat(INFRA)).toBe('missing')
-    expect(await workspaces.retiredSecondaryRoots(retiredAgent)).toEqual([])
+    expect(await pod.stat(sessionDirOf('sess-1'))).toBe('missing')
   })
 
   it('keeps a retired root whose checkout holds commits no remote can reach', async () => {
@@ -1030,7 +1176,7 @@ describe('secondary roots on the pod volume', () => {
     await expect(workspaces.retiredSecondaryRoots(clusterAgent())).rejects.toThrow(/cannot list/)
     await expect(workspaces.sessionWorktreeRoots(agent)).rejects.toThrow(/cannot list/)
     await expect(
-      workspaces.additionalWorkspaceDirectories(agent, `${WORKTREES}/${workspaces.sessionWorktreeId('sess-1')}`, {
+      workspaces.additionalWorkspaceDirectories(agent, sessionCloneOf('sess-1'), {
         sessionKey: 'sess-1',
         isolation: 'session'
       })

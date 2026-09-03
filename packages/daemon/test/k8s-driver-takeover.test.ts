@@ -126,15 +126,15 @@ describe('sandbox launches follow the duty', () => {
     const a = member(api, store, clock)
     const b = member(api, store, clock)
     await a.driver.ensureBoundChannel(AGENT)
-    expect(a.driver.launchedAgents().map((l) => l.agentId)).toEqual([AGENT])
+    expect(a.driver.launched().map((l) => l.agentId)).toEqual([AGENT])
     expect(a.driver.sessionFor(AGENT)?.isAttached()).toBe(true)
 
     // The duty moves: A stops serving the agent, B takes it over from the cluster.
-    a.driver.releaseAgent(AGENT)
-    expect(a.driver.launchedAgents()).toEqual([])
+    a.driver.release(AGENT)
+    expect(a.driver.launched()).toEqual([])
     expect(a.driver.sessionFor(AGENT)).toBeUndefined()
     expect(a.revoked).toEqual([AGENT])
-    expect(await b.driver.adoptAgent(AGENT)).toMatchObject({ sandboxName: 'sb-1', sandboxUid: 'sandbox-uid-1' })
+    expect(await b.driver.adopt(AGENT)).toMatchObject({ sandboxName: 'sb-1', sandboxUid: 'sandbox-uid-1' })
 
     // A's idle sweep now has nothing to act on, however idle the agent looks from A.
     expect(await a.driver.suspendIfIdle(AGENT)).toBe('absent')
@@ -150,21 +150,21 @@ describe('sandbox launches follow the duty', () => {
     const a = member(api, store, clock)
     const b = member(api, store, clock)
     const bound = await a.driver.ensureSandbox(AGENT)
-    a.driver.releaseAgent(AGENT)
+    a.driver.release(AGENT)
 
     clock.advance(5_000)
-    const adopted = await b.driver.adoptAgent(AGENT)
+    const adopted = await b.driver.adopt(AGENT)
     // Nothing was created: the claim and its Sandbox are the ones A left behind.
     expect(adopted).toMatchObject({ sandboxName: bound.sandboxName, sandboxUid: bound.sandboxUid })
     // Idleness is anchored at the takeover, so the pod gets a full window from B's clock.
     expect(adopted?.since).toBe(clock.now())
     // The generation continues from the shared store, so B's later dial fences A's out.
     expect(adopted!.generation).toBeGreaterThan(bound.generation)
-    expect(b.driver.launchedAgents()).toEqual([{ agentId: AGENT, since: clock.now() }])
+    expect(b.driver.launched()).toEqual([{ subject: AGENT, agentId: AGENT, since: clock.now() }])
 
     expect(await b.driver.suspendIfIdle(AGENT)).toBe('suspended')
     expect(state.mode).toBe('Suspended')
-    expect(b.driver.launchedAgents()).toEqual([])
+    expect(b.driver.launched()).toEqual([])
     await store.close()
   })
 
@@ -173,15 +173,15 @@ describe('sandbox launches follow the duty', () => {
     const store = await sharedStore()
     const clock = new FakeClock()
     const b = member(api, store, clock)
-    expect(await b.driver.adoptAgent(AGENT)).toBeUndefined()
-    expect(b.driver.launchedAgents()).toEqual([])
+    expect(await b.driver.adopt(AGENT)).toBeUndefined()
+    expect(b.driver.launched()).toEqual([])
 
     const a = member(api, store, clock)
     await a.driver.ensureSandbox(AGENT)
     expect(await a.driver.suspendIfIdle(AGENT)).toBe('suspended')
-    a.driver.releaseAgent(AGENT)
+    a.driver.release(AGENT)
     expect(state.mode).toBe('Suspended')
-    expect(await b.driver.adoptAgent(AGENT)).toBeUndefined()
+    expect(await b.driver.adopt(AGENT)).toBeUndefined()
     // The ordinary launch path still resumes it.
     await b.driver.ensureBoundChannel(AGENT)
     expect(state.mode).toBe('Running')
@@ -195,9 +195,9 @@ describe('sandbox launches follow the duty', () => {
     const clock = new FakeClock()
     const a = member(api, store, clock)
     const acquiring = a.driver.ensureSandbox(AGENT)
-    a.driver.releaseAgent(AGENT)
+    a.driver.release(AGENT)
     await expect(acquiring).rejects.toThrow(/left this member/)
-    expect(a.driver.launchedAgents()).toEqual([])
+    expect(a.driver.launched()).toEqual([])
     await store.close()
   })
 
@@ -207,11 +207,11 @@ describe('sandbox launches follow the duty', () => {
     const clock = new FakeClock()
     const a = member(api, store, clock)
     await a.driver.ensureSandbox(AGENT)
-    a.driver.releaseAgent(AGENT)
+    a.driver.release(AGENT)
     const b = member(api, store, clock)
-    const [adopted, acquired] = await Promise.all([b.driver.adoptAgent(AGENT), b.driver.ensureSandbox(AGENT)])
+    const [adopted, acquired] = await Promise.all([b.driver.adopt(AGENT), b.driver.ensureSandbox(AGENT)])
     expect(acquired).toBe(adopted)
-    expect(b.driver.launchedAgents()).toHaveLength(1)
+    expect(b.driver.launched()).toHaveLength(1)
     await store.close()
   })
 
@@ -221,8 +221,8 @@ describe('sandbox launches follow the duty', () => {
     const clock = new FakeClock()
     const a = member(api, store, clock)
     const launch = await a.driver.ensureSandbox(AGENT)
-    expect(await a.driver.adoptAgent(AGENT)).toBe(launch)
-    expect(a.driver.launchedAgents()).toEqual([{ agentId: AGENT, since: launch.since }])
+    expect(await a.driver.adopt(AGENT)).toBe(launch)
+    expect(a.driver.launched()).toEqual([{ subject: AGENT, agentId: AGENT, since: launch.since }])
     expect(await a.driver.suspendIfIdle(AGENT)).toBe('suspended')
     expect(state.mode).toBe('Suspended')
     await store.close()

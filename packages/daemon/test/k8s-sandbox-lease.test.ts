@@ -142,3 +142,43 @@ describe('sandbox lease mode queue', () => {
     expect(await subject.queueMode('sb-1', 'Suspended')).toBe('Suspended')
   })
 })
+
+describe('sandbox lease with one agent holding several pods (git-workspace-model §11)', () => {
+  it('gates a suspension per SUBJECT, so a session pod mid-suspend neither blocks nor is blocked by its siblings', async () => {
+    // Three Sandboxes of one agent — its own (`sb-a`) and two sessions' (`sb-s`, `sb-t`) — each a subject of its own.
+    const modes = new Map<string, OperatingMode>()
+    const writes: string[] = []
+    let releaseWrite: () => void = () => {}
+    const held = new Promise<void>((resolve) => (releaseWrite = resolve))
+    const api = {
+      getSandbox: async (name: string): Promise<Sandbox> => ({
+        metadata: { name },
+        spec: { operatingMode: modes.get(name) ?? 'Running' }
+      }),
+      setOperatingMode: async (name: string, desired: OperatingMode): Promise<Sandbox> => {
+        if (name === 'sb-s') await held
+        writes.push(`${name}:${desired}`)
+        modes.set(name, desired)
+        return { metadata: { name }, spec: { operatingMode: desired } }
+      }
+    } as unknown as SandboxApi
+    const subject = lease(api)
+    // Work on the AGENT pod, and a suspension in flight on the SESSION pod.
+    subject.retain('sb-a')
+    const suspending = subject.suspendIfIdle('agent-a/session-1', 'sb-s', () => {})
+    expect(subject.suspensionOf('agent-a/session-1')).toBeDefined()
+    // The agent pod's gate is untouched by the session pod's suspension, and its own hold decides for it.
+    expect(subject.suspensionOf('agent-a')).toBeUndefined()
+    expect(await subject.suspendIfIdle('agent-a', 'sb-a', () => {})).toBe('busy')
+    // A sibling session pod is neither gated nor held by either of them.
+    expect(subject.suspensionOf('agent-a/session-2')).toBeUndefined()
+    expect(await subject.suspendIfIdle('agent-a/session-2', 'sb-t', () => {})).toBe('suspended')
+    releaseWrite()
+    expect(await suspending).toBe('suspended')
+    expect(subject.suspensionOf('agent-a/session-1')).toBeUndefined()
+    // The agent pod's work was never counted against a session pod's Sandbox, and each write named its own pod.
+    subject.release('sb-a')
+    expect(await subject.suspendIfIdle('agent-a', 'sb-a', () => {})).toBe('suspended')
+    expect(writes).toEqual(['sb-t:Suspended', 'sb-s:Suspended', 'sb-a:Suspended'])
+  })
+})

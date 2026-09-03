@@ -164,6 +164,28 @@ describe('one ACP host per session under a confined self-hosted launch', () => {
     await daemon.stop()
   })
 
+  it('keys every session of a confined self-hosted agent by session, whatever isolation its row reports', async () => {
+    // The pool's isolation rule (daemon-k8s-mode.test.ts) is the pool's alone: off it, the mechanism decides and
+    // a shared-isolation session still gets its own host and its own directory on this disk.
+    const { daemon } = await startDaemon(scaffold())
+    const agent = (daemon as any).agents.get('bot-a')
+    expect((daemon as any).perSessionHost(agent, KEY('T1'))).toBe(true)
+    expect((daemon as any).hostKeyForRequest('bot-a', { sessionKey: KEY('T1'), isolation: 'shared' })).toBe(
+      sessionHostKey('bot-a', KEY('T1'))
+    )
+    expect((daemon as any).hostKeyForRequest('bot-a', { sessionKey: KEY('T2'), isolation: 'session' })).toBe(
+      sessionHostKey('bot-a', KEY('T2'))
+    )
+    // No pod is involved in a self-hosted launch, and the directory the policy names stays under the agent dir.
+    expect((daemon as any).k8sPlane).toBeUndefined()
+    expect((daemon as any).workspaces.sessionDir(agent, KEY('T1'))).toBe(
+      join(agent.dir, 'sessions', hostKeyDirName(sessionHostKey('bot-a', KEY('T1'))))
+    )
+    // Not on disk yet ⇒ not confined yet: the disk decides the tier locally, never a policy.
+    expect((daemon as any).workspaces.confinedSessionDir(agent, KEY('T1'))).toBeUndefined()
+    await daemon.stop()
+  })
+
   it('keeps one host per agent when the launch is not confined', async () => {
     const { daemon, hosts, factory } = await startDaemon(scaffold({ runInSandbox: false }))
     await (daemon as any).dispatch('bot-a', dm('100', 'one', 'T1'), 'int-a')

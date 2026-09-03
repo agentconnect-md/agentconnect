@@ -199,6 +199,7 @@ describe('cluster spawn driver', () => {
     expect(records).toEqual([
       {
         agentId: 'agent-a',
+        subject: 'agent-a',
         sandboxUid: 'sandbox-uid-1',
         generation: 1,
         grants: ['acp', 'materialize', 'exec', 'read', 'tunnel', 'automerge', 'skills', 'skills-wide'],
@@ -634,7 +635,7 @@ describe('cluster spawn driver', () => {
     // A renewal reporting a root keeps it current on the replacement connection too.
     instance.onChannelBound(stubConnection(generation, '/mnt/agent'))
     expect(instance.workspaceRootFor('agent-a')).toBe('/mnt/agent')
-    await instance.removeAgent('agent-a')
+    await instance.removeSandbox('agent-a')
     expect(instance.workspaceRootFor('agent-a')).toBeUndefined()
   })
 
@@ -691,7 +692,7 @@ describe('cluster spawn driver', () => {
     const { api, state } = fakeApi()
     const { instance } = driver(api)
     await instance.ensureSandbox('agent-a')
-    await instance.removeAgent('agent-a')
+    await instance.removeSandbox('agent-a')
     expect(state.deleted).toEqual(['agent-agent-a'])
     expect(instance.currentLaunch('agent-a')).toBeUndefined()
   })

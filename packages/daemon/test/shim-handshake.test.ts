@@ -612,7 +612,7 @@ describe('shim binding registry', () => {
     clock.value = 1_000
     const first = mustBind(bindings, record(), { name: 'p1', uid: 'u1' })
     const second = mustBind(bindings, record({ generation: 4 }), { name: 'p2', uid: 'u2' })
-    bindings.revokeAgent('agent-a')
+    bindings.revokeSubject('agent-a')
     expect(bindings.size()).toBe(0)
     expect(bindings.authorize({ credential: first.credential, generation: 3, capability: 'materialize' }).ok).toBe(
       false

@@ -93,7 +93,7 @@ describe('PostgreSQL daemon capacity harness', () => {
       expect(harness.plane.gitRunnerFor('capacity-agent-001')).toBeUndefined()
       expect(harness.plane.workspaceFilesFor('capacity-agent-001')).toBeUndefined()
       expect(harness.plane.memoryFsFor('capacity-agent-001')).toBeUndefined()
-      expect(harness.plane.launchedAgents()).toEqual([])
+      expect(harness.plane.launched()).toEqual([])
       await expect(harness.plane.adoptAgent('capacity-agent-001')).resolves.toBeUndefined()
       expect(() => harness.plane.releaseAgent('capacity-agent-001')).not.toThrow()
       await expect(harness.plane.discardAgent('capacity-agent-001')).resolves.toBeUndefined()

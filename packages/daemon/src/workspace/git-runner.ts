@@ -53,6 +53,25 @@ export interface GitRunner {
   readBounded(args: string[], maxBytes: number): Promise<{ out: Buffer; overflow: boolean }>
 }
 
+/** A runner whose backing runner is opened on first use — for a pod that is brought up by the read that names it. */
+export function deferredGitRunner(open: () => Promise<GitRunner>, env?: Record<string, string>): GitRunner {
+  let opened: Promise<GitRunner> | undefined
+  const runner = (): Promise<GitRunner> => {
+    opened ??= open().then((inner) => (env ? inner.withEnv(env) : inner))
+    return opened
+  }
+  return {
+    // `withEnv` REPLACES the whole environment, so a derived runner drops the one applied here rather than merging over it.
+    withEnv: (next) => deferredGitRunner(open, next),
+    raw: async (args) => (await runner()).raw(args),
+    clone: async (repo, target, options) => (await runner()).clone(repo, target, options),
+    pull: async (remote, branch, options) => (await runner()).pull(remote, branch, options),
+    status: async () => (await runner()).status(),
+    log: async (options) => (await runner()).log(options),
+    readBounded: async (args, maxBytes) => (await runner()).readBounded(args, maxBytes)
+  }
+}
+
 /**
  * Raised when an invocation never reached git — as opposed to git running and failing.
  *

@@ -241,7 +241,11 @@ process, and the in-pod merge watcher
 ([webchat-side-panels.md](webchat-side-panels.md) §M6) dies with it. So the
 session page renews a LEASE (`POST /sessions/:id/sandbox-keep-alive` →
 `sandbox/keepalive` → `k8s/sandbox-hold.ts`) while its document is visible, and
-`sweepIdleSandboxes` skips an agent whose lease is live.
+`sweepIdleSandboxes` skips a POD whose lease is live. The lease is keyed by
+sandbox SUBJECT, so a page watching an isolated session's worktree holds that
+session's own pod and neither the agent's nor a sibling session's (§11); an armed
+merge watcher is a process in the agent's pod and holds that one, whatever
+worktree the page is looking at.
 
 Three properties make that safe to hand a browser:
 
@@ -259,7 +263,15 @@ Three properties make that safe to hand a browser:
   sweep's own schedule.
 - **A suspended pod is held, never woken.** Keep-alive reads nothing from a pod
   that is down and answers `asleep`. Resurrecting a sandbox from a keep-alive
-  poll would invert the rule the sweep exists to serve.
+  poll would invert the rule the sweep exists to serve. The pod judged for the
+  tree is THIS page's — the one that owns the worktree it is watching — because
+  "any pod of the agent is up" would let a bound agent pod carry the poll into a
+  status read that the routed runner then serves by waking a suspended session
+  pod. And it is HELD across that read rather than only checked before it: the
+  idle gate reads its holds synchronously, so the hold excludes the sweep instead
+  of racing it. The two facts are judged **independently**, one pod each, so a
+  page whose session pod went to sleep still holds the agent's pod for a watcher
+  armed in it — otherwise a visible page would silently disarm its own box.
 
 Nothing about this is persisted anywhere — not in the CP, which only relays the
 frame, and not on the pod's volume. A daemon restart forgets every lease, and
@@ -279,6 +291,37 @@ pod, adopting from the runtime tier's shared warm pool when one is available;
 record at pod-name time — and the holder then dials the shim and binds at its
 term (§7). Cold, warm, and resume paths are already distinguished and metered
 (`LaunchTimer.observedPath`). **No new wake machinery exists here.**
+
+**One pod per session, beside the agent's
+([git-workspace-model.md](git-workspace-model.md) §11).** An isolated session on a
+pool member is the confined tier, so its host launches into a pod of its own: the
+claim is `agent-<agentId>-<16 hex of the session leaf>`, its pod labelled
+`agentconnect.md/agent` AND `agentconnect.md/session` (the leaf,
+`session-<24 hex>`), and the same labels ride the claim's own metadata so a
+successor member can list an agent's session claims without knowing its
+sessions. The session's clones and HOME live on that pod's volume under
+`<mount>/sessions/<leaf>/`; the agent pod keeps the primary checkout, the
+secondary roots and managed memory, and a session runtime binds and holds it as
+its companion for the runtime's life, so a running runtime still implies a
+reachable agent pod. Every workspace path is routed to the pod that owns it,
+read off the **path** rather than off the live-launch registry, so a suspended
+session pod stays addressable; a read that names one RESUMES it, only beside a
+bound agent pod and only onto the claim whose uid the router just observed. The
+resume creates nothing: the observation and the wake are two round trips, and the
+uid is re-judged against the object after that gap, so a retirement landing in
+between refuses instead of claiming a fresh empty volume for a session that no
+longer has one — a read can lose a race with a retirement, never win one.
+Sleep is per pod — a quiet session pod suspends on its own session's activity
+while its siblings and the agent pod stay — and the claim goes with the
+session's row: retention deletes it (volume and all) once the clone has passed
+the dirty and unique-commit rules, a replaced workspace retires every session
+pod of the agent **when its conversion runs on the volume** — not when the edit
+is activated, which precedes the acknowledgement and has no rollback that
+reaches a pod's volume — sparing the leaf then being prepared, whose own
+directory is emptied so it clones afresh, and agent removal deletes them all. Shared-isolation sessions
+are unchanged: one pod per agent, in the primary checkout. Admission still
+counts agents (`maxAgents`); session pods are bounded by session admission and
+the idle sweep.
 
 ### Orphan reconciliation
 

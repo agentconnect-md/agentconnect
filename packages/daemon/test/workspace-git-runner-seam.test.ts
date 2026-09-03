@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { WorkspaceManager, type WorkspaceGitRunnerResolver } from '../src/workspace/workspace-manager.js'
+import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 
 // One plane per test file — the isolation Vitest's per-file module registry used to give.
 const workspaces = new WorkspaceManager()
@@ -328,16 +329,17 @@ describe.skipIf(process.platform === 'win32')('consoleWorkspaceRoot', () => {
     expect(workspaces.consoleWorkspaceRoot(agentAt('/local/ws'), undefined, '/agent')).toBeUndefined()
   })
 
-  it('names the per-session worktree on the volume, never the shared checkout', () => {
+  it('names the session clone on its own pod, never the shared checkout (§11)', () => {
     workspaces.setSandboxMode(true)
-    // The console addresses the repository the session stands in, and for an isolated session that
-    // is its own worktree — naming the shared checkout would answer about a different tree.
-    const id = workspaces.sessionWorktreeId('sess-1')
+    // The console addresses the repository the session stands in, and for an isolated pool session that
+    // is the clone in its own directory — naming the shared checkout would answer about a different tree.
+    const agent = agentAt('/local/ws')
+    const leaf = hostKeyDirName(sessionHostKey(agent.id, 'sess-1'))
     expect(
-      workspaces.consoleWorkspaceRoot(agentAt('/local/ws'), '/local/ws/.sessions/abc', '/agent', {
+      workspaces.consoleWorkspaceRoot(agent, '/local/ws/.sessions/abc', '/agent', {
         isolation: 'session',
         sessionKey: 'sess-1'
       })
-    ).toBe(`/agent/worktrees/${id}`)
+    ).toBe(`/agent/sessions/${leaf}/workspace`)
   })
 })

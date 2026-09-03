@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AgentSchema, type Agent } from '../src/agents/agent-schema.js'
+import { hostKeyDirName, sessionHostKey } from '../src/acp/host-key.js'
 import { createWorkspaceGit } from '../src/cp/workspace-git.js'
 import { createWorkspaceReader, WorkspaceViolationError } from '../src/cp/workspace-reader.js'
 import { createWorkspaceScope, type WorkspaceScopeSession } from '../src/cp/workspace-scope.js'
@@ -407,7 +408,7 @@ describe.skipIf(process.platform === 'win32')('a cluster daemon addresses a seco
   const POD_ROOT = '/agent'
   const POD_SECONDARY = `${POD_ROOT}/repos/${AUTHORIZED}`
 
-  it('resolves the checkout, its session worktree and the attested branch in pod coordinates', async () => {
+  it('resolves the checkout, its session clone and the attested branch in pod coordinates', async () => {
     const pod = new PodWorkspaceFs(POD_ROOT, `${POD_SECONDARY}/checkout`, `${POD_SECONDARY}/worktrees`)
     pod.files.set(
       `${POD_SECONDARY}/.materialization.json`,
@@ -427,8 +428,11 @@ describe.skipIf(process.platform === 'win32')('a cluster daemon addresses a seco
         root: `${POD_SECONDARY}/checkout`,
         scratch: false
       })
-      const worktree = await podScope.location(AGENT, 'acp-iso', AUTHORIZED)
-      expect(worktree?.root).toBe(`${POD_SECONDARY}/worktrees/${workspaces.sessionWorktreeId('iso-key')}`)
+      // An isolated pool session's copy of the root is the clone in its own directory, on its own pod (§11).
+      const clone = await podScope.location(AGENT, 'acp-iso', AUTHORIZED)
+      expect(clone?.root).toBe(
+        `${POD_ROOT}/sessions/${hostKeyDirName(sessionHostKey(AGENT, 'iso-key'))}/repos/${AUTHORIZED}`
+      )
       // The branch comes from the marker ON THE VOLUME, read through the seam — never this disk.
       await expect(podScope.target(AGENT, AUTHORIZED)).resolves.toMatchObject({ branch: 'pod-trunk', githubApp: true })
       // The primary still resolves to the sandbox checkout, untouched by the repo scope.

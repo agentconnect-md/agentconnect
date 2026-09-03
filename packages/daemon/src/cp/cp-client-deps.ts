@@ -48,6 +48,7 @@ import type { WorkspaceManager } from '../workspace/workspace-manager.js'
 import type { K8sRuntimePlane } from '../k8s/runtime-plane.js'
 import type { AutoMergeWatcher } from '../github/auto-merge/watcher.js'
 import type { SandboxHolds } from '../k8s/sandbox-hold.js'
+import { agentSandboxSubject } from '../k8s/sandbox-identity.js'
 import { createSandboxKeepAlive } from './sandbox-keepalive.js'
 import type { SystemMetrics } from '../metrics/system-metrics.js'
 import type { ReadinessGate } from '../readiness.js'
@@ -365,7 +366,11 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     ...(host.k8sPlane()
       ? {
           sandboxKeepAlive: createSandboxKeepAlive({
-            runsInSandbox: (id) => host.k8sPlane()!.runsInSandbox(id),
+            // The pod this page's worktree lives on, through the SAME scope the status read resolves its root with and the same routing rule, so the lease, the judgement and the read can never name different pods (§11).
+            podFor: async (id, sessionId) =>
+              host.k8sPlane()!.subjectForPath(id, await workspaceScope.gitRoot(id, sessionId)),
+            agentPod: (id) => agentSandboxSubject(id),
+            holdIfBound: (subject) => host.k8sPlane()!.holdIfBound(subject),
             knownAgent: (id) => host.agents().has(id),
             armedFor: async (id) => (await host.autoMerge()?.armedFor(id)) === true,
             gitStatus: (id, sessionId) => workspaceGit.status(id, sessionId),
@@ -381,8 +386,9 @@ export function buildCpClientDeps(host: CpClientDepsHost): CpClientDeps {
     agentWake: createAgentWaker({
       ...(host.k8sPlane()
         ? {
+            // The agent's OWN pod: the console browses the primary checkout there, whatever session pods are up.
             sandbox: {
-              isRunning: (id) => host.k8sPlane()!.runsInSandbox(id),
+              isRunning: (id) => host.k8sPlane()!.sandboxBound(id),
               ensureChannel: (id) => host.k8sPlane()!.ensureChannel(id)
             }
           }

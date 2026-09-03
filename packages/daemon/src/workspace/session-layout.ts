@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { isRepoSegment, PRIMARY_CHECKOUT_DIR, SECONDARY_ROOTS_DIR } from './secondary-layout.js'
+import type { WorkspaceFs } from './workspace-fs.js'
 
 // The on-disk shape of one confined session's directory, `<agentDir>/sessions/<leaf>/{workspace,repos/<owner>/<repo>,home}` (git-workspace-model.md §11) — separate from the manager, like secondary-layout.ts, so the launch path derives a session host's grants without the whole workspace module.
 
@@ -44,6 +45,33 @@ export function sessionSecondaryClonesIn(sessionDir: string): { repoFullName: st
 export function sessionClonesIn(sessionDir: string): { repoFullName?: string; path: string }[] {
   const primary = sessionRootCloneIn(sessionDir)
   return [...(isRealDir(primary) ? [{ path: primary }] : []), ...sessionSecondaryClonesIn(sessionDir)]
+}
+
+/** {@link sessionClonesIn} asked of the filesystem that HOLDS the directory — a pod's volume as much as this disk. */
+export async function sessionClonesUnder(
+  fs: Pick<WorkspaceFs, 'stat' | 'readdir'>,
+  sessionDir: string
+): Promise<{ repoFullName?: string; path: string }[]> {
+  const out: { repoFullName?: string; path: string }[] = []
+  const primary = sessionRootCloneIn(sessionDir)
+  if ((await fs.stat(primary)) === 'dir') out.push({ path: primary })
+  const parent = join(sessionDir, SECONDARY_ROOTS_DIR)
+  for (const owner of await dirEntriesUnder(fs, parent)) {
+    for (const repo of await dirEntriesUnder(fs, join(parent, owner))) {
+      out.push({ repoFullName: `${owner}/${repo}`, path: join(parent, owner, repo) })
+    }
+  }
+  return out
+}
+
+/** Child directories of `dir` whose names are legal repository segments, sorted, as `fs` reports them; a missing parent is empty. */
+async function dirEntriesUnder(fs: Pick<WorkspaceFs, 'stat' | 'readdir'>, dir: string): Promise<string[]> {
+  if ((await fs.stat(dir)) !== 'dir') return []
+  const names: string[] = []
+  for (const name of await fs.readdir(dir)) {
+    if (isRepoSegment(name) && (await fs.stat(join(dir, name))) === 'dir') names.push(name)
+  }
+  return names.sort()
 }
 
 /** The `.git` DIRECTORY of every clone in a session directory — a clone's own, never a worktree's link file. */

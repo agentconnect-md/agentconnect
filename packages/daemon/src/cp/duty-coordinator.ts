@@ -184,6 +184,7 @@ export class DutyCoordinator {
 
   /** How many more duty-covered agents this member will accept. `maxAgents: 0`
    *  means unbounded, reported as the CP's own per-tick grant cap. */
+  // Agents, not sessions: a pool member's session pods (git-workspace-model §11) are bounded by session admission and the idle sweep, so admission keeps counting the agents it holds duties for.
   dutyHeadroom(): number {
     const max = this.host.cfg()?.limits?.maxAgents ?? 0
     // `maxAgents: 0` is unbounded, but the WIRE still needs a finite number —

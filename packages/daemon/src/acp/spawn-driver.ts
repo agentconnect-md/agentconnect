@@ -6,6 +6,7 @@ import { LocalFileSink } from '../shim/file-sink.js'
 import { resolveCommandPath } from '../runtimes/probe.js'
 import { sandboxWrap, type SandboxMechanism } from './sandbox.js'
 import type { ClaudeProtectedSettings } from '../runtime-defs/claude-runtime.js'
+import type { HostKey } from './host-key.js'
 import type { Logger } from '../log.js'
 
 export interface AcpSandboxLaunch {
@@ -60,6 +61,8 @@ export interface SpawnRequest {
   suppressChildStderr?: boolean
   /** OS sandbox for the agent process (issue #312). Absent ⇒ run unconfined. */
   sandbox?: AcpSandboxLaunch
+  /** The host this launch is for; a cluster driver claims the pod that key names (git-workspace-model §11). */
+  hostKey?: HostKey
 }
 
 /** A launched ACP runtime, reduced to what the protocol layer actually needs. */

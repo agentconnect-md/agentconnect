@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AGENT_WAKE_FEATURE, DAEMON_BOOTSTRAP_UPGRADE_FEATURE } from '@agentconnect.md/protocol'
 import { Daemon } from '../src/daemon.js'
-import { agentHostKey } from '../src/acp/host-key.js'
+import { agentHostKey, sessionHostKey } from '../src/acp/host-key.js'
+import { sandboxSubjectFor } from '../src/k8s/sandbox-identity.js'
 import type { ResolvedRuntimeCatalog } from '../src/runtimes/registry.js'
 import { LocalStore } from '../src/store/local-store.js'
 import { mcpSocketPath, statePath } from '../src/paths.js'
@@ -105,7 +106,7 @@ function daemon(opts: {
               runtimeImage: async () => 'runtime-sandbox:test',
               listener: { listeningPort: () => 0 } as never,
               gitRunnerFor: () => undefined,
-              launchedAgents: () => [],
+              launched: () => [],
               suspendIdle: async () => 'absent',
               discardAgent: async () => {},
               stop: async () => {},
@@ -125,27 +126,52 @@ function daemon(opts: {
 }
 
 describe('daemon --k8s mode', () => {
-  it('keeps one ACP host per agent: a pool launch dials one sandbox pod, whatever mechanism this host has', async () => {
+  it('gives an isolated session its own host and pod, and a shared one the agent host, whatever mechanism this host has (§11)', async () => {
     const instance = daemon({ root: root(), k8s: true })
     try {
       await instance.start()
-      // The mode never turns the in-process mechanism on; force it so the `!k8s` half of the
-      // per-session-host predicate is what keeps the shared host, not the mechanism rule.
+      // The mode never turns the in-process mechanism on; force it so the isolation rule — not the
+      // mechanism rule that decides self-hosted — is what keys the host here.
       ;(instance as any).sandboxMechanism = 'bwrap'
       const agent = {
         id: 'bot-a',
         name: 'bot-a',
         status: 'active',
         runtime: 'claude',
-        runInSandbox: true,
-        workspace: { mode: 'from-scratch', path: '/agents/bot-a/workspace' },
+        runInSandbox: false,
+        workspace: {
+          mode: 'git-repo',
+          path: '/agents/bot-a/workspace',
+          gitRepo: 'https://github.com/acme/private.git',
+          gitBranch: 'main'
+        },
         integrations: [],
         output: { mode: 'medium' }
       }
       ;(instance as any).agents.set('bot-a', agent)
-      expect((instance as any).agentRunsInSandbox(agent)).toBe(true)
-      expect((instance as any).perSessionHost(agent)).toBe(false)
-      expect((instance as any).hostKeyFor('bot-a', 'slack:C1:T1:bot-a')).toBe(agentHostKey('bot-a'))
+      const shared = { sessionKey: 'slack:C1:T1:bot-a', isolation: 'shared' as const }
+      const isolated = { sessionKey: 'slack:C1:T2:bot-a', isolation: 'session' as const }
+      expect((instance as any).hostKeyForRequest('bot-a', shared)).toBe(agentHostKey('bot-a'))
+      expect((instance as any).hostKeyForRequest('bot-a', isolated)).toBe(sessionHostKey('bot-a', isolated.sessionKey))
+      // The learned isolation keeps answering for callers holding only the key, and the pod follows the host.
+      expect((instance as any).hostKeyFor('bot-a', isolated.sessionKey)).toBe(
+        sessionHostKey('bot-a', isolated.sessionKey)
+      )
+      expect((instance as any).hostKeyFor('bot-a', shared.sessionKey)).toBe(agentHostKey('bot-a'))
+      expect((instance as any).podSubjectFor(agent, sessionHostKey('bot-a', isolated.sessionKey))).toBe(
+        sandboxSubjectFor(sessionHostKey('bot-a', isolated.sessionKey))
+      )
+      // A session-shaped host key the pool does not know as isolated (a dream, a model-session host) stays in the agent pod.
+      expect((instance as any).podSubjectFor(agent, sessionHostKey('bot-a', 'dream:bot-a:d1'))).toBeUndefined()
+      expect((instance as any).podSubjectFor(agent, agentHostKey('bot-a'))).toBeUndefined()
+      // A session the pool never heard of is the agent's, not a guess.
+      expect((instance as any).hostKeyFor('bot-a', 'slack:C1:T9:bot-a')).toBe(agentHostKey('bot-a'))
+      // Capacity keeps counting AGENTS: session hosts (and their pods) do not spend `maxAgents` slots.
+      ;(instance as any).cfg.limits.maxAgents = 5
+      ;(instance as any).hosts.set(sessionHostKey('bot-a', isolated.sessionKey), {})
+      ;(instance as any).hosts.set(sessionHostKey('bot-a', 'slack:C1:T3:bot-a'), {})
+      expect((instance as any).dutyCoordinator.dutyHeadroom()).toBe(5)
+      ;(instance as any).hosts.clear()
     } finally {
       await instance.stop()
     }
@@ -330,9 +356,9 @@ describe('daemon --k8s mode', () => {
       root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
       k8s: true,
       plane: {
-        launchedAgents: () => [
-          { agentId: 'quiet', since: 0 },
-          { agentId: 'serving', since: 0 }
+        launched: () => [
+          { subject: 'quiet', agentId: 'quiet', since: 0 },
+          { subject: 'serving', agentId: 'serving', since: 0 }
         ],
         suspendIdle: async (agentId: string) => {
           suspended.push(agentId)
@@ -359,9 +385,9 @@ describe('daemon --k8s mode', () => {
       root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
       k8s: true,
       plane: {
-        launchedAgents: () => [
-          { agentId: 'watched', since: 0 },
-          { agentId: 'abandoned', since: 0 }
+        launched: () => [
+          { subject: 'watched', agentId: 'watched', since: 0 },
+          { subject: 'abandoned', agentId: 'abandoned', since: 0 }
         ],
         suspendIdle: async (agentId: string) => {
           suspended.push(agentId)
@@ -386,6 +412,38 @@ describe('daemon --k8s mode', () => {
     }
   })
 
+  it('judges the hold per POD, so one dirty session page cannot pin its agent or its siblings (§11)', async () => {
+    // The lease is keyed by sandbox subject, not by agent: an agent-keyed one let a page watching one
+    // dirty session worktree keep every running session pod of that agent out of the sweep.
+    const suspended: string[] = []
+    const dirty = 'watched/session-dirty'
+    const k8sDaemon = daemon({
+      root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
+      k8s: true,
+      plane: {
+        launched: () => [
+          { subject: dirty, agentId: 'watched', since: 0 },
+          { subject: 'watched/session-clean', agentId: 'watched', since: 0 },
+          { subject: 'watched', agentId: 'watched', since: 0 }
+        ],
+        suspendIdle: async (subject: string) => {
+          suspended.push(subject)
+          return 'suspended'
+        }
+      }
+    })
+    try {
+      await k8sDaemon.start()
+      ;(k8sDaemon as any).sandboxHolds.renew(dirty, 'session-dirty', ['uncommitted-files'])
+      ;(k8sDaemon as any).sweepIdle()
+      // The agent's own pod and the sibling session's are judged on their own keys, and suspend.
+      await vi.waitFor(() => expect([...suspended].sort()).toEqual(['watched', 'watched/session-clean']))
+      expect(suspended).not.toContain(dirty)
+    } finally {
+      await k8sDaemon.stop()
+    }
+  })
+
   it('counts idleness from when the launch was taken over when no activity is recorded', async () => {
     const suspended: string[] = []
     const k8sDaemon = daemon({
@@ -393,9 +451,9 @@ describe('daemon --k8s mode', () => {
       k8s: true,
       plane: {
         // No session row exists for either agent, so activity alone would read as idle since epoch.
-        launchedAgents: () => [
-          { agentId: 'fresh', since: Date.now() },
-          { agentId: 'stale', since: Date.now() - 24 * 3_600_000 }
+        launched: () => [
+          { subject: 'fresh', agentId: 'fresh', since: Date.now() },
+          { subject: 'stale', agentId: 'stale', since: Date.now() - 24 * 3_600_000 }
         ],
         suspendIdle: async (agentId: string) => {
           suspended.push(agentId)
@@ -418,9 +476,9 @@ describe('daemon --k8s mode', () => {
       root: root({ declared: { runtimes: [{ id: 'claude' }] } }),
       k8s: true,
       plane: {
-        launchedAgents: () => [
-          { agentId: 'held', since: 0 },
-          { agentId: 'moved', since: 0 }
+        launched: () => [
+          { subject: 'held', agentId: 'held', since: 0 },
+          { subject: 'moved', agentId: 'moved', since: 0 }
         ],
         suspendIdle: async (agentId: string) => {
           suspended.push(agentId)

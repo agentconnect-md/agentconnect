@@ -21,6 +21,7 @@ export class ShimSession {
   private closed = false
 
   constructor(
+    /** The launch's subject: the agent id, or `<agentId>/<session leaf>` for a confined session's own pod. */
     readonly agentId: string,
     readonly generation: number,
     private readonly timers: { setTimeout: (fn: () => void, ms: number) => unknown; clearTimeout: (h: unknown) => void }

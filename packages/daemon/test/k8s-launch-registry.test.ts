@@ -15,7 +15,7 @@ describe('launch registry records', () => {
     const first = await subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-1')
     expect(first).toMatchObject({ agentId: 'agent-a', sandboxName: 'sb-1', generation: 1, since: clock.now() })
     expect(subject.currentLaunch('agent-a')).toBe(first)
-    expect(subject.launchedAgents()).toEqual([{ agentId: 'agent-a', since: clock.now() }])
+    expect(subject.launched()).toEqual([{ subject: 'agent-a', agentId: 'agent-a', since: clock.now() }])
 
     // A replacement pod must never reuse the fence the departed incarnation was bound against.
     const second = await subject.recordLaunch('agent-a', 'sb-1', 'sandbox-uid-2')
@@ -24,7 +24,7 @@ describe('launch registry records', () => {
     expect(subject.forgetLaunch('agent-a')).toBe(second)
     expect(subject.currentLaunch('agent-a')).toBeUndefined()
     expect(subject.forgetLaunch('agent-a')).toBeUndefined()
-    expect(subject.launchedAgents()).toEqual([])
+    expect(subject.launched()).toEqual([])
   })
 })
 
