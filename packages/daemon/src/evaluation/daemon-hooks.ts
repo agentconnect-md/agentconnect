@@ -162,7 +162,7 @@ export class DaemonEvaluationHooks {
     if (registryTools.length > 0) {
       // The COMPLETE stable product namespace, not just what this composition
       // happens to request: `executeTool` dispatches evaluation tools BEFORE the
-      // product handlers, so a name it never composes (e.g. `setSessionTitle`,
+      // product handlers, so a name it never composes (e.g. `viewSessionStatus`,
       // which `executeTool` handles directly) would still be shadowed. Only a
       // full-registry check makes "never shadow a product tool" exact.
       const productNames = new Set<string>(ALL_TOOL_NAMES)

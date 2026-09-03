@@ -69,7 +69,7 @@ import { TerminalOutputFolder } from './session/terminal-output-folder.js'
 import { attachmentMention, sniffImageMimeType } from './session/attachment-block.js'
 import { McpControlServer } from './mcp/control-server.js'
 import { RemoteWebchatGrantManager } from './mcp/remote-webchat-grant.js'
-import type { CodeHostEffectReq, SessionContext, SetSessionTitleReq } from './mcp/ops.js'
+import type { CodeHostEffectReq, SessionContext } from './mcp/ops.js'
 import { GitCredentialCache } from './cp/git-credential.js'
 import { GitlabBroker } from './gitlab/broker.js'
 import { gitlabApiBaseUrl } from './gitlab/api-base.js'
@@ -101,7 +101,6 @@ import { resolveAgentMcpServers, RESERVED_MCP_SERVER_NAME } from './mcp/resolve-
 import { toolsForIntegrations, CODE_HOST_EFFECT_TOOLS, GITHUB_REVIEW_TOOLS, KNOWLEDGE_TOOLS } from './mcp/tools.js'
 import { MEMORY_TOOL_NAMES, MEMORY_TOOLS } from './memory/tools.js'
 import { DREAM_TOPIC_RE, MAX_DREAM_FILES } from './dream/dreamer.js'
-import { isSessionTitleToolCall } from './mcp/session-title-tool.js'
 import { MEMORY_DISTILLATION_SYSTEM_PROMPT, readOnlyExtractionMode } from './memory/distill.js'
 import { CLAUDE_HEADLESS_DISALLOWED_TOOLS } from './runtime-defs/claude-runtime.js'
 import {
@@ -2523,7 +2522,6 @@ export class Daemon {
       log: this.log,
       now: () => Date.now(),
       canRun: (ctx) => this.toolTurnRunnable(ctx),
-      setSessionTitle: (req) => this.setSessionTitleFromTool(req),
       gatewayFor: (integrationId) => this.connForIntegration(integrationId),
       // A platform's own session tools act through ANY platform's connection — including the one
       // the reply-surface registry above omits (Linear, §4.6).
@@ -2924,10 +2922,6 @@ export class Daemon {
       // The session integration's own bot identity (auth.test-resolved on both
       // socket and send-only connections) for the `# Agent` Slack-identity line.
       slackBotUserIdFor: (integrationId) => this.connByIntegration.get(integrationId)?.botUserId || undefined,
-      // No runtime is whitelisted for the model-authored `setSessionTitle` fallback
-      // anymore: codex-acp >= 1.1.3 emits native session_info_update titles itself
-      // (issue #659), so every runtime now relies on its native ACP title path. The
-      // ingress side (MCP handler + event hiding) stays for warm pre-upgrade sessions.
       // Same runtime-def env base the spawn path merges under the agent env, so
       // the standing-context config-file description matches what materialized.
       runtimeEnvFor: (runtimeId) =>
@@ -11081,7 +11075,6 @@ export class Daemon {
         runtimeCostReported: false
       },
       builtinSystemToolCallIds: new Set(),
-      hiddenSessionTitleToolCallIds: new Set(),
       acpSessionId: sessionId,
       outwardSessionId,
       ...(entry.selectedHost ? { selectedHost: entry.selectedHost } : {}),
@@ -13555,41 +13548,6 @@ export class Daemon {
     }
   }
 
-  /** MCP callback for the legacy model-authored title fallback. New sessions no
-   *  longer receive the tool (codex-acp >= 1.1.3 emits native titles — issue #659),
-   *  but warm ACP sessions created under the old Codex whitelist retain it for
-   *  their lifetime. The tool input contains only the title; every coordinate and
-   *  delivery route was captured in the trusted SessionContext. */
-  private async setSessionTitleFromTool(req: SetSessionTitleReq): Promise<void> {
-    const key = sessionKey(req.platform, req.channel, req.thread, req.agentId, req.transportScope)
-    const rec = await this.store.getSession(key)
-    if (!rec?.acpSessionId) throw new Error('the current session is not addressable yet')
-
-    // MCP tokens are session-static, while an integration can rotate between warm
-    // turns. Prefer the exact route installed by the current dispatch; use the token
-    // binding only as a defensive fallback for non-dispatch callers.
-    const binding: SessionDeliveryBinding = this.sessionDeliveryBindings.get(key) ?? {
-      agentId: req.agentId,
-      platform: req.platform,
-      ...(req.integrationId !== undefined ? { integrationId: req.integrationId } : {}),
-      isDm: req.isDm
-    }
-    await this.persistSessionTitle(rec, req.title)
-
-    const p = this.pending.get(pendingTurnKey(this.sessionOwnerKey(rec.agentId, rec.key), rec.acpSessionId))
-    if (p && p.plan.sessionKey === key && !p.outputSuppressed) {
-      if (p.webchat) {
-        webchatTurnOutput.emitWebchatUpdate(p.webchat, { sessionUpdate: 'session_info_update', title: req.title })
-      }
-      if (turnChromeFor(p.plan.platform).sessionTitle && p.conn) {
-        this.enqueueApply(p, { kind: 'set-title', text: req.title })
-        await p.signals.applyChain
-        return
-      }
-    }
-    await this.setSlackTitleForBinding(rec, binding, req.title)
-  }
-
   /** One ACP session's updates stay in arrival order: the async store would otherwise let
    *  a later update whose handler does less I/O emit ahead of an earlier one. */
   private enqueueAcpUpdate(owner: HostKey, sessionId: string, update: unknown): Promise<void> {
@@ -13802,12 +13760,6 @@ export class Daemon {
         p.reply.text += text
       }
     }
-    // `setSessionTitle` is daemon housekeeping, not conversational activity. Codex
-    // ACP reports it as an ordinary MCP tool_call, followed by title-less updates
-    // keyed only by toolCallId. Remember the id from the structured first event and
-    // drop the whole burst before any platform renderer, live webchat stream, GitHub
-    // collector, or persisted transcript sees it. The tool callback independently
-    // persists and streams the resulting session_info_update.
     // codex-acp streams a shell command's output as `_meta.terminal_output_delta` chunks and
     // completes the call with an empty `formatted_output` — fold the buffered text back into
     // the terminal update HERE, before any consumer, so the transcript (web console), the
@@ -13815,11 +13767,6 @@ export class Daemon {
     update = p.termOut.fold(update)
     const toolCallId = typeof update?.toolCallId === 'string' ? update.toolCallId : ''
     if (toolCallId && isBuiltinSystemToolCall(update)) p.builtinSystemToolCallIds.add(toolCallId)
-    if (isSessionTitleToolCall(update)) {
-      if (toolCallId) p.hiddenSessionTitleToolCallIds.add(toolCallId)
-      return
-    }
-    if (toolCallId && p.hiddenSessionTitleToolCallIds.has(toolCallId)) return
     // Select the complete GitHub final in memory. Do not write any GitHub comment here:
     // the prompt (and every agent-side tool call) must finish before publish() performs
     // the first and only public POST.

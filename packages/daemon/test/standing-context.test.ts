@@ -9,7 +9,6 @@ const BASE = {
   thread: 'T123',
   envSecretNames: [],
   fileSecrets: [],
-  usesSessionTitleTool: false,
   needsReplyToParent: false,
   memoryIndex: '',
   usesMeta: false

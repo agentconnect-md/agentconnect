@@ -1,30 +1,9 @@
 import { z } from 'zod'
-import type { McpContentResult, SessionContext } from './context.js'
+import type { SessionContext } from './context.js'
 import { parseArgs, requiredString } from './args.js'
-
-/** `setSessionTitle` arguments: whitespace is collapsed before the 80-character cap is applied. */
-export const SET_SESSION_TITLE_ARGS = z.object({
-  title: requiredString('title')
-    .transform((title) => title.replace(/\s+/g, ' ').trim())
-    .refine((title) => title.length > 0, 'missing required string argument: title')
-    .refine((title) => [...title].length <= 80, 'session title must be at most 80 characters')
-})
 
 /** `viewSessionStatus` arguments: the child session id is the only model input. */
 export const VIEW_SESSION_STATUS_ARGS = z.object({ sessionId: requiredString('sessionId') })
-
-/** A trusted session-title update. Every coordinate comes from the registered
- *  session context; the model supplies only `title`. */
-export interface SetSessionTitleReq {
-  agentId: string
-  platform: string
-  integrationId?: string
-  transportScope?: string
-  isDm: boolean
-  channel: string
-  thread: string
-  title: string
-}
 
 /**
  * A trusted request to read the status of a session the caller STARTED. Everything except
@@ -71,10 +50,8 @@ export interface SessionStatusResult {
   updatedAt?: number
 }
 
-/** The session-lifecycle deps: name a session, and read the progress of one it started. */
+/** The session-lifecycle deps: read the progress of a session this one started. */
 export interface SessionOpsDeps {
-  /** Persist and fan out a model-authored user-facing session title. */
-  setSessionTitle: (req: SetSessionTitleReq) => Promise<void> | void
   /** Read the progress of a session the caller started (backs `viewSessionStatus`). The daemon
    *  fills the trusted caller identity from the session context and authorizes `sessionId`
    *  against the caller's own children, fail-closed. Returns null when the id is unknown or is
@@ -84,35 +61,6 @@ export interface SessionOpsDeps {
   viewSessionStatus?: (req: SessionStatusReq) => Promise<SessionStatusResult | null>
 }
 
-// Session naming is daemon-local and platform-neutral. SECURITY: the model
-// contributes only the title; all routing coordinates come from the trusted
-// token-bound SessionContext.
-export async function setSessionTitle(
-  ctx: SessionContext,
-  args: Record<string, unknown>,
-  deps: SessionOpsDeps
-): Promise<unknown> {
-  const { title } = parseArgs(SET_SESSION_TITLE_ARGS, args)
-  await deps.setSessionTitle({
-    agentId: ctx.agentId,
-    platform: ctx.platform,
-    ...(ctx.integrationId !== undefined ? { integrationId: ctx.integrationId } : {}),
-    ...(ctx.transportScope !== undefined ? { transportScope: ctx.transportScope } : {}),
-    isDm: ctx.isDm,
-    channel: ctx.channel,
-    thread: ctx.thread,
-    title
-  })
-  // Empty native content avoids rendering a redundant tool-result body. The ACP
-  // tool activity itself remains observable in the session transcript.
-  const result: McpContentResult = { mcpContent: [] }
-  return result
-}
-
-// Read the progress of a session THIS session started (session-concept §5.3, the read
-// counterpart of a SessionTarget reply). SECURITY: the caller identity + coords come from the
-// trusted session context; `sessionId` is the only tool input and the daemon authorizes it
-// against the caller's own children — an agent cannot inspect an arbitrary session.
 export async function viewSessionStatus(
   ctx: SessionContext,
   args: Record<string, unknown>,

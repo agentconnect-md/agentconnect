@@ -45,8 +45,8 @@ describe('isBuiltinSystemTool — auto-approve the daemon’s own MCP tools', ()
   it('matches the FQN wherever the runtime puts it (title / kind / toolCallId)', () => {
     expect(isBuiltinSystemTool(req({ kind: 'mcp__agentconnect__sendMessage' }))).toBe(true)
     expect(isBuiltinSystemTool(req({ toolCallId: 'mcp__agentconnect__sendMessage-42' }))).toBe(true)
-    expect(isBuiltinSystemTool(req({ title: 'mcp.agentconnect.setSessionTitle' }))).toBe(true)
-    expect(isBuiltinSystemTool(req({ title: 'please run mcp.agentconnect.setSessionTitle' }))).toBe(false)
+    expect(isBuiltinSystemTool(req({ title: 'mcp.agentconnect.viewSessionStatus' }))).toBe(true)
+    expect(isBuiltinSystemTool(req({ title: 'please run mcp.agentconnect.viewSessionStatus' }))).toBe(false)
   })
 
   it('matches an opaque id only after a trusted tool event correlated it', () => {
@@ -111,7 +111,6 @@ function elicitation(toolCallId: string, overrides: Record<string, unknown> = {}
 function installPending(daemon: Daemon): {
   plan: { platform: string; approvalSurfaceSuppressed: boolean }
   builtinSystemToolCallIds: Set<string>
-  hiddenSessionTitleToolCallIds: Set<string>
 } {
   ;(daemon as any).store = {
     getSessionByAcpIdForAgent: () => ({ triggeredBy: 'user-1' }),
@@ -134,7 +133,6 @@ function installPending(daemon: Daemon): {
     signals: { applyChain: Promise.resolve() },
     approval: { waitMs: 0, depth: 0 },
     builtinSystemToolCallIds: new Set<string>(),
-    hiddenSessionTitleToolCallIds: new Set<string>(),
     conv: { onUpdate: () => [], hasBuffered: () => false },
     rec: { onUpdate: () => [] },
     termOut: new TerminalOutputFolder()

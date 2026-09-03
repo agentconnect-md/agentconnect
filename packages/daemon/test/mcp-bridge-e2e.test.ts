@@ -18,17 +18,14 @@ import type { MessageGateway } from '../src/mcp/ops.js'
 const cliEntry = fileURLToPath(new URL('../src/index.ts', import.meta.url))
 const repoRoot = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'))
 
-const tools = toolsForIntegrations(
-  [
-    {
-      id: 'int-1',
-      platform: 'slack',
-      core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
-      config: { botToken: 'x', appToken: 'y' }
-    }
-  ],
-  { sessionTitle: true }
-)
+const tools = toolsForIntegrations([
+  {
+    id: 'int-1',
+    platform: 'slack',
+    core: { mode: 'direct', bindRules: [], mutedChannels: [], gated: false },
+    config: { botToken: 'x', appToken: 'y' }
+  }
+])
 
 /** The bridge only exercises the tools these deps back; the rest are never dispatched. */
 const controlDeps = (deps: Partial<McpControlDeps>): McpControlDeps => deps as McpControlDeps
@@ -75,13 +72,9 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
       downloadFile: vi.fn(async () => null)
     }
     const recorded: unknown[] = []
-    const titleUpdates: unknown[] = []
     server = new McpControlServer(
       controlDeps({
         socketPath: path,
-        setSessionTitle: async (req) => {
-          titleUpdates.push(req)
-        },
         gatewayFor: () => gw,
         recordOutbound: async (_c, channel, _t, text, ts) => {
           recorded.push({ channel, text, ts })
@@ -118,22 +111,6 @@ describe('mcp-bridge end-to-end (real stdio MCP handshake)', () => {
 
     const listed = await client.listTools()
     expect(listed.tools.map((t) => t.name)).toContain('sendMessage')
-    expect(listed.tools.map((t) => t.name)).toContain('setSessionTitle')
-
-    const titleOut = await client.callTool({ name: 'setSessionTitle', arguments: { title: '  Review\nPR  ' } })
-    expect(titleOut.isError).toBeFalsy()
-    expect(titleUpdates).toEqual([
-      {
-        agentId: 'bot-a',
-        platform: 'slack',
-        integrationId: 'int-1',
-        isDm: false,
-        channel: 'C9',
-        thread: '5.5',
-        title: 'Review PR'
-      }
-    ])
-
     const out = await client.callTool({
       name: 'sendMessage',
       arguments: { toUser: 'U9', channel: 'C9', message: 'e2e hi' }

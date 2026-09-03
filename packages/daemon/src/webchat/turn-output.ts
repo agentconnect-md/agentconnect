@@ -81,8 +81,8 @@ export function emitWebchatUpdate(wc: WebchatTurnOutput, update: any): void {
       return
     }
     case 'session_info_update': {
-      // The runtime's auto-generated title (already persisted via setSessionTitle
-      // above). Stream it so the live playground session renames in place. Slack
+      // The runtime's auto-generated title (already persisted by the update handler).
+      // Stream it so the live playground session renames in place. Slack
       // app-DM threads are updated independently through setTitle above. Only a
       // non-empty set is streamed; a null/clear leaves the client's fallback label
       // untouched.

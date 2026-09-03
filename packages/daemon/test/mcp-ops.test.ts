@@ -78,7 +78,6 @@ const noMemory = {} as unknown as MemoryProvider
  *  return a benign delivered result; the send/read/discovery deps are overridden per test. */
 function makeDeps(over: Partial<OpsDeps> = {}): OpsDeps {
   return {
-    setSessionTitle: async () => {},
     gatewayFor: () => undefined,
     channelAgents: async () => {
       throw new Error('channelAgents not stubbed in this test')
@@ -95,66 +94,17 @@ function makeDeps(over: Partial<OpsDeps> = {}): OpsDeps {
   }
 }
 
-function deps(gw: MessageGateway): { deps: OpsDeps; recorded: unknown[]; titleUpdates: unknown[] } {
+function deps(gw: MessageGateway): { deps: OpsDeps; recorded: unknown[] } {
   const recorded: unknown[] = []
-  const titleUpdates: unknown[] = []
   return {
     recorded,
-    titleUpdates,
     deps: makeDeps({
-      setSessionTitle: async (req) => {
-        titleUpdates.push(req)
-      },
       gatewayFor: () => gw,
       recordOutbound: async (_c, channel, thread, text, ts) => void recorded.push({ channel, thread, text, ts }),
       now: () => 1000
     })
   }
 }
-
-describe('executeTool: setSessionTitle', () => {
-  it('normalizes the title and forwards only trusted session coordinates', async () => {
-    const gw = fakeGateway()
-    const gatewayFor = vi.fn(() => gw)
-    const { deps: d, titleUpdates } = deps(gw)
-    d.gatewayFor = gatewayFor
-
-    const result = await executeTool(
-      { ...ctx, isDm: true },
-      'setSessionTitle',
-      {
-        title: '  Fix\n  session titles  ',
-        agentId: 'attacker',
-        channel: 'C_OTHER',
-        integrationId: 'int-other'
-      },
-      d
-    )
-
-    expect(titleUpdates).toEqual([
-      {
-        agentId: 'bot-a',
-        platform: 'slack',
-        integrationId: 'int-1',
-        isDm: true,
-        channel: 'C_CURRENT',
-        thread: '111.1',
-        title: 'Fix session titles'
-      }
-    ])
-    expect(result).toEqual({ mcpContent: [] })
-    expect(gatewayFor).not.toHaveBeenCalled()
-  })
-
-  it('rejects blank, overlong, and stopped title updates', async () => {
-    const { deps: d, titleUpdates } = deps(fakeGateway())
-    await expect(executeTool(ctx, 'setSessionTitle', { title: '  ' }, d)).rejects.toThrow(/title/)
-    await expect(executeTool(ctx, 'setSessionTitle', { title: 'x'.repeat(81) }, d)).rejects.toThrow(/80/)
-    d.canRun = () => false
-    await expect(executeTool(ctx, 'setSessionTitle', { title: 'Late title' }, d)).rejects.toThrow(/stopped/)
-    expect(titleUpdates).toEqual([])
-  })
-})
 
 // The unified `sendMessage` tool's MessageTarget post path (§3) — the former
 // `sendPlatformMessage`. A `channel`-only target posts a visible IM through the gateway

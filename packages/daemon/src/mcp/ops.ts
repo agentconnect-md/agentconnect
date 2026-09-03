@@ -116,13 +116,7 @@ import {
   READ_ATTACHMENT_ARGS,
   type PlatformReadDeps
 } from './ops/platform-reads.js'
-import {
-  setSessionTitle,
-  SET_SESSION_TITLE_ARGS,
-  viewSessionStatus,
-  VIEW_SESSION_STATUS_ARGS,
-  type SessionOpsDeps
-} from './ops/session.js'
+import { viewSessionStatus, VIEW_SESSION_STATUS_ARGS, type SessionOpsDeps } from './ops/session.js'
 
 export type { McpContentResult, MessageGateway, SendIdentity, SessionContext } from './ops/context.js'
 export type { ChannelAgentsRequest } from './ops/directory.js'
@@ -141,7 +135,7 @@ export type {
   StartOrchestrationReq,
   StartOrchestrationResult
 } from './ops/orchestration.js'
-export type { SessionStatusReq, SessionStatusResult, SetSessionTitleReq } from './ops/session.js'
+export type { SessionStatusReq, SessionStatusResult } from './ops/session.js'
 
 /**
  * Everything the daemon bridge tools need, composed from the per-domain deps each
@@ -189,7 +183,6 @@ export interface OpsDeps
  * the daemon itself, or resolves its own target gateway from the trusted session snapshot.
  */
 const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<OpsDeps>>([
-  ['setSessionTitle', setSessionTitle],
   ['shareFile', shareFile],
   ['viewSessionStatus', viewSessionStatus],
   ['readMemory', readMemory],
@@ -251,7 +244,6 @@ const HANDLERS: Map<string, ToolHandler<OpsDeps>> = new Map<string, ToolHandler<
  * lives in {@link SEND_MESSAGE_BRANCHES} instead.
  */
 export const TOOL_ARG_SCHEMAS: Map<string, ZodType> = new Map<string, ZodType>([
-  ['setSessionTitle', SET_SESSION_TITLE_ARGS],
   ['viewSessionStatus', VIEW_SESSION_STATUS_ARGS],
   ['readMemory', READ_MEMORY_ARGS],
   ['writeMemory', WRITE_MEMORY_ARGS],

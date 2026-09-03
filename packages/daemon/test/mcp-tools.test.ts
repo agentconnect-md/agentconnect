@@ -406,7 +406,7 @@ describe('toolsForIntegrations', () => {
     const retired = ['startOrchestration', 'getOrchestration', 'cancelOrchestration']
     const surfaces = [
       toolsForIntegrations([]),
-      toolsForIntegrations([slackInt, telegramInt, discordInt], { sessionTitle: true, organizationKnowledge: true }),
+      toolsForIntegrations([slackInt, telegramInt, discordInt], { organizationKnowledge: true }),
       toolsForIntegrations([slackInt])
     ]
     for (const tools of surfaces) {
@@ -426,7 +426,7 @@ describe('toolsForIntegrations', () => {
     const surfaces = [
       toolsForIntegrations([]),
       toolsForIntegrations([slackInt]),
-      toolsForIntegrations([slackInt, telegramInt, discordInt], { sessionTitle: true, organizationKnowledge: true })
+      toolsForIntegrations([slackInt, telegramInt, discordInt], { organizationKnowledge: true })
     ]
     for (const tools of surfaces) {
       const names = tools.map((tool) => tool.name)
@@ -445,13 +445,8 @@ describe('toolsForIntegrations', () => {
     }
   })
 
-  it('injects the session-title fallback only when the runtime is explicitly whitelisted', () => {
-    expect(toolsForIntegrations([]).map((t) => t.name)).not.toContain('setSessionTitle')
-    expect(toolsForIntegrations([], { sessionTitle: true }).map((t) => t.name)).toContain('setSessionTitle')
-  })
-
   it('every injected tool exposes a JSON-Schema object input + a description', () => {
-    for (const t of toolsForIntegrations([slackInt, telegramInt], { sessionTitle: true })) {
+    for (const t of toolsForIntegrations([slackInt, telegramInt])) {
       expect(t.inputSchema).toMatchObject({ type: 'object' })
       expect(typeof t.description).toBe('string')
     }
@@ -474,7 +469,6 @@ describe('toolsForIntegrations', () => {
     expect(new Set(ALL_TOOL_NAMES).size).toBe(ALL_TOOL_NAMES.length)
     expect(ALL_TOOL_NAMES).toEqual(
       expect.arrayContaining([
-        'setSessionTitle',
         'sendMessage',
         'listChannels',
         'getChannelHistory',
