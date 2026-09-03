@@ -2,7 +2,7 @@ import type { ContentBlock, McpServer } from '@agentclientprotocol/sdk'
 import { LocalStore, sessionKey, transcriptChannelKey, type TranscriptEntry } from '../store/local-store.js'
 import { isSyntheticA2aChannel } from '../cp/cp-collab-routes.js'
 import { monotonicTs } from '../store/monotonic-ts.js'
-import { WorkspaceManager } from '../workspace/workspace-manager.js'
+import { effectiveSessionIsolation, WorkspaceManager } from '../workspace/workspace-manager.js'
 import { initiatorLabel } from '../workspace/session-branch.js'
 import { memoryKindOf, type MemoryProvider, type MemoryScope } from '../memory/provider.js'
 import { agentChildEnv } from '../agents/agent-env.js'
@@ -437,8 +437,7 @@ export class SessionManager {
         await this.deps.store.upsertSession(rec)
       }
     }
-    const requestedWorkspaceIsolation =
-      agent.workspace.mode === 'git-repo' ? (options.workspaceIsolation ?? agent.workspace.isolation) : 'shared'
+    const requestedWorkspaceIsolation = effectiveSessionIsolation(agent, options.workspaceIsolation)
     const workspaceIsolation =
       options.forceWorkspaceIsolation === true
         ? requestedWorkspaceIsolation

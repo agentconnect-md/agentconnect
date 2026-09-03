@@ -177,6 +177,59 @@ describe('daemon --k8s mode', () => {
     }
   })
 
+  it('claims no session pod for a tier nothing has reported, whatever the agent defaults to (§11)', async () => {
+    // The asymmetry the pool needs: guessing `session` claims a pod that lives as long as the session's
+    // row, while guessing `shared` costs at most one turn in the agent pod. Every host key whose session
+    // the pool has not been told about — a dream, a model-session host, a session key seen before its
+    // row — therefore lands in the agent's own pod.
+    const instance = daemon({ root: root(), k8s: true })
+    try {
+      await instance.start()
+      ;(instance as any).sandboxMechanism = 'bwrap'
+      const agent = poolAgent('session')
+      ;(instance as any).agents.set('bot-a', agent)
+      const unreported = 'slack:C1:T1:bot-a'
+      expect((instance as any).confinedSession(agent, unreported)).toBe(false)
+      expect((instance as any).hostKeyFor('bot-a', unreported)).toBe(agentHostKey('bot-a'))
+      expect((instance as any).podSubjectFor(agent, sessionHostKey('bot-a', unreported))).toBeUndefined()
+      expect((instance as any).podSubjectFor(agent, sessionHostKey('bot-a', 'dream:bot-a:d1'))).toBeUndefined()
+      // The feature is untouched: a session the pool HAS been told is isolated still gets its own pod.
+      const isolated = { sessionKey: 'slack:C1:T2:bot-a', isolation: 'session' as const }
+      expect((instance as any).hostKeyForRequest('bot-a', isolated)).toBe(sessionHostKey('bot-a', isolated.sessionKey))
+      expect((instance as any).podSubjectFor(agent, sessionHostKey('bot-a', isolated.sessionKey))).toBe(
+        sandboxSubjectFor(sessionHostKey('bot-a', isolated.sessionKey))
+      )
+    } finally {
+      await instance.stop()
+    }
+  })
+
+  it("claims the pod this session's own isolation names, before its row is written (§11)", async () => {
+    // The model-session host starts inside openSession, seconds before `sessions.handle` records the
+    // row — so the pod it claims has to read the session's own isolation there, or an explicit
+    // per-session opt-out is honoured only once a pod nobody asked for is already running.
+    const cases = [
+      { agentDefault: 'session' as const, recorded: 'shared' as const, ownPod: false },
+      { agentDefault: 'shared' as const, recorded: 'session' as const, ownPod: true },
+      { agentDefault: 'session' as const, worktree: false, ownPod: false },
+      { agentDefault: 'shared' as const, worktree: true, ownPod: true }
+    ]
+    for (const scenario of cases) {
+      const instance = daemon({ root: root(), k8s: true })
+      try {
+        await instance.start()
+        ;(instance as any).sandboxMechanism = 'bwrap'
+        const agent = poolAgent(scenario.agentDefault)
+        ;(instance as any).agents.set('bot-a', agent)
+        const key = 'slack:C1:T1:bot-a'
+        const claimed = await openSessionClaim(instance, agent, key, scenario)
+        expect(claimed).toBe(scenario.ownPod ? sandboxSubjectFor(sessionHostKey('bot-a', key)) : undefined)
+      } finally {
+        await instance.stop()
+      }
+    }
+  })
+
   it('does not inspect or open the PostgreSQL data plane outside k8s mode', async () => {
     const openDataPlane = vi.fn()
     const local = daemon({ root: root(), k8s: false, openDataPlane })
@@ -1004,4 +1057,62 @@ function mcpServersFor(
     thread: '1',
     isDm: false
   })
+}
+
+/** A pool agent whose workspace could serve an isolated session, so only the tier rule decides its pod. */
+function poolAgent(isolation: 'shared' | 'session') {
+  return {
+    id: 'bot-a',
+    name: 'bot-a',
+    status: 'active',
+    runtime: 'claude',
+    runInSandbox: false,
+    workspace: {
+      mode: 'git-repo',
+      path: '/agents/bot-a/workspace',
+      gitRepo: 'https://github.com/acme/private.git',
+      gitBranch: 'main',
+      isolation
+    },
+    integrations: [],
+    output: { mode: 'medium' }
+  }
+}
+
+/** Run the real openSession as far as the model-session host, and report the pod that host would claim. */
+async function openSessionClaim(
+  instance: Daemon,
+  agent: ReturnType<typeof poolAgent>,
+  key: string,
+  scenario: { recorded?: 'shared' | 'session'; worktree?: boolean }
+): Promise<string | undefined> {
+  let claimed: string | undefined
+  const inner = instance as any
+  inner.githubReviews = { prepareGithubReviewWorkspace: async () => ({}) }
+  inner.store.getSession = async () =>
+    scenario.recorded === undefined ? undefined : { key, workspaceIsolation: scenario.recorded }
+  inner.modelSessions = {
+    enabled: true,
+    keys: () => [],
+    release: async () => {},
+    ensure: async () => {
+      claimed = inner.podSubjectFor(agent, sessionHostKey('bot-a', key))
+      return { host: {}, hostKey: sessionHostKey('bot-a', key), stop: async () => {}, waitForCleanup: async () => {} }
+    }
+  }
+  inner.sessions = { handle: async () => ({ sessionId: 'acp-1', blocks: [], created: true }) }
+  const run = {
+    entry: {
+      agentId: 'bot-a',
+      initAbort: new AbortController(),
+      msg: { platform: 'webchat', channel: 'C1', msgId: 'm1', sender: { id: 'U1' }, text: 'hi' },
+      ...(scenario.worktree === undefined ? {} : { webchat: { worktree: scenario.worktree } })
+    },
+    key,
+    plan: { deliveryBinding: {} },
+    agent,
+    evaluation: {}
+  }
+  await inner.openSession(run, () => {})
+  return claimed
 }

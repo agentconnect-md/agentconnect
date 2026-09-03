@@ -191,6 +191,14 @@ export interface PrepareSessionWorkspaceRequest {
   confined?: boolean
 }
 
+/** The isolation a session created now is recorded with (§11): its own choice where the agent's workspace can serve one, else the agent's default — and always `shared` for a from-scratch workspace, whose primary is not a repository to clone. The one rule, so the host key and the pod claim cannot answer differently from the row `SessionManager` writes. */
+export function effectiveSessionIsolation(
+  agent: Pick<Agent, 'workspace'>,
+  requested?: 'shared' | 'session'
+): 'shared' | 'session' {
+  return agent.workspace.mode === 'git-repo' ? (requested ?? agent.workspace.isolation) : 'shared'
+}
+
 const PULL_TIMEOUT_MS = 4500
 const REVIEW_FETCH_TIMEOUT_MS = 15_000
 const LS_REMOTE_TIMEOUT_MS = 10_000
