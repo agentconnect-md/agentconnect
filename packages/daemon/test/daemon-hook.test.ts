@@ -16,6 +16,7 @@ import {
   CODEHOST_REVIEW_V1_FEATURE,
   HOOK_REPORT_REASON_PROVIDER_AUTH_REQUIRED,
   HOOK_REPORT_REASON_PROVIDER_QUOTA_EXHAUSTED,
+  hookSubjectSessionKey,
   type EventSession,
   type HookReport,
   type HookStart,
@@ -3651,6 +3652,32 @@ describe('buildHookMessage', () => {
     const m = buildHookMessage(fire({ sessionKey: 'acme/infra#42' }), 'trace-1')
     expect(m.channel).toBe('acme/infra')
     expect(m.thread).toBe('42')
+  })
+
+  it('perSubject keys every delivery of one subject to one session-store key', async () => {
+    const sessionKey = hookSubjectSessionKey(HOOK_ID, 'ticket-42')
+    const first = buildHookMessage(fire({ sessionKey, msgId: `${HOOK_ID}:d-1`, deliveryKey: 'd-1' }), 'trace-1')
+    const second = buildHookMessage(fire({ sessionKey, msgId: `${HOOK_ID}:d-2`, deliveryKey: 'd-2' }), 'trace-2')
+
+    expect(first).toMatchObject({ channel: HOOK_ID, thread: 'subject:ticket-42' })
+    // The store key is (platform, channel, thread): equal across deliveries, distinct per subject.
+    expect(second.channel).toBe(first.channel)
+    expect(transcriptCoords(second).thread).toBe(transcriptCoords(first).thread)
+    const other = buildHookMessage(fire({ sessionKey: hookSubjectSessionKey(HOOK_ID, 'ticket-43') }), 'trace-3')
+    expect(other.thread).not.toBe(first.thread)
+  })
+
+  it("perSubject does not read a '#' in the caller's subject key as a github thread", async () => {
+    const m = buildHookMessage(fire({ sessionKey: hookSubjectSessionKey(HOOK_ID, 'ticket#42') }), 'trace-1')
+    expect(m).toMatchObject({ channel: HOOK_ID, thread: 'subject:ticket#42' })
+  })
+
+  it('a perSubject key and the perDelivery key that spells it agree on coordinates', async () => {
+    const sessionKey = hookSubjectSessionKey(HOOK_ID, 'ticket-42')
+    const asDelivery = buildHookMessage(fire({ sessionKey, msgId: sessionKey, deliveryKey: 'subject:ticket-42' }), 't')
+    const asSubject = buildHookMessage(fire({ sessionKey }), 't')
+    expect(asDelivery.thread).toBe(asSubject.thread)
+    expect(asDelivery.channel).toBe(asSubject.channel)
   })
 
   it('the payload IS the message: a `prompt` field speaks for the caller', async () => {

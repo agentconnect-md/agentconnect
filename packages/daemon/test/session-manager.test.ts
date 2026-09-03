@@ -6,7 +6,7 @@ import { LocalStore, sessionKey, transcriptChannelKey } from '../src/store/local
 import { SessionManager, isStandingContextTitleEcho } from '../src/session/session-manager.js'
 import { clampRuntimeTitle, isPromptEchoTitle, promptEchoPrefix } from '../src/session/derive-title.js'
 import { buildHookMessage } from '../src/messages/hook-message.js'
-import type { RdMsgHook } from '@agentconnect.md/protocol'
+import { hookSubjectSessionKey, type RdMsgHook } from '@agentconnect.md/protocol'
 import { WorkspaceManager } from '../src/workspace/workspace-manager.js'
 import { createManagedMemoryProvider } from '../src/memory/provider.js'
 import { writeMemoryFile, MEMORY_INDEX, MAX_INDEX_INJECT_BYTES } from '../src/memory/store.js'
@@ -742,6 +742,34 @@ describe('SessionManager', () => {
     expect(isPromptEchoTitle(upstreamFallbackTitle, promptEchoPrefix(promptTexts))).toBe(true)
     // A real runtime title on the same turn still gets through.
     expect(isPromptEchoTitle('Review the Linear transcript change', promptEchoPrefix(promptTexts))).toBe(false)
+    await (await store).close()
+  })
+
+  it('continues one session across every webhook delivery naming the same subject', async () => {
+    const store = await newStore()
+    const host = { newSession: vi.fn(async () => 'acp-subject-1') } as any
+    const sm = new SessionManager({ store, hostFor: async () => host, agentById: () => agent, memory })
+    const hookId = 'hook-1'
+    const fire = (deliveryKey: string, subject: string): RdMsgHook =>
+      ({
+        source: 'hook',
+        agentId: 'bot-a',
+        sessionKey: hookSubjectSessionKey(hookId, subject),
+        msgId: `${hookId}:${deliveryKey}`,
+        hookId,
+        deliveryKey,
+        firedAt: new Date().toISOString(),
+        context: { source: 'webhook', body: `{"ticket":"${subject}"}`, truncated: false }
+      }) as unknown as RdMsgHook
+
+    const opened = await sm.handle('bot-a', buildHookMessage(fire('d-1', 'ticket-42'), 't-1'))
+    expect(opened.created).toBe(true)
+    // A distinct delivery of the SAME subject appends a turn instead of waking context-free.
+    const followUp = await sm.handle('bot-a', buildHookMessage(fire('d-2', 'ticket-42'), 't-2'))
+    expect(followUp.created).toBe(false)
+    // Another subject on the same hook stays its own session.
+    const other = await sm.handle('bot-a', buildHookMessage(fire('d-3', 'ticket-43'), 't-3'))
+    expect(other.created).toBe(true)
     await (await store).close()
   })
 
