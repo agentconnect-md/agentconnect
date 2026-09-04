@@ -464,6 +464,25 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
     [mutateSteps]
   )
 
+  /** Settle any card this lane left standing when its terminal frame lands. The daemon
+   *  resolves every pending elicitation as the turn ends, but that output can lose the race
+   *  with `done` — which retires the lane cursor, so a later event is dropped and the card
+   *  would stay answerable forever. A card cannot outlive its turn, so settle it here. */
+  const settleLiveElicits = useCallback(
+    (id: string, agentId: string | undefined, turnId: string): void =>
+      mutateSteps(id, (steps) => {
+        let changed = false
+        const next = steps.map((s) => {
+          if (s.kind !== 'elicit' || s.turnId !== turnId || (s.agentId ?? undefined) !== agentId) return s
+          if (!s.elicit || s.elicit.outcome) return s
+          changed = true
+          return { ...s, elicit: { ...s.elicit, outcome: 'cancelled' as const } }
+        })
+        return changed ? next : steps
+      }),
+    [mutateSteps]
+  )
+
   /** Retire a lane's wait notice on an event that is not folded into a step (a title, a clean end). */
   const retireWaitNotice = useCallback(
     (id: string, agentId: string | undefined, turnId: string): void =>
@@ -600,11 +619,14 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         }
         if (ev.kind === 'elicitation_resolved') {
           // Settle the card in place — the append-only stream's equivalent of Slack
-          // rewriting its message. Matched by requestId across the whole transcript: a
-          // card can outlive the lane fences the chunk accumulator scans within.
+          // rewriting its message. Scanned across the whole transcript, since a card can
+          // outlive the lane fences the chunk accumulator stops at, but matched on lane
+          // identity too: `elicit-<n>` is unique only within one daemon, so two
+          // participants on different daemons can hold the same id concurrently.
           for (let i = steps.length - 1; i >= 0; i--) {
             const step = steps[i]!
             if (step.kind !== 'elicit' || step.elicit?.requestId !== ev.requestId) continue
+            if ((step.agentId ?? undefined) !== agentId || step.turnId !== turnId) continue
             return replaceAt(i, {
               ...step,
               elicit: {
@@ -865,6 +887,7 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
         if (rec && rec.turnId === result.done.turnId) rec.agents.add(agentId)
         else finishedTurnLanes.current.set(id, { turnId: result.done.turnId, agents: new Set([agentId]) })
       }
+      if (result.done.turnId) settleLiveElicits(id, agentId, result.done.turnId)
       if (result.done.error) {
         // The notice STAYS on a failure: a turn that died waiting for its pod is explained by it.
         const name = participantName(id, agentId)
@@ -893,7 +916,8 @@ export function PlaygroundProvider({ children }: { children: ReactNode }) {
       participantName,
       pushStep,
       retireWaitNotice,
-      setBusy
+      setBusy,
+      settleLiveElicits
     ]
   )
 

@@ -899,11 +899,17 @@ describe('in-band elicitation cards', () => {
     return { socket, turnId: turn.turnId }
   }
 
-  function feed(socket: ElicitSocket, turnId: string, index: number, event: unknown) {
+  function feed(socket: ElicitSocket, turnId: string, index: number, event: unknown, agentId = 'agent-1') {
     act(() => {
       socket.onmessage?.({
-        data: JSON.stringify({ type: 'output', output: { turnId, agentId: 'agent-1', index, event } })
+        data: JSON.stringify({ type: 'output', output: { turnId, agentId, index, event } })
       })
+    })
+  }
+
+  function finish(socket: ElicitSocket, turnId: string, lastIndex: number, agentId = 'agent-1') {
+    act(() => {
+      socket.onmessage?.({ data: JSON.stringify({ type: 'done', done: { turnId, agentId, lastIndex } }) })
     })
   }
 
@@ -927,6 +933,40 @@ describe('in-band elicitation cards', () => {
         boundary: true,
         elicit: { requestId: 'elicit-1', options: [{ value: 'main' }, { value: 'develop' }] }
       }
+    ])
+  })
+
+  it('settles a card another participant cannot claim: `elicit-<n>` is unique per daemon only', async () => {
+    const { socket, turnId } = await openStream()
+    feed(socket, turnId, 0, card('elicit-1'))
+    // A second participant on a DIFFERENT daemon reuses the id from its own counter.
+    // agent-2 streams on its OWN index sequence — cursors are per participant lane.
+    feed(
+      socket,
+      turnId,
+      0,
+      { kind: 'elicitation_resolved', requestId: 'elicit-1', outcome: 'accepted', label: 'x' },
+      'agent-2'
+    )
+    const held = getLiveSteps('s1').filter((s) => s.kind === 'elicit')
+    expect(held).toHaveLength(1)
+    expect(held[0]!.elicit).toMatchObject({ requestId: 'elicit-1' })
+    expect(held[0]!.elicit?.outcome).toBeUndefined() // still live — the other lane's id is not ours
+
+    feed(socket, turnId, 1, { kind: 'elicitation_resolved', requestId: 'elicit-1', outcome: 'accepted', label: 'main' })
+    expect(getLiveSteps('s1').filter((s) => s.kind === 'elicit')).toMatchObject([
+      { elicit: { requestId: 'elicit-1', outcome: 'accepted', answerLabel: 'main' } }
+    ])
+  })
+
+  it("cancels a card the lane's terminal frame overtook, so it cannot stay answerable forever", async () => {
+    const { socket, turnId } = await openStream()
+    feed(socket, turnId, 0, card('elicit-1'))
+    // An interrupt sends `done` before releaseElicits' output reaches the browser, which
+    // retires the lane cursor — the settlement that follows is dropped.
+    finish(socket, turnId, 0)
+    expect(getLiveSteps('s1').filter((s) => s.kind === 'elicit')).toMatchObject([
+      { elicit: { requestId: 'elicit-1', outcome: 'cancelled' } }
     ])
   })
 
