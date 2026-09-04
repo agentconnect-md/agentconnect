@@ -150,7 +150,9 @@ function formAnswerLabel(
     const value = answer[t.propName]
     if (value !== undefined) parts.push(`${elicitFieldLabel(params, t.propName)}: ${chosenLabel(t, value)}`)
   }
-  return clampTo(parts.join(' · '), 200)
+  // An all-optional form left alone is still an answer — settling it as nothing would read
+  // as a card that never resolved, the same reason a `minItems: 0` selection says so too.
+  return parts.length ? clampTo(parts.join(' · '), 200) : 'Nothing filled in'
 }
 
 /** The card-side descriptors of ONE field — the wire's own shape, minus what only a form

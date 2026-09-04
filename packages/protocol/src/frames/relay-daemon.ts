@@ -228,7 +228,9 @@ export const RelayWebchatOp = z.discriminatedUnion('op', [
       z.array(z.string()).max(100),
       z
         .record(z.string().min(1).max(200), z.union([z.string(), z.number(), z.array(z.string()).max(100)]))
-        .refine((v) => Object.keys(v).length >= 1 && Object.keys(v).length <= ELICIT_FORM_FIELD_CAP),
+        // EMPTY is a real answer: a form of nothing but optional fields, all left alone, is
+        // schema-valid content and the daemon's own accept check already takes it.
+        .refine((v) => Object.keys(v).length <= ELICIT_FORM_FIELD_CAP),
       z.null()
     ]),
     agentId: z.string().uuid().optional()

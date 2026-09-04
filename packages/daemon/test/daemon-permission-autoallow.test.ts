@@ -1054,6 +1054,23 @@ describe('webchat answers a multi-field elicitation form with a record', () => {
     })
   })
 
+  // A form of nothing but optional fields, submitted untouched, is a real answer: schema-valid
+  // empty content. The wire used to refuse the frame, so an enabled Submit did nothing.
+  it('accepts an all-optional form submitted with nothing filled in', async () => {
+    const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
+    const pending: any = installPending(daemon)
+    const sink = installWebchat(pending)
+
+    const result = (daemon as any).permissions.onAcpElicit('agent-1', 's1', twoFieldElicitation([]))
+    await vi.waitFor(() => expect((daemon as any).permissions.pendingElicits.size).toBe(1))
+    const [requestId] = (daemon as any).permissions.pendingElicits.keys()
+
+    await (daemon as any).permissions.handleElicitChoice({ requestId, value: {}, webchatConversationId: 'conv-1' })
+    await expect(result).resolves.toEqual({ action: 'accept', content: {} })
+    // Settled as an answer, not left looking like a card that never resolved.
+    expect(cardEvents(sink)[1]).toMatchObject({ outcome: 'accepted', label: 'Nothing filled in' })
+  })
+
   it('refuses the WHOLE record for one bad, extra, or misspelled field', async () => {
     const daemon = new Daemon({ slackAppFactory: fakeSlackAppFactory(), sandboxMechanism: null })
     const pending: any = installPending(daemon)
