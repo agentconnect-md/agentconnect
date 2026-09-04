@@ -666,6 +666,8 @@ export function elicitTarget(params: CreateElicitationRequest, renderable: Elici
   const props = p.requestedSchema?.properties ?? {}
   const required = Array.isArray(p.requestedSchema?.required) ? (p.requestedSchema.required as unknown[]) : []
   // A required field we can't render is unanswerable: accepting without it would assert a lie.
+  // A candidate that fails this does NOT end the scan — a later property may be the sole
+  // required one, and returning here would decline a form this surface can in fact answer.
   const answerable = (t: ElicitTarget) => (required.every((r) => r === t.propName) ? t : null)
   for (const [name, prop] of Object.entries(props)) {
     if (prop?.type === 'string' && renderable.has('enum')) {
@@ -676,23 +678,30 @@ export function elicitTarget(params: CreateElicitationRequest, renderable: Elici
         : Array.isArray(en)
           ? en.map((v) => ({ value: String(v), label: clampTo(String(v), 75) }))
           : []
-      if (options.length) return answerable({ propName: name, kind: 'enum', options })
+      if (options.length) {
+        const t = answerable({ propName: name, kind: 'enum', options })
+        if (t) return t
+      }
     }
     if (prop?.type === 'array' && renderable.has('multi-enum')) {
       const options = arrayOptions(prop)
       const min = itemBound(prop.minItems)
       const max = itemBound(prop.maxItems)
-      if (options.length)
-        return answerable({
+      // Bounds that admit only the empty selection, or none at all, are not a question.
+      const askable = max === undefined || (max > 0 && max >= (min ?? 0))
+      if (options.length && askable) {
+        const t = answerable({
           propName: name,
           kind: 'multi-enum',
           options,
           ...(min !== undefined ? { minItems: min } : {}),
           ...(max !== undefined ? { maxItems: max } : {})
         })
+        if (t) return t
+      }
     }
     if (prop?.type === 'boolean' && renderable.has('boolean')) {
-      return answerable({
+      const t = answerable({
         propName: name,
         kind: 'boolean',
         options: [
@@ -700,6 +709,7 @@ export function elicitTarget(params: CreateElicitationRequest, renderable: Elici
           { value: 'false', label: 'No' }
         ]
       })
+      if (t) return t
     }
   }
   return null

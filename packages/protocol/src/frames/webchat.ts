@@ -174,7 +174,7 @@ export const WebchatEvent = z.discriminatedUnion('kind', [
     // (zod strips what it does not know) instead of dropping the frame the way an unknown
     // kind would, and a daemon predating it simply never sets it.
     multi: z
-      .object({ minItems: z.number().int().min(0).optional(), maxItems: z.number().int().min(1).optional() })
+      .object({ minItems: z.number().int().min(0).optional(), maxItems: z.number().int().min(0).optional() })
       .optional()
   }),
   // The same card, settled. Slack rewrites its message in place; this stream is
