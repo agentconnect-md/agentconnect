@@ -377,16 +377,20 @@ describe('DreamPanel', () => {
     expect(api.adoptDream).toHaveBeenLastCalledWith(AGENT, 'drm-1', true, 'sha256:store')
   })
 
-  it('names the files a forced adopt would drop, from the live-only paths', async () => {
-    // stale.md exists live but not in the staged tree, so a whole-directory swap drops it.
+  it('names the live-only files a forced adopt would drop, recomputed at fence time (#1792)', async () => {
+    // The review panel loaded with no live-only topics; another session then added
+    // new.md, which is what trips the fence. The warning must name new.md — so the
+    // dropped set is recomputed when the fence fires, not reused from review load.
     api.listDreams.mockResolvedValue([dream()])
-    api.listAgentMemory.mockResolvedValue({
-      exists: true,
-      files: [
-        { name: 'MEMORY.md', size: 10, mtime: 'x' },
-        { name: 'stale.md', size: 10, mtime: 'x' }
-      ]
-    })
+    api.listAgentMemory
+      .mockResolvedValueOnce({ exists: true, files: [{ name: 'MEMORY.md', size: 10, mtime: 'x' }] })
+      .mockResolvedValue({
+        exists: true,
+        files: [
+          { name: 'MEMORY.md', size: 10, mtime: 'x' },
+          { name: 'new.md', size: 10, mtime: 'x' }
+        ]
+      })
     const fence = new FakeApiError(409)
     fence.message = 'the live store changed since this dream was snapshotted; rerun the dream or force'
     api.adoptDream.mockRejectedValueOnce(fence).mockResolvedValue(dream({ status: 'adopted' }))
@@ -396,13 +400,16 @@ describe('DreamPanel', () => {
     await act(async () => {
       await Promise.resolve()
     })
+    // The review panel, loaded before new.md existed, shows no deletions.
+    expect(host.textContent).not.toContain('Adopting removes')
     await act(async () => button(host, 'Adopt')?.click())
     const confirm = [...document.body.querySelectorAll<HTMLButtonElement>('button')].filter(
       (b) => b.textContent?.trim() === 'Adopt'
     )
     await act(async () => confirm.at(-1)?.click())
 
-    expect(document.body.textContent).toContain('drops 1 file added since: stale.md')
+    // Provenance is unknowable, so the copy says "not in the staged version", not "added since".
+    expect(document.body.textContent).toContain('drops 1 live file not in the staged version: new.md')
   })
 
   it('recommends mined skills and never installs one without an explicit click', async () => {
