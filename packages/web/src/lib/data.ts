@@ -1133,6 +1133,13 @@ export interface SessionStep {
     /** Present ⇒ the card picks SEVERAL options and confirms, and answers with the list.
      *  Absent ⇒ one option, answered on the tap. */
     multi?: { minItems?: number; maxItems?: number }
+    /** Present ⇒ the card is a free-text input carrying the schema's constraints (the daemon
+     *  re-checks every one of them), and `options` is empty. */
+    text?: { minLength?: number; maxLength?: number; pattern?: string; format?: string }
+    /** Present ⇒ a numeric input; `integer` refuses a fractional answer. */
+    number?: { integer?: boolean; minimum?: number; maximum?: number }
+    /** The schema's `default` — what the control starts out holding. */
+    defaultValue?: string | number | boolean | string[]
     outcome?: 'accepted' | 'dismissed' | 'cancelled'
     answerLabel?: string
   }

@@ -200,6 +200,9 @@ describe('relay↔daemon wire — skeleton frame codec (shared-bot-relay.md §7.
       // A multi-select answers with the chosen LIST — same op, widened value.
       { op: 'elicitation_choice', requestId: 'elicit-1', value: ['lint', 'build'] },
       { op: 'elicitation_choice', requestId: 'elicit-1', value: [] },
+      // A typed field answers with the schema's own type — a real number, never its spelling.
+      { op: 'elicitation_choice', requestId: 'elicit-1', value: 42 },
+      { op: 'elicitation_choice', requestId: 'elicit-1', value: -1.5 },
       { op: 'close' }
     ]
     for (const payload of ops) {

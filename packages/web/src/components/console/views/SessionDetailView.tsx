@@ -653,19 +653,107 @@ function selectionHint(min: number, max?: number): string {
   return max !== undefined ? `Select up to ${max}` : 'Select any that apply'
 }
 
+// What each schema `format` asks of a typed answer, named the way the reader has to fix it.
+const FORMAT_HINT: Record<string, { test: (v: string) => boolean; why: string }> = {
+  email: { test: (v) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(v), why: 'Enter an email address' },
+  uri: {
+    test: (v) => {
+      try {
+        return !!new URL(v).protocol
+      } catch {
+        return false
+      }
+    },
+    why: 'Enter a URL, including its scheme'
+  },
+  date: {
+    // `2025-13-01` matches the shape but is not a date, and toISOString THROWS on it — this
+    // runs during render, so an ordinary invalid draft would crash the view, not fail a check.
+    test: (v) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false
+      const d = new Date(`${v}T00:00:00Z`)
+      return !Number.isNaN(d.getTime()) && v === d.toISOString().slice(0, 10)
+    },
+    why: 'Enter a date as YYYY-MM-DD'
+  },
+  'date-time': {
+    test: (v) =>
+      /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(v) && !isNaN(Date.parse(v)),
+    why: 'Enter a date and time, e.g. 2025-01-31T09:00:00Z'
+  }
+}
+
+/** Why a typed draft is not yet answerable, or undefined once it is — the same constraints the
+ *  daemon re-checks, said in words the reader can act on rather than as a silent dead control. */
+function typedInvalidReason(elicit: NonNullable<FmtStep['elicit']>, draft: string): string | undefined {
+  const num = elicit.number
+  if (num) {
+    if (!draft.trim()) return 'Enter a number'
+    const value = Number(draft)
+    if (!Number.isFinite(value)) return 'Enter a number'
+    if (num.integer && !Number.isInteger(value)) return 'Enter a whole number'
+    if (num.minimum !== undefined && value < num.minimum) return `Enter ${num.minimum} or more`
+    if (num.maximum !== undefined && value > num.maximum) return `Enter ${num.maximum} or less`
+    return undefined
+  }
+  const text = elicit.text
+  if (!text) return undefined
+  if (text.minLength !== undefined && draft.length < text.minLength)
+    return `Enter at least ${text.minLength} character${text.minLength === 1 ? '' : 's'}`
+  if (!draft.length) return 'Enter an answer'
+  // Also what keeps the pattern below cheap: the daemon sizes maxLength down to the pattern
+  // cap, so a long draft is refused here rather than matched on every keystroke.
+  if (text.maxLength !== undefined && draft.length > text.maxLength) return `Enter at most ${text.maxLength} characters`
+  const format = text.format ? FORMAT_HINT[text.format] : undefined
+  if (format && !format.test(draft)) return format.why
+  if (text.pattern !== undefined) {
+    try {
+      if (!new RegExp(text.pattern).test(draft)) return `Match ${text.pattern}`
+    } catch {
+      return 'This field cannot be answered here'
+    }
+  }
+  return undefined
+}
+
+/** What a typed card's control starts out holding: the schema's `default`, or nothing. */
+function typedDraft(elicit: FmtStep['elicit']): string {
+  const value = elicit?.defaultValue
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+}
+
+/** The options a card starts out holding — a multi-select's default list, or the single default
+ *  pick, which stays marked so the reader sees what the agent suggested before tapping. */
+function pickedDefaults(elicit: FmtStep['elicit']): string[] {
+  const value = elicit?.defaultValue
+  if (Array.isArray(value)) return value
+  return typeof value === 'string' || typeof value === 'boolean' ? [String(value)] : []
+}
+
 /** The agent's in-band question: its options while it is live, its outcome once settled.
  *  A multi-select (`elicit.multi`) toggles its options and answers with the list on Confirm —
  *  one tap can't express a set — while a single-choice card still answers on the tap itself.
+ *  A typed field (`elicit.text` / `elicit.number`) has no options at all: it submits what the
+ *  reader wrote, once the schema's own constraints are met.
  *  Without `onAnswer` — a reader with no live socket to answer over — the same card renders
  *  as a plain record of the ask, controls inert rather than missing. */
-function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value: string | string[] | null) => void }) {
-  const [picked, setPicked] = useState<string[]>([])
+function ElicitationCard({
+  step,
+  onAnswer
+}: {
+  step: FmtStep
+  onAnswer?: (value: string | string[] | number | null) => void
+}) {
+  const [picked, setPicked] = useState<string[]>(() => pickedDefaults(step.elicit))
+  const [draft, setDraft] = useState<string>(() => typedDraft(step.elicit))
   const elicit = step.elicit
   const multi = elicit?.multi
+  const typed = elicit && (elicit.text || elicit.number) ? elicit : undefined
   const min = multi?.minItems ?? 0
   const max = multi?.maxItems
   // The same bounds the daemon re-checks: a browser frame is not what makes an answer valid.
   const complete = picked.length >= min && (max === undefined || picked.length <= max)
+  const invalid = typed ? typedInvalidReason(typed, draft) : undefined
   if (!elicit) return null
   const settled = elicit.outcome ? ELICIT_OUTCOME[elicit.outcome] : undefined
   return (
@@ -684,6 +772,46 @@ function ElicitationCard({ step, onAnswer }: { step: FmtStep; onAnswer?: (value:
             <Icon name={settled.icon} size={13} color={settled.color} />
             <span className="min-w-0 truncate">{settled.label(elicit.answerLabel)}</span>
           </span>
+        ) : typed ? (
+          <>
+            <input
+              className="inp min-w-0 flex-1 basis-[220px] disabled:cursor-default disabled:opacity-55"
+              type={elicit.number ? 'number' : 'text'}
+              value={draft}
+              disabled={!onAnswer}
+              aria-label="Your answer"
+              {...(elicit.number?.minimum !== undefined ? { min: elicit.number.minimum } : {})}
+              {...(elicit.number?.maximum !== undefined ? { max: elicit.number.maximum } : {})}
+              {...(elicit.number?.integer ? { step: 1 } : {})}
+              {...(elicit.text?.maxLength !== undefined ? { maxLength: elicit.text.maxLength } : {})}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && onAnswer && !invalid) onAnswer(elicit.number ? Number(draft) : draft)
+              }}
+            />
+            {invalid && (
+              <span className="font-sans text-[12.5px] font-normal leading-normal text-(--text-tertiary)">
+                {invalid}
+              </span>
+            )}
+            <button
+              type="button"
+              className="dsbtn dsbtn-primary xs"
+              disabled={!onAnswer || !!invalid}
+              onClick={() => onAnswer?.(elicit.number ? Number(draft) : draft)}
+            >
+              Submit
+            </button>
+            <button
+              type="button"
+              className="chip disabled:cursor-default disabled:opacity-55"
+              disabled={!onAnswer}
+              onClick={() => onAnswer?.(null)}
+              title="Dismiss without answering"
+            >
+              Dismiss
+            </button>
+          </>
         ) : (
           <>
             {elicit.options.map((option) => {
@@ -2955,7 +3083,11 @@ export default function SessionDetailView() {
   // the card renders inert rather than offering buttons that would go nowhere.
   const answerElicitation =
     isLive && (isPg || isWebchat)
-      ? (agentId: string | undefined, requestId: string | undefined, value: string | string[] | null): void => {
+      ? (
+          agentId: string | undefined,
+          requestId: string | undefined,
+          value: string | string[] | number | null
+        ): void => {
           if (!requestId) return
           pgAnswerElicitation(session.id, agentId ?? session.agentId ?? '', requestId, value, webchatConversationId)
         }
@@ -4357,7 +4489,7 @@ export default function SessionDetailView() {
                                           step={st}
                                           {...(answerElicitation
                                             ? {
-                                                onAnswer: (value: string | string[] | null) =>
+                                                onAnswer: (value: string | string[] | number | null) =>
                                                   answerElicitation(turn.agentId, st.elicit?.requestId, value)
                                               }
                                             : {})}

@@ -182,6 +182,11 @@ describe('parseBrowserFrame', () => {
     expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: [] }, USER)).toEqual({
       op: { op: 'elicitation_choice', requestId: 'elicit-1', value: [] }
     })
+    // A typed field answers with a real number; a non-finite one is not a number a schema means.
+    expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: 42 }, USER)).toEqual({
+      op: { op: 'elicitation_choice', requestId: 'elicit-1', value: 42 }
+    })
+    expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: Number.NaN }, USER)).toBeNull()
     expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1', value: ['a', 7] }, USER)).toBeNull()
     expect(parseBrowserFrame({ type: 'elicitation_choice', requestId: 'elicit-1' }, USER)).toBeNull()
     expect(parseBrowserFrame({ type: 'elicitation_choice', value: 'yes' }, USER)).toBeNull()
